@@ -68,6 +68,7 @@ mod sidebar_pins;
 mod sidebar_sections;
 pub(crate) mod spaces;
 mod tabs;
+pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
 
 use spaces::{AddSpaceFlow, RenameSpaceDialog};
@@ -466,6 +467,14 @@ pub fn apply_keymap(
             None,
         ))
     }));
+    // Work Outline commands (empty combos stay unbound).
+    cx.bind_keys(work_outline_ui::work_outline_bindings(keymap));
+    // Outline navigation keys, context `WorkOutline` minus text inputs. The
+    // function is compiled out until the presentation branch's
+    // `work_outline::outline_view` actions exist; the integrator removes both
+    // `cfg(any())` attributes (here and on the function) at merge.
+    #[cfg(any())]
+    work_outline_ui::bind_work_outline_navigation(cx);
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
@@ -1626,6 +1635,11 @@ pub struct Shell {
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    /// Work Outline confirmation modal (`work_outline_ui`), `Some` while open.
+    work_outline_modal: Option<work_outline_ui::WorkOutlineModal>,
+    /// Modals replaced by a newer request; their cancel is delivered at the
+    /// next render, when a window is at hand.
+    work_outline_superseded: Vec<work_outline_ui::WorkOutlineModal>,
     /// The chat close-out dialog (`closeout_ui`), `Some` while open.
     closeout_dialog: Option<closeout_ui::CloseoutDialog>,
     /// Monotonic id per close-out dialog open (stale-reply guard).
@@ -2051,6 +2065,8 @@ impl Shell {
             chat_menu: popover::Popup::default(),
             rename_dialog: None,
             delete_confirm: None,
+            work_outline_modal: None,
+            work_outline_superseded: Vec::new(),
             closeout_dialog: None,
             closeout_seq: 0,
             space_menu: popover::Popup::default(),
@@ -5235,6 +5251,7 @@ impl Shell {
             || self.section_dialog.is_some()
             || self.section_menu.is_some()
             || self.add_space.is_some()
+            || self.work_outline_modal.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
@@ -8679,6 +8696,7 @@ impl Shell {
         }
         if self.sync_flow.has_visible_overlay()
             || self.delete_confirm.is_some()
+            || self.work_outline_modal.is_some()
             || self.delete_space_confirm.is_some()
             || self.chat_menu.get().is_some()
             || self.space_menu.get().is_some()
@@ -8729,6 +8747,11 @@ impl Shell {
         if event.keystroke.key == "escape" && self.sidebar_session_transfer.is_some() {
             cx.stop_active_drag(window);
             self.cancel_sidebar_session_transfer(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.work_outline_modal_open() {
+            self.cancel_work_outline_modal(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -9237,6 +9260,10 @@ impl Shell {
         }
 
         if let Some(overlay) = self.render_closeout_overlay(viewport, cx) {
+            overlays.push(overlay);
+        }
+
+        if let Some(overlay) = self.render_work_outline_modal(viewport, window, cx) {
             overlays.push(overlay);
         }
 
@@ -11889,6 +11916,13 @@ impl Render for Shell {
                     this.open_pr_review_chats_focused(window, cx);
                 }
             }))
+            .on_action(cx.listener(
+                |this, action: &work_outline_ui::RunWorkOutlineCommand, window, cx| {
+                    if !this.overlay_owns_keyboard(cx) {
+                        this.run_work_outline_command(action.0, window, cx);
+                    }
+                },
+            ))
             .on_action(cx.listener(|this, _: &OpenMyPrs, _, cx| {
                 if !this.overlay_owns_keyboard(cx) {
                     this.toggle_my_prs(cx);
@@ -12385,6 +12419,16 @@ mod tests {
         // `apply_keymap` silently falls back on an unparseable combo, so a
         // default gpui cannot parse would ship as a dead shortcut.
         for id in crate::settings::ShortcutId::ALL {
+            // Work Outline commands without a default ship unbound (the
+            // palette is their entry point); `apply_keymap` skips empty combos.
+            if id.default_combo().is_empty() {
+                assert!(
+                    crate::work_outline::WorkOutlineCommand::from_shortcut_id(id).is_some(),
+                    "{} has no default and is not a Work Outline command",
+                    id.label()
+                );
+                continue;
+            }
             let combo = platform_combo(id.default_combo());
             assert!(
                 Keystroke::parse(&combo).is_ok(),
@@ -14586,57 +14630,6 @@ mod exit_regressions {
                 })
                 .unwrap();
         }
-    }
-}
-
-impl Shell {
-    /// Open a work item's external reference (issue, PR, doc) in the right
-    /// browser: the internal browser surface when `open_web_links_in_zeron` is
-    /// on and a Chat is selected (leaving Overview), otherwise
-    /// `cx.open_url`. Overview-hosted Work Item Details have no source Chat
-    /// and always use the external browser (m0-contract §7). Never overwrites
-    /// manual PR/ticket links.
-    ///
-    /// STUB (scaffold): the data/shell owner (implementer B, sole owner of
-    /// this file) implements it.
-    #[allow(dead_code)]
-    pub(crate) fn open_work_item_reference(
-        &mut self,
-        url: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let _ = (url, window, cx);
-    }
-
-    /// Show a Shell-owned window modal (discard draft, archive or move with
-    /// descendants) and deliver the decision through
-    /// `request.on_decision`. The dialog must be registered in both
-    /// `capture_escape_surface` and `overlay_owns_keyboard`.
-    ///
-    /// STUB (scaffold): the data/shell owner (implementer B) implements it.
-    #[allow(dead_code)]
-    pub(crate) fn open_work_outline_confirm(
-        &mut self,
-        request: crate::work_outline::WorkOutlineConfirmRequest,
-        cx: &mut Context<Self>,
-    ) {
-        let _ = (request, cx);
-    }
-
-    /// Single entry point for the nine Work Outline commands (command
-    /// palette, keymap actions): open the Overview route if needed and
-    /// forward to `Overview::run_work_outline_command`.
-    ///
-    /// STUB (scaffold): the data/shell owner (implementer B) implements it.
-    #[allow(dead_code)]
-    pub(crate) fn run_work_outline_command(
-        &mut self,
-        command: crate::work_outline::WorkOutlineCommand,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let _ = (command, window, cx);
     }
 }
 
