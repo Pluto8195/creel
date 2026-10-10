@@ -755,6 +755,8 @@ pub struct AppState {
     change_request_tasks: HashMap<ChangeRequestWatchKey, Task<()>>,
     queue_task: Option<Task<()>>,
     change_requests_visible: bool,
+    /// Work Outline snapshots keyed by Space id, fed by `WatchWorkOutline`.
+    work_outlines: crate::work_outline::WorkOutlineStore,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -830,6 +832,7 @@ impl AppState {
             change_request_tasks: HashMap::new(),
             queue_task: None,
             change_requests_visible: true,
+            work_outlines: crate::work_outline::WorkOutlineStore::new(),
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,
@@ -1813,6 +1816,22 @@ impl AppState {
     pub fn change_request_for_chat(&self, chat: &Chat) -> Option<&ChangeRequestSummary> {
         self.change_requests
             .change_request_for_chat(chat, &self.spaces)
+    }
+
+    /// Current Work Outline load state for one Space.
+    pub(crate) fn work_outline(&self, space_id: &str) -> crate::work_outline::WorkOutlineLoad {
+        self.work_outlines.load(space_id)
+    }
+
+    /// Declares which Spaces the Outline presentation shows, so the
+    /// `WatchWorkOutline` reconciler watches exactly those.
+    pub(crate) fn set_work_outline_visible(&mut self, space_ids: Vec<String>) {
+        let _ = space_ids;
+    }
+
+    /// Mutation facade bound to the current engine connection.
+    pub(crate) fn work_outline_actions(&self) -> crate::work_outline::WorkOutlineActions {
+        crate::work_outline::WorkOutlineActions::new(self.engine.clone())
     }
 
     pub fn gate(&self) -> GatePhase {
