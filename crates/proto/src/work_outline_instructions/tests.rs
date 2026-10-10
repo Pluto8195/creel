@@ -1,5 +1,5 @@
 use super::*;
-use crate::work_outline::{WorkOutlineActorKind, WorkOutlineMutation, WorkOutlineQueryRequest};
+use crate::work_outline::{WorkOutlineActorKind, WorkOutlineQueryRequest};
 use serde_json::json;
 
 fn round_trip<T>(value: &T, expected: Value)
@@ -701,4 +701,558 @@ fn diff_lines_is_a_minimal_lcs_diff() {
             text: "z".into()
         }]
     );
+}
+
+// ── wire field names ────────────────────────────────────────────────────────
+
+const USER_JSON: &str = r#"{"kind":"user","deviceId":"dev-1"}"#;
+
+fn user_json() -> Value {
+    serde_json::from_str(USER_JSON).unwrap()
+}
+
+#[test]
+fn instruction_wire_names_are_pinned() {
+    round_trip(&InstructionScope::SpaceRoot, json!({"type":"spaceRoot"}));
+    round_trip(
+        &InstructionScope::WorkItem {
+            work_item_id: "w".into(),
+        },
+        json!({"type":"workItem","workItemId":"w"}),
+    );
+    let source = InstructionSource {
+        chat_id: Some("c".into()),
+        message_id: Some("m".into()),
+        excerpt: Some("x".into()),
+        content_hash: Some("h".into()),
+    };
+    round_trip(
+        &source,
+        json!({"chatId":"c","messageId":"m","excerpt":"x","contentHash":"h"}),
+    );
+    round_trip(&InstructionSource::default(), json!({}));
+    let view = WorkItemInstructionView {
+        id: "i".into(),
+        space_id: "s".into(),
+        work_item_id: Some("w".into()),
+        text: "T".into(),
+        order_key: "a0".into(),
+        created_by: Some(user()),
+        created_at: 1,
+        updated_at: 2,
+        source: Some(source.clone()),
+        source_proposal_id: Some("p".into()),
+        archived_at: Some(3),
+        archived_by: Some(user()),
+    };
+    round_trip(
+        &view,
+        json!({
+            "id":"i","spaceId":"s","workItemId":"w","text":"T","orderKey":"a0",
+            "createdBy":user_json(),"createdAt":1,"updatedAt":2,
+            "source":{"chatId":"c","messageId":"m","excerpt":"x","contentHash":"h"},
+            "sourceProposalId":"p","archivedAt":3,"archivedBy":user_json()
+        }),
+    );
+    // Space-root instruction: `workItemId` absent; lenient decode.
+    let root: WorkItemInstructionView = serde_json::from_value(json!({"id":"i"})).unwrap();
+    assert_eq!(root.scope(), InstructionScope::SpaceRoot);
+    assert!(!root.archived());
+    // Provenance drops the excerpt.
+    assert_eq!(
+        serde_json::to_value(view.provenance()).unwrap(),
+        json!({"createdBy":user_json(),"source":{"chatId":"c","messageId":"m","contentHash":"h"},
+               "sourceProposalId":"p"})
+    );
+}
+
+#[test]
+fn effective_instruction_wire_names_are_pinned() {
+    let entry = EffectiveInstructionEntry {
+        instruction_id: "i".into(),
+        source_kind: InstructionSourceKind::SpaceRoot,
+        scope_id: "s".into(),
+        scope_title: "Space root".into(),
+        text: "T".into(),
+        order: 0,
+        inherited: true,
+        provenance: InstructionProvenance::default(),
+    };
+    let entry_json = json!({
+        "instructionId":"i","sourceKind":"spaceRoot","scopeId":"s","scopeTitle":"Space root",
+        "text":"T","order":0,"inherited":true,"provenance":{}
+    });
+    round_trip(&entry, entry_json.clone());
+    round_trip(
+        &EffectiveInstructions {
+            work_item_id: "w".into(),
+            boundary_work_item_id: Some("b".into()),
+            entries: vec![entry],
+            precedence_rule: "rule".into(),
+            rendered_chars: 1,
+            entry_count: 1,
+            within_budget: false,
+            budget_error: Some("too big".into()),
+            budget: InstructionBudget::default(),
+        },
+        json!({
+            "workItemId":"w","boundaryWorkItemId":"b","entries":[entry_json],
+            "precedenceRule":"rule","renderedChars":1,"entryCount":1,"withinBudget":false,
+            "budgetError":"too big","budget":{"maxChars":9000,"maxEntries":32}
+        }),
+    );
+    // Lenient source kind.
+    assert_eq!(
+        serde_json::from_value::<InstructionSourceKind>(json!("future")).unwrap(),
+        InstructionSourceKind::WorkItem
+    );
+    round_trip(&InstructionSourceKind::WorkItem, json!("workItem"));
+}
+
+#[test]
+fn revision_wire_names_are_pinned() {
+    let body = InstructionRevisionBody {
+        entries: vec![entry("i", InstructionSourceKind::WorkItem, "w", "W", "T")],
+        envelope_version: 1,
+        envelope_sha256: "e".into(),
+        hash: "h".into(),
+    };
+    let body_json = json!({
+        "entries":[{"instructionId":"i","sourceKind":"workItem","scopeId":"w","scopeTitle":"W",
+                    "text":"T","order":0,"provenance":{}}],
+        "envelopeVersion":1,"envelopeSha256":"e","hash":"h"
+    });
+    round_trip(&body, body_json.clone());
+    let revision = InstructionRevisionView {
+        id: "r".into(),
+        space_id: "s".into(),
+        work_item_id: "w".into(),
+        body,
+        created_by: Some(user()),
+        created_at: 5,
+        integrity: InstructionRevisionIntegrity::Ok,
+    };
+    round_trip(
+        &revision,
+        json!({"id":"r","spaceId":"s","workItemId":"w","body":body_json,
+               "createdBy":user_json(),"createdAt":5,"integrity":"ok"}),
+    );
+    // Missing or unknown integrity fails closed.
+    let missing: InstructionRevisionView =
+        serde_json::from_value(json!({"id":"r","body":{}})).unwrap();
+    assert_eq!(missing.integrity, InstructionRevisionIntegrity::Corrupt);
+    round_trip(&InstructionRevisionIntegrity::Corrupt, json!("corrupt"));
+    assert_eq!(
+        serde_json::from_value::<InstructionRevisionIntegrity>(json!("weird")).unwrap(),
+        InstructionRevisionIntegrity::Corrupt
+    );
+
+    let application = InstructionRevisionApplicationView {
+        id: "a".into(),
+        space_id: "s".into(),
+        chat_id: "c".into(),
+        work_item_id: "w".into(),
+        revision_id: "r".into(),
+        session_ref: Some("x".into()),
+        turn_boundary: InstructionTurnBoundary {
+            message_id: Some("m".into()),
+        },
+        reason: InstructionApplicationReason::ForkInherit,
+        result: InstructionApplicationResult::Accepted,
+        idempotency_key: "op".into(),
+        applied_hlc: "hlc".into(),
+        created_by: Some(user()),
+        created_at: 6,
+    };
+    round_trip(
+        &application,
+        json!({
+            "id":"a","spaceId":"s","chatId":"c","workItemId":"w","revisionId":"r",
+            "sessionRef":"x","turnBoundary":{"messageId":"m"},"reason":"forkInherit",
+            "result":"accepted","idempotencyKey":"op","appliedHlc":"hlc",
+            "createdBy":user_json(),"createdAt":6
+        }),
+    );
+    for (wire, reason) in [
+        ("launch", InstructionApplicationReason::Launch),
+        ("explicit", InstructionApplicationReason::Explicit),
+        ("forkInherit", InstructionApplicationReason::ForkInherit),
+        ("fork-inherit", InstructionApplicationReason::ForkInherit),
+        ("future", InstructionApplicationReason::Explicit),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<InstructionApplicationReason>(json!(wire)).unwrap(),
+            reason
+        );
+    }
+    assert_eq!(
+        serde_json::from_value::<InstructionApplicationResult>(json!("success")).unwrap(),
+        InstructionApplicationResult::Accepted
+    );
+
+    round_trip(
+        &ChatInstructionState {
+            chat_id: "c".into(),
+            selected_revision_id: Some("r".into()),
+            selected_revision_hash: Some("h".into()),
+            current_effective_hash: Some("h2".into()),
+            drift: true,
+            delivered_revision_id: Some("r0".into()),
+            delivered_revision_hash: Some("h0".into()),
+        },
+        json!({
+            "chatId":"c","selectedRevisionId":"r","selectedRevisionHash":"h",
+            "currentEffectiveHash":"h2","drift":true,"deliveredRevisionId":"r0",
+            "deliveredRevisionHash":"h0"
+        }),
+    );
+    round_trip(
+        &ChatInstructionState {
+            chat_id: "c".into(),
+            ..Default::default()
+        },
+        json!({"chatId":"c","drift":false}),
+    );
+}
+
+#[test]
+fn delivery_wire_names_are_pinned() {
+    let envelope = InstructionEnvelope {
+        revision_id: "r".into(),
+        revision_hash: "h".into(),
+        envelope_version: 1,
+        envelope_sha256: "e".into(),
+        rendered: "text".into(),
+    };
+    let envelope_json = json!({
+        "revisionId":"r","revisionHash":"h","envelopeVersion":1,"envelopeSha256":"e",
+        "rendered":"text"
+    });
+    round_trip(&envelope, envelope_json.clone());
+    round_trip(&InstructionTransition::Fresh, json!({"kind":"fresh"}));
+    round_trip(&InstructionTransition::Continue, json!({"kind":"continue"}));
+    round_trip(
+        &InstructionTransition::Replace {
+            previous_revision_id: "r0".into(),
+        },
+        json!({"kind":"replace","previousRevisionId":"r0"}),
+    );
+    let delivery = InstructionDelivery {
+        envelope,
+        transition: InstructionTransition::Fresh,
+    };
+    let delivery_json = json!({"envelope":envelope_json,"transition":{"kind":"fresh"}});
+    round_trip(&delivery, delivery_json.clone());
+    round_trip(
+        &InstructionRevisionPin {
+            revision_id: "r".into(),
+            revision_hash: "h".into(),
+        },
+        json!({"revisionId":"r","revisionHash":"h"}),
+    );
+    round_trip(
+        &ExecutionSessionReport {
+            id: "x".into(),
+            native_resume_id: Some("n".into()),
+            harness: HarnessId::ClaudeCode,
+            execution_root: "/repo".into(),
+            revision_id: Some("r".into()),
+            revision_hash: Some("h".into()),
+        },
+        json!({
+            "id":"x","nativeResumeId":"n","harness":"claude-code","executionRoot":"/repo",
+            "revisionId":"r","revisionHash":"h"
+        }),
+    );
+
+    // RunRequest: absent instructions are omitted and default to None.
+    let minimal = json!({
+        "prompt":"p","model":null,"reasoning":null,"cwd":"/repo","sandbox":"workspace-write",
+        "resume":null
+    });
+    let mut request: crate::RunRequest = serde_json::from_value(minimal).unwrap();
+    assert!(request.instructions.is_none());
+    assert!(
+        serde_json::to_value(&request)
+            .unwrap()
+            .get("instructions")
+            .is_none()
+    );
+    request.instructions = Some(delivery);
+    let value = serde_json::to_value(&request).unwrap();
+    assert_eq!(value["instructions"], delivery_json);
+    let back: crate::RunRequest = serde_json::from_value(value).unwrap();
+    assert_eq!(back, request);
+}
+
+#[test]
+fn comparison_wire_names_are_pinned() {
+    round_trip(
+        &TextDiffLine {
+            kind: TextDiffKind::Removed,
+            text: "x".into(),
+        },
+        json!({"kind":"removed","text":"x"}),
+    );
+    round_trip(&TextDiffKind::Added, json!("added"));
+    round_trip(&TextDiffKind::Same, json!("same"));
+    round_trip(
+        &InstructionRevisionComparison {
+            source_hash: "a".into(),
+            target_hash: "b".into(),
+            identical: false,
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: vec![InstructionTextChange {
+                instruction_id: "i".into(),
+                before_text: "B".into(),
+                after_text: "A".into(),
+            }],
+            reordered: vec!["j".into()],
+            line_diff: Vec::new(),
+        },
+        json!({
+            "sourceHash":"a","targetHash":"b","identical":false,"added":[],"removed":[],
+            "changed":[{"instructionId":"i","beforeText":"B","afterText":"A"}],
+            "reordered":["j"],"lineDiff":[]
+        }),
+    );
+}
+
+#[test]
+fn instruction_mutation_wire_names_are_pinned() {
+    use crate::work_outline::*;
+    let cases = vec![
+        (
+            WorkOutlineMutation::CreateWorkItemInstruction(CreateWorkItemInstructionParams {
+                space_id: "s".into(),
+                scope: InstructionScope::WorkItem {
+                    work_item_id: "w".into(),
+                },
+                text: "T".into(),
+                placement: Some(InstructionPlacement::Before {
+                    sibling_instruction_id: "i0".into(),
+                }),
+                source: Some(InstructionSource {
+                    chat_id: Some("c".into()),
+                    ..Default::default()
+                }),
+                operation_id: "op".into(),
+            }),
+            json!({
+                "op":"createWorkItemInstruction","spaceId":"s",
+                "scope":{"type":"workItem","workItemId":"w"},"text":"T",
+                "placement":{"type":"before","siblingInstructionId":"i0"},
+                "source":{"chatId":"c"},"operationId":"op"
+            }),
+        ),
+        (
+            WorkOutlineMutation::CreateWorkItemInstruction(CreateWorkItemInstructionParams {
+                space_id: "s".into(),
+                scope: InstructionScope::SpaceRoot,
+                text: "T".into(),
+                placement: None,
+                source: None,
+                operation_id: "op".into(),
+            }),
+            json!({
+                "op":"createWorkItemInstruction","spaceId":"s","scope":{"type":"spaceRoot"},
+                "text":"T","operationId":"op"
+            }),
+        ),
+        (
+            WorkOutlineMutation::UpdateWorkItemInstruction(UpdateWorkItemInstructionParams {
+                instruction_id: "i".into(),
+                text: "T2".into(),
+                operation_id: "op".into(),
+            }),
+            json!({"op":"updateWorkItemInstruction","instructionId":"i","text":"T2","operationId":"op"}),
+        ),
+        (
+            WorkOutlineMutation::MoveWorkItemInstruction(MoveWorkItemInstructionParams {
+                instruction_id: "i".into(),
+                placement: InstructionPlacement::After {
+                    sibling_instruction_id: "i1".into(),
+                },
+                operation_id: "op".into(),
+            }),
+            json!({
+                "op":"moveWorkItemInstruction","instructionId":"i",
+                "placement":{"type":"after","siblingInstructionId":"i1"},"operationId":"op"
+            }),
+        ),
+        (
+            WorkOutlineMutation::ArchiveWorkItemInstruction(ArchiveWorkItemInstructionParams {
+                instruction_id: "i".into(),
+                operation_id: "op".into(),
+            }),
+            json!({"op":"archiveWorkItemInstruction","instructionId":"i","operationId":"op"}),
+        ),
+        (
+            WorkOutlineMutation::CreateInstructionRevision(CreateInstructionRevisionParams {
+                work_item_id: "w".into(),
+                operation_id: "op".into(),
+            }),
+            json!({"op":"createInstructionRevision","workItemId":"w","operationId":"op"}),
+        ),
+        (
+            WorkOutlineMutation::ApplyInstructionRevision(ApplyInstructionRevisionParams {
+                chat_id: "c".into(),
+                revision_id: "r".into(),
+                reason: InstructionApplicationReason::Explicit,
+                turn_boundary: Some(InstructionTurnBoundary {
+                    message_id: Some("m".into()),
+                }),
+                operation_id: "op".into(),
+            }),
+            json!({
+                "op":"applyInstructionRevision","chatId":"c","revisionId":"r","reason":"explicit",
+                "turnBoundary":{"messageId":"m"},"operationId":"op"
+            }),
+        ),
+    ];
+    for (mutation, expected) in cases {
+        assert!(mutation.is_instruction_operation());
+        assert_eq!(mutation.operation_id(), "op");
+        round_trip(&mutation, expected);
+    }
+    round_trip(&InstructionPlacement::First, json!({"type":"first"}));
+    round_trip(&InstructionPlacement::Last, json!({"type":"last"}));
+
+    // Replies carry exactly the minted id.
+    for (reply, expected) in [
+        (
+            WorkOutlineMutateReply {
+                instruction_id: Some(derive_id("op", roles::INSTRUCTION)),
+                ..Default::default()
+            },
+            json!({"instructionId": derive_id("op", "instruction")}),
+        ),
+        (
+            WorkOutlineMutateReply {
+                revision_id: Some(derive_id("op", roles::REVISION)),
+                ..Default::default()
+            },
+            json!({"revisionId": derive_id("op", "revision")}),
+        ),
+        (
+            WorkOutlineMutateReply {
+                application_id: Some(derive_id("op", roles::APPLICATION)),
+                ..Default::default()
+            },
+            json!({"applicationId": derive_id("op", "application")}),
+        ),
+    ] {
+        round_trip(&reply, expected);
+    }
+    assert_eq!(
+        WorkOutlineMutateReply::default()
+            .into_revision_id()
+            .unwrap_err()
+            .code,
+        WorkOutlineErrorCode::Invalid
+    );
+}
+
+#[test]
+fn query_wire_names_are_pinned() {
+    use crate::work_outline::WorkOutlineQueryResponse;
+    round_trip(
+        &WorkOutlineQueryRequest::ResolveEffectiveInstructions {
+            work_item_id: "w".into(),
+        },
+        json!({"query":"resolveEffectiveInstructions","workItemId":"w"}),
+    );
+    round_trip(
+        &WorkOutlineQueryRequest::CompareInstructionRevisions {
+            source_revision_id: "a".into(),
+            target_revision_id: "b".into(),
+        },
+        json!({"query":"compareInstructionRevisions","sourceRevisionId":"a","targetRevisionId":"b"}),
+    );
+    round_trip(
+        &WorkOutlineQueryRequest::GetInstructionRevision {
+            revision_id: "r".into(),
+        },
+        json!({"query":"getInstructionRevision","revisionId":"r"}),
+    );
+    // Strict: an unknown query is an error, not a silent default.
+    assert!(serde_json::from_value::<WorkOutlineQueryRequest>(json!({"query":"nope"})).is_err());
+
+    let (items, instructions) = fixture(true, false);
+    let effective = resolve_effective_instructions_in("w-leaf", &items, &instructions);
+    let response = WorkOutlineQueryResponse::ResolveEffectiveInstructions(effective.clone());
+    let value = serde_json::to_value(&response).unwrap();
+    assert_eq!(value["query"], "resolveEffectiveInstructions");
+    assert_eq!(value["workItemId"], "w-leaf");
+    assert_eq!(
+        serde_json::from_value::<WorkOutlineQueryResponse>(value).unwrap(),
+        response
+    );
+
+    round_trip(
+        &WorkOutlineQueryResponse::CompareInstructionRevisions {
+            source_revision_id: "a".into(),
+            target_revision_id: "b".into(),
+            comparison: InstructionRevisionComparison::default(),
+        },
+        json!({
+            "query":"compareInstructionRevisions","sourceRevisionId":"a","targetRevisionId":"b",
+            "comparison":{"sourceHash":"","targetHash":"","identical":false,"added":[],
+                          "removed":[],"changed":[],"reordered":[],"lineDiff":[]}
+        }),
+    );
+    let revision = InstructionRevisionView {
+        id: "r".into(),
+        space_id: "s".into(),
+        work_item_id: "w".into(),
+        body: build_revision_body(Vec::new()).unwrap(),
+        created_by: None,
+        created_at: 0,
+        integrity: InstructionRevisionIntegrity::Ok,
+    };
+    let value = serde_json::to_value(WorkOutlineQueryResponse::GetInstructionRevision(
+        revision.clone(),
+    ))
+    .unwrap();
+    assert_eq!(value["query"], "getInstructionRevision");
+    assert_eq!(value["id"], "r");
+    assert_eq!(value["integrity"], "ok");
+}
+
+#[test]
+fn snapshot_carries_instruction_state_in_same_content_as() {
+    let (items, instructions) = fixture(true, true);
+    let base = crate::WorkOutlineSnapshot {
+        space_id: "s-1".into(),
+        items,
+        instructions,
+        ..Default::default()
+    };
+    let mut changed = base.clone();
+    changed.instructions[0].text.push('!');
+    assert!(!base.same_content_as(&changed));
+    let mut state = base.clone();
+    state.chat_instruction_states.push(ChatInstructionState {
+        chat_id: "c".into(),
+        drift: true,
+        ..Default::default()
+    });
+    assert!(!base.same_content_as(&state));
+    assert_eq!(
+        state.chat_instruction_state("c").map(|s| s.drift),
+        Some(true)
+    );
+    let mut revisions = base.clone();
+    revisions.revisions.push(InstructionRevisionView {
+        id: "r".into(),
+        space_id: "s-1".into(),
+        work_item_id: "w-leaf".into(),
+        body: build_revision_body(Vec::new()).unwrap(),
+        created_by: None,
+        created_at: 0,
+        integrity: InstructionRevisionIntegrity::Ok,
+    });
+    assert!(!base.same_content_as(&revisions));
+    assert!(revisions.revision("r").is_some());
 }
