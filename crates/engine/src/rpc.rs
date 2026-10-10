@@ -3847,6 +3847,17 @@ mod tests {
         assert!(!forwardable(methods::SET_CHAT_LINK));
     }
 
+    /// Work Outline reads and writes are pure registry operations served by
+    /// the local replica (like `WATCH_CHATS` and `MUTATE`): never relay-forwarded.
+    /// Until the engine handlers land they fall through to `UnknownMethod`,
+    /// which clients treat as "host does not support the Work Outline".
+    #[test]
+    fn work_outline_methods_are_local_not_forwardable() {
+        assert!(!forwardable(methods::WATCH_WORK_OUTLINE));
+        assert!(!forwardable(methods::WORK_OUTLINE_MUTATE));
+        assert!(!is_stream_method(methods::WATCH_WORK_OUTLINE));
+    }
+
     /// `RECLASSIFY_OTHER_CHATS` rewrites this device's import cursors and
     /// calls TypeSafe with a local key: never relay-forwarded. Its reply
     /// field names are the UI's contract.

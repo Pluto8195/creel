@@ -12,6 +12,11 @@ pub mod capabilities {
     pub const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1: &str =
         "message-queue-clean-attachment-text-v1";
     pub const MESSAGE_QUEUE_EDIT_LEASE_V1: &str = "message-queue-edit-lease-v1";
+    /// Work Outline rows are readable and writable on this host (registry
+    /// rows, `WatchWorkOutline`, `WorkOutlineMutate`). Deliberately NOT in
+    /// [`CURRENT`] until the engine implements them: a host must not
+    /// advertise a surface that still answers `unknown method`.
+    pub const WORK_OUTLINE_V1: &str = "work-outline-v1";
 
     pub const CURRENT: &[&str] = &[
         MESSAGE_QUEUE_V1,

@@ -98,6 +98,24 @@ pub mod methods {
     pub const WATCH_TRANSFERS: &str = "WatchTransfers";
     pub const WATCH_CHATS: &str = "WatchChats";
     pub const WATCH_SIDEBAR_PREFERENCES: &str = "WatchSidebarPreferences";
+    /// The composed Work Outline of one Space (`zeron_proto::WorkOutlineSnapshot`):
+    /// current value first, then a fresh snapshot per change. `{spaceId}`.
+    /// Served from the local registry replica like `WatchChats` — NOT
+    /// forwardable; hosts that predate the feature answer `unknown method`,
+    /// which clients treat as "unsupported host".
+    pub const WATCH_WORK_OUTLINE: &str = "WatchWorkOutline";
+    /// Every Work Outline mutation, one tagged call:
+    /// `zeron_proto::WorkOutlineMutation` (`{op: createWorkItem|updateWorkItem|
+    /// moveWorkItem|archiveWorkItem|restoreWorkItem|assignChatToWorkItem|
+    /// removeChatFromWorkItem|createWorkItemExternalReference|
+    /// removeWorkItemExternalReference|repairWorkOutline, operationId, …}`) →
+    /// `zeron_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
+    /// any device may write), so — like `Mutate` — handled locally and NOT
+    /// forwardable. Failures are strings `work-outline/<code>: <message>`
+    /// (`WorkOutlineError::from_wire_message`). Later milestones' execution
+    /// operations (`createChatForWorkItem` …) get their own forwardable
+    /// methods instead of new `op`s here.
+    pub const WORK_OUTLINE_MUTATE: &str = "WorkOutlineMutate";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -465,6 +483,12 @@ mod tests {
     fn reclassify_other_chats_wire_name_is_pinned() {
         assert_eq!(methods::RECLASSIFY_OTHER_CHATS, "ReclassifyOtherChats");
         assert_eq!(methods::SET_CHAT_CLASSIFICATION, "SetChatClassification");
+    }
+
+    #[test]
+    fn work_outline_wire_names_are_pinned() {
+        assert_eq!(methods::WATCH_WORK_OUTLINE, "WatchWorkOutline");
+        assert_eq!(methods::WORK_OUTLINE_MUTATE, "WorkOutlineMutate");
     }
 
     struct TestService;

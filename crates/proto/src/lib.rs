@@ -10,6 +10,8 @@ pub mod preview;
 pub mod repository_topology;
 pub mod sidebar_pins;
 pub mod view;
+pub mod work_outline;
+pub mod work_outline_order;
 pub mod workspace;
 
 pub use agent::*;
@@ -17,6 +19,8 @@ pub use entities::*;
 pub use preview::*;
 pub use repository_topology::*;
 pub use sidebar_pins::*;
+pub use work_outline::*;
+pub use work_outline_order::*;
 pub use workspace::*;
 
 /// Parse "0.2.12" (tolerating a `-suffix`/`+build` tail on the last part)
