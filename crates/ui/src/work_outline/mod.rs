@@ -24,7 +24,11 @@
 #![allow(dead_code)]
 
 pub(crate) mod actions;
+pub(crate) mod chips;
 pub(crate) mod command;
+pub(crate) mod filter;
+pub(crate) mod model;
+pub(crate) mod nav;
 pub(crate) mod store;
 
 #[allow(unused_imports)]
