@@ -319,3 +319,87 @@ or a gap later milestones must close.
     `WatchWorkOutline` in every mode, not only in Outline mode, so the List and Canvas path chips
     (and attention) have data. This deliberately deviates from m0-ui-integration section 9; the
     cost is bounded by the Space count.
+
+## Milestone 2 contract notes
+
+Recorded by Milestone 2 stage 1 (wire contracts and pure core: `crates/proto/src/
+work_outline_instructions.rs`, additions to `crates/proto/src/work_outline.rs`, `crates/harness/
+src/instruction_support.rs`). Each item is a decision later stages build on.
+
+1. **Revision entries carry `scopeTitle`.** Registry audit 7.8 lists `instructionId`, `sourceKind`,
+   `scopeId`, `text`, `order`, `provenance`; entries also store `scopeTitle` so the envelope is
+   reproducible from the stored entries alone. Titles are snapshotted: renaming an item changes the
+   current effective hash (drift), never an existing revision. Space-root entries use the Space id
+   as `scopeId` and the fixed title `Space root` (a Space rename never drifts).
+2. **Envelope v1** (`render_instruction_envelope`, golden-tested). An opening tag
+   `<zeron_work_outline_instructions version="1" hash="<first 12 hex of the revision hash>">`, the
+   fixed `ENVELOPE_V1_PREAMBLE` (section 5.8: supplements and never overrides repository
+   instruction files, global instructions, skills, and runtime safety rules; later, more specific
+   entries take precedence; replaces earlier Work Outline instructions), then entries numbered
+   from 1, grouped under one label per consecutive scope (`[Space root]`, `[Work item: <title>]`),
+   then the closing tag and a final newline. Text: CRLF/CR become LF, trailing whitespace is
+   trimmed, continuation lines are indented three spaces, a literal closing tag inside text or
+   titles is neutralized to `</ zeron_work_outline_instructions`. No entries: the body is `No Work
+   Outline instructions apply.` Deviations from the delivery audit section 5 sketch: the revision
+   id is not in the text (rendering is a pure function of `(version, entries)`; the hash
+   identifies the content, and `InstructionEnvelope.revisionId` travels beside it); scope labels
+   group entries instead of prefixing each line; local versus inherited is not marked (it is a
+   property of the viewing item, not of the revision).
+3. **Hashes.** `hash = hex(sha256(canonical_json({"entries", "envelopeVersion"})))`; canonical
+   JSON = object keys sorted by byte order, no whitespace, `serde_json` scalar spelling, non-ASCII
+   as raw UTF-8, absent optional fields omitted (a later optional entry field leaves old hashes
+   valid while absent). `envelopeSha256 = hex(sha256(utf8(rendered)))`.
+4. **Budgets** (`limits`): instruction text <= 6,000 and excerpt <= 1,500 Unicode scalar values;
+   <= 50 live instructions per scope; a revision has <= 32 entries and <= 9,000 effective
+   characters (sum of entry text; preamble and labels not counted) and its serialized `body` <=
+   14,000 UTF-16 units (headroom under the 15,000-unit op gate). `build_revision_body` fails with
+   `limitExceeded` and an actionable message before any write; the resolver never fails and
+   reports `withinBudget` / `budgetError` instead.
+5. **Provenance.** Instruction rows keep the copied excerpt; effective entries and revisions carry
+   `createdBy`, `source` without `excerpt`, and `sourceProposalId` (the excerpt would consume the
+   revision budget; `contentHash` still identifies it). `contentHash` is `sha256(excerpt)` hex,
+   reading registry 7.2 "exact text at creation" as the copied source text (acceptance 21).
+6. **Resolver lives in proto** (`resolve_effective_instructions`, `..._in`,
+   `WorkOutlineSnapshot::effective_instructions`): it walks materialized `WorkItemView`s, whose
+   `parentWorkItemId` is already the repaired parent, so no doc types are needed. Space-root
+   entries come first and are `inherited: true`; an unknown item yields no entries; a work-item
+   instruction whose `spaceId` differs from its item's is excluded (orphan).
+7. **Applications** follow section 5.6, superseding registry 7.9 and delivery audit section 7:
+   `reason` is `launch | explicit | forkInherit` on the wire (`fork-inherit` accepted on read);
+   `result` is only `accepted` (`success` and unknown values read as `accepted`); `turnBoundary`
+   is `{messageId?}`. Delivery outcome is never an application row; hosts report it through
+   `ExecutionSessionReport` on the session-status row.
+8. **Delivery wire names.** The delivery audit's `InstructionRef` is `InstructionRevisionPin
+   {revisionId, revisionHash}`; `InstructionEnvelope` carries `revisionId` / `revisionHash` as
+   plain fields (no flatten); `Replace` is `{"kind":"replace","previousRevisionId":…}`.
+9. **Integrity.** `verify_revision_body` checks, in order, `entries[i].order == i`, the envelope
+   version, the hash, and the envelope digest; any failure is `revisionIntegrity`. A revision
+   view whose `integrity` is missing or unknown reads `corrupt`. New repairs:
+   `orphanInstruction {instructionId, workItemId}`, `corruptRevision {revisionId}`.
+10. **Comparison** (`compare_instruction_revisions`): entry-level `added` / `removed` /
+    `changed` by instruction id, `reordered` = shared ids outside one LCS of their order, and a
+    deterministic LCS line diff of the two rendered envelopes (tables over 4,000,000 cells fall
+    back to remove-then-add). Entry numbers shift when entries are inserted, so the UI should lead
+    with the entry-level lists. `identical` iff both hashes are equal and non-empty.
+11. **Operations.** New `WorkOutlineMutate` ops: `createWorkItemInstruction` (`spaceId` required
+    for both scopes; `placement` tagged by `type` with `siblingInstructionId`; reply
+    `instructionId`), `updateWorkItemInstruction` (text only), `moveWorkItemInstruction`,
+    `archiveWorkItemInstruction`, `createInstructionRevision` (reply `revisionId`),
+    `applyInstructionRevision` (reply `applicationId`). Read-only questions use a new local,
+    non-forwardable method `WorkOutlineQuery`, tagged by `query`:
+    `resolveEffectiveInstructions`, `compareInstructionRevisions`, `getInstructionRevision`. Until
+    stage 2 the engine and doc layer answer every new op and query with `unsupported`, before
+    claiming replay-ledger keys, so a later build can apply the same operation id.
+12. **Snapshot** gains `instructions` (all, archived flagged), `chatInstructionStates` (`drift` =
+    a selection exists and its hash differs from `currentEffectiveHash`), and `revisions` (only
+    those referenced by Chat selections or deliveries). The materializer emits them empty until
+    instruction rows are read.
+13. **Capabilities.** `work-outline-instruction-envelope-v1` and
+    `work-outline-instruction-envelope-v1/<harness wire id>` are defined but not in `CURRENT`
+    until delivery ships.
+14. **Harness.** `InstructionSupport::{Unsupported {reason, upgrade_hint}, Supported {channel:
+    SystemPromptAppend | DeveloperInstructions | Test, replace_strategy: RespawnResume |
+    CompactSwap | FreshSession, max_bytes}}`, default `Unsupported` for every adapter;
+    `HarnessError::Capability {harness, detail, upgrade_hint}`; `require_instruction_support` is
+    the adapter-side fail-closed check, not yet called from adapters (stage 2 wires it with
+    delivery). Every `RunRequest` construction site passes `instructions: None`.
