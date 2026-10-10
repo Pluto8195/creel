@@ -2741,8 +2741,7 @@ impl Overview {
         let outline = cx.new(|cx| OutlineView::new(state.clone(), cx));
         let outline_events = cx.subscribe(&outline, |this: &mut Self, _, event, cx| match event {
             OutlineEvent::OpenChat(chat_id) => {
-                this.close_work_item_details(cx);
-                this.open_chat_panel(chat_id.clone(), cx);
+                this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
             }
             OutlineEvent::OpenDetails { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
@@ -9099,6 +9098,46 @@ impl Overview {
         }) {
             return;
         }
+        self.leave_work_item_details(DetailsExit::OpenItem { space_id, item_id }, cx);
+    }
+
+    /// Leave the current Work Item Details (switch item, open a Chat, or
+    /// close) without silently dropping a draft: with unsaved edits this asks
+    /// "Keep Editing / Discard" and acts only after Discard.
+    fn leave_work_item_details(&mut self, exit: DetailsExit, cx: &mut Context<Self>) {
+        let Some(details) = self.work_item_details.clone() else {
+            self.apply_details_exit(exit, cx);
+            return;
+        };
+        let overview = cx.entity().downgrade();
+        details.update(cx, |details, cx| {
+            details.confirm_discard(cx, move |cx| {
+                overview
+                    .update(cx, |this, cx| this.apply_details_exit(exit, cx))
+                    .ok();
+            })
+        });
+    }
+
+    fn apply_details_exit(&mut self, exit: DetailsExit, cx: &mut Context<Self>) {
+        match exit {
+            DetailsExit::Close => self.close_work_item_details(cx),
+            DetailsExit::OpenChat(chat_id) => {
+                self.close_work_item_details(cx);
+                self.open_chat_panel(chat_id, cx);
+            }
+            DetailsExit::OpenItem { space_id, item_id } => {
+                self.replace_work_item_details(space_id, item_id, cx)
+            }
+        }
+    }
+
+    fn replace_work_item_details(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
         let key = row_key::item(&space_id, &item_id);
         let details = cx.new(|cx| {
             WorkItemDetails::new(
@@ -9110,15 +9149,12 @@ impl Overview {
             )
         });
         let events = cx.subscribe(&details, |this: &mut Self, _, event, cx| match event {
+            // `request_close` already confirmed any discard.
             DetailsEvent::Close => this.close_work_item_details(cx),
             DetailsEvent::OpenChat(chat_id) => {
-                this.close_work_item_details(cx);
-                this.open_chat_panel(chat_id.clone(), cx);
+                this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
             }
             DetailsEvent::OpenItem { space_id, item_id } => {
-                let key = row_key::item(space_id, item_id);
-                this.outline
-                    .update(cx, |outline, cx| outline.select(&key, cx));
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
             }
         });
@@ -9234,6 +9270,13 @@ impl Overview {
     pub fn work_outline_key_bindings() -> Vec<gpui::KeyBinding> {
         crate::work_outline::outline_view::key_bindings()
     }
+}
+
+/// Where the Overview goes when it leaves Work Item Details.
+enum DetailsExit {
+    Close,
+    OpenChat(String),
+    OpenItem { space_id: String, item_id: String },
 }
 
 /// The store fixture for the `ix`-th Space: the first verbatim, later ones
@@ -12288,6 +12331,77 @@ mod logic_tests {
             assert!(o.chat_panel_open);
         });
         assert!(vcx.debug_bounds("work-item-details").is_none());
+    }
+
+    /// Switching items or opening a Chat with an unsaved draft asks first;
+    /// Keep Editing keeps the draft and the item, Discard then switches.
+    #[gpui::test]
+    fn leaving_details_with_a_draft_asks_before_discarding(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        overview.update(vcx, |o, cx| {
+            o.set_mode(OverviewMode::Outline, cx);
+            o.open_work_item_details("s1".into(), API.into(), cx);
+        });
+        draw(vcx);
+        let details = overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap());
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| d.begin_title_draft("API v2", window, cx))
+        });
+        let shown = |vcx: &mut gpui::VisualTestContext| {
+            overview.read_with(vcx, |o, cx| {
+                o.work_item_details
+                    .as_ref()
+                    .map(|d| d.read(cx).item_id.clone())
+            })
+        };
+
+        // Switch item: the confirmation is requested, nothing switches yet.
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), UI.into(), cx)
+        });
+        assert_eq!(shown(vcx).as_deref(), Some(API));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("asks first");
+        assert_eq!(request.confirm_label.as_ref(), "Discard");
+        assert_eq!(request.cancel_label.as_ref(), "Keep Editing");
+        // Keep Editing: same item, draft intact.
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        assert_eq!(shown(vcx).as_deref(), Some(API));
+        assert!(details.read_with(vcx, |d, cx| d.has_unsaved_draft(cx)));
+
+        // Opening a Chat asks too; Keep Editing keeps everything.
+        overview.update(vcx, |o, cx| {
+            o.leave_work_item_details(DetailsExit::OpenChat(CHAT_API.into()), cx)
+        });
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("asks first");
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        assert_eq!(shown(vcx).as_deref(), Some(API));
+        assert!(!overview.read_with(vcx, |o, _| o.chat_panel_open));
+
+        // Discard: the switch happens.
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), UI.into(), cx)
+        });
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("asks first");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        assert_eq!(shown(vcx).as_deref(), Some(UI));
+
+        // Without a draft, switching and closing need no confirmation.
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), API.into(), cx)
+        });
+        assert_eq!(shown(vcx).as_deref(), Some(API));
+        let details = overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap());
+        details.update(vcx, |d, cx| d.request_close(cx));
+        vcx.run_until_parked();
+        assert_eq!(shown(vcx), None);
     }
 
     #[gpui::test]

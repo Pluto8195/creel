@@ -127,6 +127,9 @@ pub(crate) struct WorkItemDetails {
     in_flight: HashSet<String>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
+    /// Tests run without a Shell: the discard confirmation lands here.
+    #[cfg(test)]
+    pub(crate) captured_confirm: Option<WorkOutlineConfirmRequest>,
 }
 
 impl EventEmitter<DetailsEvent> for WorkItemDetails {}
@@ -193,6 +196,8 @@ impl WorkItemDetails {
             in_flight: HashSet::new(),
             error: None,
             _subscriptions: subscriptions,
+            #[cfg(test)]
+            captured_confirm: None,
         }
     }
 
@@ -228,8 +233,25 @@ impl WorkItemDetails {
 
     /// Close, asking first when a draft would be lost.
     pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        self.confirm_discard(cx, move |cx| {
+            weak.update(cx, |_, cx| cx.emit(DetailsEvent::Close)).ok();
+        });
+    }
+
+    /// Run `then` once no draft would be lost: immediately when there is
+    /// none, otherwise only after the user picks Discard in the Shell's
+    /// "Keep Editing / Discard" confirmation (the drafts are dropped first).
+    /// Keep Editing, or no Shell to ask through, leaves the draft and does
+    /// nothing. Every path that replaces or closes this surface goes here.
+    pub(crate) fn confirm_discard(
+        &mut self,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut gpui::App) + 'static,
+    ) {
         if !self.has_unsaved_draft(cx) {
-            cx.emit(DetailsEvent::Close);
+            // Deferred: callers are mid-update of this entity and the caller's.
+            cx.defer(then);
             return;
         }
         let weak = cx.entity().downgrade();
@@ -240,24 +262,48 @@ impl WorkItemDetails {
             cancel_label: "Keep Editing".into(),
             destructive: true,
             on_decision: Box::new(move |confirmed, _window, cx| {
-                if confirmed {
-                    weak.update(cx, |this, cx| {
+                if !confirmed {
+                    return;
+                }
+                let discarded = weak
+                    .update(cx, |this, cx| {
                         this.discard_drafts();
-                        cx.emit(DetailsEvent::Close);
+                        cx.notify();
                     })
-                    .ok();
+                    .is_ok();
+                if discarded {
+                    then(cx);
                 }
             }),
         };
-        if self
-            .shell
-            .update(cx, |shell, cx| shell.open_work_outline_confirm(request, cx))
-            .is_err()
+        if let Some(shell) = self.shell.upgrade() {
+            shell.update(cx, |shell, cx| shell.open_work_outline_confirm(request, cx));
+            return;
+        }
+        #[cfg(test)]
         {
-            // No Shell (tests, fixtures): keep the draft rather than drop it.
+            self.captured_confirm = Some(request);
+        }
+        #[cfg(not(test))]
+        {
+            // No Shell (fixtures): keep the draft rather than drop it.
+            drop(request);
             self.error = Some("Save or cancel your edits first".into());
             cx.notify();
         }
+    }
+
+    /// Start a title edit with `text` (tests drive drafts through this).
+    #[cfg(test)]
+    pub(crate) fn begin_title_draft(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_title_edit(window, cx);
+        self.title_input
+            .update(cx, |input, cx| input.set_text(text, cx));
     }
 
     fn discard_drafts(&mut self) {
