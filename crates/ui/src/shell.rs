@@ -1636,6 +1636,13 @@ pub struct Shell {
     /// Modals replaced by a newer request; their cancel is delivered at the
     /// next render, when a window is at hand.
     work_outline_superseded: Vec<work_outline_ui::WorkOutlineModal>,
+    /// Focus target of the Work Outline modal, claimed at the next render
+    /// after it opens so keys cannot reach the outline underneath.
+    work_outline_modal_focus: FocusHandle,
+    /// Claim `work_outline_modal_focus` at the next render.
+    work_outline_modal_focus_pending: bool,
+    /// What had focus before the modal opened; restored when it closes.
+    work_outline_prior_focus: Option<FocusHandle>,
     /// The chat close-out dialog (`closeout_ui`), `Some` while open.
     closeout_dialog: Option<closeout_ui::CloseoutDialog>,
     /// Monotonic id per close-out dialog open (stale-reply guard).
@@ -2063,6 +2070,9 @@ impl Shell {
             delete_confirm: None,
             work_outline_modal: None,
             work_outline_superseded: Vec::new(),
+            work_outline_modal_focus: cx.focus_handle(),
+            work_outline_modal_focus_pending: false,
+            work_outline_prior_focus: None,
             closeout_dialog: None,
             closeout_seq: 0,
             space_menu: popover::Popup::default(),
