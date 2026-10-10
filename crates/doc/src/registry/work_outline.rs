@@ -1,5 +1,7 @@
-//! Work Outline registry rows (Milestone 1 kinds): `workItems`,
-//! `workItemChatAssignments`, `workItemExternalReferences`.
+//! Work Outline registry rows: `workItems`, `workItemChatAssignments`,
+//! `workItemExternalReferences` (Milestone 1) and, in [`instructions`],
+//! `workItemInstructions`, `instructionRevisions`,
+//! `instructionRevisionApplications` (Milestone 2).
 //!
 //! Mechanism layer (registry audit section 7.11): sizes, formats, immutable
 //! field omission, same-Space and cycle checks on the RAW parent graph,
@@ -37,6 +39,7 @@ use zeron_proto::work_outline_order::order_keys_between;
 
 use super::*;
 
+pub mod instructions;
 mod materialize;
 
 use materialize::{DecodedItem, OutlineTree, build_tree, cycle_victim, decode_item};
@@ -45,6 +48,9 @@ pub use materialize::{OutlineChat, WorkOutlineInputs, materialize_work_outline};
 pub const KIND_WORK_ITEMS: &str = "workItems";
 pub const KIND_WORK_ITEM_CHAT_ASSIGNMENTS: &str = "workItemChatAssignments";
 pub const KIND_WORK_ITEM_EXTERNAL_REFERENCES: &str = "workItemExternalReferences";
+pub const KIND_WORK_ITEM_INSTRUCTIONS: &str = "workItemInstructions";
+pub const KIND_INSTRUCTION_REVISIONS: &str = "instructionRevisions";
+pub const KIND_INSTRUCTION_REVISION_APPLICATIONS: &str = "instructionRevisionApplications";
 
 /// Every outline kind this build writes: the `delete_space` cascade and the
 /// orphan sweep cover exactly these. Later milestones append their kinds.
@@ -52,6 +58,9 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_WORK_ITEMS,
     KIND_WORK_ITEM_CHAT_ASSIGNMENTS,
     KIND_WORK_ITEM_EXTERNAL_REFERENCES,
+    KIND_WORK_ITEM_INSTRUCTIONS,
+    KIND_INSTRUCTION_REVISIONS,
+    KIND_INSTRUCTION_REVISION_APPLICATIONS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
@@ -137,6 +146,9 @@ fn op_too_large(op: &RowOp) -> WorkOutlineError {
         Some("description") => "Description",
         Some("title") => "Title",
         Some("cachedTitle") => "Reference title",
+        Some("text") => "Instruction",
+        Some("source") => "Source excerpt",
+        Some("body") => "Instruction revision",
         Some(other) => other,
         None => "The change",
     };
@@ -206,6 +218,9 @@ struct Planned {
     /// Existing clocks to keep for specific fields of `set` instead of the
     /// op's fresh clock (re-keys keep the sibling's parent at its old clock).
     keep_clocks: BTreeMap<String, String>,
+    /// A field set to the op's own HLC when the clock is minted
+    /// (`appliedHlc`, registry audit 7.9).
+    stamp_hlc: Option<&'static str>,
 }
 
 impl Planned {
@@ -216,6 +231,7 @@ impl Planned {
             op: OpKind::Update,
             set: Some(set),
             keep_clocks: BTreeMap::new(),
+            stamp_hlc: None,
         }
     }
 
@@ -226,6 +242,7 @@ impl Planned {
             op: OpKind::Upsert,
             set: Some(set),
             keep_clocks: BTreeMap::new(),
+            stamp_hlc: None,
         }
     }
 
@@ -236,6 +253,7 @@ impl Planned {
             op: OpKind::Delete,
             set: None,
             keep_clocks: BTreeMap::new(),
+            stamp_hlc: None,
         }
     }
 }
@@ -342,12 +360,17 @@ impl RegistryDoc {
     /// Clone everything the materializer needs (call under the registry lock,
     /// materialize after releasing it).
     pub fn work_outline_inputs(&self, space_id: &str, synced: bool) -> WorkOutlineInputs {
+        let (applications, revisions, sessions) = self.instruction_inputs(space_id);
         WorkOutlineInputs {
             space_live: self.row_state(KIND_SPACES, space_id) == RowState::Live,
             synced,
             items: self.overlay_rows(KIND_WORK_ITEMS),
             assignments: self.overlay_rows(KIND_WORK_ITEM_CHAT_ASSIGNMENTS),
             references: self.overlay_rows(KIND_WORK_ITEM_EXTERNAL_REFERENCES),
+            instructions: self.overlay_rows(KIND_WORK_ITEM_INSTRUCTIONS),
+            applications,
+            revisions,
+            sessions,
             chats: self
                 .read_chats()
                 .unwrap_or_default()
@@ -469,11 +492,15 @@ impl RegistryDoc {
         let mut ops = Vec::with_capacity(plan.len());
         for planned in plan {
             let hlc = self.next_hlc();
+            let mut set = planned.set;
+            if let (Some(field), Some(set)) = (planned.stamp_hlc, set.as_mut()) {
+                set.insert(field.to_owned(), json!(hlc));
+            }
             ops.push(RowOp {
                 kind: planned.kind.to_owned(),
                 id: planned.id,
                 op: planned.op,
-                set: planned.set,
+                set,
                 hlc,
                 clocks: (!planned.keep_clocks.is_empty()).then_some(planned.keep_clocks),
             });
@@ -674,17 +701,36 @@ impl RegistryDoc {
                 self.remove_work_item_external_reference(p).map(|_| empty)
             }
             WorkOutlineMutation::RepairWorkOutline(p) => self.repair_work_outline(p).map(|_| empty),
-            // Milestone 2 instruction operations: wire contract only so far;
-            // the typed mutators land with instruction persistence.
-            WorkOutlineMutation::CreateWorkItemInstruction(_)
-            | WorkOutlineMutation::UpdateWorkItemInstruction(_)
-            | WorkOutlineMutation::MoveWorkItemInstruction(_)
-            | WorkOutlineMutation::ArchiveWorkItemInstruction(_)
-            | WorkOutlineMutation::CreateInstructionRevision(_)
-            | WorkOutlineMutation::ApplyInstructionRevision(_) => Err(err(
-                WorkOutlineErrorCode::Unsupported,
-                "Work Outline instructions are not supported by this version of Zeron yet",
-            )),
+            WorkOutlineMutation::CreateWorkItemInstruction(p) => {
+                let id = self.create_work_item_instruction(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    instruction_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::UpdateWorkItemInstruction(p) => {
+                self.update_work_item_instruction(p, now_ms).map(|_| empty)
+            }
+            WorkOutlineMutation::MoveWorkItemInstruction(p) => {
+                self.move_work_item_instruction(p, now_ms).map(|_| empty)
+            }
+            WorkOutlineMutation::ArchiveWorkItemInstruction(p) => self
+                .archive_work_item_instruction(p, actor, now_ms)
+                .map(|_| empty),
+            WorkOutlineMutation::CreateInstructionRevision(p) => {
+                let id = self.create_instruction_revision(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    revision_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::ApplyInstructionRevision(p) => {
+                let id = self.apply_instruction_revision(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    application_id: Some(id),
+                    ..Default::default()
+                })
+            }
         }
     }
 
