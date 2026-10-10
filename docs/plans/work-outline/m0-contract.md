@@ -298,3 +298,7 @@ or a gap later milestones must close.
    outline rows; outline rows are non-migrating until `local_import` is extended. No edge
    `validateOp` backstop (deferred per section 3.6). `repairWorkOutline` persists cycle victims and
    invalid order keys only; missing parents stay derived (the parent may not have synced yet).
+10. **Overview watches every Space's outline.** The Overview declares all Spaces visible for
+    `WatchWorkOutline` in every mode, not only in Outline mode, so the List and Canvas path chips
+    (and attention) have data. This deliberately deviates from m0-ui-integration section 9; the
+    cost is bounded by the Space count.
