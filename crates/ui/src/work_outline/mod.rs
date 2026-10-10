@@ -28,6 +28,7 @@ pub(crate) mod chips;
 pub(crate) mod command;
 pub(crate) mod details_panel;
 pub(crate) mod filter;
+pub(crate) mod instructions;
 pub(crate) mod model;
 pub(crate) mod nav;
 pub(crate) mod outline_view;
