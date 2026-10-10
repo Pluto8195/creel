@@ -14,6 +14,8 @@
 //! Text bodies are **LoroText** so streaming appends RLE-merge (1.03x oplog overhead vs
 //! 125x for whole-value rewrites).
 
+use std::collections::HashMap;
+
 use loro::{ExportMode, LoroDoc, LoroError, LoroList, LoroMap, LoroText, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
 
@@ -462,21 +464,30 @@ impl SessionDoc {
             .get_deep_value()
             .to_json_value();
         let raw: Vec<serde_json::Value> = serde_json::from_value(commands)?;
-        Ok(raw
+        let entries: Vec<SessionCommandEntry> = raw
             .into_iter()
             .filter_map(|v| match serde_json::from_value(v) {
                 Ok(entry) => Some(entry),
                 Err(err) => {
+                    // Also how a host that predates a payload `kind` (for
+                    // example `runWithInstructions`) fails closed.
                     tracing::warn!(error = %err, "skipping malformed command entry");
                     None
                 }
             })
-            .collect())
+            .collect();
+        Ok(collapse_duplicate_commands(entries))
     }
 
     /// Append a command entry (rule 1: own entries only, append-only).
-    pub fn queue_command(&self, entry: &SessionCommandEntry) -> Result<(), DocError> {
+    /// Idempotent by id: when an entry with this id is already in the ledger
+    /// the call is a no-op and returns `false` (a retried enqueue with a
+    /// deterministic command id never appends a second command).
+    pub fn queue_command(&self, entry: &SessionCommandEntry) -> Result<bool, DocError> {
         let commands = self.doc.get_list("commands");
+        if command_index(&commands, &entry.id).is_some() {
+            return Ok(false);
+        }
         let map = commands.push_container(LoroMap::new())?;
         map.insert("id", entry.id.as_str())?;
         map.insert(
@@ -507,10 +518,17 @@ impl SessionDoc {
                 .ok_or_else(|| DocError::Schema("status not a string".into()))?,
         )?;
         self.doc.commit();
-        Ok(())
+        Ok(true)
     }
 
     /// Rule 2: host (or the issuing composer, for `cancelled`) writes an outcome.
+    ///
+    /// Duplicate ids (two devices appended the same deterministic id before
+    /// syncing) are written as one command: every still-pending duplicate
+    /// receives the outcome, and a terminal duplicate is never overwritten
+    /// while a pending one exists — so a dead-command sweep can no longer
+    /// replace an `applied` outcome. With no pending duplicate, the first
+    /// entry is updated (the single-entry behavior).
     pub fn set_command_status(
         &self,
         command_id: &str,
@@ -518,6 +536,7 @@ impl SessionDoc {
         resolution: Option<&str>,
     ) -> Result<(), DocError> {
         let commands = self.doc.get_list("commands");
+        let mut matching = Vec::new();
         for i in 0..commands.len() {
             if let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) =
                 commands.get(i)
@@ -527,21 +546,34 @@ impl SessionDoc {
                     Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == command_id
                 );
                 if id_matches {
-                    map.insert(
-                        "status",
-                        serde_json::to_value(status)?
-                            .as_str()
-                            .ok_or_else(|| DocError::Schema("status not a string".into()))?,
-                    )?;
-                    if let Some(r) = resolution {
-                        map.insert("resolution", r)?;
-                    }
-                    self.doc.commit();
-                    return Ok(());
+                    let pending = matches!(
+                        map.get("status"),
+                        Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == "pending"
+                    );
+                    matching.push((map, pending));
                 }
             }
         }
-        Err(DocError::Schema(format!("command {command_id} not found")))
+        if matching.is_empty() {
+            return Err(DocError::Schema(format!("command {command_id} not found")));
+        }
+        let any_pending = matching.iter().any(|(_, pending)| *pending);
+        let status_value = serde_json::to_value(status)?;
+        let status_str = status_value
+            .as_str()
+            .ok_or_else(|| DocError::Schema("status not a string".into()))?;
+        for (index, (map, pending)) in matching.iter().enumerate() {
+            let target = if any_pending { *pending } else { index == 0 };
+            if !target {
+                continue;
+            }
+            map.insert("status", status_str)?;
+            if let Some(r) = resolution {
+                map.insert("resolution", r)?;
+            }
+        }
+        self.doc.commit();
+        Ok(())
     }
 
     /// Stamp a terminal status on an existing message entry by id (recovery:
@@ -1312,6 +1344,50 @@ pub fn materialize_tail(
     })
 }
 
+/// Index of the first command entry with this id.
+fn command_index(commands: &loro::LoroList, command_id: &str) -> Option<usize> {
+    (0..commands.len()).find(|&i| {
+        matches!(
+            commands.get(i),
+            Some(loro::ValueOrContainer::Container(loro::Container::Map(map)))
+                if matches!(
+                    map.get("id"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == command_id
+                )
+        )
+    })
+}
+
+/// Collapse entries sharing an id (concurrent appends of one deterministic
+/// id) into one, deterministically, at the first occurrence's position: an
+/// `applied` duplicate wins (it ran), then the first other terminal one, then
+/// the first. Readers therefore never see — or execute — one command twice.
+fn collapse_duplicate_commands(entries: Vec<SessionCommandEntry>) -> Vec<SessionCommandEntry> {
+    fn rank(entry: &SessionCommandEntry) -> u8 {
+        match entry.status {
+            SessionCommandStatus::Applied => 0,
+            SessionCommandStatus::Pending => 2,
+            _ => 1,
+        }
+    }
+    let mut out: Vec<SessionCommandEntry> = Vec::with_capacity(entries.len());
+    let mut positions: HashMap<String, usize> = HashMap::new();
+    for entry in entries {
+        match positions.get(&entry.id) {
+            Some(&index) => {
+                if rank(&entry) < rank(&out[index]) {
+                    out[index] = entry;
+                }
+            }
+            None => {
+                positions.insert(entry.id.clone(), out.len());
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1895,6 +1971,172 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].status, SessionCommandStatus::Applied);
         assert_eq!(commands[0].payload, entry.payload);
+    }
+
+    fn command(id: &str, payload: crate::commands::SessionCommandPayload) -> SessionCommandEntry {
+        SessionCommandEntry {
+            id: id.into(),
+            payload,
+            issued_by: "dev-a".into(),
+            issued_at: 10,
+            based_on: None,
+            expires_at: None,
+            status: SessionCommandStatus::Pending,
+            resolution: None,
+        }
+    }
+
+    fn steer(prompt: &str) -> crate::commands::SessionCommandPayload {
+        crate::commands::SessionCommandPayload::Steer {
+            prompt: prompt.into(),
+            message_id: None,
+        }
+    }
+
+    fn fork(doc: &SessionDoc) -> SessionDoc {
+        let other = LoroDoc::new();
+        other.import(&doc.export_snapshot().unwrap()).unwrap();
+        SessionDoc::from_doc(other)
+    }
+
+    fn merge(into: &SessionDoc, from: &SessionDoc) {
+        into.doc().import(&from.export_snapshot().unwrap()).unwrap();
+    }
+
+    /// Idempotency audit 9 item 1: a duplicate command id is a no-op.
+    #[test]
+    fn queue_command_is_idempotent_by_id() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        assert!(doc.queue_command(&command("c1", steer("first"))).unwrap());
+        assert!(!doc.queue_command(&command("c1", steer("retry"))).unwrap());
+        let commands = doc.read_commands().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].payload, steer("first"));
+    }
+
+    /// Two devices append one deterministic id before syncing: readers see
+    /// one command, and an outcome never replaces `applied`.
+    #[test]
+    fn concurrent_duplicate_ids_collapse_and_keep_the_applied_outcome() {
+        let a = SessionDoc::init("chat-1").unwrap();
+        let b = fork(&a);
+        a.queue_command(&command("c1", steer("from a"))).unwrap();
+        b.queue_command(&command("c1", steer("from b"))).unwrap();
+        merge(&a, &b);
+        assert_eq!(a.read_commands().unwrap().len(), 1);
+        a.set_command_status("c1", SessionCommandStatus::Applied, None)
+            .unwrap();
+        // A later sweep's Rejected for the same id must not undo Applied.
+        a.set_command_status(
+            "c1",
+            SessionCommandStatus::Rejected,
+            Some("interrupted before completion"),
+        )
+        .unwrap();
+        let commands = a.read_commands().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].status,
+            SessionCommandStatus::Applied,
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_pending_duplicate_receives_the_outcome_not_the_applied_one() {
+        let a = SessionDoc::init("chat-1").unwrap();
+        let b = fork(&a);
+        a.queue_command(&command("c1", steer("from a"))).unwrap();
+        a.set_command_status("c1", SessionCommandStatus::Applied, None)
+            .unwrap();
+        b.queue_command(&command("c1", steer("from b"))).unwrap();
+        merge(&a, &b);
+        // The merged view already prefers the applied duplicate.
+        let view = a.read_commands().unwrap();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].status, SessionCommandStatus::Applied);
+        a.set_command_status("c1", SessionCommandStatus::Rejected, Some("dup"))
+            .unwrap();
+        let view = a.read_commands().unwrap();
+        assert_eq!(view[0].status, SessionCommandStatus::Applied, "{view:?}");
+    }
+
+    /// Hosts that predate instruction delivery decode commands with the old
+    /// payload enum; they must SKIP a `runWithInstructions` entry (fail
+    /// closed) rather than run it without its instructions.
+    #[test]
+    fn an_older_decoder_skips_instruction_bearing_runs() {
+        use crate::commands::SessionCommandPayload;
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "camelCase")]
+        #[allow(dead_code)]
+        enum OldPayload {
+            #[serde(rename_all = "camelCase")]
+            Run {
+                request: zeron_proto::RunRequest,
+                message_id: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            Steer {
+                prompt: String,
+                message_id: Option<String>,
+            },
+            Interrupt {},
+            #[serde(rename_all = "camelCase")]
+            RespondInput {
+                request_id: String,
+                answers: Vec<zeron_proto::UserInputAnswer>,
+            },
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldEntry {
+            id: String,
+            payload: OldPayload,
+        }
+        let request: zeron_proto::RunRequest = serde_json::from_value(serde_json::json!({
+            "prompt": "go", "model": null, "reasoning": null, "cwd": "/w",
+            "sandbox": "workspace-write", "resume": null
+        }))
+        .unwrap();
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.queue_command(&command(
+            "plain",
+            SessionCommandPayload::Run {
+                request: request.clone(),
+                message_id: "m0".into(),
+            },
+        ))
+        .unwrap();
+        doc.queue_command(&command(
+            "pinned",
+            SessionCommandPayload::RunWithInstructions {
+                request,
+                message_id: "m1".into(),
+                instructions: zeron_proto::InstructionRevisionPin {
+                    revision_id: "rev-1".into(),
+                    revision_hash: "abc".into(),
+                },
+                context_reset_confirmed: false,
+            },
+        ))
+        .unwrap();
+        // The old `read_commands` policy: decode each entry, skip failures.
+        let raw: Vec<serde_json::Value> = serde_json::from_value(
+            doc.doc()
+                .get_list("commands")
+                .get_deep_value()
+                .to_json_value(),
+        )
+        .unwrap();
+        let old: Vec<String> = raw
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<OldEntry>(v).ok())
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(old, vec!["plain".to_string()]);
+        // The current decoder keeps both.
+        assert_eq!(doc.read_commands().unwrap().len(), 2);
     }
 
     #[test]

@@ -77,6 +77,9 @@ pub enum QueueDeliveryGate {
     },
 }
 
+/// Row-map key holding a queued row's captured instruction revision pin.
+const QUEUED_INSTRUCTIONS_KEY: &str = "instructions";
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -313,6 +316,69 @@ impl SessionDoc {
         Ok(item)
     }
 
+    /// Append a row that captured a Work Outline instruction revision at
+    /// queue time (`m0-contract.md` 5.3, acceptance 10). The pin is a key on
+    /// the row map — not a `QueuedMessage` field — so it moves with the row,
+    /// survives text edits, and older readers simply ignore it.
+    pub fn push_queued_with_instructions(
+        &self,
+        item: &QueuedMessage,
+        instructions: Option<&zeron_proto::InstructionRevisionPin>,
+    ) -> Result<(), DocError> {
+        if item.id.trim().is_empty() {
+            return Err(DocError::Schema("queued message id required".into()));
+        }
+        if item.text.trim().is_empty() {
+            return Err(DocError::Schema("queued message text required".into()));
+        }
+        let queue = self.doc().get_movable_list("queue");
+        let map = queue.push_container(loro::LoroMap::new())?;
+        write_queued_map(&map, item)?;
+        if let Some(pin) = instructions {
+            map.insert(
+                QUEUED_INSTRUCTIONS_KEY,
+                crate::schema::loro_value_from_json(&serde_json::to_value(pin)?),
+            )?;
+        }
+        self.doc().commit();
+        Ok(())
+    }
+
+    /// The instruction revision a queued row captured, if any.
+    pub fn queued_instructions(&self, id: &str) -> Option<zeron_proto::InstructionRevisionPin> {
+        let queue = self.doc().get_movable_list("queue");
+        let index = index_of(&queue, id)?;
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
+        else {
+            return None;
+        };
+        let value = map.get_deep_value().to_json_value();
+        serde_json::from_value(value.get(QUEUED_INSTRUCTIONS_KEY)?.clone()).ok()
+    }
+
+    /// Re-attach a captured pin to a row (the host's undo after a failed
+    /// send re-inserts the row without it).
+    pub fn set_queued_instructions(
+        &self,
+        id: &str,
+        instructions: &zeron_proto::InstructionRevisionPin,
+    ) -> Result<bool, DocError> {
+        let queue = self.doc().get_movable_list("queue");
+        let Some(index) = index_of(&queue, id) else {
+            return Ok(false);
+        };
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
+        else {
+            return Ok(false);
+        };
+        map.insert(
+            QUEUED_INSTRUCTIONS_KEY,
+            crate::schema::loro_value_from_json(&serde_json::to_value(instructions)?),
+        )?;
+        self.doc().commit();
+        Ok(true)
+    }
+
     /// Remove and return the head — the host's turn-end flush.
     pub fn take_queue_head(&self) -> Result<Option<QueuedMessage>, DocError> {
         let Some(head) = self.read_queue()?.into_iter().next() else {
@@ -408,6 +474,31 @@ fn queued_from_json(v: serde_json::Value) -> Option<QueuedMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_rows_keep_their_captured_instruction_pin() {
+        let doc = SessionDoc::init("chat").unwrap();
+        let pin = zeron_proto::InstructionRevisionPin {
+            revision_id: "rev-1".into(),
+            revision_hash: "abc".into(),
+        };
+        doc.push_queued_with_instructions(&QueuedMessage::new("q1", "first", "dev"), Some(&pin))
+            .unwrap();
+        doc.push_queued(&QueuedMessage::new("q2", "second", "dev"))
+            .unwrap();
+        assert_eq!(doc.queued_instructions("q1"), Some(pin.clone()));
+        assert_eq!(doc.queued_instructions("q2"), None);
+        // Edits and moves keep the pin; the row still reads normally.
+        doc.set_queued_text("q1", "first, edited", 5).unwrap();
+        assert_eq!(doc.queued_instructions("q1"), Some(pin.clone()));
+        assert_eq!(doc.read_queue().unwrap()[0].text, "first, edited");
+        // A row re-inserted after a failed send gets its pin back.
+        let taken = doc.take_queued("q1").unwrap().unwrap();
+        doc.insert_queued(0, &taken).unwrap();
+        assert_eq!(doc.queued_instructions("q1"), None);
+        assert!(doc.set_queued_instructions("q1", &pin).unwrap());
+        assert_eq!(doc.queued_instructions("q1"), Some(pin));
+    }
 
     fn doc() -> SessionDoc {
         SessionDoc::init("chat-1").unwrap()
