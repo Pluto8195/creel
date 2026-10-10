@@ -737,3 +737,31 @@ After rollout, validate that:
 - Users can resume ticket-oriented work from the Work Outline without locating the correct Chat manually.
 - User action requests are resolved from the Required Actions view.
 - Chat-derived instructions remain concise, reviewed, and actively reused.
+
+## Implementation contract amendments
+
+Milestone 0 resolved this specification against the existing code. The binding contract is
+`work-outline/m0-contract.md`; it takes precedence where it differs from the text above. Summary of
+amendments:
+
+- Execution Session: any change to the applied revision starts a new Execution Session, even when
+  the harness continues the same native transcript. The host reports the delivered revision on its
+  session-status row; there is no separate Execution Session entity.
+- `instruction_revision` stores ordered entries, renderer version, and hashes, not the rendered
+  envelope text (registry ops are capped at 16 KiB). Delivery re-renders deterministically and
+  verifies the hash. Budget: 9,000 effective characters and 32 entries per revision.
+- `instruction_revision_application` rows record selection (written once by the client); actual
+  delivery is reported separately by the host.
+- Queued commands carry only the revision id and hash; the host waits for the exact revision and
+  never substitutes another.
+- Revision changes never swap instructions inside a live harness thread. Claude Code resumes with
+  a replaced system-prompt file; Codex requires a proven compaction swap or a confirmed context
+  reset.
+- Cursor and ACP harnesses reject Work Outline instruction delivery with a capability error.
+- A Work Outline instruction cannot be mechanically prevented from outranking repository
+  instructions in Claude Code; the envelope states the precedence rule in a fixed preamble.
+- A per-Chat `chat_execution_binding` row captures the resolved execution configuration at launch,
+  so later configuration edits never retarget existing Chats. Resolution is whole-row, not
+  field-wise.
+- Cycle repair uses the HLC of the parent field, because registry rows have no row-level HLC.
+- Non-Git workspace roots are outside the MVP.
