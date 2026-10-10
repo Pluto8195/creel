@@ -18,14 +18,15 @@ use gpui::{
 };
 use zeron_proto::{
     ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemExternalReferenceParams,
-    DescendantArchivePolicy, FieldPatch, RemoveChatFromWorkItemParams,
-    RemoveWorkItemExternalReferenceParams, RestoreWorkItemParams, UpdateWorkItemParams,
-    WorkItemChanges,
+    FieldPatch, RemoveChatFromWorkItemParams, RemoveWorkItemExternalReferenceParams,
+    RestoreWorkItemParams, UpdateWorkItemParams, WorkItemChanges,
 };
 
 use super::actions::{ActionTask, new_operation_id};
 use super::chips::{self, TextTooltip};
-use super::command::WorkOutlineConfirmRequest;
+use super::command::{
+    WorkOutlineArchiveRequest, WorkOutlineConfirmRequest, WorkOutlineParentChoice,
+};
 use super::model::{self, OutlineChat};
 use super::store::{WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineSnapshot};
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -110,7 +111,7 @@ pub(crate) struct WorkItemDetails {
     pub(crate) space_id: String,
     pub(crate) item_id: String,
     snapshot: Option<Arc<WorkOutlineSnapshot>>,
-    chats: Vec<OutlineChat>,
+    chats: Arc<Vec<OutlineChat>>,
     focus: FocusHandle,
     title_input: Entity<ComposerInput>,
     editing_title: bool,
@@ -121,7 +122,6 @@ pub(crate) struct WorkItemDetails {
     reference_input: Entity<ComposerInput>,
     adding_reference: bool,
     associate_open: bool,
-    archive_choice_open: bool,
     /// In-flight mutation keys (one per field/target), so a repeat click
     /// cannot double-submit.
     in_flight: HashSet<String>,
@@ -179,7 +179,7 @@ impl WorkItemDetails {
             space_id,
             item_id,
             snapshot: None,
-            chats: Vec::new(),
+            chats: Arc::default(),
             focus: cx.focus_handle(),
             title_input,
             editing_title: false,
@@ -190,7 +190,6 @@ impl WorkItemDetails {
             reference_input,
             adding_reference: false,
             associate_open: false,
-            archive_choice_open: false,
             in_flight: HashSet::new(),
             error: None,
             _subscriptions: subscriptions,
@@ -201,7 +200,7 @@ impl WorkItemDetails {
     pub(crate) fn set_data(
         &mut self,
         snapshot: Option<Arc<WorkOutlineSnapshot>>,
-        chats: Vec<OutlineChat>,
+        chats: Arc<Vec<OutlineChat>>,
     ) {
         self.snapshot = snapshot;
         self.chats = chats;
@@ -487,43 +486,49 @@ impl WorkItemDetails {
         }
     }
 
-    /// Archive (after the Shell's confirmation). `policy` decides what
-    /// happens to descendants.
-    fn confirm_archive(&mut self, policy: DescendantArchivePolicy, cx: &mut Context<Self>) {
-        let Some(item) = self.item().cloned() else {
+    /// "Archive…": the Shell's archive confirmation, which for an item with
+    /// descendants makes the user choose between archiving the subtree and
+    /// moving the descendants to another parent (never an implicit default).
+    fn request_archive(&mut self, cx: &mut Context<Self>) {
+        let (Some(item), Some(snapshot)) = (self.item().cloned(), self.snapshot.clone()) else {
             return;
         };
-        let descendants = self
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| model::descendants(snapshot, &item.id).len());
-        let body = match (&policy, descendants) {
-            (_, 0) => format!(
-                "“{}” will be hidden from the outline. Its chats keep working.",
-                item.title
-            ),
-            (DescendantArchivePolicy::ArchiveDescendants, n) => format!(
-                "“{}” and its {n} descendant item{} will be archived. Their chats keep working.",
-                item.title,
-                if n == 1 { "" } else { "s" }
-            ),
-            (DescendantArchivePolicy::MoveDescendants { .. }, n) => format!(
-                "“{}” will be archived and its {n} descendant item{} moved up to its parent.",
-                item.title,
-                if n == 1 { "" } else { "s" }
-            ),
-        };
+        let descendant_count = model::descendants(&snapshot, &item.id).len();
+        // Valid new parents: the Space root and every live item outside the
+        // archived subtree, labeled with their path; the current parent
+        // first so it is preselected.
+        let mut parents: Vec<WorkOutlineParentChoice> =
+            model::destinations(&snapshot, Some(&item.id))
+                .into_iter()
+                .map(|dest| WorkOutlineParentChoice {
+                    label: match &dest.item_id {
+                        Some(id) => model::path_label(
+                            model::item_path(&snapshot, id)
+                                .iter()
+                                .map(|item| item.title.as_str()),
+                        ),
+                        None => "Top level".to_string(),
+                    }
+                    .into(),
+                    work_item_id: dest.item_id,
+                })
+                .collect();
+        if let Some(ix) = parents
+            .iter()
+            .position(|choice| choice.work_item_id == item.parent_work_item_id)
+        {
+            let current = parents.remove(ix);
+            parents.insert(0, current);
+        }
         let weak = cx.entity().downgrade();
-        let request = WorkOutlineConfirmRequest {
-            title: "Archive work item?".into(),
-            body: body.into(),
-            confirm_label: "Archive".into(),
-            cancel_label: "Cancel".into(),
-            destructive: true,
-            on_decision: Box::new(move |confirmed, _window, cx| {
-                if !confirmed {
+        let request = WorkOutlineArchiveRequest {
+            item_title: item.title.clone().into(),
+            descendant_count,
+            parents,
+            on_decision: Box::new(move |policy, _window, cx| {
+                let Some(policy) = policy else {
                     return;
-                }
+                };
                 weak.update(cx, |this, cx| {
                     let task = this
                         .state
@@ -534,14 +539,16 @@ impl WorkItemDetails {
                             descendant_archive_policy: policy,
                             operation_id: new_operation_id(),
                         });
-                    this.run("archive", task, cx, |this| this.archive_choice_open = false);
+                    this.run("archive", task, cx, |_| {});
                 })
                 .ok();
             }),
         };
         if self
             .shell
-            .update(cx, |shell, cx| shell.open_work_outline_confirm(request, cx))
+            .update(cx, |shell, cx| {
+                shell.open_work_outline_archive_confirm(request, cx)
+            })
             .is_err()
         {
             self.error = Some("Archive needs the app window".into());
@@ -1185,60 +1192,15 @@ impl Render for WorkItemDetails {
         }
 
         // Archive / restore.
-        let has_children = !item.child_ids.is_empty();
-        let archived = item.archived_at.is_some();
-        let parent = item.parent_work_item_id.clone();
-        let footer = if archived {
+        let footer = if item.archived_at.is_some() {
             div().child(
                 Self::small_button("work-item-restore", "Restore", &theme)
                     .on_click(cx.listener(|this, _, _, cx| this.restore(cx))),
             )
-        } else if self.archive_choice_open && has_children {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(6.0))
-                .child(
-                    Self::small_button("work-item-archive-all", "Archive with descendants", &theme)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.confirm_archive(DescendantArchivePolicy::ArchiveDescendants, cx)
-                        })),
-                )
-                .child(
-                    Self::small_button(
-                        "work-item-archive-move",
-                        "Archive, move descendants up",
-                        &theme,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.confirm_archive(
-                            DescendantArchivePolicy::MoveDescendants {
-                                destination_parent_work_item_id: parent.clone(),
-                            },
-                            cx,
-                        )
-                    })),
-                )
-                .child(
-                    Self::small_button("work-item-archive-cancel", "Cancel", &theme).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.archive_choice_open = false;
-                            cx.notify();
-                        }),
-                    ),
-                )
         } else {
             div().child(
-                Self::small_button("work-item-archive", "Archive…", &theme).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        if has_children {
-                            this.archive_choice_open = true;
-                            cx.notify();
-                        } else {
-                            this.confirm_archive(DescendantArchivePolicy::ArchiveDescendants, cx);
-                        }
-                    },
-                )),
+                Self::small_button("work-item-archive", "Archive…", &theme)
+                    .on_click(cx.listener(|this, _, _, cx| this.request_archive(cx))),
             )
         };
 

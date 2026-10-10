@@ -85,6 +85,12 @@ use crate::shell::Shell;
 use crate::state::{AppState, format_time_ago};
 use crate::theme::Theme;
 use crate::transcript::Transcript;
+use crate::work_outline::details_panel::{DetailsEvent, WorkItemDetails};
+use crate::work_outline::filter::{self as work_item_filter, WorkItemIndex, WorkItemPathLabel};
+use crate::work_outline::model::{OutlineChat, OutlineOptions, OutlineSpace, row_key};
+use crate::work_outline::outline_view::{OutlineEvent, OutlineInputs, OutlineView};
+use crate::work_outline::store::WorkOutlineSnapshot;
+use crate::work_outline::{WorkOutlineCommand, WorkOutlineLoad};
 
 /// A chat with no activity for longer than this, and not currently
 /// working/awaiting input, reads as stale. Adapted from
@@ -381,6 +387,14 @@ struct OverviewRow {
     /// eligibility. Computed in the cached `rows()` pass so the fs check never
     /// runs per frame.
     closeable: bool,
+    /// The associated work item's breadcrumb (path chip), copied in from the
+    /// Work Outline index in `rows()` like `ticket`. Never feeds `tile_size`:
+    /// the chip shares an existing line of the card/row.
+    work_item_path: Option<WorkItemPathLabel>,
+    /// The associated work item is in User Action Required.
+    user_action_required: bool,
+    /// Its unresolved user-action request count (0 until Milestone 4).
+    user_action_count: u32,
 }
 
 impl OverviewRow {
@@ -718,8 +732,9 @@ fn pr_sidebar_empty_message(total: usize, query: &str, pending: bool) -> String 
 
 /// Restore the sidebar's open state from the persisted UI-flag set. Unknown
 /// entries (a future flag, or junk) are ignored rather than failing the load.
-/// `ViewMode` (formerly with a `MyPrs` variant) is persisted separately as
-/// [`VIEW_CANVAS_FLAG`]; a stale `viewMode:myPrs` entry is just an unknown
+/// `OverviewMode` (formerly with a `MyPrs` variant) is persisted separately
+/// as a `viewMode:` flag ([`OverviewMode::from_flags`]); a stale
+/// `viewMode:myPrs` entry is just an unknown
 /// flag and is ignored.
 fn pr_sidebar_open_from_flags(flags: &BTreeSet<String>) -> bool {
     flags.contains(PR_SIDEBAR_FLAG)
@@ -747,9 +762,16 @@ fn pr_collapsed_sections_from_flags(flags: &BTreeSet<String>) -> BTreeSet<String
         .collect()
 }
 
-/// UI-flag entry: the canvas (rather than the list) is the main column's
-/// mode. Absent = List, the default.
+/// UI-flag entry: the canvas is the main column's mode. The legacy spelling
+/// from the List/Canvas boolean era, kept verbatim so every existing choice
+/// survives with zero rewrite.
 const VIEW_CANVAS_FLAG: &str = "viewMode:canvas";
+/// UI-flag entry: the Work Outline is the main column's mode. Older builds
+/// read it as an unknown flag, i.e. List (downgrade-safe).
+const VIEW_OUTLINE_FLAG: &str = "viewMode:outline";
+/// Prefix shared by every overview-mode flag; the writer purges all of them
+/// before inserting the one for the active mode.
+const VIEW_MODE_PREFIX: &str = "viewMode:";
 /// UI-flag entry: the "Hide stale" toggle is on.
 const HIDE_STALE_FLAG: &str = "hideStale";
 /// UI-flag entry: the "Show archived" toggle is on.
@@ -764,7 +786,7 @@ const GROUP_BY_PREFIX: &str = "groupBy:";
 /// its own `HIDDEN_REPOS_FILE`) and the PR-sidebar flags.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct ViewPrefs {
-    canvas: bool,
+    mode: OverviewMode,
     hide_stale: bool,
     show_archived: bool,
     groups: Vec<GroupDimension>,
@@ -789,7 +811,7 @@ fn view_prefs_from_flags(flags: &BTreeSet<String>) -> ViewPrefs {
         }
     }
     ViewPrefs {
-        canvas: flags.contains(VIEW_CANVAS_FLAG),
+        mode: OverviewMode::from_flags(flags),
         hide_stale: flags.contains(HIDE_STALE_FLAG),
         show_archived: flags.contains(SHOW_ARCHIVED_FLAG),
         groups,
@@ -800,9 +822,11 @@ fn view_prefs_from_flags(flags: &BTreeSet<String>) -> ViewPrefs {
 /// entries and leaving every other flag (sidebar, collapsed sections, future
 /// flags) untouched.
 fn apply_view_prefs_to_flags(flags: &mut BTreeSet<String>, prefs: &ViewPrefs) {
-    flags.retain(|flag| !flag.starts_with(GROUP_BY_PREFIX));
+    flags.retain(|flag| !flag.starts_with(GROUP_BY_PREFIX) && !flag.starts_with(VIEW_MODE_PREFIX));
+    if let Some(flag) = prefs.mode.flag() {
+        flags.insert(flag.to_string());
+    }
     for (flag, on) in [
-        (VIEW_CANVAS_FLAG, prefs.canvas),
         (HIDE_STALE_FLAG, prefs.hide_stale),
         (SHOW_ARCHIVED_FLAG, prefs.show_archived),
     ] {
@@ -1896,11 +1920,41 @@ fn pr_action_badge(action: PrAction) -> (&'static str, gpui::Hsla) {
 
 /// The main column's rendering mode. "My PRs" used to be a third mode that
 /// replaced the whole body; it is now the independent left sidebar
-/// ([`Overview::pr_sidebar_open`]) shown alongside either of these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewMode {
+/// ([`Overview::pr_sidebar_open`]) shown alongside any of these.
+///
+/// Persisted as at most one `viewMode:` flag in `UI_FLAGS_FILE` (a tolerant
+/// enum over the old List/Canvas boolean): no flag = List,
+/// [`VIEW_CANVAS_FLAG`] = Canvas, [`VIEW_OUTLINE_FLAG`] = Outline, any other
+/// `viewMode:` value = List. Both flags present (only after a round trip
+/// through an older build that toggles the canvas flag alone) = Canvas: an
+/// old build can only have set it deliberately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum OverviewMode {
+    #[default]
     List,
     Canvas,
+    Outline,
+}
+
+impl OverviewMode {
+    fn from_flags(flags: &BTreeSet<String>) -> Self {
+        if flags.contains(VIEW_CANVAS_FLAG) {
+            Self::Canvas
+        } else if flags.contains(VIEW_OUTLINE_FLAG) {
+            Self::Outline
+        } else {
+            Self::List
+        }
+    }
+
+    /// The flag written for this mode (`None` = List, written as absence).
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::List => None,
+            Self::Canvas => Some(VIEW_CANVAS_FLAG),
+            Self::Outline => Some(VIEW_OUTLINE_FLAG),
+        }
+    }
 }
 
 /// A PR-row jump waiting for the layout it will be framed in. Opening the
@@ -2324,7 +2378,7 @@ pub struct Overview {
     state: Entity<AppState>,
     shell: gpui::WeakEntity<Shell>,
     scroll: ScrollHandle,
-    view_mode: ViewMode,
+    view_mode: OverviewMode,
     /// Logical grid/drag positions, keyed by chat id. Populated lazily: a
     /// chat not yet here gets a default grid slot the first time canvas mode
     /// renders it.
@@ -2570,6 +2624,38 @@ pub struct Overview {
     /// Focused when a peek opens, so Escape reaches the panel's key handler
     /// wherever the pointer is.
     peek_focus: gpui::FocusHandle,
+    /// The Outline presentation (`OverviewMode::Outline`).
+    outline: Entity<OutlineView>,
+    /// The Outline's inputs must be re-pushed (set whenever `rows()`
+    /// rebuilds, or an Outline-only option changes).
+    outline_dirty: bool,
+    /// Every Chat as the Outline sees it (child and archived Chats included,
+    /// with the Overview's filters folded into `visible`). Built by `rows()`.
+    outline_chats: std::sync::Arc<Vec<OutlineChat>>,
+    /// The explicit "reveal completed items" control (they hide while
+    /// "Hide stale" is on).
+    outline_show_completed: bool,
+    /// Test/fixture override for the per-Space Work Outline loads (instead
+    /// of `AppState::work_outline`).
+    outline_fixture: Option<HashMap<String, WorkOutlineLoad>>,
+    /// The Space set last declared through `AppState::set_work_outline_visible`.
+    declared_outline_spaces: Option<Vec<String>>,
+    /// Chat → work item lookups across every loaded Space (path chips,
+    /// attention, the work-item filter). Rebuilt by `rows()`.
+    work_item_index: WorkItemIndex,
+    /// List/Canvas work-item filter (item ids + `UNASSOCIATED_KEY`),
+    /// persisted via `overview_positions::WORK_ITEM_FILTER_FILE`.
+    work_item_filter: BTreeSet<String>,
+    /// One-shot stale-filter check once every Space's outline has loaded.
+    work_item_filter_needs_validation: bool,
+    work_item_filter_popup: popover::Popup<()>,
+    /// Work Item Details (Overview-owned right surface). While `Some` it
+    /// renders in the right slot instead of the chat panel / peek, leaving
+    /// `chat_panel_open`, `subagent_peek`, and the selection untouched, so
+    /// closing it restores the previous layout.
+    work_item_details: Option<Entity<WorkItemDetails>>,
+    _details_events: Option<Subscription>,
+    _outline_events: Subscription,
     _observe: Subscription,
     _search_events: Subscription,
     _pr_search_events: Subscription,
@@ -2652,6 +2738,16 @@ impl Overview {
                 cx.notify();
             }
         });
+        let outline = cx.new(|cx| OutlineView::new(state.clone(), cx));
+        let outline_events = cx.subscribe(&outline, |this: &mut Self, _, event, cx| match event {
+            OutlineEvent::OpenChat(chat_id) => {
+                this.close_work_item_details(cx);
+                this.open_chat_panel(chat_id.clone(), cx);
+            }
+            OutlineEvent::OpenDetails { space_id, item_id } => {
+                this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
+            }
+        });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
         // loop idiom as the composer's queue-lease renewal. Ends on its own
         // once the entity is dropped (`update` fails).
@@ -2667,7 +2763,7 @@ impl Overview {
             state,
             shell,
             scroll: ScrollHandle::new(),
-            view_mode: ViewMode::List,
+            view_mode: OverviewMode::List,
             tile_positions: HashMap::new(),
             canvas_pan: (0.0, 0.0),
             canvas_zoom: 1.0,
@@ -2737,6 +2833,19 @@ impl Overview {
             peek_request_seq: 0,
             peek_scroll: ScrollHandle::new(),
             peek_focus: cx.focus_handle(),
+            outline,
+            outline_dirty: true,
+            outline_chats: std::sync::Arc::default(),
+            outline_show_completed: false,
+            outline_fixture: None,
+            declared_outline_spaces: None,
+            work_item_index: WorkItemIndex::default(),
+            work_item_filter: BTreeSet::new(),
+            work_item_filter_needs_validation: false,
+            work_item_filter_popup: popover::Popup::default(),
+            work_item_details: None,
+            _details_events: None,
+            _outline_events: outline_events,
             _observe: observe,
             _search_events: search_events,
             _pr_search_events: pr_search_events,
@@ -2745,7 +2854,7 @@ impl Overview {
     }
 
     pub(crate) fn is_canvas(&self) -> bool {
-        self.view_mode == ViewMode::Canvas
+        self.view_mode == OverviewMode::Canvas
     }
 
     /// Cmd/Ctrl+F follows the platform Find convention while Canvas is the
@@ -2821,6 +2930,12 @@ impl Overview {
                 &data_dir,
                 overview_positions::HIDDEN_REPOS_FILE,
             ));
+        self.work_item_filter
+            .extend(work_item_filter::load_filter(&data_dir));
+        if !self.work_item_filter.is_empty() {
+            self.work_item_filter_needs_validation = true;
+            self.rows_dirty = true;
+        }
         if !self.hidden_repos.is_empty() {
             self.repo_filter_needs_validation = true;
             self.rows_dirty = true;
@@ -2829,11 +2944,7 @@ impl Overview {
         // A toggle made before `data_dir` existed wins over the older file.
         if !self.view_prefs_touched {
             let prefs = view_prefs_from_flags(&flags);
-            self.view_mode = if prefs.canvas {
-                ViewMode::Canvas
-            } else {
-                ViewMode::List
-            };
+            self.view_mode = prefs.mode;
             self.hide_stale = prefs.hide_stale;
             self.show_archived = prefs.show_archived;
             self.active_groups = prefs.groups;
@@ -2845,7 +2956,7 @@ impl Overview {
     /// The current view state as [`ViewPrefs`].
     fn view_prefs(&self) -> ViewPrefs {
         ViewPrefs {
-            canvas: self.view_mode == ViewMode::Canvas,
+            mode: self.view_mode,
             hide_stale: self.hide_stale,
             show_archived: self.show_archived,
             groups: self.active_groups.clone(),
@@ -3046,6 +3157,18 @@ impl Overview {
         }
 
         let now = Utc::now();
+        // Work Outline facts for path chips, attention, and the work-item
+        // filter. Association never feeds layout: nothing here touches
+        // `tile_positions` or `position_for`.
+        let outline_spaces = self.outline_spaces(cx);
+        let snapshots: Vec<std::sync::Arc<WorkOutlineSnapshot>> = outline_spaces
+            .iter()
+            .filter_map(|space| space.load.snapshot().cloned())
+            .collect();
+        let work_item_index = WorkItemIndex::build(snapshots.iter().map(|s| s.as_ref()));
+        let outlines_loaded = outline_spaces
+            .iter()
+            .all(|space| !matches!(space.load, WorkOutlineLoad::Loading));
         let (raw, spaces): (Vec<(ChatIndicator, Chat)>, HashMap<String, Space>) = {
             let state = self.state.read(cx);
             (
@@ -3121,6 +3244,11 @@ impl Overview {
             let repo = repo_key_for_chat(&chat, space);
             let closeable = crate::chat_closeout::is_closeout_candidate(chat.cwd.as_deref());
             known_repos.insert(repo.clone());
+            let work_item_path = work_item_index
+                .item_for_chat(&chat.id)
+                .and_then(|item| work_item_index.path_label(item));
+            let (user_action_required, user_action_count) =
+                work_item_index.attention_for_chat(&chat.id);
             all.push(OverviewRow {
                 status,
                 chat,
@@ -3136,6 +3264,9 @@ impl Overview {
                 subagent_count,
                 has_badge_row,
                 closeable,
+                work_item_path,
+                user_action_required,
+                user_action_count,
             });
         }
         self.known_repos = known_repos;
@@ -3152,6 +3283,24 @@ impl Overview {
                 );
             }
         }
+        if self.work_item_filter_needs_validation && outlines_loaded && !all.is_empty() {
+            self.work_item_filter_needs_validation = false;
+            if work_item_filter::restored_filter_hides_everything(
+                &self.work_item_filter,
+                &work_item_index,
+                all.iter().map(|row| row.chat.id.as_str()),
+            ) {
+                tracing::info!("restored work-item filter hid every chat; resetting it");
+                self.work_item_filter.clear();
+                self.save_string_set(
+                    overview_positions::WORK_ITEM_FILTER_FILE,
+                    &self.work_item_filter,
+                    cx,
+                );
+            }
+        }
+        self.outline_chats = std::sync::Arc::new(self.build_outline_chats(&all, now, cx));
+        self.outline_dirty = true;
         if acknowledged_changed {
             self.save_string_set(
                 overview_positions::ACKNOWLEDGED_DONE_FILE,
@@ -3160,10 +3309,14 @@ impl Overview {
             );
         }
         let hidden_repos = &self.hidden_repos;
+        let work_filter = &self.work_item_filter;
         let rows: Vec<OverviewRow> = all
             .into_iter()
             .filter(|row| !(hide_stale && row.stale))
             .filter(|row| !hidden_repos.contains(&row.repo))
+            .filter(|row| {
+                work_item_filter::chat_passes(work_filter, &work_item_index, &row.chat.id)
+            })
             .filter(|row| {
                 // Web `sessionMatchesSearch` fields that exist here: name
                 // (title), branch, last message (preview), cwd, ticket id,
@@ -3180,9 +3333,118 @@ impl Overview {
                 matches_search(&query, &fields)
             })
             .collect();
+        self.work_item_index = work_item_index;
         self.rows_cache = rows.clone();
         self.rows_dirty = false;
         rows
+    }
+
+    /// Every Chat as the Outline sees it: the Overview's rows (pre-filter)
+    /// plus child Chats and hidden (archived, stale, repo-filtered) Chats,
+    /// with those filters folded into `visible` so an associated Chat that
+    /// is merely filtered is never mistaken for a missing one.
+    fn build_outline_chats(
+        &self,
+        rows: &[OverviewRow],
+        now: chrono::DateTime<Utc>,
+        cx: &gpui::App,
+    ) -> Vec<OutlineChat> {
+        let by_id: HashMap<&str, &OverviewRow> =
+            rows.iter().map(|row| (row.chat.id.as_str(), row)).collect();
+        let state = self.state.read(cx);
+        state
+            .chats
+            .iter()
+            .filter(|chat| {
+                chat.space_id
+                    .as_deref()
+                    .is_none_or(|space_id| state.space_row(space_id).is_some())
+            })
+            .map(|chat| {
+                let row = by_id.get(chat.id.as_str());
+                let status = row.map_or_else(|| state.display_status_for(chat, now), |r| r.status);
+                let stale = row.map_or_else(|| is_stale(chat, status, now), |r| r.stale);
+                let shown_by_toggles =
+                    (self.show_archived || !chat.archived) && !(self.hide_stale && stale);
+                let visible = shown_by_toggles && {
+                    let repo = match row {
+                        Some(row) => row.repo.clone(),
+                        None => repo_key_for_chat(
+                            chat,
+                            chat.space_id.as_deref().and_then(|id| state.space_row(id)),
+                        ),
+                    };
+                    !self.hidden_repos.contains(&repo)
+                };
+                let pr_number = row.and_then(|r| r.pr_number).or_else(|| {
+                    self.link_status.get(&chat.id).and_then(|entry| {
+                        effective_pr_links(&entry.status).first().map(|link| {
+                            link.detail
+                                .as_ref()
+                                .map_or_else(|| pr_number_from_url(&link.url), |pr| pr.number)
+                        })
+                    })
+                });
+                OutlineChat {
+                    id: chat.id.clone(),
+                    space_id: chat.space_id.clone(),
+                    parent_chat_id: chat.parent_chat_id.clone(),
+                    title: chat
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| "New session".to_string()),
+                    status,
+                    archived: chat.archived,
+                    stale,
+                    branch: chat.branch.clone(),
+                    harness: Some(chat_model_label(chat).to_string()),
+                    pr_number,
+                    visible,
+                    activity: chat
+                        .last_message_at
+                        .unwrap_or(chat.created_at)
+                        .timestamp_millis(),
+                }
+            })
+            .collect()
+    }
+
+    /// Every Space the Outline shows (all of them: the Overview is the
+    /// All-spaces view), in display order, with its current load.
+    fn outline_spaces(&self, cx: &gpui::App) -> Vec<OutlineSpace> {
+        let state = self.state.read(cx);
+        let mut spaces: Vec<&Space> = state.spaces.iter().collect();
+        spaces.sort_by_cached_key(|space| (space.display_name().to_lowercase(), space.id.clone()));
+        spaces
+            .into_iter()
+            .map(|space| OutlineSpace {
+                id: space.id.clone(),
+                label: space.display_name().to_string(),
+                load: match &self.outline_fixture {
+                    Some(map) => map
+                        .get(&space.id)
+                        .cloned()
+                        .unwrap_or(WorkOutlineLoad::Loading),
+                    None => state.work_outline(&space.id),
+                },
+            })
+            .collect()
+    }
+
+    fn outline_snapshot(
+        &self,
+        space_id: &str,
+        cx: &gpui::App,
+    ) -> Option<std::sync::Arc<WorkOutlineSnapshot>> {
+        match &self.outline_fixture {
+            Some(map) => map.get(space_id).and_then(|load| load.snapshot().cloned()),
+            None => self
+                .state
+                .read(cx)
+                .work_outline(space_id)
+                .snapshot()
+                .cloned(),
+        }
     }
 
     fn open(&mut self, chat_id: String, cx: &mut Context<Self>) {
@@ -4375,13 +4637,23 @@ impl Overview {
         let classification = self.classification.get(&chat_id);
         let category = classification.map(|info| category_label(&info.category).to_string());
         let origin = classification.map(|info| origin_label(&info.origin).to_string());
-        let metadata = crate::chat_metadata::metadata_items(
+        let mut metadata = crate::chat_metadata::metadata_items(
             &chat,
             space.as_ref(),
             links.as_ref(),
             category.as_deref(),
             origin.as_deref(),
         );
+        if let Some(path) = self
+            .work_item_index
+            .item_for_chat(&chat_id)
+            .and_then(|item| self.work_item_index.path_label(item))
+        {
+            metadata.push(crate::chat_metadata::work_item_item(
+                &path.short,
+                &path.full,
+            ));
+        }
         let classification_shell = self.shell.clone();
         let classification_chat_id = chat_id.clone();
         // The chat route drives these per frame (`render_main`); it doesn't
@@ -5805,10 +6077,14 @@ impl Render for Overview {
             .map(|p| p.chat_id.clone())
             .or_else(|| self.panel_chat_id(cx));
         let rows = self.rows(cx);
+        self.declare_outline_spaces(cx);
+        if self.view_mode == OverviewMode::Outline {
+            self.sync_outline(cx);
+        }
         // Toolbar badge data — TTL-gated, so this is a no-op most frames.
         self.ensure_my_prs(cx);
 
-        let toggle = |mode: ViewMode, label: String, current: ViewMode| {
+        let toggle = |mode: OverviewMode, label: String, current: OverviewMode| {
             let active = mode == current;
             div()
                 .id(SharedString::from(format!("overview-mode-{mode:?}")))
@@ -5934,25 +6210,34 @@ impl Render for Overview {
                             .rounded(px(6.0))
                             .bg(theme.element_hover.opacity(0.5))
                             .child(
-                                toggle(ViewMode::List, "List".into(), self.view_mode).on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.view_mode = ViewMode::List;
-                                        this.hovered_tile = None;
-                                        this.view_prefs_changed(cx);
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                            .child(
-                                toggle(ViewMode::Canvas, "Canvas".into(), self.view_mode)
+                                toggle(OverviewMode::List, "List".into(), self.view_mode)
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
-                                            this.view_mode = ViewMode::Canvas;
-                                            this.hovered_tile = None;
-                                            this.view_prefs_changed(cx);
-                                            cx.notify();
+                                            this.set_mode(OverviewMode::List, cx);
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                toggle(OverviewMode::Canvas, "Canvas".into(), self.view_mode)
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.set_mode(OverviewMode::Canvas, cx);
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                toggle(OverviewMode::Outline, "Outline".into(), self.view_mode)
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.set_mode(OverviewMode::Outline, cx);
+                                            let handle = gpui::Focusable::focus_handle(
+                                                this.outline.read(cx),
+                                                cx,
+                                            );
+                                            window.focus(&handle, cx);
                                         }),
                                     ),
                             ),
@@ -6072,6 +6357,8 @@ impl Render for Overview {
                 }),
             );
 
+        let outline_mode = self.view_mode == OverviewMode::Outline;
+        let work_item_filter = (!outline_mode).then(|| self.render_work_item_filter(&theme, cx));
         let mut toolbar = div()
             .flex()
             .flex_wrap()
@@ -6079,8 +6366,11 @@ impl Render for Overview {
             .gap(px(6.0))
             .child(filters)
             .child(repo_filter)
+            .when_some(work_item_filter, |el, filter| el.child(filter))
             .child(key_toggle);
-        {
+        if outline_mode {
+            toolbar = toolbar.children(self.render_outline_toolbar(&theme, cx));
+        } else {
             // Composable dimension chips: click toggles membership, order
             // clicked = nesting order (`self.active_groups`). A chip shows
             // its position in that order (1-based) while active, so the
@@ -6151,7 +6441,7 @@ impl Render for Overview {
 
         let legend = self.legend_open.then(|| self.render_legend(&theme));
 
-        if self.view_mode != ViewMode::Canvas {
+        if self.view_mode != OverviewMode::Canvas {
             // Auto-fit is a canvas-only reaction to the edit that caused it —
             // never a deferred jump on a later mode switch.
             self.pending_fit_to_matches = false;
@@ -6173,8 +6463,9 @@ impl Render for Overview {
         // Built before the body, which consumes `rows`.
         let pr_sidebar = self.render_pr_sidebar(&rows, &theme, cx);
         let body = match self.view_mode {
-            ViewMode::List => self.render_list_body(&rows, &theme, cx),
-            ViewMode::Canvas => self.render_canvas_body(rows, &theme, cx),
+            OverviewMode::List => self.render_list_body(&rows, &theme, cx),
+            OverviewMode::Canvas => self.render_canvas_body(rows, &theme, cx),
+            OverviewMode::Outline => self.render_outline_body(cx),
         };
         // A focus the body couldn't use (target filtered out / not a row)
         // is dropped, never replayed on a later frame.
@@ -6197,8 +6488,16 @@ impl Render for Overview {
             .when_some(legend, |el, legend| el.child(legend))
             .child(body);
 
-        // One right-side panel, two exclusive modes (see `subagent_peek`).
-        let panel = if self.subagent_peek.is_some() {
+        // One right-side panel. Work Item Details, while open, renders in the
+        // slot without touching the chat panel / peek state underneath, so
+        // closing it brings back exactly what was there.
+        let panel = if let Some(details) = self.work_item_details.clone() {
+            let space_id = details.read(cx).space_id.clone();
+            let snapshot = self.outline_snapshot(&space_id, cx);
+            let chats = self.outline_chats.clone();
+            details.update(cx, |details, _| details.set_data(snapshot, chats));
+            Some(div().h_full().flex_none().child(details).into_any_element())
+        } else if self.subagent_peek.is_some() {
             self.render_subagent_peek(&theme, cx)
         } else {
             self.render_chat_panel(&theme, cx)
@@ -6214,7 +6513,13 @@ impl Render for Overview {
             // (the peek panel's own handler covers focus inside it; this
             // covers focus elsewhere here, e.g. the search box).
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && this.subagent_peek.is_some() {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if let Some(details) = this.work_item_details.clone() {
+                    details.update(cx, |details, cx| details.request_close(cx));
+                    cx.stop_propagation();
+                } else if this.subagent_peek.is_some() {
                     this.close_subagent_peek(cx);
                     cx.stop_propagation();
                 }
@@ -6860,6 +7165,23 @@ impl Overview {
             row.status == ChatIndicator::Completed,
         );
         let (dim, ribbon) = card_dimming(row.chat.archived, row.stale, unread);
+        // A chat whose work item needs the user stays at full opacity.
+        let dim = dim.filter(|_| !(row.user_action_required && !row.chat.archived));
+        let attention = crate::work_outline::chips::attention_indicator(
+            format!("overview-row-attention-{chat_id}"),
+            row.user_action_required,
+            row.user_action_count,
+            theme,
+            1.0,
+        );
+        let path_chip = row.work_item_path.as_ref().map(|path| {
+            crate::work_outline::chips::path_chip(
+                format!("overview-row-work-item-{chat_id}"),
+                path,
+                theme,
+                1.0,
+            )
+        });
         let is_expanded = self.expanded.contains(&chat_id);
         let category_badge = category_badge(row, 1.0);
         let model = model_badge(&row.chat, theme, 1.0);
@@ -6940,7 +7262,21 @@ impl Overview {
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
-                            .child(div().truncate().text_color(theme.text).child(title))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.text)
+                                            .child(title),
+                                    )
+                                    .when_some(attention, |el, attention| el.child(attention)),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -6963,6 +7299,7 @@ impl Overview {
                                             .text_color(dot)
                                             .child(SharedString::from(format!("{icon} {label}"))),
                                     )
+                                    .when_some(path_chip, |el, chip| el.child(chip))
                                     .when_some(category_badge, |el, badge| el.child(badge)),
                             )
                             .when_some(badges, |el, badges| el.child(badges)),
@@ -7058,6 +7395,25 @@ impl Overview {
             row.status == ChatIndicator::Completed,
         );
         let (dim, ribbon) = card_dimming(row.chat.archived, row.stale, unread);
+        // A chat whose work item needs the user stays at full opacity.
+        let dim = dim.filter(|_| !(row.user_action_required && !row.chat.archived));
+        // Work-item chips share existing lines (title row, status row), so
+        // the card's size and `tile_content_height_estimate` are unchanged.
+        let attention = crate::work_outline::chips::attention_indicator(
+            format!("overview-tile-attention-{}", row.chat.id),
+            row.user_action_required,
+            row.user_action_count,
+            theme,
+            zoom,
+        );
+        let path_chip = row.work_item_path.as_ref().map(|path| {
+            crate::work_outline::chips::path_chip(
+                format!("overview-tile-work-item-{}", row.chat.id),
+                path,
+                theme,
+                zoom,
+            )
+        });
         // Status color as a whole-tile background tint, not just the small
         // dot — ports `renderTile`'s `color-mix(in srgb, ${st.color} 14%,
         // surface)` (its own code comment argues this "reads at a glance
@@ -7139,7 +7495,8 @@ impl Overview {
                                     .overflow_hidden()
                             })
                             .child(title),
-                    ),
+                    )
+                    .when_some(attention, |el, attention| el.child(attention)),
             )
             .child(
                 div()
@@ -7194,6 +7551,7 @@ impl Overview {
                             .text_color(theme.text_muted.opacity(0.6))
                             .child(when),
                     )
+                    .when_some(path_chip, |el, chip| el.child(chip))
                     .child(div().flex_1())
                     .when_some(category_badge, |el, badge| el.child(badge)),
             )
@@ -8397,23 +8755,516 @@ impl Overview {
 }
 
 impl Overview {
-    /// Run one Work Outline command in the Overview: switch to Outline mode,
-    /// resolve the selected work item or Chat, then start the inline create /
-    /// rename, open the move picker, associate the Chat, and so on. With no
-    /// valid target it opens the Outline and shows a short notice; it never
-    /// silently does nothing (m0-contract §7).
-    ///
-    /// STUB (scaffold): the presentation owner (implementer A, sole owner of
-    /// this file) implements it. Called by `Shell::run_work_outline_command`.
-    #[allow(dead_code)]
+    /// Switch the main column's presentation and persist it.
+    fn set_mode(&mut self, mode: OverviewMode, cx: &mut Context<Self>) {
+        if self.view_mode == mode {
+            return;
+        }
+        self.view_mode = mode;
+        self.hovered_tile = None;
+        self.outline_dirty = true;
+        self.view_prefs_changed(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn mode(&self) -> OverviewMode {
+        self.view_mode
+    }
+
+    /// Tell the watch reconciler which Spaces' outlines the Overview needs:
+    /// all of them (path chips and attention on List/Canvas need them too).
+    /// Only on change, so it never loops with the `AppState` observer.
+    fn declare_outline_spaces(&mut self, cx: &mut Context<Self>) {
+        if self.outline_fixture.is_some() {
+            return;
+        }
+        let ids: Vec<String> = self
+            .state
+            .read(cx)
+            .spaces
+            .iter()
+            .map(|space| space.id.clone())
+            .collect();
+        if self.declared_outline_spaces.as_ref() == Some(&ids) {
+            return;
+        }
+        self.declared_outline_spaces = Some(ids.clone());
+        self.state
+            .update(cx, |state, cx| state.declare_work_outline_visible(ids, cx));
+    }
+
+    /// Push fresh inputs into the Outline when `rows()` rebuilt or an
+    /// Outline-only option changed.
+    fn sync_outline(&mut self, cx: &mut Context<Self>) {
+        if !self.outline_dirty {
+            return;
+        }
+        self.outline_dirty = false;
+        let inputs = OutlineInputs {
+            spaces: self.outline_spaces(cx),
+            chats: (*self.outline_chats).clone(),
+            options: OutlineOptions {
+                hide_completed: self.hide_stale && !self.outline_show_completed,
+                show_archived: self.show_archived,
+                query: self.search.read(cx).text().trim().to_lowercase(),
+                all_spaces: true,
+            },
+        };
+        self.outline
+            .update(cx, |outline, cx| outline.set_inputs(inputs, cx));
+    }
+
+    fn render_outline_body(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let details_key = self.work_item_details.as_ref().map(|details| {
+            let details = details.read(cx);
+            row_key::item(&details.space_id, &details.item_id)
+        });
+        let panel_chat = self.panel_highlight.clone();
+        self.outline.update(cx, |outline, _| {
+            outline.set_highlights(details_key, panel_chat)
+        });
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(self.outline.clone())
+            .into_any_element()
+    }
+
+    /// Outline-only toolbar controls: the inline "New item" entry point and
+    /// the explicit reveal for completed items hidden by "Hide stale".
+    fn render_outline_toolbar(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let pill = |id: &'static str, label: String, active: bool| {
+            div()
+                .id(id)
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(11.0))
+                .bg(theme.element_hover.opacity(0.5))
+                .when(active, |el| {
+                    el.bg(theme.element_active).text_color(theme.text)
+                })
+                .when(!active, |el| el.text_color(theme.text_muted))
+                .hover(|el| el.text_color(theme.text))
+                .child(SharedString::from(label))
+        };
+        let mut out = vec![
+            pill("outline-new-item", "New item".into(), false)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.run_work_outline_command(WorkOutlineCommand::CreateWorkItem, window, cx);
+                }))
+                .into_any_element(),
+        ];
+        if self.hide_stale {
+            let hidden = self.outline.read(cx).hidden_completed();
+            let label = if self.outline_show_completed {
+                "Completed shown".to_string()
+            } else {
+                format!("Completed hidden ({hidden})")
+            };
+            out.push(
+                pill("outline-show-completed", label, self.outline_show_completed)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.outline_show_completed = !this.outline_show_completed;
+                        this.outline_dirty = true;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
+    /// The List/Canvas work-item filter dropdown (same shape as "Repos").
+    fn render_work_item_filter(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active = !self.work_item_filter.is_empty() || self.work_item_filter_popup.is_open();
+        let trigger = div()
+            .id("overview-work-item-filter")
+            .relative()
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .text_size(crate::typography::ui_rems(11.0))
+            .bg(theme.element_hover.opacity(0.5))
+            .when(active, |el| {
+                el.bg(theme.element_active).text_color(theme.text)
+            })
+            .when(!active, |el| el.text_color(theme.text_muted))
+            .hover(|el| el.text_color(theme.text))
+            .child(SharedString::from(format!(
+                "{} ▾",
+                work_item_filter::filter_label(&self.work_item_filter)
+            )))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.work_item_filter_popup.note_trigger_press()),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.work_item_filter_popup.take_press_was_open() {
+                    this.close_work_item_filter(cx);
+                } else {
+                    this.work_item_filter_popup.open(());
+                    cx.notify();
+                }
+            }));
+        if self.work_item_filter_popup.get().is_none() {
+            return trigger.into_any_element();
+        }
+        let closing = self.work_item_filter_popup.closing_since();
+        let popup = theme.for_popup();
+        let check_row = |id: gpui::ElementId, label: String, depth: u32, checked: bool| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .pl(px(6.0 + depth as f32 * 12.0))
+                .pr(px(6.0))
+                .py(px(3.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(popup.element_hover))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(12.0))
+                        .rounded(px(3.0))
+                        .border_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(crate::typography::ui_rems(9.0))
+                        .when(checked, |el| {
+                            el.bg(popup.accent)
+                                .border_color(popup.accent)
+                                .text_color(gpui::white())
+                                .child("✓")
+                        })
+                        .when(!checked, |el| el.border_color(popup.border_strong)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(if checked {
+                            popup.text
+                        } else {
+                            popup.text_muted
+                        })
+                        .child(SharedString::from(label)),
+                )
+        };
+        let choices = self.work_item_index.choices();
+        let multi_space = self.state.read(cx).spaces.len() > 1;
+        let mut list: Vec<gpui::AnyElement> = Vec::new();
+        let unassociated = work_item_filter::UNASSOCIATED_KEY.to_string();
+        list.push(
+            check_row(
+                "overview-work-item-filter-unassociated".into(),
+                "Unassociated chats".into(),
+                0,
+                self.work_item_filter.contains(&unassociated),
+            )
+            .on_click(
+                cx.listener(move |this, _, _, cx| this.toggle_work_item_filter(&unassociated, cx)),
+            )
+            .into_any_element(),
+        );
+        let mut last_space: Option<String> = None;
+        for (ix, choice) in choices.into_iter().enumerate() {
+            if multi_space && last_space.as_deref() != Some(choice.space_id.as_str()) {
+                last_space = Some(choice.space_id.clone());
+                let label = self
+                    .state
+                    .read(cx)
+                    .space_row(&choice.space_id)
+                    .map(|space| space.display_name().to_string())
+                    .unwrap_or_default();
+                list.push(
+                    div()
+                        .px(px(6.0))
+                        .pt(px(6.0))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .text_color(popup.text_muted)
+                        .child(SharedString::from(label))
+                        .into_any_element(),
+                );
+            }
+            let key = choice.item_id.clone();
+            list.push(
+                check_row(
+                    ("overview-work-item-filter-row", ix).into(),
+                    choice.title,
+                    choice.depth,
+                    self.work_item_filter.contains(&key),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_work_item_filter(&key, cx)))
+                .into_any_element(),
+            );
+        }
+        let card = popover::popover_card(&popup)
+            .w(px(260.0))
+            .max_h(px(380.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_work_item_filter(cx)))
+            .child(
+                div().flex().gap(px(6.0)).pb(px(4.0)).child(
+                    div()
+                        .id("overview-work-item-filter-clear")
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(popup.text_muted)
+                        .border_1()
+                        .border_color(popup.border)
+                        .hover(|el| el.bg(popup.element_hover).text_color(popup.text))
+                        .child("All chats")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.work_item_filter.clear();
+                            this.work_item_filter_changed(cx);
+                        })),
+                ),
+            )
+            .child(
+                div()
+                    .id("overview-work-item-filter-list")
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.0))
+                    .overflow_y_scroll()
+                    .children(list),
+            );
+        trigger
+            .child(popover::anchored_menu_below(
+                "overview-work-item-filter-menu",
+                card.into_any_element(),
+                closing,
+            ))
+            .into_any_element()
+    }
+
+    fn close_work_item_filter(&mut self, cx: &mut Context<Self>) {
+        if self.work_item_filter_popup.begin_close() {
+            popover::reap_popup(cx, |this: &mut Self| &mut this.work_item_filter_popup);
+        }
+        cx.notify();
+    }
+
+    fn toggle_work_item_filter(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.work_item_filter.remove(key) {
+            self.work_item_filter.insert(key.to_string());
+        }
+        self.work_item_filter_changed(cx);
+    }
+
+    /// Persist and re-derive rows. Filtering only changes which rows exist;
+    /// flat-canvas positions of the remaining chats are untouched.
+    fn work_item_filter_changed(&mut self, cx: &mut Context<Self>) {
+        self.work_item_filter_needs_validation = false;
+        self.save_string_set(
+            overview_positions::WORK_ITEM_FILTER_FILE,
+            &self.work_item_filter,
+            cx,
+        );
+        self.rows_dirty = true;
+        self.grouped_layout_cache = None;
+        cx.notify();
+    }
+
+    /// Open Work Item Details in the right slot (replacing a details surface
+    /// for another item; the chat panel / peek state is left as is).
+    pub(crate) fn open_work_item_details(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.work_item_details.as_ref().is_some_and(|details| {
+            let details = details.read(cx);
+            details.space_id == space_id && details.item_id == item_id
+        }) {
+            return;
+        }
+        let key = row_key::item(&space_id, &item_id);
+        let details = cx.new(|cx| {
+            WorkItemDetails::new(
+                self.state.clone(),
+                self.shell.clone(),
+                space_id,
+                item_id,
+                cx,
+            )
+        });
+        let events = cx.subscribe(&details, |this: &mut Self, _, event, cx| match event {
+            DetailsEvent::Close => this.close_work_item_details(cx),
+            DetailsEvent::OpenChat(chat_id) => {
+                this.close_work_item_details(cx);
+                this.open_chat_panel(chat_id.clone(), cx);
+            }
+            DetailsEvent::OpenItem { space_id, item_id } => {
+                let key = row_key::item(space_id, item_id);
+                this.outline
+                    .update(cx, |outline, cx| outline.select(&key, cx));
+                this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
+            }
+        });
+        self.outline
+            .update(cx, |outline, cx| outline.select(&key, cx));
+        self.work_item_details = Some(details);
+        self._details_events = Some(events);
+        cx.notify();
+    }
+
+    /// Close Work Item Details; the right slot falls back to whatever the
+    /// chat panel / peek state says (restoring the previous layout).
+    pub(crate) fn close_work_item_details(&mut self, cx: &mut Context<Self>) {
+        if self.work_item_details.take().is_some() {
+            self._details_events = None;
+            cx.notify();
+        }
+    }
+
+    /// Run one Work Outline command in the Overview: switch to Outline mode
+    /// and focus it, resolve the selected work item or Chat, then start the
+    /// inline create / rename, open the move or associate picker. With no
+    /// valid target it shows a short notice in the Outline; it never silently
+    /// does nothing (m0-contract §7). Called by `Shell::run_work_outline_command`.
     pub(crate) fn run_work_outline_command(
         &mut self,
-        command: crate::work_outline::WorkOutlineCommand,
+        command: WorkOutlineCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = (command, window, cx);
+        self.set_mode(OverviewMode::Outline, cx);
+        self.ensure_prefs_loaded(cx);
+        let _ = self.rows(cx);
+        self.sync_outline(cx);
+        let outline = self.outline.clone();
+        let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+        window.focus(&handle, cx);
+        let chat_hint = self.state.read(cx).selected_chat.clone();
+        let result: Result<(), &'static str> = match command {
+            WorkOutlineCommand::OpenOutline => Ok(()),
+            WorkOutlineCommand::CreateWorkItem => {
+                outline.update(cx, |outline, cx| outline.begin_create(false, window, cx))
+            }
+            WorkOutlineCommand::CreateChildWorkItem => {
+                outline.update(cx, |outline, cx| outline.begin_create(true, window, cx))
+            }
+            WorkOutlineCommand::RenameWorkItem => {
+                outline.update(cx, |outline, cx| outline.begin_rename(window, cx))
+            }
+            WorkOutlineCommand::MoveWorkItem => {
+                outline.update(cx, |outline, cx| outline.open_move_picker(window, cx))
+            }
+            WorkOutlineCommand::AssociateChatWithWorkItem => outline.update(cx, |outline, cx| {
+                outline.open_associate_picker(chat_hint, window, cx)
+            }),
+            WorkOutlineCommand::OpenEffectiveInstructions
+            | WorkOutlineCommand::CreateInstructionFromChat => {
+                Err("Work item instructions arrive in a later update")
+            }
+            WorkOutlineCommand::OpenRequiredActions => {
+                Err("Required Actions arrive in a later update")
+            }
+        };
+        if let Err(notice) = result {
+            outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
+        }
+        cx.notify();
     }
+
+    /// Replace the per-Space outline loads (tests and the offline fixture;
+    /// the app reads `AppState::work_outline`).
+    pub(crate) fn set_outline_loads(
+        &mut self,
+        loads: HashMap<String, WorkOutlineLoad>,
+        cx: &mut Context<Self>,
+    ) {
+        self.outline_fixture = Some(loads);
+        self.rows_dirty = true;
+        self.grouped_layout_cache = None;
+        self.outline_dirty = true;
+        cx.notify();
+    }
+
+    /// Offline fixture hook (`examples/outline-fixture.rs`): every Space gets
+    /// the store fixture (ids suffixed per Space after the first), and the
+    /// Overview switches to Outline.
+    #[doc(hidden)]
+    pub fn show_work_outline_fixture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut ids: Vec<(String, String)> = self
+            .state
+            .read(cx)
+            .spaces
+            .iter()
+            .map(|space| (space.display_name().to_lowercase(), space.id.clone()))
+            .collect();
+        ids.sort();
+        let loads = ids
+            .into_iter()
+            .enumerate()
+            .map(|(ix, (_, id))| {
+                let snapshot = fixture_snapshot_for(&id, ix);
+                (id, WorkOutlineLoad::Ready(std::sync::Arc::new(snapshot)))
+            })
+            .collect();
+        self.set_outline_loads(loads, cx);
+        self.set_mode(OverviewMode::Outline, cx);
+        let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Outline navigation bindings for fixtures that run without a Shell.
+    #[doc(hidden)]
+    pub fn work_outline_key_bindings() -> Vec<gpui::KeyBinding> {
+        crate::work_outline::outline_view::key_bindings()
+    }
+}
+
+/// The store fixture for the `ix`-th Space: the first verbatim, later ones
+/// with every work item and Chat id suffixed `-<ix>` so Spaces never share
+/// ids (chat ids are global).
+fn fixture_snapshot_for(space_id: &str, ix: usize) -> WorkOutlineSnapshot {
+    use crate::work_outline::store::fixture_ids::*;
+    let snapshot = crate::work_outline::store::fixture_snapshot(space_id);
+    if ix == 0 {
+        return snapshot;
+    }
+    let mut json = serde_json::to_string(&snapshot).unwrap_or_default();
+    for id in [
+        LAUNCH,
+        API,
+        API_AUTH,
+        UI,
+        HOUSEKEEPING,
+        RETIRED,
+        CHAT_API,
+        CHAT_AUTH,
+        CHAT_UI,
+        CHAT_LOOSE_A,
+        CHAT_LOOSE_B,
+        CHAT_GHOST,
+        CHAT_ORPHAN,
+        "w-deleted",
+    ] {
+        json = json.replace(&format!("\"{id}\""), &format!("\"{id}-{ix}\""));
+    }
+    serde_json::from_str(&json).unwrap_or(snapshot)
 }
 
 /// `ACTION_SEVERITY` (`session_canvas.html`) — lower sorts first.
@@ -9291,7 +10142,7 @@ mod logic_tests {
     #[test]
     fn view_prefs_round_trip_through_the_flag_set_and_keep_other_flags() {
         let prefs = ViewPrefs {
-            canvas: true,
+            mode: OverviewMode::Canvas,
             hide_stale: true,
             show_archived: true,
             groups: vec![
@@ -9359,7 +10210,7 @@ mod logic_tests {
             prefs.groups,
             vec![GroupDimension::Repo, GroupDimension::Ticket]
         );
-        assert!(!prefs.canvas);
+        assert_eq!(prefs.mode, OverviewMode::List);
         // Every dimension's key round-trips.
         for dim in [
             GroupDimension::Category,
@@ -9374,13 +10225,88 @@ mod logic_tests {
         }
     }
 
+    /// Overview-mode migration: the legacy List/Canvas boolean flag keeps
+    /// meaning what it meant, Outline gets its own flag, exactly one flag is
+    /// ever written, and unknown/conflicting flags degrade deterministically.
+    #[test]
+    fn overview_mode_migrates_the_legacy_flag_and_writes_exactly_one() {
+        let flags =
+            |keys: &[&str]| -> BTreeSet<String> { keys.iter().map(|k| k.to_string()).collect() };
+        // Legacy files.
+        assert_eq!(OverviewMode::from_flags(&flags(&[])), OverviewMode::List);
+        assert_eq!(
+            OverviewMode::from_flags(&flags(&["viewMode:canvas"])),
+            OverviewMode::Canvas
+        );
+        // New spelling.
+        assert_eq!(
+            OverviewMode::from_flags(&flags(&["viewMode:outline"])),
+            OverviewMode::Outline
+        );
+        // Unknown / stale values read as List, never fail.
+        assert_eq!(
+            OverviewMode::from_flags(&flags(&["viewMode:myPrs", "viewMode:board"])),
+            OverviewMode::List
+        );
+        // Both present (after a downgrade round trip): canvas wins.
+        assert_eq!(
+            OverviewMode::from_flags(&flags(&["viewMode:outline", "viewMode:canvas"])),
+            OverviewMode::Canvas
+        );
+        // The writer purges every `viewMode:` entry and writes one.
+        for mode in [
+            OverviewMode::List,
+            OverviewMode::Canvas,
+            OverviewMode::Outline,
+        ] {
+            let mut set = flags(&[
+                "viewMode:canvas",
+                "viewMode:outline",
+                "viewMode:myPrs",
+                "hideStale",
+                "prSidebarOpen",
+            ]);
+            apply_view_prefs_to_flags(
+                &mut set,
+                &ViewPrefs {
+                    mode,
+                    hide_stale: true,
+                    ..Default::default()
+                },
+            );
+            let modes: Vec<&String> = set
+                .iter()
+                .filter(|f| f.starts_with(VIEW_MODE_PREFIX))
+                .collect();
+            assert_eq!(
+                modes.len(),
+                usize::from(mode != OverviewMode::List),
+                "{mode:?}: {set:?}"
+            );
+            assert_eq!(view_prefs_from_flags(&set).mode, mode);
+            assert!(set.contains("prSidebarOpen"), "unrelated flags survive");
+        }
+        // Downgrade safety: an older build only knows `viewMode:canvas`; an
+        // Outline file has none, so the old reader sees List (not Canvas).
+        let mut outline = BTreeSet::new();
+        apply_view_prefs_to_flags(
+            &mut outline,
+            &ViewPrefs {
+                mode: OverviewMode::Outline,
+                ..Default::default()
+            },
+        );
+        assert!(!outline.contains(VIEW_CANVAS_FLAG));
+        assert_eq!(outline, flags(&["viewMode:outline"]));
+    }
+
     #[test]
     fn view_prefs_round_trip_through_the_string_set_file() {
         let dir =
             std::env::temp_dir().join(format!("zeron-overview-viewprefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let prefs = ViewPrefs {
-            canvas: true,
+            mode: OverviewMode::Canvas,
             hide_stale: false,
             show_archived: true,
             groups: vec![GroupDimension::Ticket, GroupDimension::Category],
@@ -9467,7 +10393,7 @@ mod logic_tests {
         let state = state_with_repos(cx, dir.path(), &["alpha"]);
         let (overview, vcx) = overview_over(cx, &state);
         overview.update(vcx, |overview, cx| {
-            overview.view_mode = ViewMode::Canvas;
+            overview.view_mode = OverviewMode::Canvas;
             overview
                 .search
                 .update(cx, |search, cx| search.set_text("old query", cx));
@@ -9487,7 +10413,7 @@ mod logic_tests {
             assert_eq!(overview.search.read(cx).text(), "replacement");
         });
 
-        overview.update(vcx, |overview, _| overview.view_mode = ViewMode::List);
+        overview.update(vcx, |overview, _| overview.view_mode = OverviewMode::List);
         vcx.update(|window, cx| {
             window.blur();
             assert!(!overview.update(cx, |overview, cx| {
@@ -9534,7 +10460,7 @@ mod logic_tests {
         let (first, vcx) = overview_over(cx, &state);
         first.update(vcx, |o, cx| {
             assert!(o.prefs_loaded, "data_dir was available at first render");
-            o.view_mode = ViewMode::Canvas;
+            o.view_mode = OverviewMode::Canvas;
             o.view_prefs_changed(cx);
             o.hide_stale = true;
             o.view_prefs_changed(cx);
@@ -9550,7 +10476,7 @@ mod logic_tests {
 
         let (second, vcx) = overview_over(cx, &state);
         second.update(vcx, |o, _| {
-            assert_eq!(o.view_mode, ViewMode::Canvas);
+            assert_eq!(o.view_mode, OverviewMode::Canvas);
             assert!(o.hide_stale);
             assert!(o.show_archived);
             assert_eq!(
@@ -9562,7 +10488,7 @@ mod logic_tests {
 
         // And turning things back off persists too.
         second.update(vcx, |o, cx| {
-            o.view_mode = ViewMode::List;
+            o.view_mode = OverviewMode::List;
             o.view_prefs_changed(cx);
             o.hide_stale = false;
             o.view_prefs_changed(cx);
@@ -10216,6 +11142,9 @@ mod logic_tests {
             subagent_count,
             has_badge_row,
             closeable: false,
+            work_item_path: None,
+            user_action_required: false,
+            user_action_count: 0,
         }
     }
 
@@ -10634,7 +11563,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = ViewMode::Canvas;
+            overview.view_mode = OverviewMode::Canvas;
             overview.link_status.insert(
                 "c1".into(),
                 LinkStatusEntry {
@@ -10710,7 +11639,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = ViewMode::Canvas;
+            overview.view_mode = OverviewMode::Canvas;
             overview
         });
         vcx.run_until_parked();
@@ -10768,7 +11697,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = ViewMode::Canvas;
+            overview.view_mode = OverviewMode::Canvas;
             overview
         });
         vcx.run_until_parked();
@@ -10865,7 +11794,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = ViewMode::Canvas;
+            overview.view_mode = OverviewMode::Canvas;
             overview
         });
         vcx.run_until_parked();
@@ -11074,7 +12003,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = ViewMode::List;
+            overview.view_mode = OverviewMode::List;
             for id in &ids {
                 overview.subagents.insert(
                     id.clone(),

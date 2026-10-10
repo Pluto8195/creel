@@ -62,24 +62,23 @@ actions!(
 /// Default outline navigation bindings, all scoped to [`KEY_CONTEXT`] (and
 /// excluded from text-input contexts). `Shell::apply_keymap` registers these.
 pub(crate) fn key_bindings() -> Vec<KeyBinding> {
-    let ctx = Some("WorkOutline && !PaletteSearch && !Composer && !MessageComposer");
+    // Mirrors `shell::work_outline_ui::OUTLINE_NAVIGATION_KEYS` (the Shell
+    // binds those in `apply_keymap`); used by fixtures and tests that run
+    // without a Shell.
+    let ctx = Some("WorkOutline && !Composer && !MessageComposer && !PaletteSearch");
     vec![
-        KeyBinding::new("down", SelectNext, ctx),
-        KeyBinding::new("up", SelectPrevious, ctx),
-        KeyBinding::new("home", SelectFirst, ctx),
-        KeyBinding::new("end", SelectLast, ctx),
-        KeyBinding::new("secondary-up", SelectFirst, ctx),
-        KeyBinding::new("secondary-down", SelectLast, ctx),
-        KeyBinding::new("secondary-left", SelectParent, ctx),
-        KeyBinding::new("secondary-right", SelectChild, ctx),
-        KeyBinding::new("alt-down", SelectNextSibling, ctx),
-        KeyBinding::new("alt-up", SelectPreviousSibling, ctx),
-        KeyBinding::new("right", Expand, ctx),
+        KeyBinding::new("up", SelectPreviousSibling, ctx),
+        KeyBinding::new("down", SelectNextSibling, ctx),
+        KeyBinding::new("alt-up", SelectParent, ctx),
+        KeyBinding::new("alt-down", SelectChild, ctx),
         KeyBinding::new("left", Collapse, ctx),
+        KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
         KeyBinding::new("f2", RenameSelected, ctx),
-        KeyBinding::new("shift-enter", CreateSibling, ctx),
-        KeyBinding::new("alt-enter", CreateChild, ctx),
+        KeyBinding::new("n", CreateSibling, ctx),
+        KeyBinding::new("shift-n", CreateChild, ctx),
+        KeyBinding::new("home", SelectFirst, ctx),
+        KeyBinding::new("end", SelectLast, ctx),
     ]
 }
 
@@ -719,7 +718,9 @@ impl OutlineView {
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
         let selected_chat = self.selected_chat();
-        if let Some(chat_id) = selected_chat.or(chat_id) {
+        let target_chat =
+            selected_chat.or_else(|| chat_id.filter(|_| self.selected_item().is_none()));
+        if let Some(chat_id) = target_chat {
             let chat = self
                 .inputs
                 .chats

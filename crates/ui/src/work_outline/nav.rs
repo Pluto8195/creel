@@ -70,6 +70,16 @@ pub(crate) fn previous_sibling(model: &OutlineModel, ix: usize) -> Option<usize>
     None
 }
 
+/// Index just past `ix`'s visible subtree.
+pub(crate) fn subtree_end(model: &OutlineModel, ix: usize) -> usize {
+    let depth = model.rows[ix].depth;
+    let mut end = ix + 1;
+    while end < model.len() && model.rows[end].depth > depth {
+        end += 1;
+    }
+    end
+}
+
 /// The first visible child (`None` when collapsed or a leaf).
 pub(crate) fn first_child(model: &OutlineModel, ix: usize) -> Option<usize> {
     let row = model.rows.get(ix)?;
@@ -102,8 +112,14 @@ pub(crate) fn navigate(
         NavCommand::First => Some(0),
         NavCommand::Last => Some(last),
         NavCommand::Parent => row.parent,
-        NavCommand::NextSibling => next_sibling(model, ix),
-        NavCommand::PreviousSibling => previous_sibling(model, ix),
+        // Sibling-or-row: past the last sibling, continue with the row after
+        // this subtree (the parent's next sibling); before the first, the
+        // parent. Up/Down walk the tree without diving into expanded children.
+        NavCommand::NextSibling => next_sibling(model, ix).or_else(|| {
+            let end = subtree_end(model, ix);
+            (end < model.len()).then_some(end)
+        }),
+        NavCommand::PreviousSibling => previous_sibling(model, ix).or(row.parent),
         NavCommand::Child => {
             if row.has_children && row.collapsed {
                 // Expand; the child is selected once it is on screen.
@@ -209,8 +225,20 @@ mod tests {
             sel(navigate(&m, Some(&item(UI)), NavCommand::PreviousSibling)),
             item(API)
         );
+        // Past the last sibling: the row after the subtree (parent's sibling).
         assert_eq!(
-            navigate(&m, Some(&item(UI)), NavCommand::NextSibling),
+            sel(navigate(&m, Some(&item(UI)), NavCommand::NextSibling)),
+            item(HOUSEKEEPING)
+        );
+        // Before the first sibling: the parent.
+        assert_eq!(
+            sel(navigate(&m, Some(&item(API)), NavCommand::PreviousSibling)),
+            launch
+        );
+        // Very last row: nowhere to go.
+        let last = m.rows.last().unwrap().key.clone();
+        assert_eq!(
+            navigate(&m, Some(&last), NavCommand::NextSibling),
             NavResult::default()
         );
         assert_eq!(
