@@ -116,6 +116,14 @@ pub mod methods {
     /// operations (`createChatForWorkItem` …) get their own forwardable
     /// methods instead of new `op`s here.
     pub const WORK_OUTLINE_MUTATE: &str = "WorkOutlineMutate";
+    /// Read-only Work Outline questions, one tagged call:
+    /// `zeron_proto::WorkOutlineQueryRequest` (`{query:
+    /// resolveEffectiveInstructions|compareInstructionRevisions|
+    /// getInstructionRevision, …}`) → `zeron_proto::WorkOutlineQueryResponse`
+    /// (tagged by the same `query`). Answered from the local registry replica,
+    /// so — like `WorkOutlineMutate` — handled locally and NOT forwardable.
+    /// Failures use the same `work-outline/<code>: <message>` strings.
+    pub const WORK_OUTLINE_QUERY: &str = "WorkOutlineQuery";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -489,6 +497,7 @@ mod tests {
     fn work_outline_wire_names_are_pinned() {
         assert_eq!(methods::WATCH_WORK_OUTLINE, "WatchWorkOutline");
         assert_eq!(methods::WORK_OUTLINE_MUTATE, "WorkOutlineMutate");
+        assert_eq!(methods::WORK_OUTLINE_QUERY, "WorkOutlineQuery");
     }
 
     struct TestService;

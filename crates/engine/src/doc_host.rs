@@ -4781,6 +4781,7 @@ impl DocHost {
             attachments: Vec::new(),
             resume: None,
             worktree: None,
+            instructions: None,
         })
     }
 

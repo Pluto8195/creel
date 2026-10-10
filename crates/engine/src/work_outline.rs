@@ -38,7 +38,7 @@ use zeron_proto::work_outline::{
 };
 use zeron_proto::{
     WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError, WorkOutlineMutateReply,
-    WorkOutlineMutation, WorkOutlineSnapshot,
+    WorkOutlineMutation, WorkOutlineQueryRequest, WorkOutlineQueryResponse, WorkOutlineSnapshot,
 };
 
 use crate::workspace_host::WorkspaceHost;
@@ -98,22 +98,31 @@ pub fn ledger_inputs_key(inputs_hash: &str, operation_id: &str) -> String {
     format!("{LEDGER_KEY_PREFIX}in:{inputs_hash}:{operation_id}")
 }
 
+/// The answer to instruction operations and queries until the instruction
+/// service ships.
+fn instructions_unsupported() -> WorkOutlineError {
+    WorkOutlineError::new(
+        WorkOutlineErrorCode::Unsupported,
+        "Work Outline instructions are not supported by this version of Zeron yet",
+    )
+}
+
 /// The reply of an already-applied mutation, recomputed without touching the
 /// registry: every id a mutation returns is derived from its inputs.
 fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
     match mutation {
         WorkOutlineMutation::CreateWorkItem(p) => WorkOutlineMutateReply {
             work_item_id: Some(derive_id(&p.operation_id, roles::ITEM)),
-            reference_id: None,
+            ..Default::default()
         },
         WorkOutlineMutation::CreateWorkItemExternalReference(p) => WorkOutlineMutateReply {
-            work_item_id: None,
             reference_id: Some(external_reference_id(
                 &p.work_item_id,
                 &p.provider,
                 &p.reference_type,
                 &p.external_id,
             )),
+            ..Default::default()
         },
         _ => WorkOutlineMutateReply::default(),
     }
@@ -140,6 +149,12 @@ impl WorkOutlineService {
         &self,
         mutation: &WorkOutlineMutation,
     ) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
+        // Milestone 2 instruction operations: the wire contract exists, the
+        // service does not yet. Refuse before touching the replay ledger so a
+        // later build can apply the same operation id.
+        if mutation.is_instruction_operation() {
+            return Err(instructions_unsupported());
+        }
         if writes_disabled() {
             return Err(WorkOutlineError::new(
                 WorkOutlineErrorCode::WritesDisabled,
@@ -185,6 +200,15 @@ impl WorkOutlineService {
                 .work_outline_mutate(mutation, &actor, &[operation_key, inputs_key])?;
         recent.insert(operation_id, hash, reply.clone());
         Ok(reply)
+    }
+
+    /// Handle one `WorkOutlineQuery` call. Not served yet (Milestone 2 stage
+    /// 1 ships the wire contract only).
+    pub fn query(
+        &self,
+        _query: &WorkOutlineQueryRequest,
+    ) -> Result<WorkOutlineQueryResponse, WorkOutlineError> {
+        Err(instructions_unsupported())
     }
 
     /// The current snapshot of one Space (revision 0).

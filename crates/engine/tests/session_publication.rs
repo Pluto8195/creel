@@ -258,6 +258,7 @@ async fn turn(core: &EngineCore, cwd: &std::path::Path, live: bool, second: bool
                 attachments: vec![],
                 worktree: None,
                 resume: None,
+                instructions: None,
             },
             Some(if second { "second-user" } else { "first-user" }.into()),
         )

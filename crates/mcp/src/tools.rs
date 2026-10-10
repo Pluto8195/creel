@@ -931,6 +931,7 @@ impl Tools {
                     resume: None,
                     attachments: Vec::new(),
                     worktree: None,
+                    instructions: None,
                 };
                 self.zeron
                     .queue_command(

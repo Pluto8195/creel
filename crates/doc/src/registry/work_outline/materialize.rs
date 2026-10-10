@@ -615,5 +615,9 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         unassociated_chat_ids,
         external_references: references,
         repairs: repairs.into_iter().collect(),
+        // Milestone 2 instruction rows are not materialized yet.
+        instructions: Vec::new(),
+        chat_instruction_states: Vec::new(),
+        revisions: Vec::new(),
     }
 }

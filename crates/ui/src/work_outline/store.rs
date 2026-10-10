@@ -457,6 +457,7 @@ pub(crate) fn fixture_snapshot(space_id: &str) -> WorkOutlineSnapshot {
                 work_item_id: "w-deleted".into(),
             },
         ],
+        ..Default::default()
     }
 }
 
