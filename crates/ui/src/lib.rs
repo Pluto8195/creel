@@ -66,6 +66,7 @@ pub mod theme;
 pub mod theme_library;
 pub mod transcript;
 pub mod typography;
+pub(crate) mod work_outline;
 pub mod workspace_chip;
 mod workspace_links;
 

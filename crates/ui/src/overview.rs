@@ -8396,6 +8396,26 @@ impl Overview {
     }
 }
 
+impl Overview {
+    /// Run one Work Outline command in the Overview: switch to Outline mode,
+    /// resolve the selected work item or Chat, then start the inline create /
+    /// rename, open the move picker, associate the Chat, and so on. With no
+    /// valid target it opens the Outline and shows a short notice; it never
+    /// silently does nothing (m0-contract §7).
+    ///
+    /// STUB (scaffold): the presentation owner (implementer A, sole owner of
+    /// this file) implements it. Called by `Shell::run_work_outline_command`.
+    #[allow(dead_code)]
+    pub(crate) fn run_work_outline_command(
+        &mut self,
+        command: crate::work_outline::WorkOutlineCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = (command, window, cx);
+    }
+}
+
 /// `ACTION_SEVERITY` (`session_canvas.html`) — lower sorts first.
 fn pr_action_severity(action: PrAction) -> u8 {
     match action {

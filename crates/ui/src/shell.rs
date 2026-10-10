@@ -14589,6 +14589,57 @@ mod exit_regressions {
     }
 }
 
+impl Shell {
+    /// Open a work item's external reference (issue, PR, doc) in the right
+    /// browser: the internal browser surface when `open_web_links_in_zeron` is
+    /// on and a Chat is selected (leaving Overview), otherwise
+    /// `cx.open_url`. Overview-hosted Work Item Details have no source Chat
+    /// and always use the external browser (m0-contract §7). Never overwrites
+    /// manual PR/ticket links.
+    ///
+    /// STUB (scaffold): the data/shell owner (implementer B, sole owner of
+    /// this file) implements it.
+    #[allow(dead_code)]
+    pub(crate) fn open_work_item_reference(
+        &mut self,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = (url, window, cx);
+    }
+
+    /// Show a Shell-owned window modal (discard draft, archive or move with
+    /// descendants) and deliver the decision through
+    /// `request.on_decision`. The dialog must be registered in both
+    /// `capture_escape_surface` and `overlay_owns_keyboard`.
+    ///
+    /// STUB (scaffold): the data/shell owner (implementer B) implements it.
+    #[allow(dead_code)]
+    pub(crate) fn open_work_outline_confirm(
+        &mut self,
+        request: crate::work_outline::WorkOutlineConfirmRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = (request, cx);
+    }
+
+    /// Single entry point for the nine Work Outline commands (command
+    /// palette, keymap actions): open the Overview route if needed and
+    /// forward to `Overview::run_work_outline_command`.
+    ///
+    /// STUB (scaffold): the data/shell owner (implementer B) implements it.
+    #[allow(dead_code)]
+    pub(crate) fn run_work_outline_command(
+        &mut self,
+        command: crate::work_outline::WorkOutlineCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = (command, window, cx);
+    }
+}
+
 /// Native browser regression fixture hooks are excluded from shipped builds.
 #[cfg(feature = "browser-fixture")]
 impl Shell {
