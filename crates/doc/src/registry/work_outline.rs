@@ -125,6 +125,30 @@ fn check_description(description: &str) -> Outcome<()> {
     Ok(())
 }
 
+/// `LimitExceeded` for an op over the unit budget, naming the field that
+/// dominates it: a value within its character limit can still exceed the op
+/// budget once JSON-escaped (for example 8,000 quote characters).
+fn op_too_large(op: &RowOp) -> WorkOutlineError {
+    let units = op_utf16_units(op);
+    let largest = op.set.iter().flatten().max_by_key(|(_, value)| {
+        serde_json::to_string(value).map_or(0, |s| s.encode_utf16().count())
+    });
+    let label = match largest.map(|(field, _)| field.as_str()) {
+        Some("description") => "Description",
+        Some("title") => "Title",
+        Some("cachedTitle") => "Reference title",
+        Some(other) => other,
+        None => "The change",
+    };
+    err(
+        WorkOutlineErrorCode::LimitExceeded,
+        format!(
+            "{label} is too long to save ({units} of {} units after encoding)",
+            limits::MAX_OP_UTF16_UNITS
+        ),
+    )
+}
+
 fn check_text(what: &str, value: &str, max: usize, required: bool) -> Outcome<()> {
     if required && value.trim().is_empty() {
         return Err(invalid(format!("{what} is required")));
@@ -179,6 +203,9 @@ struct Planned {
     id: String,
     op: OpKind,
     set: Option<BTreeMap<String, Value>>,
+    /// Existing clocks to keep for specific fields of `set` instead of the
+    /// op's fresh clock (re-keys keep the sibling's parent at its old clock).
+    keep_clocks: BTreeMap<String, String>,
 }
 
 impl Planned {
@@ -188,6 +215,7 @@ impl Planned {
             id: id.to_owned(),
             op: OpKind::Update,
             set: Some(set),
+            keep_clocks: BTreeMap::new(),
         }
     }
 
@@ -197,6 +225,7 @@ impl Planned {
             id: id.to_owned(),
             op: OpKind::Upsert,
             set: Some(set),
+            keep_clocks: BTreeMap::new(),
         }
     }
 
@@ -206,6 +235,7 @@ impl Planned {
             id: id.to_owned(),
             op: OpKind::Delete,
             set: None,
+            keep_clocks: BTreeMap::new(),
         }
     }
 }
@@ -349,11 +379,9 @@ impl RegistryDoc {
         keys
     }
 
-    /// Orphan cleanup (contract section 3.5): tombstone live outline rows
-    /// whose Space row is not live. Destructive on a stale view, so the caller
-    /// must gate on `registry_synced()`. Idempotent: only live rows get a
-    /// delete. Returns how many rows were tombstoned.
-    pub fn sweep_work_outline_orphans(&mut self) -> usize {
+    /// Live outline rows whose Space row is not live (sorted), computed
+    /// without writing anything.
+    pub fn work_outline_orphans(&self) -> Vec<(&'static str, String)> {
         let live: HashSet<String> = self
             .overlay_rows(KIND_SPACES)
             .into_iter()
@@ -370,6 +398,19 @@ impl RegistryDoc {
             }
         }
         doomed.sort();
+        doomed
+    }
+
+    /// Orphan cleanup (contract section 3.5): tombstone live outline rows
+    /// whose Space row is not live. Destructive on a stale view, so the caller
+    /// must gate on `registry_synced()`. Idempotent: only live rows get a
+    /// delete, and nothing is written (no clock minted) when there are none.
+    /// Returns how many rows were tombstoned.
+    pub fn sweep_work_outline_orphans(&mut self) -> usize {
+        let doomed = self.work_outline_orphans();
+        if doomed.is_empty() {
+            return 0;
+        }
         let keys: Vec<(&str, &str)> = doomed.iter().map(|(k, id)| (*k, id.as_str())).collect();
         self.delete_row_ops(&keys);
         doomed.len()
@@ -434,12 +475,13 @@ impl RegistryDoc {
                 op: planned.op,
                 set: planned.set,
                 hlc,
-                clocks: None,
+                clocks: (!planned.keep_clocks.is_empty()).then_some(planned.keep_clocks),
             });
         }
         for op in &ops {
-            check_op_size(op)
-                .map_err(|e| err(WorkOutlineErrorCode::LimitExceeded, e.to_string()))?;
+            if check_op_size(op).is_err() {
+                return Err(op_too_large(op));
+            }
         }
         self.enqueue_ops(ops);
         Ok(())
@@ -530,20 +572,34 @@ impl RegistryDoc {
         })
     }
 
-    /// Plan group P re-keys for siblings. Each keeps its stored raw parent
-    /// (a derived repair stays derived) and gets the new key, in one op.
+    /// Plan re-keys for siblings other than the placed item. Each is an
+    /// order-only write: `orderKey` gets a fresh clock while
+    /// `parentWorkItemId` is carried at the sibling's EXISTING value and
+    /// clock (a derived repair stays derived). This device's view of a
+    /// sibling's parent may be stale, so stamping it with a fresh clock could
+    /// silently revert a concurrent offline move of that sibling; with the
+    /// old clock a concurrent move always wins and a torn pair can only
+    /// misorder.
     fn plan_rekeys(
         links: &BTreeMap<String, RawLink>,
         rekeys: &[(String, String)],
         plan: &mut Vec<Planned>,
     ) {
         for (id, key) in rekeys {
-            let parent = links.get(id).and_then(|l| l.parent.as_deref());
-            plan.push(Planned::update(
-                KIND_WORK_ITEMS,
-                id,
-                placement_set(parent, key),
-            ));
+            let mut set = BTreeMap::from([("orderKey".to_owned(), json!(key))]);
+            let mut keep = BTreeMap::new();
+            if let Some(link) = links.get(id)
+                // `~` marks a victim repaired earlier in this batch; its
+                // parent write is already planned, and a never-written
+                // parent has no clock to keep.
+                && let Some(clock) = link.parent_clock.as_deref().filter(|c| *c != "~")
+            {
+                set.insert("parentWorkItemId".into(), opt_value(link.parent.as_deref()));
+                keep.insert("parentWorkItemId".to_owned(), clock.to_owned());
+            }
+            let mut planned = Planned::update(KIND_WORK_ITEMS, id, set);
+            planned.keep_clocks = keep;
+            plan.push(planned);
         }
     }
 

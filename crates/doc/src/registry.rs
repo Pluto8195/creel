@@ -747,6 +747,11 @@ impl RegistryDoc {
     }
 
     fn delete_row_ops(&mut self, keys: &[(&str, &str)]) {
+        // R3: the delete clock must beat every clock already on the doomed
+        // rows, including ones from a device whose wall clock runs ahead.
+        for (kind, id) in keys {
+            self.observe_row(kind, id);
+        }
         let hlc = self.next_hlc();
         let ops = keys
             .iter()

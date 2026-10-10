@@ -273,10 +273,18 @@ or a gap later milestones must close.
    assignment row (assignment rows are only tombstoned by Space cleanup, and the Chat id is the
    only possible key), and re-adding a removed external reference revives its content-derived row
    (registry audit 7.5). A retried `createWorkItem` whose row is tombstoned fails with `notFound`.
-3. **Re-keyed siblings keep their stored parent.** Tie-group and overflow re-keys write group P
-   with the sibling's stored raw `parentWorkItemId` (not its repaired parent), so a derived repair
-   stays derived. Every op in one batch gets its own fresh HLC: two ops on one row sharing a clock
-   would make the second a no-op under strict `>` LWW.
+3. **Re-keyed siblings are order-only writes.** The group P invariant (parent + order key in one
+   op, one clock) applies to user placement ops: create, move, and the items placed by archive
+   `moveDescendants`. A tie-group or overflow re-key of a sibling OTHER than the placed item writes
+   `orderKey` with a fresh clock but carries `parentWorkItemId` at the sibling's existing value and
+   existing clock (`RowOp.clocks`; a never-written parent, or a victim already repaired in the same
+   batch, omits the field). This device's view of a sibling's parent may be stale: stamping it with
+   a fresh clock would silently revert a concurrent offline move of that sibling on another device
+   (acceptance 2). With the old clock a concurrent move always wins, and a torn pair can only
+   misorder (the item lands in its new parent with a key minted for the old one), never lose the
+   move. A re-key keeps the stored raw parent, so a derived repair stays derived. Every op in one
+   batch gets its own fresh HLC: two ops on one row sharing a clock would make the second a no-op
+   under strict `>` LWW.
 4. **Archived targets.** Creating under, moving under, moving descendants to, or assigning a Chat
    to an archived work item fails with `archived`. Moving or renaming an archived item is allowed.
    Restore clears the item and descendants whose `archiveCause` is `cascade`, stopping at
@@ -298,7 +306,16 @@ or a gap later milestones must close.
    outline rows; outline rows are non-migrating until `local_import` is extended. No edge
    `validateOp` backstop (deferred per section 3.6). `repairWorkOutline` persists cycle victims and
    invalid order keys only; missing parents stay derived (the parent may not have synced yet).
-10. **Overview watches every Space's outline.** The Overview declares all Spaces visible for
+10. **Idle sweep, delete clocks, import, op budget.** The orphan sweep computes doomed rows on a
+    read path and only mutates (change bump, publish, snapshot) when there are any. Every
+    tombstone batch (`delete_row_ops`: Space cascade, sweep, chat deletes) observes the doomed
+    rows' clocks before minting (R3), so a fast-clock device's rows cannot outlive the delete.
+    `local_import` skips `work-outline:` ledger keys because outline rows are not imported (a
+    carried key would make a retried operation falsely succeed without writing). An in-limit
+    field whose serialized op still exceeds the 15,000-unit budget (JSON escaping) fails with
+    `limitExceeded` naming the dominant field, for example "Description is too long to save (N of
+    15000 units after encoding)".
+11. **Overview watches every Space's outline.** The Overview declares all Spaces visible for
     `WatchWorkOutline` in every mode, not only in Outline mode, so the List and Canvas path chips
     (and attention) have data. This deliberately deviates from m0-ui-integration section 9; the
     cost is bounded by the Space count.

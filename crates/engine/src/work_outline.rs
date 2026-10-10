@@ -84,15 +84,18 @@ impl RecentOperations {
     }
 }
 
+/// Prefix of every Work Outline key in the processed-command ledger.
+pub const LEDGER_KEY_PREFIX: &str = "work-outline:";
+
 /// Ledger key recording that `operation_id` was applied on this device.
 pub fn ledger_operation_key(operation_id: &str) -> String {
-    format!("work-outline:op:{operation_id}")
+    format!("{LEDGER_KEY_PREFIX}op:{operation_id}")
 }
 
 /// Ledger key recording the inputs `operation_id` was applied with (the hash
 /// is fixed-width hex, so the key is unambiguous).
 pub fn ledger_inputs_key(inputs_hash: &str, operation_id: &str) -> String {
-    format!("work-outline:in:{inputs_hash}:{operation_id}")
+    format!("{LEDGER_KEY_PREFIX}in:{inputs_hash}:{operation_id}")
 }
 
 /// The reply of an already-applied mutation, recomputed without touching the

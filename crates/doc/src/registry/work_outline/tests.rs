@@ -259,6 +259,12 @@ fn oversize_ops_are_refused_before_the_queue() {
     )
     .unwrap_err();
     assert_eq!(err.code, WorkOutlineErrorCode::LimitExceeded);
+    assert!(
+        err.message.contains("Description is too long to save")
+            && err.message.contains("units after encoding"),
+        "field-level message, got: {}",
+        err.message
+    );
     assert_eq!(doc.pending_len(), before);
     assert!(snap(&doc).items.is_empty());
 }
@@ -1055,6 +1061,108 @@ fn concurrent_move_vs_reorder_vs_move_converge() {
     );
     let x = s.item(&id("op-x")).unwrap();
     assert_eq!(x.parent_work_item_id, Some(id("op-q")));
+}
+
+fn tie_rekey_vs_offline_move(a_pushes_first: bool) {
+    let mut a = doc_with_spaces("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    // Three tied roots and a destination, all with old clocks.
+    let old = "0000000000010-000000-x";
+    let rows = vec![
+        item_row("s1", SPACE, None, old, Some("a0")),
+        item_row("s2", SPACE, None, old, Some("a0")),
+        item_row("s3", SPACE, None, old, Some("a0")),
+        item_row("q", SPACE, None, old, Some("a5")),
+    ];
+    for row in &rows {
+        server.insert((row.kind.clone(), row.id.clone()), row.clone());
+    }
+    let _ = a.apply_rows(seq, rows.clone());
+    let _ = b.apply_rows(seq, rows);
+    assert_eq!(snap(&a), snap(&b));
+
+    // B moves s2 under q while offline; A inserts after s1, which re-keys the
+    // tie group (including s2) from A's stale view of s2's parent.
+    move_to(&mut b, "m-b", "s2", Some("q"), WorkOutlinePlacement::Last).unwrap();
+    let new = create_in(&mut a, SPACE, "op-n", None, after("s1"), "N");
+    let rekey = a
+        .pending
+        .iter()
+        .flat_map(|batch| batch.ops.iter())
+        .find(|op| op.id == "s2")
+        .expect("s2 is re-keyed by A");
+    assert_eq!(
+        rekey
+            .clocks
+            .as_ref()
+            .and_then(|c| c.get("parentWorkItemId")),
+        Some(&old.to_owned()),
+        "re-key keeps the sibling's parent at its existing clock"
+    );
+
+    // Pushes reach the server in either order; the move wins both ways.
+    // (the server applies batches in slice order).
+    if a_pushes_first {
+        server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    } else {
+        server_round(&mut server, &mut seq, &mut [&mut b, &mut a]);
+    }
+    let (sa, sb) = (snap(&a), snap(&b));
+    assert_eq!(sa, sb, "identical materialization");
+    assert_eq!(
+        sa.item("s2").unwrap().parent_work_item_id.as_deref(),
+        Some("q")
+    );
+    assert_eq!(titles(&sa, Some("q")), ["T s2"]);
+    assert!(sa.root_work_item_ids.contains(&new));
+    assert!(!sa.root_work_item_ids.iter().any(|id| id == "s2"));
+}
+
+#[test]
+fn tie_rekey_never_reverts_a_concurrent_offline_move_of_the_sibling() {
+    tie_rekey_vs_offline_move(true);
+    tie_rekey_vs_offline_move(false);
+}
+
+#[test]
+fn sweep_and_space_cascade_deletes_beat_a_fast_clock_writers_rows() {
+    // B's wall clock runs an hour fast; its row carries a far-future clock.
+    let (mut a, mut b, mut server, mut seq) = synced_pair();
+    b.clock.last_ms = Utc::now().timestamp_millis() + 3_600_000;
+    let late = create(&mut b, "op-late", None, "Late");
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    // A (normal clock) deletes the Space: the cascade must observe the fast
+    // clocks, or its tombstones would lose to B's rows.
+    a.delete_space(SPACE).unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        assert_eq!(doc.row_state(KIND_WORK_ITEMS, &late), RowState::Tombstoned);
+    }
+
+    // Same for the orphan sweep: a row from a fast device in a Space that is
+    // already gone.
+    let (mut a, mut b, mut server, mut seq) = synced_pair();
+    b.clock.last_ms = Utc::now().timestamp_millis() + 3_600_000;
+    a.delete_space(SPACE).unwrap();
+    let late = create(&mut b, "op-late2", None, "Late");
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(a.row_state(KIND_WORK_ITEMS, &late), RowState::Live);
+    assert_eq!(a.sweep_work_outline_orphans(), 1);
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        assert_eq!(doc.row_state(KIND_WORK_ITEMS, &late), RowState::Tombstoned);
+    }
+}
+
+#[test]
+fn sweep_with_nothing_to_do_writes_nothing() {
+    let (mut a, _b, _server, _seq) = synced_pair();
+    let pending = a.pending_len();
+    assert_eq!(a.sweep_work_outline_orphans(), 0);
+    assert_eq!(a.pending_len(), pending);
 }
 
 #[test]
