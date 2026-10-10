@@ -469,11 +469,7 @@ pub fn apply_keymap(
     }));
     // Work Outline commands (empty combos stay unbound).
     cx.bind_keys(work_outline_ui::work_outline_bindings(keymap));
-    // Outline navigation keys, context `WorkOutline` minus text inputs. The
-    // function is compiled out until the presentation branch's
-    // `work_outline::outline_view` actions exist; the integrator removes both
-    // `cfg(any())` attributes (here and on the function) at merge.
-    #[cfg(any())]
+    // Outline navigation keys, context `WorkOutline` minus text inputs.
     work_outline_ui::bind_work_outline_navigation(cx);
 }
 

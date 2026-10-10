@@ -198,10 +198,7 @@ pub(crate) fn work_outline_bindings(keymap: &KeymapConfig) -> Vec<KeyBinding> {
 }
 
 /// Binds [`OUTLINE_NAVIGATION_KEYS`] under [`OUTLINE_NAVIGATION_CONTEXT`] to
-/// the actions of `work_outline::outline_view`. Compiled out (`cfg(any())`)
-/// because that module lands with the presentation branch; the integrator
-/// removes the attribute here and at the call site in `apply_keymap` at merge.
-#[cfg(any())]
+/// the actions of `work_outline::outline_view`.
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, OpenSelected, RenameSelected, SelectChild,
