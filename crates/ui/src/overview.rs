@@ -12342,6 +12342,33 @@ mod logic_tests {
         assert!(work_item_filter::load_filter(dir.path()).is_empty());
     }
 
+    /// Canvas cards carry the chips on existing lines: the card's size is
+    /// the same with or without an association.
+    #[gpui::test]
+    fn canvas_cards_show_chips_without_changing_tile_size(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-path-chip").is_some());
+        assert!(vcx.debug_bounds("work-item-attention").is_some());
+        let (with, without) = overview.update(vcx, |o, cx| {
+            let with: Vec<(String, (f32, f32))> = o
+                .rows(cx)
+                .iter()
+                .map(|r| (r.chat.id.clone(), r.tile_size()))
+                .collect();
+            o.set_outline_loads(HashMap::new(), cx);
+            let without: Vec<(String, (f32, f32))> = o
+                .rows(cx)
+                .iter()
+                .map(|r| (r.chat.id.clone(), r.tile_size()))
+                .collect();
+            (with, without)
+        });
+        assert_eq!(with, without);
+    }
+
     /// Spec "Integrate with the existing overview": associating, moving, or
     /// removing a Chat (and filtering by work item, and switching to Outline)
     /// never writes Canvas positions.
