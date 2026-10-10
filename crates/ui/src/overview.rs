@@ -12036,4 +12036,354 @@ mod logic_tests {
             "row {row:?} must not be squeezed below its subagent block {block:?}"
         );
     }
+
+    // ----------------------------------------------------------------------
+    // Work Outline presentation (Milestone 1)
+    // ----------------------------------------------------------------------
+
+    use crate::work_outline::model::row_key;
+    use crate::work_outline::store::fixture_ids::*;
+
+    /// An Overview over one Space `s1` whose chats match the store fixture's
+    /// live chat ids, with the fixture installed as its outline.
+    fn outline_overview<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+    ) -> (
+        Entity<Overview>,
+        Entity<AppState>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+        let state = cx.new(|_| AppState::new());
+        let dir = dir.to_path_buf();
+        state.update(cx, |state, _| {
+            state.data_dir = Some(dir);
+            state.spaces = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                    "createdAt": "2026-01-01T00:00:00Z"
+                }))
+                .unwrap(),
+            ];
+            state.chats = [
+                CHAT_API,
+                CHAT_AUTH,
+                CHAT_UI,
+                CHAT_LOOSE_A,
+                CHAT_LOOSE_B,
+                CHAT_ORPHAN,
+            ]
+            .iter()
+            .map(|id| {
+                let mut chat = row_ex(id, "/work/alpha", None, 0, false).chat;
+                chat.space_id = Some("s1".into());
+                chat.title = Some(format!("Chat {id}"));
+                chat.last_message_at = Some(Utc::now());
+                chat
+            })
+            .collect();
+        });
+        let (overview, vcx) = overview_over(cx, &state);
+        overview.update(vcx, |o, cx| o.set_outline_loads(fixture_loads(None), cx));
+        (overview, state, vcx)
+    }
+
+    fn fixture_loads(snapshot: Option<WorkOutlineSnapshot>) -> HashMap<String, WorkOutlineLoad> {
+        let snapshot =
+            snapshot.unwrap_or_else(|| crate::work_outline::store::fixture_snapshot("s1"));
+        HashMap::from([(
+            "s1".to_string(),
+            WorkOutlineLoad::Ready(std::sync::Arc::new(snapshot)),
+        )])
+    }
+
+    /// `debug_bounds` takes a `'static` selector; leak the (test-only) string.
+    fn row_bounds(vcx: &mut gpui::VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
+        vcx.debug_bounds(Box::leak(selector.into_boxed_str()))
+    }
+
+    fn draw(vcx: &mut gpui::VisualTestContext) {
+        vcx.update(|window, cx| window.draw(cx).clear());
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear());
+    }
+
+    #[gpui::test]
+    fn outline_mode_survives_a_fresh_overview(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, state, vcx) = outline_overview(cx, dir.path());
+        first.update(vcx, |o, cx| o.set_mode(OverviewMode::Outline, cx));
+        let flags =
+            overview_positions::load_string_set(dir.path(), overview_positions::UI_FLAGS_FILE);
+        assert!(flags.contains(VIEW_OUTLINE_FLAG));
+        assert!(!flags.contains(VIEW_CANVAS_FLAG));
+        let (second, vcx) = overview_over(cx, &state);
+        second.update(vcx, |o, _| assert_eq!(o.mode(), OverviewMode::Outline));
+    }
+
+    #[gpui::test]
+    fn outline_renders_compact_rows_with_stable_selectors(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Outline, cx));
+        draw(vcx);
+        for key in [
+            row_key::item("s1", LAUNCH),
+            row_key::item("s1", API_AUTH),
+            row_key::chat(CHAT_AUTH),
+            row_key::chat(CHAT_GHOST),
+            row_key::unassociated(Some("s1")),
+            row_key::chat(CHAT_LOOSE_A),
+        ] {
+            assert!(
+                row_bounds(vcx, format!("outline-row-{key}")).is_some(),
+                "{key} renders"
+            );
+        }
+        // Archived items stay out by default.
+        assert!(row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", RETIRED))).is_none());
+        let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", API))).unwrap();
+        assert!(
+            f32::from(row.size.height) <= 28.0,
+            "one compact line: {row:?}"
+        );
+    }
+
+    /// Acceptance 30: only the visible slice of a large outline renders.
+    #[gpui::test]
+    fn large_outlines_render_only_the_visible_slice(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        let (snapshot, _) = crate::work_outline::model::tests::large_snapshot("s1", 10, 100);
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(snapshot)), cx);
+            o.set_mode(OverviewMode::Outline, cx);
+        });
+        draw(vcx);
+        let total = overview.read_with(vcx, |o, cx| o.outline.read(cx).model().len());
+        assert!(total > 2_000, "{total}");
+        assert!(row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", "r0"))).is_some());
+        assert!(row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", "r9c99"))).is_none());
+    }
+
+    #[gpui::test]
+    fn outline_keyboard_navigation_moves_between_parent_child_and_siblings(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Outline, cx));
+        draw(vcx);
+        vcx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(overview.read(cx).outline.read(cx), cx);
+            window.focus(&handle, cx);
+        });
+        let selected = |vcx: &mut gpui::VisualTestContext| {
+            overview.read_with(vcx, |o, cx| {
+                o.outline.read(cx).selected_key().map(str::to_string)
+            })
+        };
+        vcx.simulate_keystrokes("down");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
+        vcx.simulate_keystrokes("alt-down");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", API)));
+        vcx.simulate_keystrokes("down");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", UI)));
+        vcx.simulate_keystrokes("alt-up");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
+        // Left collapses, a second Left on the root stays put.
+        vcx.simulate_keystrokes("left");
+        let collapsed = overview.read_with(vcx, |o, cx| {
+            o.outline
+                .read(cx)
+                .model()
+                .row(&row_key::item("s1", LAUNCH))
+                .unwrap()
+                .collapsed
+        });
+        assert!(collapsed);
+        // Focus survives a snapshot refresh.
+        overview.update(vcx, |o, cx| o.set_outline_loads(fixture_loads(None), cx));
+        draw(vcx);
+        assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
+        vcx.simulate_keystrokes("right");
+        vcx.simulate_keystrokes("right");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", API)));
+    }
+
+    #[gpui::test]
+    fn commands_without_a_selection_open_the_outline_with_a_notice(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        assert_eq!(overview.read_with(vcx, |o, _| o.mode()), OverviewMode::List);
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::RenameWorkItem, window, cx)
+            })
+        });
+        overview.read_with(vcx, |o, cx| {
+            assert_eq!(o.mode(), OverviewMode::Outline);
+            assert_eq!(
+                o.outline.read(cx).notice(),
+                Some("Select a work item first")
+            );
+        });
+        // Create needs no selection: an inline editor row appears.
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::CreateWorkItem, window, cx)
+            })
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("outline-row-editor").is_some());
+        // Later-milestone commands are a notice, not a silent no-op.
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::OpenRequiredActions, window, cx)
+            })
+        });
+        overview.read_with(vcx, |o, cx| assert!(o.outline.read(cx).notice().is_some()));
+    }
+
+    /// Acceptance 26: details render in the right slot and closing them
+    /// restores the chat panel exactly as it was.
+    #[gpui::test]
+    fn work_item_details_open_and_close_restore_the_previous_layout(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, state, vcx) = outline_overview(cx, dir.path());
+        state.update(vcx, |state, _| state.selected_chat = Some(CHAT_API.into()));
+        overview.update(vcx, |o, cx| {
+            o.chat_panel_open = true;
+            o.set_mode(OverviewMode::Outline, cx);
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-details").is_none());
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), API.into(), cx)
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-details").is_some());
+        assert!(vcx.debug_bounds("work-item-breadcrumbs").is_some());
+        overview.read_with(vcx, |o, cx| {
+            assert!(
+                o.chat_panel_open,
+                "details never touch the chat panel state"
+            );
+            assert!(o.subagent_peek.is_none());
+            assert_eq!(state.read(cx).selected_chat.as_deref(), Some(CHAT_API));
+        });
+        // Escape inside the details (no draft) closes them.
+        overview.update(vcx, |o, cx| {
+            let details = o.work_item_details.clone().unwrap();
+            details.update(cx, |d, cx| d.request_close(cx));
+        });
+        draw(vcx);
+        overview.read_with(vcx, |o, _| {
+            assert!(o.work_item_details.is_none());
+            assert!(o.chat_panel_open);
+        });
+        assert!(vcx.debug_bounds("work-item-details").is_none());
+    }
+
+    #[gpui::test]
+    fn list_rows_show_the_work_item_path_and_attention(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        draw(vcx);
+        let rows = overview.update(vcx, |o, cx| o.rows(cx));
+        let auth = rows.iter().find(|r| r.chat.id == CHAT_AUTH).unwrap();
+        assert_eq!(
+            auth.work_item_path.as_ref().map(|p| p.full.as_str()),
+            Some("Launch v2 › API › Auth endpoints")
+        );
+        let ui = rows.iter().find(|r| r.chat.id == CHAT_UI).unwrap();
+        assert!(ui.user_action_required);
+        let loose = rows.iter().find(|r| r.chat.id == CHAT_LOOSE_A).unwrap();
+        assert!(loose.work_item_path.is_none());
+        assert!(vcx.debug_bounds("work-item-path-chip").is_some());
+        assert!(vcx.debug_bounds("work-item-attention").is_some());
+    }
+
+    #[gpui::test]
+    fn work_item_filter_keeps_subtrees_and_resets_a_stale_restore(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        let ids = |rows: Vec<OverviewRow>| {
+            let mut ids: Vec<String> = rows.into_iter().map(|r| r.chat.id).collect();
+            ids.sort();
+            ids
+        };
+        overview.update(vcx, |o, cx| {
+            o.toggle_work_item_filter(LAUNCH, cx);
+            assert_eq!(ids(o.rows(cx)), [CHAT_API, CHAT_AUTH, CHAT_UI]);
+            o.toggle_work_item_filter(LAUNCH, cx);
+            o.toggle_work_item_filter(work_item_filter::UNASSOCIATED_KEY, cx);
+            assert_eq!(ids(o.rows(cx)), [CHAT_LOOSE_A, CHAT_LOOSE_B, CHAT_ORPHAN]);
+        });
+        assert_eq!(
+            work_item_filter::load_filter(dir.path()),
+            BTreeSet::from([work_item_filter::UNASSOCIATED_KEY.to_string()])
+        );
+
+        // A restored filter naming only a deleted item hides everything:
+        // it resets once the outline has loaded.
+        let dir = tempfile::tempdir().unwrap();
+        work_item_filter::save_filter(dir.path(), &BTreeSet::from(["w-gone".to_string()])).unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        overview.update(vcx, |o, cx| {
+            assert_eq!(o.rows(cx).len(), 6, "nothing is filtered out invisibly");
+            assert!(o.work_item_filter.is_empty());
+        });
+        assert!(work_item_filter::load_filter(dir.path()).is_empty());
+    }
+
+    /// Spec "Integrate with the existing overview": associating, moving, or
+    /// removing a Chat (and filtering by work item, and switching to Outline)
+    /// never writes Canvas positions.
+    #[gpui::test]
+    fn association_changes_leave_canvas_positions_byte_identical(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+        // A prior drag persisted the layout.
+        overview.update(vcx, |o, cx| o.save_positions(cx));
+        let path = overview_positions::path(dir.path());
+        let before_bytes = std::fs::read(&path).unwrap();
+        let before = overview.read_with(vcx, |o, _| o.tile_positions.clone());
+
+        // Move chat-api to UI, disassociate chat-ui, associate a loose chat.
+        let mut moved = crate::work_outline::store::fixture_snapshot("s1");
+        for item in &mut moved.items {
+            item.chat_ids.retain(|c| c != CHAT_API && c != CHAT_UI);
+            if item.id == UI {
+                item.chat_ids.push(CHAT_API.into());
+                item.chat_ids.push(CHAT_LOOSE_A.into());
+            }
+        }
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(moved)), cx)
+        });
+        draw(vcx);
+        overview.update(vcx, |o, cx| o.toggle_work_item_filter(UI, cx));
+        draw(vcx);
+        overview.update(vcx, |o, cx| o.toggle_work_item_filter(UI, cx));
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Outline, cx));
+        draw(vcx);
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        overview.read_with(vcx, |o, _| {
+            for (id, pos) in &before {
+                let now = o.tile_positions.get(id).copied().unwrap();
+                assert!(now.x == pos.x && now.y == pos.y, "{id} kept its slot");
+            }
+        });
+    }
 }
