@@ -403,3 +403,70 @@ src/instruction_support.rs`). Each item is a decision later stages build on.
     `HarnessError::Capability {harness, detail, upgrade_hint}`; `require_instruction_support` is
     the adapter-side fail-closed check, not yet called from adapters (stage 2 wires it with
     delivery). Every `RunRequest` construction site passes `instructions: None`.
+
+## Milestone 2 registry discoveries
+
+Recorded by the Milestone 2 registry backend (`crates/doc/src/registry/work_outline/instructions.rs`,
+`.../materialize.rs`, `crates/engine/src/work_outline.rs`, `crates/engine/src/workspace_host.rs`).
+No wire type in `crates/proto` changed; the additions below are registry row fields and behavior.
+
+1. **Additive row fields.** `workItemInstructions`, `instructionRevisions`, and
+   `instructionRevisionApplications` carry an immutable `inputsHash` (as `workItems` does), so a
+   replay of an operation id with other inputs is `operationConflict` on any device, not only
+   where the ledger holds it. Applications also carry `revisionHash`, the hash the writer verified.
+   `reason` is written in wire spelling (`launch`, `explicit`, `forkInherit`); `result` is always
+   `accepted`; `appliedHlc` equals the clock of the op that wrote it. `sessionRef` is never written
+   (the request has no Execution Session target).
+2. **Selection rule.** The selected revision is the newest application by `(appliedHlc, id)` whose
+   revision is not corrupt and not in another Space; a corrupt one is skipped and the next older
+   application wins. An application whose revision has not synced yet is still selected, pinned by
+   its `revisionHash` (the delivery side waits for that exact row). Applying observes every
+   existing application of the Chat first, so an application made after seeing another device's
+   always sorts after it. The doc reader `selected_instruction_revision` and the snapshot use the
+   same rule.
+3. **Budget enforcement.** Text <= 6,000 and excerpt <= 1,500 characters are checked on every
+   write. Create checks every item whose effective instructions include the scope (the item and
+   its descendants; for the Space root every item plus the root alone) with `build_revision_body`,
+   memoized per chain of contributing scopes, and fails with `limitExceeded` naming the item. An
+   edit is checked only when the text grows (characters or JSON-escaped units), so shortening is
+   always allowed even when an item is already over budget (two devices can push one over
+   concurrently); archive is never checked. Two observations: the 50-per-scope cap is unreachable
+   through the API because the 32-entry revision cap binds first (it guards rows written by other
+   writers), and about 180 units of JSON overhead per entry mean many-entry sets hit the
+   14,000-unit body cap well before 9,000 characters.
+4. **Errors.** Creating an instruction on an archived item is `archived`; editing or moving an
+   archived instruction is `archived`; archiving twice is a no-op. `applyInstructionRevision`:
+   missing Chat or revision `notFound`, projectless Chat `projectless`, Chat without a live
+   assigned item `invalid` ("Assign the Chat to a work item before applying instructions"),
+   revision or assignment of another Space `crossSpace`, corrupt revision `revisionIntegrity`.
+   Revisions may be created for archived items, and applications target the Chat's current item.
+5. **Provenance.** `source.contentHash` is recomputed as `sha256(excerpt)` whenever an excerpt is
+   present (a client-supplied hash is replaced); a hash without an excerpt is kept. `source`,
+   `workItemId`, `spaceId`, `createdBy`, `createdAt` are written only by the create upsert.
+6. **Ordering.** Instructions sort `(orderKey, id)` on raw strings within a scope (the resolver's
+   order); invalid keys are re-keyed by the placement window like work items. Re-keyed sibling
+   instructions are order-only `orderKey` writes.
+7. **Snapshot.** `instructions` lists every instruction of the Space, archived and orphan ones
+   included (orphans also get `orphanInstruction` and are never effective).
+   `chatInstructionStates` covers Chats of the Space that are associated or have an application
+   here. A Chat without an associated item has no `currentEffectiveHash` and never drifts; an
+   associated Chat with no selection drifts iff its item has effective instructions. Revisions are
+   verified lazily, only those the selection walk or a delivery touches (revision rows are never
+   pruned, so verifying all of them per frame would grow without bound); `corruptRevision` is
+   reported for those. `revisions` lists the selected and delivered revisions of the Space.
+   Materializer inputs carry this Space's applications, only the referenced revision rows, and
+   session rows that have an `executionSession`.
+8. **Execution Session report.** `WorkspaceHost::report_execution_session` writes only the
+   `executionSession` field with an `update` (so status writes and reports never clobber each
+   other), observes the row's clocks first, writes nothing for an equal report (no change-counter
+   bump), never revives a tombstoned row, and, when no status row exists yet, creates one as
+   `idle` so `read_sessions` keeps decoding it. Nothing calls it yet; delivery wires it on
+   `SessionStarted`.
+9. **Queries.** `getInstructionRevision` returns a corrupt revision flagged (`integrity: corrupt`)
+   rather than an error; `compareInstructionRevisions` requires both revisions to exist
+   (`notFound`) and verify (`revisionIntegrity`); `resolveEffectiveInstructions` is `notFound` for
+   an unknown item or a suppressed Space. Queries ignore the kill switch; every instruction
+   mutation honors it and the replay ledger exactly like Milestone 1 operations.
+10. **Not done.** The `work-outline-instruction-envelope-v1` capability is not advertised (delivery
+    owns it). Application rows are cascaded only with their Space, not on Chat deletion.
+    Instruction rows are not copied by local-to-synced import (same as Milestone 1 rows).
