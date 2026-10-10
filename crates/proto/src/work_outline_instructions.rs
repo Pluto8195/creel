@@ -330,7 +330,8 @@ fn sorted_scope<'a>(
 ///    down to the parent, root-most first;
 /// 3. the item's own instructions.
 ///
-/// Archived instructions are excluded; within one scope the order is
+/// Archived instructions and instructions whose `spaceId` differs from their
+/// item's are excluded; within one scope the order is
 /// `(orderKey, id)`. An unknown item yields only Space-root entries of no
 /// Space (an empty list), never a panic; a parent cycle (impossible after
 /// repair) is cut at the first repeat.
@@ -390,7 +391,9 @@ pub fn resolve_effective_instructions<'a>(
     for item in chain.iter().rev() {
         let inherited = item.id != work_item_id;
         for instruction in sorted_scope(instructions, |i| {
-            i.work_item_id.as_deref() == Some(item.id.as_str())
+            // A row naming this item from another Space is an orphan
+            // (`OrphanInstruction`), never effective.
+            i.work_item_id.as_deref() == Some(item.id.as_str()) && i.space_id == item.space_id
         }) {
             push(
                 instruction,

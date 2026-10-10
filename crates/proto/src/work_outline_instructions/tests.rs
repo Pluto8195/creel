@@ -199,6 +199,12 @@ fn resolver_always_applies_space_root_and_excludes_archived_and_other_spaces() {
     assert!(!ids(&effective).contains(&"i-x"));
     let mid = resolve_effective_instructions_in("w-mid", &items, &instructions);
     assert!(!ids(&mid).contains(&"i-m2"), "archived is excluded");
+    // A work-item instruction stamped with another Space is an orphan.
+    let mut cross = instruction("i-cross", Some("w-leaf"), "a0", "Cross-Space rule.");
+    cross.space_id = "s-2".into();
+    instructions.push(cross);
+    let effective = resolve_effective_instructions_in("w-leaf", &items, &instructions);
+    assert!(!ids(&effective).contains(&"i-cross"));
     // Archiving a Space-root instruction removes it everywhere.
     instructions[0].archived_at = Some(9);
     let effective = resolve_effective_instructions_in("w-leaf", &items, &instructions);
