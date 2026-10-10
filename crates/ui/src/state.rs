@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use gpui::{App, Context, Entity, Task};
+use gpui::{App, AsyncApp, Context, Entity, Task, WeakEntity};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
@@ -757,6 +757,14 @@ pub struct AppState {
     change_requests_visible: bool,
     /// Work Outline snapshots keyed by Space id, fed by `WatchWorkOutline`.
     work_outlines: crate::work_outline::WorkOutlineStore,
+    /// One `WatchWorkOutline` task per watched Space (single-flight per key).
+    work_outline_tasks: HashMap<String, Task<()>>,
+    /// Spaces the Outline presentation declared visible; the reconciler
+    /// watches exactly these (intersected with live Spaces).
+    work_outline_visible: Vec<String>,
+    /// Captured at attach time so the cx-less `set_work_outline_visible` and
+    /// `work_outline_actions` can schedule work on the app.
+    work_outline_runtime: Option<WorkOutlineRuntime>,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -833,6 +841,9 @@ impl AppState {
             queue_task: None,
             change_requests_visible: true,
             work_outlines: crate::work_outline::WorkOutlineStore::new(),
+            work_outline_tasks: HashMap::new(),
+            work_outline_visible: Vec::new(),
+            work_outline_runtime: None,
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,
@@ -1824,14 +1835,144 @@ impl AppState {
     }
 
     /// Declares which Spaces the Outline presentation shows, so the
-    /// `WatchWorkOutline` reconciler watches exactly those.
+    /// `WatchWorkOutline` reconciler watches exactly those (an empty list
+    /// stops every watch). Takes no `cx`: the reconcile is scheduled on the app
+    /// through the runtime captured at engine attach (a no-op before attach,
+    /// where `attach_engine` reconciles anyway). Use
+    /// [`Self::declare_work_outline_visible`] from code that already has a `cx`.
     pub(crate) fn set_work_outline_visible(&mut self, space_ids: Vec<String>) {
-        let _ = space_ids;
+        if !self.record_work_outline_visible(space_ids) {
+            return;
+        }
+        if let Some(runtime) = self.work_outline_runtime.clone() {
+            runtime
+                .app
+                .clone()
+                .spawn(async move |cx| {
+                    runtime
+                        .state
+                        .update(cx, |state, cx| state.reconcile_work_outline_watches(cx))
+                        .ok();
+                })
+                .detach();
+        }
+    }
+
+    /// [`Self::set_work_outline_visible`] with an immediate reconcile.
+    pub(crate) fn declare_work_outline_visible(
+        &mut self,
+        space_ids: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.record_work_outline_visible(space_ids);
+        self.reconcile_work_outline_watches(cx);
+    }
+
+    /// Normalize (sort, dedupe) and store the declared set; whether it changed.
+    fn record_work_outline_visible(&mut self, mut space_ids: Vec<String>) -> bool {
+        space_ids.sort();
+        space_ids.dedup();
+        if self.work_outline_visible == space_ids {
+            return false;
+        }
+        self.work_outline_visible = space_ids;
+        true
+    }
+
+    /// Unresolved user-action totals per watched Space (zero totals omitted).
+    /// Plumbing for the Milestone 4 notification detector: it diffs this map
+    /// against its previous copy and fires on 0 -> nonzero. No notification or
+    /// color is produced in Milestone 1.
+    pub(crate) fn work_outline_unresolved_user_actions(&self) -> HashMap<String, u32> {
+        self.work_outlines.unresolved_user_action_totals()
     }
 
     /// Mutation facade bound to the current engine connection.
     pub(crate) fn work_outline_actions(&self) -> crate::work_outline::WorkOutlineActions {
-        crate::work_outline::WorkOutlineActions::new(self.engine.clone())
+        let actions = crate::work_outline::WorkOutlineActions::new(self.engine.clone());
+        match &self.work_outline_runtime {
+            Some(runtime) => actions.with_executor(runtime.app.background_executor().clone()),
+            None => actions,
+        }
+    }
+
+    /// Apply one `WatchWorkOutline` frame for `space_id`. Returns whether the
+    /// store changed. A frame for another Space, or for a Space that is not
+    /// declared visible, is dropped. Stale-revision filtering is per stream
+    /// and lives in the pump (`spawn_work_outline_watch`).
+    pub(crate) fn apply_work_outline_frame(
+        &mut self,
+        space_id: &str,
+        snapshot: zeron_proto::WorkOutlineSnapshot,
+    ) -> bool {
+        if snapshot.space_id != space_id || !self.work_outline_visible_contains(space_id) {
+            return false;
+        }
+        self.work_outlines.set(
+            space_id,
+            crate::work_outline::WorkOutlineLoad::Ready(Arc::new(snapshot)),
+        )
+    }
+
+    /// Apply a failed subscribe. A last good snapshot survives transient
+    /// failures (the outline keeps rendering stale rather than blanking);
+    /// `Unsupported` always replaces it.
+    pub(crate) fn apply_work_outline_failure(&mut self, space_id: &str, message: &str) -> bool {
+        if !self.work_outline_visible_contains(space_id) {
+            return false;
+        }
+        let load = crate::work_outline::WorkOutlineLoad::from_watch_error(message);
+        if matches!(load, crate::work_outline::WorkOutlineLoad::Failed(_))
+            && self.work_outlines.snapshot(space_id).is_some()
+        {
+            return false;
+        }
+        self.work_outlines.set(space_id, load)
+    }
+
+    fn work_outline_visible_contains(&self, space_id: &str) -> bool {
+        self.work_outline_visible
+            .binary_search_by(|id| id.as_str().cmp(space_id))
+            .is_ok()
+    }
+
+    /// Spaces that should have a live watch: declared visible and still live.
+    fn desired_work_outline_spaces(&self) -> HashSet<String> {
+        self.work_outline_visible
+            .iter()
+            .filter(|id| self.spaces.iter().any(|space| &space.id == *id))
+            .cloned()
+            .collect()
+    }
+
+    /// Mirror of the change-request reconciler: compute the desired Space
+    /// set, drop tasks and snapshots for Spaces no longer wanted (deleted or
+    /// hidden), and spawn a watch for each missing one. Re-run from the
+    /// Spaces frame, `attach_engine` and `declare_work_outline_visible`.
+    fn reconcile_work_outline_watches(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.engine.clone() else {
+            self.work_outline_tasks.clear();
+            return;
+        };
+        let wanted = self.desired_work_outline_spaces();
+        self.work_outline_tasks
+            .retain(|space_id, _| wanted.contains(space_id));
+        let dropped = {
+            let before = self.work_outlines.space_ids().count();
+            self.work_outlines
+                .retain(|space_id| wanted.contains(space_id));
+            before != self.work_outlines.space_ids().count()
+        };
+        for space_id in wanted {
+            if self.work_outline_tasks.contains_key(&space_id) {
+                continue;
+            }
+            let task = spawn_work_outline_watch(cx, handle.clone(), space_id.clone());
+            self.work_outline_tasks.insert(space_id, task);
+        }
+        if dropped {
+            cx.notify();
+        }
     }
 
     pub fn gate(&self) -> GatePhase {
@@ -1856,6 +1997,9 @@ impl AppState {
         self.transcript_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
+        self.work_outline_tasks.clear();
+        self.work_outlines = crate::work_outline::WorkOutlineStore::new();
+        self.work_outline_runtime = None;
         self.connection = ConnectionStatus::Connecting;
         self.workspace_scope = None;
         self.auth = None;
@@ -2000,7 +2144,12 @@ impl AppState {
             spawn_local_device_probe(cx, handle.clone()),
         ]);
         self.watch_tasks = watch_tasks;
+        self.work_outline_runtime = Some(WorkOutlineRuntime {
+            state: cx.weak_entity(),
+            app: cx.to_async(),
+        });
         self.reconcile_change_request_watches(cx);
+        self.reconcile_work_outline_watches(cx);
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
@@ -2394,6 +2543,107 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
 
 pub use zeron_proto::version_triple;
 
+/// What the cx-less Work Outline entry points need to schedule work on the
+/// app: a weak handle to the state and the app's async context.
+#[derive(Clone)]
+struct WorkOutlineRuntime {
+    state: WeakEntity<AppState>,
+    app: AsyncApp,
+}
+
+/// Backoff before resubscribing a failed `WatchWorkOutline`: 2 s doubling to
+/// a 30 s ceiling.
+fn work_outline_retry_delay(attempt: u32) -> std::time::Duration {
+    let seconds = 2u64.saturating_mul(1u64 << attempt.min(4));
+    std::time::Duration::from_secs(seconds.min(30))
+}
+
+/// One `WatchWorkOutline` subscription per Space. Mirrors
+/// `spawn_change_request_watch`: `UnknownMethod` (a host that predates the
+/// feature) marks the Space `Unsupported` and stops; other failures retry with
+/// backoff; malformed frames are dropped, never fatal; the last good snapshot
+/// survives stream gaps.
+fn spawn_work_outline_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    space_id: String,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let mut attempt: u32 = 0;
+        loop {
+            let params = serde_json::json!({ "spaceId": space_id });
+            let mut subscription = match handle
+                .client()
+                .subscribe_checked(methods::WATCH_WORK_OUTLINE, params)
+                .await
+            {
+                Ok(subscription) => subscription,
+                Err(err) => {
+                    let unsupported = matches!(err, RpcError::UnknownMethod(_));
+                    let message = err.to_string();
+                    let load =
+                        crate::work_outline::WorkOutlineLoad::from_watch_error(&message);
+                    let terminal =
+                        unsupported || matches!(load, crate::work_outline::WorkOutlineLoad::Unsupported);
+                    tracing::debug!(%space_id, error = %err, terminal, "work outline watch unavailable");
+                    let alive = this.update(cx, |state, cx| {
+                        let message = if unsupported {
+                            "unknown method".to_owned()
+                        } else {
+                            message
+                        };
+                        if state.apply_work_outline_failure(&space_id, &message) {
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() || terminal {
+                        return;
+                    }
+                    cx.background_executor()
+                        .timer(work_outline_retry_delay(attempt))
+                        .await;
+                    attempt = attempt.saturating_add(1);
+                    continue;
+                }
+            };
+            attempt = 0;
+            // Revisions are per stream; a stale frame is one older than the
+            // newest already applied from this subscription.
+            let mut newest_revision: u64 = 0;
+            while let Some(value) = subscription.recv().await {
+                let snapshot: zeron_proto::WorkOutlineSnapshot = match serde_json::from_value(value)
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(err) => {
+                        tracing::warn!(%space_id, error = %err, "dropping malformed work outline frame");
+                        continue;
+                    }
+                };
+                if snapshot.revision < newest_revision {
+                    continue;
+                }
+                newest_revision = snapshot.revision;
+                let alive = this.update(cx, |state, cx| {
+                    if state.apply_work_outline_frame(&space_id, snapshot) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            // Keep the last good snapshot through a transport gap.
+            tracing::debug!(%space_id, "work outline stream ended; resubscribing");
+            if this.update(cx, |_, _| {}).is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(work_outline_retry_delay(0))
+                .await;
+        }
+    })
+}
+
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
@@ -2526,6 +2776,9 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
                     if changed {
                         if matches!(method, methods::WATCH_SPACES | methods::WATCH_DEVICES) {
                             state.reconcile_change_request_watches(cx);
+                        }
+                        if method == methods::WATCH_SPACES {
+                            state.reconcile_work_outline_watches(cx);
                         }
                         cx.notify();
                     }
@@ -4086,6 +4339,221 @@ mod tests {
         // No spaces at all: selection clears.
         state.apply_spaces(vec![]);
         assert_eq!(state.selected_space, None);
+    }
+
+    fn outline_snapshot(
+        space_id: &str,
+        revision: u64,
+        title: &str,
+    ) -> zeron_proto::WorkOutlineSnapshot {
+        let mut snapshot = crate::work_outline::store::fixture_snapshot(space_id);
+        snapshot.revision = revision;
+        snapshot.items[0].title = title.into();
+        snapshot
+    }
+
+    fn outline_titles(state: &AppState, space_id: &str) -> Option<String> {
+        state
+            .work_outline(space_id)
+            .snapshot()
+            .map(|snapshot| snapshot.items[0].title.clone())
+    }
+
+    #[test]
+    fn work_outline_visible_set_is_sorted_deduped_and_change_detected() {
+        let mut state = AppState::new();
+        assert!(state.record_work_outline_visible(vec!["b".into(), "a".into(), "b".into()]));
+        assert_eq!(state.work_outline_visible, ["a", "b"]);
+        assert!(!state.record_work_outline_visible(vec!["a".into(), "b".into()]));
+        assert!(state.record_work_outline_visible(vec![]));
+    }
+
+    #[test]
+    fn work_outline_frames_apply_only_for_visible_spaces_and_only_on_change() {
+        let mut state = AppState::new();
+        // Nobody declared the Space visible: a straggler frame is dropped.
+        assert!(!state.apply_work_outline_frame("s1", outline_snapshot("s1", 1, "A")));
+        assert!(outline_titles(&state, "s1").is_none());
+
+        state.record_work_outline_visible(vec!["s1".into()]);
+        assert!(state.apply_work_outline_frame("s1", outline_snapshot("s1", 1, "A")));
+        assert_eq!(outline_titles(&state, "s1").as_deref(), Some("A"));
+        // Same content with a newer revision is not a change (no notify).
+        assert!(!state.apply_work_outline_frame("s1", outline_snapshot("s1", 2, "A")));
+        assert!(state.apply_work_outline_frame("s1", outline_snapshot("s1", 3, "B")));
+        assert_eq!(outline_titles(&state, "s1").as_deref(), Some("B"));
+        // A frame naming a different Space never lands under this key.
+        assert!(!state.apply_work_outline_frame("s1", outline_snapshot("s2", 4, "C")));
+        assert_eq!(outline_titles(&state, "s1").as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn work_outline_failures_keep_the_last_good_snapshot_but_unsupported_wins() {
+        let mut state = AppState::new();
+        state.record_work_outline_visible(vec!["s1".into()]);
+        assert!(matches!(
+            state.work_outline("s1"),
+            crate::work_outline::WorkOutlineLoad::Loading
+        ));
+        assert!(state.apply_work_outline_failure("s1", "transport: reset"));
+        assert!(matches!(
+            state.work_outline("s1"),
+            crate::work_outline::WorkOutlineLoad::Failed(_)
+        ));
+        state.apply_work_outline_frame("s1", outline_snapshot("s1", 1, "A"));
+        // A transient failure after a good frame keeps the snapshot.
+        assert!(!state.apply_work_outline_failure("s1", "transport: reset"));
+        assert_eq!(outline_titles(&state, "s1").as_deref(), Some("A"));
+        // An unsupported host replaces it.
+        assert!(state.apply_work_outline_failure("s1", "unknown method: WatchWorkOutline"));
+        assert!(matches!(
+            state.work_outline("s1"),
+            crate::work_outline::WorkOutlineLoad::Unsupported
+        ));
+        // Not visible: ignored.
+        assert!(!state.apply_work_outline_failure("other", "unknown method: x"));
+    }
+
+    #[test]
+    fn work_outline_retry_delay_backs_off_to_a_ceiling() {
+        let delays: Vec<u64> = (0..8)
+            .map(|attempt| work_outline_retry_delay(attempt).as_secs())
+            .collect();
+        assert_eq!(delays, [2, 4, 8, 16, 30, 30, 30, 30]);
+    }
+
+    #[test]
+    fn work_outline_unresolved_user_actions_total_per_space() {
+        let mut state = AppState::new();
+        state.record_work_outline_visible(vec!["s1".into(), "s2".into()]);
+        // The fixture has one open request on w-ui.
+        state.apply_work_outline_frame("s1", outline_snapshot("s1", 1, "A"));
+        let mut clean = crate::work_outline::store::fixture_snapshot("s2");
+        for item in &mut clean.items {
+            item.rollup.unresolved_user_action_count = 0;
+        }
+        state.apply_work_outline_frame("s2", clean);
+        let totals = state.work_outline_unresolved_user_actions();
+        assert_eq!(totals.get("s1"), Some(&1));
+        assert!(!totals.contains_key("s2"));
+    }
+
+    /// Answer every request the client has sent: `WatchWorkOutline` gets the
+    /// scripted reply for its Space. Returns the Spaces asked for.
+    fn answer_outline_watches(
+        runtime: &tokio::runtime::Runtime,
+        requests: &mut tokio::sync::mpsc::Receiver<String>,
+        replies: &tokio::sync::mpsc::Sender<String>,
+        reply_for: &dyn Fn(&str) -> serde_json::Value,
+    ) -> Vec<String> {
+        let mut asked = Vec::new();
+        while let Ok(frame) = requests.try_recv() {
+            let request: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            assert_eq!(request["method"], methods::WATCH_WORK_OUTLINE);
+            let space_id = request["params"]["spaceId"].as_str().unwrap().to_owned();
+            let mut reply = reply_for(&space_id);
+            reply["id"] = request["id"].clone();
+            runtime.block_on(async {
+                replies.send(reply.to_string()).await.unwrap();
+                while replies.capacity() < replies.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            });
+            asked.push(space_id);
+        }
+        asked
+    }
+
+    #[gpui::test]
+    fn reconciler_watches_exactly_the_visible_live_spaces(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.set_test_engine(EngineHandle::from_test_client(RpcClient::new(out, inbound)));
+            state.apply_spaces(vec![
+                space("s1", "dev", "/a", 1),
+                space("s2", "dev", "/b", 2),
+            ]);
+            // `ghost` is declared but is not a live Space: never watched.
+            state.declare_work_outline_visible(vec!["s1".into(), "s2".into(), "ghost".into()], cx);
+            assert_eq!(state.work_outline_tasks.len(), 2);
+            // Declaring again is idempotent: no duplicate tasks.
+            state.declare_work_outline_visible(vec!["s1".into(), "s2".into(), "ghost".into()], cx);
+            assert_eq!(state.work_outline_tasks.len(), 2);
+        });
+        cx.run_until_parked();
+        let item =
+            |space_id: &str| serde_json::json!({ "item": outline_snapshot(space_id, 1, "A") });
+        let asked = answer_outline_watches(&runtime, &mut requests, &replies, &|id| item(id));
+        assert_eq!(asked, ["s1", "s2"]);
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(outline_titles(state, "s1").as_deref(), Some("A"));
+            assert_eq!(outline_titles(state, "s2").as_deref(), Some("A"));
+        });
+
+        // A Space disappears: its task and snapshot drop; the other stays.
+        state.update(cx, |state, cx| {
+            state.apply_spaces(vec![space("s1", "dev", "/a", 1)]);
+            state.reconcile_work_outline_watches(cx);
+            assert_eq!(state.work_outline_tasks.keys().collect::<Vec<_>>(), ["s1"]);
+            assert!(outline_titles(state, "s2").is_none());
+            assert_eq!(outline_titles(state, "s1").as_deref(), Some("A"));
+        });
+
+        // Hiding the Outline stops every watch and clears the store.
+        state.update(cx, |state, cx| {
+            state.declare_work_outline_visible(vec![], cx);
+            assert!(state.work_outline_tasks.is_empty());
+            assert!(outline_titles(state, "s1").is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn cxless_visibility_declaration_reconciles_through_the_captured_runtime(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.set_test_engine(EngineHandle::from_test_client(RpcClient::new(out, inbound)));
+            state.work_outline_runtime = Some(WorkOutlineRuntime {
+                state: cx.weak_entity(),
+                app: cx.to_async(),
+            });
+            state.apply_spaces(vec![space("s1", "dev", "/a", 1)]);
+            // The stable, cx-less entry point the presentation layer uses.
+            state.set_work_outline_visible(vec!["s1".into()]);
+            assert!(state.work_outline_tasks.is_empty(), "deferred, not inline");
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| assert_eq!(state.work_outline_tasks.len(), 1));
+        let asked = answer_outline_watches(
+            &runtime,
+            &mut requests,
+            &replies,
+            &|_| serde_json::json!({ "err": "unknown method: WatchWorkOutline" }),
+        );
+        assert_eq!(asked, ["s1"]);
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert!(matches!(
+                state.work_outline("s1"),
+                crate::work_outline::WorkOutlineLoad::Unsupported
+            ));
+        });
     }
 
     #[test]
