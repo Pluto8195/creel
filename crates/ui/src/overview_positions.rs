@@ -58,6 +58,13 @@ pub const HIDDEN_REPOS_FILE: &str = "overview-hidden-repos.json";
 /// Named on/off overview UI toggles that persist (a string is present = on),
 /// e.g. the My PRs sidebar. Unknown entries are ignored by readers.
 pub const UI_FLAGS_FILE: &str = "overview-ui-flags.json";
+/// Work-item ids (plus the `~unassociated` sentinel) the List/Canvas
+/// work-item filter keeps; empty = no filter. See `work_outline::filter`.
+pub const WORK_ITEM_FILTER_FILE: &str = "overview-work-item-filter.json";
+/// Outline row keys the user collapsed (Space roots, work items, groups).
+/// Its own file rather than `UI_FLAGS_FILE`, which is read-modify-written on
+/// every view toggle.
+pub const OUTLINE_COLLAPSED_FILE: &str = "overview-outline-collapsed.json";
 
 /// Load a JSON string array from `{data_dir}/{file_name}`. Absent or corrupt
 /// degrades to empty, same as [`load_positions`].

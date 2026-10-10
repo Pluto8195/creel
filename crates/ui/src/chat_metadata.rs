@@ -116,6 +116,12 @@ fn item(
     }
 }
 
+/// The associated work item's breadcrumb, appended after the standard items
+/// by headers that know the Chat's association (the Overview chat panel).
+pub(crate) fn work_item_item(short: &str, full: &str) -> MetadataItem {
+    item("work-item", short, format!("Work item: {full}"))
+}
+
 fn source_label(source: Option<ChatLinkSource>) -> &'static str {
     match source {
         Some(ChatLinkSource::Manual) => "linked manually",
@@ -548,6 +554,15 @@ mod tests {
             })),
             (None, None)
         );
+    }
+
+    #[test]
+    fn work_item_metadata_shows_the_compact_path_with_the_full_path_tooltip() {
+        let item = work_item_item("… › API › Auth", "Launch › API › Auth");
+        assert_eq!(item.key, "work-item");
+        assert_eq!(item.label, "… › API › Auth");
+        assert_eq!(item.tooltip, "Work item: Launch › API › Auth");
+        assert_eq!(item.action, None);
     }
 
     #[test]
