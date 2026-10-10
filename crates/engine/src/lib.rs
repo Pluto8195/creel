@@ -28,6 +28,7 @@ pub mod doc_host;
 pub mod external_import;
 mod http_error;
 pub mod instance_lock;
+pub mod instruction_registry;
 pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
