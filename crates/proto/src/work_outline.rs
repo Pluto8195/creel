@@ -27,6 +27,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::work_outline_instructions::{
+    ChatInstructionState, EffectiveInstructions, InstructionApplicationReason,
+    InstructionRevisionComparison, InstructionRevisionView, InstructionScope, InstructionSource,
+    InstructionTurnBoundary, WorkItemInstructionView, resolve_effective_instructions_in,
+};
 pub use crate::work_outline_order::MAX_ORDER_KEY_LEN;
 
 /// Hard limits enforced by typed mutators (doc crate) and the engine service,
@@ -55,6 +60,22 @@ pub mod limits {
     /// budget must never enter the queue (registry audit section 6, rule R4).
     /// Serialized, not visible, length: JSON escaping can double text.
     pub const MAX_OP_UTF16_UNITS: usize = 15_000;
+
+    // ── Milestone 2: instructions and revisions (contract 5.2) ──
+    /// One instruction's text, in Unicode scalar values.
+    pub const MAX_INSTRUCTION_TEXT_CHARS: usize = 6_000;
+    /// The copied Chat excerpt of an instruction's source.
+    pub const MAX_INSTRUCTION_EXCERPT_CHARS: usize = 1_500;
+    /// Live (non-archived) instructions of one scope (a work item or the
+    /// Space root).
+    pub const MAX_INSTRUCTIONS_PER_SCOPE: usize = 50;
+    /// Sum of entry text of one revision (effective instruction characters).
+    pub const MAX_EFFECTIVE_INSTRUCTION_CHARS: usize = 9_000;
+    /// Entries of one revision.
+    pub const MAX_REVISION_ENTRIES: usize = 32;
+    /// Serialized `instructionRevisions.body`, in UTF-16 code units: leaves
+    /// room under [`MAX_OP_UTF16_UNITS`] for the row's other fields and clocks.
+    pub const MAX_REVISION_BODY_UTF16_UNITS: usize = 14_000;
 }
 
 /// Environment kill switch: when set (any non-empty value other than `0`),
@@ -519,6 +540,22 @@ pub enum WorkOutlineRepair {
         #[serde(default)]
         work_item_id: String,
     },
+    /// An instruction whose work item is missing or in another Space: listed,
+    /// but excluded from effective instructions (Milestone 2).
+    #[serde(rename_all = "camelCase")]
+    OrphanInstruction {
+        #[serde(default)]
+        instruction_id: String,
+        #[serde(default)]
+        work_item_id: String,
+    },
+    /// A revision whose stored hash or envelope digest does not verify: flagged
+    /// `corrupt` and never selected or delivered (Milestone 2).
+    #[serde(rename_all = "camelCase")]
+    CorruptRevision {
+        #[serde(default)]
+        revision_id: String,
+    },
     #[doc(hidden)]
     #[serde(other)]
     Unknown,
@@ -528,12 +565,14 @@ pub enum WorkOutlineRepair {
 /// `WatchWorkOutline` stream). Everything is sorted; two materializations of
 /// the same inputs are `==`, so the stream can dedupe frames.
 ///
-/// Reserved for later milestones (do NOT add before their milestone; each is
-/// an additive, defaulted field): `instructions` / `effectiveInstructions`
-/// (M2), `executionConfigurations` and `chatExecutionBindings` (M3),
-/// `userActionRequests`, `instructionProposals`, `instructionRevisions` and
-/// `selectedRevisions` per Chat (M2/M4). Counts in [`WorkItemRollup`] that
-/// depend on them are 0 until then.
+/// Milestone 2 added `instructions`, `chatInstructionStates`, and `revisions`
+/// (effective instructions are computed on demand with
+/// [`WorkOutlineSnapshot::effective_instructions`] or the
+/// `resolveEffectiveInstructions` query). Reserved for later milestones (do
+/// NOT add before their milestone; each is an additive, defaulted field):
+/// `executionConfigurations` and `chatExecutionBindings` (M3),
+/// `userActionRequests` and `instructionProposals` (M4). Counts in
+/// [`WorkItemRollup`] that depend on them are 0 until then.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkOutlineSnapshot {
@@ -574,6 +613,19 @@ pub struct WorkOutlineSnapshot {
     /// Sorted.
     #[serde(default)]
     pub repairs: Vec<WorkOutlineRepair>,
+    /// Every instruction of this Space (Space-root and work-item scopes,
+    /// archived ones included and flagged), sorted by
+    /// `(workItemId (Space root first), orderKey, id)`.
+    #[serde(default)]
+    pub instructions: Vec<WorkItemInstructionView>,
+    /// One state per assigned Chat of this Space that has a selection or an
+    /// assigned item, sorted by Chat id.
+    #[serde(default)]
+    pub chat_instruction_states: Vec<ChatInstructionState>,
+    /// Only the revisions referenced by Chat selections (and deliveries),
+    /// sorted by id. Other revisions are fetched with `getInstructionRevision`.
+    #[serde(default)]
+    pub revisions: Vec<InstructionRevisionView>,
 }
 
 impl WorkOutlineSnapshot {
@@ -600,10 +652,29 @@ impl WorkOutlineSnapshot {
             && self.unassociated_chat_ids == other.unassociated_chat_ids
             && self.external_references == other.external_references
             && self.repairs == other.repairs
+            && self.instructions == other.instructions
+            && self.chat_instruction_states == other.chat_instruction_states
+            && self.revisions == other.revisions
     }
 
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
         self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Effective instructions of one item, resolved over this snapshot's
+    /// repaired tree and instructions.
+    pub fn effective_instructions(&self, work_item_id: &str) -> EffectiveInstructions {
+        resolve_effective_instructions_in(work_item_id, &self.items, &self.instructions)
+    }
+
+    pub fn chat_instruction_state(&self, chat_id: &str) -> Option<&ChatInstructionState> {
+        self.chat_instruction_states
+            .iter()
+            .find(|state| state.chat_id == chat_id)
+    }
+
+    pub fn revision(&self, id: &str) -> Option<&InstructionRevisionView> {
+        self.revisions.iter().find(|revision| revision.id == id)
     }
 }
 
@@ -763,6 +834,95 @@ pub struct RepairWorkOutlineParams {
     pub operation_id: String,
 }
 
+/// Where to put an instruction among the other instructions of its scope.
+/// Internally tagged by `type`: `{"type":"first"}`, `{"type":"last"}`,
+/// `{"type":"before","siblingInstructionId":"…"}`,
+/// `{"type":"after","siblingInstructionId":"…"}`. Strict (request enum).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum InstructionPlacement {
+    First,
+    #[default]
+    Last,
+    #[serde(rename_all = "camelCase")]
+    Before {
+        sibling_instruction_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    After {
+        sibling_instruction_id: String,
+    },
+}
+
+/// `createWorkItemInstruction`. Reply: `instructionId` =
+/// `derive_id(operationId, "instruction")`. `spaceId` is required for both
+/// scopes (a work-item scope must name an item of that Space). `text` is at
+/// most [`limits::MAX_INSTRUCTION_TEXT_CHARS`]; a source excerpt at most
+/// [`limits::MAX_INSTRUCTION_EXCERPT_CHARS`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkItemInstructionParams {
+    pub space_id: String,
+    pub scope: InstructionScope,
+    pub text: String,
+    /// Absent = last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<InstructionPlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InstructionSource>,
+    pub operation_id: String,
+}
+
+/// `updateWorkItemInstruction` (text only; scope and source are immutable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateWorkItemInstructionParams {
+    pub instruction_id: String,
+    pub text: String,
+    pub operation_id: String,
+}
+
+/// `moveWorkItemInstruction`: reorder within the instruction's own scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveWorkItemInstructionParams {
+    pub instruction_id: String,
+    pub placement: InstructionPlacement,
+    pub operation_id: String,
+}
+
+/// `archiveWorkItemInstruction`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveWorkItemInstructionParams {
+    pub instruction_id: String,
+    pub operation_id: String,
+}
+
+/// `createInstructionRevision`: snapshot the item's current effective
+/// instructions. Reply: `revisionId` = `derive_id(operationId, "revision")`.
+/// Over budget fails with `limitExceeded` before any write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInstructionRevisionParams {
+    pub work_item_id: String,
+    pub operation_id: String,
+}
+
+/// `applyInstructionRevision`: select a revision for a Chat (an immutable
+/// application row). Reply: `applicationId` =
+/// `derive_id(operationId, "application")`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyInstructionRevisionParams {
+    pub chat_id: String,
+    pub revision_id: String,
+    pub reason: InstructionApplicationReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_boundary: Option<InstructionTurnBoundary>,
+    pub operation_id: String,
+}
+
 /// The params of `WorkOutlineMutate`: one tagged enum (`op`, camelCase) so a
 /// peer that predates an operation answers a single, recognizable error.
 /// Each variant's fields sit beside `op`, e.g.
@@ -780,6 +940,13 @@ pub enum WorkOutlineMutation {
     CreateWorkItemExternalReference(CreateWorkItemExternalReferenceParams),
     RemoveWorkItemExternalReference(RemoveWorkItemExternalReferenceParams),
     RepairWorkOutline(RepairWorkOutlineParams),
+    // ── Milestone 2 ──
+    CreateWorkItemInstruction(CreateWorkItemInstructionParams),
+    UpdateWorkItemInstruction(UpdateWorkItemInstructionParams),
+    MoveWorkItemInstruction(MoveWorkItemInstructionParams),
+    ArchiveWorkItemInstruction(ArchiveWorkItemInstructionParams),
+    CreateInstructionRevision(CreateInstructionRevisionParams),
+    ApplyInstructionRevision(ApplyInstructionRevisionParams),
 }
 
 impl WorkOutlineMutation {
@@ -796,13 +963,36 @@ impl WorkOutlineMutation {
             Self::CreateWorkItemExternalReference(p) => &p.operation_id,
             Self::RemoveWorkItemExternalReference(p) => &p.operation_id,
             Self::RepairWorkOutline(p) => &p.operation_id,
+            Self::CreateWorkItemInstruction(p) => &p.operation_id,
+            Self::UpdateWorkItemInstruction(p) => &p.operation_id,
+            Self::MoveWorkItemInstruction(p) => &p.operation_id,
+            Self::ArchiveWorkItemInstruction(p) => &p.operation_id,
+            Self::CreateInstructionRevision(p) => &p.operation_id,
+            Self::ApplyInstructionRevision(p) => &p.operation_id,
         }
+    }
+
+    /// Whether this is a Milestone 2 instruction operation (hosts without
+    /// instruction support answer `unsupported`).
+    pub fn is_instruction_operation(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateWorkItemInstruction(_)
+                | Self::UpdateWorkItemInstruction(_)
+                | Self::MoveWorkItemInstruction(_)
+                | Self::ArchiveWorkItemInstruction(_)
+                | Self::CreateInstructionRevision(_)
+                | Self::ApplyInstructionRevision(_)
+        )
     }
 }
 
 /// The reply of `WorkOutlineMutate`. Operations that mint an id set exactly
 /// one of the fields (`createWorkItem` -> `workItemId`,
-/// `createWorkItemExternalReference` -> `referenceId`); every other operation
+/// `createWorkItemExternalReference` -> `referenceId`,
+/// `createWorkItemInstruction` -> `instructionId`,
+/// `createInstructionRevision` -> `revisionId`,
+/// `applyInstructionRevision` -> `applicationId`); every other operation
 /// replies `{}`. [`CreateWorkItemResult`] and
 /// [`CreateWorkItemExternalReferenceResult`] decode from the same reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -812,9 +1002,39 @@ pub struct WorkOutlineMutateReply {
     pub work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
 }
 
 impl WorkOutlineMutateReply {
+    fn require(id: Option<String>, what: &str) -> Result<String, WorkOutlineError> {
+        id.ok_or_else(|| {
+            WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                format!("reply is missing {what}"),
+            )
+        })
+    }
+
+    /// The `createWorkItemInstruction` result.
+    pub fn into_instruction_id(self) -> Result<String, WorkOutlineError> {
+        Self::require(self.instruction_id, "instructionId")
+    }
+
+    /// The `createInstructionRevision` result.
+    pub fn into_revision_id(self) -> Result<String, WorkOutlineError> {
+        Self::require(self.revision_id, "revisionId")
+    }
+
+    /// The `applyInstructionRevision` result.
+    pub fn into_application_id(self) -> Result<String, WorkOutlineError> {
+        Self::require(self.application_id, "applicationId")
+    }
+
     /// The `createWorkItem` result; `Invalid` if the host replied without an id.
     pub fn into_create_work_item(self) -> Result<CreateWorkItemResult, WorkOutlineError> {
         self.work_item_id
@@ -844,6 +1064,42 @@ impl WorkOutlineMutateReply {
 }
 
 // --------------------------------------------------------------------------
+// Queries (Milestone 2)
+// --------------------------------------------------------------------------
+
+/// The params of `WorkOutlineQuery`: read-only questions answered from the
+/// local registry replica. Internally tagged by `query` (camelCase), e.g.
+/// `{"query":"resolveEffectiveInstructions","workItemId":"…"}`. Strict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "query", rename_all = "camelCase")]
+pub enum WorkOutlineQueryRequest {
+    #[serde(rename_all = "camelCase")]
+    ResolveEffectiveInstructions { work_item_id: String },
+    #[serde(rename_all = "camelCase")]
+    CompareInstructionRevisions {
+        source_revision_id: String,
+        target_revision_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    GetInstructionRevision { revision_id: String },
+}
+
+/// The reply of `WorkOutlineQuery`, tagged by the same `query` name as the
+/// request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "query", rename_all = "camelCase")]
+pub enum WorkOutlineQueryResponse {
+    ResolveEffectiveInstructions(EffectiveInstructions),
+    #[serde(rename_all = "camelCase")]
+    CompareInstructionRevisions {
+        source_revision_id: String,
+        target_revision_id: String,
+        comparison: InstructionRevisionComparison,
+    },
+    GetInstructionRevision(InstructionRevisionView),
+}
+
+// --------------------------------------------------------------------------
 // Errors
 // --------------------------------------------------------------------------
 
@@ -870,6 +1126,12 @@ pub enum WorkOutlineErrorCode {
     Invalid,
     /// The [`DISABLE_WRITES_ENV`] kill switch is on.
     WritesDisabled,
+    /// A stored instruction revision failed its hash or envelope check
+    /// (fail closed; never delivered).
+    RevisionIntegrity,
+    /// The harness or host cannot deliver Work Outline instructions; the
+    /// message carries the upgrade path.
+    Capability,
     /// The host lacks the Work Outline capability or operation.
     #[serde(other)]
     Unsupported,
@@ -887,6 +1149,8 @@ impl WorkOutlineErrorCode {
             Self::OperationConflict => "operationConflict",
             Self::Invalid => "invalid",
             Self::WritesDisabled => "writesDisabled",
+            Self::RevisionIntegrity => "revisionIntegrity",
+            Self::Capability => "capability",
             Self::Unsupported => "unsupported",
         }
     }
@@ -902,6 +1166,8 @@ impl WorkOutlineErrorCode {
             "operationConflict" => Self::OperationConflict,
             "invalid" => Self::Invalid,
             "writesDisabled" => Self::WritesDisabled,
+            "revisionIntegrity" => Self::RevisionIntegrity,
+            "capability" => Self::Capability,
             _ => Self::Unsupported,
         }
     }
@@ -1235,6 +1501,10 @@ mod tests {
                 former_parent: "w-2".into(),
                 members: vec!["w-1".into(), "w-2".into()],
             }],
+            // Element shapes are pinned in `work_outline_instructions::tests`.
+            instructions: Vec::new(),
+            chat_instruction_states: Vec::new(),
+            revisions: Vec::new(),
         };
         let actor_json =
             json!({"kind":"agent","deviceId":"dev-1","chatId":"chat-1","messageId":"msg-1"});
@@ -1302,7 +1572,10 @@ mod tests {
                     "victim": "w-1",
                     "formerParent": "w-2",
                     "members": ["w-1", "w-2"]
-                }]
+                }],
+                "instructions": [],
+                "chatInstructionStates": [],
+                "revisions": []
             }),
         );
     }
@@ -1322,9 +1595,10 @@ mod tests {
         assert_eq!(item.title, "");
         assert!(item.child_ids.is_empty() && item.parent_work_item_id.is_none());
         // Unknown extra fields from a newer peer are ignored.
-        let newer: WorkOutlineSnapshot =
-            serde_json::from_value(json!({"spaceId":"s","instructions":[1,2],"future":{}}))
-                .unwrap();
+        let newer: WorkOutlineSnapshot = serde_json::from_value(
+            json!({"spaceId":"s","executionConfigurations":[1,2],"future":{}}),
+        )
+        .unwrap();
         assert_eq!(newer.space_id, "s");
     }
 
@@ -1353,7 +1627,10 @@ mod tests {
                 "assignments": [],
                 "unassociatedChatIds": [],
                 "externalReferences": [],
-                "repairs": []
+                "repairs": [],
+                "instructions": [],
+                "chatInstructionStates": [],
+                "revisions": []
             })
         );
     }
@@ -1440,6 +1717,19 @@ mod tests {
                     work_item_id: "w".into(),
                 },
                 json!({"type":"orphanReference","referenceId":"r","workItemId":"w"}),
+            ),
+            (
+                WorkOutlineRepair::OrphanInstruction {
+                    instruction_id: "i".into(),
+                    work_item_id: "w".into(),
+                },
+                json!({"type":"orphanInstruction","instructionId":"i","workItemId":"w"}),
+            ),
+            (
+                WorkOutlineRepair::CorruptRevision {
+                    revision_id: "r".into(),
+                },
+                json!({"type":"corruptRevision","revisionId":"r"}),
             ),
         ];
         for (repair, expected) in cases {
@@ -1626,14 +1916,14 @@ mod tests {
         round_trip(
             &WorkOutlineMutateReply {
                 work_item_id: Some("w".into()),
-                reference_id: None,
+                ..Default::default()
             },
             json!({"workItemId":"w"}),
         );
         assert_eq!(
             WorkOutlineMutateReply {
                 work_item_id: Some("w".into()),
-                reference_id: None
+                ..Default::default()
             }
             .into_create_work_item()
             .unwrap()
@@ -1669,6 +1959,8 @@ mod tests {
             (WorkOutlineErrorCode::OperationConflict, "operationConflict"),
             (WorkOutlineErrorCode::Invalid, "invalid"),
             (WorkOutlineErrorCode::WritesDisabled, "writesDisabled"),
+            (WorkOutlineErrorCode::RevisionIntegrity, "revisionIntegrity"),
+            (WorkOutlineErrorCode::Capability, "capability"),
             (WorkOutlineErrorCode::Unsupported, "unsupported"),
         ];
         for (code, name) in codes {

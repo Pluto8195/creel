@@ -126,6 +126,14 @@ pub struct RunRequest {
     /// host ignores it and runs in `cwd` (the repo's main checkout).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeSpec>,
+    /// Work Outline runtime instructions, resolved by the HOST just before
+    /// dispatch from the pinned revision (`m0-instruction-delivery.md` 5).
+    /// Never part of `prompt`. Additive for serde, but only ever sent inside
+    /// instruction-bearing commands so old hosts skip the command instead of
+    /// running without instructions. An adapter that cannot deliver it must
+    /// fail with `HarnessError::Capability`, never ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<crate::work_outline_instructions::InstructionDelivery>,
 }
 
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created

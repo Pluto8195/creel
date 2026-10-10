@@ -644,7 +644,7 @@ impl RegistryDoc {
                 let id = self.create_work_item(p, actor, now_ms)?;
                 Ok(WorkOutlineMutateReply {
                     work_item_id: Some(id),
-                    reference_id: None,
+                    ..Default::default()
                 })
             }
             WorkOutlineMutation::UpdateWorkItem(p) => {
@@ -666,14 +666,25 @@ impl RegistryDoc {
             WorkOutlineMutation::CreateWorkItemExternalReference(p) => {
                 let id = self.create_work_item_external_reference(p, actor, now_ms)?;
                 Ok(WorkOutlineMutateReply {
-                    work_item_id: None,
                     reference_id: Some(id),
+                    ..Default::default()
                 })
             }
             WorkOutlineMutation::RemoveWorkItemExternalReference(p) => {
                 self.remove_work_item_external_reference(p).map(|_| empty)
             }
             WorkOutlineMutation::RepairWorkOutline(p) => self.repair_work_outline(p).map(|_| empty),
+            // Milestone 2 instruction operations: wire contract only so far;
+            // the typed mutators land with instruction persistence.
+            WorkOutlineMutation::CreateWorkItemInstruction(_)
+            | WorkOutlineMutation::UpdateWorkItemInstruction(_)
+            | WorkOutlineMutation::MoveWorkItemInstruction(_)
+            | WorkOutlineMutation::ArchiveWorkItemInstruction(_)
+            | WorkOutlineMutation::CreateInstructionRevision(_)
+            | WorkOutlineMutation::ApplyInstructionRevision(_) => Err(err(
+                WorkOutlineErrorCode::Unsupported,
+                "Work Outline instructions are not supported by this version of Zeron yet",
+            )),
         }
     }
 

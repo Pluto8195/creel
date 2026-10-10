@@ -7085,6 +7085,7 @@ impl Composer {
                         resume: None,
                         attachments: attachment_paths,
                         worktree: run_worktree,
+                        instructions: None,
                     },
                     message_id: message_id.clone(),
                 };

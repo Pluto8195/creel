@@ -38,6 +38,15 @@ pub enum HarnessError {
     Discovery(#[from] CatalogFailure),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// The run carries Work Outline instructions this adapter cannot deliver
+    /// (`instruction_support()` is not `Supported`, or the envelope does not
+    /// fit). Raised before spawning; never run without the instructions.
+    #[error("{harness:?} cannot deliver Work Outline instructions: {detail}")]
+    Capability {
+        harness: HarnessId,
+        detail: String,
+        upgrade_hint: Option<String>,
+    },
 }
 
 /// A steer prompt pushed into a live run; delivered at the harness's steering boundary.
@@ -137,6 +146,16 @@ pub trait Harness: Send + Sync {
         ))
     }
 
+    /// Whether this adapter can deliver Work Outline instruction envelopes
+    /// (`RunRequest.instructions`). Default: `Unsupported`; every adapter must
+    /// opt in explicitly (acceptance 12). An adapter that is not `Supported`
+    /// must reject an instruction-bearing `run()` with
+    /// [`HarnessError::Capability`] ([`require_instruction_support`]). May
+    /// probe the CLI (cache by executable identity, like `model_context`).
+    fn instruction_support(&self) -> InstructionSupport {
+        InstructionSupport::no_channel()
+    }
+
     /// Run one (persistent) session; the stream ends with `AgentEvent::Done`.
     async fn run(
         &self,
@@ -151,6 +170,10 @@ pub mod archive_install;
 mod catalog;
 mod catalog_failure;
 pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
+mod instruction_support;
+pub use instruction_support::{
+    InstructionChannel, InstructionReplaceStrategy, InstructionSupport, require_instruction_support,
+};
 pub mod claude;
 pub mod codex;
 pub mod cursor;

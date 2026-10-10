@@ -48,6 +48,7 @@ async fn real_pi_mock_lifecycle() {
             } else {
                 None
             },
+            instructions: None,
         };
         let mut stream = harness.run(request, controls).await.unwrap();
         let kill = || {

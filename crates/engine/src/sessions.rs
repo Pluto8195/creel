@@ -851,6 +851,7 @@ impl SessionsEngine {
                             attachments: Vec::new(),
                             resume: None,
                             worktree: None,
+                            instructions: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -3070,6 +3071,7 @@ mod tests {
             resume: None,
             attachments: Vec::new(),
             worktree: None,
+            instructions: None,
         }
     }
 

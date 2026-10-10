@@ -736,7 +736,8 @@ pub struct EngineRpc {
     /// plain field built fresh here rather than threaded through a
     /// `with_*` builder from `EngineCore`.
     subagent_transcript_cache: crate::subagent_transcript::TranscriptCache,
-    /// `WatchWorkOutline` / `WorkOutlineMutate` (local replica, never forwarded).
+    /// `WatchWorkOutline` / `WorkOutlineMutate` / `WorkOutlineQuery` (local
+    /// replica, never forwarded).
     work_outline: std::sync::Arc<crate::work_outline::WorkOutlineService>,
     engine_info: EngineInfo,
 }
@@ -2227,6 +2228,15 @@ impl RpcService for EngineRpc {
                 // Materializing placement over a large outline is CPU work
                 // under the registry lock: keep it off the async workers.
                 let reply = tokio::task::spawn_blocking(move || service.mutate(&mutation))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                RpcReply::value(&reply)
+            }
+            methods::WORK_OUTLINE_QUERY => {
+                let query: zeron_proto::WorkOutlineQueryRequest = parse_params(params)?;
+                let service = self.work_outline.clone();
+                let reply = tokio::task::spawn_blocking(move || service.query(&query))
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                     .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
@@ -3876,6 +3886,8 @@ mod tests {
     fn work_outline_methods_are_local_not_forwardable() {
         assert!(!forwardable(methods::WATCH_WORK_OUTLINE));
         assert!(!forwardable(methods::WORK_OUTLINE_MUTATE));
+        assert!(!forwardable(methods::WORK_OUTLINE_QUERY));
+        assert!(!is_stream_method(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WATCH_WORK_OUTLINE));
     }
 
