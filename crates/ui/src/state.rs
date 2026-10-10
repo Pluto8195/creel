@@ -765,6 +765,9 @@ pub struct AppState {
     /// Captured at attach time so the cx-less `set_work_outline_visible` and
     /// `work_outline_actions` can schedule work on the app.
     work_outline_runtime: Option<WorkOutlineRuntime>,
+    /// Tests: answer every Work Outline mutation/query with this facade.
+    #[cfg(test)]
+    pub(crate) work_outline_actions_override: Option<crate::work_outline::WorkOutlineActions>,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -844,6 +847,8 @@ impl AppState {
             work_outline_tasks: HashMap::new(),
             work_outline_visible: Vec::new(),
             work_outline_runtime: None,
+            #[cfg(test)]
+            work_outline_actions_override: None,
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,
@@ -1889,6 +1894,10 @@ impl AppState {
 
     /// Mutation facade bound to the current engine connection.
     pub(crate) fn work_outline_actions(&self) -> crate::work_outline::WorkOutlineActions {
+        #[cfg(test)]
+        if let Some(actions) = &self.work_outline_actions_override {
+            return actions.clone();
+        }
         let actions = crate::work_outline::WorkOutlineActions::new(self.engine.clone());
         match &self.work_outline_runtime {
             Some(runtime) => actions.with_executor(runtime.app.background_executor().clone()),
