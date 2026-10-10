@@ -38,6 +38,36 @@ pub(crate) fn new_operation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// The operation id of one logical user action, reused on every retry of
+/// the SAME inputs (idempotent replay) and re-minted once the inputs change
+/// after a failed attempt (a host that recorded the first attempt would
+/// otherwise answer `operationConflict`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct OperationSlot {
+    id: Option<String>,
+    inputs: Option<String>,
+}
+
+impl OperationSlot {
+    /// The id to send with `inputs` (a stable rendering of the request).
+    pub(crate) fn id_for(&mut self, inputs: &str) -> String {
+        match (&self.id, &self.inputs) {
+            (Some(id), Some(sent)) if sent == inputs => id.clone(),
+            (Some(id), None) => {
+                let id = id.clone();
+                self.inputs = Some(inputs.to_owned());
+                id
+            }
+            _ => {
+                let id = new_operation_id();
+                self.id = Some(id.clone());
+                self.inputs = Some(inputs.to_owned());
+                id
+            }
+        }
+    }
+}
+
 /// Every operation resolves to the shared reply (`{}` unless the operation
 /// mints an id) or a coded [`WorkOutlineError`].
 pub(crate) type ActionTask = Task<Result<WorkOutlineMutateReply, WorkOutlineError>>;
@@ -595,6 +625,16 @@ mod tests {
         );
         let (outcome, _, _) = run(&mutation, vec![Ok(serde_json::Value::Null)]);
         assert_eq!(outcome.unwrap(), WorkOutlineMutateReply::default());
+    }
+
+    #[test]
+    fn operation_slots_reuse_ids_for_the_same_inputs_only() {
+        let mut slot = OperationSlot::default();
+        let first = slot.id_for("a");
+        assert_eq!(slot.id_for("a"), first);
+        let second = slot.id_for("b");
+        assert_ne!(second, first);
+        assert_eq!(slot.id_for("b"), second);
     }
 
     #[test]

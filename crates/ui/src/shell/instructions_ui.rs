@@ -1,0 +1,1301 @@
+//! Shell-owned instruction surfaces (Work Outline Milestone 2):
+//!
+//! - the Chat drift line in the full-chat header metadata ("Instructions
+//!   changed since this Chat's applied revision." with Compare / Apply, and
+//!   "Selected r… · Delivered r…" when the host reports a different
+//!   delivery — never inferred from selection);
+//! - the revision comparison modal (entry-level summary plus the generic
+//!   line diff of `work_outline::revision_diff`) with Apply;
+//! - Apply: `createInstructionRevision` then `applyInstructionRevision`
+//!   (reason `explicit`), with operation ids that stay stable across retries
+//!   of the same inputs ([`ApplyState`]);
+//! - Create Instruction from Chat: excerpt from the transcript selection, or
+//!   the last assistant message when nothing is selected; target this item /
+//!   parent workstream / Space root; explicit Save.
+//!
+//! Every surface reads the Work Outline snapshot from `AppState` and works
+//! locally (pure resolver, local compare); RPC is used only for writes and
+//! for an applied revision missing from the snapshot. An engine that still
+//! answers instruction operations with `unsupported` shows a calm "not
+//! available on this host" message.
+use super::work_outline_ui::WorkOutlineModal;
+use super::*;
+
+use std::sync::Arc;
+
+use zeron_proto::{
+    ApplyInstructionRevisionParams, ChatIndicator, ChatInstructionState,
+    CreateInstructionRevisionParams, CreateWorkItemInstructionParams, InstructionApplicationReason,
+    InstructionRevisionComparison, InstructionScope, InstructionSource, WorkOutlineQueryRequest,
+    WorkOutlineSnapshot,
+};
+
+use crate::work_outline::actions::{OperationSlot, expect_revision, instruction_error_text};
+use crate::work_outline::instructions::{self, CompareUnavailable};
+use crate::work_outline::{model, revision_diff};
+
+/// Where a Chat stands in its Space's outline.
+pub(crate) struct ChatInstructionContext {
+    pub item_id: Option<String>,
+    pub state: Option<ChatInstructionState>,
+    pub snapshot: Arc<WorkOutlineSnapshot>,
+}
+
+pub(crate) fn chat_instruction_context(
+    state: &AppState,
+    chat_id: &str,
+) -> Option<ChatInstructionContext> {
+    let space_id = state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)?
+        .space_id
+        .clone()?;
+    let load = state.work_outline(&space_id);
+    let snapshot = load.snapshot()?.clone();
+    let item_id = instructions::assigned_chats(&snapshot).remove(chat_id);
+    let chat_state = snapshot.chat_instruction_state(chat_id).cloned();
+    Some(ChatInstructionContext {
+        item_id,
+        state: chat_state,
+        snapshot,
+    })
+}
+
+fn chat_is_working(state: &AppState, chat_id: &str) -> bool {
+    state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)
+        .is_some_and(|chat| state.display_status_for(chat, Utc::now()) == ChatIndicator::Working)
+}
+
+fn chat_title(state: &AppState, chat_id: &str) -> String {
+    state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)
+        .and_then(|chat| chat.title.clone())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Chat".into())
+}
+
+/// Per-Chat Apply progress. The two operation ids are reused while the
+/// inputs are the same (the item and its current effective hash; the Chat
+/// and the minted revision), so a retry after a lost reply replays instead
+/// of writing twice.
+#[derive(Debug, Default)]
+pub(crate) struct ApplyState {
+    revision_op: OperationSlot,
+    apply_op: OperationSlot,
+    pub(crate) in_flight: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) done: Option<&'static str>,
+}
+
+pub(super) enum ComparePhase {
+    Loading,
+    Ready(InstructionRevisionComparison),
+    Failed(String),
+}
+
+pub(super) struct CompareDialog {
+    pub(super) chat_id: String,
+    title: String,
+    phase: ComparePhase,
+    delivery: Option<String>,
+    working: bool,
+}
+
+fn compare_failure_text(error: CompareUnavailable) -> String {
+    match error {
+        CompareUnavailable::NothingToCompare => "This Chat has no applied revision yet".into(),
+        CompareUnavailable::MissingRevision(id) => {
+            format!(
+                "Revision {} is not available",
+                instructions::revision_label(&id)
+            )
+        }
+        CompareUnavailable::Failed(message) => message,
+    }
+}
+
+/// Which scope a Chat-derived instruction goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FromChatTarget {
+    Item,
+    Parent,
+    SpaceRoot,
+}
+
+pub(super) struct FromChatDialog {
+    chat_id: String,
+    message_id: Option<String>,
+    excerpt: String,
+    space_id: String,
+    item: Option<(String, String)>,
+    parent: Option<(String, String)>,
+    pub(super) target: FromChatTarget,
+    snapshot: Arc<WorkOutlineSnapshot>,
+    pub(super) input: Entity<ComposerInput>,
+    op: OperationSlot,
+    saving: bool,
+    error: Option<String>,
+    _input_events: Subscription,
+}
+
+impl FromChatDialog {
+    pub(super) fn input_focus(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
+    fn target_item(&self) -> Option<&(String, String)> {
+        match self.target {
+            FromChatTarget::Item => self.item.as_ref(),
+            FromChatTarget::Parent => self.parent.as_ref(),
+            FromChatTarget::SpaceRoot => None,
+        }
+    }
+}
+
+/// One transcript row as the excerpt picker sees it.
+pub(crate) struct ExcerptRow<'a> {
+    pub row_id: &'a str,
+    pub message_id: &'a str,
+    pub user: bool,
+    pub copy_text: Option<&'a str>,
+}
+
+/// The excerpt for Create Instruction from Chat: the transcript selection
+/// when it is anchored in one of `rows` (message id = the anchor row's
+/// message), else the last assistant message's text. Pure.
+pub(crate) fn excerpt_from_transcript(
+    rows: &[ExcerptRow<'_>],
+    selection: Option<(&str, &str)>,
+) -> Option<(Option<String>, String)> {
+    if let Some((anchor, text)) = selection.filter(|(_, text)| !text.trim().is_empty()) {
+        let owner = rows
+            .iter()
+            .filter(|row| {
+                anchor
+                    .strip_prefix(row.row_id)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '-']))
+            })
+            .max_by_key(|row| row.row_id.len());
+        if let Some(row) = owner {
+            return Some((Some(row.message_id.to_owned()), text.trim().to_owned()));
+        }
+    }
+    rows.iter().rev().filter(|row| !row.user).find_map(|row| {
+        let text = row.copy_text?.trim();
+        (!text.is_empty()).then(|| (Some(row.message_id.to_owned()), text.to_owned()))
+    })
+}
+
+impl Shell {
+    // ----------------------------------------------------------------------
+    // Drift line in the chat header
+    // ----------------------------------------------------------------------
+
+    /// The compact instruction status under the chat header metadata, when
+    /// the Chat drifted or its delivery differs from its selection.
+    pub(super) fn render_chat_instruction_status(
+        &mut self,
+        chat_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let context = chat_instruction_context(self.state.read(cx), chat_id)?;
+        let chat_state = context.state?;
+        let delivery = instructions::delivery_line(&chat_state);
+        if !chat_state.drift && delivery.is_none() {
+            return None;
+        }
+        let apply = self.instruction_apply.get(chat_id);
+        let in_flight = apply.is_some_and(|apply| apply.in_flight);
+        let error = apply.and_then(|apply| apply.error.clone());
+        let done = apply.and_then(|apply| apply.done);
+        let link = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex_none()
+                .px(px(4.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .text_color(theme.accent)
+                .hover(|el| el.bg(theme.element_hover))
+                .child(label)
+        };
+        let compare_chat = chat_id.to_owned();
+        let apply_chat = chat_id.to_owned();
+        Some(
+            div()
+                .debug_selector(|| "chat-header-instruction-status".into())
+                .mt(px(2.0))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text_muted)
+                .when(chat_state.drift, |el| {
+                    el.child(
+                        icon(icons::DANGER_TRIANGLE)
+                            .size(px(10.0))
+                            .text_color(theme.warning),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "chat-header-instruction-drift".into())
+                            .child(
+                                "Instructions changed since this Chat\u{2019}s applied revision.",
+                            ),
+                    )
+                    .child(
+                        link("chat-header-instructions-compare", "Compare").on_click(cx.listener(
+                            move |this, _, _, cx| this.open_instruction_compare(&compare_chat, cx),
+                        )),
+                    )
+                    .child(
+                        link(
+                            "chat-header-instructions-apply",
+                            if in_flight {
+                                "Applying\u{2026}"
+                            } else {
+                                "Apply"
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.apply_chat_instructions(&apply_chat, cx)
+                        })),
+                    )
+                })
+                .when_some(delivery, |el, line| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "chat-header-instruction-delivery".into())
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(line)),
+                    )
+                })
+                .when_some(error, |el, error| {
+                    el.child(
+                        div()
+                            .text_color(theme.warning)
+                            .child(SharedString::from(error)),
+                    )
+                })
+                .when_some(done, |el, done| el.child(div().child(done)))
+                .into_any_element(),
+        )
+    }
+
+    // ----------------------------------------------------------------------
+    // Apply
+    // ----------------------------------------------------------------------
+
+    /// Apply the Chat's item's current effective instructions to the Chat:
+    /// `createInstructionRevision`, then `applyInstructionRevision` with
+    /// reason `explicit`. A running Turn is never touched; the revision takes
+    /// effect at the next Turn (contract 5.7).
+    pub(crate) fn apply_chat_instructions(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let (context, working) = {
+            let state = self.state.read(cx);
+            (
+                chat_instruction_context(state, chat_id),
+                chat_is_working(state, chat_id),
+            )
+        };
+        let Some((snapshot, item_id)) =
+            context.and_then(|context| Some((context.snapshot, context.item_id?)))
+        else {
+            let entry = self
+                .instruction_apply
+                .entry(chat_id.to_owned())
+                .or_default();
+            entry.error = Some("This Chat is not associated with a work item".into());
+            cx.notify();
+            return;
+        };
+        let effective = instructions::effective_hash(&snapshot, Some(&item_id));
+        let entry = self
+            .instruction_apply
+            .entry(chat_id.to_owned())
+            .or_default();
+        if entry.in_flight {
+            return;
+        }
+        let revision_op = entry.revision_op.id_for(&format!("{item_id}\n{effective}"));
+        entry.in_flight = true;
+        entry.error = None;
+        entry.done = None;
+        let create = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .create_instruction_revision(CreateInstructionRevisionParams {
+                work_item_id: item_id,
+                operation_id: revision_op,
+            });
+        cx.notify();
+        let chat_id = chat_id.to_owned();
+        cx.spawn(async move |this, cx| {
+            let revision_id = match create.await.and_then(|reply| reply.into_revision_id()) {
+                Ok(id) => id,
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.finish_apply(&chat_id, Err(error), working, cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Ok(apply) = this.update(cx, |this, cx| {
+                let entry = this.instruction_apply.entry(chat_id.clone()).or_default();
+                let operation_id = entry.apply_op.id_for(&format!("{chat_id}\n{revision_id}"));
+                this.state
+                    .read(cx)
+                    .work_outline_actions()
+                    .apply_instruction_revision(ApplyInstructionRevisionParams {
+                        chat_id: chat_id.clone(),
+                        revision_id: revision_id.clone(),
+                        reason: InstructionApplicationReason::Explicit,
+                        turn_boundary: None,
+                        operation_id,
+                    })
+            }) else {
+                return;
+            };
+            let result = apply.await.map(|_| ());
+            this.update(cx, |this, cx| {
+                this.finish_apply(&chat_id, result, working, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_apply(
+        &mut self,
+        chat_id: &str,
+        result: Result<(), zeron_proto::WorkOutlineError>,
+        working: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = self
+            .instruction_apply
+            .entry(chat_id.to_owned())
+            .or_default();
+        entry.in_flight = false;
+        match result {
+            Ok(()) => {
+                entry.revision_op = OperationSlot::default();
+                entry.apply_op = OperationSlot::default();
+                entry.done = Some(if working {
+                    "Applied \u{b7} takes effect at the next Turn"
+                } else {
+                    "Applied"
+                });
+            }
+            Err(error) => entry.error = Some(instruction_error_text(&error)),
+        }
+        cx.notify();
+    }
+
+    // ----------------------------------------------------------------------
+    // Compare
+    // ----------------------------------------------------------------------
+
+    /// Open the revision comparison for an assigned Chat: its applied
+    /// revision against its item's current effective instructions.
+    pub(crate) fn open_instruction_compare(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let (context, working, title) = {
+            let state = self.state.read(cx);
+            (
+                chat_instruction_context(state, chat_id),
+                chat_is_working(state, chat_id),
+                chat_title(state, chat_id),
+            )
+        };
+        let Some(context) = context else {
+            return;
+        };
+        let delivery = context.state.as_ref().and_then(instructions::delivery_line);
+        let phase = match &context.item_id {
+            None => ComparePhase::Failed("This Chat is not associated with a work item".into()),
+            Some(item_id) => match instructions::chat_comparison(&context.snapshot, chat_id) {
+                Ok(comparison) => ComparePhase::Ready(comparison),
+                Err(CompareUnavailable::MissingRevision(revision_id)) => {
+                    self.fetch_revision_for_compare(
+                        chat_id.to_owned(),
+                        item_id.clone(),
+                        revision_id,
+                        context.snapshot.clone(),
+                        cx,
+                    );
+                    ComparePhase::Loading
+                }
+                Err(error) => ComparePhase::Failed(compare_failure_text(error)),
+            },
+        };
+        self.begin_work_outline_modal(
+            WorkOutlineModal::Compare(CompareDialog {
+                chat_id: chat_id.to_owned(),
+                title,
+                phase,
+                delivery,
+                working,
+            }),
+            cx,
+        );
+    }
+
+    /// The applied revision is not in the snapshot (only selected and
+    /// delivered revisions are): fetch it with `getInstructionRevision`.
+    fn fetch_revision_for_compare(
+        &mut self,
+        chat_id: String,
+        item_id: String,
+        revision_id: String,
+        snapshot: Arc<WorkOutlineSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        let task = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .query(WorkOutlineQueryRequest::GetInstructionRevision { revision_id });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.and_then(expect_revision);
+            this.update(cx, |this, cx| {
+                let Some(WorkOutlineModal::Compare(dialog)) = this.work_outline_modal.as_mut()
+                else {
+                    return;
+                };
+                if dialog.chat_id != chat_id {
+                    return;
+                }
+                dialog.phase = match result {
+                    Ok(revision) => {
+                        match instructions::compare_with_current(&snapshot, &item_id, &revision) {
+                            Ok(comparison) => ComparePhase::Ready(comparison),
+                            Err(error) => ComparePhase::Failed(compare_failure_text(error)),
+                        }
+                    }
+                    Err(error) => ComparePhase::Failed(instruction_error_text(&error)),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // ----------------------------------------------------------------------
+    // Create Instruction from Chat
+    // ----------------------------------------------------------------------
+
+    /// Palette "Create Instruction from Chat": the active Chat's transcript
+    /// selection, or its last assistant message.
+    pub(crate) fn open_instruction_from_chat(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let chat_id = if matches!(self.route, Route::Chat) && !self.active_chat.is_empty() {
+            self.active_chat.clone()
+        } else {
+            self.state
+                .read(cx)
+                .selected_chat
+                .clone()
+                .ok_or("Open a Chat first")?
+        };
+        let picked = {
+            let transcript = self.transcript.read(cx);
+            let rows: Vec<ExcerptRow<'_>> = if transcript.chat_id() == Some(chat_id.as_str()) {
+                transcript
+                    .rows()
+                    .iter()
+                    .map(|row| ExcerptRow {
+                        row_id: row.id.as_ref(),
+                        message_id: row.entry_id.as_ref(),
+                        user: matches!(row.kind, transcript::RowKind::User { .. }),
+                        copy_text: row.copy_text.as_deref(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let anchor = crate::markdown::selection::anchor_key();
+            let selected = crate::markdown::selection::selected_text();
+            let selection = anchor.as_deref().zip(selected.as_deref());
+            excerpt_from_transcript(&rows, selection)
+        };
+        let (message_id, excerpt) = picked.ok_or("Select text in the Chat first")?;
+        self.open_instruction_from_chat_with(&chat_id, message_id, excerpt, window, cx)
+    }
+
+    /// Open the Create Instruction from Chat dialog with a known excerpt.
+    pub(crate) fn open_instruction_from_chat_with(
+        &mut self,
+        chat_id: &str,
+        message_id: Option<String>,
+        excerpt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let (space_id, snapshot) = {
+            let state = self.state.read(cx);
+            let chat = state
+                .chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .ok_or("That Chat is not available")?;
+            let space_id = chat
+                .space_id
+                .clone()
+                .ok_or("Chats without a project cannot have instructions")?;
+            let load = state.work_outline(&space_id);
+            let snapshot = load
+                .snapshot()
+                .ok_or("This project's outline is not loaded")?
+                .clone();
+            (space_id, snapshot)
+        };
+        let live = |id: &str| {
+            snapshot
+                .item(id)
+                .filter(|item| item.archived_at.is_none())
+                .map(|item| (item.id.clone(), item.title.clone()))
+        };
+        let item = instructions::assigned_chats(&snapshot)
+            .remove(chat_id)
+            .and_then(|id| live(&id));
+        let parent = item
+            .as_ref()
+            .and_then(|(id, _)| snapshot.item(id)?.parent_work_item_id.clone())
+            .and_then(|id| live(&id));
+        let excerpt: String = excerpt
+            .chars()
+            .take(zeron_proto::limits::MAX_INSTRUCTION_EXCERPT_CHARS)
+            .collect();
+        let draft: String = excerpt
+            .chars()
+            .take(zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS)
+            .collect();
+        let input = cx.new(|cx| {
+            let mut input = ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0);
+            input.set_text(draft, cx);
+            input
+        });
+        let input_events = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.save_instruction_from_chat(window, cx);
+            }
+        });
+        self.begin_work_outline_modal(
+            WorkOutlineModal::FromChat(FromChatDialog {
+                chat_id: chat_id.to_owned(),
+                message_id,
+                excerpt,
+                space_id,
+                target: if item.is_some() {
+                    FromChatTarget::Item
+                } else {
+                    FromChatTarget::SpaceRoot
+                },
+                item,
+                parent,
+                snapshot,
+                input,
+                op: OperationSlot::default(),
+                saving: false,
+                error: None,
+                _input_events: input_events,
+            }),
+            cx,
+        );
+        Ok(())
+    }
+
+    pub(super) fn set_instruction_from_chat_target(
+        &mut self,
+        target: FromChatTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(WorkOutlineModal::FromChat(dialog)) = self.work_outline_modal.as_mut() {
+            dialog.target = target;
+            cx.notify();
+        }
+    }
+
+    /// Save: create the instruction with Chat provenance (`chatId`,
+    /// `messageId`, the copied excerpt and its sha256).
+    pub(super) fn save_instruction_from_chat(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let actions = self.state.read(cx).work_outline_actions();
+        let Some(WorkOutlineModal::FromChat(dialog)) = self.work_outline_modal.as_mut() else {
+            return;
+        };
+        if dialog.saving {
+            return;
+        }
+        let text = dialog.input.read(cx).text().trim().to_owned();
+        if text.is_empty() {
+            dialog.error = Some("Enter the instruction text".into());
+            cx.notify();
+            return;
+        }
+        let max = zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS;
+        if text.chars().count() > max {
+            dialog.error = Some(format!("Instructions are limited to {max} characters"));
+            cx.notify();
+            return;
+        }
+        let scope = match dialog.target_item() {
+            Some((id, _)) => InstructionScope::WorkItem {
+                work_item_id: id.clone(),
+            },
+            None => InstructionScope::SpaceRoot,
+        };
+        let operation_id = dialog.op.id_for(&format!("{scope:?}\n{text}"));
+        let task = actions.create_instruction(CreateWorkItemInstructionParams {
+            space_id: dialog.space_id.clone(),
+            scope,
+            text,
+            placement: None,
+            source: Some(InstructionSource {
+                chat_id: Some(dialog.chat_id.clone()),
+                message_id: dialog.message_id.clone(),
+                content_hash: Some(instructions::excerpt_content_hash(&dialog.excerpt)),
+                excerpt: Some(dialog.excerpt.clone()),
+            }),
+            operation_id,
+        });
+        dialog.saving = true;
+        dialog.error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(WorkOutlineModal::FromChat(dialog)) = this.work_outline_modal.as_mut()
+                else {
+                    return;
+                };
+                dialog.saving = false;
+                match result {
+                    Ok(_) => {
+                        this.resolve_work_outline_modal(true, window, cx);
+                    }
+                    Err(error) => {
+                        dialog.error = Some(instruction_error_text(&error));
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+fn small_note(selector: &'static str, text: String, color: gpui::Hsla) -> gpui::Div {
+    div()
+        .debug_selector(move || selector.into())
+        .text_size(crate::typography::ui_rems(11.5))
+        .text_color(color)
+        .child(SharedString::from(text))
+}
+
+/// The comparison modal card.
+pub(super) fn compare_card(
+    dialog: &CompareDialog,
+    shell: &Shell,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let apply = shell.instruction_apply.get(&dialog.chat_id);
+    let in_flight = apply.is_some_and(|apply| apply.in_flight);
+    let body: AnyElement = match &dialog.phase {
+        ComparePhase::Loading => small_note(
+            "instruction-compare-loading",
+            "Loading\u{2026}".into(),
+            theme.text_muted,
+        )
+        .into_any_element(),
+        ComparePhase::Failed(message) => {
+            small_note("instruction-compare-error", message.clone(), theme.warning)
+                .into_any_element()
+        }
+        ComparePhase::Ready(comparison) => revision_diff::render_comparison(comparison, theme),
+    };
+    let apply_chat = dialog.chat_id.clone();
+    popover::dialog_card(theme)
+        .w(px(560.0))
+        .debug_selector(|| "instruction-compare".into())
+        .child(popover::dialog_title(theme, "Instructions changed"))
+        .child(small_note(
+            "instruction-compare-chat",
+            format!("{} \u{b7} applied revision \u{2192} current", dialog.title),
+            theme.text_muted,
+        ))
+        .when_some(dialog.delivery.clone(), |el, line| {
+            el.child(small_note(
+                "instruction-compare-delivery",
+                line,
+                theme.text_faint,
+            ))
+        })
+        .child(
+            div()
+                .id("instruction-compare-body")
+                .mt(px(10.0))
+                .max_h(px(360.0))
+                .overflow_y_scroll()
+                .child(body),
+        )
+        .when(dialog.working, |el| {
+            el.child(small_note(
+                "instruction-compare-working",
+                "This Chat is working; applying takes effect at the next Turn.".into(),
+                theme.text_muted,
+            ))
+        })
+        .when_some(apply.and_then(|apply| apply.error.clone()), |el, error| {
+            el.child(small_note(
+                "instruction-compare-apply-error",
+                error,
+                theme.warning,
+            ))
+        })
+        .when_some(apply.and_then(|apply| apply.done), |el, done| {
+            el.child(small_note(
+                "instruction-compare-applied",
+                done.into(),
+                theme.text_muted,
+            ))
+        })
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(theme, "Close", "instruction-compare-close")
+                        .id("instruction-compare-close")
+                        .debug_selector(|| "instruction-compare-close".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.resolve_work_outline_modal(false, window, cx);
+                        })),
+                )
+                .child(
+                    popover::btn_primary(
+                        theme,
+                        if in_flight {
+                            "Applying\u{2026}"
+                        } else {
+                            "Apply"
+                        },
+                    )
+                    .id("instruction-compare-apply")
+                    .debug_selector(|| "instruction-compare-apply".into())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_chat_instructions(&apply_chat, cx)
+                    })),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The Create Instruction from Chat card.
+pub(super) fn from_chat_card(
+    dialog: &FromChatDialog,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let option =
+        |id: &'static str, label: String, target: FromChatTarget, cx: &mut Context<Shell>| {
+            let selected = dialog.target == target;
+            popover::menu_row(theme, selected, id)
+                .id(id)
+                .debug_selector(move || id.into())
+                .role(gpui::Role::RadioButton)
+                .aria_label(label.clone())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_instruction_from_chat_target(target, cx)
+                }))
+                .child(
+                    icon(icons::CHECK)
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(if selected {
+                            theme.text
+                        } else {
+                            gpui::transparent_black()
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(label)),
+                )
+        };
+    let mut targets = div().mt(px(10.0)).flex().flex_col().gap(px(2.0));
+    if let Some((_, title)) = &dialog.item {
+        targets = targets.child(option(
+            "instruction-from-chat-target-item",
+            format!("This item \u{b7} {title}"),
+            FromChatTarget::Item,
+            cx,
+        ));
+    }
+    if let Some((_, title)) = &dialog.parent {
+        targets = targets.child(option(
+            "instruction-from-chat-target-parent",
+            format!("Parent workstream \u{b7} {title}"),
+            FromChatTarget::Parent,
+            cx,
+        ));
+    }
+    targets = targets.child(option(
+        "instruction-from-chat-target-root",
+        "Space root".into(),
+        FromChatTarget::SpaceRoot,
+        cx,
+    ));
+    let target_id = dialog.target_item().map(|(id, _)| id.clone());
+    let target_label = match &target_id {
+        Some(id) => model::path_label(
+            model::item_path(&dialog.snapshot, id)
+                .iter()
+                .map(|item| item.title.as_str()),
+        ),
+        None => "Space root".into(),
+    };
+    let descendants =
+        instructions::affected_descendant_count(&dialog.snapshot, target_id.as_deref());
+    let reach = match target_id {
+        Some(_) => format!(
+            "{target_label} \u{b7} also reaches {}",
+            instructions::plural(descendants, "descendant item", "descendant items")
+        ),
+        None => format!(
+            "{target_label} \u{b7} reaches {}",
+            instructions::plural(descendants, "work item", "work items")
+        ),
+    };
+    popover::dialog_card(theme)
+        .w(px(480.0))
+        .debug_selector(|| "instruction-from-chat".into())
+        .child(popover::dialog_title(theme, "Create instruction from Chat"))
+        .child(targets)
+        .child(small_note("instruction-from-chat-reach", reach, theme.text_muted).mt(px(8.0)))
+        .child(
+            div()
+                .mt(px(8.0))
+                .w_full()
+                .min_h(px(64.0))
+                .max_h(px(220.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border_strong)
+                .bg(theme.input_bg)
+                .child(dialog.input.clone()),
+        )
+        .when_some(dialog.error.clone(), |el, error| {
+            el.child(small_note("instruction-from-chat-error", error, theme.warning).mt(px(6.0)))
+        })
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(theme, "Cancel", "instruction-from-chat-cancel")
+                        .id("instruction-from-chat-cancel")
+                        .debug_selector(|| "instruction-from-chat-cancel".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.resolve_work_outline_modal(false, window, cx);
+                        })),
+                )
+                .child(
+                    popover::btn_primary(
+                        theme,
+                        if dialog.saving {
+                            "Saving\u{2026}"
+                        } else {
+                            "Save"
+                        },
+                    )
+                    .id("instruction-from-chat-save")
+                    .debug_selector(|| "instruction-from-chat-save".into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_instruction_from_chat(window, cx)
+                    })),
+                ),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::work_outline::WorkOutlineActions;
+    use crate::work_outline::instructions::fixture;
+    use crate::work_outline::store::fixture_ids::*;
+    use std::sync::Mutex;
+
+    type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
+
+    fn test_shell<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+    ) -> (Entity<Shell>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let data_dir = dir.to_path_buf();
+        cx.add_window_view(move |_, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |state, _| {
+                state.connection = crate::state::ConnectionStatus::Ready;
+                state.workspace_scope = Some(WorkspaceScope::Local);
+                state.auth = Some(zeron_proto::AuthState::SignedOut);
+            });
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: data_dir.clone(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        })
+    }
+
+    /// Seed one Space with the instruction fixture and a scripted engine
+    /// that records every call and answers through `reply`.
+    fn seed(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        snapshot: WorkOutlineSnapshot,
+        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Calls {
+        let calls: Calls = Arc::default();
+        let sink = calls.clone();
+        let actions = WorkOutlineActions::scripted(Arc::new(move |_, params| {
+            sink.lock().unwrap().push(params.clone());
+            reply(&params)
+        }));
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.spaces = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                ];
+                state.chats = [CHAT_API, CHAT_AUTH, CHAT_UI]
+                    .iter()
+                    .map(|id| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": id, "deviceId": "d", "archived": false,
+                            "createdAt": "2026-01-01T00:00:00Z", "spaceId": "s1",
+                            "title": format!("Chat {id}"),
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+                state.set_work_outline_visible(vec!["s1".into()]);
+                assert!(state.apply_work_outline_frame("s1", snapshot));
+                state.work_outline_actions_override = Some(actions);
+            })
+        });
+        calls
+    }
+
+    fn draw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+    }
+
+    fn ok_ids(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+        Ok(match params["op"].as_str() {
+            Some("createInstructionRevision") => serde_json::json!({"revisionId": "r-new"}),
+            Some("applyInstructionRevision") => serde_json::json!({"applicationId": "a-new"}),
+            Some("createWorkItemInstruction") => serde_json::json!({"instructionId": "i-new"}),
+            _ => serde_json::json!({}),
+        })
+    }
+
+    #[gpui::test]
+    fn drift_status_shows_only_for_drifted_or_undelivered_chats(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let mut snapshot = fixture::snapshot("s1");
+        // chat-auth: delivered == selected, no drift.
+        snapshot.chat_instruction_states[1].delivered_revision_id = Some(fixture::R_AUTH.into());
+        seed(&shell, cx, snapshot, ok_ids);
+        shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            assert!(
+                shell
+                    .render_chat_instruction_status(CHAT_API, &theme, cx)
+                    .is_some()
+            );
+            assert!(
+                shell
+                    .render_chat_instruction_status(CHAT_AUTH, &theme, cx)
+                    .is_none()
+            );
+            assert!(
+                shell
+                    .render_chat_instruction_status(CHAT_UI, &theme, cx)
+                    .is_none()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn apply_creates_then_applies_with_stable_operation_ids(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let failures = Arc::new(Mutex::new(1));
+        let calls = seed(&shell, cx, fixture::snapshot("s1"), move |params| {
+            if params["op"] == "applyInstructionRevision" {
+                let mut left = failures.lock().unwrap();
+                if *left > 0 {
+                    *left -= 1;
+                    return Err(zeron_rpc::RpcError::Failed(
+                        "work-outline/invalid: try again".into(),
+                    ));
+                }
+            }
+            ok_ids(params)
+        });
+        shell.update(cx, |shell, cx| shell.apply_chat_instructions(CHAT_API, cx));
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            let apply = &shell.instruction_apply[CHAT_API];
+            assert!(!apply.in_flight);
+            assert_eq!(apply.error.as_deref(), Some("try again"));
+        });
+        // Retry: same operation ids for the same inputs.
+        shell.update(cx, |shell, cx| shell.apply_chat_instructions(CHAT_API, cx));
+        cx.run_until_parked();
+        let calls = calls.lock().unwrap().clone();
+        let ops: Vec<_> = calls.iter().map(|c| c["op"].as_str().unwrap()).collect();
+        assert_eq!(
+            ops,
+            [
+                "createInstructionRevision",
+                "applyInstructionRevision",
+                "createInstructionRevision",
+                "applyInstructionRevision"
+            ]
+        );
+        assert_eq!(calls[0]["workItemId"], API);
+        assert_eq!(calls[0]["operationId"], calls[2]["operationId"]);
+        assert_eq!(calls[1]["operationId"], calls[3]["operationId"]);
+        assert_ne!(calls[0]["operationId"], calls[1]["operationId"]);
+        assert_eq!(calls[1]["chatId"], CHAT_API);
+        assert_eq!(calls[1]["revisionId"], "r-new");
+        assert_eq!(calls[1]["reason"], "explicit");
+        shell.read_with(cx, |shell, _| {
+            let apply = &shell.instruction_apply[CHAT_API];
+            assert_eq!(apply.error, None);
+            assert_eq!(apply.done, Some("Applied"));
+        });
+    }
+
+    #[gpui::test]
+    fn apply_against_an_unsupported_engine_explains_calmly(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(&shell, cx, fixture::snapshot("s1"), |_| {
+            Err(zeron_rpc::RpcError::Failed(
+                "work-outline/unsupported: instruction operations are not available yet".into(),
+            ))
+        });
+        shell.update(cx, |shell, cx| shell.apply_chat_instructions(CHAT_API, cx));
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1, "apply is not attempted");
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(
+                shell.instruction_apply[CHAT_API].error.as_deref(),
+                Some("Instructions aren\u{2019}t available on this host yet")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn compare_renders_the_generic_diff_and_fetches_a_missing_revision(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-compare").is_some());
+        assert!(cx.debug_bounds("instruction-comparison-changed").is_some());
+        assert!(cx.debug_bounds("instruction-comparison-diff").is_some());
+        shell.update_in(cx, |shell, window, cx| {
+            shell.cancel_work_outline_modal(window, cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-compare").is_none());
+
+        // The applied revision is not in the snapshot: fetched by query.
+        let full = fixture::snapshot("s1");
+        let old = full.revision(fixture::R_API_OLD).unwrap().clone();
+        let mut missing = full.clone();
+        missing.revisions.clear();
+        let reply = serde_json::to_value(
+            zeron_proto::WorkOutlineQueryResponse::GetInstructionRevision(old),
+        )
+        .unwrap();
+        let calls = seed(&shell, cx, missing, move |params| {
+            if params.get("query").is_some() {
+                Ok(reply.clone())
+            } else {
+                ok_ids(params)
+            }
+        });
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        assert_eq!(calls.lock().unwrap()[0]["query"], "getInstructionRevision");
+        assert!(cx.debug_bounds("instruction-comparison-diff").is_some());
+    }
+
+    #[gpui::test]
+    fn create_from_chat_saves_with_provenance_to_the_chosen_target(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        let excerpt = "We must never log bearer tokens.";
+        shell.update_in(cx, |shell, window, cx| {
+            shell
+                .open_instruction_from_chat_with(
+                    CHAT_AUTH,
+                    Some("m-7".into()),
+                    excerpt.into(),
+                    window,
+                    cx,
+                )
+                .unwrap()
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-from-chat").is_some());
+        assert!(
+            cx.debug_bounds("instruction-from-chat-target-item")
+                .is_some()
+        );
+        assert!(
+            cx.debug_bounds("instruction-from-chat-target-parent")
+                .is_some()
+        );
+        assert!(
+            cx.debug_bounds("instruction-from-chat-target-root")
+                .is_some()
+        );
+        assert!(cx.debug_bounds("instruction-from-chat-reach").is_some());
+        let parent = cx
+            .debug_bounds("instruction-from-chat-target-parent")
+            .unwrap()
+            .center();
+        cx.simulate_click(parent, gpui::Modifiers::default());
+        draw(cx);
+        let save = cx
+            .debug_bounds("instruction-from-chat-save")
+            .unwrap()
+            .center();
+        cx.simulate_click(save, gpui::Modifiers::default());
+        draw(cx);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0];
+        assert_eq!(call["op"], "createWorkItemInstruction");
+        assert_eq!(call["spaceId"], "s1");
+        assert_eq!(call["scope"]["type"], "workItem");
+        assert_eq!(call["scope"]["workItemId"], API);
+        assert_eq!(call["text"], excerpt);
+        assert_eq!(call["source"]["chatId"], CHAT_AUTH);
+        assert_eq!(call["source"]["messageId"], "m-7");
+        assert_eq!(call["source"]["excerpt"], excerpt);
+        assert_eq!(
+            call["source"]["contentHash"],
+            instructions::excerpt_content_hash(excerpt)
+        );
+        shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    #[test]
+    fn excerpt_prefers_an_anchored_selection_then_the_last_assistant_message() {
+        let rows = [
+            ExcerptRow {
+                row_id: "m1",
+                message_id: "m1",
+                user: true,
+                copy_text: Some("question"),
+            },
+            ExcerptRow {
+                row_id: "m2:0",
+                message_id: "m2",
+                user: false,
+                copy_text: None,
+            },
+            ExcerptRow {
+                row_id: "m2:1",
+                message_id: "m2",
+                user: false,
+                copy_text: Some("Answer text"),
+            },
+        ];
+        assert_eq!(
+            excerpt_from_transcript(&rows, Some(("m2:1:3", "  chosen  "))),
+            Some((Some("m2".into()), "chosen".into()))
+        );
+        // A selection anchored elsewhere (another surface, or a row id that
+        // merely shares a prefix) is ignored.
+        assert_eq!(
+            excerpt_from_transcript(&rows, Some(("m2:10:0", "x"))),
+            Some((Some("m2".into()), "Answer text".into()))
+        );
+        assert_eq!(
+            excerpt_from_transcript(&rows, Some(("other:0", "x"))),
+            Some((Some("m2".into()), "Answer text".into()))
+        );
+        assert_eq!(
+            excerpt_from_transcript(&rows[..1], None),
+            None,
+            "user rows are never the fallback"
+        );
+    }
+}

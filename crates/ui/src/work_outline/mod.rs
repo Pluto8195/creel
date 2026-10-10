@@ -40,7 +40,7 @@ pub(crate) use actions::WorkOutlineActions;
 #[allow(unused_imports)]
 pub(crate) use command::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
-    WorkOutlineParentChoice,
+    WorkOutlineDriftRequest, WorkOutlineParentChoice,
 };
 #[allow(unused_imports)]
 pub(crate) use store::{WorkOutlineLoad, WorkOutlineStore};

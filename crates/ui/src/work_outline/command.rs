@@ -105,17 +105,11 @@ impl WorkOutlineCommand {
             .find(|command| command.shortcut_id() == id)
     }
 
-    /// Whether the command appears in the command palette. The three
-    /// instruction / required-action commands are registered as shortcuts but
-    /// stay out of the palette until their milestone (instructions in M2,
-    /// required actions in M4): the Overview side has nothing to run for them.
+    /// Whether the command appears in the command palette. Open Required
+    /// Actions is registered as a shortcut but stays out of the palette until
+    /// Milestone 4: the Overview side has nothing to run for it yet.
     pub(crate) fn in_palette(self) -> bool {
-        !matches!(
-            self,
-            Self::OpenEffectiveInstructions
-                | Self::CreateInstructionFromChat
-                | Self::OpenRequiredActions
-        )
+        !matches!(self, Self::OpenRequiredActions)
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
@@ -186,6 +180,18 @@ pub(crate) struct WorkOutlineConfirmRequest {
     pub on_decision: Box<dyn FnOnce(bool, &mut Window, &mut gpui::App) + 'static>,
 }
 
+/// The drift confirmation (Milestone 2): shown before a change that alters
+/// the current effective instructions of at least one assigned Chat
+/// (associate/move a Chat, toggle inheritance, edit or archive an inherited
+/// instruction, move an item). `impact` is computed client-side
+/// (`instructions::drift_impact`). `on_decision` gets `true` = confirmed.
+pub(crate) struct WorkOutlineDriftRequest {
+    pub title: SharedString,
+    pub confirm_label: SharedString,
+    pub impact: super::instructions::DriftImpact,
+    pub on_decision: Box<dyn FnOnce(bool, &mut Window, &mut gpui::App) + 'static>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn six_milestone_one_commands_are_in_the_palette() {
+    fn eight_commands_are_in_the_palette_and_required_actions_waits() {
         let listed: Vec<_> = WorkOutlineCommand::ALL
             .into_iter()
             .filter(|c| c.in_palette())
@@ -257,8 +263,11 @@ mod tests {
                 WorkOutlineCommand::RenameWorkItem,
                 WorkOutlineCommand::MoveWorkItem,
                 WorkOutlineCommand::AssociateChatWithWorkItem,
+                WorkOutlineCommand::OpenEffectiveInstructions,
+                WorkOutlineCommand::CreateInstructionFromChat,
             ]
         );
+        assert!(!WorkOutlineCommand::OpenRequiredActions.in_palette());
     }
 
     #[test]

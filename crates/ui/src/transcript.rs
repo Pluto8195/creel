@@ -3470,6 +3470,11 @@ impl Transcript {
         &self.rows
     }
 
+    /// The Chat whose rows this transcript shows.
+    pub(crate) fn chat_id(&self) -> Option<&str> {
+        self.chat_id.as_deref()
+    }
+
     pub(crate) fn list_state(&self) -> &ListState {
         &self.list
     }
