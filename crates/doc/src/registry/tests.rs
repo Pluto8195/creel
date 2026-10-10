@@ -250,7 +250,7 @@ fn device(id: &str, name: &str) -> Device {
     }
 }
 
-fn chat(id: &str, device_id: &str) -> Chat {
+pub(super) fn chat(id: &str, device_id: &str) -> Chat {
     Chat {
         id: id.into(),
         device_id: device_id.into(),
@@ -284,7 +284,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
     }
 }
 
-fn space(id: &str, device_id: &str, path: &str) -> Space {
+pub(super) fn space(id: &str, device_id: &str, path: &str) -> Space {
     Space {
         id: id.into(),
         device_id: device_id.into(),
@@ -310,7 +310,7 @@ fn session(chat_id: &str, device_id: &str, status: SessionStatus) -> Session {
 
 /// Stand-in for the server: applies every pushable batch from `docs` to a row
 /// table with the SAME merge fn, acks, and broadcasts merged rows to all.
-fn server_round(
+pub(super) fn server_round(
     server: &mut HashMap<(String, String), RegistryRow>,
     seq: &mut u64,
     docs: &mut [&mut RegistryDoc],

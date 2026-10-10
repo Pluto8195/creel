@@ -12,16 +12,7 @@ impl RegistryDoc {
             .overlay_row(kind, id)
             .and_then(|r| r.max_clock().map(str::to_owned))
         {
-            let mut parts = clock.splitn(3, '-');
-            if let (Some(ms), Some(counter)) = (
-                parts.next().and_then(|v| v.parse::<i64>().ok()),
-                parts.next().and_then(|v| v.parse::<u32>().ok()),
-            ) {
-                if (ms, counter) > (self.clock.last_ms, self.clock.counter) {
-                    self.clock.last_ms = ms;
-                    self.clock.counter = counter;
-                }
-            }
+            self.observe_clock(&clock);
         }
     }
 
