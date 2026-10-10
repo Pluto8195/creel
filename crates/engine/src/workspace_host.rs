@@ -694,6 +694,39 @@ impl WorkspaceHost {
         Ok(())
     }
 
+    // ── Work Outline (registry rows; policy in `crate::work_outline`) ──────
+
+    /// The registry change counter: bumped on every local mutation and every
+    /// applied server frame. Composed watches (`WatchWorkOutline`) recompute
+    /// from it.
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.inner.changed_tx.subscribe()
+    }
+
+    /// Clone the Work Outline inputs of one Space under the registry lock;
+    /// the caller materializes after the lock is released (the lock also
+    /// guards sync-frame application).
+    pub fn work_outline_inputs(&self, space_id: &str) -> zeron_doc::WorkOutlineInputs {
+        let synced = self.registry_synced();
+        self.read(|doc| doc.work_outline_inputs(space_id, synced))
+    }
+
+    /// Apply one Work Outline mutation as one registry write.
+    pub fn work_outline_mutate(
+        &self,
+        mutation: &zeron_proto::WorkOutlineMutation,
+        actor: &zeron_proto::WorkOutlineActor,
+    ) -> Result<zeron_proto::WorkOutlineMutateReply, zeron_proto::WorkOutlineError> {
+        let now = Utc::now().timestamp_millis();
+        self.mutate(|doc| doc.apply_work_outline_mutation(mutation, actor, now))
+    }
+
+    /// Tombstone outline rows whose Space is gone. Destructive on a stale
+    /// view: callers gate on [`Self::registry_synced`].
+    pub fn sweep_work_outline_orphans(&self) -> usize {
+        self.mutate(|doc| doc.sweep_work_outline_orphans())
+    }
+
     // ── watches (WatchChats / WatchDevices / merged WatchSessions) ──────────
 
     pub fn watch_chats(&self) -> watch::Receiver<Vec<Chat>> {

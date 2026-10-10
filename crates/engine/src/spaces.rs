@@ -317,6 +317,19 @@ fn sweep_orphans(inner: &Arc<SpacesSyncInner>) {
             tracing::warn!(chat = %chat.id, error = %err, "spaces: orphan delete failed");
         }
     }
+    // Work Outline rows of Spaces that are gone (a concurrent create the
+    // `delete_space` cascade missed, or a peer that predates the cascade).
+    // Any device may sweep: the dead Space's owner cannot be consulted. Same
+    // synced gate as above; the write kill switch covers deletes too.
+    if !crate::work_outline::writes_disabled() {
+        let swept = inner.workspace.sweep_work_outline_orphans();
+        if swept > 0 {
+            tracing::info!(
+                rows = swept,
+                "tombstoned orphaned work outline rows (space gone)"
+            );
+        }
+    }
 }
 
 /// Spaces-watch follower + repair tick. Weak handles so dropping the service

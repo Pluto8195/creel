@@ -13,9 +13,7 @@ pub mod capabilities {
         "message-queue-clean-attachment-text-v1";
     pub const MESSAGE_QUEUE_EDIT_LEASE_V1: &str = "message-queue-edit-lease-v1";
     /// Work Outline rows are readable and writable on this host (registry
-    /// rows, `WatchWorkOutline`, `WorkOutlineMutate`). Deliberately NOT in
-    /// [`CURRENT`] until the engine implements them: a host must not
-    /// advertise a surface that still answers `unknown method`.
+    /// rows, `WatchWorkOutline`, `WorkOutlineMutate`).
     pub const WORK_OUTLINE_V1: &str = "work-outline-v1";
 
     pub const CURRENT: &[&str] = &[
@@ -24,6 +22,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_ATTACHMENTS_V1,
         MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
         MESSAGE_QUEUE_EDIT_LEASE_V1,
+        WORK_OUTLINE_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -101,7 +100,8 @@ mod tests {
                     "message-queue-actions-v1",
                     "message-queue-attachments-v1",
                     "message-queue-clean-attachment-text-v1",
-                    "message-queue-edit-lease-v1"
+                    "message-queue-edit-lease-v1",
+                    "work-outline-v1"
                 ],
             })
         );

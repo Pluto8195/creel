@@ -42,6 +42,10 @@ pub const KIND_SIDEBAR_PINS: &str = "sidebarPins";
 mod sidebar_pins;
 mod sidebar_sections;
 pub mod work_outline;
+pub use work_outline::{
+    KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES, KIND_WORK_ITEMS,
+    OutlineChat, WORK_OUTLINE_KINDS, WorkOutlineInputs, materialize_work_outline,
+};
 
 /// Whether a row exists in the overlay view, and if not, whether it was
 /// tombstoned (registry audit rule R1). `overlay_row` hides tombstones, so

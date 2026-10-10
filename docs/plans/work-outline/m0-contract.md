@@ -243,3 +243,49 @@ resume cwd mismatch is an error, and `zeron/*` branch auto-minting and auto-rena
 variable on an unauthenticated loopback socket, and `create_chat` is not idempotent. Milestone 4
 requires an engine-minted per-Run token, an allow-listed agent RPC surface, and a mandatory
 idempotency key.
+
+## Milestone 1 discoveries
+
+Recorded by the Milestone 1 backend (`crates/doc/src/registry/work_outline.rs`,
+`crates/engine/src/work_outline.rs`). Each item is either a faithful reading of an ambiguous rule
+or a gap later milestones must close.
+
+1. **Durable vs device-local idempotency.** Only records with derived ids are durably idempotent:
+   `createWorkItem` (`derive_id(operationId, "item")`) stamps an additive, immutable `inputsHash`
+   field on the `workItems` row, so a replay after a restart returns the same id and a replay with
+   other inputs is `OperationConflict`. External references are content-keyed and assignments are
+   keyed by Chat id, so their replays converge structurally. Updates, moves, archives, restores,
+   and disassociations are deduplicated by an in-memory per-engine cache (4,096 most recent
+   operation ids, same id + same inputs → the first reply without a write; other inputs →
+   `OperationConflict`). A retry of such an operation after an engine restart re-applies it with
+   last-writer-wins semantics. A durable operation ledger (idempotency audit section 6, optional
+   `workOutlineOperation` kind) is the follow-up if that window matters.
+2. **Revival exceptions to R1.** An explicit `assignChatToWorkItem` may revive a tombstoned
+   assignment row (assignment rows are only tombstoned by Space cleanup, and the Chat id is the
+   only possible key), and re-adding a removed external reference revives its content-derived row
+   (registry audit 7.5). A retried `createWorkItem` whose row is tombstoned fails with `notFound`.
+3. **Re-keyed siblings keep their stored parent.** Tie-group and overflow re-keys write group P
+   with the sibling's stored raw `parentWorkItemId` (not its repaired parent), so a derived repair
+   stays derived. Every op in one batch gets its own fresh HLC: two ops on one row sharing a clock
+   would make the second a no-op under strict `>` LWW.
+4. **Archived targets.** Creating under, moving under, moving descendants to, or assigning a Chat
+   to an archived work item fails with `archived`. Moving or renaming an archived item is allowed.
+   Restore clears the item and descendants whose `archiveCause` is `cascade`, stopping at
+   descendants the user archived themselves.
+5. **Raw-cycle repair on create too.** The "persist the pending cycle repair in the same batch"
+   rule is applied to every write that places items under a destination (create, move, archive
+   with `moveDescendants`), not only moves.
+6. **Rollup rule.** Status counts cover the item and all descendants that are not archived (an
+   archived item is not counted; its non-archived descendants are). `associatedChatCount` counts
+   the item's own `associated` Chats only (a `danglingChat` is listed in `chatIds` but not counted).
+7. **Unattributable repairs.** A `workItems` row without a decodable `spaceId` cannot be assigned to
+   a Space, so its `missingSpace`/`malformed` marker appears in every Space's snapshot. Assignment
+   and reference markers appear only where the Chat or work item is attributable.
+8. **Size gate scope.** The 15,000-unit op gate applies to outline writers and the public
+   `RegistryDoc::write_ops`; pre-existing writers (chats, sessions, sidebar) are unchanged except
+   that `enqueue_ops` now also chunks at 512,000 serialized units per batch (count chunking at 400
+   is unchanged for small ops).
+9. **Not done in Milestone 1 backend.** Local-to-synced import (registry audit C6) does not copy
+   outline rows; outline rows are non-migrating until `local_import` is extended. No edge
+   `validateOp` backstop (deferred per section 3.6). `repairWorkOutline` persists cycle victims and
+   invalid order keys only; missing parents stay derived (the parent may not have synced yet).

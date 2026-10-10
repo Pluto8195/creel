@@ -736,6 +736,8 @@ pub struct EngineRpc {
     /// plain field built fresh here rather than threaded through a
     /// `with_*` builder from `EngineCore`.
     subagent_transcript_cache: crate::subagent_transcript::TranscriptCache,
+    /// `WatchWorkOutline` / `WorkOutlineMutate` (local replica, never forwarded).
+    work_outline: std::sync::Arc<crate::work_outline::WorkOutlineService>,
     engine_info: EngineInfo,
 }
 
@@ -762,6 +764,9 @@ impl EngineRpc {
             cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
             capabilities: zeron_proto::capabilities::current(),
         };
+        let work_outline = std::sync::Arc::new(crate::work_outline::WorkOutlineService::new(
+            workspace.clone(),
+        ));
         Self {
             sessions,
             doc_host,
@@ -784,6 +789,7 @@ impl EngineRpc {
             pr_ticket_cache: None,
             context_usage: None,
             subagent_transcript_cache: crate::subagent_transcript::TranscriptCache::new(),
+            work_outline,
             engine_info,
         }
     }
@@ -2210,6 +2216,21 @@ impl RpcService for EngineRpc {
             }
             methods::WATCH_CHATS => {
                 Ok(RpcReply::Stream(watch_stream(self.workspace.watch_chats())))
+            }
+            methods::WATCH_WORK_OUTLINE => {
+                let p: zeron_proto::WatchWorkOutlineParams = parse_params(params)?;
+                Ok(RpcReply::Stream(self.work_outline.watch(p.space_id)))
+            }
+            methods::WORK_OUTLINE_MUTATE => {
+                let mutation: zeron_proto::WorkOutlineMutation = parse_params(params)?;
+                let service = self.work_outline.clone();
+                // Materializing placement over a large outline is CPU work
+                // under the registry lock: keep it off the async workers.
+                let reply = tokio::task::spawn_blocking(move || service.mutate(&mutation))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                RpcReply::value(&reply)
             }
             methods::WATCH_SIDEBAR_PREFERENCES => Ok(RpcReply::Stream(watch_stream(
                 self.workspace.watch_sidebar_preferences(),
@@ -3849,8 +3870,8 @@ mod tests {
 
     /// Work Outline reads and writes are pure registry operations served by
     /// the local replica (like `WATCH_CHATS` and `MUTATE`): never relay-forwarded.
-    /// Until the engine handlers land they fall through to `UnknownMethod`,
-    /// which clients treat as "host does not support the Work Outline".
+    /// Hosts that predate the feature answer `UnknownMethod`, which clients
+    /// treat as "host does not support the Work Outline".
     #[test]
     fn work_outline_methods_are_local_not_forwardable() {
         assert!(!forwardable(methods::WATCH_WORK_OUTLINE));
