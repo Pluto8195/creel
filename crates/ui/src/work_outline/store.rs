@@ -126,6 +126,20 @@ impl WorkOutlineStore {
         self.loads.keys().map(String::as_str)
     }
 
+    /// Unresolved user-action requests per Space: the sum of each live
+    /// (non-archived) item's own `unresolved_user_action_count`. Spaces with
+    /// no outstanding request are omitted. Attention plumbing for the later
+    /// notification detector; Milestone 1 has no consumer that notifies.
+    pub(crate) fn unresolved_user_action_totals(&self) -> HashMap<String, u32> {
+        self.loads
+            .iter()
+            .filter_map(|(space_id, load)| {
+                let total = unresolved_user_action_total(load.snapshot()?);
+                (total > 0).then(|| (space_id.clone(), total))
+            })
+            .collect()
+    }
+
     /// A ready store holding [`fixture_snapshot`] for `space_id`.
     pub(crate) fn from_fixture(space_id: &str) -> Self {
         let mut store = Self::new();
@@ -135,6 +149,17 @@ impl WorkOutlineStore {
         );
         store
     }
+}
+
+/// Own unresolved user-action requests summed over a snapshot's live items.
+/// Archived items are excluded; an unavailable snapshot has no items.
+pub(crate) fn unresolved_user_action_total(snapshot: &WorkOutlineSnapshot) -> u32 {
+    snapshot
+        .items
+        .iter()
+        .filter(|item| item.archived_at.is_none())
+        .map(|item| item.rollup.unresolved_user_action_count)
+        .fold(0, u32::saturating_add)
 }
 
 // --------------------------------------------------------------------------
@@ -439,6 +464,24 @@ pub(crate) fn fixture_snapshot(space_id: &str) -> WorkOutlineSnapshot {
 mod tests {
     use super::fixture_ids::*;
     use super::*;
+
+    #[test]
+    fn unresolved_user_actions_total_skips_archived_items_and_empty_spaces() {
+        let mut store = WorkOutlineStore::from_fixture("space-1");
+        assert_eq!(
+            store.unresolved_user_action_totals().get("space-1"),
+            Some(&1)
+        );
+        // Archive the item that carries the request: the total drops out.
+        let mut snapshot = fixture_snapshot("space-1");
+        let ui = snapshot.items.iter_mut().find(|i| i.id == UI).unwrap();
+        ui.archived_at = Some(1);
+        store.set("space-1", WorkOutlineLoad::Ready(Arc::new(snapshot)));
+        assert!(store.unresolved_user_action_totals().is_empty());
+        // Loading / unsupported Spaces contribute nothing.
+        store.set("space-2", WorkOutlineLoad::Unsupported);
+        assert!(store.unresolved_user_action_totals().is_empty());
+    }
 
     #[test]
     fn fixture_is_three_levels_deep_in_preorder() {

@@ -5,6 +5,9 @@
 //! `Overview::run_work_outline_command`. This file only names the commands; it
 //! owns no behavior.
 use gpui::{SharedString, Window};
+use zeron_proto::DescendantArchivePolicy;
+
+use crate::settings::ShortcutId;
 
 /// The Work Outline commands, in palette order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,6 +51,20 @@ impl WorkOutlineCommand {
         }
     }
 
+    /// Palette glyph. Names come from `crate::icons`.
+    pub(crate) fn icon(self) -> &'static str {
+        use crate::icons;
+        match self {
+            Self::OpenOutline => icons::LIST,
+            Self::CreateWorkItem | Self::CreateChildWorkItem => icons::ADD_CIRCLE,
+            Self::RenameWorkItem => icons::PEN,
+            Self::MoveWorkItem => icons::SORT_VERTICAL,
+            Self::AssociateChatWithWorkItem => icons::CHAT_ROUND_LINE,
+            Self::OpenEffectiveInstructions | Self::CreateInstructionFromChat => icons::DOCUMENT,
+            Self::OpenRequiredActions => icons::BELL,
+        }
+    }
+
     /// Stable id: camelCase, never renamed. It is the persisted/keymap field
     /// name (`KeymapConfig`) and the test selector suffix, so it must not
     /// change once shipped.
@@ -63,6 +80,42 @@ impl WorkOutlineCommand {
             Self::CreateInstructionFromChat => "createInstructionFromChat",
             Self::OpenRequiredActions => "openRequiredActions",
         }
+    }
+
+    /// The rebindable shortcut registered for this command. Every command has
+    /// one, including those whose palette entry waits for a later milestone.
+    pub(crate) fn shortcut_id(self) -> ShortcutId {
+        match self {
+            Self::OpenOutline => ShortcutId::OpenOutline,
+            Self::CreateWorkItem => ShortcutId::CreateWorkItem,
+            Self::CreateChildWorkItem => ShortcutId::CreateChildWorkItem,
+            Self::RenameWorkItem => ShortcutId::RenameWorkItem,
+            Self::MoveWorkItem => ShortcutId::MoveWorkItem,
+            Self::AssociateChatWithWorkItem => ShortcutId::AssociateChatWithWorkItem,
+            Self::OpenEffectiveInstructions => ShortcutId::OpenEffectiveInstructions,
+            Self::CreateInstructionFromChat => ShortcutId::CreateInstructionFromChat,
+            Self::OpenRequiredActions => ShortcutId::OpenRequiredActions,
+        }
+    }
+
+    /// The command a shortcut id fires, if it is a Work Outline shortcut.
+    pub(crate) fn from_shortcut_id(id: ShortcutId) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|command| command.shortcut_id() == id)
+    }
+
+    /// Whether the command appears in the command palette. The three
+    /// instruction / required-action commands are registered as shortcuts but
+    /// stay out of the palette until their milestone (instructions in M2,
+    /// required actions in M4): the Overview side has nothing to run for them.
+    pub(crate) fn in_palette(self) -> bool {
+        !matches!(
+            self,
+            Self::OpenEffectiveInstructions
+                | Self::CreateInstructionFromChat
+                | Self::OpenRequiredActions
+        )
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
@@ -90,6 +143,33 @@ impl WorkOutlineCommand {
             Self::AssociateChatWithWorkItem | Self::CreateInstructionFromChat
         )
     }
+}
+
+/// A candidate new parent in [`WorkOutlineArchiveRequest`]. `work_item_id:
+/// None` is the Space root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkOutlineParentChoice {
+    pub work_item_id: Option<String>,
+    /// Path label shown in the picker (for example `Launch v2 / API`).
+    pub label: SharedString,
+}
+
+/// The archive confirmation for an item that has descendants: the user must
+/// choose explicitly between archiving the whole subtree and moving the
+/// descendants to a parent first (never an implicit default). The Overview
+/// supplies the valid destinations (live items outside the archived subtree,
+/// plus the Space root); the first entry is preselected.
+///
+/// `on_decision` receives the chosen policy, or `None` when the dialog was
+/// cancelled (Cancel, Escape). An item without descendants needs no choice:
+/// the dialog degrades to a plain confirmation and reports
+/// `DescendantArchivePolicy::ArchiveDescendants`.
+pub(crate) struct WorkOutlineArchiveRequest {
+    pub item_title: SharedString,
+    pub descendant_count: usize,
+    pub parents: Vec<WorkOutlineParentChoice>,
+    pub on_decision:
+        Box<dyn FnOnce(Option<DescendantArchivePolicy>, &mut Window, &mut gpui::App) + 'static>,
 }
 
 /// A confirmation the Overview asks the Shell to show as a window modal
@@ -144,6 +224,39 @@ mod tests {
                 "openEffectiveInstructions",
                 "createInstructionFromChat",
                 "openRequiredActions",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_command_has_a_distinct_shortcut_that_maps_back() {
+        let mut seen = HashSet::new();
+        for command in WorkOutlineCommand::ALL {
+            let id = command.shortcut_id();
+            assert!(seen.insert(id), "{command:?} shares a shortcut id");
+            assert_eq!(WorkOutlineCommand::from_shortcut_id(id), Some(command));
+        }
+        assert_eq!(
+            WorkOutlineCommand::from_shortcut_id(ShortcutId::NewSession),
+            None
+        );
+    }
+
+    #[test]
+    fn six_milestone_one_commands_are_in_the_palette() {
+        let listed: Vec<_> = WorkOutlineCommand::ALL
+            .into_iter()
+            .filter(|c| c.in_palette())
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                WorkOutlineCommand::OpenOutline,
+                WorkOutlineCommand::CreateWorkItem,
+                WorkOutlineCommand::CreateChildWorkItem,
+                WorkOutlineCommand::RenameWorkItem,
+                WorkOutlineCommand::MoveWorkItem,
+                WorkOutlineCommand::AssociateChatWithWorkItem,
             ]
         );
     }

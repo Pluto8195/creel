@@ -851,6 +851,11 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
     "Jump to session 9",
 ];
 
+/// Work Outline commands registered as rebindable shortcuts (every
+/// `WorkOutlineCommand`, including the ones whose palette entry waits for a
+/// later milestone).
+pub const WORK_OUTLINE_SHORTCUTS: usize = 9;
+
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
 /// or past [`JUMP_SLOTS`] has no combo and no label, so it reads as unbound
 /// rather than panicking.
@@ -870,11 +875,20 @@ pub enum ShortcutId {
     NextSession,
     PrevSession,
     ArchiveSession,
+    OpenOutline,
+    CreateWorkItem,
+    CreateChildWorkItem,
+    RenameWorkItem,
+    MoveWorkItem,
+    AssociateChatWithWorkItem,
+    OpenEffectiveInstructions,
+    CreateInstructionFromChat,
+    OpenRequiredActions,
     JumpSession(usize),
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 14 + WORK_OUTLINE_SHORTCUTS + JUMP_SLOTS] = [
         ShortcutId::CaptureAppshot,
         ShortcutId::SaveFile,
         ShortcutId::BrowserReload,
@@ -889,6 +903,15 @@ impl ShortcutId {
         ShortcutId::NextSession,
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
+        ShortcutId::OpenOutline,
+        ShortcutId::CreateWorkItem,
+        ShortcutId::CreateChildWorkItem,
+        ShortcutId::RenameWorkItem,
+        ShortcutId::MoveWorkItem,
+        ShortcutId::AssociateChatWithWorkItem,
+        ShortcutId::OpenEffectiveInstructions,
+        ShortcutId::CreateInstructionFromChat,
+        ShortcutId::OpenRequiredActions,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -921,6 +944,15 @@ impl ShortcutId {
             ShortcutId::NextSession => "Next session",
             ShortcutId::PrevSession => "Previous session",
             ShortcutId::ArchiveSession => "Archive session",
+            ShortcutId::OpenOutline => "Open Outline",
+            ShortcutId::CreateWorkItem => "Create work item",
+            ShortcutId::CreateChildWorkItem => "Create child work item",
+            ShortcutId::RenameWorkItem => "Rename work item",
+            ShortcutId::MoveWorkItem => "Move work item",
+            ShortcutId::AssociateChatWithWorkItem => "Associate chat with work item",
+            ShortcutId::OpenEffectiveInstructions => "Open effective instructions",
+            ShortcutId::CreateInstructionFromChat => "Create instruction from chat",
+            ShortcutId::OpenRequiredActions => "Open required actions",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -964,6 +996,22 @@ impl ShortcutId {
             // Mod+A is the composer's Select all, so archiving takes the
             // shifted combo.
             ShortcutId::ArchiveSession => "mod-shift-a",
+            // Work Outline. Only the two global entry points ship bound: a
+            // chord here fires even while a text field has focus, and `mod-l`,
+            // `mod-i` and the other free letters are one step from composer or
+            // browser chords. Everything else stays reachable from the command
+            // palette (and the outline's own context keys) and is unbound here
+            // until a user records a chord; `mod-shift-l` / `mod-shift-i` clash
+            // with no default, fixed combo or editing binding.
+            ShortcutId::OpenOutline => "mod-shift-l",
+            ShortcutId::CreateWorkItem => "mod-shift-i",
+            ShortcutId::CreateChildWorkItem
+            | ShortcutId::RenameWorkItem
+            | ShortcutId::MoveWorkItem
+            | ShortcutId::AssociateChatWithWorkItem
+            | ShortcutId::OpenEffectiveInstructions
+            | ShortcutId::CreateInstructionFromChat
+            | ShortcutId::OpenRequiredActions => "",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -997,6 +1045,15 @@ pub struct KeymapConfig {
     pub next_session: String,
     pub prev_session: String,
     pub archive_session: String,
+    pub open_outline: String,
+    pub create_work_item: String,
+    pub create_child_work_item: String,
+    pub rename_work_item: String,
+    pub move_work_item: String,
+    pub associate_chat_with_work_item: String,
+    pub open_effective_instructions: String,
+    pub create_instruction_from_chat: String,
+    pub open_required_actions: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1062,6 +1119,21 @@ impl Default for KeymapConfig {
             next_session: ShortcutId::NextSession.default_combo().into(),
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
+            open_outline: ShortcutId::OpenOutline.default_combo().into(),
+            create_work_item: ShortcutId::CreateWorkItem.default_combo().into(),
+            create_child_work_item: ShortcutId::CreateChildWorkItem.default_combo().into(),
+            rename_work_item: ShortcutId::RenameWorkItem.default_combo().into(),
+            move_work_item: ShortcutId::MoveWorkItem.default_combo().into(),
+            associate_chat_with_work_item: ShortcutId::AssociateChatWithWorkItem
+                .default_combo()
+                .into(),
+            open_effective_instructions: ShortcutId::OpenEffectiveInstructions
+                .default_combo()
+                .into(),
+            create_instruction_from_chat: ShortcutId::CreateInstructionFromChat
+                .default_combo()
+                .into(),
+            open_required_actions: ShortcutId::OpenRequiredActions.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
         }
     }
@@ -1084,6 +1156,15 @@ impl KeymapConfig {
             ShortcutId::NextSession => &self.next_session,
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
+            ShortcutId::OpenOutline => &self.open_outline,
+            ShortcutId::CreateWorkItem => &self.create_work_item,
+            ShortcutId::CreateChildWorkItem => &self.create_child_work_item,
+            ShortcutId::RenameWorkItem => &self.rename_work_item,
+            ShortcutId::MoveWorkItem => &self.move_work_item,
+            ShortcutId::AssociateChatWithWorkItem => &self.associate_chat_with_work_item,
+            ShortcutId::OpenEffectiveInstructions => &self.open_effective_instructions,
+            ShortcutId::CreateInstructionFromChat => &self.create_instruction_from_chat,
+            ShortcutId::OpenRequiredActions => &self.open_required_actions,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1108,6 +1189,15 @@ impl KeymapConfig {
             ShortcutId::NextSession => self.next_session = combo,
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,
+            ShortcutId::OpenOutline => self.open_outline = combo,
+            ShortcutId::CreateWorkItem => self.create_work_item = combo,
+            ShortcutId::CreateChildWorkItem => self.create_child_work_item = combo,
+            ShortcutId::RenameWorkItem => self.rename_work_item = combo,
+            ShortcutId::MoveWorkItem => self.move_work_item = combo,
+            ShortcutId::AssociateChatWithWorkItem => self.associate_chat_with_work_item = combo,
+            ShortcutId::OpenEffectiveInstructions => self.open_effective_instructions = combo,
+            ShortcutId::CreateInstructionFromChat => self.create_instruction_from_chat = combo,
+            ShortcutId::OpenRequiredActions => self.open_required_actions = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {
@@ -1479,6 +1569,8 @@ impl UiSettings {
                         for (id, field) in [
                             (ShortcutId::ToggleFiles, "toggleFiles"),
                             (ShortcutId::OpenMyPrs, "openMyPrs"),
+                            (ShortcutId::OpenOutline, "openOutline"),
+                            (ShortcutId::CreateWorkItem, "createWorkItem"),
                         ] {
                             let default = platform_combo(id.default_combo());
                             let taken = !keymap.contains_key(field)
@@ -2859,6 +2951,10 @@ mod tests {
         for mac in [true, false] {
             for id in ShortcutId::ALL {
                 let combo = id.default_combo_on(mac);
+                // Unbound-by-default commands have nothing to record.
+                if combo.is_empty() {
+                    continue;
+                }
                 // Via the platform spelling, where modifier names are
                 // unambiguous, so the decode can't inherit the bug it checks.
                 let bound = platform_combo_on(mac, combo);
@@ -2888,6 +2984,10 @@ mod tests {
         // the same keystroke through `platform_combo`.
         let mut seen = std::collections::HashSet::new();
         for id in ShortcutId::ALL {
+            // Unbound-by-default commands share the empty string.
+            if id.default_combo().is_empty() {
+                continue;
+            }
             let bound = platform_combo(id.default_combo());
             assert!(seen.insert(bound.clone()), "{bound:?} bound twice");
         }
@@ -3136,6 +3236,149 @@ mod tests {
         assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-p");
         assert_eq!(keymap.get(ShortcutId::OpenMyPrs), "");
         assert!(conflicted_shortcuts(&keymap).is_empty());
+    }
+
+    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 9] = [
+        (ShortcutId::OpenOutline, "openOutline"),
+        (ShortcutId::CreateWorkItem, "createWorkItem"),
+        (ShortcutId::CreateChildWorkItem, "createChildWorkItem"),
+        (ShortcutId::RenameWorkItem, "renameWorkItem"),
+        (ShortcutId::MoveWorkItem, "moveWorkItem"),
+        (
+            ShortcutId::AssociateChatWithWorkItem,
+            "associateChatWithWorkItem",
+        ),
+        (
+            ShortcutId::OpenEffectiveInstructions,
+            "openEffectiveInstructions",
+        ),
+        (
+            ShortcutId::CreateInstructionFromChat,
+            "createInstructionFromChat",
+        ),
+        (ShortcutId::OpenRequiredActions, "openRequiredActions"),
+    ];
+
+    #[test]
+    fn work_outline_shortcuts_are_registered_with_camel_case_fields() {
+        assert_eq!(WORK_OUTLINE_FIELDS.len(), WORK_OUTLINE_SHORTCUTS);
+        let json = serde_json::to_value(KeymapConfig::default()).unwrap();
+        for (id, field) in WORK_OUTLINE_FIELDS {
+            assert!(ShortcutId::ALL.contains(&id), "{field} is in ALL");
+            assert!(!id.label().is_empty());
+            assert_eq!(
+                json[field].as_str(),
+                Some(id.default_combo()),
+                "{field} serializes its default"
+            );
+        }
+        assert_eq!(ShortcutId::OpenOutline.default_combo(), "mod-shift-l");
+        assert_eq!(ShortcutId::CreateWorkItem.default_combo(), "mod-shift-i");
+    }
+
+    #[test]
+    fn old_settings_files_gain_work_outline_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-s", "toggleSidebar": "mod-b", "toggleChanges": "mod-r", "newSession": "mod-n"}}"#,
+        )
+        .unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        for (id, _) in WORK_OUTLINE_FIELDS {
+            assert_eq!(keymap.get(id), id.default_combo());
+        }
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-n");
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        // No keymap at all behaves the same.
+        std::fs::write(UiSettings::path(dir.path()), r#"{"sidebarWidth": 300}"#).unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        assert_eq!(keymap, KeymapConfig::default());
+    }
+
+    #[test]
+    fn work_outline_customizations_and_unknown_keys_survive_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-s", "toggleSidebar": "mod-b", "toggleChanges": "mod-r",
+                "renameWorkItem": "mod-shift-m", "openOutline": "", "someFutureShortcut": "mod-q"}}"#,
+        )
+        .unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        assert_eq!(keymap.get(ShortcutId::RenameWorkItem), "mod-shift-m");
+        // Cleared on purpose stays cleared (not re-defaulted).
+        assert_eq!(keymap.get(ShortcutId::OpenOutline), "");
+        assert_eq!(
+            keymap.get(ShortcutId::CreateWorkItem),
+            ShortcutId::CreateWorkItem.default_combo()
+        );
+        // A round trip through save keeps the customization.
+        let mut settings = UiSettings::load(dir.path());
+        settings
+            .keymap
+            .set(ShortcutId::MoveWorkItem, "mod-alt-m".into());
+        settings.save(dir.path()).unwrap();
+        let reloaded = UiSettings::load(dir.path()).keymap;
+        assert_eq!(reloaded.get(ShortcutId::MoveWorkItem), "mod-alt-m");
+        assert_eq!(reloaded.get(ShortcutId::RenameWorkItem), "mod-shift-m");
+    }
+
+    #[test]
+    fn work_outline_defaults_yield_to_an_existing_custom_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-s", "toggleTerminal": "mod-shift-l", "archiveSession": "mod-shift-i"}}"#,
+        )
+        .unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-shift-l");
+        assert_eq!(keymap.get(ShortcutId::OpenOutline), "");
+        assert_eq!(keymap.get(ShortcutId::CreateWorkItem), "");
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+    }
+
+    #[test]
+    fn work_outline_defaults_do_not_conflict_with_any_other_default() {
+        let keymap = KeymapConfig::default();
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        let bound: Vec<&str> = WORK_OUTLINE_FIELDS
+            .iter()
+            .map(|(id, _)| keymap.get(*id))
+            .filter(|combo| !combo.is_empty())
+            .collect();
+        assert_eq!(bound.len(), 2);
+        // Binding one to another command's combo is a detected conflict.
+        let mut clash = keymap.clone();
+        clash.set(ShortcutId::MoveWorkItem, "mod-shift-l".into());
+        let conflicts = conflicted_shortcuts(&clash);
+        assert!(conflicts.contains(&ShortcutId::OpenOutline));
+        assert!(conflicts.contains(&ShortcutId::MoveWorkItem));
+    }
+
+    #[test]
+    fn work_outline_defaults_use_the_platform_primary_modifier() {
+        for mac in [true, false] {
+            for id in [ShortcutId::OpenOutline, ShortcutId::CreateWorkItem] {
+                let combo = id.default_combo_on(mac);
+                assert!(combo.starts_with("mod-"), "{combo}");
+                let bound = platform_combo_on(mac, combo);
+                assert!(
+                    bound.starts_with(if mac { "cmd-" } else { "ctrl-" }),
+                    "{bound}"
+                );
+            }
+        }
+        // The recorder spells the primary modifier "mod" on both platforms.
+        assert_eq!(
+            combo_from_keystroke_on(true, false, false, true, true, "l").as_deref(),
+            Some("mod-shift-l")
+        );
+        assert_eq!(
+            combo_from_keystroke_on(false, true, false, true, false, "l").as_deref(),
+            Some("mod-shift-l")
+        );
     }
 
     #[test]
