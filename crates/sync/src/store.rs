@@ -281,6 +281,37 @@ impl DocsStore {
         Ok(())
     }
 
+    /// Save a snapshot and claim `processed` ledger ids in ONE transaction,
+    /// so the ledger can never record an operation whose effect is not in the
+    /// durable snapshot (and vice versa). Used by the Work Outline replay
+    /// ledger: its writes live in the registry snapshot.
+    pub fn save_snapshot_marking_processed(
+        &self,
+        doc_id: &str,
+        bytes: &[u8],
+        processed: &[String],
+    ) -> Result<(), StoreError> {
+        store_blocking(|| {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let now = now_ms();
+            tx.execute(
+                "INSERT INTO snapshots (doc_id, bytes, saved_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(doc_id) DO UPDATE SET bytes = excluded.bytes, saved_at = excluded.saved_at",
+                params![doc_id, bytes, now],
+            )?;
+            self.invalidate_failed_publication(&tx, doc_id)?;
+            for id in processed {
+                tx.execute(
+                    "INSERT OR IGNORE INTO processed_commands (command_id, processed_at) VALUES (?1, ?2)",
+                    params![id, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// Save the snapshot together with its chat2 room cursor and doc epoch —
     /// ONE transaction, so bytes and cursor can never disagree (the C2 rule;
     /// a divergent pair is exactly the restored-backup redownload bug).
@@ -715,6 +746,26 @@ mod tests {
             !store.mark_processed("cmd-1").unwrap(),
             "second mark must not re-claim"
         );
+    }
+
+    #[test]
+    fn snapshot_and_processed_marks_commit_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DocsStore::open(dir.path()).unwrap();
+        store.mark_processed("already").unwrap();
+        store
+            .save_snapshot_marking_processed(
+                "registry1",
+                b"bytes",
+                &["op-a".to_owned(), "already".to_owned()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.load_snapshot("registry1").unwrap().as_deref(),
+            Some(&b"bytes"[..])
+        );
+        assert!(store.is_processed("op-a").unwrap());
+        assert!(store.is_processed("already").unwrap());
     }
 
     #[test]

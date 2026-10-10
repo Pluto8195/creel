@@ -192,6 +192,10 @@ struct WorkspaceHostInner {
     /// warm-up clock (`peer_liveness`): a just-joined room hasn't heard
     /// anyone's heartbeat yet, and that silence must not read as "offline".
     room_joined_at: std::sync::atomic::AtomicI64,
+    /// Work Outline replay-ledger keys whose registry write is not yet in a
+    /// durable snapshot; claimed together with the next snapshot save.
+    /// Lock order: `reg` before this.
+    pending_ledger_marks: Mutex<Vec<String>>,
 }
 
 /// "This peer is alive" callback (device id) — see `WorkspaceHost::set_peer_alive_hook`.
@@ -322,6 +326,7 @@ impl WorkspaceHost {
                 peer_alive: Mutex::new(None),
                 presence_watch: Mutex::new(PresenceWatch::default()),
                 room_joined_at: std::sync::atomic::AtomicI64::new(0),
+                pending_ledger_marks: Mutex::new(Vec::new()),
             }),
         };
         // Persist immediately: after this boot the migration source is never
@@ -692,6 +697,68 @@ impl WorkspaceHost {
             self.inner.persist_snapshot()?;
         }
         Ok(())
+    }
+
+    // ── Work Outline (registry rows; policy in `crate::work_outline`) ──────
+
+    /// The registry change counter: bumped on every local mutation and every
+    /// applied server frame. Composed watches (`WatchWorkOutline`) recompute
+    /// from it.
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.inner.changed_tx.subscribe()
+    }
+
+    /// Clone the Work Outline inputs of one Space under the registry lock;
+    /// the caller materializes after the lock is released (the lock also
+    /// guards sync-frame application).
+    pub fn work_outline_inputs(&self, space_id: &str) -> zeron_doc::WorkOutlineInputs {
+        let synced = self.registry_synced();
+        self.read(|doc| doc.work_outline_inputs(space_id, synced))
+    }
+
+    /// Apply one Work Outline mutation as one registry write. On success the
+    /// `ledger_keys` are queued to be claimed in the device-local
+    /// processed-command ledger by the NEXT registry snapshot save, in the
+    /// same SQLite transaction as the snapshot that contains this write
+    /// (queued under the registry lock, so a snapshot holds the write iff it
+    /// carries the marks). A crash before that save loses both the write and
+    /// the marks, so a replay re-applies a write that never became durable;
+    /// a crash after it keeps both, so a replay is refused.
+    pub fn work_outline_mutate(
+        &self,
+        mutation: &zeron_proto::WorkOutlineMutation,
+        actor: &zeron_proto::WorkOutlineActor,
+        ledger_keys: &[String],
+    ) -> Result<zeron_proto::WorkOutlineMutateReply, zeron_proto::WorkOutlineError> {
+        let now = Utc::now().timestamp_millis();
+        self.mutate(|doc| {
+            let reply = doc.apply_work_outline_mutation(mutation, actor, now)?;
+            lock(&self.inner.pending_ledger_marks).extend(ledger_keys.iter().cloned());
+            Ok(reply)
+        })
+    }
+
+    /// Whether the durable processed-command ledger holds `key` (a reserved
+    /// `work-outline:` key; see `crate::work_outline`). Read errors count as
+    /// "not processed": the doc-layer mutators are replay-safe on their own.
+    pub fn ledger_holds(&self, key: &str) -> bool {
+        self.inner.store.is_processed(key).unwrap_or(false)
+    }
+
+    /// One overlay registry row with its clocks (diagnostics and tests).
+    pub fn registry_row(&self, kind: &str, id: &str) -> Option<zeron_doc::RegistryRow> {
+        self.read(|doc| doc.row(kind, id))
+    }
+
+    /// Unacked registry batches (diagnostics and tests).
+    pub fn registry_pending_len(&self) -> usize {
+        self.read(|doc| doc.pending_len())
+    }
+
+    /// Tombstone outline rows whose Space is gone. Destructive on a stale
+    /// view: callers gate on [`Self::registry_synced`].
+    pub fn sweep_work_outline_orphans(&self) -> usize {
+        self.mutate(|doc| doc.sweep_work_outline_orphans())
     }
 
     // ── watches (WatchChats / WatchDevices / merged WatchSessions) ──────────
@@ -1602,9 +1669,23 @@ impl WorkspaceHostInner {
         // must not overwrite an acknowledged migration's durable snapshot.
         let doc = lock(&self.reg);
         let bytes = doc.to_bytes()?;
-        self.store
-            .save_snapshot(REGISTRY_DOC_ID, &bytes)
-            .map_err(|error| EngineError::Other(format!("registry snapshot save failed: {error}")))
+        // Taken under the registry lock: exactly the marks whose writes are
+        // in `bytes` (see `WorkspaceHost::work_outline_mutate`).
+        let marks = std::mem::take(&mut *lock(&self.pending_ledger_marks));
+        let saved = if marks.is_empty() {
+            self.store.save_snapshot(REGISTRY_DOC_ID, &bytes)
+        } else {
+            self.store
+                .save_snapshot_marking_processed(REGISTRY_DOC_ID, &bytes, &marks)
+        };
+        saved.map_err(|error| {
+            if !marks.is_empty() {
+                let mut pending = lock(&self.pending_ledger_marks);
+                let newer = std::mem::replace(&mut *pending, marks);
+                pending.extend(newer);
+            }
+            EngineError::Other(format!("registry snapshot save failed: {error}"))
+        })
     }
 
     /// Presence heartbeat — a memory-only frame on the room, never a row write.

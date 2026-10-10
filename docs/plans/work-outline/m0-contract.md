@@ -243,3 +243,58 @@ resume cwd mismatch is an error, and `zeron/*` branch auto-minting and auto-rena
 variable on an unauthenticated loopback socket, and `create_chat` is not idempotent. Milestone 4
 requires an engine-minted per-Run token, an allow-listed agent RPC surface, and a mandatory
 idempotency key.
+
+## Milestone 1 discoveries
+
+Recorded by the Milestone 1 backend (`crates/doc/src/registry/work_outline.rs`,
+`crates/engine/src/work_outline.rs`). Each item is either a faithful reading of an ambiguous rule
+or a gap later milestones must close.
+
+1. **Durable idempotency without a new table.** `createWorkItem` derives its id
+   (`derive_id(operationId, "item")`) and stamps an additive, immutable `inputsHash` field on the
+   `workItems` row; external references are content-keyed and assignments are keyed by Chat id.
+   Every mutation is also recorded in the existing device-local processed-command ledger
+   (`processed_commands` in the profile `DocsStore`, global key space shared with the chat command
+   plane) under two reserved keys: `work-outline:op:{operationId}` and
+   `work-outline:in:{inputsHash}:{operationId}`. A replay whose operation key is present returns
+   the recomputed reply without writing (all reply ids are derived from inputs); a present
+   operation key without the matching inputs key is `OperationConflict`. Crash safety: the keys
+   are queued under the registry lock with the write and claimed in the same SQLite transaction
+   as the registry snapshot that contains the write (`DocsStore::save_snapshot_marking_processed`),
+   so the ledger never records a write the snapshot lacks, and a crash before that save loses
+   both (the replay then re-applies a write that never became durable). The doc-layer mutators are
+   additionally compare-before-write (unchanged fields, an item already at the requested
+   placement, an already-archived/restored/assigned target are no-ops). TTL: none; the ledger is
+   never pruned, so an operation id is consumed for the life of the profile store on that device.
+   The ledger is device-local: a replay of the same id against another device's engine is guarded
+   only by the compare-before-write mutators. An in-memory cache of the 4,096 most recent
+   operation ids remains the fast path.
+2. **Revival exceptions to R1.** An explicit `assignChatToWorkItem` may revive a tombstoned
+   assignment row (assignment rows are only tombstoned by Space cleanup, and the Chat id is the
+   only possible key), and re-adding a removed external reference revives its content-derived row
+   (registry audit 7.5). A retried `createWorkItem` whose row is tombstoned fails with `notFound`.
+3. **Re-keyed siblings keep their stored parent.** Tie-group and overflow re-keys write group P
+   with the sibling's stored raw `parentWorkItemId` (not its repaired parent), so a derived repair
+   stays derived. Every op in one batch gets its own fresh HLC: two ops on one row sharing a clock
+   would make the second a no-op under strict `>` LWW.
+4. **Archived targets.** Creating under, moving under, moving descendants to, or assigning a Chat
+   to an archived work item fails with `archived`. Moving or renaming an archived item is allowed.
+   Restore clears the item and descendants whose `archiveCause` is `cascade`, stopping at
+   descendants the user archived themselves.
+5. **Raw-cycle repair on create too.** The "persist the pending cycle repair in the same batch"
+   rule is applied to every write that places items under a destination (create, move, archive
+   with `moveDescendants`), not only moves.
+6. **Rollup rule.** Status counts cover the item and all descendants that are not archived (an
+   archived item is not counted; its non-archived descendants are). `associatedChatCount` counts
+   the item's own `associated` Chats only (a `danglingChat` is listed in `chatIds` but not counted).
+7. **Unattributable repairs.** A `workItems` row without a decodable `spaceId` cannot be assigned to
+   a Space, so its `missingSpace`/`malformed` marker appears in every Space's snapshot. Assignment
+   and reference markers appear only where the Chat or work item is attributable.
+8. **Size gate scope.** The 15,000-unit op gate applies to outline writers and the public
+   `RegistryDoc::write_ops`; pre-existing writers (chats, sessions, sidebar) are unchanged except
+   that `enqueue_ops` now also chunks at 512,000 serialized units per batch (count chunking at 400
+   is unchanged for small ops).
+9. **Not done in Milestone 1 backend.** Local-to-synced import (registry audit C6) does not copy
+   outline rows; outline rows are non-migrating until `local_import` is extended. No edge
+   `validateOp` backstop (deferred per section 3.6). `repairWorkOutline` persists cycle victims and
+   invalid order keys only; missing parents stay derived (the parent may not have synced yet).

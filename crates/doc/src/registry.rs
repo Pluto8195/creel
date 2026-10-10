@@ -41,6 +41,54 @@ pub const SIDEBAR_PINS_STATE_ID: &str = "sidebarPins";
 pub const KIND_SIDEBAR_PINS: &str = "sidebarPins";
 mod sidebar_pins;
 mod sidebar_sections;
+pub mod work_outline;
+pub use work_outline::{
+    KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES, KIND_WORK_ITEMS,
+    OutlineChat, WORK_OUTLINE_KINDS, WorkOutlineInputs, materialize_work_outline,
+};
+
+/// Whether a row exists in the overlay view, and if not, whether it was
+/// tombstoned (registry audit rule R1). `overlay_row` hides tombstones, so
+/// a plain existence check cannot tell "never created" from "deleted": a
+/// create-if-absent on a deleted id must not revive it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowState {
+    Absent,
+    Live,
+    Tombstoned,
+}
+
+/// Ops per pushed batch. The registry room rejects batches over 500 ops.
+const MAX_OPS_PER_BATCH: usize = 400;
+/// Serialized size budget of one pushed batch, in UTF-16 code units (JS
+/// `.length`). The room closes any socket whose inbound frame exceeds
+/// 1,000,000 characters, so a batch must stay well below that (registry
+/// audit section 6: 400 ops × 16 KiB would not).
+const MAX_BATCH_UTF16_UNITS: usize = 512_000;
+
+/// Serialized length of one op as the edge measures it
+/// (`JSON.stringify(op).length`, UTF-16 code units).
+pub fn op_utf16_units(op: &RowOp) -> usize {
+    serde_json::to_string(op)
+        .map(|s| s.encode_utf16().count())
+        .unwrap_or(usize::MAX)
+}
+
+/// Client-side op size gate (rule R4): an op the edge would reject must never
+/// enter the queue, because a rejected batch is never retired and wedges every
+/// later registry write.
+pub fn check_op_size(op: &RowOp) -> Result<(), DocError> {
+    let units = op_utf16_units(op);
+    if units > zeron_proto::work_outline::limits::MAX_OP_UTF16_UNITS {
+        return Err(DocError::Schema(format!(
+            "registry op for {}/{} is {units} units, over the {} unit limit",
+            op.kind,
+            op.id,
+            zeron_proto::work_outline::limits::MAX_OP_UTF16_UNITS
+        )));
+    }
+    Ok(())
+}
 
 /// Snapshot row id in the local `DocsStore` for the persisted registry state.
 pub const REGISTRY_DOC_ID: &str = "registry1";
@@ -594,7 +642,53 @@ impl RegistryDoc {
         self.clock.next(Self::now_ms(), &device)
     }
 
-    fn enqueue_ops(&mut self, mut ops: Vec<RowOp>) {
+    /// Advance the local clock past an observed HLC string. `HlcClock` has no
+    /// receive rule, so writers that edit rows another device may have
+    /// written with a faster wall clock observe those clocks first (rule R3);
+    /// otherwise the causally later local edit loses LWW and snaps back.
+    pub(crate) fn observe_clock(&mut self, clock: &str) {
+        let mut parts = clock.splitn(3, '-');
+        if let (Some(ms), Some(counter)) = (
+            parts.next().and_then(|v| v.parse::<i64>().ok()),
+            parts.next().and_then(|v| v.parse::<u32>().ok()),
+        ) && (ms, counter) > (self.clock.last_ms, self.clock.counter)
+        {
+            self.clock.last_ms = ms;
+            self.clock.counter = counter;
+        }
+    }
+
+    /// Observe the newest clock of a row (live or tombstoned) before writing
+    /// it or a row whose meaning depends on it (rule R3).
+    pub(crate) fn observe_row(&mut self, kind: &str, id: &str) {
+        if let Some(clock) = self
+            .overlay_row_any(kind, id)
+            .and_then(|r| r.max_clock().map(str::to_owned))
+        {
+            self.observe_clock(&clock);
+        }
+    }
+
+    /// A fresh local HLC (monotonic per device). For callers that build their
+    /// own ops for [`Self::write_ops`].
+    pub fn mint_hlc(&mut self) -> String {
+        self.next_hlc()
+    }
+
+    /// Public multi-op batch writer (rule R6): every op is size-gated first
+    /// (rule R4) and nothing is enqueued unless all pass; the ops then go out
+    /// as one batch when they fit [`MAX_OPS_PER_BATCH`] and the byte budget,
+    /// otherwise as ordered chunks (atomic per chunk only, so callers must be
+    /// replay-safe).
+    pub fn write_ops(&mut self, ops: Vec<RowOp>) -> Result<(), DocError> {
+        for op in &ops {
+            check_op_size(op)?;
+        }
+        self.enqueue_ops(ops);
+        Ok(())
+    }
+
+    fn enqueue_ops(&mut self, ops: Vec<RowOp>) {
         if ops.is_empty() {
             return;
         }
@@ -605,25 +699,39 @@ impl RegistryDoc {
         // rows included) never propagates again. `delete_space` on a
         // ≥250-chat space minted exactly such a batch. Chunk here so no
         // writer can ever produce one; chunks apply in order, each
-        // atomically (only cross-chunk atomicity is given up).
-        const MAX_OPS_PER_BATCH: usize = 400;
+        // atomically (only cross-chunk atomicity is given up). Chunks are
+        // also byte-bounded: the room closes a socket whose frame exceeds
+        // 1,000,000 characters, and 400 large ops can.
         self.generation += 1;
-        while !ops.is_empty() {
-            let tail = if ops.len() > MAX_OPS_PER_BATCH {
-                ops.split_off(MAX_OPS_PER_BATCH)
-            } else {
-                Vec::new()
-            };
-            // Batch ids only need device-lifetime uniqueness; the HLC of a
-            // fresh tick provides exactly that without a rng dependency.
-            let batch = format!("b-{}", self.next_hlc());
-            self.pending.push(PendingBatch {
-                batch,
-                ops,
-                in_flight: false,
-            });
-            ops = tail;
+        let mut chunk: Vec<RowOp> = Vec::new();
+        let mut chunk_units = 0usize;
+        for op in ops {
+            let units = op_utf16_units(&op);
+            if !chunk.is_empty()
+                && (chunk.len() >= MAX_OPS_PER_BATCH
+                    || chunk_units.saturating_add(units) > MAX_BATCH_UTF16_UNITS)
+            {
+                let full = std::mem::take(&mut chunk);
+                self.push_pending_batch(full);
+                chunk_units = 0;
+            }
+            chunk_units = chunk_units.saturating_add(units);
+            chunk.push(op);
         }
+        if !chunk.is_empty() {
+            self.push_pending_batch(chunk);
+        }
+    }
+
+    fn push_pending_batch(&mut self, ops: Vec<RowOp>) {
+        // Batch ids only need device-lifetime uniqueness; the HLC of a
+        // fresh tick provides exactly that without a rng dependency.
+        let batch = format!("b-{}", self.next_hlc());
+        self.pending.push(PendingBatch {
+            batch,
+            ops,
+            in_flight: false,
+        });
     }
 
     fn write(&mut self, kind: &str, id: &str, op: OpKind, set: BTreeMap<String, Value>) {
@@ -658,6 +766,11 @@ impl RegistryDoc {
 
     /// The row as this device should display it: authoritative + pending ops.
     fn overlay_row(&self, kind: &str, id: &str) -> Option<RegistryRow> {
+        self.overlay_row_any(kind, id).filter(|r| !r.deleted)
+    }
+
+    /// [`Self::overlay_row`] including tombstones.
+    fn overlay_row_any(&self, kind: &str, id: &str) -> Option<RegistryRow> {
         let mut row = self
             .authoritative
             .get(kind)
@@ -673,25 +786,55 @@ impl RegistryDoc {
                 }
             }
         }
-        row.filter(|r| !r.deleted)
+        row
     }
 
-    /// All live rows of `kind`, overlay applied.
+    /// The overlay row (live or tombstoned) with its per-field clocks.
+    pub fn row(&self, kind: &str, id: &str) -> Option<RegistryRow> {
+        self.overlay_row_any(kind, id)
+    }
+
+    /// Live, tombstoned, or never seen, in the overlay view (rule R1).
+    pub fn row_state(&self, kind: &str, id: &str) -> RowState {
+        match self.overlay_row_any(kind, id) {
+            None => RowState::Absent,
+            Some(row) if row.deleted => RowState::Tombstoned,
+            Some(_) => RowState::Live,
+        }
+    }
+
+    /// All live rows of `kind`, overlay applied. One pass over the pending
+    /// queue (not one per id), so a large offline queue stays linear; the
+    /// result per id is identical to [`Self::overlay_row`] because ops apply
+    /// in the same batch order.
     fn overlay_rows(&self, kind: &str) -> Vec<RegistryRow> {
-        let mut ids: Vec<String> = self
-            .authoritative
-            .get(kind)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut order: Vec<String> = Vec::new();
+        let mut rows: HashMap<String, Option<RegistryRow>> = HashMap::new();
+        if let Some(by_id) = self.authoritative.get(kind) {
+            for (id, row) in by_id {
+                order.push(id.clone());
+                rows.insert(id.clone(), Some(row.clone()));
+            }
+        }
         for batch in &self.pending {
             for op in &batch.ops {
-                if op.kind == kind && !ids.iter().any(|id| id == &op.id) {
-                    ids.push(op.id.clone());
+                if op.kind != kind {
+                    continue;
+                }
+                let slot = rows.entry(op.id.clone()).or_insert_with(|| {
+                    order.push(op.id.clone());
+                    None
+                });
+                let (next, _) = apply_op(slot.as_ref(), op);
+                if let Some(next) = next {
+                    *slot = Some(next);
                 }
             }
         }
-        ids.iter()
-            .filter_map(|id| self.overlay_row(kind, id))
+        order
+            .into_iter()
+            .filter_map(|id| rows.remove(&id).flatten())
+            .filter(|row| !row.deleted)
             .collect()
     }
 
@@ -875,14 +1018,22 @@ impl RegistryDoc {
             })
             .map(|row| row.id)
             .collect();
+        // Work Outline rows owned by the Space go in the same cascade
+        // (contract section 3.5); readers suppress them anyway once the Space
+        // row is not live, and `sweep_work_outline_orphans` catches rows
+        // created concurrently elsewhere.
+        let outline_keys = self.work_outline_rows_of_space(space_id);
         let mut keys: Vec<(&str, &str)> =
-            Vec::with_capacity(chat_ids.len() * 2 + pr_link_ids.len() + 1);
+            Vec::with_capacity(chat_ids.len() * 2 + pr_link_ids.len() + outline_keys.len() + 1);
         for chat_id in &chat_ids {
             keys.push((KIND_CHATS, chat_id));
             keys.push((KIND_SESSIONS, chat_id));
         }
         for link_id in &pr_link_ids {
             keys.push((KIND_CHAT_PR_LINKS, link_id));
+        }
+        for (kind, id) in &outline_keys {
+            keys.push((kind, id));
         }
         keys.push((KIND_SPACES, space_id));
         self.delete_row_ops(&keys);
