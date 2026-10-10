@@ -32,6 +32,7 @@ pub(crate) mod instructions;
 pub(crate) mod model;
 pub(crate) mod nav;
 pub(crate) mod outline_view;
+pub(crate) mod revision_diff;
 pub(crate) mod store;
 
 #[allow(unused_imports)]
