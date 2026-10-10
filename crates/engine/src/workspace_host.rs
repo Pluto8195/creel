@@ -758,6 +758,12 @@ impl WorkspaceHost {
     /// Tombstone outline rows whose Space is gone. Destructive on a stale
     /// view: callers gate on [`Self::registry_synced`].
     pub fn sweep_work_outline_orphans(&self) -> usize {
+        // Read first: `mutate` always bumps the change counter (registry
+        // publish, snapshot write, watch recompute), so the 120 s sweep must
+        // not take that path when there is nothing to delete.
+        if self.read(|doc| doc.work_outline_orphans().is_empty()) {
+            return 0;
+        }
         self.mutate(|doc| doc.sweep_work_outline_orphans())
     }
 
@@ -2087,6 +2093,56 @@ mod tests {
             host.watch_spaces().borrow()[0].name.as_deref(),
             Some("Renamed")
         );
+    }
+
+    #[tokio::test]
+    async fn work_outline_sweep_with_nothing_to_do_does_not_bump_the_change_counter() {
+        use super::*;
+        use zeron_doc::{OpKind, RowOp};
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        let mut changes = host.watch_changes();
+        changes.borrow_and_update();
+        let pending = host.registry_pending_len();
+
+        assert_eq!(host.sweep_work_outline_orphans(), 0);
+        assert!(!changes.has_changed().unwrap(), "idle sweep must be quiet");
+        assert_eq!(host.registry_pending_len(), pending, "and write nothing");
+
+        // An orphan (its Space row never existed) is still swept and notifies.
+        host.mutate(|doc| {
+            let hlc = doc.mint_hlc();
+            doc.write_ops(vec![RowOp {
+                kind: zeron_doc::KIND_WORK_ITEMS.to_owned(),
+                id: "ghost-item".into(),
+                op: OpKind::Upsert,
+                set: Some(std::collections::BTreeMap::from([(
+                    "spaceId".to_owned(),
+                    serde_json::json!("ghost-space"),
+                )])),
+                hlc,
+                clocks: None,
+            }])
+            .unwrap();
+        });
+        changes.borrow_and_update();
+        assert_eq!(host.sweep_work_outline_orphans(), 1);
+        assert!(changes.has_changed().unwrap(), "a real sweep notifies");
+        changes.borrow_and_update();
+        assert_eq!(host.sweep_work_outline_orphans(), 0);
+        assert!(!changes.has_changed().unwrap());
     }
 
     #[tokio::test]

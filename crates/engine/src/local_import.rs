@@ -360,6 +360,7 @@ impl LocalImporter {
         // never re-execute under this profile (mark-before-execute carries over).
         let ledger_rows_merged = source_store
             .processed_commands()
+            .map(importable_ledger_rows)
             .and_then(|rows| self.inner.target_store.import_processed_commands(&rows))
             .unwrap_or_else(|err| {
                 errors.push(format!("command ledger: {err}"));
@@ -436,9 +437,32 @@ impl LocalImporter {
     }
 }
 
+/// Ledger claims worth carrying into the synced profile. Work Outline
+/// operation keys are excluded: outline rows are not imported, so a carried
+/// key would make a retried operation falsely succeed without writing.
+fn importable_ledger_rows(rows: Vec<(String, i64)>) -> Vec<(String, i64)> {
+    rows.into_iter()
+        .filter(|(key, _)| !key.starts_with(crate::work_outline::LEDGER_KEY_PREFIX))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ImportEvent;
+    use super::{ImportEvent, importable_ledger_rows};
+
+    #[test]
+    fn work_outline_ledger_keys_are_not_imported() {
+        let rows = vec![
+            ("cmd-1".to_owned(), 1),
+            ("work-outline:op:op-a".to_owned(), 2),
+            ("work-outline:in:abc:op-a".to_owned(), 3),
+            ("cmd-2".to_owned(), 4),
+        ];
+        assert_eq!(
+            importable_ledger_rows(rows),
+            vec![("cmd-1".to_owned(), 1), ("cmd-2".to_owned(), 4)]
+        );
+    }
 
     #[test]
     fn import_events_serialize_camel_case() {
