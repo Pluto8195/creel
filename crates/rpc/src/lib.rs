@@ -108,7 +108,10 @@ pub mod methods {
     /// `zeron_proto::WorkOutlineMutation` (`{op: createWorkItem|updateWorkItem|
     /// moveWorkItem|archiveWorkItem|restoreWorkItem|assignChatToWorkItem|
     /// removeChatFromWorkItem|createWorkItemExternalReference|
-    /// removeWorkItemExternalReference|repairWorkOutline, operationId, …}`) →
+    /// removeWorkItemExternalReference|repairWorkOutline|
+    /// createWorkItemInstruction|updateWorkItemInstruction|
+    /// moveWorkItemInstruction|archiveWorkItemInstruction|
+    /// createInstructionRevision|applyInstructionRevision, operationId, …}`) →
     /// `zeron_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
     /// any device may write), so — like `Mutate` — handled locally and NOT
     /// forwardable. Failures are strings `work-outline/<code>: <message>`

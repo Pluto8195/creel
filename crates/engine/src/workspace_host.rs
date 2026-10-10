@@ -755,6 +755,58 @@ impl WorkspaceHost {
         self.read(|doc| doc.pending_len())
     }
 
+    /// The Space of a live work item (overlay view).
+    pub fn work_item_space(&self, work_item_id: &str) -> Option<String> {
+        self.read(|doc| doc.work_item_space(work_item_id))
+    }
+
+    /// A live instruction revision with its integrity verified.
+    pub fn instruction_revision(
+        &self,
+        revision_id: &str,
+    ) -> Option<zeron_proto::InstructionRevisionView> {
+        self.read(|doc| doc.instruction_revision(revision_id))
+    }
+
+    /// The Chat's selected instruction revision (latest accepted application
+    /// by `(appliedHlc, id)` whose revision is intact).
+    pub fn selected_instruction_revision(
+        &self,
+        chat_id: &str,
+    ) -> Option<zeron_proto::InstructionRevisionPin> {
+        self.read(|doc| doc.selected_instruction_revision(chat_id))
+    }
+
+    /// Record what an Execution Session received on this host's session-status
+    /// row (`executionSession`, contract 5.6). Idempotent: an equal report
+    /// writes nothing (and does not bump the change counter). Returns whether
+    /// a write was enqueued.
+    pub fn report_execution_session(
+        &self,
+        chat_id: &str,
+        report: &zeron_proto::ExecutionSessionReport,
+    ) -> bool {
+        let unchanged = self.read(|doc| {
+            doc.row(zeron_doc::KIND_SESSIONS, chat_id)
+                .is_some_and(|row| {
+                    !row.deleted
+                        && row.fields.get("executionSession")
+                            == serde_json::to_value(report).ok().as_ref()
+                })
+        });
+        if unchanged {
+            return false;
+        }
+        let now = Utc::now().timestamp_millis();
+        match self.mutate(|doc| doc.report_execution_session(chat_id, report, now)) {
+            Ok(written) => written,
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "execution session report failed");
+                false
+            }
+        }
+    }
+
     /// Tombstone outline rows whose Space is gone. Destructive on a stale
     /// view: callers gate on [`Self::registry_synced`].
     pub fn sweep_work_outline_orphans(&self) -> usize {
@@ -1423,6 +1475,28 @@ impl WorkspaceHost {
             tracing::warn!(error = %err, "device lastSeenAt stamp failed");
         }
         self.inner.save_snapshot();
+    }
+}
+
+/// The registry side of the delivery seam: revisions and selections come
+/// from the local replica; reports land on this host's session-status row.
+impl crate::instruction_registry::InstructionRegistry for WorkspaceHost {
+    fn instruction_revision(
+        &self,
+        revision_id: &str,
+    ) -> Option<zeron_proto::InstructionRevisionView> {
+        WorkspaceHost::instruction_revision(self, revision_id)
+    }
+
+    fn selected_instruction_revision(
+        &self,
+        chat_id: &str,
+    ) -> Option<zeron_proto::InstructionRevisionPin> {
+        WorkspaceHost::selected_instruction_revision(self, chat_id)
+    }
+
+    fn report_execution_session(&self, chat_id: &str, report: zeron_proto::ExecutionSessionReport) {
+        WorkspaceHost::report_execution_session(self, chat_id, &report);
     }
 }
 
