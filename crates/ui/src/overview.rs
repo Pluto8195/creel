@@ -8770,6 +8770,16 @@ impl Overview {
         self.view_mode
     }
 
+    #[cfg(test)]
+    pub(crate) fn outline_entity(&self) -> Entity<OutlineView> {
+        self.outline.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_work_item_details(&self) -> bool {
+        self.work_item_details.is_some()
+    }
+
     /// Tell the watch reconciler which Spaces' outlines the Overview needs:
     /// all of them (path chips and attention on List/Canvas need them too).
     /// Only on change, so it never loops with the `AppState` observer.
@@ -12168,6 +12178,64 @@ mod logic_tests {
         assert!(!flags.contains(VIEW_CANVAS_FLAG));
         let (second, vcx) = overview_over(cx, &state);
         second.update(vcx, |o, _| assert_eq!(o.mode(), OverviewMode::Outline));
+    }
+
+    /// Regression: the command can reach an Overview that has never rendered
+    /// (so its saved prefs are not loaded yet). Switching to Outline persists
+    /// the in-memory prefs, which must not overwrite the saved file with
+    /// defaults.
+    #[gpui::test]
+    fn open_outline_command_on_an_unrendered_overview_keeps_saved_prefs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with_repos(cx, dir.path(), &["alpha"]);
+        let mut flags = BTreeSet::new();
+        apply_view_prefs_to_flags(
+            &mut flags,
+            &ViewPrefs {
+                mode: OverviewMode::List,
+                hide_stale: true,
+                show_archived: true,
+                groups: vec![GroupDimension::Repo],
+            },
+        );
+        overview_positions::save_string_set(dir.path(), overview_positions::UI_FLAGS_FILE, &flags)
+            .unwrap();
+
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+        let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
+        let overview = {
+            let state = state.clone();
+            cx.new(move |cx| {
+                Overview::new(
+                    state,
+                    gpui::WeakEntity::new_invalid(),
+                    transcript,
+                    composer,
+                    cx,
+                )
+            })
+        };
+        overview.read_with(cx, |o, _| assert!(!o.prefs_loaded, "no render yet"));
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::OpenOutline, window, cx)
+            })
+        });
+        overview.read_with(vcx, |o, _| {
+            assert_eq!(o.mode(), OverviewMode::Outline);
+            assert!(o.hide_stale);
+            assert!(o.show_archived);
+            assert_eq!(o.active_groups, vec![GroupDimension::Repo]);
+        });
+        let saved =
+            overview_positions::load_string_set(dir.path(), overview_positions::UI_FLAGS_FILE);
+        assert!(saved.contains(VIEW_OUTLINE_FLAG));
+        assert!(saved.contains(HIDE_STALE_FLAG));
+        assert!(saved.contains(SHOW_ARCHIVED_FLAG));
+        assert!(saved.iter().any(|f| f.starts_with(GROUP_BY_PREFIX)));
     }
 
     #[gpui::test]

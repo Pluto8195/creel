@@ -312,6 +312,7 @@ impl Shell {
         }
         self.command_palette = None;
         self.work_outline_modal = Some(modal);
+        self.work_outline_modal_focus_pending = true;
         cx.notify();
     }
 
@@ -333,6 +334,10 @@ impl Shell {
         let Some(modal) = self.work_outline_modal.take() else {
             return false;
         };
+        self.work_outline_modal_focus_pending = false;
+        if let Some(prior) = self.work_outline_prior_focus.take() {
+            window.focus(&prior, cx);
+        }
         cx.notify();
         window.defer(cx, move |window, cx| {
             deliver_decision(modal, accept, window, cx)
@@ -371,6 +376,16 @@ impl Shell {
         }
         let theme = Theme::of(cx).for_popup();
         let modal = self.work_outline_modal.as_ref()?;
+        // Move keyboard focus into the modal (remembering where it was), so
+        // the outline's key actions (Enter, n, ...) cannot fire underneath it.
+        if std::mem::take(&mut self.work_outline_modal_focus_pending) {
+            if self.work_outline_prior_focus.is_none() {
+                self.work_outline_prior_focus = window
+                    .focused(cx)
+                    .filter(|focused| *focused != self.work_outline_modal_focus);
+            }
+            window.focus(&self.work_outline_modal_focus, cx);
+        }
         let card = match modal {
             WorkOutlineModal::Confirm(dialog) => {
                 let accept = if dialog.destructive {
@@ -561,6 +576,10 @@ impl Shell {
                 .into_any_element()
             }
         };
+        let card = div()
+            .track_focus(&self.work_outline_modal_focus)
+            .child(card)
+            .into_any_element();
         Some(popover::modal("work-outline-modal", viewport, card))
     }
 }
@@ -900,5 +919,86 @@ mod tests {
             assert!(matches!(shell.route, Route::Overview));
             assert!(shell.overview_page.is_some());
         });
+    }
+
+    #[gpui::test]
+    fn modal_takes_focus_so_outline_keys_do_nothing_and_cancel_restores_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::outline_view::{CreateSibling, OpenSelected};
+        use crate::work_outline::store::fixture_ids::LAUNCH;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.spaces = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                ];
+            })
+        });
+        shell.update_in(cx, |shell, window, cx| {
+            shell.run_work_outline_command(WorkOutlineCommand::OpenOutline, window, cx);
+            let overview = shell.overview_page.clone().unwrap();
+            overview.update(cx, |overview, cx| {
+                overview.show_work_outline_fixture(window, cx)
+            });
+        });
+        let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
+        let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        };
+        draw(cx);
+        let outline_focus = cx.update(|_, cx| gpui::Focusable::focus_handle(outline.read(cx), cx));
+        outline.update(cx, |outline, cx| {
+            outline.select(&row_key::item("s1", LAUNCH), cx)
+        });
+        cx.update(|window, _| assert!(outline_focus.is_focused(window), "outline starts focused"));
+
+        // Sanity: with no modal the outline's key actions do act.
+        cx.update(|window, cx| window.dispatch_action(Box::new(CreateSibling), cx));
+        outline.read_with(cx, |outline, _| assert!(outline.is_editing()));
+        outline.update(cx, |outline, cx| outline.cancel_edit(cx));
+        cx.update(|window, cx| window.focus(&outline_focus, cx));
+        draw(cx);
+
+        let decisions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        shell.update(cx, |shell, cx| {
+            shell.open_work_outline_confirm(confirm_request(decisions.clone()), cx)
+        });
+        draw(cx);
+        cx.update(|window, _| {
+            assert!(!outline_focus.is_focused(window), "modal took focus");
+        });
+        cx.update(|window, cx| {
+            window.dispatch_action(Box::new(OpenSelected), cx);
+            window.dispatch_action(Box::new(CreateSibling), cx);
+        });
+        cx.run_until_parked();
+        overview.read_with(cx, |overview, _| assert!(!overview.has_work_item_details()));
+        outline.read_with(cx, |outline, _| assert!(!outline.is_editing()));
+
+        // Cancel restores focus to the outline, and its keys work again.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.cancel_work_outline_modal(window, cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(*decisions.borrow(), [false]);
+        cx.update(|window, _| assert!(outline_focus.is_focused(window), "focus restored"));
+        cx.update(|window, cx| window.dispatch_action(Box::new(OpenSelected), cx));
+        cx.run_until_parked();
+        overview.read_with(cx, |overview, _| assert!(overview.has_work_item_details()));
     }
 }
