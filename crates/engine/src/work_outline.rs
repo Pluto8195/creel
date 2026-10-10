@@ -2,13 +2,26 @@
 //! `zeron_doc::registry::work_outline` (contract `docs/plans/work-outline/
 //! m0-contract.md`, registry audit section 7.11).
 //!
-//! - `WorkOutlineMutate`: kill switch, operation-id validation, a
-//!   device-local operation replay cache (same id + same inputs returns the
-//!   first reply without writing; same id + other inputs is
-//!   `OperationConflict`), actor derivation, then one registry write. The
-//!   mechanism checks (live Space, same Space, projectless, cycles, sizes,
-//!   create-if-absent) run in the doc layer under the registry lock, so the
-//!   check and the write are atomic.
+//! - `WorkOutlineMutate`: kill switch, operation-id replay protection (same
+//!   id + same inputs returns the first reply without writing; same id +
+//!   other inputs is `OperationConflict`), actor derivation, then one
+//!   registry write. The mechanism checks (live Space, same Space,
+//!   projectless, cycles, sizes, create-if-absent) run in the doc layer under
+//!   the registry lock, so the check and the write are atomic.
+//!
+//! Replay protection is durable. An in-memory cache is the fast path; the
+//! source of truth is the device-local processed-command ledger
+//! (`processed_commands` in the profile `DocsStore`, shared with the chat
+//! command plane, keyed globally, never pruned) under two reserved keys per
+//! operation: [`ledger_operation_key`] (`work-outline:op:{operationId}`) and
+//! [`ledger_inputs_key`] (`work-outline:in:{inputsHash}:{operationId}`). They
+//! are claimed in the same SQLite transaction as the registry snapshot that
+//! contains the write (`WorkspaceHost::work_outline_mutate`), so the ledger
+//! and the registry can never disagree after a crash. Ledger TTL: none; the
+//! ledger is never pruned, so an operation id is consumed for the lifetime of
+//! the profile store on this device. It is device-local: the same id replayed
+//! against another device's engine is guarded only by the doc layer's
+//! replay-safe mutators (create-if-absent, compare-before-write).
 //! - `WatchWorkOutline(spaceId)`: driven by the registry change counter
 //!   (WATCH_PREVIEWS pattern): clone inputs under the lock, materialize off
 //!   the async runtime, coalesce bursts, emit only frames whose content
@@ -20,7 +33,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use zeron_proto::work_outline::{DISABLE_WRITES_ENV, WorkOutlineErrorCode};
+use zeron_proto::work_outline::{
+    DISABLE_WRITES_ENV, WorkOutlineErrorCode, derive_id, external_reference_id, roles,
+};
 use zeron_proto::{
     WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError, WorkOutlineMutateReply,
     WorkOutlineMutation, WorkOutlineSnapshot,
@@ -69,17 +84,51 @@ impl RecentOperations {
     }
 }
 
+/// Ledger key recording that `operation_id` was applied on this device.
+pub fn ledger_operation_key(operation_id: &str) -> String {
+    format!("work-outline:op:{operation_id}")
+}
+
+/// Ledger key recording the inputs `operation_id` was applied with (the hash
+/// is fixed-width hex, so the key is unambiguous).
+pub fn ledger_inputs_key(inputs_hash: &str, operation_id: &str) -> String {
+    format!("work-outline:in:{inputs_hash}:{operation_id}")
+}
+
+/// The reply of an already-applied mutation, recomputed without touching the
+/// registry: every id a mutation returns is derived from its inputs.
+fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
+    match mutation {
+        WorkOutlineMutation::CreateWorkItem(p) => WorkOutlineMutateReply {
+            work_item_id: Some(derive_id(&p.operation_id, roles::ITEM)),
+            reference_id: None,
+        },
+        WorkOutlineMutation::CreateWorkItemExternalReference(p) => WorkOutlineMutateReply {
+            work_item_id: None,
+            reference_id: Some(external_reference_id(
+                &p.work_item_id,
+                &p.provider,
+                &p.reference_type,
+                &p.external_id,
+            )),
+        },
+        _ => WorkOutlineMutateReply::default(),
+    }
+}
+
 /// The engine's Work Outline surface (one per `EngineRpc`).
 pub struct WorkOutlineService {
     workspace: WorkspaceHost,
-    recent: Mutex<RecentOperations>,
+    /// Serializes check-then-apply so two concurrent calls with one
+    /// operation id cannot both pass the replay check.
+    gate: Mutex<RecentOperations>,
 }
 
 impl WorkOutlineService {
     pub fn new(workspace: WorkspaceHost) -> Self {
         Self {
             workspace,
-            recent: Mutex::new(RecentOperations::default()),
+            gate: Mutex::new(RecentOperations::default()),
         }
     }
 
@@ -96,18 +145,29 @@ impl WorkOutlineService {
         }
         let operation_id = mutation.operation_id().to_owned();
         let hash = zeron_doc::registry::work_outline::inputs_hash(mutation);
-        {
-            let recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((stored, reply)) = recent.get(&operation_id) {
-                return if *stored == hash {
-                    Ok(reply.clone())
-                } else {
-                    Err(WorkOutlineError::new(
-                        WorkOutlineErrorCode::OperationConflict,
-                        "operationId was already used for a different change",
-                    ))
-                };
+        let conflict = || {
+            WorkOutlineError::new(
+                WorkOutlineErrorCode::OperationConflict,
+                "operationId was already used for a different change",
+            )
+        };
+        let mut recent = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((stored, reply)) = recent.get(&operation_id) {
+            return if *stored == hash {
+                Ok(reply.clone())
+            } else {
+                Err(conflict())
+            };
+        }
+        let operation_key = ledger_operation_key(&operation_id);
+        let inputs_key = ledger_inputs_key(&hash, &operation_id);
+        if self.workspace.ledger_holds(&operation_key) {
+            if !self.workspace.ledger_holds(&inputs_key) {
+                return Err(conflict());
             }
+            let reply = replay_reply(mutation);
+            recent.insert(operation_id, hash, reply.clone());
+            return Ok(reply);
         }
         // The RPC surface cannot tell agents from users yet (Milestone 4 adds
         // per-run tokens); every Milestone 1 write is the local user's.
@@ -117,11 +177,10 @@ impl WorkOutlineService {
             chat_id: None,
             message_id: None,
         };
-        let reply = self.workspace.work_outline_mutate(mutation, &actor)?;
-        self.recent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(operation_id, hash, reply.clone());
+        let reply =
+            self.workspace
+                .work_outline_mutate(mutation, &actor, &[operation_key, inputs_key])?;
+        recent.insert(operation_id, hash, reply.clone());
         Ok(reply)
     }
 

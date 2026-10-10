@@ -789,6 +789,11 @@ impl RegistryDoc {
         row
     }
 
+    /// The overlay row (live or tombstoned) with its per-field clocks.
+    pub fn row(&self, kind: &str, id: &str) -> Option<RegistryRow> {
+        self.overlay_row_any(kind, id)
+    }
+
     /// Live, tombstoned, or never seen, in the overlay view (rule R1).
     pub fn row_state(&self, kind: &str, id: &str) -> RowState {
         match self.overlay_row_any(kind, id) {

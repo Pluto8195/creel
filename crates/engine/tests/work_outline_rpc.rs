@@ -241,3 +241,107 @@ async fn outline_survives_an_engine_restart() {
     assert_eq!(reply, json!({ "workItemId": root }));
     core.shutdown().await;
 }
+
+/// Durable replay protection: after an engine restart over the same store, a
+/// retried move or update must not re-write (it would clobber the later
+/// edit with a fresh clock), and the same id with other inputs conflicts.
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_after_restart_does_not_rewrite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let item = |op: &str| derive_id(op, roles::ITEM);
+    let first_move = json!({
+        "op": "moveWorkItem", "workItemId": item("op-x"), "destinationParentWorkItemId": item("op-p"),
+        "placement": { "type": "last" }, "operationId": "op-move",
+    });
+    let first_rename = json!({
+        "op": "updateWorkItem", "workItemId": item("op-x"), "changes": { "title": "First" },
+        "operationId": "op-rename",
+    });
+    {
+        let core = assemble(&data);
+        let client = zeron_rpc::memory_client(core.rpc_service());
+        client
+            .call(
+                methods::MUTATE,
+                json!({ "op": "createSpace", "spaceId": "space-1", "deviceId": "dev-a", "path": "/tmp" }),
+            )
+            .await
+            .unwrap();
+        for (op, title) in [("op-p", "P"), ("op-q", "Q"), ("op-x", "X")] {
+            mutate(
+                &client,
+                json!({ "op": "createWorkItem", "spaceId": "space-1", "title": title, "operationId": op }),
+            )
+            .await
+            .unwrap();
+        }
+        mutate(&client, first_move.clone()).await.unwrap();
+        mutate(&client, first_rename.clone()).await.unwrap();
+        // The ledger claims ride the registry snapshot save.
+        core.workspace.flush();
+        assert!(core.workspace.ledger_holds("work-outline:op:op-move"));
+        core.shutdown().await;
+    }
+
+    let core = assemble(&data);
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    // A later edit (as if from another device) moves and renames X again.
+    mutate(
+        &client,
+        json!({
+            "op": "moveWorkItem", "workItemId": item("op-x"), "destinationParentWorkItemId": item("op-q"),
+            "placement": { "type": "first" }, "operationId": "op-later-move",
+        }),
+    )
+    .await
+    .unwrap();
+    mutate(
+        &client,
+        json!({
+            "op": "updateWorkItem", "workItemId": item("op-x"), "changes": { "title": "Later" },
+            "operationId": "op-later-rename",
+        }),
+    )
+    .await
+    .unwrap();
+    let row_before = core
+        .workspace
+        .registry_row(zeron_doc::KIND_WORK_ITEMS, &item("op-x"))
+        .unwrap();
+    let pending_before = core.workspace.registry_pending_len();
+
+    // Replays of the pre-restart operations: acknowledged, nothing written.
+    assert_eq!(
+        mutate(&client, first_move.clone()).await.unwrap(),
+        json!({})
+    );
+    assert_eq!(mutate(&client, first_rename).await.unwrap(), json!({}));
+    let created = mutate(
+        &client,
+        json!({ "op": "createWorkItem", "spaceId": "space-1", "title": "X", "operationId": "op-x" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created, json!({ "workItemId": item("op-x") }));
+    let row_after = core
+        .workspace
+        .registry_row(zeron_doc::KIND_WORK_ITEMS, &item("op-x"))
+        .unwrap();
+    assert_eq!(row_after.clocks, row_before.clocks, "no field re-written");
+    assert_eq!(row_after.fields, row_before.fields);
+    assert_eq!(
+        core.workspace.registry_pending_len(),
+        pending_before,
+        "no op enqueued"
+    );
+    assert_eq!(row_after.fields["title"], json!("Later"));
+    assert_eq!(row_after.fields["parentWorkItemId"], json!(item("op-q")));
+
+    // Same operation id, different inputs, after the restart.
+    let mut other = first_move;
+    other["placement"] = json!({ "type": "first" });
+    let conflict = mutate(&client, other).await.unwrap_err();
+    assert_eq!(conflict.code, WorkOutlineErrorCode::OperationConflict);
+    core.shutdown().await;
+}

@@ -250,16 +250,25 @@ Recorded by the Milestone 1 backend (`crates/doc/src/registry/work_outline.rs`,
 `crates/engine/src/work_outline.rs`). Each item is either a faithful reading of an ambiguous rule
 or a gap later milestones must close.
 
-1. **Durable vs device-local idempotency.** Only records with derived ids are durably idempotent:
-   `createWorkItem` (`derive_id(operationId, "item")`) stamps an additive, immutable `inputsHash`
-   field on the `workItems` row, so a replay after a restart returns the same id and a replay with
-   other inputs is `OperationConflict`. External references are content-keyed and assignments are
-   keyed by Chat id, so their replays converge structurally. Updates, moves, archives, restores,
-   and disassociations are deduplicated by an in-memory per-engine cache (4,096 most recent
-   operation ids, same id + same inputs → the first reply without a write; other inputs →
-   `OperationConflict`). A retry of such an operation after an engine restart re-applies it with
-   last-writer-wins semantics. A durable operation ledger (idempotency audit section 6, optional
-   `workOutlineOperation` kind) is the follow-up if that window matters.
+1. **Durable idempotency without a new table.** `createWorkItem` derives its id
+   (`derive_id(operationId, "item")`) and stamps an additive, immutable `inputsHash` field on the
+   `workItems` row; external references are content-keyed and assignments are keyed by Chat id.
+   Every mutation is also recorded in the existing device-local processed-command ledger
+   (`processed_commands` in the profile `DocsStore`, global key space shared with the chat command
+   plane) under two reserved keys: `work-outline:op:{operationId}` and
+   `work-outline:in:{inputsHash}:{operationId}`. A replay whose operation key is present returns
+   the recomputed reply without writing (all reply ids are derived from inputs); a present
+   operation key without the matching inputs key is `OperationConflict`. Crash safety: the keys
+   are queued under the registry lock with the write and claimed in the same SQLite transaction
+   as the registry snapshot that contains the write (`DocsStore::save_snapshot_marking_processed`),
+   so the ledger never records a write the snapshot lacks, and a crash before that save loses
+   both (the replay then re-applies a write that never became durable). The doc-layer mutators are
+   additionally compare-before-write (unchanged fields, an item already at the requested
+   placement, an already-archived/restored/assigned target are no-ops). TTL: none; the ledger is
+   never pruned, so an operation id is consumed for the life of the profile store on that device.
+   The ledger is device-local: a replay of the same id against another device's engine is guarded
+   only by the compare-before-write mutators. An in-memory cache of the 4,096 most recent
+   operation ids remains the fast path.
 2. **Revival exceptions to R1.** An explicit `assignChatToWorkItem` may revive a tombstoned
    assignment row (assignment rows are only tombstoned by Space cleanup, and the Chat id is the
    only possible key), and re-adding a removed external reference revives its content-derived row
