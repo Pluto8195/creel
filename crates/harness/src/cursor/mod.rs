@@ -306,6 +306,9 @@ impl Harness for CursorHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // No instruction channel (m0-instruction-delivery.md section 2):
+        // refuse instruction-bearing runs before spawning (acceptance 12).
+        crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
         let lease = if self.executable.is_none() {
             Some(state::Lease::acquire(&state::state_root(), request.resume.as_deref()).await?)
         } else {

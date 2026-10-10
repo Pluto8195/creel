@@ -33,6 +33,7 @@
 
 pub mod catalog;
 mod discovery;
+pub mod instructions;
 mod normalize;
 mod wire;
 
@@ -55,7 +56,9 @@ use zeron_proto::{
 };
 
 use crate::process::{Child, ChildStdin, Command, Stdio};
-use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
+use crate::{
+    Harness, HarnessError, InstructionSupport, RunControls, Signal, send_signal, shutdown_child,
+};
 use catalog::{apply_ultrathink, to_effort};
 use normalize::Normalizer;
 use wire::{ControlRequestFrame, Frame, allow_response, control_response_line};
@@ -102,6 +105,11 @@ pub struct ClaudeHarness {
     /// (project-scoped `.claude/commands` and skills) — kept separate from
     /// `initialize` for that reason; see [`discovery::CommandsCache`].
     commands_cache: discovery::CommandsCache,
+    /// Zeron-owned directory for Work Outline envelope files (see
+    /// [`instructions`]); defaults beside the model-discovery directory.
+    instruction_dir: Option<PathBuf>,
+    /// `claude --help` instruction-flag probe, cached per executable identity.
+    instruction_probe: crate::instruction_support::ProbeCache,
 }
 
 impl Default for ClaudeHarness {
@@ -114,6 +122,8 @@ impl Default for ClaudeHarness {
             initialize: discovery::InitializeCache::default(),
             models_cache: crate::catalog::Catalog::default(),
             commands_cache: discovery::CommandsCache::default(),
+            instruction_dir: None,
+            instruction_probe: Default::default(),
         }
     }
 }
@@ -133,6 +143,35 @@ impl ClaudeHarness {
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
+    }
+
+    /// Write Work Outline envelope files under this Zeron-owned directory.
+    pub fn with_instruction_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.instruction_dir = Some(path.into());
+        self
+    }
+
+    fn instruction_dir(&self) -> PathBuf {
+        self.instruction_dir
+            .clone()
+            .unwrap_or_else(|| instructions::default_dir(self.model_discovery_cwd.as_deref()))
+    }
+
+    /// The argv tail for an instruction-bearing run: the envelope file plus
+    /// `--system-prompt-snapshot off`, on every spawn (fresh, resume, crash
+    /// respawn). Empty for runs without instructions.
+    fn instruction_args(
+        &self,
+        request: &RunRequest,
+    ) -> Result<Vec<std::ffi::OsString>, HarnessError> {
+        match &request.instructions {
+            None => Ok(Vec::new()),
+            Some(delivery) => {
+                let file =
+                    instructions::write_envelope_file(&self.instruction_dir(), &delivery.envelope)?;
+                Ok(instructions::delivery_args(&file))
+            }
+        }
     }
 
     /// Tune the interrupt→SIGTERM→SIGKILL escalation timing.
@@ -163,7 +202,12 @@ impl ClaudeHarness {
         })
     }
 
-    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
+    fn build_command(
+        &self,
+        exe: &PathBuf,
+        request: &RunRequest,
+        instruction_args: Vec<std::ffi::OsString>,
+    ) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
         cmd.args([
@@ -216,6 +260,7 @@ impl ClaudeHarness {
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
         }
+        cmd.args(instruction_args);
         let mut settings = serde_json::Map::new();
         if option_is_on(&request.model_options, "fastMode") {
             settings.insert("fastMode".into(), Value::Bool(true));
@@ -487,11 +532,29 @@ impl Harness for ClaudeHarness {
         self.discover_commands(cwd).await
     }
 
+    /// `Supported` only when this executable lists both delivery flags
+    /// (probed from `claude --help`, cached per executable identity).
+    fn instruction_support(&self) -> InstructionSupport {
+        let exe = match self.resolve_executable() {
+            Ok(exe) => exe,
+            Err(err) => {
+                return InstructionSupport::Unsupported {
+                    reason: err.to_string(),
+                    upgrade_hint: Some("Install Claude Code".into()),
+                };
+            }
+        };
+        self.instruction_probe.get(&exe, instructions::probe)
+    }
+
     async fn run(
         &self,
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        if request.instructions.is_some() {
+            crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
+        }
         self.run_with_mode(request, controls, false).await
     }
 
@@ -500,6 +563,7 @@ impl Harness for ClaudeHarness {
         mut request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        request.instructions = None;
         request.resume = None;
         request.worktree = None;
         request.attachments.clear();
@@ -517,7 +581,8 @@ impl ClaudeHarness {
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let mut cmd = self.build_command(&exe, &request);
+        let instruction_args = self.instruction_args(&request)?;
+        let mut cmd = self.build_command(&exe, &request, instruction_args);
         if title_only {
             cmd.args([
                 "--system-prompt",
@@ -992,6 +1057,101 @@ fn updated_input_with_answers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn instruction_request(
+        resume: Option<&str>,
+        transition: zeron_proto::InstructionTransition,
+    ) -> RunRequest {
+        let rendered = "<zeron_work_outline_instructions version=\"1\" hash=\"abc\">\n1. Be terse\n</zeron_work_outline_instructions>\n";
+        let mut request: RunRequest = serde_json::from_value(json!({
+            "prompt": "p", "model": null, "reasoning": null, "cwd": "",
+            "sandbox": "workspace-write", "resume": resume
+        }))
+        .unwrap();
+        request.instructions = Some(zeron_proto::InstructionDelivery {
+            envelope: zeron_proto::InstructionEnvelope {
+                revision_id: "rev-1".into(),
+                revision_hash: "hash-1".into(),
+                envelope_version: 1,
+                envelope_sha256: zeron_proto::envelope_sha256(rendered),
+                rendered: rendered.into(),
+            },
+            transition,
+        });
+        request
+    }
+
+    fn argv(harness: &ClaudeHarness, request: &RunRequest) -> Vec<String> {
+        let args = harness.instruction_args(request).unwrap();
+        let cmd = harness.build_command(&PathBuf::from("/bin/claude"), request, args);
+        cmd.as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Every spawn path (fresh Run, native resume, crash respawn, explicit
+    /// revision change) builds its argv here, so each must carry the
+    /// envelope file AND `--system-prompt-snapshot off` (C3/C5/C8).
+    #[cfg(unix)]
+    #[test]
+    fn every_instruction_bearing_spawn_carries_the_file_and_snapshot_off() {
+        use zeron_proto::InstructionTransition::{Continue, Fresh, Replace};
+        let dir = tempfile::tempdir().unwrap();
+        let harness = ClaudeHarness::new().with_instruction_dir(dir.path());
+        for (resume, transition) in [
+            (None, Fresh),
+            (Some("sess-1"), Continue),
+            (
+                Some("sess-1"),
+                Replace {
+                    previous_revision_id: "rev-0".into(),
+                },
+            ),
+        ] {
+            let request = instruction_request(resume, transition.clone());
+            let args = argv(&harness, &request);
+            let file = args
+                .iter()
+                .position(|a| a == "--append-system-prompt-file")
+                .and_then(|i| args.get(i + 1))
+                .unwrap_or_else(|| panic!("no file flag for {transition:?}: {args:?}"));
+            assert_eq!(
+                std::fs::read_to_string(file).unwrap(),
+                request.instructions.as_ref().unwrap().envelope.rendered
+            );
+            let snapshot = args.iter().position(|a| a == "--system-prompt-snapshot");
+            assert_eq!(
+                snapshot.and_then(|i| args.get(i + 1)).map(String::as_str),
+                Some("off"),
+                "{transition:?}: {args:?}"
+            );
+            assert_eq!(
+                args.iter().any(|a| a.starts_with("--resume=")),
+                resume.is_some()
+            );
+            // Never through the prompt or an inline system-prompt flag.
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a == "--append-system-prompt" || a == "--system-prompt")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runs_without_instructions_keep_the_old_argv() {
+        let harness = ClaudeHarness::new();
+        let mut request =
+            instruction_request(Some("sess-1"), zeron_proto::InstructionTransition::Continue);
+        request.instructions = None;
+        let args = argv(&harness, &request);
+        assert!(
+            !args.iter().any(|a| a.contains("system-prompt")),
+            "{args:?}"
+        );
+    }
 
     #[test]
     fn parses_questions_tolerantly() {
