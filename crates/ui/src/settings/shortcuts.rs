@@ -464,12 +464,13 @@ pub fn modifier_send_label(is_macos: bool) -> &'static str {
 /// extends the match and appears on the page by construction
 /// (`every_shortcut_lands_in_a_rendered_group` holds the other half: its group
 /// name must be listed here).
-const GROUP_ORDER: [&str; 7] = [
+const GROUP_ORDER: [&str; 8] = [
     "Files",
     "Browser",
     "Panels",
     "Sessions",
     "Projects",
+    "Work Outline",
     "Jump to session",
     "Appshots",
 ];
@@ -491,6 +492,15 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::NextSession
         | ShortcutId::PrevSession
         | ShortcutId::ArchiveSession => "Sessions",
+        ShortcutId::OpenOutline
+        | ShortcutId::CreateWorkItem
+        | ShortcutId::CreateChildWorkItem
+        | ShortcutId::RenameWorkItem
+        | ShortcutId::MoveWorkItem
+        | ShortcutId::AssociateChatWithWorkItem
+        | ShortcutId::OpenEffectiveInstructions
+        | ShortcutId::CreateInstructionFromChat
+        | ShortcutId::OpenRequiredActions => "Work Outline",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -517,6 +527,21 @@ fn description(id: ShortcutId) -> &'static str {
             "Select the previous session in the sidebar, wrapping at the start."
         }
         ShortcutId::ArchiveSession => "Move the current session to the archived shelf.",
+        ShortcutId::OpenOutline => "Open the overview in Outline mode.",
+        ShortcutId::CreateWorkItem => "Create a work item at the top level of the Outline.",
+        ShortcutId::CreateChildWorkItem => "Create a work item inside the selected work item.",
+        ShortcutId::RenameWorkItem => "Rename the selected work item in place.",
+        ShortcutId::MoveWorkItem => "Move the selected work item to another parent.",
+        ShortcutId::AssociateChatWithWorkItem => "Associate the current session with a work item.",
+        ShortcutId::OpenEffectiveInstructions => {
+            "Show the instructions in effect for the selected work item."
+        }
+        ShortcutId::CreateInstructionFromChat => {
+            "Turn the current session into an instruction for a work item."
+        }
+        ShortcutId::OpenRequiredActions => {
+            "Show the actions waiting on you for the selected work item."
+        }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.
         ShortcutId::JumpSession(_) => "Open the session at this place in the sidebar list.",
@@ -1024,6 +1049,43 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn work_outline_commands_render_in_their_own_group_with_descriptions() {
+        assert!(GROUP_ORDER.contains(&"Work Outline"));
+        for id in ShortcutId::ALL
+            .into_iter()
+            .filter(|id| crate::work_outline::WorkOutlineCommand::from_shortcut_id(*id).is_some())
+        {
+            assert_eq!(group(id), "Work Outline", "{}", id.label());
+            assert!(!description(id).is_empty());
+        }
+    }
+
+    #[test]
+    fn recording_a_work_outline_combo_is_refused_when_taken() {
+        let keymap = KeymapConfig::default();
+        // Another command's combo.
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::MoveWorkItem, "mod-shift-l"),
+            Some(ShortcutId::OpenOutline)
+        );
+        // An existing app shortcut.
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::RenameWorkItem, "mod-n"),
+            Some(ShortcutId::NewSession)
+        );
+        // A free combo.
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::RenameWorkItem, "mod-shift-m"),
+            None
+        );
+        // Re-recording a command's own combo is not a conflict with itself.
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::OpenOutline, "mod-shift-l"),
+            None
+        );
     }
 
     #[test]

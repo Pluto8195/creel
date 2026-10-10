@@ -1,6 +1,7 @@
 //! Global action and conversation search, using the sidebar's conversation rows.
 use super::*;
 use crate::appearance::AppearanceMode;
+use crate::work_outline::WorkOutlineCommand;
 
 const HISTORY_RESULT_LIMIT: usize = 30;
 const RESULTS_FADE_BAND: f32 = 18.0;
@@ -46,6 +47,9 @@ enum Entry {
     MyPrs,
     ImportSessionCanvasSessions,
     Theme(AppearanceMode),
+    /// A Work Outline command (only the Milestone 1 ones; see
+    /// `WorkOutlineCommand::in_palette`).
+    WorkOutline(WorkOutlineCommand),
     Chat(String),
 }
 
@@ -70,6 +74,7 @@ impl Entry {
                 },
                 mode.icon(),
             )),
+            Self::WorkOutline(command) => Some((command.label(), command.icon())),
             Self::Chat(_) => None,
         }
     }
@@ -88,14 +93,22 @@ fn actions_for(query: &str, is_dark: bool) -> Vec<Entry> {
         Entry::Overview,
         Entry::PrReviewChats,
         Entry::MyPrs,
+    ]
+    .into_iter()
+    .chain(
+        WorkOutlineCommand::ALL
+            .into_iter()
+            .filter(|command| command.in_palette())
+            .map(Entry::WorkOutline),
+    )
+    .chain([
         Entry::ImportSessionCanvasSessions,
         Entry::Theme(if is_dark {
             AppearanceMode::Light
         } else {
             AppearanceMode::Dark
         }),
-    ]
-    .into_iter()
+    ])
     .filter(|entry| matches_query(query, entry.action().unwrap().0))
     .collect()
 }
@@ -213,6 +226,7 @@ impl Shell {
             Entry::PrReviewChats => self.open_pr_review_chats_focused(window, cx),
             Entry::MyPrs => self.toggle_my_prs(cx),
             Entry::ImportSessionCanvasSessions => self.bulk_import_session_canvas_sessions(cx),
+            Entry::WorkOutline(command) => self.run_work_outline_command(command, window, cx),
             Entry::Theme(_) => unreachable!(),
             Entry::Chat(id) => self.open_chat(id, cx),
         }
@@ -265,6 +279,18 @@ impl Shell {
                         } else {
                             id.default_combo()
                         }))
+                    }
+                    Entry::WorkOutline(command) => {
+                        let id = command.shortcut_id();
+                        let combo = self.settings.keymap.get(id);
+                        let usable = if combo.is_empty() {
+                            None
+                        } else if Keystroke::parse(&platform_combo(combo)).is_ok() {
+                            Some(combo)
+                        } else {
+                            Some(id.default_combo()).filter(|default| !default.is_empty())
+                        };
+                        usable.map(crate::settings::badge_combo)
                     }
                     Entry::Settings => Some(crate::settings::badge_combo("mod-,")),
                     Entry::PrReviewChats => {
@@ -568,6 +594,12 @@ mod tests {
                 Entry::Overview,
                 Entry::PrReviewChats,
                 Entry::MyPrs,
+                Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
+                Entry::WorkOutline(WorkOutlineCommand::CreateWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::CreateChildWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::MoveWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::AssociateChatWithWorkItem),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
             ]
@@ -587,6 +619,32 @@ mod tests {
             vec![Entry::Theme(AppearanceMode::Light)]
         );
         assert!(actions_for("deployment", true).is_empty());
+    }
+
+    #[test]
+    fn palette_lists_six_work_outline_commands_and_hides_later_milestones() {
+        let entries = actions_for("", true);
+        let listed: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::WorkOutline(command) => Some(*command),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(listed.len(), 6);
+        for command in [
+            WorkOutlineCommand::OpenEffectiveInstructions,
+            WorkOutlineCommand::CreateInstructionFromChat,
+            WorkOutlineCommand::OpenRequiredActions,
+        ] {
+            assert!(!listed.contains(&command), "{command:?} is not in M1");
+            assert!(actions_for(command.label(), true).is_empty());
+        }
+        assert_eq!(
+            actions_for("rename work", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem)]
+        );
+        assert_eq!(actions_for("outline", true).len(), 1);
     }
 
     #[test]

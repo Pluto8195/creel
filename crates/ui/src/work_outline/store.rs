@@ -466,6 +466,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unresolved_user_actions_total_skips_archived_items_and_empty_spaces() {
+        let mut store = WorkOutlineStore::from_fixture("space-1");
+        assert_eq!(
+            store.unresolved_user_action_totals().get("space-1"),
+            Some(&1)
+        );
+        // Archive the item that carries the request: the total drops out.
+        let mut snapshot = fixture_snapshot("space-1");
+        let ui = snapshot.items.iter_mut().find(|i| i.id == UI).unwrap();
+        ui.archived_at = Some(1);
+        store.set("space-1", WorkOutlineLoad::Ready(Arc::new(snapshot)));
+        assert!(store.unresolved_user_action_totals().is_empty());
+        // Loading / unsupported Spaces contribute nothing.
+        store.set("space-2", WorkOutlineLoad::Unsupported);
+        assert!(store.unresolved_user_action_totals().is_empty());
+    }
+
+    #[test]
     fn fixture_is_three_levels_deep_in_preorder() {
         let snapshot = fixture_snapshot("space-1");
         let order: Vec<&str> = snapshot.items.iter().map(|i| i.id.as_str()).collect();

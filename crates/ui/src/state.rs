@@ -4491,6 +4491,8 @@ mod tests {
         let item =
             |space_id: &str| serde_json::json!({ "item": outline_snapshot(space_id, 1, "A") });
         let asked = answer_outline_watches(&runtime, &mut requests, &replies, &|id| item(id));
+        let mut asked = asked;
+        asked.sort();
         assert_eq!(asked, ["s1", "s2"]);
         cx.run_until_parked();
         state.read_with(cx, |state, _| {
