@@ -15,6 +15,22 @@ pub mod capabilities {
     /// Work Outline rows are readable and writable on this host (registry
     /// rows, `WatchWorkOutline`, `WorkOutlineMutate`).
     pub const WORK_OUTLINE_V1: &str = "work-outline-v1";
+    /// The host resolves, verifies, and delivers Work Outline instruction
+    /// envelopes (version 1). Not in [`CURRENT`] until delivery ships; hosts
+    /// also stamp one [`work_outline_instruction_envelope_for`] token per
+    /// harness that can deliver.
+    pub const WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1: &str = "work-outline-instruction-envelope-v1";
+
+    /// Per-harness token: `work-outline-instruction-envelope-v1/<harness>`,
+    /// where `<harness>` is the harness id's wire spelling (`claude-code`,
+    /// `codex`, ...).
+    pub fn work_outline_instruction_envelope_for(harness: crate::HarnessId) -> String {
+        let name = serde_json::to_value(harness)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        format!("{WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1}/{name}")
+    }
 
     pub const CURRENT: &[&str] = &[
         MESSAGE_QUEUE_V1,
@@ -104,6 +120,26 @@ mod tests {
                     "work-outline-v1"
                 ],
             })
+        );
+    }
+
+    #[test]
+    fn instruction_envelope_capability_tokens_are_pinned() {
+        assert_eq!(
+            capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1,
+            "work-outline-instruction-envelope-v1"
+        );
+        assert_eq!(
+            capabilities::work_outline_instruction_envelope_for(crate::HarnessId::ClaudeCode),
+            "work-outline-instruction-envelope-v1/claude-code"
+        );
+        assert_eq!(
+            capabilities::work_outline_instruction_envelope_for(crate::HarnessId::Codex),
+            "work-outline-instruction-envelope-v1/codex"
+        );
+        // Not advertised until delivery ships.
+        assert!(
+            !capabilities::CURRENT.contains(&capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1)
         );
     }
 

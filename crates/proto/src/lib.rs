@@ -11,6 +11,7 @@ pub mod repository_topology;
 pub mod sidebar_pins;
 pub mod view;
 pub mod work_outline;
+pub mod work_outline_instructions;
 pub mod work_outline_order;
 pub mod workspace;
 
@@ -20,6 +21,7 @@ pub use preview::*;
 pub use repository_topology::*;
 pub use sidebar_pins::*;
 pub use work_outline::*;
+pub use work_outline_instructions::*;
 pub use work_outline_order::*;
 pub use workspace::*;
 
