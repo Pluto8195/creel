@@ -9185,8 +9185,10 @@ impl Overview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_mode(OverviewMode::Outline, cx);
+        // Load saved view prefs before changing mode: `set_mode` persists the
+        // in-memory prefs, which would overwrite the saved file with defaults.
         self.ensure_prefs_loaded(cx);
+        self.set_mode(OverviewMode::Outline, cx);
         let _ = self.rows(cx);
         self.sync_outline(cx);
         let outline = self.outline.clone();
