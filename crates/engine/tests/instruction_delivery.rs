@@ -1310,3 +1310,67 @@ async fn a_steer_fallback_that_cannot_deliver_its_revision_writes_nothing() {
     assert_eq!(rig.mock.runs().len(), 1);
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Capability tokens: stable across boot, restamped on registry change
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let codex = zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex);
+    let own_device = |core: &EngineCore| {
+        core.workspace
+            .read_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == core.device_id)
+            .unwrap()
+    };
+    {
+        let rig = assemble(&dir, InstructionMockHarness::default(), Arc::default());
+        // What a previous probe-based restamp advertised.
+        let mut device = own_device(&rig.core);
+        device.capabilities.push(codex.clone());
+        rig.core.workspace.upsert_device_row(&device);
+        rig.core.shutdown().await;
+    }
+    // Boot re-registration keeps the per-harness token (no flap to "none").
+    let rig = assemble(&dir, InstructionMockHarness::default(), Arc::default());
+    let device = own_device(&rig.core);
+    assert!(
+        device.capabilities.contains(&codex),
+        "{:?}",
+        device.capabilities
+    );
+    assert!(device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1));
+
+    // A registry change restamps from the probes: this registry has no
+    // Codex, so its token goes.
+    zeron_engine::instruction_delivery::restamp_on_registry_change(
+        &rig.core.workspace,
+        &rig.core.registry,
+    );
+    wait_for(
+        || !own_device(&rig.core).capabilities.contains(&codex),
+        "the restamp to drop the stale token",
+    )
+    .await;
+    let mut device = own_device(&rig.core);
+    device.capabilities.push(codex.clone());
+    rig.core.workspace.upsert_device_row(&device);
+    rig.core
+        .registry
+        .register(Arc::new(InstructionMockHarness::default()));
+    wait_for(
+        || !own_device(&rig.core).capabilities.contains(&codex),
+        "the registry change to restamp",
+    )
+    .await;
+    assert_eq!(
+        zeron_engine::instruction_delivery::last_advertised_capabilities(),
+        Some(zeron_proto::capabilities::current())
+    );
+    rig.core.shutdown().await;
+}

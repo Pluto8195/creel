@@ -935,7 +935,10 @@ impl Engine {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
             cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
-            capabilities: zeron_proto::capabilities::current(),
+            // Before any profile is open: the last probe-based stamp this
+            // process made, else the static list.
+            capabilities: instruction_delivery::last_advertised_capabilities()
+                .unwrap_or_else(zeron_proto::capabilities::current),
         })
     }
 
@@ -1026,14 +1029,9 @@ impl Engine {
         core.set_auth(auth.clone());
         // Stamp per-harness Work Outline instruction tokens once the CLI
         // probes (`claude --help`, `codex --version`) have run — blocking, so
-        // off the runtime; boot stamped only the static capability list.
-        {
-            let workspace = core.workspace.clone();
-            let registry = core.registry.clone();
-            tokio::task::spawn_blocking(move || {
-                instruction_delivery::restamp_device_capabilities(&workspace, &registry);
-            });
-        }
+        // off the runtime; boot kept the previous stamp meanwhile. Restamp
+        // again whenever the harness registry changes (enablement, install).
+        instruction_delivery::restamp_on_registry_change(&core.workspace, &core.registry);
         let preview_workspace = core.workspace.clone();
         let preview_device = core.device_id.clone();
         let projects = Arc::new(move || {

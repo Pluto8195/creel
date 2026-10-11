@@ -1409,6 +1409,9 @@ where
     install()
         .await
         .map_err(|error| RpcError::Failed(error.to_string()))?;
+    // A new or upgraded CLI can change which harnesses deliver Work Outline
+    // instructions; listeners restamp the device's capability tokens.
+    registry.notify_changed();
     Ok(registry.descriptors())
 }
 
@@ -1828,7 +1831,21 @@ impl RpcService for EngineRpc {
                 .await;
         }
         match method {
-            methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
+            methods::ENGINE_INFO => {
+                // Capabilities are dynamic (per-harness instruction tokens
+                // follow the probes): serve what this device's registry row
+                // currently advertises.
+                let mut info = self.engine_info.clone();
+                if let Some(device) = self.workspace.read_devices().ok().and_then(|devices| {
+                    devices
+                        .into_iter()
+                        .find(|device| device.id == self.engine_info.device_id)
+                }) && !device.capabilities.is_empty()
+                {
+                    info.capabilities = device.capabilities;
+                }
+                RpcReply::value(&info)
+            }
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
             methods::INSTALL_HARNESS => {

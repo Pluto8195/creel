@@ -238,13 +238,56 @@ pub fn advertised_capabilities(registry: &HarnessRegistry) -> Vec<String> {
     ))
 }
 
+/// The capability list this process last stamped from the probes (served by
+/// the pre-profile `EngineInfo`).
+static LAST_ADVERTISED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+pub fn last_advertised_capabilities() -> Option<Vec<String>> {
+    LAST_ADVERTISED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Restamp now (off the runtime) and again on every harness registry
+/// change. The listener holds the registry weakly (the registry owns it).
+pub fn restamp_on_registry_change(
+    workspace: &crate::workspace_host::WorkspaceHost,
+    registry: &Arc<HarnessRegistry>,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        restamp_device_capabilities(workspace, registry);
+        return;
+    };
+    let restamp = {
+        let workspace = workspace.clone();
+        let registry = Arc::downgrade(registry);
+        let runtime = runtime.clone();
+        Arc::new(move || {
+            let workspace = workspace.clone();
+            let registry = registry.clone();
+            runtime.spawn_blocking(move || {
+                if let Some(registry) = registry.upgrade() {
+                    restamp_device_capabilities(&workspace, &registry);
+                }
+            });
+        })
+    };
+    restamp();
+    registry.on_change(restamp);
+}
+
 /// Restamp this device's registry row with [`advertised_capabilities`]
-/// (boot stamps only the static list). Blocking: runs the CLI probes.
+/// (boot keeps the previous per-harness tokens until this runs). Blocking:
+/// runs the CLI probes (cached per executable identity).
 pub fn restamp_device_capabilities(
     workspace: &crate::workspace_host::WorkspaceHost,
     registry: &HarnessRegistry,
 ) {
     let capabilities = advertised_capabilities(registry);
+    *LAST_ADVERTISED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(capabilities.clone());
     let device_id = workspace.device_id().to_string();
     let Ok(devices) = workspace.read_devices() else {
         return;

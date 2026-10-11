@@ -272,6 +272,14 @@ impl WorkspaceHost {
             .read_devices()?
             .into_iter()
             .find(|d| d.id == config.device_id);
+        // Keep the per-harness instruction tokens the last probe stamped;
+        // the post-boot restamp replaces them with the fresh probe result.
+        let capabilities = zeron_proto::capabilities::current_preserving_instruction_harnesses(
+            existing
+                .as_ref()
+                .map(|d| d.capabilities.as_slice())
+                .unwrap_or_default(),
+        );
         doc.upsert_device(&Device {
             id: config.device_id.clone(),
             name: device_name_on_boot(
@@ -287,7 +295,7 @@ impl WorkspaceHost {
             // on the Devices page; workspace version — same for every crate).
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
-            capabilities: zeron_proto::capabilities::current(),
+            capabilities,
         })?;
 
         let state = doc.read_all()?;
