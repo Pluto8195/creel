@@ -42,9 +42,11 @@
 //!   replay writes nothing). [`WorkOutlineService::agent_context`] is what an
 //!   agent may read.
 //! - `WatchWorkOutline(spaceId)`: driven by the registry change counter
-//!   (WATCH_PREVIEWS pattern): clone inputs under the lock, materialize off
-//!   the async runtime, coalesce bursts, emit only frames whose content
-//!   changed, stamp a per-stream monotone `revision`.
+//!   (WATCH_PREVIEWS pattern): coalesce bursts, skip the recompute when no
+//!   row kind the outline reads changed (a per-kind registry generation;
+//!   when unsure, recompute), clone inputs under the lock and materialize
+//!   off the async runtime (both in `spawn_blocking`), emit only frames
+//!   whose content changed, stamp a per-stream monotone `revision`.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -450,6 +452,8 @@ impl WorkOutlineService {
             changes: tokio::sync::watch::Receiver<u64>,
             space_id: String,
             last: Option<WorkOutlineSnapshot>,
+            /// Inputs marker of the last recompute.
+            marker: Option<(u64, bool)>,
             revision: u64,
         }
         let state = State {
@@ -457,6 +461,7 @@ impl WorkOutlineService {
             workspace: self.workspace.clone(),
             space_id,
             last: None,
+            marker: None,
             revision: 0,
         };
         futures::stream::unfold(state, |mut state| async move {
@@ -465,14 +470,24 @@ impl WorkOutlineService {
                     state.changes.changed().await.ok()?;
                     tokio::time::sleep(COALESCE).await;
                     state.changes.borrow_and_update();
+                    // Nothing the outline reads changed (devices, pins,
+                    // seen markers, …): no recompute.
+                    if state.marker == Some(state.workspace.work_outline_inputs_marker()) {
+                        continue;
+                    }
                 }
-                let inputs = state.workspace.work_outline_inputs(&state.space_id);
+                let workspace = state.workspace.clone();
                 let space_id = state.space_id.clone();
-                let mut snapshot = tokio::task::spawn_blocking(move || {
-                    zeron_doc::materialize_work_outline(&space_id, &inputs)
+                let (marker, mut snapshot) = tokio::task::spawn_blocking(move || {
+                    let (marker, inputs) = workspace.work_outline_inputs_marked(&space_id);
+                    (
+                        marker,
+                        zeron_doc::materialize_work_outline(&space_id, &inputs),
+                    )
                 })
                 .await
                 .ok()?;
+                state.marker = Some(marker);
                 if state
                     .last
                     .as_ref()

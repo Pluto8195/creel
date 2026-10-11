@@ -407,6 +407,14 @@ impl RegistryDoc {
         }
     }
 
+    /// Change marker of everything [`Self::work_outline_inputs`] reads (the
+    /// outline kinds plus Spaces, Chats, and session rows): unchanged between
+    /// two reads ⇒ every Space's inputs are unchanged too (`synced` aside).
+    pub fn work_outline_inputs_generation(&self) -> u64 {
+        let base = self.kinds_generation(WORK_OUTLINE_KINDS);
+        base.max(self.kinds_generation(&[KIND_SPACES, KIND_CHATS, KIND_SESSIONS]))
+    }
+
     /// Convenience: inputs + materialization in one call (tests, small reads).
     pub fn work_outline_snapshot(&self, space_id: &str, synced: bool) -> WorkOutlineSnapshot {
         materialize_work_outline(space_id, &self.work_outline_inputs(space_id, synced))

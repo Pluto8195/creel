@@ -724,6 +724,32 @@ impl WorkspaceHost {
         self.read(|doc| doc.work_outline_inputs(space_id, synced))
     }
 
+    /// Cheap change marker of the Work Outline inputs: `(generation of the
+    /// row kinds they read, registry synced)`. Equal markers ⇒ equal inputs.
+    pub fn work_outline_inputs_marker(&self) -> (u64, bool) {
+        let synced = self.registry_synced();
+        (
+            self.read(|doc| doc.work_outline_inputs_generation()),
+            synced,
+        )
+    }
+
+    /// [`Self::work_outline_inputs`] with the marker read under the same
+    /// registry lock (so the marker never claims a newer state than the
+    /// inputs hold).
+    pub fn work_outline_inputs_marked(
+        &self,
+        space_id: &str,
+    ) -> ((u64, bool), zeron_doc::WorkOutlineInputs) {
+        let synced = self.registry_synced();
+        self.read(|doc| {
+            (
+                (doc.work_outline_inputs_generation(), synced),
+                doc.work_outline_inputs(space_id, synced),
+            )
+        })
+    }
+
     /// Apply one Work Outline mutation as one registry write. On success the
     /// `ledger_keys` are queued to be claimed in the device-local
     /// processed-command ledger by the NEXT registry snapshot save, in the
