@@ -2804,10 +2804,12 @@ impl DocHost {
         }
     }
 
-    /// Sender preflight for instruction-bearing commands (contract 5.5): a
-    /// remote host must advertise instruction delivery for the harness, and a
-    /// local host must be able to deliver right now. Rejects with an upgrade
-    /// message instead of queueing work that would sit Pending forever.
+    /// Ingestion preflight for instruction-bearing commands (contract 5.5),
+    /// before anything is written: a remote host must advertise
+    /// `work-outline-instruction-envelope-v1/<harness>` (an older or offline
+    /// host would otherwise skip the command or run without instructions),
+    /// and a local host must be able to deliver right now. Refuses with a
+    /// typed `instructionHostUnsupported` outcome and an actionable message.
     fn preflight_instruction_command(
         &self,
         chat_id: &str,
@@ -2817,6 +2819,15 @@ impl DocHost {
             return Ok(());
         };
         let harness = self.harness_for_request(chat_id, request);
+        self.preflight_instruction_host(chat_id, harness)
+    }
+
+    /// [`Self::preflight_instruction_command`] for one harness.
+    fn preflight_instruction_host(
+        &self,
+        chat_id: &str,
+        harness: HarnessId,
+    ) -> Result<(), EngineError> {
         match self.remote_host_for(chat_id) {
             Some(host_id) => {
                 let devices = self
@@ -2826,7 +2837,7 @@ impl DocHost {
                     .unwrap_or_default();
                 let host = devices.iter().find(|d| d.id == host_id);
                 instruction_delivery::remote_host_preflight(host, &host_id, harness)
-                    .map_err(EngineError::Other)
+                    .map_err(EngineError::InstructionDelivery)
             }
             None => {
                 let Some(sessions) = self.sessions() else {
@@ -2837,8 +2848,9 @@ impl DocHost {
                     zeron_harness::InstructionSupport::Unsupported {
                         reason,
                         upgrade_hint,
-                    } => Err(EngineError::Other(
-                        instruction_delivery::capability_message(
+                    } => Err(EngineError::InstructionDelivery(
+                        instruction_delivery::local_harness_unsupported(
+                            &self.inner.config.device_id,
                             harness,
                             &reason,
                             upgrade_hint.as_deref(),
@@ -2893,6 +2905,11 @@ impl DocHost {
         // revision the Chat had selected when the user queued it, even if a
         // newer one is applied before it drains.
         let instructions = self.selected_instruction_revision(chat_id);
+        // A pinned row needs a host that can deliver it (an older host would
+        // ignore the pin and run the row without instructions).
+        if instructions.is_some() {
+            self.preflight_instruction_host(chat_id, self.harness_for(chat_id))?;
+        }
         handle.doc.push_queued_with_instructions(
             &QueuedMessage {
                 id: id.clone(),
@@ -4945,7 +4962,18 @@ impl DocHost {
             let harness = self.harness_for_request(chat_id, &request);
             let support = sessions.instruction_support(harness)?;
             if let Err(message) = instruction_delivery::check_support(harness, &support, envelope) {
-                return Ok((SessionCommandStatus::Rejected, Some(message)));
+                let mut rejection = instruction_delivery::local_harness_unsupported(
+                    &self.inner.config.device_id,
+                    harness,
+                    "",
+                    None,
+                );
+                rejection.message = message;
+                return Ok(self.reject_command(
+                    handle,
+                    &entry.id,
+                    EngineError::InstructionDelivery(rejection),
+                ));
             }
             request.instructions = Some(InstructionDelivery {
                 envelope: envelope.clone(),

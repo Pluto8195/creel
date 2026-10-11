@@ -1122,3 +1122,145 @@ async fn a_restart_before_session_start_keeps_the_context_reset_confirmation() {
     assert!(!sidecar.contains("contextResetConfirmed"), "{sidecar}");
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Ingestion: a remote host must advertise the per-harness token
+// ---------------------------------------------------------------------------
+
+fn host_rejection(error: zeron_engine::EngineError) -> zeron_proto::InstructionDeliveryRejection {
+    let wire = error.to_string();
+    let parsed = zeron_proto::InstructionDeliveryRejection::from_wire_message(&wire)
+        .unwrap_or_else(|| panic!("not a typed rejection: {wire}"));
+    match error {
+        zeron_engine::EngineError::InstructionDelivery(rejection) => {
+            assert_eq!(rejection, parsed);
+            rejection
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+fn host_reason(
+    rejection: &zeron_proto::InstructionDeliveryRejection,
+) -> zeron_proto::InstructionHostUnsupportedReason {
+    match &rejection.outcome {
+        zeron_proto::InstructionDeliveryOutcome::InstructionHostUnsupported {
+            reason,
+            host_device_id,
+            required_capability,
+            ..
+        } => {
+            assert_eq!(host_device_id, "device-b");
+            assert_eq!(
+                required_capability,
+                "work-outline-instruction-envelope-v1/mock"
+            );
+            *reason
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
+    use zeron_proto::InstructionHostUnsupportedReason as Reason;
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = assemble(
+        tmp.path(),
+        InstructionMockHarness::default(),
+        Arc::new(FakeRegistry::default()),
+    );
+    // Hosted by another device (no Space: the row names the host).
+    rig.core
+        .workspace
+        .create_chat(CHAT, None, Some("device-b"), None, Some("/tmp".into()))
+        .unwrap();
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    let commands = |core: &EngineCore| {
+        core.doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .read_commands()
+            .unwrap()
+    };
+
+    // Unknown host.
+    let refused = rig
+        .core
+        .doc_host
+        .queue_command(CHAT, plain("hello", "m-1"))
+        .unwrap_err();
+    assert_eq!(host_reason(&host_rejection(refused)), Reason::UnknownDevice);
+
+    // A host on an older Zeron.
+    let mut device: zeron_proto::Device = serde_json::from_value(serde_json::json!({
+        "id": "device-b", "name": "Studio", "platform": "macos", "lastSeenAt": null,
+        "version": "0.2.81"
+    }))
+    .unwrap();
+    rig.core.workspace.upsert_device_row(&device);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_command(CHAT, plain("hello", "m-1"))
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::ZeronUpgradeRequired);
+    assert!(
+        rejection.message.contains("Update Zeron on Studio"),
+        "{}",
+        rejection.message
+    );
+
+    // Envelope support but no token for this harness; a queued message is
+    // refused the same way.
+    device.capabilities =
+        vec![zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
+    rig.core.workspace.upsert_device_row(&device);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_command(CHAT, plain("hello", "m-1"))
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::HarnessUnsupported);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_message(CHAT, "queued", Vec::new())
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::HarnessUnsupported);
+
+    // Nothing was written.
+    assert!(commands(&rig.core).is_empty());
+    assert!(entries(&rig.core).is_empty());
+    assert!(
+        rig.core
+            .doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .read_queue()
+            .unwrap()
+            .is_empty()
+    );
+
+    // With the token the send is accepted and written, pinned.
+    device
+        .capabilities
+        .push(zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Mock));
+    rig.core.workspace.upsert_device_row(&device);
+    let id = queue(&rig.core, plain("hello", "m-1"));
+    assert!(matches!(
+        command(&rig.core, &id).unwrap().payload,
+        SessionCommandPayload::RunWithInstructions { .. }
+    ));
+    assert!(
+        rig.mock.runs().is_empty(),
+        "the remote host runs it, not us"
+    );
+    rig.core.shutdown().await;
+}
