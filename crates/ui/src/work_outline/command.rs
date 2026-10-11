@@ -112,11 +112,10 @@ impl WorkOutlineCommand {
             .find(|command| command.shortcut_id() == id)
     }
 
-    /// Whether the command appears in the command palette. Open Required
-    /// Actions is registered as a shortcut but stays out of the palette until
-    /// Milestone 4: the Overview side has nothing to run for it yet.
+    /// Whether the command appears in the command palette: every command
+    /// since Milestone 4 enabled Open Required Actions.
     pub(crate) fn in_palette(self) -> bool {
-        !matches!(self, Self::OpenRequiredActions)
+        true
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
@@ -133,7 +132,6 @@ impl WorkOutlineCommand {
                 | Self::RenameWorkItem
                 | Self::MoveWorkItem
                 | Self::OpenEffectiveInstructions
-                | Self::OpenRequiredActions
                 | Self::StartChatForWorkItem
         )
     }
@@ -258,26 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn nine_commands_are_in_the_palette_and_required_actions_waits() {
+    fn every_command_is_in_the_palette_including_required_actions() {
         let listed: Vec<_> = WorkOutlineCommand::ALL
             .into_iter()
             .filter(|c| c.in_palette())
             .collect();
-        assert_eq!(
-            listed,
-            [
-                WorkOutlineCommand::OpenOutline,
-                WorkOutlineCommand::CreateWorkItem,
-                WorkOutlineCommand::CreateChildWorkItem,
-                WorkOutlineCommand::RenameWorkItem,
-                WorkOutlineCommand::MoveWorkItem,
-                WorkOutlineCommand::AssociateChatWithWorkItem,
-                WorkOutlineCommand::OpenEffectiveInstructions,
-                WorkOutlineCommand::CreateInstructionFromChat,
-                WorkOutlineCommand::StartChatForWorkItem,
-            ]
-        );
-        assert!(!WorkOutlineCommand::OpenRequiredActions.in_palette());
+        assert_eq!(listed, WorkOutlineCommand::ALL);
+        assert!(WorkOutlineCommand::OpenRequiredActions.in_palette());
+        // Global: no selection needed.
+        assert!(!WorkOutlineCommand::OpenRequiredActions.needs_selected_work_item());
     }
 
     #[test]

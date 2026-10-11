@@ -2664,6 +2664,15 @@ pub struct Overview {
     /// Expand Effective Instructions once details for this `(space, item)`
     /// open (palette "Open Effective Instructions" across a discard prompt).
     pending_effective: Option<(String, String)>,
+    /// Expand Proposed instructions once details for this `(space, item)`
+    /// open (Outline / chat-header proposal indicators).
+    pending_proposals: Option<(String, String)>,
+    /// The global Required Actions surface (Milestone 4): renders in the
+    /// right slot under Work Item Details (details opened from it stack on
+    /// top; closing them shows it again) and above the chat panel / peek.
+    required_actions_panel:
+        Option<Entity<crate::work_outline::required_actions_view::RequiredActionsList>>,
+    _required_actions_events: Option<Subscription>,
     /// Tests run without a Shell: Start Chat requests land here.
     #[cfg(test)]
     pub(crate) captured_start_chat: Option<(String, String)>,
@@ -2773,6 +2782,10 @@ impl Overview {
                         .update(cx, |outline, cx| outline.show_notice(notice, cx));
                 }
             }
+            OutlineEvent::OpenProposals { space_id, item_id } => {
+                this.open_proposals(space_id.clone(), item_id.clone(), cx);
+            }
+            OutlineEvent::OpenRequiredActions => this.open_required_actions(cx),
         });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
         // loop idiom as the composer's queue-lease renewal. Ends on its own
@@ -2871,6 +2884,9 @@ impl Overview {
             work_item_filter_popup: popover::Popup::default(),
             work_item_details: None,
             pending_effective: None,
+            pending_proposals: None,
+            required_actions_panel: None,
+            _required_actions_events: None,
             #[cfg(test)]
             captured_start_chat: None,
             _details_events: None,
@@ -6574,6 +6590,11 @@ impl Render for Overview {
             let chats = self.outline_chats.clone();
             details.update(cx, |details, _| details.set_data(snapshot, chats));
             Some(div().h_full().flex_none().child(details).into_any_element())
+        } else if let Some(list) = self.required_actions_panel.clone() {
+            let spaces = self.required_action_spaces(cx);
+            let chats = self.outline_chats.clone();
+            list.update(cx, |list, _| list.set_data(spaces, chats));
+            Some(div().h_full().flex_none().child(list).into_any_element())
         } else if self.subagent_peek.is_some() {
             self.render_subagent_peek(&theme, cx)
         } else {
@@ -6595,6 +6616,9 @@ impl Render for Overview {
                 }
                 if let Some(details) = this.work_item_details.clone() {
                     details.update(cx, |details, cx| details.request_close(cx));
+                    cx.stop_propagation();
+                } else if this.required_actions_panel.is_some() {
+                    this.close_required_actions(cx);
                     cx.stop_propagation();
                 } else if this.subagent_peek.is_some() {
                     this.close_subagent_peek(cx);
@@ -8985,6 +9009,33 @@ impl Overview {
                 }))
                 .into_any_element(),
         ];
+        // Required Actions: always reachable; the count uses the attention token.
+        let open = crate::work_outline::required_actions::open_request_count(
+            &self.required_action_spaces(cx),
+        );
+        out.push(
+            pill(
+                "outline-required-actions",
+                if open > 0 {
+                    format!("Required actions ({open})")
+                } else {
+                    "Required actions".to_string()
+                },
+                self.required_actions_panel.is_some(),
+            )
+            .debug_selector(|| "outline-required-actions".into())
+            .when(open > 0, |el| {
+                el.text_color(crate::work_outline::chips::attention_color(theme))
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.required_actions_panel.is_some() {
+                    this.close_required_actions(cx);
+                } else {
+                    this.open_required_actions(cx);
+                }
+            }))
+            .into_any_element(),
+        );
         if self.hide_stale {
             let hidden = self.outline.read(cx).hidden_completed();
             let label = if self.outline_show_completed {
@@ -9248,6 +9299,7 @@ impl Overview {
             DetailsExit::Close => self.close_work_item_details(cx),
             DetailsExit::OpenChat(chat_id) => {
                 self.close_work_item_details(cx);
+                self.close_required_actions(cx);
                 self.open_chat_panel(chat_id, cx);
             }
             DetailsExit::OpenItem { space_id, item_id } => {
@@ -9295,6 +9347,13 @@ impl Overview {
             details.update(cx, |details, cx| {
                 if details.space_id == space && details.item_id == item {
                     details.open_effective(cx);
+                }
+            });
+        }
+        if let Some((space, item)) = self.pending_proposals.take() {
+            details.update(cx, |details, cx| {
+                if details.space_id == space && details.item_id == item {
+                    details.open_proposals(cx);
                 }
             });
         }
@@ -9365,7 +9424,8 @@ impl Overview {
                 Err("Open a Chat and select text to create an instruction from it")
             }
             WorkOutlineCommand::OpenRequiredActions => {
-                Err("Required Actions arrive in a later update")
+                self.open_required_actions(cx);
+                Ok(())
             }
             WorkOutlineCommand::StartChatForWorkItem => {
                 match self.outline.read(cx).selected_item() {
@@ -9465,6 +9525,91 @@ impl Overview {
         }
         self.pending_effective = Some((space_id.clone(), item_id.clone()));
         self.open_work_item_details(space_id, item_id, cx);
+    }
+
+    /// Open Work Item Details (`item_id` empty = Space root) with Proposed
+    /// instructions expanded.
+    pub(crate) fn open_proposals(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(details) = self.work_item_details.as_ref().filter(|details| {
+            let details = details.read(cx);
+            details.space_id == space_id && details.item_id == item_id
+        }) {
+            details.update(cx, |details, cx| details.open_proposals(cx));
+            return;
+        }
+        self.pending_proposals = Some((space_id.clone(), item_id.clone()));
+        self.open_work_item_details(space_id, item_id, cx);
+    }
+
+    /// Every loaded Space's snapshot, in Outline Space order (the global
+    /// Required Actions view).
+    fn required_action_spaces(
+        &self,
+        cx: &gpui::App,
+    ) -> Vec<crate::work_outline::required_actions::SpaceSnapshot> {
+        self.outline_spaces(cx)
+            .into_iter()
+            .filter_map(|space| {
+                Some(crate::work_outline::required_actions::SpaceSnapshot {
+                    snapshot: space.load.snapshot()?.clone(),
+                    space_id: space.id,
+                    label: space.label,
+                })
+            })
+            .collect()
+    }
+
+    /// Open the global Required Actions surface (palette command, shortcut,
+    /// Outline toolbar). Work Item Details close first (through the discard
+    /// policy) so the surface is visible.
+    pub(crate) fn open_required_actions(&mut self, cx: &mut Context<Self>) {
+        if self.required_actions_panel.is_none() {
+            use crate::work_outline::required_actions_view::{
+                RequiredActionsEvent, RequiredActionsList,
+            };
+            let list = cx.new(|cx| {
+                RequiredActionsList::new(
+                    self.state.clone(),
+                    crate::work_outline::required_actions::RequestScope::Global,
+                    true,
+                    cx,
+                )
+            });
+            let events = cx.subscribe(&list, |this: &mut Self, _, event, cx| match event {
+                RequiredActionsEvent::Close => this.close_required_actions(cx),
+                RequiredActionsEvent::OpenChat(chat_id) => {
+                    this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
+                }
+                RequiredActionsEvent::OpenItem { space_id, item_id } => {
+                    this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
+                }
+            });
+            self.required_actions_panel = Some(list);
+            self._required_actions_events = Some(events);
+        }
+        if self.work_item_details.is_some() {
+            self.leave_work_item_details(DetailsExit::Close, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_required_actions(&mut self, cx: &mut Context<Self>) {
+        if self.required_actions_panel.take().is_some() {
+            self._required_actions_events = None;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn required_actions_panel(
+        &self,
+    ) -> Option<Entity<crate::work_outline::required_actions_view::RequiredActionsList>> {
+        self.required_actions_panel.clone()
     }
 
     /// Replace the per-Space outline loads (tests and the offline fixture;
@@ -12587,13 +12732,13 @@ mod logic_tests {
         });
         draw(vcx);
         assert!(vcx.debug_bounds("outline-row-editor").is_some());
-        // Later-milestone commands are a notice, not a silent no-op.
+        // Open Required Actions needs no selection: the global surface opens.
         vcx.update(|window, cx| {
             overview.update(cx, |o, cx| {
                 o.run_work_outline_command(WorkOutlineCommand::OpenRequiredActions, window, cx)
             })
         });
-        overview.read_with(vcx, |o, cx| assert!(o.outline.read(cx).notice().is_some()));
+        overview.read_with(vcx, |o, _| assert!(o.required_actions_panel.is_some()));
     }
 
     /// Acceptance 26: details render in the right slot and closing them
@@ -14058,5 +14203,11 @@ mod logic_tests {
             overview.update(vcx, |o, _| o.captured_start_chat.take()),
             Some(("s1".to_string(), API.to_string()))
         );
+    }
+
+    /// Milestone 4 (Required Actions, proposals); the body lives beside the
+    /// Work Outline modules and shares this module's fixtures.
+    mod required_actions_tests {
+        include!("work_outline/required_actions_tests.rs");
     }
 }

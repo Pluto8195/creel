@@ -48,6 +48,10 @@ pub(crate) use instructions_section::InstructionDraft;
 #[path = "details_execution.rs"]
 mod execution_section;
 
+#[path = "details_user_actions.rs"]
+mod user_actions_section;
+pub(crate) use user_actions_section::ProposalReview;
+
 /// `item_id` of the Space-root variant of the details surface.
 pub(crate) const SPACE_ROOT_ITEM_ID: &str = "";
 
@@ -169,6 +173,18 @@ pub(crate) struct WorkItemDetails {
     execution_reset_op: super::actions::OperationSlot,
     pub(crate) execution_validation: super::execution::ValidationState,
     pub(crate) execution_error: Option<String>,
+    /// Milestone 4: the Space-level Required Actions list (this item's
+    /// subtree, or the whole Space on the Space-root variant).
+    required_actions: Entity<super::required_actions_view::RequiredActionsList>,
+    /// `None` = open while something is open.
+    pub(crate) required_actions_open: Option<bool>,
+    /// Proposed instructions: collapsed until opened.
+    pub(crate) proposals_open: bool,
+    pub(crate) proposal_review: Option<ProposalReview>,
+    proposal_input: Entity<ComposerInput>,
+    reason_input: Entity<ComposerInput>,
+    pub(crate) proposal_history_open: bool,
+    pub(crate) proposals_error: Option<String>,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
@@ -222,7 +238,28 @@ impl WorkItemDetails {
             .with_text_metrics(12.0, 18.0)
         });
         let is_space_root = item_id == SPACE_ROOT_ITEM_ID;
+        // Generic composer context (Shift+Enter breaks a line); Approve is
+        // explicit (button only), blur never approves.
+        let proposal_input = cx
+            .new(|cx| ComposerInput::new("Proposed instruction", cx).with_text_metrics(12.5, 18.0));
+        let reason_input = cx.new(|cx| {
+            ComposerInput::with_context(
+                "Optional reason",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+            .with_text_metrics(12.0, 18.0)
+        });
+        let (required_actions, required_actions_events) =
+            Self::new_required_actions(&state, &space_id, &item_id, cx);
         let subscriptions = vec![
+            required_actions_events,
+            cx.subscribe(&reason_input, |this: &mut Self, _, event, cx| {
+                if matches!(event, ComposerInputEvent::Submitted) {
+                    this.reject_proposal(cx);
+                }
+            }),
             cx.subscribe(&execution_root_input, |this: &mut Self, _, event, cx| {
                 if matches!(event, ComposerInputEvent::Submitted) {
                     this.save_execution(cx);
@@ -281,6 +318,14 @@ impl WorkItemDetails {
             execution_reset_op: Default::default(),
             execution_validation: Default::default(),
             execution_error: None,
+            required_actions,
+            required_actions_open: None,
+            proposals_open: false,
+            proposal_review: None,
+            proposal_input,
+            reason_input,
+            proposal_history_open: false,
+            proposals_error: None,
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_confirm: None,
@@ -316,7 +361,10 @@ impl WorkItemDetails {
 
     /// A draft that closing would lose.
     pub(crate) fn has_unsaved_draft(&self, cx: &gpui::App) -> bool {
-        if self.instruction_draft_dirty(cx) || self.execution_draft_dirty(cx) {
+        if self.instruction_draft_dirty(cx)
+            || self.execution_draft_dirty(cx)
+            || self.proposal_review_dirty(cx)
+        {
             return true;
         }
         let Some(item) = self.item() else {
@@ -359,6 +407,8 @@ impl WorkItemDetails {
                 "Your instruction edits have not been saved.".into()
             } else if self.execution_draft_dirty(cx) {
                 "Your execution configuration edits have not been saved.".into()
+            } else if self.proposal_review_dirty(cx) {
+                "Your edits to the proposed instruction have not been approved.".into()
             } else {
                 "Your edits to this work item have not been saved.".into()
             },
@@ -417,6 +467,7 @@ impl WorkItemDetails {
         self.instruction_draft = None;
         self.execution_draft = None;
         self.execution_ref_inputs.clear();
+        self.proposal_review = None;
     }
 
     // ----------------------------------------------------------------------
@@ -546,8 +597,18 @@ impl WorkItemDetails {
         );
     }
 
-    fn set_status(&mut self, status: WorkItemStatus, cx: &mut Context<Self>) {
-        if self.item().is_some_and(|item| item.status == status) {
+    pub(crate) fn set_status(&mut self, status: WorkItemStatus, cx: &mut Context<Self>) {
+        // Re-completing an item that gained a request is gated too.
+        let open = self
+            .item()
+            .is_some_and(|item| item.rollup.unresolved_user_action_count > 0);
+        if self.item().is_some_and(|item| {
+            item.status == status && !(open && status == WorkItemStatus::Completed)
+        }) {
+            return;
+        }
+        if status == WorkItemStatus::Completed {
+            self.request_completion(cx);
             return;
         }
         self.update_item(
@@ -819,6 +880,12 @@ impl Render for WorkItemDetails {
                         this.confirm_discard(cx, |_| {});
                     } else {
                         this.instruction_draft = None;
+                    }
+                } else if this.proposal_review.is_some() {
+                    if this.proposal_review_dirty(cx) {
+                        this.confirm_discard(cx, |_| {});
+                    } else {
+                        this.cancel_proposal_review(cx);
                     }
                 } else if this.execution_draft.is_some() {
                     if this.execution_draft_dirty(cx) {
@@ -1416,6 +1483,9 @@ impl Render for WorkItemDetails {
             )
         };
 
+        let created_by = self.render_created_by(&item, &theme, cx);
+        let required_actions = self.render_required_actions_section(&snapshot, &theme, cx);
+        let proposals = self.render_proposals_section(&snapshot, &theme, cx);
         let error = self.error.clone();
         shell_frame.child(header).child(
             div()
@@ -1429,9 +1499,12 @@ impl Render for WorkItemDetails {
                 .px(px(14.0))
                 .py(px(10.0))
                 .child(title)
+                .when_some(created_by, |el, line| el.child(line))
                 .child(status_row)
+                .child(required_actions)
                 .child(description)
                 .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
+                .when_some(proposals, |el, section| el.child(section))
                 .child(self.render_effective_section(&item, &snapshot, &theme, cx))
                 .child(self.render_execution_section(&snapshot, &theme, cx))
                 .child(chats_section)
