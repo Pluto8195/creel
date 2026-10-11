@@ -1323,3 +1323,80 @@ async fn malformed_binding_rejects_every_gate_instead_of_reading_as_unbound() {
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 1: HOME is never an execution root, and never remapped
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn home_directory_root_is_rejected_not_remapped_to_the_projectless_folder() {
+    let rig = rig().await;
+    let home = std::env::var("HOME").expect("HOME is set");
+    // A launch override naming HOME is refused before any Chat exists.
+    let mut p = params(&rig, "op-home", "launch home");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": { "executionRoot": home, "bindings": [], "schema": 1 }
+        }))
+        .unwrap(),
+    );
+    let error = launch(&rig, &p).await.expect_err("HOME root is refused");
+    assert!(
+        error.message.contains("execution-scope:homeDirectoryRoot"),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .message
+            .contains("Choose a project folder inside your home directory"),
+        "{error:?}"
+    );
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-home", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    // A binding captured with HOME by an older build: a Run is rejected,
+    // never run in the per-Chat projectless folder.
+    rig.client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "home-chat", "spaceId": SPACE,
+                    "deviceId": DEVICE, "cwd": home }),
+        )
+        .await
+        .unwrap();
+    let mut resolved = rig
+        .core
+        .workspace
+        .resolve_execution(&zeron_proto::ExecutionScope::Space {
+            space_id: SPACE.into(),
+        })
+        .unwrap();
+    resolved.configuration.execution_root = home.clone();
+    resolved.configuration.bindings.clear();
+    rig.core
+        .workspace
+        .capture_chat_execution_binding(
+            "home-chat",
+            &resolved,
+            "op-home-capture",
+            &zeron_proto::WorkOutlineActor {
+                kind: zeron_proto::WorkOutlineActorKind::User,
+                device_id: DEVICE.into(),
+                chat_id: None,
+                message_id: None,
+            },
+        )
+        .unwrap();
+    let id = queue_run(&rig, "home-chat", "home raw", &home);
+    assert_rejected_with(
+        &wait_command(&rig, "home-chat", &id).await,
+        "homeDirectoryRoot",
+    );
+    assert!(turns_with(&rig, "home raw").is_empty());
+    assert_eq!(user_messages(&rig, "home-chat"), 0);
+    rig.core.shutdown().await;
+}

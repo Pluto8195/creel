@@ -29,7 +29,39 @@ pub(crate) struct ExecutionFolderPick {
     pub confirm_label: SharedString,
     pub device_id: String,
     pub start_path: Option<String>,
+    /// Refuse to confirm the device's home directory itself (execution
+    /// roots: validation rejects HOME with `homeDirectoryRoot`).
+    pub reject_home_directory: bool,
     pub on_pick: Box<dyn FnOnce(String, &mut gpui::App) + 'static>,
+}
+
+/// Why the folder picker will not confirm the home directory as an
+/// execution root (the validator's `homeDirectoryRoot` remediation).
+pub(crate) const HOME_ROOT_REFUSAL: &str = "Your home directory can't be an execution root. Choose a project folder inside your home \
+     directory.";
+
+/// Whether `path` is the device's home directory: the home the browser
+/// resolved when known, else the conventional `/Users/<name>`,
+/// `/home/<name>`, `/root`, or `~` shapes (the browser may have opened at a
+/// start path and never resolved home). Folders inside it are not.
+pub(crate) fn is_device_home(path: &str, known_home: Option<&str>) -> bool {
+    let path = path.trim_end_matches('/');
+    if path == "~" {
+        return true;
+    }
+    if let Some(home) = known_home.map(|home| home.trim_end_matches('/'))
+        && !home.is_empty()
+        && home == path
+    {
+        return true;
+    }
+    if path == "/root" {
+        return true;
+    }
+    ["/Users/", "/home/"].iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    })
 }
 
 /// What a folder pick is for.
@@ -912,6 +944,21 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn home_directory_detection_for_the_root_picker() {
+        use super::is_device_home;
+        assert!(is_device_home("/Users/mikey", None));
+        assert!(is_device_home("/Users/mikey/", None));
+        assert!(is_device_home("/home/dev", None));
+        assert!(is_device_home("/root", None));
+        assert!(is_device_home("~", None));
+        assert!(is_device_home("/srv/me", Some("/srv/me")));
+        assert!(!is_device_home("/Users/mikey/Projects", None));
+        assert!(!is_device_home("/Users", None));
+        assert!(!is_device_home("/srv/me/app", Some("/srv/me")));
+        assert!(!is_device_home("/srv/work", None));
+    }
+
     use super::super::store::fixture_ids::*;
     use super::fixture::*;
     use super::*;

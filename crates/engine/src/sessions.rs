@@ -308,7 +308,7 @@ impl SessionsEngine {
     /// (terminal and command discovery) must not accidentally revive the old
     /// behavior where project-less chats ran from the person's HOME.
     pub(crate) fn resolve_cwd(&self, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
-        resolve_run_cwd(&self.inner.journal, chat_id, cwd)
+        self.inner.resolve_dispatch_cwd(chat_id, cwd)
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -611,7 +611,9 @@ impl SessionsEngine {
         // then probe Desktop/Documents/Music/Pictures and macOS attributes the
         // privacy prompts to Zeron. Existing `~` chats migrate automatically
         // to a stable per-chat Zeron-owned directory on their next dispatch.
-        request.cwd = resolve_run_cwd(&self.inner.journal, chat_id, &request.cwd)?;
+        // A bound Chat's cwd is its validated execution root (the dispatch
+        // chokepoint overwrote it); it is never remapped.
+        request.cwd = self.inner.resolve_dispatch_cwd(chat_id, &request.cwd)?;
         // Work Outline instructions (acceptance 9-10): an engine-built
         // follow-up carries none of its own, so it takes the revision its
         // Turn is pinned to (sidecar by message id, else the live Execution
@@ -1524,6 +1526,21 @@ impl Inner {
         // Cache the journal hit (memory + row) so later dispatches skip the scan.
         self.remember_harness_session(chat_id, &session_id, &session_cwd);
         cwd_ok(&session_cwd).then_some(session_id)
+    }
+
+    /// The cwd a dispatch runs in: the projectless remap of `~` / HOME for
+    /// unbound Chats, and the cwd unchanged for a bound Chat (Work Outline
+    /// contract 6.3: a bound Chat runs in its validated execution root or
+    /// not at all; validation rejects HOME as a root, so remapping it to the
+    /// projectless directory would silently run elsewhere).
+    fn resolve_dispatch_cwd(&self, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
+        let bound = self
+            .workspace()
+            .is_some_and(|ws| ws.chat_execution_binding_state(chat_id).is_bound());
+        if bound {
+            return Ok(cwd.to_owned());
+        }
+        resolve_run_cwd(&self.journal, chat_id, cwd)
     }
 
     /// [`Self::resume_for`] with the Work Outline execution-scope rule

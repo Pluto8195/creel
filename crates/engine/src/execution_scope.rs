@@ -294,6 +294,13 @@ pub(crate) fn canonical_lenient(path: &Path) -> PathBuf {
     path
 }
 
+/// Whether `path` (canonical) is the user's home directory, including
+/// symlink aliases of it. A folder inside HOME is not.
+pub(crate) fn is_home_directory(path: &Path) -> bool {
+    let home = crate::repos::home_dir();
+    canonical_lenient(path) == canonical_lenient(&home)
+}
+
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -642,6 +649,16 @@ pub async fn validate(
             None
         }
     };
+    // The user's home directory is never an execution root: an agent there
+    // probes every personal folder, and dispatch treats HOME as projectless.
+    if let Some(root) = &root
+        && is_home_directory(root)
+    {
+        errors.push(ExecutionValidationError::HomeDirectoryRoot {
+            path: configuration.execution_root.clone(),
+        });
+        return Err(errors);
+    }
     let root_checkout_id = match &root {
         Some(root) => checkout_at(probe, root)
             .await

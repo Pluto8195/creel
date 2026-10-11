@@ -2070,7 +2070,21 @@ pub(super) struct AddSpaceFlow {
 pub(super) struct FolderPickMode {
     title: SharedString,
     confirm_label: SharedString,
+    /// Execution roots: the home directory itself cannot be confirmed.
+    reject_home_directory: bool,
     on_pick: Option<Box<dyn FnOnce(String, &mut App) + 'static>>,
+}
+
+impl AddSpaceFlow {
+    /// Pick mode refuses the open folder (an execution root at the device's
+    /// home directory); the reason to show.
+    fn pick_refusal(&self) -> Option<&'static str> {
+        let pick = self.pick.as_ref()?;
+        let listing = self.browser.ready()?;
+        (pick.reject_home_directory
+            && crate::work_outline::execution::is_device_home(&listing.path, self.home.as_deref()))
+        .then_some(crate::work_outline::execution::HOME_ROOT_REFUSAL)
+    }
 }
 
 /// Segment-aware "is `path` at or under `base`" (`/media/a` is not under
@@ -5147,6 +5161,7 @@ impl Shell {
         flow.pick = Some(FolderPickMode {
             title: request.title,
             confirm_label: request.confirm_label,
+            reject_home_directory: request.reject_home_directory,
             on_pick: Some(request.on_pick),
         });
         let search = flow.search.clone();
@@ -5168,6 +5183,11 @@ impl Shell {
         let Some(path) = flow.browser.ready().map(|listing| listing.path.clone()) else {
             return;
         };
+        if let Some(refusal) = flow.pick_refusal() {
+            flow.error = Some(refusal.into());
+            cx.notify();
+            return;
+        }
         let on_pick = flow.pick.as_mut().and_then(|pick| pick.on_pick.take());
         self.add_space = None;
         cx.notify();
@@ -5814,11 +5834,13 @@ impl Shell {
         let home = flow.home.clone();
         let load_error = flow.browser.error().map(str::to_string);
         let error = flow.error.clone();
+        let flow_error_absent = error.is_none();
         let busy = flow.submit_busy;
         let pick_labels = flow
             .pick
             .as_ref()
             .map(|pick| (pick.title.clone(), pick.confirm_label.clone()));
+        let pick_refusal = flow.pick_refusal();
         let active = flow.active;
         let loading = matches!(flow.browser, Loadable::Idle | Loadable::Loading);
         let drives_loading = matches!(flow.drives, Loadable::Loading);
@@ -6193,7 +6215,9 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
-                    .when(busy || listing.is_none(), |el| el.opacity(0.5))
+                    .when(busy || listing.is_none() || pick_refusal.is_some(), |el| {
+                        el.opacity(0.5)
+                    })
                     .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx)))
                     .child(
                         popover::key_cap(&theme)
@@ -6232,6 +6256,15 @@ impl Shell {
                             .pb(px(8.0))
                             .text_color(theme.danger)
                             .child(error),
+                    )
+                })
+                .when_some(pick_refusal.filter(|_| flow_error_absent), |el, refusal| {
+                    el.child(
+                        div()
+                            .px(px(18.0))
+                            .pb(px(8.0))
+                            .text_color(theme.text_muted)
+                            .child(refusal),
                     )
                 })
                 .child(footer);
@@ -6720,6 +6753,7 @@ mod project_flow_tests {
                     confirm_label: "Add repository".into(),
                     device_id: "remote".into(),
                     start_path: Some("/srv/work".into()),
+                    reject_home_directory: false,
                     on_pick: Box::new(move |path, _| *sink.borrow_mut() = Some(path)),
                 },
                 cx,
@@ -6746,5 +6780,81 @@ mod project_flow_tests {
             );
         });
         assert_eq!(picked.borrow().as_deref(), Some("/srv/work/ui"));
+    }
+
+    /// An execution-root pick never confirms the device's home directory
+    /// (validation would reject it with `homeDirectoryRoot`); a project
+    /// folder inside it is fine.
+    #[gpui::test]
+    fn execution_root_pick_refuses_the_home_directory(cx: &mut gpui::TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let shell = cx.new(|cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                state.devices = serde_json::from_value(serde_json::json!([
+                    {"id":"remote","name":"Server","platform":"linux","lastSeenAt":null}
+                ]))
+                .unwrap();
+                state
+            });
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: data.path().into(),
+                    ipc_port: 0,
+                    edge_url: String::new(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        let picked = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let sink = picked.clone();
+        shell.update(cx, |shell, cx| {
+            shell.open_folder_pick(
+                crate::work_outline::execution::ExecutionFolderPick {
+                    title: "Execution root".into(),
+                    confirm_label: "Use this folder".into(),
+                    device_id: "remote".into(),
+                    start_path: None,
+                    reject_home_directory: true,
+                    on_pick: Box::new(move |path, _| *sink.borrow_mut() = Some(path)),
+                },
+                cx,
+            );
+            let flow = shell.add_space.as_mut().unwrap();
+            // The browser resolved the device's home.
+            flow.home = Some("/srv/me".into());
+            flow.browser = Loadable::Ready(FolderListing {
+                path: "/srv/me".into(),
+                entries: Vec::new(),
+                truncated: false,
+            });
+            assert!(flow.pick_refusal().is_some());
+            shell.submit_add_space(cx);
+            let flow = shell.add_space.as_mut().expect("the picker stays open");
+            assert_eq!(
+                flow.error.as_deref(),
+                Some(crate::work_outline::execution::HOME_ROOT_REFUSAL)
+            );
+            // A project folder inside home is accepted.
+            flow.browser = Loadable::Ready(FolderListing {
+                path: "/srv/me/app".into(),
+                entries: Vec::new(),
+                truncated: false,
+            });
+            assert!(flow.pick_refusal().is_none());
+        });
+        assert!(picked.borrow().is_none());
+        shell.update(cx, |shell, cx| shell.submit_add_space(cx));
+        assert_eq!(picked.borrow().as_deref(), Some("/srv/me/app"));
     }
 }

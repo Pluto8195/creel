@@ -383,6 +383,7 @@ impl WorkItemDetails {
             confirm_label: confirm_label.into(),
             device_id,
             start_path,
+            reject_home_directory: purpose == FolderPickPurpose::ExecutionRoot,
             on_pick: Box::new(move |path, cx| {
                 weak.update(cx, |this, cx| match purpose {
                     FolderPickPurpose::ExecutionRoot => this.set_execution_root(&path, cx),
