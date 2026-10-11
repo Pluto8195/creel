@@ -854,7 +854,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// Work Outline commands registered as rebindable shortcuts (every
 /// `WorkOutlineCommand`, including the ones whose palette entry waits for a
 /// later milestone).
-pub const WORK_OUTLINE_SHORTCUTS: usize = 9;
+pub const WORK_OUTLINE_SHORTCUTS: usize = 10;
 
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
 /// or past [`JUMP_SLOTS`] has no combo and no label, so it reads as unbound
@@ -884,6 +884,7 @@ pub enum ShortcutId {
     OpenEffectiveInstructions,
     CreateInstructionFromChat,
     OpenRequiredActions,
+    StartChatForWorkItem,
     JumpSession(usize),
 }
 
@@ -912,6 +913,7 @@ impl ShortcutId {
         ShortcutId::OpenEffectiveInstructions,
         ShortcutId::CreateInstructionFromChat,
         ShortcutId::OpenRequiredActions,
+        ShortcutId::StartChatForWorkItem,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -953,6 +955,7 @@ impl ShortcutId {
             ShortcutId::OpenEffectiveInstructions => "Open effective instructions",
             ShortcutId::CreateInstructionFromChat => "Create instruction from chat",
             ShortcutId::OpenRequiredActions => "Open required actions",
+            ShortcutId::StartChatForWorkItem => "Start chat in work item",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1011,7 +1014,8 @@ impl ShortcutId {
             | ShortcutId::AssociateChatWithWorkItem
             | ShortcutId::OpenEffectiveInstructions
             | ShortcutId::CreateInstructionFromChat
-            | ShortcutId::OpenRequiredActions => "",
+            | ShortcutId::OpenRequiredActions
+            | ShortcutId::StartChatForWorkItem => "",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1054,6 +1058,7 @@ pub struct KeymapConfig {
     pub open_effective_instructions: String,
     pub create_instruction_from_chat: String,
     pub open_required_actions: String,
+    pub start_chat_for_work_item: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1134,6 +1139,7 @@ impl Default for KeymapConfig {
                 .default_combo()
                 .into(),
             open_required_actions: ShortcutId::OpenRequiredActions.default_combo().into(),
+            start_chat_for_work_item: ShortcutId::StartChatForWorkItem.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
         }
     }
@@ -1165,6 +1171,7 @@ impl KeymapConfig {
             ShortcutId::OpenEffectiveInstructions => &self.open_effective_instructions,
             ShortcutId::CreateInstructionFromChat => &self.create_instruction_from_chat,
             ShortcutId::OpenRequiredActions => &self.open_required_actions,
+            ShortcutId::StartChatForWorkItem => &self.start_chat_for_work_item,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1198,6 +1205,7 @@ impl KeymapConfig {
             ShortcutId::OpenEffectiveInstructions => self.open_effective_instructions = combo,
             ShortcutId::CreateInstructionFromChat => self.create_instruction_from_chat = combo,
             ShortcutId::OpenRequiredActions => self.open_required_actions = combo,
+            ShortcutId::StartChatForWorkItem => self.start_chat_for_work_item = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {
@@ -3238,7 +3246,7 @@ mod tests {
         assert!(conflicted_shortcuts(&keymap).is_empty());
     }
 
-    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 9] = [
+    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 10] = [
         (ShortcutId::OpenOutline, "openOutline"),
         (ShortcutId::CreateWorkItem, "createWorkItem"),
         (ShortcutId::CreateChildWorkItem, "createChildWorkItem"),
@@ -3257,6 +3265,7 @@ mod tests {
             "createInstructionFromChat",
         ),
         (ShortcutId::OpenRequiredActions, "openRequiredActions"),
+        (ShortcutId::StartChatForWorkItem, "startChatForWorkItem"),
     ];
 
     #[test]

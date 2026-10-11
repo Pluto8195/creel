@@ -100,6 +100,8 @@ pub(super) enum WorkOutlineModal {
     Compare(super::instructions_ui::CompareDialog),
     /// Create Instruction from Chat (`instructions_ui`).
     FromChat(super::instructions_ui::FromChatDialog),
+    /// Start Chat from a work item (`start_chat_ui`).
+    StartChat(super::start_chat_ui::StartChatDialog),
 }
 
 /// How a work item reference link should open.
@@ -255,7 +257,9 @@ fn deliver_decision(modal: WorkOutlineModal, accept: bool, window: &mut Window, 
                 callback(accept, window, cx);
             }
         }
-        WorkOutlineModal::Compare(_) | WorkOutlineModal::FromChat(_) => {}
+        WorkOutlineModal::Compare(_)
+        | WorkOutlineModal::FromChat(_)
+        | WorkOutlineModal::StartChat(_) => {}
     }
 }
 
@@ -439,6 +443,10 @@ impl Shell {
                     let handle = dialog.input_focus(cx);
                     window.focus(&handle, cx);
                 }
+                WorkOutlineModal::StartChat(dialog) => {
+                    let handle = dialog.input_focus(cx);
+                    window.focus(&handle, cx);
+                }
                 _ => window.focus(&self.work_outline_modal_focus, cx),
             }
         }
@@ -504,6 +512,9 @@ impl Shell {
             }
             WorkOutlineModal::FromChat(dialog) => {
                 super::instructions_ui::from_chat_card(dialog, &theme, cx)
+            }
+            WorkOutlineModal::StartChat(dialog) => {
+                super::start_chat_ui::start_chat_card(dialog, self, &theme, cx)
             }
             WorkOutlineModal::Confirm(dialog) => {
                 let accept = if dialog.destructive {

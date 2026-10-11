@@ -63,6 +63,11 @@ pub(crate) enum DetailsEvent {
         space_id: String,
         item_id: String,
     },
+    /// Start a Chat in this work item (Milestone 3).
+    StartChat {
+        space_id: String,
+        item_id: String,
+    },
 }
 
 /// A parsed external-reference URL.
@@ -1021,7 +1026,22 @@ impl Render for WorkItemDetails {
                     .bg(theme.element_hover.opacity(0.5))
                     .children(status_pills),
             )
-            .when_some(attention, |el, attention| el.child(attention));
+            .when_some(attention, |el, attention| el.child(attention))
+            .child(div().flex_1())
+            .when(item.archived_at.is_none(), |el| {
+                let space_id = self.space_id.clone();
+                let item_id = item.id.clone();
+                el.child(
+                    Self::small_button("work-item-start-chat", "Start Chat", &theme)
+                        .debug_selector(|| "work-item-start-chat".into())
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(DetailsEvent::StartChat {
+                                space_id: space_id.clone(),
+                                item_id: item_id.clone(),
+                            })
+                        })),
+                )
+            });
 
         // Description (collapsed until opened).
         let description_open = self.description_open || self.editing_description;

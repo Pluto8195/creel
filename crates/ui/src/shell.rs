@@ -68,6 +68,7 @@ mod project_icon;
 mod sidebar_pins;
 mod sidebar_sections;
 pub(crate) mod spaces;
+mod start_chat_ui;
 mod tabs;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;

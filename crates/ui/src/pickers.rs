@@ -1060,6 +1060,52 @@ impl Pickers {
         }
     }
 
+    /// The agents a Start Chat from a work item can use: the composer's
+    /// resolved harness first (with its model, reasoning, and options), then
+    /// every other offered harness with its host defaults. Reuses the
+    /// composer's harness catalog and sticky defaults.
+    pub(crate) fn launch_agents(&self, cx: &App) -> Vec<crate::work_outline::launch::LaunchAgent> {
+        let resolved = self.resolved(cx);
+        let offered = self
+            .harnesses
+            .ready()
+            .map(|list| offered_harnesses(list))
+            .unwrap_or_default();
+        let name_of = |id: HarnessId| {
+            offered
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| format!("{id:?}"))
+        };
+        let mut agents = Vec::new();
+        if let Some(config) = resolved.chat_config() {
+            agents.push(crate::work_outline::launch::LaunchAgent {
+                harness: config.harness,
+                name: name_of(config.harness),
+                config,
+            });
+        }
+        for descriptor in &offered {
+            if agents.iter().any(|agent| agent.harness == descriptor.id) {
+                continue;
+            }
+            agents.push(crate::work_outline::launch::LaunchAgent {
+                harness: descriptor.id,
+                name: descriptor.name.clone(),
+                config: ChatConfig {
+                    harness: descriptor.id,
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: SandboxLevel::WorkspaceWrite,
+                    auto_approve: resolved.auto_approve,
+                },
+            });
+        }
+        agents
+    }
+
     // ---- the per-chat approval chip (see [`approval`]) ----
 
     /// The approval flag the next send carries (and the chip shows).

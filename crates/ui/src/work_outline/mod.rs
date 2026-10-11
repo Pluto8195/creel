@@ -30,6 +30,7 @@ pub(crate) mod details_panel;
 pub(crate) mod execution;
 pub(crate) mod filter;
 pub(crate) mod instructions;
+pub(crate) mod launch;
 pub(crate) mod model;
 pub(crate) mod nav;
 pub(crate) mod outline_view;

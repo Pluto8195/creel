@@ -94,6 +94,8 @@ pub(crate) enum OutlineEvent {
     OpenDetails { space_id: String, item_id: String },
     /// Open the Space-root details (Space-root instructions).
     OpenSpaceRoot { space_id: String },
+    /// Start a Chat in the work item (Milestone 3).
+    StartChat { space_id: String, item_id: String },
 }
 
 /// What the Overview feeds the Outline each time its inputs change.
@@ -1314,6 +1316,50 @@ impl OutlineView {
                 chat_body(&key, chat, chip, theme)
             }
         };
+        // Row action: Start Chat on the selected, live work item.
+        let start_chat = row
+            .item()
+            .filter(|item| selected && !renaming && !item.archived)
+            .map(|item| {
+                let space_id = item.space_id.clone();
+                let item_id = item.item_id.clone();
+                div()
+                    .id(SharedString::from(format!("outline-start-chat-{key}")))
+                    .debug_selector({
+                        let selector = format!("outline-start-chat-{key}");
+                        move || selector.clone()
+                    })
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .px(px(4.0))
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.text_muted)
+                    .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
+                    .child(
+                        crate::icons::icon(crate::icons::ACTION_PLAY)
+                            .size(px(10.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child("Start Chat")
+                    .tooltip(|_, cx| {
+                        cx.new(|_| TextTooltip("Start a Chat in this work item".into()))
+                            .into()
+                    })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if !this.is_editing() {
+                            cx.emit(OutlineEvent::StartChat {
+                                space_id: space_id.clone(),
+                                item_id: item_id.clone(),
+                            });
+                        }
+                    }))
+            });
         let open_row = row.clone();
         let click_key = key.clone();
         let dimmed = row
@@ -1363,6 +1409,7 @@ impl OutlineView {
             }))
             .child(disclosure)
             .child(body)
+            .children(start_chat)
             .into_any_element()
     }
 

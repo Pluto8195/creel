@@ -475,6 +475,27 @@ impl WorkOutlineActions {
         }
     }
 
+    /// `CreateChatForWorkItem` (forwardable; the engine forwards to the
+    /// Space's owner itself). Transport retries resend the same params, so
+    /// the same `operationId`; the host completes missing steps and returns
+    /// the same ids.
+    pub(crate) fn create_chat_for_work_item(
+        &self,
+        params: zeron_proto::CreateChatForWorkItemParams,
+    ) -> Task<Result<zeron_proto::CreateChatForWorkItemReply, WorkOutlineError>> {
+        match serde_json::to_value(&params) {
+            Ok(value) => self.call(
+                methods::CREATE_CHAT_FOR_WORK_ITEM,
+                value,
+                decode_json::<zeron_proto::CreateChatForWorkItemReply>,
+            ),
+            Err(error) => Task::ready(Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                error.to_string(),
+            ))),
+        }
+    }
+
     /// `DescribeExecutionRepository`: the identity a binding records for the
     /// checkout at `path`. The caller sets `targetDeviceId` when the Space
     /// lives on another device (only the owner can fingerprint it).

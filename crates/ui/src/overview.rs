@@ -2664,6 +2664,9 @@ pub struct Overview {
     /// Expand Effective Instructions once details for this `(space, item)`
     /// open (palette "Open Effective Instructions" across a discard prompt).
     pending_effective: Option<(String, String)>,
+    /// Tests run without a Shell: Start Chat requests land here.
+    #[cfg(test)]
+    pub(crate) captured_start_chat: Option<(String, String)>,
     _details_events: Option<Subscription>,
     _outline_events: Subscription,
     _observe: Subscription,
@@ -2763,6 +2766,13 @@ impl Overview {
                     cx,
                 );
             }
+            OutlineEvent::StartChat { space_id, item_id } => {
+                if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
         });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
         // loop idiom as the composer's queue-lease renewal. Ends on its own
@@ -2861,6 +2871,8 @@ impl Overview {
             work_item_filter_popup: popover::Popup::default(),
             work_item_details: None,
             pending_effective: None,
+            #[cfg(test)]
+            captured_start_chat: None,
             _details_events: None,
             _outline_events: outline_events,
             _observe: observe,
@@ -9269,6 +9281,13 @@ impl Overview {
             DetailsEvent::OpenItem { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
             }
+            DetailsEvent::StartChat { space_id, item_id } => {
+                if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
         });
         self.outline
             .update(cx, |outline, cx| outline.select(&key, cx));
@@ -9348,6 +9367,12 @@ impl Overview {
             WorkOutlineCommand::OpenRequiredActions => {
                 Err("Required Actions arrive in a later update")
             }
+            WorkOutlineCommand::StartChatForWorkItem => {
+                match self.outline.read(cx).selected_item() {
+                    Some((space_id, item_id)) => self.start_chat_for_item(space_id, item_id, cx),
+                    None => Err("Select a work item first"),
+                }
+            }
         };
         if let Err(notice) = result {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
@@ -9381,6 +9406,45 @@ impl Overview {
             .filter_map(|row| row.chat())
             .find(|chat| chat.chat.id == chat_id)
             .and_then(|chat| chat.work_item.clone())
+    }
+
+    /// Start Chat in a work item (Outline row action, details button,
+    /// palette). When the item's instructions changed since its last launch,
+    /// Effective Instructions open in details first (the pre-launch check);
+    /// the Shell's Start Chat dialog then shows them expanded too.
+    pub(crate) fn start_chat_for_item(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let snapshot = self
+            .outline_snapshot(&space_id, cx)
+            .ok_or("This project's outline is not loaded")?;
+        let item = snapshot.item(&item_id).ok_or("That work item is gone")?;
+        if item.archived_at.is_some() {
+            return Err("Restore the work item to start a Chat in it");
+        }
+        if crate::work_outline::launch::instructions_changed_since_last_launch(&snapshot, &item_id)
+        {
+            self.open_effective_instructions(space_id.clone(), item_id.clone(), cx);
+        }
+        #[cfg(test)]
+        if self.shell.upgrade().is_none() {
+            self.captured_start_chat = Some((space_id, item_id));
+            return Ok(());
+        }
+        let shell = self
+            .shell
+            .upgrade()
+            .ok_or("Starting a Chat needs the app window")?;
+        // Deferred: the palette path runs inside a Shell update.
+        cx.defer(move |cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_start_chat_or_notice(&space_id, &item_id, cx)
+            });
+        });
+        Ok(())
     }
 
     /// Open Work Item Details for the item with Effective Instructions
@@ -13904,6 +13968,95 @@ mod logic_tests {
         assert_eq!(
             written[1]["scope"],
             serde_json::json!({"type": "space", "spaceId": "s1"})
+        );
+    }
+
+    /// Start Chat entry points: the Outline row action on the selected item,
+    /// the Work Item Details button, and the palette command (which needs a
+    /// selected item). Changed instructions open Effective Instructions in
+    /// details first.
+    #[gpui::test]
+    fn start_chat_entry_points_reach_the_shell_and_review_changed_instructions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = execution_fixture::snapshot("s1");
+        let instructions = instruction_fixture::snapshot("s1");
+        snapshot.instructions = instructions.instructions;
+        snapshot.chat_instruction_states = instructions.chat_instruction_states;
+        snapshot.revisions = instructions.revisions;
+        let (overview, _calls, vcx) =
+            instruction_overview(cx, dir.path(), snapshot, execution_reply(validate_ok()));
+
+        // Palette without a selection: a notice, no request.
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::StartChatForWorkItem, window, cx)
+            })
+        });
+        draw(vcx);
+        assert!(overview.read_with(vcx, |o, _| o.captured_start_chat.is_none()));
+
+        // Outline row action on the selected item (Auth: instructions
+        // current, so details stay closed).
+        let auth_key = row_key::item("s1", API_AUTH);
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.select(&auth_key, cx))
+        });
+        draw(vcx);
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-start-chat-{}", row_key::item("s1", API))
+            )
+            .is_none()
+        );
+        let action = row_bounds(vcx, format!("outline-start-chat-{auth_key}"))
+            .unwrap()
+            .center();
+        vcx.simulate_click(action, gpui::Modifiers::default());
+        draw(vcx);
+        overview.update(vcx, |o, _| {
+            assert_eq!(
+                o.captured_start_chat.take(),
+                Some(("s1".to_string(), API_AUTH.to_string()))
+            );
+            assert!(o.work_item_details.is_none());
+        });
+
+        // Palette with API selected: API's instructions changed since its
+        // last launch, so Effective Instructions open in details first.
+        let api_key = row_key::item("s1", API);
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.select(&api_key, cx))
+        });
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::StartChatForWorkItem, window, cx)
+            })
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        let details = overview.update(vcx, |o, _| {
+            assert_eq!(
+                o.captured_start_chat.take(),
+                Some(("s1".to_string(), API.to_string()))
+            );
+            o.work_item_details
+                .clone()
+                .expect("Effective Instructions opened")
+        });
+        assert!(details.read_with(vcx, |d, _| d.effective_open));
+
+        // The details button.
+        let button = vcx.debug_bounds("work-item-start-chat").unwrap().center();
+        vcx.simulate_click(button, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            overview.update(vcx, |o, _| o.captured_start_chat.take()),
+            Some(("s1".to_string(), API.to_string()))
         );
     }
 }
