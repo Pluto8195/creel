@@ -13,9 +13,10 @@
 use super::*;
 
 use crate::markdown::links::LinkTarget;
+use crate::work_outline::instructions::DriftImpact;
 use crate::work_outline::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
-    WorkOutlineParentChoice,
+    WorkOutlineDriftRequest, WorkOutlineParentChoice,
 };
 use zeron_proto::DescendantArchivePolicy;
 
@@ -82,9 +83,23 @@ impl ArchiveDialog {
     }
 }
 
+/// The drift confirmation: counts of affected Chats and items, and the
+/// statement that existing Chats keep their applied revision.
+pub(super) struct DriftDialog {
+    title: SharedString,
+    confirm_label: SharedString,
+    impact: DriftImpact,
+    on_decision: Option<ConfirmCallback>,
+}
+
 pub(super) enum WorkOutlineModal {
     Confirm(ConfirmDialog),
     Archive(ArchiveDialog),
+    Drift(DriftDialog),
+    /// Revision comparison with Apply (`instructions_ui`).
+    Compare(super::instructions_ui::CompareDialog),
+    /// Create Instruction from Chat (`instructions_ui`).
+    FromChat(super::instructions_ui::FromChatDialog),
 }
 
 /// How a work item reference link should open.
@@ -235,6 +250,12 @@ fn deliver_decision(modal: WorkOutlineModal, accept: bool, window: &mut Window, 
                 callback(policy, window, cx);
             }
         }
+        WorkOutlineModal::Drift(mut dialog) => {
+            if let Some(callback) = dialog.on_decision.take() {
+                callback(accept, window, cx);
+            }
+        }
+        WorkOutlineModal::Compare(_) | WorkOutlineModal::FromChat(_) => {}
     }
 }
 
@@ -294,6 +315,24 @@ impl Shell {
         );
     }
 
+    /// Show the drift confirmation and deliver the decision through
+    /// `request.on_decision` (`true` = confirmed; any other close is `false`).
+    pub(crate) fn open_work_outline_drift_confirm(
+        &mut self,
+        request: WorkOutlineDriftRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_work_outline_modal(
+            WorkOutlineModal::Drift(DriftDialog {
+                title: request.title,
+                confirm_label: request.confirm_label,
+                impact: request.impact,
+                on_decision: Some(request.on_decision),
+            }),
+            cx,
+        );
+    }
+
     /// Show the archive dialog with its explicit descendant choice.
     pub(crate) fn open_work_outline_archive_confirm(
         &mut self,
@@ -303,7 +342,11 @@ impl Shell {
         self.begin_work_outline_modal(WorkOutlineModal::Archive(ArchiveDialog::new(request)), cx);
     }
 
-    fn begin_work_outline_modal(&mut self, modal: WorkOutlineModal, cx: &mut Context<Self>) {
+    pub(super) fn begin_work_outline_modal(
+        &mut self,
+        modal: WorkOutlineModal,
+        cx: &mut Context<Self>,
+    ) {
         // A newer request supersedes an open one, which reports a cancel. No
         // window is at hand here, so the report is delivered on the next
         // render (`render_work_outline_modal`).
@@ -325,7 +368,7 @@ impl Shell {
         self.resolve_work_outline_modal(false, window, cx)
     }
 
-    fn resolve_work_outline_modal(
+    pub(super) fn resolve_work_outline_modal(
         &mut self,
         accept: bool,
         window: &mut Window,
@@ -354,6 +397,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.command_palette = None;
+        // Create Instruction from Chat acts where the Chat is; only when that
+        // is impossible does it fall through to the Outline (with a notice).
+        if command == WorkOutlineCommand::CreateInstructionFromChat
+            && self.open_instruction_from_chat(window, cx).is_ok()
+        {
+            return;
+        }
         if !matches!(self.route, Route::Overview) {
             self.open_overview(cx);
         }
@@ -384,9 +434,77 @@ impl Shell {
                     .focused(cx)
                     .filter(|focused| *focused != self.work_outline_modal_focus);
             }
-            window.focus(&self.work_outline_modal_focus, cx);
+            match modal {
+                WorkOutlineModal::FromChat(dialog) => {
+                    let handle = dialog.input_focus(cx);
+                    window.focus(&handle, cx);
+                }
+                _ => window.focus(&self.work_outline_modal_focus, cx),
+            }
         }
         let card = match modal {
+            WorkOutlineModal::Drift(dialog) => {
+                let impact_line = format!(
+                    "{} \u{b7} {}",
+                    crate::work_outline::instructions::plural(
+                        dialog.impact.chat_ids.len(),
+                        "Chat",
+                        "Chats"
+                    ),
+                    crate::work_outline::instructions::plural(
+                        dialog.impact.item_ids.len(),
+                        "work item",
+                        "work items"
+                    ),
+                );
+                popover::dialog_card(&theme)
+                    .debug_selector(|| "work-outline-drift".into())
+                    .child(popover::dialog_title(&theme, &dialog.title))
+                    .child(
+                        div()
+                            .mt(px(6.0))
+                            .child(popover::dialog_body(&theme, dialog.impact.body())),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "work-outline-drift-counts".into())
+                            .mt(px(8.0))
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(impact_line)),
+                    )
+                    .child(
+                        div()
+                            .mt(px(16.0))
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(
+                                popover::btn_ghost(&theme, "Cancel", "work-outline-drift-cancel")
+                                    .id("work-outline-drift-cancel")
+                                    .debug_selector(|| "work-outline-drift-cancel".into())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.resolve_work_outline_modal(false, window, cx);
+                                    })),
+                            )
+                            .child(
+                                popover::btn_primary(&theme, &dialog.confirm_label)
+                                    .id("work-outline-drift-confirm")
+                                    .debug_selector(|| "work-outline-drift-confirm".into())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.resolve_work_outline_modal(true, window, cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            WorkOutlineModal::Compare(dialog) => {
+                super::instructions_ui::compare_card(dialog, self, &theme, cx)
+            }
+            WorkOutlineModal::FromChat(dialog) => {
+                super::instructions_ui::from_chat_card(dialog, &theme, cx)
+            }
             WorkOutlineModal::Confirm(dialog) => {
                 let accept = if dialog.destructive {
                     popover::btn_danger(&theme, &dialog.confirm_label)
@@ -907,6 +1025,44 @@ mod tests {
                 destination_parent_work_item_id: None
             })]
         );
+    }
+
+    #[gpui::test]
+    fn drift_modal_shows_counts_and_reports_the_decision(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let decisions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for (selector, expected) in [
+            ("work-outline-drift-confirm", true),
+            ("work-outline-drift-cancel", false),
+        ] {
+            let sink = decisions.clone();
+            shell.update(cx, |shell, cx| {
+                shell.open_work_outline_drift_confirm(
+                    WorkOutlineDriftRequest {
+                        title: "Move and change instructions?".into(),
+                        confirm_label: "Move".into(),
+                        impact: DriftImpact {
+                            chat_ids: vec!["c1".into(), "c2".into()],
+                            item_ids: vec!["w1".into()],
+                        },
+                        on_decision: Box::new(move |ok, _, _| sink.borrow_mut().push(ok)),
+                    },
+                    cx,
+                );
+                assert!(shell.overlay_owns_keyboard(cx));
+            });
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            assert!(cx.debug_bounds("work-outline-drift").is_some());
+            assert!(cx.debug_bounds("work-outline-drift-counts").is_some());
+            let center = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_click(center, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(decisions.borrow().last(), Some(&expected), "{selector}");
+        }
     }
 
     #[gpui::test]

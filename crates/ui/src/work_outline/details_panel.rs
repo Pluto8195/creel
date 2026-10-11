@@ -9,6 +9,13 @@
 //! `AppState::work_outline_actions()`; archive and draft discard confirm
 //! through the Shell-owned modal (`Shell::open_work_outline_confirm`);
 //! references open through `Shell::open_work_item_reference`.
+//!
+//! Milestone 2 adds the collapsed **Instructions** and **Effective
+//! instructions** sections, the inheritance toggle, and a Space-root variant
+//! (`item_id` empty) that edits Space-root instructions
+//! (`details_instructions.rs`). Instruction edits save only on an explicit
+//! Save; Cancel discards the draft; closing, switching items, or Escape with
+//! an unsaved draft asks "Keep Editing / Discard" first.
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -33,6 +40,13 @@ use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::shell::Shell;
 use crate::state::AppState;
 use crate::theme::Theme;
+
+#[path = "details_instructions.rs"]
+mod instructions_section;
+pub(crate) use instructions_section::InstructionDraft;
+
+/// `item_id` of the Space-root variant of the details surface.
+pub(crate) const SPACE_ROOT_ITEM_ID: &str = "";
 
 /// Fixed width of the details surface.
 pub(crate) const DETAILS_PANEL_W: f32 = 380.0;
@@ -126,10 +140,23 @@ pub(crate) struct WorkItemDetails {
     /// cannot double-submit.
     in_flight: HashSet<String>,
     error: Option<String>,
+    /// Collapsed until opened (Space-root variant: open).
+    pub(crate) instructions_open: bool,
+    /// The one instruction being written or edited (explicit Save/Cancel).
+    pub(crate) instruction_draft: Option<InstructionDraft>,
+    instruction_input: Entity<ComposerInput>,
+    /// Instructions whose Chat excerpt is expanded.
+    excerpts_open: HashSet<String>,
+    instructions_error: Option<String>,
+    /// Effective Instructions: collapsed until opened.
+    pub(crate) effective_open: bool,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
     pub(crate) captured_confirm: Option<WorkOutlineConfirmRequest>,
+    /// Tests run without a Shell: the drift confirmation lands here.
+    #[cfg(test)]
+    pub(crate) captured_drift: Option<super::command::WorkOutlineDriftRequest>,
 }
 
 impl EventEmitter<DetailsEvent> for WorkItemDetails {}
@@ -159,7 +186,17 @@ impl WorkItemDetails {
             .with_single_line()
             .with_text_metrics(12.0, 18.0)
         });
+        // Generic composer context: Enter saves (an explicit keystroke, like
+        // the description editor), Shift+Enter breaks a line. Blur never saves.
+        let instruction_input =
+            cx.new(|cx| ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0));
+        let is_space_root = item_id == SPACE_ROOT_ITEM_ID;
         let subscriptions = vec![
+            cx.subscribe(&instruction_input, |this: &mut Self, _, event, cx| {
+                if matches!(event, ComposerInputEvent::Submitted) {
+                    this.save_instruction(cx);
+                }
+            }),
             cx.subscribe(&title_input, |this: &mut Self, _, event, cx| {
                 if matches!(event, ComposerInputEvent::Submitted) {
                     this.save_title(cx);
@@ -195,10 +232,23 @@ impl WorkItemDetails {
             associate_open: false,
             in_flight: HashSet::new(),
             error: None,
+            instructions_open: is_space_root,
+            instruction_draft: None,
+            instruction_input,
+            excerpts_open: HashSet::new(),
+            instructions_error: None,
+            effective_open: false,
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_confirm: None,
+            #[cfg(test)]
+            captured_drift: None,
         }
+    }
+
+    /// The Space-root variant (edits Space-root instructions only).
+    pub(crate) fn is_space_root(&self) -> bool {
+        self.item_id == SPACE_ROOT_ITEM_ID
     }
 
     /// Fed by the Overview every frame it renders the surface.
@@ -221,6 +271,9 @@ impl WorkItemDetails {
 
     /// A draft that closing would lose.
     pub(crate) fn has_unsaved_draft(&self, cx: &gpui::App) -> bool {
+        if self.instruction_draft_dirty(cx) {
+            return true;
+        }
         let Some(item) = self.item() else {
             return false;
         };
@@ -257,7 +310,11 @@ impl WorkItemDetails {
         let weak = cx.entity().downgrade();
         let request = WorkOutlineConfirmRequest {
             title: "Discard unsaved changes?".into(),
-            body: "Your edits to this work item have not been saved.".into(),
+            body: if self.instruction_draft_dirty(cx) {
+                "Your instruction edits have not been saved.".into()
+            } else {
+                "Your edits to this work item have not been saved.".into()
+            },
             confirm_label: "Discard".into(),
             cancel_label: "Keep Editing".into(),
             destructive: true,
@@ -310,6 +367,7 @@ impl WorkItemDetails {
         self.editing_title = false;
         self.editing_description = false;
         self.adding_reference = false;
+        self.instruction_draft = None;
     }
 
     // ----------------------------------------------------------------------
@@ -467,6 +525,14 @@ impl WorkItemDetails {
     }
 
     fn associate(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let change = super::instructions::OutlineChange::AssignChat {
+            chat_id: chat_id.clone(),
+            work_item_id: self.item_id.clone(),
+        };
+        self.with_drift_confirm(change, cx, move |this, cx| this.send_associate(chat_id, cx));
+    }
+
+    fn send_associate(&mut self, chat_id: String, cx: &mut Context<Self>) {
         let task =
             self.state
                 .read(cx)
@@ -699,7 +765,13 @@ impl Render for WorkItemDetails {
                 if event.keystroke.key != "escape" {
                     return;
                 }
-                if this.editing_title {
+                if this.instruction_draft.is_some() {
+                    if this.instruction_draft_dirty(cx) {
+                        this.confirm_discard(cx, |_| {});
+                    } else {
+                        this.instruction_draft = None;
+                    }
+                } else if this.editing_title {
                     this.editing_title = false;
                 } else if this.editing_description {
                     this.editing_description = false;
@@ -728,6 +800,9 @@ impl Render for WorkItemDetails {
                     .text_color(theme.text_muted),
             )
             .on_click(cx.listener(|this, _, _, cx| this.request_close(cx)));
+        if self.is_space_root() {
+            return self.render_space_root(shell_frame, close, &theme, cx);
+        }
         let Some(item) = self.item().cloned() else {
             return shell_frame
                 .child(div().flex().justify_end().p(px(8.0)).child(close))
@@ -747,32 +822,53 @@ impl Render for WorkItemDetails {
 
         // Breadcrumbs: ancestors are links.
         let path = model::item_path(&snapshot, &item.id);
-        let crumbs = path
-            .iter()
-            .take(path.len().saturating_sub(1))
-            .enumerate()
-            .flat_map(|(ix, ancestor)| {
-                let space_id = self.space_id.clone();
-                let item_id = ancestor.id.clone();
-                [
-                    div()
-                        .id(("work-item-crumb", ix))
-                        .flex_shrink_0()
-                        .max_w(px(140.0))
-                        .truncate()
-                        .cursor_pointer()
-                        .hover(|el| el.text_color(theme.text))
-                        .child(SharedString::from(ancestor.title.clone()))
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(DetailsEvent::OpenItem {
-                                space_id: space_id.clone(),
-                                item_id: item_id.clone(),
-                            })
-                        }))
-                        .into_any_element(),
-                    div().flex_none().child("›").into_any_element(),
-                ]
-            })
+        let root_space = self.space_id.clone();
+        let root_crumb = [
+            div()
+                .id("work-item-crumb-space-root")
+                .debug_selector(|| "work-item-crumb-space-root".into())
+                .flex_shrink_0()
+                .cursor_pointer()
+                .hover(|el| el.text_color(theme.text))
+                .child("Space root")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(DetailsEvent::OpenItem {
+                        space_id: root_space.clone(),
+                        item_id: SPACE_ROOT_ITEM_ID.into(),
+                    })
+                }))
+                .into_any_element(),
+            div().flex_none().child("›").into_any_element(),
+        ];
+        let crumbs = root_crumb
+            .into_iter()
+            .chain(
+                path.iter()
+                    .take(path.len().saturating_sub(1))
+                    .enumerate()
+                    .flat_map(|(ix, ancestor)| {
+                        let space_id = self.space_id.clone();
+                        let item_id = ancestor.id.clone();
+                        [
+                            div()
+                                .id(("work-item-crumb", ix))
+                                .flex_shrink_0()
+                                .max_w(px(140.0))
+                                .truncate()
+                                .cursor_pointer()
+                                .hover(|el| el.text_color(theme.text))
+                                .child(SharedString::from(ancestor.title.clone()))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(DetailsEvent::OpenItem {
+                                        space_id: space_id.clone(),
+                                        item_id: item_id.clone(),
+                                    })
+                                }))
+                                .into_any_element(),
+                            div().flex_none().child("›").into_any_element(),
+                        ]
+                    }),
+            )
             .collect::<Vec<AnyElement>>();
         let header = div()
             .flex_none()
@@ -1265,6 +1361,8 @@ impl Render for WorkItemDetails {
                 .child(title)
                 .child(status_row)
                 .child(description)
+                .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
+                .child(self.render_effective_section(&item, &snapshot, &theme, cx))
                 .child(chats_section)
                 .when_some(children_section, |el, section| el.child(section))
                 .child(refs_section)

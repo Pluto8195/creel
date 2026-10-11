@@ -63,6 +63,7 @@ mod actions_ui;
 mod closeout_ui;
 mod command_palette;
 mod files_panel;
+mod instructions_ui;
 mod project_icon;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1643,6 +1644,8 @@ pub struct Shell {
     work_outline_modal_focus_pending: bool,
     /// What had focus before the modal opened; restored when it closes.
     work_outline_prior_focus: Option<FocusHandle>,
+    /// Per-Chat "Apply updated instructions" progress (`instructions_ui`).
+    instruction_apply: std::collections::HashMap<String, instructions_ui::ApplyState>,
     /// The chat close-out dialog (`closeout_ui`), `Some` while open.
     closeout_dialog: Option<closeout_ui::CloseoutDialog>,
     /// Monotonic id per close-out dialog open (stale-reply guard).
@@ -2073,6 +2076,7 @@ impl Shell {
             work_outline_modal_focus: cx.focus_handle(),
             work_outline_modal_focus_pending: false,
             work_outline_prior_focus: None,
+            instruction_apply: std::collections::HashMap::new(),
             closeout_dialog: None,
             closeout_seq: 0,
             space_menu: popover::Popup::default(),
@@ -4265,6 +4269,7 @@ impl Shell {
             classification.and_then(|entry| entry.category.as_deref()),
             classification.and_then(|entry| entry.origin.as_deref()),
         );
+        let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
         Some(
             div()
                 .id("full-chat-header-metadata-wrap")
@@ -4293,6 +4298,7 @@ impl Shell {
                         })),
                     )
                 })
+                .when_some(instruction_status, |el, status| el.child(status))
                 .into_any_element(),
         )
     }

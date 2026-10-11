@@ -477,3 +477,78 @@ registry row fields and behavior.
 10. **Not done.** The `work-outline-instruction-envelope-v1` capability is not advertised (delivery
     owns it). Application rows are cascaded only with their Space, not on Chat deletion.
     Instruction rows are not copied by local-to-synced import (same as Milestone 1 rows).
+
+## Milestone 2 UI discoveries
+
+Recorded by the Milestone 2 user interface (`crates/ui/src/work_outline/{actions,instructions,
+revision_diff,details_instructions}.rs`, `shell/instructions_ui.rs`, edits to `details_panel.rs`,
+`outline_view.rs`, `overview.rs`, `shell/work_outline_ui.rs`). Each item is a reading of an
+ambiguous rule or a gap later milestones must close.
+
+1. **Local first.** Effective Instructions, the drift analysis, and Compare are computed from the
+   `WatchWorkOutline` snapshot with the shared pure functions (`effective_instructions`,
+   `canonical_revision_hash`, `build_revision_body`, `compare_instruction_revisions`). The
+   `WorkOutlineQuery` facade (`WorkOutlineActions::query` + `expect_*`) is used only when a Chat's
+   applied revision is missing from `snapshot.revisions` (`getInstructionRevision`). The UI
+   therefore works while the engine answers instruction operations with `unsupported`; writes then
+   show "Instructions aren't available on this host yet" (`actions::instruction_error_text`) and
+   keep the draft.
+2. **Operation ids.** Transport retries resend identical params (M1). Across user retries an
+   `OperationSlot` reuses the id while the inputs are unchanged and re-mints it once they change
+   (a host that recorded the first attempt would otherwise answer `operationConflict`). Apply keys
+   the `createInstructionRevision` id by `(item, current effective hash)` and the
+   `applyInstructionRevision` id by `(chat, revision id)`; both reset after success.
+3. **Persistence policy (acceptance 28).** An instruction is written only by Save (button, or Enter
+   in the generic composer; Shift+Enter breaks a line). Cancel discards at once (explicit, no
+   prompt). Blur never saves. Closing details, switching items, opening a Chat, or Escape with a
+   dirty instruction draft goes through the existing "Keep Editing / Discard" confirmation. One
+   instruction draft is open at a time; saving unchanged text writes nothing.
+4. **Drift rule.** The confirmation appears iff at least one assigned Chat (assignment `associated`;
+   dangling Chats excluded) would see its current canonical effective hash change. Triggers: Chat
+   association/move (an unassociated Chat counts as an empty list), item move (Outline move
+   picker), the inheritance toggle, and edit/archive of an instruction of any scope ("ancestor" is
+   read relative to the Chat, so a local edit on an item with its own Chats also asks). Counts are
+   the affected Chats and the live items whose effective instructions change. Not gated: creating
+   or reordering instructions (not in the spec list; affected Chats still show drift afterwards),
+   archive with `moveDescendants`, and renames (titles are snapshotted, so a rename drifts).
+5. **Apply.** `createInstructionRevision(itemId)` then `applyInstructionRevision(chatId,
+   revisionId, reason: explicit)` with no `turnBoundary`. A working Chat shows "Applied · takes
+   effect at the next Turn". The Compare dialog stays open after Apply and shows the outcome.
+   Caveat: a replayed revision operation returns the revision the host minted first, which is the
+   intended idempotent outcome even if the outline changed in between under the same inputs key.
+6. **Delivery.** "Selected r… · Delivered r…" (or "Not delivered yet") appears whenever the host's
+   delivered revision id differs from the selection, in the chat header and the Compare dialog.
+   Labels use the first 7 hex characters of the revision hash (the id when no hash is known).
+7. **Space root.** The details surface has a Space-root variant (`item_id == ""`,
+   `details_panel::SPACE_ROOT_ITEM_ID`) that edits Space-root instructions only. Entries: an
+   "Instructions" button on each Space row (multi-Space), a "Space root instructions (N)" line atop
+   a single-Space Outline, the "Space root" breadcrumb in item details, and inherited Space-root
+   entries in Effective Instructions.
+8. **Effective view.** Collapsed until opened; entries in effective order with a Local/Inherited
+   marker, the source title (inherited sources link to their details), "Parent instructions stop
+   at …" when a boundary applies, the precedence rule, and "N / 9000 characters · M / 32 entries"
+   in the danger color with `budgetError` when over budget. Palette Open Effective Instructions
+   targets the selected item, else the selected Chat row's item, else the app's selected Chat's
+   item; `Overview::open_effective_instructions` is the open path Milestone 3's pre-launch check
+   should call. The inheritance toggle is hidden on root items (nothing to inherit).
+9. **Drift surfaces.** Full-chat header: one compact line with Compare / Apply. Outline Chat rows:
+   an "Instructions changed" chip (warning token and icon) that opens Compare, where Apply lives;
+   two inline buttons would not fit the compact row. Not marked: List/Canvas cards and the
+   Overview chat-panel header. The header shows drift only while the Chat's Space outline is
+   watched (the Overview declares every Space visible once its page exists).
+10. **Create Instruction from Chat.** The palette command acts in place (Shell modal) when a Chat
+    is active; otherwise it falls back to the Outline with a notice. The excerpt is the global
+    markdown selection when its anchor key (`{rowId}:…` or `{rowId}-code…`) belongs to a row of
+    the active transcript (message id = the row's message entry id); else the last assistant
+    message's copy text (message-level, tools excluded). Targets: this item, the live parent, the
+    Space root; the dialog shows the target path and the reached descendant count. The excerpt is
+    truncated to 1,500 characters before hashing (`contentHash = sha256(stored excerpt)`), the
+    editable text to 6,000. No drift confirmation for creation (see item 4).
+11. **Generic diff.** `work_outline/revision_diff.rs` renders the wire `lineDiff` directly (dual
+    line numbers, `diff_add`/`diff_del` tints, accent bar, code font and size, 3 lines of context
+    around changes, 400-row cap) after the entry-level changed/added/removed/reordered summary. It
+    does not use `transcript::diff_to_file` or `changes::diff_line_row`: the wire already carries
+    the line diff and the Changes renderer stays private and checkout-bound.
+12. **Palette.** Eight Work Outline entries; Open Required Actions stays out until Milestone 4.
+13. **Tests.** `WorkOutlineActions::scripted` and `AppState::work_outline_actions_override`
+    (test-only) answer mutations and queries synchronously and record their params.

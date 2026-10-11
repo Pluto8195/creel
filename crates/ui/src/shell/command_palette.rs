@@ -47,8 +47,8 @@ enum Entry {
     MyPrs,
     ImportSessionCanvasSessions,
     Theme(AppearanceMode),
-    /// A Work Outline command (only the Milestone 1 ones; see
-    /// `WorkOutlineCommand::in_palette`).
+    /// A Work Outline command (all but Open Required Actions, which waits for
+    /// Milestone 4; see `WorkOutlineCommand::in_palette`).
     WorkOutline(WorkOutlineCommand),
     Chat(String),
 }
@@ -600,6 +600,8 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::MoveWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::AssociateChatWithWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::OpenEffectiveInstructions),
+                Entry::WorkOutline(WorkOutlineCommand::CreateInstructionFromChat),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
             ]
@@ -622,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_lists_six_work_outline_commands_and_hides_later_milestones() {
+    fn palette_lists_eight_work_outline_commands_and_hides_required_actions() {
         let entries = actions_for("", true);
         let listed: Vec<_> = entries
             .iter()
@@ -631,15 +633,21 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(listed.len(), 6);
-        for command in [
-            WorkOutlineCommand::OpenEffectiveInstructions,
-            WorkOutlineCommand::CreateInstructionFromChat,
-            WorkOutlineCommand::OpenRequiredActions,
-        ] {
-            assert!(!listed.contains(&command), "{command:?} is not in M1");
-            assert!(actions_for(command.label(), true).is_empty());
-        }
+        assert_eq!(listed.len(), 8);
+        assert!(!listed.contains(&WorkOutlineCommand::OpenRequiredActions));
+        assert!(actions_for(WorkOutlineCommand::OpenRequiredActions.label(), true).is_empty());
+        assert_eq!(
+            actions_for("effective instructions", true),
+            vec![Entry::WorkOutline(
+                WorkOutlineCommand::OpenEffectiveInstructions
+            )]
+        );
+        assert_eq!(
+            actions_for("instruction from chat", true),
+            vec![Entry::WorkOutline(
+                WorkOutlineCommand::CreateInstructionFromChat
+            )]
+        );
         assert_eq!(
             actions_for("rename work", true),
             vec![Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem)]

@@ -20,11 +20,14 @@ use std::time::Duration;
 
 use gpui::{BackgroundExecutor, Task};
 use zeron_proto::{
-    ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemExternalReferenceParams,
-    CreateWorkItemParams, MoveWorkItemParams, RemoveChatFromWorkItemParams,
+    ApplyInstructionRevisionParams, ArchiveWorkItemInstructionParams, ArchiveWorkItemParams,
+    AssignChatToWorkItemParams, CreateInstructionRevisionParams,
+    CreateWorkItemExternalReferenceParams, CreateWorkItemInstructionParams, CreateWorkItemParams,
+    EffectiveInstructions, InstructionRevisionComparison, InstructionRevisionView,
+    MoveWorkItemInstructionParams, MoveWorkItemParams, RemoveChatFromWorkItemParams,
     RemoveWorkItemExternalReferenceParams, RepairWorkOutlineParams, RestoreWorkItemParams,
-    UpdateWorkItemParams, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply,
-    WorkOutlineMutation,
+    UpdateWorkItemInstructionParams, UpdateWorkItemParams, WorkOutlineError, WorkOutlineErrorCode,
+    WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlineQueryRequest, WorkOutlineQueryResponse,
 };
 use zeron_rpc::{RpcError, methods};
 
@@ -33,6 +36,36 @@ use crate::state::EngineHandle;
 /// A new idempotency key for one logical user action (UUID v4).
 pub(crate) fn new_operation_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// The operation id of one logical user action, reused on every retry of
+/// the SAME inputs (idempotent replay) and re-minted once the inputs change
+/// after a failed attempt (a host that recorded the first attempt would
+/// otherwise answer `operationConflict`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct OperationSlot {
+    id: Option<String>,
+    inputs: Option<String>,
+}
+
+impl OperationSlot {
+    /// The id to send with `inputs` (a stable rendering of the request).
+    pub(crate) fn id_for(&mut self, inputs: &str) -> String {
+        match (&self.id, &self.inputs) {
+            (Some(id), Some(sent)) if sent == inputs => id.clone(),
+            (Some(id), None) => {
+                let id = id.clone();
+                self.inputs = Some(inputs.to_owned());
+                id
+            }
+            _ => {
+                let id = new_operation_id();
+                self.id = Some(id.clone());
+                self.inputs = Some(inputs.to_owned());
+                id
+            }
+        }
+    }
 }
 
 /// Every operation resolves to the shared reply (`{}` unless the operation
@@ -90,41 +123,27 @@ pub(crate) fn parse_failed_message(message: &str) -> WorkOutlineError {
         .unwrap_or_else(|| WorkOutlineError::new(WorkOutlineErrorCode::Invalid, message))
 }
 
-/// Send `mutation` through `call`, retrying transient failures. The mutation
-/// is serialized ONCE, so every attempt carries identical params and hence the
-/// same `operationId`. `sleep` is the backoff timer (injected so tests run
-/// without a clock).
-async fn mutate_with_retry<Call, CallFut, Sleep, SleepFut>(
-    mutation: &WorkOutlineMutation,
+/// Send `params` through `call`, retrying transient failures with the SAME
+/// params (so a mutation keeps its `operationId`). `sleep` is the backoff
+/// timer (injected so tests run without a clock).
+async fn call_with_retry<Call, CallFut, Sleep, SleepFut>(
+    params: serde_json::Value,
     mut call: Call,
     mut sleep: Sleep,
-) -> Result<WorkOutlineMutateReply, WorkOutlineError>
+) -> Result<serde_json::Value, WorkOutlineError>
 where
     Call: FnMut(serde_json::Value) -> CallFut,
     CallFut: Future<Output = Result<serde_json::Value, RpcError>>,
     Sleep: FnMut(Duration) -> SleepFut,
     SleepFut: Future<Output = ()>,
 {
-    let params = serde_json::to_value(mutation)
-        .map_err(|error| WorkOutlineError::new(WorkOutlineErrorCode::Invalid, error.to_string()))?;
     let mut last_transport = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
             sleep(retry_delay(attempt - 1)).await;
         }
         match call(params.clone()).await {
-            Ok(value) => {
-                return if value.is_null() {
-                    Ok(WorkOutlineMutateReply::default())
-                } else {
-                    serde_json::from_value(value).map_err(|error| {
-                        WorkOutlineError::new(
-                            WorkOutlineErrorCode::Invalid,
-                            format!("malformed Work Outline reply: {error}"),
-                        )
-                    })
-                };
-            }
+            Ok(value) => return Ok(value),
             Err(error) => match classify(error) {
                 Failure::Final(error) => return Err(error),
                 Failure::Transient(message) => last_transport = message,
@@ -137,12 +156,82 @@ where
     ))
 }
 
+fn decode_reply(value: serde_json::Value) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
+    if value.is_null() {
+        return Ok(WorkOutlineMutateReply::default());
+    }
+    serde_json::from_value(value).map_err(|error| {
+        WorkOutlineError::new(
+            WorkOutlineErrorCode::Invalid,
+            format!("malformed Work Outline reply: {error}"),
+        )
+    })
+}
+
+fn decode_query(value: serde_json::Value) -> Result<WorkOutlineQueryResponse, WorkOutlineError> {
+    serde_json::from_value(value).map_err(|error| {
+        WorkOutlineError::new(
+            WorkOutlineErrorCode::Invalid,
+            format!("malformed Work Outline query reply: {error}"),
+        )
+    })
+}
+
+/// Send `mutation` through `call`, retrying transient failures. The mutation
+/// is serialized ONCE, so every attempt carries identical params and hence the
+/// same `operationId`.
+#[cfg(test)]
+async fn mutate_with_retry<Call, CallFut, Sleep, SleepFut>(
+    mutation: &WorkOutlineMutation,
+    call: Call,
+    sleep: Sleep,
+) -> Result<WorkOutlineMutateReply, WorkOutlineError>
+where
+    Call: FnMut(serde_json::Value) -> CallFut,
+    CallFut: Future<Output = Result<serde_json::Value, RpcError>>,
+    Sleep: FnMut(Duration) -> SleepFut,
+    SleepFut: Future<Output = ()>,
+{
+    let params = serde_json::to_value(mutation)
+        .map_err(|error| WorkOutlineError::new(WorkOutlineErrorCode::Invalid, error.to_string()))?;
+    decode_reply(call_with_retry(params, call, sleep).await?)
+}
+
+/// Whether an error means "this host cannot do instruction work yet" (an
+/// engine that answers `unsupported`, or predates the method): the UI shows
+/// a calm "not available on this host" state instead of a failure.
+pub(crate) fn is_unsupported(error: &WorkOutlineError) -> bool {
+    error.code == WorkOutlineErrorCode::Unsupported && !is_transport_failure(error)
+}
+
+/// Displayable text for a failed instruction operation.
+pub(crate) fn instruction_error_text(error: &WorkOutlineError) -> String {
+    if is_unsupported(error) {
+        "Instructions aren\u{2019}t available on this host yet".to_owned()
+    } else if error.message.is_empty() {
+        error.code.as_str().to_owned()
+    } else {
+        error.message.clone()
+    }
+}
+
+/// Scripted transport for tests: `(method, params) -> reply`.
+#[cfg(test)]
+pub(crate) type FakeCall = std::sync::Arc<
+    dyn Fn(&str, serde_json::Value) -> Result<serde_json::Value, RpcError> + Send + Sync,
+>;
+
+/// Every query resolves to the typed reply or a coded [`WorkOutlineError`].
+pub(crate) type QueryTask = Task<Result<WorkOutlineQueryResponse, WorkOutlineError>>;
+
 /// Mutation facade. Cheap to clone; holds only the engine handle and the
 /// executor its tasks run on.
 #[derive(Clone)]
 pub(crate) struct WorkOutlineActions {
     engine: Option<EngineHandle>,
     executor: Option<BackgroundExecutor>,
+    #[cfg(test)]
+    fake: Option<FakeCall>,
 }
 
 impl WorkOutlineActions {
@@ -150,6 +239,18 @@ impl WorkOutlineActions {
         Self {
             engine,
             executor: None,
+            #[cfg(test)]
+            fake: None,
+        }
+    }
+
+    /// A facade whose calls are answered synchronously by `call` (tests).
+    #[cfg(test)]
+    pub(crate) fn scripted(call: FakeCall) -> Self {
+        Self {
+            engine: None,
+            executor: None,
+            fake: Some(call),
         }
     }
 
@@ -161,9 +262,28 @@ impl WorkOutlineActions {
         self
     }
 
-    /// Send one mutation and decode the reply; see the module docs for retry
-    /// semantics.
-    fn mutate(&self, mutation: WorkOutlineMutation) -> ActionTask {
+    /// Send `params` to `method` with transient-failure retries; see the
+    /// module docs for retry semantics.
+    fn call<T: Send + 'static>(
+        &self,
+        method: &'static str,
+        params: serde_json::Value,
+        decode: fn(serde_json::Value) -> Result<T, WorkOutlineError>,
+    ) -> Task<Result<T, WorkOutlineError>> {
+        #[cfg(test)]
+        if let Some(fake) = self.fake.clone() {
+            return Task::ready(
+                futures::executor::block_on(call_with_retry(
+                    params,
+                    move |params| {
+                        let reply = fake(method, params);
+                        async move { reply }
+                    },
+                    |_| async {},
+                ))
+                .and_then(decode),
+            );
+        }
         let (Some(engine), Some(executor)) = (self.engine.clone(), self.executor.clone()) else {
             return Task::ready(Err(WorkOutlineError::new(
                 WorkOutlineErrorCode::Unsupported,
@@ -172,21 +292,47 @@ impl WorkOutlineActions {
         };
         let timer = executor.clone();
         executor.spawn(async move {
-            mutate_with_retry(
-                &mutation,
+            call_with_retry(
+                params,
                 |params| {
                     let engine = engine.clone();
-                    async move {
-                        engine
-                            .client()
-                            .call(methods::WORK_OUTLINE_MUTATE, params)
-                            .await
-                    }
+                    async move { engine.client().call(method, params).await }
                 },
                 |delay| timer.timer(delay),
             )
             .await
+            .and_then(decode)
         })
+    }
+
+    /// Send one mutation and decode the reply. The mutation is serialized
+    /// once, so every transport retry carries the same `operationId`.
+    fn mutate(&self, mutation: WorkOutlineMutation) -> ActionTask {
+        let params = match serde_json::to_value(&mutation) {
+            Ok(params) => params,
+            Err(error) => {
+                return Task::ready(Err(WorkOutlineError::new(
+                    WorkOutlineErrorCode::Invalid,
+                    error.to_string(),
+                )));
+            }
+        };
+        self.call(methods::WORK_OUTLINE_MUTATE, params, decode_reply)
+    }
+
+    /// One read-only `WorkOutlineQuery` (local, never forwarded; no
+    /// operation id). Transient transport failures retry like mutations.
+    pub(crate) fn query(&self, request: WorkOutlineQueryRequest) -> QueryTask {
+        let params = match serde_json::to_value(&request) {
+            Ok(params) => params,
+            Err(error) => {
+                return Task::ready(Err(WorkOutlineError::new(
+                    WorkOutlineErrorCode::Invalid,
+                    error.to_string(),
+                )));
+            }
+        };
+        self.call(methods::WORK_OUTLINE_QUERY, params, decode_query)
     }
 
     /// Reply carries `work_item_id` (`derive_id(operationId, "item")`);
@@ -244,6 +390,83 @@ impl WorkOutlineActions {
     pub(crate) fn repair(&self, params: RepairWorkOutlineParams) -> ActionTask {
         self.mutate(WorkOutlineMutation::RepairWorkOutline(params))
     }
+
+    // ── Milestone 2: instructions ──
+
+    /// Reply carries `instruction_id`
+    /// (`WorkOutlineMutateReply::into_instruction_id`).
+    pub(crate) fn create_instruction(&self, params: CreateWorkItemInstructionParams) -> ActionTask {
+        self.mutate(WorkOutlineMutation::CreateWorkItemInstruction(params))
+    }
+
+    /// Replace an instruction's text (scope and provenance are immutable).
+    pub(crate) fn update_instruction(&self, params: UpdateWorkItemInstructionParams) -> ActionTask {
+        self.mutate(WorkOutlineMutation::UpdateWorkItemInstruction(params))
+    }
+
+    /// Reorder within the instruction's own scope.
+    pub(crate) fn move_instruction(&self, params: MoveWorkItemInstructionParams) -> ActionTask {
+        self.mutate(WorkOutlineMutation::MoveWorkItemInstruction(params))
+    }
+
+    pub(crate) fn archive_instruction(
+        &self,
+        params: ArchiveWorkItemInstructionParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::ArchiveWorkItemInstruction(params))
+    }
+
+    /// Snapshot an item's current effective instructions; reply carries
+    /// `revision_id` (`WorkOutlineMutateReply::into_revision_id`).
+    pub(crate) fn create_instruction_revision(
+        &self,
+        params: CreateInstructionRevisionParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::CreateInstructionRevision(params))
+    }
+
+    /// Select a revision for a Chat; reply carries `application_id`.
+    pub(crate) fn apply_instruction_revision(
+        &self,
+        params: ApplyInstructionRevisionParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::ApplyInstructionRevision(params))
+    }
+}
+
+/// Typed results of the [`WorkOutlineActions::query`] facade.
+pub(crate) fn expect_effective(
+    response: WorkOutlineQueryResponse,
+) -> Result<EffectiveInstructions, WorkOutlineError> {
+    match response {
+        WorkOutlineQueryResponse::ResolveEffectiveInstructions(effective) => Ok(effective),
+        _ => Err(mismatched_query()),
+    }
+}
+
+pub(crate) fn expect_comparison(
+    response: WorkOutlineQueryResponse,
+) -> Result<InstructionRevisionComparison, WorkOutlineError> {
+    match response {
+        WorkOutlineQueryResponse::CompareInstructionRevisions { comparison, .. } => Ok(comparison),
+        _ => Err(mismatched_query()),
+    }
+}
+
+pub(crate) fn expect_revision(
+    response: WorkOutlineQueryResponse,
+) -> Result<InstructionRevisionView, WorkOutlineError> {
+    match response {
+        WorkOutlineQueryResponse::GetInstructionRevision(revision) => Ok(revision),
+        _ => Err(mismatched_query()),
+    }
+}
+
+fn mismatched_query() -> WorkOutlineError {
+    WorkOutlineError::new(
+        WorkOutlineErrorCode::Invalid,
+        "Work Outline query reply does not match the request",
+    )
 }
 
 #[cfg(test)]
@@ -405,8 +628,81 @@ mod tests {
     }
 
     #[test]
+    fn operation_slots_reuse_ids_for_the_same_inputs_only() {
+        let mut slot = OperationSlot::default();
+        let first = slot.id_for("a");
+        assert_eq!(slot.id_for("a"), first);
+        let second = slot.id_for("b");
+        assert_ne!(second, first);
+        assert_eq!(slot.id_for("b"), second);
+    }
+
+    #[test]
     fn operation_ids_are_unique_per_intent() {
         assert_ne!(new_operation_id(), new_operation_id());
+    }
+
+    #[test]
+    fn instruction_mutations_and_queries_use_their_wire_shape() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(
+            Vec::<(String, serde_json::Value)>::new(),
+        ));
+        let sink = seen.clone();
+        let actions = WorkOutlineActions::scripted(std::sync::Arc::new(move |method, params| {
+            sink.lock()
+                .unwrap()
+                .push((method.to_owned(), params.clone()));
+            match params.get("query").and_then(|q| q.as_str()) {
+                Some(_) => Err(RpcError::Failed(
+                    "work-outline/unsupported: Instructions are not available yet".into(),
+                )),
+                None => Ok(serde_json::json!({"revisionId": "r1"})),
+            }
+        }));
+        let reply = futures::executor::block_on(actions.create_instruction_revision(
+            CreateInstructionRevisionParams {
+                work_item_id: "w1".into(),
+                operation_id: "op-r".into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(reply.into_revision_id().unwrap(), "r1");
+        let error = futures::executor::block_on(actions.query(
+            WorkOutlineQueryRequest::GetInstructionRevision {
+                revision_id: "r1".into(),
+            },
+        ))
+        .unwrap_err();
+        assert!(is_unsupported(&error));
+        assert_eq!(
+            instruction_error_text(&error),
+            "Instructions aren\u{2019}t available on this host yet"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].0, methods::WORK_OUTLINE_MUTATE);
+        assert_eq!(seen[0].1["op"], "createInstructionRevision");
+        assert_eq!(seen[0].1["operationId"], "op-r");
+        assert_eq!(seen[1].0, methods::WORK_OUTLINE_QUERY);
+        assert_eq!(seen[1].1["query"], "getInstructionRevision");
+    }
+
+    #[test]
+    fn query_replies_decode_and_mismatches_are_invalid() {
+        let actions = WorkOutlineActions::scripted(std::sync::Arc::new(|_, _| {
+            Ok(serde_json::json!({
+                "query": "resolveEffectiveInstructions",
+                "workItemId": "w1",
+                "entries": [],
+            }))
+        }));
+        let response = futures::executor::block_on(actions.query(
+            WorkOutlineQueryRequest::ResolveEffectiveInstructions {
+                work_item_id: "w1".into(),
+            },
+        ))
+        .unwrap();
+        assert!(expect_revision(response.clone()).is_err());
+        assert_eq!(expect_effective(response).unwrap().work_item_id, "w1");
     }
 
     #[test]
