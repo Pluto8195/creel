@@ -13162,6 +13162,37 @@ mod logic_tests {
         assert!(row_bounds(vcx, format!("outline-drift-{}", row_key::chat(CHAT_UI))).is_none());
     }
 
+    /// Single Space: the Space-root entry opens the Space-root details.
+    #[gpui::test]
+    fn space_root_entry_opens_space_root_instructions(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let entry = vcx
+            .debug_bounds("outline-space-root-entry")
+            .expect("single-Space entry")
+            .center();
+        vcx.simulate_click(entry, gpui::Modifiers::default());
+        draw(vcx);
+        assert!(vcx.debug_bounds("space-root-details").is_some());
+        overview.read_with(vcx, |o, cx| {
+            assert!(
+                o.work_item_details
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .is_space_root()
+            );
+        });
+        // Its instruction list is open by default and lists the root entry.
+        assert!(vcx.debug_bounds("work-item-instruction-0").is_some());
+        assert!(vcx.debug_bounds("work-item-instruction-1").is_none());
+    }
+
     #[gpui::test]
     fn unsupported_engine_shows_a_calm_instruction_error(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

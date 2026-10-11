@@ -1641,6 +1641,43 @@ impl Render for OutlineView {
                 Some(EditKind::Create { .. })
             ));
         let picker = self.render_picker(&theme, cx);
+        // Single Space (no Space row): a compact entry to its Space-root
+        // instructions. Multi-Space outlines put it on each Space row.
+        let space_root_entry = match self.inputs.spaces.as_slice() {
+            [space] => space.load.snapshot().map(|snapshot| {
+                let count = instructions::live_instructions(snapshot, None).len();
+                let space_id = space.id.clone();
+                div()
+                    .id("outline-space-root-entry")
+                    .debug_selector(|| "outline-space-root-entry".into())
+                    .flex_none()
+                    .mx(px(12.0))
+                    .mb(px(2.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .cursor_pointer()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(theme.text_faint)
+                    .hover(|el| el.text_color(theme.text))
+                    .child(
+                        crate::icons::icon(crate::icons::DOCUMENT)
+                            .size(px(10.0))
+                            .text_color(theme.text_faint),
+                    )
+                    .child(SharedString::from(format!(
+                        "Space root instructions ({count})"
+                    )))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.is_editing() {
+                            cx.emit(OutlineEvent::OpenSpaceRoot {
+                                space_id: space_id.clone(),
+                            });
+                        }
+                    }))
+            }),
+            _ => None,
+        };
         let notice = self.notice.clone();
         let _ = window;
         let list: AnyElement = if count == 0 {
@@ -1743,6 +1780,7 @@ impl Render for OutlineView {
                         .child(SharedString::from(notice)),
                 )
             })
+            .when_some(space_root_entry, |el, entry| el.child(entry))
             .when_some(picker, |el, picker| el.child(picker))
             .child(list)
     }
