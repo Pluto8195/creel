@@ -29,12 +29,21 @@ Every tool call re-authenticates the token (`AgentAuthenticate`); the engine
 answers with the Chat the token was minted for. `ZERON_CHAT_ID` is no longer
 read: no self-declared origin is trusted. With a token, every `send_message` is
 prefixed with a `[Message from Zeron chat <title> (<id8>) …]` line, the server
-refuses to message its own chat, `create_chat` needs an `idempotency_key` (the
-same key returns the same child chat and never queues a second first turn) and
-only records the caller as parent, `archive_chat` only touches chats the caller
-created, and the Work Outline agent tools (`work_outline_*`, forwarded to
-`AgentToolCall`) are listed. Without a token (a human running `zeron mcp` in a
-terminal) the original tools work unattributed. Contract:
+refuses to message its own chat, and the Work Outline agent tools
+(`work_outline_*`, forwarded to `AgentToolCall`) are listed. A token also scopes
+the original tools to the token's Chat, project, and device:
+
+| Tool | With a token |
+| --- | --- |
+| `create_chat` | Needs an `idempotency_key` (same key → same child chat, never a second first turn; same key with other inputs → `operationConflict`). Only in the token's project on the token's device, only as a child of the caller, `cwd` inside the project folder or the caller's cwd, sandbox never wider than the caller's (an omitted sandbox is capped, a wider one refused), approval mode always Ask. The child's first turn is rebuilt by the engine from the child's stored config. |
+| `send_message`, `interrupt_chat`, `respond_to_input`, `wait_for_turn`, `archive_chat` | Only chats the caller created. |
+| `get_chat`, `read_chat` | Chats the caller created, or the caller itself. |
+| `list_chats` | Lists only the caller and the chats it created. |
+| `list_projects`, `list_devices` | Only the token's project / device. |
+| `whoami`, `list_harnesses`, `list_models` | Unscoped (this device's capabilities). |
+
+Without a token (a human running `zeron mcp` in a terminal) the original tools
+work unattributed and unscoped. Contract:
 `docs/plans/work-outline/m0-contract.md`, "Milestone 4 agent tool discoveries".
 
 ### Parent links

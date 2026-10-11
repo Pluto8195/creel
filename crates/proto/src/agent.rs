@@ -699,6 +699,11 @@ pub mod agent_tools {
         /// Chat the MCP `create_chat` tool created, with ids derived from the
         /// calling Chat and its idempotency key so retries never duplicate it.
         pub const QUEUE_CHILD_CHAT_TURN: &str = "chat_queue_child_turn";
+        /// Engine-internal (not an MCP tool): bind an MCP `create_chat`
+        /// idempotency key to the hash of its inputs (durably, in the
+        /// processed-command ledger). The same key with other inputs is
+        /// `work-outline/operationConflict`; returns `{replayed}`.
+        pub const CLAIM_CHILD_CHAT: &str = "chat_claim_child";
 
         /// The Work Outline tools, in catalog order.
         pub const WORK_OUTLINE: [&str; 7] = [

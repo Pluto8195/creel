@@ -503,12 +503,29 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.trim().is_empty())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimChildArgs {
+    inputs_hash: String,
+}
+
+/// Ledger keys binding a `create_chat` operation to its inputs (the same
+/// scheme as Work Outline mutations, under their own prefix).
+fn child_chat_ledger_keys(operation_id: &str, inputs_hash: &str) -> (String, String) {
+    (
+        format!("agent-child-chat:op:{operation_id}"),
+        format!("agent-child-chat:in:{inputs_hash}:{operation_id}"),
+    )
+}
+
 /// The engine's agent RPC surface (one per `EngineRpc`).
 pub struct AgentToolsService {
     tokens: Arc<AgentTokens>,
     workspace: WorkspaceHost,
     work_outline: Arc<WorkOutlineService>,
     doc_host: Option<DocHost>,
+    /// Serializes `create_chat` input claims (check-then-mark).
+    child_claims: Mutex<()>,
 }
 
 impl AgentToolsService {
@@ -523,6 +540,7 @@ impl AgentToolsService {
             workspace,
             work_outline,
             doc_host,
+            child_claims: Mutex::new(()),
         }
     }
 
@@ -572,6 +590,7 @@ impl AgentToolsService {
             }
             tools::PROPOSE_INSTRUCTION => self.propose_instruction(&context, arguments),
             tools::QUEUE_CHILD_CHAT_TURN => self.queue_child_chat_turn(&context, arguments),
+            tools::CLAIM_CHILD_CHAT => self.claim_child_chat(&context, arguments),
             other => Err(AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
                 format!("unknown agent tool: {other}"),
@@ -857,6 +876,43 @@ impl AgentToolsService {
             "state": "pending",
             "note": "The user reviews the proposal; nothing changes until they accept it.",
         }))
+    }
+
+    /// Bind a `create_chat` idempotency key to its inputs: the first claim
+    /// records the inputs hash durably; a later claim with the same hash is a
+    /// replay, with another hash `operationConflict` (so a retry that changed
+    /// its request never silently gets the old Chat back). A Chat created
+    /// before claims existed adopts the hash of its first claim.
+    fn claim_child_chat(
+        &self,
+        context: &CallContext,
+        arguments: &Value,
+    ) -> Result<Value, AgentToolError> {
+        let operation_id = context.operation_id(arguments)?;
+        let args: ClaimChildArgs = parse_args(arguments)?;
+        let hash = args.inputs_hash.trim();
+        if hash.is_empty() || hash.len() > 128 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(AgentToolError::invalid("inputsHash must be a hex digest"));
+        }
+        let (operation_key, inputs_key) = child_chat_ledger_keys(&operation_id, hash);
+        let ledger = |e: crate::EngineError| AgentToolError::invalid(e.to_string());
+        let _serial = lock(&self.child_claims);
+        if self.workspace.ledger_holds(&operation_key) {
+            if self.workspace.ledger_holds(&inputs_key) {
+                return Ok(json!({ "replayed": true }));
+            }
+            return Err(WorkOutlineError::new(
+                zeron_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
+                "idempotency_key was already used to create a chat with different inputs; \
+                 use a new key for a new chat",
+            )
+            .into());
+        }
+        // Inputs first: a crash between the two marks leaves the operation
+        // unclaimed, and the retry claims both.
+        self.workspace.ledger_mark(&inputs_key).map_err(ledger)?;
+        self.workspace.ledger_mark(&operation_key).map_err(ledger)?;
+        Ok(json!({ "replayed": false }))
     }
 
     /// Queue the first Turn of a child Chat created by the MCP `create_chat`
