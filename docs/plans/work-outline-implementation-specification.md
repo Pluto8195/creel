@@ -764,7 +764,8 @@ amendments:
   so later configuration edits never retarget existing Chats. Resolution is whole-row, not
   field-wise.
 - Cycle repair uses the HLC of the parent field, because registry rows have no row-level HLC.
-- Non-Git workspace roots are outside the MVP.
+- Non-Git workspace roots were initially out of scope; Milestone 3 allows a plain-folder execution
+  root while still requiring every configured repository to be a Git checkout (see below).
 
 Amendments from Milestones 1–4 (details in the discoveries sections of `work-outline/m0-contract.md`):
 
