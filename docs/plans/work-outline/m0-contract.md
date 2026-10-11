@@ -864,3 +864,99 @@ Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.r
    additional-directory harness support, the explicit "start a new Execution Session" remedy for
    `resumeRootMismatch` (today: start a new Chat), and per-Run agent authorization (Milestone 4). The device-local launch ledger is never pruned
    (same as M1).
+
+## Milestone 4 registry discoveries
+
+Recorded by the Milestone 4 registry backend (`crates/proto/src/work_outline_user_actions.rs`,
+additions to `crates/proto/src/work_outline.rs`, `crates/doc/src/registry/work_outline/
+user_actions.rs`, edits to `work_outline.rs`, `materialize.rs`, `instructions.rs`,
+`crates/engine/src/work_outline.rs`, `workspace_host.rs`, `rpc.rs`). Each item is a reading of an
+ambiguous rule or a gap later work must close.
+
+1. **Wire surface.** Five `WorkOutlineMutate` ops: `createUserActionRequest {workItemId,
+   origin: {chatId, messageId?, toolCallId?}, text, info?, dedupeKey?, operationId}` → reply
+   `userActionRequestId` = `derive_id(operationId, "request")`; `resolveUserActionRequest
+   {userActionRequestId, note?, operationId}` → `{}`; `proposeWorkItemInstruction {spaceId?,
+   target: {scope: spaceRoot|workItem, workItemId?}, origin: {chatId?, messageId?, toolCallId?},
+   text, operationId}` → `proposalId` = `derive_id(operationId, "proposal")` (new role
+   `proposal`); `approveWorkItemInstructionProposal {proposalId, approvedText, placement?,
+   operationId}` → `instructionId` = `derive_id(proposalId, "instruction")`;
+   `rejectWorkItemInstructionProposal {proposalId, reason?, operationId}` → `{}`. `spaceId` on
+   propose is an addition: a Space-root target needs a Space when there is no origin Chat.
+   `resolveOpenRequests` rides in `updateWorkItem.changes` (omitted when false, so earlier
+   inputs hashes are unchanged; every UI literal already uses `..Default::default()`). New error
+   codes `openUserActionRequests` (message leads with the count;
+   `WorkOutlineError::open_request_count`) and `unauthorized`. Limits: request text 1,000, info
+   4,000, dedupe key 256, notes / reasons 1,000, origin ids 256, proposal text 6,000.
+2. **Rows.** `userActionRequests`: `spaceId`, `workItemId`, `chatId`, `messageId`,
+   `toolCallId` (the audit's single `messageRef` is split into two immutable fields), `text`,
+   `info`, `dedupeKey`, `createdBy`, `createdAt`, `inputsHash`, `v`, then `state` + ONE-field
+   `resolution {by, at, note?}` written in one op. `workItemInstructionProposals`: `spaceId`,
+   `target`, `text`, `proposedBy`, `sourceRef`, `createdAt`, `inputsHash`, `v`, then ONE-field
+   `review {state, by, at, reason?, instructionId?}`. The audit's `target.instructionId` /
+   `expectedVersion` are not written (modification proposals stay deferred). Both kinds are in
+   `WORK_OUTLINE_KINDS` (Space cascade and orphan sweep).
+3. **Dedupe semantics.** A create whose `(workItemId, dedupeKey)` matches an open request is
+   still written (so the reply id stays derived from the operation id and replay-safe) and reads
+   `deduped: true` (canonical = minimal `(clock of createdAt, id)` among OPEN rows, so a new
+   request after resolution is a fresh one). Resolving any member resolves every open member of
+   its group in one batch: duplicates are one logical request, otherwise resolving the canonical
+   would promote a duplicate and the item would stay User Action Required.
+4. **Monotone resolution.** No op ever writes `state: open` after create; a present
+   `resolution` (or `state: resolved`) reads resolved. Re-resolving is a no-op that keeps the
+   first note; concurrent resolutions converge (LWW picks one note). Requests on a deleted
+   item stay listed (inspectable, resolvable), count nowhere.
+5. **Completion gate.** Applies whenever `changes.status == completed` (also re-completing an
+   already completed item that gained a request): open requests and no `resolveOpenRequests`
+   → `openUserActionRequests` (count = unresolved, non-deduped), nothing written; with it,
+   one explicit resolution per open request (duplicates included, note "Resolved by completing
+   the work item") in the same batch as the status write. Other statuses are never gated.
+6. **Effective status and rollups.** `effectiveStatus = userActionRequired` iff the item has
+   at least one open, non-deduped request; stored status unchanged. Status counts stay
+   STORED-status counts (the UI fixture's convention), so `userActionRequiredCount` overlaps
+   them ("Flagship 3 active · 1 user action required" counts the blocked item in both).
+   `userActionRequiredCount` counts non-archived such items in the subtree;
+   `unresolvedUserActionCount` stays the item's own; new additive
+   `subtreeUnresolvedUserActionCount` sums it over the item and non-archived descendants.
+   Archived items contribute nothing to ancestors (Milestone 1 rule 6). Creating a request on an
+   archived item is `archived`.
+7. **Origin availability.** `originChatAvailable` is false when the origin Chat row is gone OR
+   archived (`OutlineChat` gained `archived`). The request keeps `chatId` either way.
+8. **Snapshot bounds.** `userActionRequests` = every open request (duplicates flagged) + the
+   50 newest resolved by `resolution.at`; `instructionProposals` = every pending + the 50 newest
+   reviewed by `review.at`; both sorted `(createdAt, id)`. Older history stays in the registry
+   (no query exposes it yet; a Required Actions history view needs one).
+9. **Approval.** One batch: the instruction (text = `approvedText`, `sourceProposalId`,
+   `source {chatId, messageId, excerpt = first 1,500 characters of the proposal text,
+   contentHash = sha256(excerpt)}`, `createdBy` = approver, `inputsHash` of the approve params,
+   placement, every budget via the shared `plan_new_instruction`, budget errors lead with
+   "Approving this proposal") and the `review`. The instruction id derives from the proposal, so
+   approving an approved proposal with ANY operation id returns the same id without writing;
+   approving a rejected proposal is allowed (approval wins, like the concurrent case); rejecting
+   an approved one is `invalid`; rejecting twice is a no-op. Reader precedence: an existing
+   approval instruction makes the proposal `approved` and, when a later reject won the `review`
+   register, the view's review is synthesized from the instruction (`by` / `at` =
+   instruction `createdBy` / `createdAt`).
+10. **Agent policy.** `WorkOutlineService::authorize_agent(actor_chat_id, &mutation) ->
+    Result<(), WorkOutlineError>` (preflight over the replica) and
+    `RegistryDoc::authorize_agent_mutation`, which `apply_work_outline_mutation` runs for every
+    `kind: agent` actor under the registry lock (an agent actor without `chatId` is
+    `unauthorized`). `WorkOutlineService::mutate_as(&mutation, &actor)` is the actor-taking entry
+    point (`mutate` = local user, unchanged for RPC); `agent_actor(chat, message?)` builds the
+    actor; `agent_context(chat)` returns `AgentWorkItemContext {chatId, spaceId, workItem,
+    effectiveInstructions, openUserActionRequests}` (`unauthorized` without a live association);
+    `EngineRpc::work_outline()` exposes the service. Allowed: `createWorkItem` under the
+    assigned item or a descendant (never at the root), `assignChatToWorkItem` of its own Chat
+    to an item in its Space (also when unassigned), `updateWorkItem` that ONLY sets status
+    `active` / `completed` on the assigned subtree with `resolveOpenRequests` false (agents get
+    `openUserActionRequests`, never auto-resolve), `createUserActionRequest` on the assigned item
+    with origin = its Chat, `resolveUserActionRequest` of requests its Chat raised (`notFound`
+    for an unknown id), `proposeWorkItemInstruction` for the assigned item, its effective
+    parent, or its Space root, with no foreign origin Chat (a missing origin records the agent's
+    Chat). Everything else, including `removeChatFromWorkItem`, external references, and
+    `repairWorkOutline`, is `unauthorized`. Authorization runs after the engine's replay check
+    (a replay writes nothing). Descendant / parent checks use the repaired tree.
+11. **Not done.** The zero-to-one notification detector and Required Actions views (UI), the
+    per-Run agent token and MCP tools (parallel agent-tools work), a query for resolved-request
+    history beyond the snapshot window, local-to-synced import of the new kinds, and edge
+    `validateOp` backstops.
