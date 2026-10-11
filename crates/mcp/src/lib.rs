@@ -11,10 +11,15 @@
 //! `tools/call`, and the `initialized` notification), and the repo already
 //! owns JSON-RPC framing for the Codex and ACP drivers. Zero new crates.
 //!
-//! When the engine launches a harness it can inject this server into the
-//! agent's MCP config with `ZERON_CHAT_ID` / `ZERON_DEVICE_ID` in the
-//! environment. Every send from such an agent is then attributed to its
-//! originating chat, and a chat can never message itself.
+//! When the engine launches a Run of a Chat in a Space on Claude Code or
+//! Codex it injects this server with an engine-minted per-Run capability
+//! token in `ZERON_AGENT_TOKEN`. Every tool call re-authenticates the token
+//! with the engine (`AgentAuthenticate`), which answers with the Chat the
+//! token was minted for; nothing self-declared is trusted. Such an agent also
+//! gets the Work Outline agent tools (`AgentToolCall`), its sends are
+//! attributed to its Chat, a Chat can never message itself, and `create_chat`
+//! requires an idempotency key. Without a token (a human running `zeron mcp`
+//! in a terminal) the original unattributed tools work as before.
 
 mod jsonrpc;
 mod tools;
@@ -24,35 +29,44 @@ mod zeron;
 pub use jsonrpc::serve_stdio;
 pub use tools::{ToolDef, Tools};
 pub use transcript::{RenderOptions, RenderedMessage, render_entries};
-pub use zeron::{Origin, Zeron};
+pub use zeron::{Zeron, token_from_env};
 
-/// How `zeron mcp` finds the engine and who it speaks for.
-#[derive(Debug, Clone)]
+/// How `zeron mcp` finds the engine and which Run's token it presents.
+#[derive(Clone)]
 pub struct McpConfig {
     /// Loopback IPC port of the engine to proxy (`ZERON_IPC_PORT`, default 27654).
     pub ipc_port: u16,
-    /// The chat whose agent spawned this server, when injected by the engine.
-    pub origin: Origin,
+    /// The engine-minted per-Run token (`ZERON_AGENT_TOKEN`), when injected.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for McpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConfig")
+            .field("ipc_port", &self.ipc_port)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl McpConfig {
     /// Resolve from the process environment: `ZERON_IPC_PORT` for the engine,
-    /// `ZERON_CHAT_ID` / `ZERON_DEVICE_ID` for the originating chat.
+    /// `ZERON_AGENT_TOKEN` for the Run. `ZERON_CHAT_ID` is ignored.
     pub fn from_env() -> Self {
-        let ipc_port = std::env::var("ZERON_IPC_PORT")
+        let ipc_port = std::env::var(zeron_proto::agent_tools::IPC_PORT_ENV)
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(27654);
         Self {
             ipc_port,
-            origin: Origin::from_env(),
+            token: token_from_env(),
         }
     }
 }
 
 /// Run the MCP server on this process's stdin/stdout until stdin closes.
 pub async fn run(config: McpConfig) -> anyhow::Result<()> {
-    let zeron = Zeron::new(format!("ws://127.0.0.1:{}", config.ipc_port), config.origin);
+    let zeron = Zeron::new(format!("ws://127.0.0.1:{}", config.ipc_port), config.token);
     let tools = Tools::new(std::sync::Arc::new(zeron));
     serve_stdio(std::sync::Arc::new(tools)).await
 }

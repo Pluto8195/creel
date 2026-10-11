@@ -11834,10 +11834,13 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
  "zeron-doc",
+ "zeron-engine",
+ "zeron-harness",
  "zeron-proto",
  "zeron-rpc",
 ]

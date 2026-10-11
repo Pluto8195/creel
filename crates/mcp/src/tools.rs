@@ -5,6 +5,14 @@
 //! by prefix, project by path), sender attribution, and the "how do I
 //! deliver a message to a chat in this state" choice the composer makes
 //! for humans.
+//!
+//! Agent mode (an engine-injected per-Run token): every call first
+//! re-authenticates the token with the engine, and the Work Outline agent
+//! tools are listed and forwarded to `AgentToolCall`. In agent mode
+//! `create_chat` takes a mandatory idempotency key (the Chat, message, and
+//! command ids derive from the token's Chat and that key, so a retry never
+//! creates a second Chat or Turn), may only record the calling Chat as the
+//! parent, and `archive_chat` only touches Chats the caller created.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeron_doc::SessionCommandPayload;
+use zeron_proto::agent_tools::{self, AgentOrigin, tools as agent_tool_names};
 use zeron_proto::{
     Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session, SessionStatus,
     Space, UserInputAnswer,
@@ -108,10 +117,11 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId). Optionally send a first prompt and wait for the reply. Returns the new chat id.",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "idempotency_key": { "type": "string", "description": "Stable key for this request (required inside a Zeron chat). The same key returns the same chat; a new chat needs a new key." },
                     "project": { "type": "string", "description": "Project id, path, or name. Required unless device is given." },
                     "device": { "type": "string", "description": "Host device (id or name) for a project-less chat; defaults to this device." },
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
@@ -188,6 +198,108 @@ fn catalog() -> Vec<ToolDef> {
     ]
 }
 
+fn idempotency_key_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Stable key for this change. Reuse it when you retry the same call (the retry returns the first result and changes nothing); use a new key for a new change."
+    })
+}
+
+/// The Work Outline agent tools (agent mode only). The engine authorizes
+/// each call against the calling Chat; arguments are camelCase like the
+/// rest of the Work Outline wire.
+fn work_outline_catalog() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: agent_tool_names::READ_CURRENT,
+            description: "Your chat's Work Outline item: title, status, path, children, and the effective instructions it inherits. Null when your chat is not associated with an item.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: agent_tool_names::CREATE_CHILD,
+            description: "Create a work item under your chat's item (default) or one of its descendants. The item records your chat as its creator.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "parentWorkItemId": { "type": "string", "description": "Your chat's item or a descendant. Defaults to your chat's item." },
+                    "status": { "type": "string", "enum": ["pending", "active"], "default": "pending" },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["title", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::ASSOCIATE_CURRENT_CHAT,
+            description: "Associate your own chat with a work item of its project (never another chat).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workItemId": { "type": "string" },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["workItemId", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::SET_STATUS,
+            description: "Mark your chat's item (default) or one of its descendants active or completed. Completing an item with open user action requests fails; they are never resolved for you.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workItemId": { "type": "string" },
+                    "status": { "type": "string", "enum": ["active", "completed"] },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["status", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::CREATE_USER_ACTION_REQUEST,
+            description: "Ask the user for a specific decision, approval, or action on your chat's work item. It stays open in Required Actions until resolved.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "request": { "type": "string", "description": "The concise question or requested action." },
+                    "detail": { "type": "string" },
+                    "dedupeKey": { "type": "string", "description": "Equivalent open requests with the same key are not repeated." },
+                    "toolCallId": { "type": "string" },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["request", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
+            description: "Resolve a user action request your chat created (for example after the user answered in chat).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "userActionRequestId": { "type": "string" },
+                    "resolution": { "type": "string" },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["userActionRequestId", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::PROPOSE_INSTRUCTION,
+            description: "Propose a durable instruction for your chat's item, its parent, or the project root. The user reviews it; nothing changes until they accept.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "enum": ["item", "parent", "spaceRoot"], "default": "item" },
+                    "text": { "type": "string" },
+                    "toolCallId": { "type": "string" },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["text", "idempotencyKey"]
+            }),
+        },
+    ]
+}
+
 // ---- argument shapes ---------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -212,6 +324,8 @@ struct ListChatsArgs {
 
 #[derive(Deserialize, Default)]
 struct CreateChatArgs {
+    #[serde(alias = "idempotencyKey")]
+    idempotency_key: Option<String>,
     project: Option<String>,
     device: Option<String>,
     parent: Option<String>,
@@ -358,59 +472,84 @@ impl Tools {
         Self { zeron }
     }
 
+    /// The original tools, plus the Work Outline agent tools when the
+    /// engine injected this server with a token.
     pub fn list(&self) -> Vec<ToolDef> {
-        catalog()
+        let mut defs = catalog();
+        if self.zeron.has_token() {
+            defs.extend(work_outline_catalog());
+        }
+        defs
     }
 
     pub fn has(&self, name: &str) -> bool {
-        catalog().iter().any(|t| t.name == name)
+        self.list().iter().any(|t| t.name == name)
     }
 
     /// `Ok` is the tool's structured result; `Err` is a message the model
     /// should read (surfaced as `isError`, never as a protocol error).
+    ///
+    /// With a token, every call (reads included) first re-authenticates it:
+    /// once the Run that received it ends, nothing works.
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
+        let origin = self.zeron.authenticate().await.map_err(|e| e.to_string())?;
+        let origin = origin.as_ref();
+        if agent_tool_names::WORK_OUTLINE.contains(&name) {
+            return self
+                .zeron
+                .agent_tool(name, args)
+                .await
+                .map_err(|e| e.to_string());
+        }
         let result = match name {
-            "whoami" => self.whoami().await,
+            "whoami" => self.whoami(origin).await,
             "list_devices" => self.list_devices().await,
             "list_projects" => self.list_projects().await,
             "list_harnesses" => self.list_harnesses().await,
             "list_models" => self.list_models(parse(args)?).await,
             "list_chats" => self.list_chats(parse(args)?).await,
             "get_chat" => self.get_chat(parse(args)?).await,
-            "create_chat" => self.create_chat(parse(args)?).await,
+            "create_chat" => self.create_chat(origin, parse(args)?).await,
             "read_chat" => self.read_chat(parse(args)?).await,
-            "send_message" => self.send_message(parse(args)?).await,
+            "send_message" => self.send_message(origin, parse(args)?).await,
             "wait_for_turn" => self.wait_for_turn(parse(args)?).await,
             "interrupt_chat" => self.interrupt_chat(parse(args)?).await,
             "respond_to_input" => self.respond_to_input(parse(args)?).await,
-            "archive_chat" => self.archive_chat(parse(args)?).await,
+            "archive_chat" => self.archive_chat(origin, parse(args)?).await,
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| e.to_string())
     }
 
-    async fn whoami(&self) -> anyhow::Result<Value> {
-        let origin = self.zeron.origin().clone();
+    async fn whoami(&self, origin: Option<&AgentOrigin>) -> anyhow::Result<Value> {
         let local_device = self.zeron.local_device_id().await?;
         let engine = self.zeron.engine_info().await.unwrap_or(Value::Null);
-        let chat = match origin.chat_id.as_deref() {
-            Some(id) => match self.zeron.resolve_chat(id).await {
+        let chat = match origin {
+            Some(origin) => match self.zeron.resolve_chat(&origin.chat_id).await {
                 Ok(chat) => {
                     let (spaces, sessions) =
                         tokio::try_join!(self.zeron.spaces(), self.zeron.sessions())?;
                     summarize_chat(&chat, &spaces, &sessions)
                 }
-                Err(_) => json!({ "id": id }),
+                Err(_) => json!({ "id": origin.chat_id }),
             },
             None => Value::Null,
         };
         Ok(json!({
             "chat": chat,
-            "originDeviceId": origin.device_id,
+            "authenticated": origin.is_some(),
+            "originDeviceId": origin.map(|o| o.device_id.clone()),
+            "runId": origin.map(|o| o.run_id.clone()),
             "localDeviceId": local_device,
             "workspaceScope": engine.get("workspaceScope").cloned().unwrap_or(Value::Null),
-            "note": if origin.chat_id.is_some() {
-                "Messages you send are attributed to this chat; it cannot message itself."
+            "workOutlineTools": if origin.is_some() {
+                json!(agent_tool_names::WORK_OUTLINE)
+            } else {
+                json!([])
+            },
+            "note": if origin.is_some() {
+                "Messages you send are attributed to this chat; it cannot message itself. \
+                 Mutating Work Outline tools and create_chat need an idempotency key."
             } else {
                 "Not running inside a chat: messages are sent without attribution."
             },
@@ -527,7 +666,21 @@ impl Tools {
         Ok(summary)
     }
 
-    async fn create_chat(&self, args: CreateChatArgs) -> anyhow::Result<Value> {
+    async fn create_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: CreateChatArgs,
+    ) -> anyhow::Result<Value> {
+        // Agent mode: the ids derive from (token Chat, key), so a retry
+        // finds the Chat it already created instead of minting another.
+        let agent_key = match origin {
+            Some(_) => Some(
+                agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
+                    .map_err(anyhow::Error::msg)?
+                    .to_owned(),
+            ),
+            None => None,
+        };
         let harnesses = self.zeron.harnesses().await?;
         let harness = match args.harness.as_deref() {
             Some(raw) => {
@@ -588,17 +741,45 @@ impl Tools {
 
         // Parent: the explicit `parent` argument, else the chat this server
         // speaks for. Resolved so a prefix/title works and a typo fails loud.
-        let parent_chat_id = match args
+        // An agent may only record its own Chat (a child inherits the
+        // parent's work item and instructions, so another parent would
+        // reach into someone else's work).
+        let explicit_parent = match args
             .parent
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty())
         {
             Some(key) => Some(self.zeron.resolve_chat(key).await?.id),
-            None => self.zeron.origin().chat_id.clone(),
+            None => None,
+        };
+        let parent_chat_id = match (origin, explicit_parent) {
+            (Some(origin), Some(parent)) if parent != origin.chat_id => {
+                anyhow::bail!("agents can only create child chats of their own chat; omit parent")
+            }
+            (Some(origin), _) => Some(origin.chat_id.clone()),
+            (None, parent) => parent,
         };
 
-        let chat_id = uuid::Uuid::new_v4().to_string();
+        let (chat_id, replayed) = match (origin, agent_key.as_deref()) {
+            (Some(origin), Some(key)) => {
+                let operation_id = agent_tools::operation_id(&origin.chat_id, key);
+                let chat_id = zeron_proto::derive_id(&operation_id, zeron_proto::roles::CHAT);
+                let existing = self
+                    .zeron
+                    .chats()
+                    .await?
+                    .into_iter()
+                    .find(|c| c.id == chat_id);
+                if let Some(existing) = &existing
+                    && existing.parent_chat_id.as_deref() != Some(origin.chat_id.as_str())
+                {
+                    anyhow::bail!("idempotency_key names a chat this chat did not create");
+                }
+                (chat_id, existing.is_some())
+            }
+            _ => (uuid::Uuid::new_v4().to_string(), false),
+        };
         let mut mutate = json!({
             "op": "createChat",
             "chatId": chat_id,
@@ -622,12 +803,14 @@ impl Tools {
         if let Some(cwd) = args.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
             mutate["cwd"] = json!(cwd);
         }
+        // `createChat` is a no-op for an existing row (never a retarget).
         self.zeron.mutate(mutate).await?;
+        // A replay leaves the title alone (the user may have renamed it).
         if let Some(title) = args
             .title
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty())
+            .filter(|t| !t.is_empty() && !replayed)
         {
             self.zeron
                 .mutate(json!({ "op": "renameChat", "chatId": chat_id, "title": title }))
@@ -643,6 +826,7 @@ impl Tools {
             "reasoning": reasoning,
             "title": args.title,
             "parentChatId": parent_chat_id,
+            "replayed": replayed,
         });
         if let Some(prompt) = args.prompt.filter(|p| !p.trim().is_empty()) {
             // The row may not have folded into WatchChats yet; build the
@@ -671,9 +855,37 @@ impl Tools {
                 linked_ticket_id: None,
                 linked_ticket_source: None,
             };
-            let sent = self
-                .deliver(&chat, space.as_ref(), &harnesses, None, prompt, "run")
-                .await?;
+            let sent = match agent_key.as_deref() {
+                // The engine derives the message and command ids from the
+                // key and queues at most one first Turn per key.
+                Some(key) => {
+                    let request = run_request(&chat, space.as_ref(), harness, prompt);
+                    let queued = self
+                        .zeron
+                        .agent_tool(
+                            agent_tool_names::QUEUE_CHILD_CHAT_TURN,
+                            json!({
+                                "chatId": chat.id,
+                                "idempotencyKey": key,
+                                "command": SessionCommandPayload::Run {
+                                    request,
+                                    message_id: String::new(),
+                                },
+                            }),
+                        )
+                        .await?;
+                    json!({
+                        "delivery": "run",
+                        "id": queued.get("commandId").cloned().unwrap_or(Value::Null),
+                        "queued": queued.get("queued").cloned().unwrap_or(Value::Null),
+                        "chatStatusAtSend": "idle",
+                    })
+                }
+                None => {
+                    self.deliver(&chat, space.as_ref(), &harnesses, None, prompt, "run")
+                        .await?
+                }
+            };
             result["sent"] = sent;
             if args.wait {
                 result["turn"] = self
@@ -717,13 +929,17 @@ impl Tools {
         }))
     }
 
-    async fn send_message(&self, args: SendArgs) -> anyhow::Result<Value> {
+    async fn send_message(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: SendArgs,
+    ) -> anyhow::Result<Value> {
         let text = args.text.trim();
         if text.is_empty() {
             anyhow::bail!("text is empty");
         }
         let chat = self.zeron.resolve_chat(&args.chat).await?;
-        if self.zeron.origin().chat_id.as_deref() == Some(chat.id.as_str()) {
+        if origin.is_some_and(|o| o.chat_id == chat.id) {
             anyhow::bail!(
                 "refusing to send a message to your own chat ({})",
                 short(&chat.id)
@@ -741,7 +957,7 @@ impl Tools {
         let baseline = session_for(&sessions, &chat);
         let mode = args.mode.as_deref().unwrap_or("auto");
         let sent_at = now_millis();
-        let body = self.attribute(&chat, text).await;
+        let body = self.attribute(origin, &chat, text).await;
         let mut result = json!({
             "chatId": chat.id,
             "title": chat.title,
@@ -771,8 +987,20 @@ impl Tools {
         Ok(json!({ "chatId": chat.id, "title": chat.title, "turn": turn }))
     }
 
-    async fn archive_chat(&self, args: ArchiveArgs) -> anyhow::Result<Value> {
+    async fn archive_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: ArchiveArgs,
+    ) -> anyhow::Result<Value> {
         let chat = self.zeron.resolve_chat(&args.chat).await?;
+        if let Some(origin) = origin
+            && chat.parent_chat_id.as_deref() != Some(origin.chat_id.as_str())
+        {
+            anyhow::bail!(
+                "agents can only archive chats they created (chat {} was not created by this chat)",
+                short(&chat.id)
+            );
+        }
         let archived = args.archived.unwrap_or(true);
         self.zeron
             .mutate(json!({ "op": "setChatArchived", "chatId": chat.id, "archived": archived }))
@@ -836,8 +1064,8 @@ impl Tools {
     /// Prefix the sender's identity when this server speaks for a chat, so
     /// the receiving agent (and the human reading that transcript) can tell
     /// an agent-to-agent message from a typed one.
-    async fn attribute(&self, target: &Chat, text: &str) -> String {
-        let Some(origin_id) = self.zeron.origin().chat_id.as_deref() else {
+    async fn attribute(&self, origin: Option<&AgentOrigin>, target: &Chat, text: &str) -> String {
+        let Some(origin_id) = origin.map(|o| o.chat_id.as_str()) else {
             return text.to_owned();
         };
         if origin_id == target.id {
@@ -906,33 +1134,7 @@ impl Tools {
         };
         let id = match chosen {
             "run" => {
-                let config = chat.config.clone();
-                let cwd = chat
-                    .cwd
-                    .clone()
-                    .or_else(|| space.map(|s| s.path.clone()))
-                    .unwrap_or_else(|| "~".into());
-                let request = RunRequest {
-                    prompt: text,
-                    harness: Some(harness),
-                    model: config.as_ref().and_then(|c| c.model.clone()),
-                    reasoning: config.as_ref().and_then(|c| c.reasoning),
-                    model_options: config
-                        .as_ref()
-                        .map(|c| c.model_options.clone())
-                        .unwrap_or_default(),
-                    cwd,
-                    sandbox: config
-                        .as_ref()
-                        .map(|c| c.sandbox)
-                        .unwrap_or(SandboxLevel::WorkspaceWrite),
-                    // The chat's own approval mode (default Ask).
-                    auto_approve: config.as_ref().is_some_and(|c| c.auto_approve),
-                    resume: None,
-                    attachments: Vec::new(),
-                    worktree: None,
-                    instructions: None,
-                };
+                let request = run_request(chat, space, harness, text);
                 self.zeron
                     .queue_command(
                         &chat.id,
@@ -1005,6 +1207,38 @@ impl Tools {
     }
 }
 
+/// The Run a composer send would queue for `chat` (its own config and cwd;
+/// the host overwrites the cwd of an execution-bound Chat).
+fn run_request(chat: &Chat, space: Option<&Space>, harness: HarnessId, text: String) -> RunRequest {
+    let config = chat.config.clone();
+    let cwd = chat
+        .cwd
+        .clone()
+        .or_else(|| space.map(|s| s.path.clone()))
+        .unwrap_or_else(|| "~".into());
+    RunRequest {
+        prompt: text,
+        harness: Some(harness),
+        model: config.as_ref().and_then(|c| c.model.clone()),
+        reasoning: config.as_ref().and_then(|c| c.reasoning),
+        model_options: config
+            .as_ref()
+            .map(|c| c.model_options.clone())
+            .unwrap_or_default(),
+        cwd,
+        sandbox: config
+            .as_ref()
+            .map(|c| c.sandbox)
+            .unwrap_or(SandboxLevel::WorkspaceWrite),
+        // The chat's own approval mode (default Ask).
+        auto_approve: config.as_ref().is_some_and(|c| c.auto_approve),
+        resume: None,
+        attachments: Vec::new(),
+        worktree: None,
+        instructions: None,
+    }
+}
+
 /// claude-code when it is offered here, else the first available harness.
 fn default_harness(harnesses: &[HarnessInfo]) -> anyhow::Result<HarnessId> {
     if harnesses.is_empty() {
@@ -1027,21 +1261,36 @@ fn default_harness(harnesses: &[HarnessInfo]) -> anyhow::Result<HarnessId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zeron::Origin;
     use async_trait::async_trait;
     use futures::StreamExt;
     use std::sync::Mutex;
     use zeron_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
 
-    /// A fixed little workspace: one device, one project, one chat with a
-    /// two-message transcript. Writes are recorded for assertions.
+    const BETA_TOKEN: &str = "tok-beta";
+
+    /// A fixed little workspace: one device, one project, two chats with a
+    /// two-message transcript, and one live agent token (`tok-beta`, minted
+    /// for chat-beta-2). Writes are recorded; created chats join the list.
     #[derive(Default)]
     struct World {
         writes: Mutex<Vec<(String, Value)>>,
+        created: Mutex<Vec<Value>>,
     }
 
     fn stream(item: Value) -> RpcReply {
         RpcReply::Stream(futures::stream::iter(vec![item]).boxed())
+    }
+
+    impl World {
+        fn writes_of(&self, method: &str) -> Vec<Value> {
+            self.writes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| m == method)
+                .map(|(_, p)| p.clone())
+                .collect()
+        }
     }
 
     #[async_trait]
@@ -1060,19 +1309,23 @@ mod tests {
                     "id": "space-1", "deviceId": "dev-local", "path": "/repo/comet",
                     "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
                 }])),
-                methods::WATCH_CHATS => stream(json!([
-                    {
-                        "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
-                        "archived": false, "spaceId": "space-1",
-                        "config": { "harness": "claude-code", "model": "opus", "reasoning": null, "sandbox": "workspace-write" },
-                        "createdAt": "2026-09-01T00:00:00Z"
-                    },
-                    {
-                        "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
-                        "archived": false, "spaceId": "space-1",
-                        "createdAt": "2026-09-02T00:00:00Z"
-                    }
-                ])),
+                methods::WATCH_CHATS => {
+                    let mut chats = vec![
+                        json!({
+                            "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
+                            "archived": false, "spaceId": "space-1",
+                            "config": { "harness": "claude-code", "model": "opus", "reasoning": null, "sandbox": "workspace-write" },
+                            "createdAt": "2026-09-01T00:00:00Z"
+                        }),
+                        json!({
+                            "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
+                            "archived": false, "spaceId": "space-1",
+                            "createdAt": "2026-09-02T00:00:00Z"
+                        }),
+                    ];
+                    chats.extend(self.created.lock().unwrap().iter().cloned());
+                    stream(Value::Array(chats))
+                }
                 methods::WATCH_SESSIONS => stream(json!([])),
                 methods::LIST_HARNESSES => RpcReply::Value(json!([
                     { "id": "claude-code", "name": "Claude Code", "supportsSteering": true,
@@ -1090,7 +1343,40 @@ mod tests {
                       "status": "complete",
                       "parts": [{ "kind": "text", "id": "t", "text": "hello back" }] }
                 ]})),
+                agent_tools::AUTHENTICATE_METHOD => {
+                    if params["token"] != BETA_TOKEN {
+                        return Err(RpcError::Failed(
+                            "agent-tools/unauthenticated: unknown token".into(),
+                        ));
+                    }
+                    RpcReply::Value(json!({
+                        "chatId": "chat-beta-2", "runId": "run-1",
+                        "spaceId": "space-1", "deviceId": "dev-local"
+                    }))
+                }
+                agent_tools::TOOL_CALL_METHOD => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    RpcReply::Value(json!({ "commandId": "cmd-agent", "queued": true }))
+                }
                 methods::MUTATE | methods::QUEUE_COMMAND | methods::QUEUE_MESSAGE => {
+                    if params["op"] == "createChat"
+                        && !self
+                            .created
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|c| c["id"] == params["chatId"])
+                    {
+                        self.created.lock().unwrap().push(json!({
+                            "id": params["chatId"], "deviceId": params["deviceId"],
+                            "archived": false, "spaceId": params["spaceId"],
+                            "parentChatId": params["parentChatId"],
+                            "createdAt": "2026-09-03T00:00:00Z"
+                        }));
+                    }
                     self.writes
                         .lock()
                         .unwrap()
@@ -1102,14 +1388,18 @@ mod tests {
         }
     }
 
-    fn tools(world: Arc<World>, origin: Origin) -> Tools {
+    fn tools(world: Arc<World>, token: Option<&str>) -> Tools {
         let client = memory_client(world);
-        Tools::new(Arc::new(Zeron::with_client(client, origin)))
+        Tools::new(Arc::new(Zeron::with_client(
+            client,
+            token.map(str::to_owned),
+        )))
     }
 
     #[tokio::test]
     async fn catalog_is_well_formed() {
-        let defs = catalog();
+        let mut defs = catalog();
+        defs.extend(work_outline_catalog());
         let mut names: Vec<&str> = defs.iter().map(|d| d.name).collect();
         names.sort_unstable();
         names.dedup();
@@ -1118,12 +1408,21 @@ mod tests {
             assert_eq!(def.input_schema["type"], "object", "{}", def.name);
             assert!(!def.description.is_empty());
         }
+        // Every mutating Work Outline tool demands an idempotency key.
+        for def in work_outline_catalog() {
+            if def.name != agent_tool_names::READ_CURRENT {
+                let required = def.input_schema["required"].as_array().unwrap();
+                assert!(required.contains(&json!("idempotencyKey")), "{}", def.name);
+            }
+        }
+        let wire: Vec<&str> = work_outline_catalog().iter().map(|d| d.name).collect();
+        assert_eq!(wire, agent_tool_names::WORK_OUTLINE);
     }
 
     #[tokio::test]
     async fn list_and_read_chats() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = tools(world, None);
         let listed = tools.call("list_chats", json!({})).await.unwrap();
         assert_eq!(listed["total"], 2);
         // Newest activity first: Beta was created later.
@@ -1150,13 +1449,7 @@ mod tests {
     #[tokio::test]
     async fn send_attributes_and_refuses_self() {
         let world = Arc::new(World::default());
-        let tools = tools(
-            world.clone(),
-            Origin {
-                chat_id: Some("chat-beta-2".into()),
-                device_id: Some("dev-local".into()),
-            },
-        );
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
         let err = tools
             .call("send_message", json!({ "chat": "beta", "text": "loop" }))
             .await
@@ -1171,9 +1464,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sent["sent"]["delivery"], "run");
-        let writes = world.writes.lock().unwrap();
-        let (method, params) = writes.last().expect("a queued command");
-        assert_eq!(method, methods::QUEUE_COMMAND);
+        let writes = world.writes_of(methods::QUEUE_COMMAND);
+        let params = writes.last().expect("a queued command");
         assert_eq!(params["chatId"], "chat-alpha-1");
         assert_eq!(params["command"]["kind"], "run");
         let prompt = params["command"]["request"]["prompt"].as_str().unwrap();
@@ -1190,7 +1482,7 @@ mod tests {
     #[tokio::test]
     async fn create_chat_writes_the_row_and_validates_model() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = tools(world.clone(), None);
         let err = tools
             .call(
                 "create_chat",
@@ -1225,26 +1517,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_chat_records_the_origin_as_parent() {
+    async fn agent_create_chat_needs_a_key_and_retries_return_the_same_chat() {
         let world = Arc::new(World::default());
-        let tools = tools(
-            world.clone(),
-            Origin {
-                chat_id: Some("chat-beta-2".into()),
-                device_id: None,
-            },
-        );
-        let created = tools
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let err = tools
             .call("create_chat", json!({ "project": "/repo/comet" }))
             .await
-            .unwrap();
-        assert_eq!(created["parentChatId"], "chat-beta-2");
-        assert_eq!(
-            world.writes.lock().unwrap()[0].1["parentChatId"],
-            "chat-beta-2"
-        );
+            .unwrap_err();
+        assert!(err.contains("idempotencyKey is required"), "{err}");
 
-        // An explicit parent (by title) overrides the origin.
+        let args = json!({ "project": "/repo/comet", "title": "Child", "prompt": "go",
+                           "idempotency_key": "spawn-reviewer" });
+        let first = tools.call("create_chat", args.clone()).await.unwrap();
+        let chat_id = first["chatId"].as_str().unwrap().to_owned();
+        let op = agent_tools::operation_id("chat-beta-2", "spawn-reviewer");
+        assert_eq!(
+            chat_id,
+            zeron_proto::derive_id(&op, zeron_proto::roles::CHAT)
+        );
+        assert_eq!(first["parentChatId"], "chat-beta-2");
+        assert_eq!(first["replayed"], false);
+        assert_eq!(first["sent"]["id"], "cmd-agent");
+
+        let again = tools.call("create_chat", args).await.unwrap();
+        assert_eq!(again["chatId"], chat_id);
+        assert_eq!(again["replayed"], true);
+
+        // One rename only (a replay never overwrites the title); every
+        // createChat names the same derived id; both first Turns go through
+        // the engine's key-derived, deduping queue (never QueueCommand).
+        let mutates = world.writes_of(methods::MUTATE);
+        assert_eq!(
+            mutates.iter().filter(|m| m["op"] == "renameChat").count(),
+            1
+        );
+        assert!(
+            mutates
+                .iter()
+                .filter(|m| m["op"] == "createChat")
+                .all(|m| m["chatId"] == chat_id && m["parentChatId"] == "chat-beta-2")
+        );
+        assert!(world.writes_of(methods::QUEUE_COMMAND).is_empty());
+        let turns = world.writes_of(agent_tools::TOOL_CALL_METHOD);
+        assert_eq!(turns.len(), 2);
+        for turn in &turns {
+            assert_eq!(turn["token"], BETA_TOKEN);
+            assert_eq!(turn["tool"], agent_tool_names::QUEUE_CHILD_CHAT_TURN);
+            assert_eq!(turn["arguments"]["chatId"], chat_id);
+            assert_eq!(turn["arguments"]["idempotencyKey"], "spawn-reviewer");
+            assert_eq!(turn["arguments"]["command"]["request"]["prompt"], "go");
+        }
+
+        // An agent may not hang a child under another chat.
+        let err = tools
+            .call(
+                "create_chat",
+                json!({ "project": "/repo/comet", "parent": "Alpha", "idempotency_key": "k2" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("own chat"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn terminal_create_chat_records_an_explicit_parent() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), None);
         let created = tools
             .call(
                 "create_chat",
@@ -1264,9 +1602,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agents_archive_only_chats_they_created() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let err = tools
+            .call("archive_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("only archive chats they created"), "{err}");
+        let child = tools
+            .call(
+                "create_chat",
+                json!({ "project": "/repo/comet", "idempotency_key": "child" }),
+            )
+            .await
+            .unwrap();
+        let archived = tools
+            .call("archive_chat", json!({ "chat": child["chatId"] }))
+            .await
+            .unwrap();
+        assert_eq!(archived["archived"], true);
+    }
+
+    #[tokio::test]
+    async fn work_outline_tools_need_a_token_and_forward_it() {
+        let world = Arc::new(World::default());
+        let anonymous = tools(world.clone(), None);
+        assert!(!anonymous.has(agent_tool_names::READ_CURRENT));
+        assert!(
+            anonymous
+                .list()
+                .iter()
+                .all(|t| !t.name.starts_with("work_outline_"))
+        );
+        let err = anonymous
+            .call(agent_tool_names::READ_CURRENT, json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("only available to agents"), "{err}");
+
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        assert!(agent.has(agent_tool_names::SET_STATUS));
+        agent
+            .call(
+                agent_tool_names::SET_STATUS,
+                json!({ "status": "active", "idempotencyKey": "k" }),
+            )
+            .await
+            .unwrap();
+        let calls = world.writes_of(agent_tools::TOOL_CALL_METHOD);
+        assert_eq!(calls[0]["token"], BETA_TOKEN);
+        assert_eq!(calls[0]["tool"], agent_tool_names::SET_STATUS);
+        assert_eq!(calls[0]["arguments"]["status"], "active");
+        // The tool never sends a chat id: the engine derives it.
+        assert!(calls[0]["arguments"].get("chatId").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_token_disables_every_tool() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some("tok-forged"));
+        for (name, args) in [
+            ("whoami", json!({})),
+            ("list_chats", json!({})),
+            ("send_message", json!({ "chat": "alpha", "text": "hi" })),
+            (agent_tool_names::READ_CURRENT, json!({})),
+        ] {
+            let err = tools.call(name, args).await.unwrap_err();
+            assert!(err.contains("refused this agent's token"), "{name}: {err}");
+        }
+        assert!(world.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_the_engine_authenticated_origin() {
+        let world = Arc::new(World::default());
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        let me = agent.call("whoami", json!({})).await.unwrap();
+        assert_eq!(me["chat"]["id"], "chat-beta-2");
+        assert_eq!(me["authenticated"], true);
+        assert_eq!(me["runId"], "run-1");
+        let anonymous = tools(world, None);
+        let me = anonymous.call("whoami", json!({})).await.unwrap();
+        assert_eq!(me["chat"], Value::Null);
+        assert_eq!(me["authenticated"], false);
+    }
+
+    #[tokio::test]
     async fn wait_on_an_idle_chat_returns_immediately() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = tools(world, None);
         let waited = tools
             .call(
                 "wait_for_turn",
@@ -1283,7 +1708,7 @@ mod tests {
         // The stub never grows a session row, so a send-then-wait must run
         // to its deadline rather than declaring the (unstarted) run done.
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = tools(world, None);
         let started = std::time::Instant::now();
         let sent = tools
             .call(
@@ -1299,7 +1724,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_and_list_over_jsonrpc() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = tools(world, None);
         let init = crate::jsonrpc::handle_request(
             &tools,
             json!(1),
