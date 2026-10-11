@@ -11,7 +11,14 @@
 //! pending/active/completed counts cover the item and every descendant that
 //! is not archived (an archived item is not counted, its non-archived
 //! descendants still are). `associated_chat_count` is the item's own Chats in
-//! state `associated`. Action-request counts stay 0 until Milestone 4.
+//! state `associated`. Milestone 4: an item with at least one unresolved
+//! (open, non-deduped) user action request is `effectiveStatus:
+//! userActionRequired` (its stored status is unchanged and still counted);
+//! `userActionRequiredCount` counts such non-archived items in the subtree,
+//! `unresolvedUserActionCount` is the item's own unresolved requests (also
+//! for archived items) and `subtreeUnresolvedUserActionCount` sums it over
+//! the item and its non-archived descendants (archived items contribute
+//! nothing, like the status counts).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -42,6 +49,9 @@ pub struct OutlineChat {
     pub id: String,
     /// `None` = projectless.
     pub space_id: Option<String>,
+    /// The Chat is archived (Milestone 4: an archived origin Chat makes a
+    /// request's `originChatAvailable` false).
+    pub archived: bool,
 }
 
 /// Everything [`materialize_work_outline`] reads, cloned from the overlay
@@ -75,22 +85,26 @@ pub struct WorkOutlineInputs {
     pub chat_execution_bindings: Vec<RegistryRow>,
     /// The Space's path and owning device (implicit execution root).
     pub execution_space: Option<zeron_proto::work_outline_execution::ExecutionSpace>,
+    /// Live `userActionRequests` rows of this Space (Milestone 4).
+    pub user_action_requests: Vec<RegistryRow>,
+    /// Live `workItemInstructionProposals` rows of this Space (Milestone 4).
+    pub instruction_proposals: Vec<RegistryRow>,
 }
 
 // ── lenient row decoding ────────────────────────────────────────────────────
 
-fn str_field(row: &RegistryRow, key: &str) -> Option<String> {
+pub(crate) fn str_field(row: &RegistryRow, key: &str) -> Option<String> {
     row.fields
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_owned)
 }
 
-fn i64_field(row: &RegistryRow, key: &str) -> Option<i64> {
+pub(crate) fn i64_field(row: &RegistryRow, key: &str) -> Option<i64> {
     row.fields.get(key).and_then(Value::as_i64)
 }
 
-fn actor_field(row: &RegistryRow, key: &str) -> Option<WorkOutlineActor> {
+pub(crate) fn actor_field(row: &RegistryRow, key: &str) -> Option<WorkOutlineActor> {
     row.fields
         .get(key)
         .filter(|v| v.is_object())
@@ -99,7 +113,7 @@ fn actor_field(row: &RegistryRow, key: &str) -> Option<WorkOutlineActor> {
 
 /// The row's `spaceId`: `Err(Malformed)` when present but not a string,
 /// `Err(MissingSpace)` when absent.
-fn space_of(row: &RegistryRow, kind: &str) -> Result<String, WorkOutlineRepair> {
+pub(crate) fn space_of(row: &RegistryRow, kind: &str) -> Result<String, WorkOutlineRepair> {
     match row.fields.get("spaceId") {
         Some(Value::String(space)) if !space.is_empty() => Ok(space.clone()),
         None | Some(Value::Null) => Err(WorkOutlineRepair::MissingSpace {
@@ -780,6 +794,14 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
     }
     references.sort_by(|a, b| a.id.cmp(&b.id));
 
+    // Milestone 4: requests and proposals (needed for effective status).
+    let user_actions = super::user_actions::materialize_user_actions(
+        space_id,
+        inputs,
+        |id| tree.items.contains_key(id),
+        &mut repairs,
+    );
+
     // Items in pre-order, then rollups bottom-up (reverse pre-order).
     let order = tree.preorder();
     let mut views: Vec<WorkItemView> = Vec::with_capacity(order.len());
@@ -792,8 +814,14 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         let mut external_reference_ids =
             item_references.remove(item.id.as_str()).unwrap_or_default();
         external_reference_ids.sort();
+        let unresolved = user_actions
+            .unresolved_by_item
+            .get(item.id.as_str())
+            .copied()
+            .unwrap_or(0);
         let mut rollup = WorkItemRollup {
             associated_chat_count: item_associated.get(item.id.as_str()).copied().unwrap_or(0),
+            unresolved_user_action_count: unresolved,
             ..WorkItemRollup::default()
         };
         if !item.archived() {
@@ -802,7 +830,14 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
                 WorkItemStatus::Active => rollup.active_count = 1,
                 WorkItemStatus::Completed => rollup.completed_count = 1,
             }
+            rollup.user_action_required_count = u32::from(unresolved > 0);
+            rollup.subtree_unresolved_user_action_count = unresolved;
         }
+        let effective_status = if unresolved > 0 {
+            WorkItemEffectiveStatus::UserActionRequired
+        } else {
+            status_effective(item.status)
+        };
         views.push(WorkItemView {
             id: item.id.clone(),
             space_id: item.space_id.clone(),
@@ -812,7 +847,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             title: item.title.clone().unwrap_or_else(|| "Untitled".into()),
             description: item.description.clone(),
             status: item.status,
-            effective_status: status_effective(item.status),
+            effective_status,
             archived_at: item.archived_at,
             archived_by: item.archived_by.clone(),
             archive_cause: item.archive_cause,
@@ -840,6 +875,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         total.active_count += child.active_count;
         total.completed_count += child.completed_count;
         total.user_action_required_count += child.user_action_required_count;
+        total.subtree_unresolved_user_action_count += child.subtree_unresolved_user_action_count;
     }
 
     // Unassociated Chats of this Space: live Chats with no effective
@@ -892,8 +928,8 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         execution_configurations: execution.configurations,
         chat_execution_bindings: execution.bindings,
         execution_exceptions: execution.exceptions,
-        user_action_requests: Vec::new(),
-        instruction_proposals: Vec::new(),
+        user_action_requests: user_actions.requests,
+        instruction_proposals: user_actions.proposals,
     }
 }
 

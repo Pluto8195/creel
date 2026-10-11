@@ -2,7 +2,9 @@
 //! `workItemExternalReferences` (Milestone 1); in [`instructions`],
 //! `workItemInstructions`, `instructionRevisions`,
 //! `instructionRevisionApplications` (Milestone 2); and in [`execution`],
-//! `executionConfigurations` and `chatExecutionBindings` (Milestone 3).
+//! `executionConfigurations` and `chatExecutionBindings` (Milestone 3); and in
+//! [`user_actions`], `userActionRequests` and `workItemInstructionProposals`
+//! plus the agent policy (Milestone 4).
 //!
 //! Mechanism layer (registry audit section 7.11): sizes, formats, immutable
 //! field omission, same-Space and cycle checks on the RAW parent graph,
@@ -43,6 +45,7 @@ use super::*;
 pub mod execution;
 pub mod instructions;
 mod materialize;
+pub mod user_actions;
 
 use materialize::{DecodedItem, OutlineTree, build_tree, cycle_victim, decode_item};
 pub use materialize::{OutlineChat, WorkOutlineInputs, materialize_work_outline};
@@ -54,6 +57,7 @@ pub const KIND_WORK_ITEM_INSTRUCTIONS: &str = "workItemInstructions";
 pub const KIND_INSTRUCTION_REVISIONS: &str = "instructionRevisions";
 pub const KIND_INSTRUCTION_REVISION_APPLICATIONS: &str = "instructionRevisionApplications";
 pub use execution::{KIND_CHAT_EXECUTION_BINDINGS, KIND_EXECUTION_CONFIGURATIONS};
+pub use user_actions::{KIND_USER_ACTION_REQUESTS, KIND_WORK_ITEM_INSTRUCTION_PROPOSALS};
 
 /// Every outline kind this build writes: the `delete_space` cascade and the
 /// orphan sweep cover exactly these. Later milestones append their kinds.
@@ -66,6 +70,8 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_INSTRUCTION_REVISION_APPLICATIONS,
     KIND_EXECUTION_CONFIGURATIONS,
     KIND_CHAT_EXECUTION_BINDINGS,
+    KIND_USER_ACTION_REQUESTS,
+    KIND_WORK_ITEM_INSTRUCTION_PROPOSALS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
@@ -155,6 +161,9 @@ fn op_too_large(op: &RowOp) -> WorkOutlineError {
         Some("source") => "Source excerpt",
         Some("body") => "Instruction revision",
         Some("configuration") | Some("resolved") => "Execution configuration",
+        Some("info") => "Supporting detail",
+        Some("resolution") => "Resolution note",
+        Some("review") => "Review",
         Some(other) => other,
         None => "The change",
     };
@@ -369,7 +378,10 @@ impl RegistryDoc {
         let (applications, revisions, sessions) = self.instruction_inputs(space_id);
         let (execution_configurations, chat_execution_bindings, execution_space) =
             self.execution_inputs(space_id);
+        let (user_action_requests, instruction_proposals) = self.user_action_inputs(space_id);
         WorkOutlineInputs {
+            user_action_requests,
+            instruction_proposals,
             execution_configurations,
             chat_execution_bindings,
             execution_space,
@@ -389,6 +401,7 @@ impl RegistryDoc {
                 .map(|chat| OutlineChat {
                     id: chat.id,
                     space_id: chat.space_id,
+                    archived: chat.archived,
                 })
                 .collect(),
         }
@@ -676,6 +689,12 @@ impl RegistryDoc {
         now_ms: i64,
     ) -> Outcome<WorkOutlineMutateReply> {
         check_operation_id(mutation.operation_id())?;
+        if actor.kind == WorkOutlineActorKind::Agent {
+            let chat_id = actor.chat_id.as_deref().ok_or_else(|| {
+                WorkOutlineError::unauthorized("Agent changes need an originating Chat")
+            })?;
+            self.authorize_agent_mutation(chat_id, mutation)?;
+        }
         let empty = WorkOutlineMutateReply::default();
         match mutation {
             WorkOutlineMutation::CreateWorkItem(p) => {
@@ -686,7 +705,7 @@ impl RegistryDoc {
                 })
             }
             WorkOutlineMutation::UpdateWorkItem(p) => {
-                self.update_work_item(p, now_ms).map(|_| empty)
+                self.update_work_item(p, actor, now_ms).map(|_| empty)
             }
             WorkOutlineMutation::MoveWorkItem(p) => self.move_work_item(p, now_ms).map(|_| empty),
             WorkOutlineMutation::ArchiveWorkItem(p) => {
@@ -745,14 +764,33 @@ impl RegistryDoc {
             WorkOutlineMutation::ConfigureExecution(p) => {
                 self.configure_execution(p, actor, now_ms).map(|_| empty)
             }
-            WorkOutlineMutation::CreateUserActionRequest(_)
-            | WorkOutlineMutation::ResolveUserActionRequest(_)
-            | WorkOutlineMutation::ProposeWorkItemInstruction(_)
-            | WorkOutlineMutation::ApproveWorkItemInstructionProposal(_)
-            | WorkOutlineMutation::RejectWorkItemInstructionProposal(_) => Err(err(
-                WorkOutlineErrorCode::Unsupported,
-                "User action requests and proposals are not available yet",
-            )),
+            WorkOutlineMutation::CreateUserActionRequest(p) => {
+                let id = self.create_user_action_request(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    user_action_request_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::ResolveUserActionRequest(p) => self
+                .resolve_user_action_request(p, actor, now_ms)
+                .map(|_| empty),
+            WorkOutlineMutation::ProposeWorkItemInstruction(p) => {
+                let id = self.propose_work_item_instruction(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    proposal_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::ApproveWorkItemInstructionProposal(p) => {
+                let id = self.approve_work_item_instruction_proposal(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    instruction_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::RejectWorkItemInstructionProposal(p) => self
+                .reject_work_item_instruction_proposal(p, actor, now_ms)
+                .map(|_| empty),
         }
     }
 
@@ -840,7 +878,17 @@ impl RegistryDoc {
     }
 
     /// `updateWorkItem`: LWW fields only (never `spaceId`, `createdBy`, …).
-    pub fn update_work_item(&mut self, p: &UpdateWorkItemParams, now_ms: i64) -> Outcome<()> {
+    /// Setting status `completed` while the item has open user action
+    /// requests needs `changes.resolveOpenRequests` (Milestone 4): without it
+    /// the update fails with `openUserActionRequests`; with it every open
+    /// request gets an explicit resolution in the same batch. The stored
+    /// status never erases request history.
+    pub fn update_work_item(
+        &mut self,
+        p: &UpdateWorkItemParams,
+        actor: &WorkOutlineActor,
+        now_ms: i64,
+    ) -> Outcome<()> {
         check_id("work item", &p.work_item_id)?;
         let item = self.live_item(&p.work_item_id)?;
         self.require_space(&item.space_id)?;
@@ -875,14 +923,21 @@ impl RegistryDoc {
         {
             set.insert("inheritParentInstructions".to_owned(), json!(inherit));
         }
-        if set.is_empty() {
-            return Ok(());
+        let mut plan = if p.changes.status == Some(WorkItemStatus::Completed) {
+            self.plan_completion_resolutions(
+                &p.work_item_id,
+                p.changes.resolve_open_requests,
+                actor,
+                now_ms,
+            )?
+        } else {
+            Vec::new()
+        };
+        if !set.is_empty() {
+            set.insert("updatedAt".to_owned(), json!(now_ms));
+            plan.insert(0, Planned::update(KIND_WORK_ITEMS, &p.work_item_id, set));
         }
-        set.insert("updatedAt".to_owned(), json!(now_ms));
-        self.commit(
-            vec![Planned::update(KIND_WORK_ITEMS, &p.work_item_id, set)],
-            &[],
-        )
+        self.commit(plan, &[])
     }
 
     /// `moveWorkItem` (a move within the same parent is a reorder). Cycle
