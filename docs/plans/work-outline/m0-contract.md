@@ -924,3 +924,42 @@ details_execution}.rs`, edits to `details_panel.rs`, `actions.rs`, `model.rs`, `
 8. **Not done.** No refresh button on the member pills (reopen the pane); the exception marker is
    not in the sidebar; the root input accepts typed paths without a device-side existence check
    until Validate.
+9. **Start Chat (Part B).** `shell/start_chat_ui.rs` (`WorkOutlineModal::StartChat`) with
+   `work_outline/launch.rs` (pure). Entry points: the Outline row action (shown on the selected
+   live item row), the Work Item Details "Start Chat" button, and palette command
+   `startChatForWorkItem` (`ShortcutId::StartChatForWorkItem`, unbound by default, persisted as
+   `startChatForWorkItem`; needs a selected work item like the other item commands). Archived
+   items refuse with a notice. `Overview::start_chat_for_item` defers the Shell call (the palette
+   path runs inside a Shell update).
+10. **Agent.** The dialog reuses the composer's harness catalog and sticky defaults
+    (`Pickers::launch_agents`): the composer's resolved harness with its model, reasoning,
+    options, and approval mode first, then every other offered harness with host defaults
+    (`model: None`). No catalog loaded and no resolved harness: `config` is omitted (host
+    default). The full composer popovers are not embedded; attachments are not offered
+    (`initialPrompt.attachments` stays empty).
+11. **Gating.** Validation (`{scope: workItem}`) runs on open and Start stays disabled until it
+    passes (offline and unsupported owners are their own headlines; "Validate again" refetches).
+    An owner device row that lacks `work-outline-launch-v1` blocks up front with "Update Zeron
+    on <device>"; an unknown device is left to the engine. Host-side validation rejections
+    (`invalid` with `execution-scope:<code>: <message>. <remediation> (+N more)`) are split back
+    into message and remediation by matching the shared remediation vocabulary.
+12. **Worktree choice.** Shown only when the engine rule picks an unpinned target (primary,
+    else the only binding, else the repository at the root); the target is described on the
+    owner and its resolvable, non-prunable checkouts other than the target path itself are
+    offered beside "Space workspace" (no `worktreeChoice`) and "New worktree" (name prefilled
+    from the prompt with the worktree chip's `worktree_name`). A root that is not a Git checkout
+    offers no choice.
+13. **Instructions review.** "Changed since the item's last launch": the last launch is the
+    item's associated Chat with the newest captured binding; changed when its selected revision
+    hash differs from the item's current effective hash, or it launched without instructions
+    and the item has some now; never launched = not changed. Then
+    `Overview::open_effective_instructions` opens details first and the dialog shows the entries
+    expanded with a notice (otherwise collapsed with the count).
+14. **Idempotency.** The operation id is an `OperationSlot` over the serialized params: retries
+    of the same inputs (transport retries and the user's Retry after an unknown outcome or a
+    rejection) reuse it; changed inputs mint a new id (the host would answer
+    `operationConflict`). A `rejected` reply keeps the dialog with "Open Chat" (the Chat is never
+    deleted) and Retry. Success closes the dialog and opens the Chat (`Shell::open_chat`).
+15. **Not wired.** `ContinueChatForWorkItem`: the composer keeps sending plain `Run` for bound
+    Chats (the host validates at dispatch per launch discovery 6); `executionOverride` (a
+    deliberate exception launch) has no UI.
