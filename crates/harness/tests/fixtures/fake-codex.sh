@@ -102,9 +102,9 @@ case "$turnline" in
 *scenario:agent-tools*)
   # Report whether thread/start carried the Zeron MCP server overrides.
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
-  if has "$thread_line" '"mcp_servers.zeron.command":"/opt/zeron/bin/zeron"' \
-    && has "$thread_line" '"mcp_servers.zeron.args":["mcp"]' \
-    && has "$thread_line" '"mcp_servers.zeron.env":{"ZERON_AGENT_TOKEN":"tok-1"}'; then
+  if has "$thread_line" '"mcp_servers.zeron-agent.command":"/opt/zeron/bin/zeron"' \
+    && has "$thread_line" '"mcp_servers.zeron-agent.args":["mcp"]' \
+    && has "$thread_line" '"mcp_servers.zeron-agent.env":{"ZERON_AGENT_TOKEN":"tok-1"}'; then
     emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:yes"}}'
   elif has "$thread_line" 'mcp_servers'; then
     emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:partial"}}'

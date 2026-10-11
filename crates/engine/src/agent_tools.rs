@@ -930,7 +930,7 @@ mod tests {
             ipc_port: 27655,
         };
         let injection = launch.injection("zat_secret");
-        assert_eq!(injection.server_name, "zeron");
+        assert_eq!(injection.server_name, "zeron-agent");
         assert_eq!(injection.args, vec!["mcp".to_owned()]);
         assert_eq!(injection.env["ZERON_AGENT_TOKEN"], "zat_secret");
         assert_eq!(injection.env["ZERON_IPC_PORT"], "27655");

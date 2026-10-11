@@ -661,8 +661,10 @@ mod generated_image_tests {
 pub mod agent_tools {
     use serde::{Deserialize, Serialize};
 
-    /// MCP server name (Claude tools surface as `mcp__zeron__<tool>`).
-    pub const SERVER_NAME: &str = "zeron";
+    /// Name of the injected MCP server (Claude tools surface as
+    /// `mcp__zeron-agent__<tool>`). Distinct from a plain `zeron`, so a
+    /// user-defined `zeron` server (a terminal `zeron mcp`) never collides.
+    pub const SERVER_NAME: &str = "zeron-agent";
     /// Environment variable carrying the per-Run capability token.
     pub const TOKEN_ENV: &str = "ZERON_AGENT_TOKEN";
     /// Environment variable naming the engine's loopback IPC port.

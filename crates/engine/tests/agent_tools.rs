@@ -257,7 +257,7 @@ async fn space_chat_runs_get_a_run_scoped_token_and_projectless_runs_get_none() 
         panic!("a Chat in a Space must get agent tools: {spawn:?}");
     };
     assert_eq!(prompt, "hello");
-    assert_eq!(tools.server_name, "zeron");
+    assert_eq!(tools.server_name, "zeron-agent");
     assert_eq!(tools.args, vec!["mcp".to_owned()]);
     let token = tools.env["ZERON_AGENT_TOKEN"].clone();
     assert!(tools.env.contains_key("ZERON_IPC_PORT"));

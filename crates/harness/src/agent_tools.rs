@@ -132,7 +132,7 @@ mod tests {
 
     fn injection() -> AgentToolsInjection {
         AgentToolsInjection {
-            server_name: "zeron".into(),
+            server_name: "zeron-agent".into(),
             command: PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
             env: BTreeMap::from([
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(dir_mode & 0o777, 0o700);
         let body: Value =
             serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
-        let server = &body["mcpServers"]["zeron"];
+        let server = &body["mcpServers"]["zeron-agent"];
         assert_eq!(server["type"], "stdio");
         assert_eq!(server["command"], "/opt/zeron/bin/zeron");
         assert_eq!(server["args"], json!(["mcp"]));
@@ -171,19 +171,19 @@ mod tests {
     fn codex_overrides_name_one_server() {
         let overrides = injection().codex_config_overrides();
         assert_eq!(
-            overrides["mcp_servers.zeron.command"],
+            overrides["mcp_servers.zeron-agent.command"],
             "/opt/zeron/bin/zeron"
         );
-        assert_eq!(overrides["mcp_servers.zeron.args"], json!(["mcp"]));
+        assert_eq!(overrides["mcp_servers.zeron-agent.args"], json!(["mcp"]));
         assert_eq!(
-            overrides["mcp_servers.zeron.env"]["ZERON_AGENT_TOKEN"],
+            overrides["mcp_servers.zeron-agent.env"]["ZERON_AGENT_TOKEN"],
             "secret-token"
         );
-        assert_eq!(overrides["mcp_servers.zeron.enabled"], true);
+        assert_eq!(overrides["mcp_servers.zeron-agent.enabled"], true);
         assert!(
             overrides
                 .keys()
-                .all(|k| k.starts_with("mcp_servers.zeron."))
+                .all(|k| k.starts_with("mcp_servers.zeron-agent."))
         );
     }
 }

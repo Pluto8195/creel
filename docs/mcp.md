@@ -14,8 +14,11 @@ the stdio tool-server subset is tiny, so no SDK dependency was taken.
 ## Identity
 
 The engine injects this server into Claude Code and Codex Runs of Chats that
-belong to a project (Claude: `--mcp-config <owner-only file>`; Codex: per-thread
-`mcp_servers.zeron.*` config overrides), with:
+belong to a project under the server name `zeron-agent` (Claude: `--mcp-config
+<owner-only file>`, tools surface as `mcp__zeron-agent__<tool>`; Codex: per-thread
+`mcp_servers.zeron-agent.*` config overrides). The distinct name keeps it from
+colliding with a `zeron` server the user configured themselves (for example a
+terminal `zeron mcp`). It is launched with:
 
 | Variable            | Meaning                                                     |
 | ------------------- | ----------------------------------------------------------- |
