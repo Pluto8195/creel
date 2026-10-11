@@ -345,3 +345,73 @@ async fn replay_after_restart_does_not_rewrite() {
     assert_eq!(conflict.code, WorkOutlineErrorCode::OperationConflict);
     core.shutdown().await;
 }
+
+/// The watch skips recomputes for registry changes the outline does not
+/// read (a device rename), but an outline change interleaved with them is
+/// never missed.
+#[tokio::test(flavor = "multi_thread")]
+async fn unrelated_registry_changes_never_hide_an_outline_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let core = assemble(&tmp.path().join("data"));
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createSpace", "spaceId": "space-1", "deviceId": "dev-a", "path": "/tmp" }),
+        )
+        .await
+        .unwrap();
+    let mut stream = client
+        .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))
+        .await
+        .unwrap();
+    frame_until(&mut stream, |s| s.available).await;
+
+    // A device row is not an outline input: the marker stays put.
+    let marker = core.workspace.work_outline_inputs_marker();
+    let device = core.device_id.clone();
+    let renamed = |n: usize| {
+        core.workspace
+            .rename_device(&device, &format!("Laptop {n}"))
+            .unwrap()
+    };
+    assert!(renamed(0), "the engine's own device row exists");
+    assert_eq!(core.workspace.work_outline_inputs_marker(), marker);
+
+    // Outline writes buried among unrelated ones all arrive.
+    for i in 0..5 {
+        renamed(10 + i);
+        mutate(
+            &client,
+            json!({ "op": "createWorkItem", "spaceId": "space-1", "title": format!("Item {i}"),
+                    "operationId": format!("op-{i}") }),
+        )
+        .await
+        .unwrap();
+        renamed(20 + i);
+        if i % 2 == 0 {
+            // Let one coalescing window pass on an unrelated change alone.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+        }
+    }
+    let last = frame_until(&mut stream, |s| s.items.len() == 5).await;
+    assert!(last.items.iter().any(|item| item.title == "Item 4"));
+    assert_ne!(core.workspace.work_outline_inputs_marker(), marker);
+
+    // And a change after a long run of unrelated ones still lands.
+    for n in 30..40 {
+        renamed(n);
+    }
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    mutate(
+        &client,
+        json!({ "op": "createWorkItem", "spaceId": "space-1", "title": "Late",
+                "operationId": "op-late" }),
+    )
+    .await
+    .unwrap();
+    frame_until(&mut stream, |s| {
+        s.items.iter().any(|item| item.title == "Late")
+    })
+    .await;
+}

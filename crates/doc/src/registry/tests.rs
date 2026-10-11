@@ -1594,3 +1594,38 @@ fn sidebar_sections_honor_pin_toggles_from_older_clients() {
         ["session"]
     );
 }
+
+#[test]
+fn kind_generations_track_exactly_the_kinds_that_changed() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let (mut server, mut seq) = (HashMap::new(), 0u64);
+    let outline = |doc: &RegistryDoc| doc.work_outline_inputs_generation();
+
+    let start = outline(&a);
+    // A device row is not a Work Outline input.
+    a.upsert_device(&device("dev-a", "Laptop")).unwrap();
+    assert_eq!(outline(&a), start, "devices never move the outline marker");
+    assert!(a.kinds_generation(&[KIND_DEVICES]) > start);
+    // A local Chat write is.
+    a.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    let after_chat = outline(&a);
+    assert!(after_chat > start);
+
+    // Applied frames: b sees a's device-only batch without an outline move,
+    // then its Chat batch with one.
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    let b_mark = outline(&b);
+    assert!(b_mark > 0, "applied chat rows move the marker");
+    let a_mark = outline(&a);
+    a.rename_device("dev-a", "Laptop 2").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(outline(&b), b_mark, "a renamed device moves nothing");
+    // Retiring a's device batch (ack) and its echo touched only devices.
+    assert_eq!(outline(&a), a_mark);
+
+    // A hello `state` frame counts for every kind.
+    let rows: Vec<RegistryRow> = server.values().cloned().collect();
+    let _ = b.apply_state(seq, true, 0, rows);
+    assert!(outline(&b) > b_mark);
+}

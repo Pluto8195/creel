@@ -661,8 +661,10 @@ mod generated_image_tests {
 pub mod agent_tools {
     use serde::{Deserialize, Serialize};
 
-    /// MCP server name (Claude tools surface as `mcp__zeron__<tool>`).
-    pub const SERVER_NAME: &str = "zeron";
+    /// Name of the injected MCP server (Claude tools surface as
+    /// `mcp__zeron-agent__<tool>`). Distinct from a plain `zeron`, so a
+    /// user-defined `zeron` server (a terminal `zeron mcp`) never collides.
+    pub const SERVER_NAME: &str = "zeron-agent";
     /// Environment variable carrying the per-Run capability token.
     pub const TOKEN_ENV: &str = "ZERON_AGENT_TOKEN";
     /// Environment variable naming the engine's loopback IPC port.
@@ -697,6 +699,11 @@ pub mod agent_tools {
         /// Chat the MCP `create_chat` tool created, with ids derived from the
         /// calling Chat and its idempotency key so retries never duplicate it.
         pub const QUEUE_CHILD_CHAT_TURN: &str = "chat_queue_child_turn";
+        /// Engine-internal (not an MCP tool): bind an MCP `create_chat`
+        /// idempotency key to the hash of its inputs (durably, in the
+        /// processed-command ledger). The same key with other inputs is
+        /// `work-outline/operationConflict`; returns `{replayed}`.
+        pub const CLAIM_CHILD_CHAT: &str = "chat_claim_child";
 
         /// The Work Outline tools, in catalog order.
         pub const WORK_OUTLINE: [&str; 7] = [

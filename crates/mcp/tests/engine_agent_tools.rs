@@ -157,9 +157,24 @@ async fn agent_created_child_chats_are_idempotent_and_inherit_the_work_item() {
     let first = tools.call("create_chat", args.clone()).await.unwrap();
     let child = first["chatId"].as_str().unwrap().to_owned();
     assert_eq!(first["parentChatId"], PARENT);
-    let second = tools.call("create_chat", args).await.unwrap();
+    let second = tools.call("create_chat", args.clone()).await.unwrap();
     assert_eq!(second["chatId"], child);
     assert_eq!(second["replayed"], true);
+    // The same key with other inputs: a conflict, and still one child.
+    let mut changed = args.clone();
+    changed["prompt"] = json!("rewrite everything");
+    let err = tools.call("create_chat", changed).await.unwrap_err();
+    assert!(err.contains("work-outline/operationConflict"), "{err}");
+    // A wider sandbox than the parent's (workspace-write) is refused.
+    let err = tools
+        .call(
+            "create_chat",
+            json!({ "project": SPACE, "sandbox": "danger-full-access",
+                    "idempotency_key": "wide" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("more permissive"), "{err}");
 
     // One child Chat, parented to the caller, holding exactly one first
     // Turn (the key-derived command id), whatever the retries.

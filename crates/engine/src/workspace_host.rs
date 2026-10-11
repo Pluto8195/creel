@@ -731,6 +731,32 @@ impl WorkspaceHost {
         self.read(|doc| doc.work_outline_inputs(space_id, synced))
     }
 
+    /// Cheap change marker of the Work Outline inputs: `(generation of the
+    /// row kinds they read, registry synced)`. Equal markers ⇒ equal inputs.
+    pub fn work_outline_inputs_marker(&self) -> (u64, bool) {
+        let synced = self.registry_synced();
+        (
+            self.read(|doc| doc.work_outline_inputs_generation()),
+            synced,
+        )
+    }
+
+    /// [`Self::work_outline_inputs`] with the marker read under the same
+    /// registry lock (so the marker never claims a newer state than the
+    /// inputs hold).
+    pub fn work_outline_inputs_marked(
+        &self,
+        space_id: &str,
+    ) -> ((u64, bool), zeron_doc::WorkOutlineInputs) {
+        let synced = self.registry_synced();
+        self.read(|doc| {
+            (
+                (doc.work_outline_inputs_generation(), synced),
+                doc.work_outline_inputs(space_id, synced),
+            )
+        })
+    }
+
     /// Apply one Work Outline mutation as one registry write. On success the
     /// `ledger_keys` are queued to be claimed in the device-local
     /// processed-command ledger by the NEXT registry snapshot save, in the
@@ -751,6 +777,17 @@ impl WorkspaceHost {
             lock(&self.inner.pending_ledger_marks).extend(ledger_keys.iter().cloned());
             Ok(reply)
         })
+    }
+
+    /// The live work item `chat_id` is assigned to in `space_id` (the lookup
+    /// the agent policy uses; one row read, no materialization).
+    pub fn chat_assigned_work_item(&self, chat_id: &str, space_id: &str) -> Option<String> {
+        self.read(|doc| doc.chat_assigned_work_item(chat_id, space_id))
+    }
+
+    /// The effective (repaired) parent of a work item in `space_id`.
+    pub fn effective_work_item_parent(&self, space_id: &str, work_item_id: &str) -> Option<String> {
+        self.read(|doc| doc.effective_work_item_parent(space_id, work_item_id))
     }
 
     /// The Milestone 4 agent policy over the local replica (see

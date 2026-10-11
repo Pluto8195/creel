@@ -8,11 +8,21 @@
 //!
 //! Agent mode (an engine-injected per-Run token): every call first
 //! re-authenticates the token with the engine, and the Work Outline agent
-//! tools are listed and forwarded to `AgentToolCall`. In agent mode
-//! `create_chat` takes a mandatory idempotency key (the Chat, message, and
-//! command ids derive from the token's Chat and that key, so a retry never
-//! creates a second Chat or Turn), may only record the calling Chat as the
-//! parent, and `archive_chat` only touches Chats the caller created.
+//! tools are listed and forwarded to `AgentToolCall`. Agent mode is scoped to
+//! the token's Chat, Space, and device:
+//! - `create_chat` takes a mandatory idempotency key (the Chat, message, and
+//!   command ids derive from the token's Chat and that key, so a retry never
+//!   creates a second Chat or Turn; a retry with other inputs is
+//!   `operationConflict`), creates only children of the caller, in the
+//!   token's Space on the token's device, with a cwd inside the Space or the
+//!   caller's cwd, and a sandbox / approval mode never more permissive than
+//!   the caller's;
+//! - `send_message`, `interrupt_chat`, `respond_to_input`, `wait_for_turn`,
+//!   and `archive_chat` reach only Chats the caller created; `get_chat` and
+//!   `read_chat` also the caller itself; `list_chats` lists only those;
+//! - `list_projects` / `list_devices` list only the token's Space / device;
+//!   `list_harnesses` / `list_models` (this device's capabilities) and
+//!   `whoami` are unscoped.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,7 +37,7 @@ use zeron_proto::{
 };
 
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
-use crate::zeron::{HarnessInfo, TurnOutcome, Zeron, session_for, short};
+use crate::zeron::{HarnessInfo, TurnOutcome, Zeron, resolve_chat_in, session_for, short};
 
 /// Default and ceiling for the blocking waits.
 const DEFAULT_WAIT: Duration = Duration::from_secs(600);
@@ -117,7 +127,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate).",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -492,8 +502,7 @@ impl Tools {
     /// With a token, every call (reads included) first re-authenticates it:
     /// once the Run that received it ends, nothing works.
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
-        let origin = self.zeron.authenticate().await.map_err(|e| e.to_string())?;
-        let origin = origin.as_ref();
+        // `AgentToolCall` authenticates the token itself: one round trip.
         if agent_tool_names::WORK_OUTLINE.contains(&name) {
             return self
                 .zeron
@@ -501,20 +510,22 @@ impl Tools {
                 .await
                 .map_err(|e| e.to_string());
         }
+        let origin = self.zeron.authenticate().await.map_err(|e| e.to_string())?;
+        let origin = origin.as_ref();
         let result = match name {
             "whoami" => self.whoami(origin).await,
-            "list_devices" => self.list_devices().await,
-            "list_projects" => self.list_projects().await,
+            "list_devices" => self.list_devices(origin).await,
+            "list_projects" => self.list_projects(origin).await,
             "list_harnesses" => self.list_harnesses().await,
             "list_models" => self.list_models(parse(args)?).await,
-            "list_chats" => self.list_chats(parse(args)?).await,
-            "get_chat" => self.get_chat(parse(args)?).await,
+            "list_chats" => self.list_chats(origin, parse(args)?).await,
+            "get_chat" => self.get_chat(origin, parse(args)?).await,
             "create_chat" => self.create_chat(origin, parse(args)?).await,
-            "read_chat" => self.read_chat(parse(args)?).await,
+            "read_chat" => self.read_chat(origin, parse(args)?).await,
             "send_message" => self.send_message(origin, parse(args)?).await,
-            "wait_for_turn" => self.wait_for_turn(parse(args)?).await,
-            "interrupt_chat" => self.interrupt_chat(parse(args)?).await,
-            "respond_to_input" => self.respond_to_input(parse(args)?).await,
+            "wait_for_turn" => self.wait_for_turn(origin, parse(args)?).await,
+            "interrupt_chat" => self.interrupt_chat(origin, parse(args)?).await,
+            "respond_to_input" => self.respond_to_input(origin, parse(args)?).await,
             "archive_chat" => self.archive_chat(origin, parse(args)?).await,
             other => return Err(format!("unknown tool: {other}")),
         };
@@ -549,16 +560,22 @@ impl Tools {
             },
             "note": if origin.is_some() {
                 "Messages you send are attributed to this chat; it cannot message itself. \
-                 Mutating Work Outline tools and create_chat need an idempotency key."
+                 You can reach only the chats you created (plus read this one), and \
+                 create_chat works only in this chat's project, never with a wider \
+                 sandbox than this chat's. Mutating Work Outline tools and create_chat \
+                 need an idempotency key."
             } else {
                 "Not running inside a chat: messages are sent without attribution."
             },
         }))
     }
 
-    async fn list_devices(&self) -> anyhow::Result<Value> {
-        let (devices, local) =
+    async fn list_devices(&self, origin: Option<&AgentOrigin>) -> anyhow::Result<Value> {
+        let (mut devices, local) =
             tokio::try_join!(self.zeron.devices(), self.zeron.local_device_id())?;
+        if let Some(origin) = origin {
+            devices.retain(|d| d.id == origin.device_id);
+        }
         Ok(json!({
             "devices": devices.iter().map(|d| json!({
                 "id": d.id,
@@ -571,8 +588,11 @@ impl Tools {
         }))
     }
 
-    async fn list_projects(&self) -> anyhow::Result<Value> {
-        let (spaces, devices) = tokio::try_join!(self.zeron.spaces(), self.zeron.devices())?;
+    async fn list_projects(&self, origin: Option<&AgentOrigin>) -> anyhow::Result<Value> {
+        let (mut spaces, devices) = tokio::try_join!(self.zeron.spaces(), self.zeron.devices())?;
+        if let Some(origin) = origin {
+            spaces.retain(|s| s.id == origin.space_id);
+        }
         let device_name = |id: &str| devices.iter().find(|d| d.id == id).map(|d| d.name.clone());
         Ok(json!({
             "projects": spaces.iter().map(|s| json!({
@@ -615,12 +635,19 @@ impl Tools {
         }))
     }
 
-    async fn list_chats(&self, args: ListChatsArgs) -> anyhow::Result<Value> {
+    async fn list_chats(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: ListChatsArgs,
+    ) -> anyhow::Result<Value> {
         let (mut chats, spaces, sessions) = tokio::try_join!(
             self.zeron.chats(),
             self.zeron.spaces(),
             self.zeron.sessions()
         )?;
+        if let Some(origin) = origin {
+            chats.retain(|c| reachable(origin, c, true));
+        }
         if let Some(project) = args.project.as_deref() {
             let space = self.zeron.resolve_space(project).await?;
             chats.retain(|c| c.space_id.as_deref() == Some(space.id.as_str()));
@@ -633,7 +660,7 @@ impl Tools {
             chats.retain(|c| !c.archived);
         }
         if let Some(parent) = args.parent.as_deref() {
-            let parent = self.zeron.resolve_chat(parent).await?;
+            let parent = self.reach_chat(origin, parent, Reach::SelfOrChild).await?;
             chats.retain(|c| c.parent_chat_id.as_deref() == Some(parent.id.as_str()));
         }
         chats.sort_by(|a, b| {
@@ -651,8 +678,14 @@ impl Tools {
         }))
     }
 
-    async fn get_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+    async fn get_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: ChatArgs,
+    ) -> anyhow::Result<Value> {
+        let chat = self
+            .reach_chat(origin, &args.chat, Reach::SelfOrChild)
+            .await?;
         let (spaces, sessions, entries) = tokio::try_join!(
             self.zeron.spaces(),
             self.zeron.sessions(),
@@ -714,9 +747,44 @@ impl Tools {
             Some(raw) => Some(parse_enum("reasoning level", raw).map_err(anyhow::Error::msg)?),
             None => None,
         };
-        let sandbox: SandboxLevel = match args.sandbox.as_deref() {
-            Some(raw) => parse_enum("sandbox", raw).map_err(anyhow::Error::msg)?,
-            None => SandboxLevel::WorkspaceWrite,
+        let requested_sandbox: Option<SandboxLevel> = match args.sandbox.as_deref() {
+            Some(raw) => Some(parse_enum("sandbox", raw).map_err(anyhow::Error::msg)?),
+            None => None,
+        };
+        // Agent mode: the calling Chat (its sandbox caps the child's, its cwd
+        // bounds the child's cwd).
+        let caller = match origin {
+            Some(origin) => Some(
+                self.zeron
+                    .chats()
+                    .await?
+                    .into_iter()
+                    .find(|c| c.id == origin.chat_id)
+                    .ok_or_else(|| anyhow::anyhow!("this agent's chat no longer exists"))?,
+            ),
+            None => None,
+        };
+        let sandbox = match &caller {
+            Some(caller) => {
+                let cap = caller
+                    .config
+                    .as_ref()
+                    .map(|c| c.sandbox)
+                    .unwrap_or(SandboxLevel::WorkspaceWrite);
+                match requested_sandbox {
+                    Some(level) if sandbox_rank(level) > sandbox_rank(cap) => anyhow::bail!(
+                        "sandbox {} is more permissive than this chat's ({}); a child chat \
+                         can never have a wider sandbox than its parent",
+                        sandbox_name(level),
+                        sandbox_name(cap)
+                    ),
+                    Some(level) => level,
+                    None => std::cmp::min_by_key(SandboxLevel::WorkspaceWrite, cap, |l| {
+                        sandbox_rank(*l)
+                    }),
+                }
+            }
+            None => requested_sandbox.unwrap_or(SandboxLevel::WorkspaceWrite),
         };
         let config = ChatConfig {
             harness,
@@ -724,20 +792,61 @@ impl Tools {
             reasoning,
             model_options: Default::default(),
             sandbox,
+            // Always Ask: never more permissive than any parent.
             auto_approve: false,
         };
 
-        let (space, device_id) = match args.project.as_deref() {
-            Some(project) => {
+        let (space, device_id) = match (origin, args.project.as_deref()) {
+            // Agent mode: the token's Space on the token's device, only.
+            (Some(origin), project) => {
+                let space = self
+                    .zeron
+                    .resolve_space(project.unwrap_or(&origin.space_id))
+                    .await?;
+                if space.id != origin.space_id {
+                    anyhow::bail!(
+                        "agents can only create chats in their own project ({})",
+                        short(&origin.space_id)
+                    );
+                }
+                if let Some(device) = args.device.as_deref()
+                    && self.zeron.resolve_device_id(Some(device)).await? != origin.device_id
+                {
+                    anyhow::bail!("agents can only create chats on their own device");
+                }
+                if space.device_id != origin.device_id {
+                    anyhow::bail!("agents can only create chats on their own device");
+                }
+                (Some(space), origin.device_id.clone())
+            }
+            (None, Some(project)) => {
                 let space = self.zeron.resolve_space(project).await?;
                 let device_id = space.device_id.clone();
                 (Some(space), device_id)
             }
-            None => (
+            (None, None) => (
                 None,
                 self.zeron.resolve_device_id(args.device.as_deref()).await?,
             ),
         };
+        let cwd = args
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned);
+        if let (Some(caller), Some(cwd)) = (&caller, &cwd) {
+            let roots = [
+                space.as_ref().map(|s| s.path.as_str()),
+                caller.cwd.as_deref(),
+            ];
+            if !path_within_any(cwd, &roots) {
+                anyhow::bail!(
+                    "agents can only start a child chat inside this project's folder or \
+                     this chat's working directory (cwd {cwd:?} is outside both)"
+                );
+            }
+        }
 
         // Parent: the explicit `parent` argument, else the chat this server
         // speaks for. Resolved so a prefix/title works and a typo fails loud.
@@ -763,6 +872,26 @@ impl Tools {
 
         let (chat_id, replayed) = match (origin, agent_key.as_deref()) {
             (Some(origin), Some(key)) => {
+                // Bind the key to these inputs first: a retry that changed its
+                // request is a conflict, never the old chat returned silently.
+                let inputs = json!({
+                    "spaceId": space.as_ref().map(|s| &s.id),
+                    "deviceId": device_id,
+                    "config": config,
+                    "parentChatId": parent_chat_id,
+                    "title": args.title.as_deref().map(str::trim),
+                    "branch": args.branch.as_deref().map(str::trim),
+                    "cwd": cwd,
+                    "prompt": args.prompt,
+                });
+                let inputs_hash =
+                    zeron_proto::derive_id(&inputs.to_string(), "mcp-create-chat-inputs");
+                self.zeron
+                    .agent_tool(
+                        agent_tool_names::CLAIM_CHILD_CHAT,
+                        json!({ "idempotencyKey": key, "inputsHash": inputs_hash }),
+                    )
+                    .await?;
                 let operation_id = agent_tools::operation_id(&origin.chat_id, key);
                 let chat_id = zeron_proto::derive_id(&operation_id, zeron_proto::roles::CHAT);
                 let existing = self
@@ -800,7 +929,7 @@ impl Tools {
         {
             mutate["branch"] = json!(branch);
         }
-        if let Some(cwd) = args.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        if let Some(cwd) = &cwd {
             mutate["cwd"] = json!(cwd);
         }
         // `createChat` is a no-op for an existing row (never a retarget).
@@ -836,7 +965,7 @@ impl Tools {
                 device_id: device_id.clone(),
                 title: args.title.clone(),
                 archived: false,
-                cwd: args.cwd.clone(),
+                cwd: cwd.clone(),
                 branch: args.branch.clone(),
                 checkout_id: None,
                 source_context: None,
@@ -857,9 +986,9 @@ impl Tools {
             };
             let sent = match agent_key.as_deref() {
                 // The engine derives the message and command ids from the
-                // key and queues at most one first Turn per key.
+                // key, queues at most one first Turn per key, and builds the
+                // Run from the child's stored config (only the prompt is ours).
                 Some(key) => {
-                    let request = run_request(&chat, space.as_ref(), harness, prompt);
                     let queued = self
                         .zeron
                         .agent_tool(
@@ -867,10 +996,7 @@ impl Tools {
                             json!({
                                 "chatId": chat.id,
                                 "idempotencyKey": key,
-                                "command": SessionCommandPayload::Run {
-                                    request,
-                                    message_id: String::new(),
-                                },
+                                "prompt": prompt,
                             }),
                         )
                         .await?;
@@ -902,8 +1028,14 @@ impl Tools {
         Ok(result)
     }
 
-    async fn read_chat(&self, args: ReadChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+    async fn read_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: ReadChatArgs,
+    ) -> anyhow::Result<Value> {
+        let chat = self
+            .reach_chat(origin, &args.chat, Reach::SelfOrChild)
+            .await?;
         let entries = self.zeron.transcript(&chat.id).await?;
         let rendered = render_entries(
             &entries,
@@ -938,7 +1070,9 @@ impl Tools {
         if text.is_empty() {
             anyhow::bail!("text is empty");
         }
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self
+            .reach_chat(origin, &args.chat, Reach::SelfOrChild)
+            .await?;
         if origin.is_some_and(|o| o.chat_id == chat.id) {
             anyhow::bail!(
                 "refusing to send a message to your own chat ({})",
@@ -979,8 +1113,12 @@ impl Tools {
         Ok(result)
     }
 
-    async fn wait_for_turn(&self, args: WaitArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+    async fn wait_for_turn(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: WaitArgs,
+    ) -> anyhow::Result<Value> {
+        let chat = self.reach_chat(origin, &args.chat, Reach::Child).await?;
         let turn = self
             .await_turn(&chat, None, false, wait_duration(args.timeout_secs), 0)
             .await?;
@@ -992,15 +1130,10 @@ impl Tools {
         origin: Option<&AgentOrigin>,
         args: ArchiveArgs,
     ) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
-        if let Some(origin) = origin
-            && chat.parent_chat_id.as_deref() != Some(origin.chat_id.as_str())
-        {
-            anyhow::bail!(
-                "agents can only archive chats they created (chat {} was not created by this chat)",
-                short(&chat.id)
-            );
-        }
+        let chat = self
+            .reach_chat(origin, &args.chat, Reach::Child)
+            .await
+            .map_err(|e| anyhow::anyhow!("agents can only archive chats they created: {e}"))?;
         let archived = args.archived.unwrap_or(true);
         self.zeron
             .mutate(json!({ "op": "setChatArchived", "chatId": chat.id, "archived": archived }))
@@ -1008,8 +1141,12 @@ impl Tools {
         Ok(json!({ "chatId": chat.id, "title": chat.title, "archived": archived }))
     }
 
-    async fn interrupt_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+    async fn interrupt_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: ChatArgs,
+    ) -> anyhow::Result<Value> {
+        let chat = self.reach_chat(origin, &args.chat, Reach::Child).await?;
         let command_id = self
             .zeron
             .queue_command(&chat.id, &SessionCommandPayload::Interrupt {})
@@ -1017,8 +1154,12 @@ impl Tools {
         Ok(json!({ "chatId": chat.id, "commandId": command_id }))
     }
 
-    async fn respond_to_input(&self, args: RespondArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+    async fn respond_to_input(
+        &self,
+        origin: Option<&AgentOrigin>,
+        args: RespondArgs,
+    ) -> anyhow::Result<Value> {
+        let chat = self.reach_chat(origin, &args.chat, Reach::Child).await?;
         let request_id = match args.request_id {
             Some(id) => id,
             None => {
@@ -1060,6 +1201,39 @@ impl Tools {
     }
 
     // ---- shared pieces -------------------------------------------------------
+
+    /// Resolve a chat key. Without a token: any chat. With one: only among
+    /// the chats the token's Chat may reach (so a foreign chat is neither
+    /// targeted nor revealed by an ambiguity error).
+    async fn reach_chat(
+        &self,
+        origin: Option<&AgentOrigin>,
+        key: &str,
+        reach: Reach,
+    ) -> anyhow::Result<Chat> {
+        let Some(origin) = origin else {
+            return self.zeron.resolve_chat(key).await;
+        };
+        let allow_self = reach == Reach::SelfOrChild;
+        let chats: Vec<Chat> = self
+            .zeron
+            .chats()
+            .await?
+            .into_iter()
+            .filter(|c| reachable(origin, c, allow_self))
+            .collect();
+        resolve_chat_in(&chats, key).map_err(|_| {
+            anyhow::anyhow!(
+                "no chat this chat created{} matches {key:?}; agents can only reach the chats \
+                 they created (list_chats shows them)",
+                if allow_self {
+                    " (or this chat itself)"
+                } else {
+                    ""
+                }
+            )
+        })
+    }
 
     /// Prefix the sender's identity when this server speaks for a chat, so
     /// the receiving agent (and the human reading that transcript) can tell
@@ -1207,6 +1381,57 @@ impl Tools {
     }
 }
 
+/// Which chats an agent-mode call may target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Only chats the caller created (`parentChatId` = the caller).
+    Child,
+    /// Those, or the caller itself (reads).
+    SelfOrChild,
+}
+
+/// Whether the token's Chat may reach `chat`: one it created (Zeron-created
+/// children carry the creating Chat as `parentChatId`), or itself.
+fn reachable(origin: &AgentOrigin, chat: &Chat, allow_self: bool) -> bool {
+    chat.parent_chat_id.as_deref() == Some(origin.chat_id.as_str())
+        || (allow_self && chat.id == origin.chat_id)
+}
+
+/// Permissiveness order of sandbox levels.
+fn sandbox_rank(level: SandboxLevel) -> u8 {
+    match level {
+        SandboxLevel::ReadOnly => 0,
+        SandboxLevel::WorkspaceWrite => 1,
+        SandboxLevel::DangerFullAccess => 2,
+    }
+}
+
+fn sandbox_name(level: SandboxLevel) -> &'static str {
+    match level {
+        SandboxLevel::ReadOnly => "read-only",
+        SandboxLevel::WorkspaceWrite => "workspace-write",
+        SandboxLevel::DangerFullAccess => "danger-full-access",
+    }
+}
+
+/// Whether `path` is absolute, has no `..`, and lies at or under one of
+/// `roots` (component-wise).
+fn path_within_any(path: &str, roots: &[Option<&str>]) -> bool {
+    let path = std::path::Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    roots
+        .iter()
+        .flatten()
+        .map(std::path::Path::new)
+        .any(|root| root.is_absolute() && path.starts_with(root))
+}
+
 /// The Run a composer send would queue for `chat` (its own config and cwd;
 /// the host overwrites the cwd of an execution-bound Chat).
 fn run_request(chat: &Chat, space: Option<&Space>, harness: HarnessId, text: String) -> RunRequest {
@@ -1275,6 +1500,8 @@ mod tests {
     struct World {
         writes: Mutex<Vec<(String, Value)>>,
         created: Mutex<Vec<Value>>,
+        /// `create_chat` claims: idempotency key → inputs hash.
+        claims: Mutex<std::collections::HashMap<String, String>>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1282,6 +1509,13 @@ mod tests {
     }
 
     impl World {
+        fn agent_calls(&self, tool: &str) -> Vec<Value> {
+            self.writes_of(agent_tools::TOOL_CALL_METHOD)
+                .into_iter()
+                .filter(|p| p["tool"] == tool)
+                .collect()
+        }
+
         fn writes_of(&self, method: &str) -> Vec<Value> {
             self.writes
                 .lock()
@@ -1304,9 +1538,15 @@ mod tests {
                 methods::WATCH_DEVICES => stream(json!([{
                     "id": "dev-local", "name": "Laptop", "platform": "linux",
                     "lastSeenAt": null
+                }, {
+                    "id": "dev-other", "name": "Desktop", "platform": "linux",
+                    "lastSeenAt": null
                 }])),
                 methods::WATCH_SPACES => stream(json!([{
                     "id": "space-1", "deviceId": "dev-local", "path": "/repo/comet",
+                    "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
+                }, {
+                    "id": "space-2", "deviceId": "dev-local", "path": "/repo/nova",
                     "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
                 }])),
                 methods::WATCH_CHATS => {
@@ -1355,10 +1595,30 @@ mod tests {
                     }))
                 }
                 agent_tools::TOOL_CALL_METHOD => {
+                    if params["token"] != BETA_TOKEN {
+                        return Err(RpcError::Failed(
+                            "agent-tools/unauthenticated: unknown token".into(),
+                        ));
+                    }
                     self.writes
                         .lock()
                         .unwrap()
                         .push((method.to_owned(), params.clone()));
+                    if params["tool"] == agent_tool_names::CLAIM_CHILD_CHAT {
+                        let key = params["arguments"]["idempotencyKey"].as_str().unwrap();
+                        let hash = params["arguments"]["inputsHash"].as_str().unwrap();
+                        let mut claims = self.claims.lock().unwrap();
+                        return match claims.get(key) {
+                            Some(stored) if stored != hash => Err(RpcError::Failed(
+                                "work-outline/operationConflict: different inputs".into(),
+                            )),
+                            Some(_) => Ok(RpcReply::Value(json!({ "replayed": true }))),
+                            None => {
+                                claims.insert(key.to_owned(), hash.to_owned());
+                                Ok(RpcReply::Value(json!({ "replayed": false })))
+                            }
+                        };
+                    }
                     RpcReply::Value(json!({ "commandId": "cmd-agent", "queued": true }))
                 }
                 methods::MUTATE | methods::QUEUE_COMMAND | methods::QUEUE_MESSAGE => {
@@ -1374,6 +1634,7 @@ mod tests {
                             "id": params["chatId"], "deviceId": params["deviceId"],
                             "archived": false, "spaceId": params["spaceId"],
                             "parentChatId": params["parentChatId"],
+                            "config": params["config"], "cwd": params["cwd"],
                             "createdAt": "2026-09-03T00:00:00Z"
                         }));
                     }
@@ -1456,17 +1717,32 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("own chat"), "{err}");
 
+        // An agent reaches only chats it created.
+        let err = tools
+            .call("send_message", json!({ "chat": "alpha", "text": "hi" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("agents can only reach"), "{err}");
+        let child = tools
+            .call(
+                "create_chat",
+                json!({ "project": "comet", "model": "opus", "idempotency_key": "reviewer" }),
+            )
+            .await
+            .unwrap();
+        let child = child["chatId"].as_str().unwrap().to_owned();
+
         let sent = tools
             .call(
                 "send_message",
-                json!({ "chat": "alpha", "text": "please review" }),
+                json!({ "chat": child, "text": "please review" }),
             )
             .await
             .unwrap();
         assert_eq!(sent["sent"]["delivery"], "run");
         let writes = world.writes_of(methods::QUEUE_COMMAND);
         let params = writes.last().expect("a queued command");
-        assert_eq!(params["chatId"], "chat-alpha-1");
+        assert_eq!(params["chatId"], child);
         assert_eq!(params["command"]["kind"], "run");
         let prompt = params["command"]["request"]["prompt"].as_str().unwrap();
         assert!(
@@ -1477,6 +1753,162 @@ mod tests {
         assert_eq!(params["command"]["request"]["cwd"], "/repo/comet");
         assert_eq!(params["command"]["request"]["harness"], "claude-code");
         assert_eq!(params["command"]["request"]["model"], "opus");
+    }
+
+    #[tokio::test]
+    async fn terminal_sends_reach_any_chat() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), None);
+        for (name, args) in [
+            ("send_message", json!({ "chat": "alpha", "text": "hi" })),
+            ("get_chat", json!({ "chat": "beta" })),
+            ("interrupt_chat", json!({ "chat": "alpha" })),
+        ] {
+            tools.call(name, args).await.unwrap();
+        }
+        assert_eq!(
+            tools.call("list_projects", json!({})).await.unwrap()["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_calls_reach_only_their_own_chat_space_and_device() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let child = tools
+            .call(
+                "create_chat",
+                json!({ "idempotency_key": "child", "title": "Kid" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            child["project"]["id"], "space-1",
+            "defaults to its own project"
+        );
+        let child = child["chatId"].as_str().unwrap().to_owned();
+
+        // Allow / deny matrix over the chat-targeting tools: alpha is
+        // someone else's chat, beta is the caller, child is its own child.
+        let matrix: [(&str, Value, [bool; 3]); 7] = [
+            ("get_chat", json!({}), [false, true, true]),
+            ("read_chat", json!({}), [false, true, true]),
+            (
+                "wait_for_turn",
+                json!({ "timeout_secs": 1 }),
+                [false, false, true],
+            ),
+            ("interrupt_chat", json!({}), [false, false, true]),
+            (
+                "respond_to_input",
+                json!({ "request_id": "r1",
+                        "answers": [{ "question_id": "q", "labels": ["Yes"] }] }),
+                [false, false, true],
+            ),
+            (
+                "send_message",
+                json!({ "text": "hi" }),
+                [false, false, true],
+            ),
+            ("archive_chat", json!({}), [false, false, true]),
+        ];
+        for (name, extra, allowed) in matrix {
+            for (target, allow) in ["chat-alpha-1", "chat-beta-2", child.as_str()]
+                .into_iter()
+                .zip(allowed)
+            {
+                let mut args = extra.clone();
+                args["chat"] = json!(target);
+                let result = tools.call(name, args).await;
+                assert_eq!(result.is_ok(), allow, "{name} -> {target}: {result:?}");
+            }
+        }
+        // A foreign chat cannot be found by title either.
+        let err = tools
+            .call("read_chat", json!({ "chat": "Alpha" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("agents can only reach"), "{err}");
+
+        // Lists show only what the token reaches.
+        let listed = tools
+            .call("list_chats", json!({ "include_archived": true }))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = listed["chats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(ids.contains(&"chat-beta-2") && ids.contains(&child.as_str()));
+        let projects = tools.call("list_projects", json!({})).await.unwrap();
+        assert_eq!(projects["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(projects["projects"][0]["id"], "space-1");
+        let devices = tools.call("list_devices", json!({})).await.unwrap();
+        assert_eq!(devices["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(devices["devices"][0]["id"], "dev-local");
+        assert!(tools.call("list_harnesses", json!({})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_create_chat_stays_in_its_space_device_folder_and_sandbox() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let refused = [
+            (json!({ "project": "nova" }), "own project"),
+            (json!({ "device": "Desktop" }), "own device"),
+            (
+                json!({ "sandbox": "danger-full-access" }),
+                "more permissive",
+            ),
+            (json!({ "cwd": "/etc" }), "outside"),
+            (json!({ "cwd": "/repo/comet/../nova" }), "outside"),
+            (json!({ "cwd": "relative/path" }), "outside"),
+        ];
+        for (i, (mut args, why)) in refused.into_iter().enumerate() {
+            args["idempotency_key"] = json!(format!("deny-{i}"));
+            let err = tools.call("create_chat", args.clone()).await.unwrap_err();
+            assert!(err.contains(why), "{args}: {err}");
+        }
+        assert!(
+            world.writes_of(methods::MUTATE).is_empty(),
+            "nothing created"
+        );
+
+        // Within bounds: read-only and an in-project worktree are fine; the
+        // default sandbox is capped at the parent's (workspace-write here).
+        let ok = tools
+            .call(
+                "create_chat",
+                json!({ "idempotency_key": "ro", "sandbox": "read-only",
+                        "cwd": "/repo/comet/.worktrees/x" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok["deviceId"], "dev-local");
+        tools
+            .call("create_chat", json!({ "idempotency_key": "default" }))
+            .await
+            .unwrap();
+        let creates: Vec<Value> = world
+            .writes_of(methods::MUTATE)
+            .into_iter()
+            .filter(|m| m["op"] == "createChat")
+            .collect();
+        assert_eq!(creates[0]["config"]["sandbox"], "read-only");
+        assert_eq!(creates[0]["cwd"], "/repo/comet/.worktrees/x");
+        assert_eq!(creates[1]["config"]["sandbox"], "workspace-write");
+        for create in &creates {
+            assert_eq!(create["config"]["autoApprove"], false);
+            assert_eq!(create["spaceId"], "space-1");
+            assert_eq!(create["parentChatId"], "chat-beta-2");
+        }
     }
 
     #[tokio::test]
@@ -1539,9 +1971,15 @@ mod tests {
         assert_eq!(first["replayed"], false);
         assert_eq!(first["sent"]["id"], "cmd-agent");
 
-        let again = tools.call("create_chat", args).await.unwrap();
+        let again = tools.call("create_chat", args.clone()).await.unwrap();
         assert_eq!(again["chatId"], chat_id);
         assert_eq!(again["replayed"], true);
+
+        // The same key with different inputs is a conflict, never the old chat.
+        let mut changed = args.clone();
+        changed["prompt"] = json!("something else");
+        let err = tools.call("create_chat", changed).await.unwrap_err();
+        assert!(err.contains("operationConflict"), "{err}");
 
         // One rename only (a replay never overwrites the title); every
         // createChat names the same derived id; both first Turns go through
@@ -1558,14 +1996,16 @@ mod tests {
                 .all(|m| m["chatId"] == chat_id && m["parentChatId"] == "chat-beta-2")
         );
         assert!(world.writes_of(methods::QUEUE_COMMAND).is_empty());
-        let turns = world.writes_of(agent_tools::TOOL_CALL_METHOD);
+        let turns = world.agent_calls(agent_tool_names::QUEUE_CHILD_CHAT_TURN);
         assert_eq!(turns.len(), 2);
         for turn in &turns {
             assert_eq!(turn["token"], BETA_TOKEN);
             assert_eq!(turn["tool"], agent_tool_names::QUEUE_CHILD_CHAT_TURN);
             assert_eq!(turn["arguments"]["chatId"], chat_id);
             assert_eq!(turn["arguments"]["idempotencyKey"], "spawn-reviewer");
-            assert_eq!(turn["arguments"]["command"]["request"]["prompt"], "go");
+            // Only the prompt: the engine rebuilds the Run from the child.
+            assert_eq!(turn["arguments"]["prompt"], "go");
+            assert!(turn["arguments"].get("command").is_none());
         }
 
         // An agent may not hang a child under another chat.
@@ -1650,7 +2090,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let calls = world.writes_of(agent_tools::TOOL_CALL_METHOD);
+        let calls = world.agent_calls(agent_tool_names::SET_STATUS);
         assert_eq!(calls[0]["token"], BETA_TOKEN);
         assert_eq!(calls[0]["tool"], agent_tool_names::SET_STATUS);
         assert_eq!(calls[0]["arguments"]["status"], "active");
@@ -1669,7 +2109,11 @@ mod tests {
             (agent_tool_names::READ_CURRENT, json!({})),
         ] {
             let err = tools.call(name, args).await.unwrap_err();
-            assert!(err.contains("refused this agent's token"), "{name}: {err}");
+            assert!(
+                err.contains("refused this agent's token")
+                    || err.contains("agent-tools/unauthenticated"),
+                "{name}: {err}"
+            );
         }
         assert!(world.writes.lock().unwrap().is_empty());
     }

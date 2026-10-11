@@ -8,9 +8,12 @@
 //!   exactly as long as the Run's driver task and revokes the token on drop,
 //!   whatever path ends the Run. Tokens are memory-only (an engine restart
 //!   revokes every token, and the Runs die with it); only a SHA-256 of each
-//!   token is kept. An optional absolute expiry backs up the lease.
+//!   token is kept. An absolute expiry ([`DEFAULT_TOKEN_TTL`]) backs up the
+//!   lease; the Run's driver renews it on every heartbeat, so only a hung
+//!   driver (one that keeps its lease but stops running) lets it lapse.
 //! - [`AgentToolsService`]: `AgentAuthenticate` / `AgentToolCall`. Every call
-//!   authenticates by token; the originating Chat is the token's, never a
+//!   authenticates by token lookup (plus the Chat row's Space), never by
+//!   materializing the outline; the originating Chat is the token's, never a
 //!   client-supplied id. Mutations run through
 //!   `WorkOutlineService::mutate_as` with `agent_actor(chatId)`, which
 //!   enforces the shared agent policy (`authorize_agent`) under the registry
@@ -28,6 +31,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -41,9 +45,9 @@ use zeron_proto::work_outline::{derive_id, roles};
 use zeron_proto::{
     AssignChatToWorkItemParams, CreateUserActionRequestParams, CreateWorkItemParams,
     InstructionProposalOrigin, InstructionProposalTarget, ProposeWorkItemInstructionParams,
-    ResolveUserActionRequestParams, UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges,
-    WorkItemChatAssignmentState, WorkItemStatus, WorkItemView, WorkOutlineError,
-    WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
+    ResolveUserActionRequestParams, RunRequest, SandboxLevel, UpdateWorkItemParams,
+    UserActionRequestOrigin, WorkItemChanges, WorkItemStatus, WorkOutlineError,
+    WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
 };
 
 use crate::doc_host::DocHost;
@@ -132,6 +136,8 @@ pub struct AgentGrant {
     pub device_id: String,
     /// Absolute backstop; `None` = valid until the Run's lease drops.
     pub expires_at: Option<Instant>,
+    /// What [`AgentTokenLease::renew`] extends `expires_at` by.
+    pub ttl: Option<Duration>,
 }
 
 impl AgentGrant {
@@ -151,6 +157,10 @@ fn token_key(token: &str) -> TokenKey {
     Sha256::digest(token.as_bytes()).into()
 }
 
+/// Absolute token lifetime for engine-minted tokens, renewed while the Run's
+/// driver is alive (generous: a renewal lands every heartbeat).
+pub const DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// The engine's live per-Run tokens (one registry per engine).
 #[derive(Default)]
 pub struct AgentTokens {
@@ -162,7 +172,8 @@ impl AgentTokens {
         Arc::new(Self::default())
     }
 
-    /// Mint a token for one Run. Valid until the returned lease drops.
+    /// Mint a token for one Run. Valid until the returned lease drops or
+    /// [`DEFAULT_TOKEN_TTL`] passes without a [`AgentTokenLease::renew`].
     pub fn mint(
         self: &Arc<Self>,
         chat_id: &str,
@@ -170,7 +181,13 @@ impl AgentTokens {
         space_id: &str,
         device_id: &str,
     ) -> AgentTokenLease {
-        self.mint_with_ttl(chat_id, run_id, space_id, device_id, None)
+        self.mint_with_ttl(
+            chat_id,
+            run_id,
+            space_id,
+            device_id,
+            Some(DEFAULT_TOKEN_TTL),
+        )
     }
 
     /// [`Self::mint`] with an absolute expiry as well.
@@ -197,6 +214,7 @@ impl AgentTokens {
                 space_id: space_id.to_owned(),
                 device_id: device_id.to_owned(),
                 expires_at: ttl.map(|ttl| Instant::now() + ttl),
+                ttl,
             },
         );
         AgentTokenLease {
@@ -234,6 +252,17 @@ impl AgentTokens {
     fn revoke(&self, key: &TokenKey) {
         lock(&self.grants).remove(key);
     }
+
+    fn renew(&self, key: &TokenKey) {
+        let mut grants = lock(&self.grants);
+        if let Some(grant) = grants.get_mut(key)
+            && let (Some(ttl), Some(at)) = (grant.ttl, grant.expires_at)
+            // An expired token stays expired (authenticate drops it).
+            && Instant::now() < at
+        {
+            grant.expires_at = Some(Instant::now() + ttl);
+        }
+    }
 }
 
 /// Owns one token for one Run; dropping it revokes the token.
@@ -247,6 +276,14 @@ impl AgentTokenLease {
     /// The secret handed to the Run's MCP server. Never log it.
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    /// Push the absolute expiry out by the token's TTL (the Run's driver
+    /// calls this on every heartbeat). A lapsed token is not revived.
+    pub fn renew(&self) {
+        if let Some(tokens) = self.tokens.upgrade() {
+            tokens.renew(&self.key);
+        }
     }
 }
 
@@ -268,49 +305,62 @@ impl Drop for AgentTokenLease {
 // Injection
 // ---------------------------------------------------------------------------
 
+/// The loopback IPC port this process's engine actually bound (0 = none).
+static BOUND_IPC_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// Record the port `serve_ipc` bound, so injected servers dial this engine
+/// rather than whatever `ZERON_IPC_PORT` / the default names. One engine
+/// serves IPC per process; the latest bind wins.
+pub fn note_bound_ipc_port(port: u16) {
+    BOUND_IPC_PORT.store(port, Ordering::Relaxed);
+}
+
+/// The port recorded by [`note_bound_ipc_port`], if any.
+pub fn bound_ipc_port() -> Option<u16> {
+    match BOUND_IPC_PORT.load(Ordering::Relaxed) {
+        0 => None,
+        port => Some(port),
+    }
+}
+
 /// How a Run reaches this engine's agent surface: the `zeron mcp` command
 /// and the loopback IPC port it dials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentToolsLaunch {
     pub command: PathBuf,
     pub args: Vec<String>,
-    pub ipc_port: u16,
+    /// `None`: the port this process's engine bound ([`bound_ipc_port`]),
+    /// read at injection time.
+    pub ipc_port: Option<u16>,
 }
 
 impl AgentToolsLaunch {
-    /// The running `zeron` binary's `mcp` subcommand and the IPC port the
-    /// engine serves (`ZERON_IPC_PORT`, default 27654, the same resolution
-    /// the binary's engine config uses). `None` when the executable path is
-    /// unknown.
+    /// The running `zeron` binary's `mcp` subcommand, dialing the IPC port
+    /// the engine actually bound. `None` when the executable path is unknown.
     pub fn from_current_exe() -> Option<Self> {
         let command = std::env::current_exe().ok()?;
-        let ipc_port = std::env::var(agent_tools::IPC_PORT_ENV)
-            .ok()
-            .and_then(|port| port.trim().parse().ok())
-            .unwrap_or(27654);
         Some(Self {
             command,
             args: vec!["mcp".into()],
-            ipc_port,
+            ipc_port: None,
         })
     }
 
-    /// The injection for one Run holding `token`.
-    pub fn injection(&self, token: &str) -> AgentToolsInjection {
-        AgentToolsInjection {
+    /// The injection for one Run holding `token`; `None` when this engine
+    /// serves no IPC port (the server would reach another engine, or none).
+    pub fn injection(&self, token: &str) -> Option<AgentToolsInjection> {
+        let ipc_port = self.ipc_port.or_else(bound_ipc_port)?;
+        Some(AgentToolsInjection {
             server_name: agent_tools::SERVER_NAME.into(),
             command: self.command.clone(),
             args: self.args.clone(),
             env: [
                 (agent_tools::TOKEN_ENV.to_owned(), token.to_owned()),
-                (
-                    agent_tools::IPC_PORT_ENV.to_owned(),
-                    self.ipc_port.to_string(),
-                ),
+                (agent_tools::IPC_PORT_ENV.to_owned(), ipc_port.to_string()),
             ]
             .into_iter()
             .collect(),
-        }
+        })
     }
 }
 
@@ -392,12 +442,19 @@ struct ProposeInstructionArgs {
     tool_call_id: Option<String>,
 }
 
+/// Only the prompt and attachments come from the caller; every other Run
+/// setting is the child Chat's own (rebuilt engine-side).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueueChildTurnArgs {
     chat_id: String,
-    command: SessionCommandPayload,
+    prompt: String,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
+
+/// Most attachments a child's first Turn may carry.
+const MAX_CHILD_ATTACHMENTS: usize = 16;
 
 fn parse_args<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<T, AgentToolError> {
     let arguments = if arguments.is_null() {
@@ -409,26 +466,24 @@ fn parse_args<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<T, Ag
         .map_err(|e| AgentToolError::invalid(format!("invalid arguments: {e}")))
 }
 
-/// The authenticated caller plus its Space's current outline (for argument
-/// defaults and the read view; authorization is the shared policy's).
-struct CallContext {
+/// The authenticated caller. Holds no outline: reads that need one build it
+/// themselves (only `read_current` materializes a snapshot).
+struct CallContext<'a> {
     grant: AgentGrant,
-    snapshot: WorkOutlineSnapshot,
+    workspace: &'a WorkspaceHost,
 }
 
-impl CallContext {
-    /// The work item the calling Chat is associated with, if any.
-    fn current_item(&self) -> Option<&WorkItemView> {
-        let assignment = self.snapshot.assignments.iter().find(|assignment| {
-            assignment.chat_id == self.grant.chat_id
-                && assignment.state == WorkItemChatAssignmentState::Associated
-        })?;
-        self.snapshot.item(assignment.work_item_id.as_deref()?)
+impl CallContext<'_> {
+    /// The work item the calling Chat is associated with (the same lookup
+    /// the shared agent policy uses), if any.
+    fn current_item_id(&self) -> Option<String> {
+        self.workspace
+            .chat_assigned_work_item(&self.grant.chat_id, &self.grant.space_id)
     }
 
     /// The Chat's item, or `unauthorized` naming what the agent tried.
-    fn require_item(&self, what: &str) -> Result<&WorkItemView, AgentToolError> {
-        self.current_item().ok_or_else(|| {
+    fn require_item(&self, what: &str) -> Result<String, AgentToolError> {
+        self.current_item_id().ok_or_else(|| {
             WorkOutlineError::unauthorized(format!(
                 "This Chat is not associated with a work item; associate it before {what}"
             ))
@@ -448,12 +503,29 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.trim().is_empty())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimChildArgs {
+    inputs_hash: String,
+}
+
+/// Ledger keys binding a `create_chat` operation to its inputs (the same
+/// scheme as Work Outline mutations, under their own prefix).
+fn child_chat_ledger_keys(operation_id: &str, inputs_hash: &str) -> (String, String) {
+    (
+        format!("agent-child-chat:op:{operation_id}"),
+        format!("agent-child-chat:in:{inputs_hash}:{operation_id}"),
+    )
+}
+
 /// The engine's agent RPC surface (one per `EngineRpc`).
 pub struct AgentToolsService {
     tokens: Arc<AgentTokens>,
     workspace: WorkspaceHost,
     work_outline: Arc<WorkOutlineService>,
     doc_host: Option<DocHost>,
+    /// Serializes `create_chat` input claims (check-then-mark).
+    child_claims: Mutex<()>,
 }
 
 impl AgentToolsService {
@@ -468,6 +540,7 @@ impl AgentToolsService {
             workspace,
             work_outline,
             doc_host,
+            child_claims: Mutex::new(()),
         }
     }
 
@@ -475,12 +548,13 @@ impl AgentToolsService {
         &self.tokens
     }
 
-    /// `AgentAuthenticate`: who the token speaks for.
+    /// `AgentAuthenticate`: who the token speaks for (token lookup and the
+    /// Chat row only; no outline is materialized).
     pub fn authenticate(&self, token: &str) -> Result<AgentOrigin, AgentToolError> {
         Ok(self.context(token)?.grant.origin())
     }
 
-    fn context(&self, token: &str) -> Result<CallContext, AgentToolError> {
+    fn context(&self, token: &str) -> Result<CallContext<'_>, AgentToolError> {
         let grant = self.tokens.authenticate(token)?;
         // The Chat must still exist in the Space the token was minted for
         // (Space is write-once; a deleted Chat ends the grant's use).
@@ -493,8 +567,10 @@ impl AgentToolsService {
         if chat.space_id.as_deref() != Some(grant.space_id.as_str()) {
             return Err(AgentToolError::unauthenticated());
         }
-        let snapshot = self.work_outline.snapshot(&grant.space_id);
-        Ok(CallContext { grant, snapshot })
+        Ok(CallContext {
+            grant,
+            workspace: &self.workspace,
+        })
     }
 
     /// `AgentToolCall`: authenticate, authorize, and run one tool.
@@ -514,6 +590,7 @@ impl AgentToolsService {
             }
             tools::PROPOSE_INSTRUCTION => self.propose_instruction(&context, arguments),
             tools::QUEUE_CHILD_CHAT_TURN => self.queue_child_chat_turn(&context, arguments),
+            tools::CLAIM_CHILD_CHAT => self.claim_child_chat(&context, arguments),
             other => Err(AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
                 format!("unknown agent tool: {other}"),
@@ -547,19 +624,25 @@ impl AgentToolsService {
                      Space's items before using the other Work Outline tools.",
         });
         // The shared read model: the item, its effective instructions, and
-        // the open requests this Chat raised.
-        let Ok(agent) = self.work_outline.agent_context(&context.grant.chat_id) else {
+        // the open requests this Chat raised, from ONE snapshot (the path
+        // and children below read the same one).
+        let snapshot = self.work_outline.snapshot(&context.grant.space_id);
+        let Ok(agent) = self.work_outline.agent_context_in(
+            &context.grant.chat_id,
+            &context.grant.space_id,
+            &snapshot,
+        ) else {
             return unassociated;
         };
         let item = &agent.work_item;
         let mut path = Vec::new();
         let mut cursor = Some(item.id.clone());
         while let Some(id) = cursor {
-            let Some(node) = context.snapshot.item(&id) else {
+            let Some(node) = snapshot.item(&id) else {
                 break;
             };
             path.push(json!({ "id": node.id, "title": node.title }));
-            if path.len() > context.snapshot.items.len() {
+            if path.len() > snapshot.items.len() {
                 break;
             }
             cursor = node.parent_work_item_id.clone();
@@ -568,7 +651,7 @@ impl AgentToolsService {
         let children: Vec<Value> = item
             .child_ids
             .iter()
-            .filter_map(|id| context.snapshot.item(id))
+            .filter_map(|id| snapshot.item(id))
             .filter(|child| child.archived_at.is_none())
             .map(|child| {
                 json!({
@@ -620,7 +703,7 @@ impl AgentToolsService {
         };
         let parent = match non_empty(args.parent_work_item_id) {
             Some(id) => Some(id),
-            None => context.current_item().map(|item| item.id.clone()),
+            None => context.current_item_id(),
         };
         let mutation = WorkOutlineMutation::CreateWorkItem(CreateWorkItemParams {
             space_id: context.grant.space_id.clone(),
@@ -673,7 +756,7 @@ impl AgentToolsService {
         };
         let target = match non_empty(args.work_item_id) {
             Some(id) => id,
-            None => context.require_item("changing status")?.id.clone(),
+            None => context.require_item("changing status")?,
         };
         // `resolveOpenRequests` stays false: completing an item with open
         // requests fails (`openUserActionRequests`), never auto-resolves.
@@ -700,10 +783,7 @@ impl AgentToolsService {
             return Err(AgentToolError::invalid("request is empty"));
         }
         // Requests are created on the Chat's own item, with the Chat as origin.
-        let work_item_id = context
-            .require_item("asking the user for an action")?
-            .id
-            .clone();
+        let work_item_id = context.require_item("asking the user for an action")?;
         let mutation =
             WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
                 work_item_id: work_item_id.clone(),
@@ -756,10 +836,13 @@ impl AgentToolsService {
         }
         let item = context.require_item("proposing instructions")?;
         let target = match args.target.as_deref().map(str::trim).unwrap_or("item") {
-            "item" => InstructionProposalTarget::work_item(item.id.clone()),
+            "item" => InstructionProposalTarget::work_item(item),
             "spaceRoot" => InstructionProposalTarget::space_root(),
-            "parent" => match &item.parent_work_item_id {
-                Some(parent) => InstructionProposalTarget::work_item(parent.clone()),
+            "parent" => match self
+                .workspace
+                .effective_work_item_parent(&context.grant.space_id, &item)
+            {
+                Some(parent) => InstructionProposalTarget::work_item(parent),
                 None => {
                     return Err(WorkOutlineError::unauthorized(
                         "This Chat's work item has no parent; propose for the item or the \
@@ -795,10 +878,50 @@ impl AgentToolsService {
         }))
     }
 
+    /// Bind a `create_chat` idempotency key to its inputs: the first claim
+    /// records the inputs hash durably; a later claim with the same hash is a
+    /// replay, with another hash `operationConflict` (so a retry that changed
+    /// its request never silently gets the old Chat back). A Chat created
+    /// before claims existed adopts the hash of its first claim.
+    fn claim_child_chat(
+        &self,
+        context: &CallContext,
+        arguments: &Value,
+    ) -> Result<Value, AgentToolError> {
+        let operation_id = context.operation_id(arguments)?;
+        let args: ClaimChildArgs = parse_args(arguments)?;
+        let hash = args.inputs_hash.trim();
+        if hash.is_empty() || hash.len() > 128 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(AgentToolError::invalid("inputsHash must be a hex digest"));
+        }
+        let (operation_key, inputs_key) = child_chat_ledger_keys(&operation_id, hash);
+        let ledger = |e: crate::EngineError| AgentToolError::invalid(e.to_string());
+        let _serial = lock(&self.child_claims);
+        if self.workspace.ledger_holds(&operation_key) {
+            if self.workspace.ledger_holds(&inputs_key) {
+                return Ok(json!({ "replayed": true }));
+            }
+            return Err(WorkOutlineError::new(
+                zeron_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
+                "idempotency_key was already used to create a chat with different inputs; \
+                 use a new key for a new chat",
+            )
+            .into());
+        }
+        // Inputs first: a crash between the two marks leaves the operation
+        // unclaimed, and the retry claims both.
+        self.workspace.ledger_mark(&inputs_key).map_err(ledger)?;
+        self.workspace.ledger_mark(&operation_key).map_err(ledger)?;
+        Ok(json!({ "replayed": false }))
+    }
+
     /// Queue the first Turn of a child Chat created by the MCP `create_chat`
     /// tool. Every id derives from `(token Chat, idempotencyKey)`, so a retry
     /// (or a second call with the same key) never queues a second Turn; the
     /// Chat must be the one that key names and a child of the token's Chat.
+    /// The Run request is rebuilt here from the child's stored config (the
+    /// caller supplies only the prompt and attachments), so an agent can
+    /// never widen the child's sandbox, approval mode, cwd, or harness.
     fn queue_child_chat_turn(
         &self,
         context: &CallContext,
@@ -825,18 +948,29 @@ impl AgentToolsService {
                 "agents may only start Chats they created",
             ));
         }
+        if args.prompt.trim().is_empty() {
+            return Err(AgentToolError::invalid("prompt is empty"));
+        }
+        if args.attachments.len() > MAX_CHILD_ATTACHMENTS
+            || args
+                .attachments
+                .iter()
+                .any(|path| !std::path::Path::new(path).is_absolute())
+        {
+            return Err(AgentToolError::invalid(format!(
+                "attachments must be at most {MAX_CHILD_ATTACHMENTS} absolute paths"
+            )));
+        }
+        let space = chat
+            .space_id
+            .as_deref()
+            .and_then(|id| self.workspace.space(id).ok().flatten());
+        let request = child_run_request(&chat, space.as_ref(), args.prompt, args.attachments);
         let message_id = derive_id(&operation_id, roles::MESSAGE);
         let command_id = derive_id(&operation_id, roles::COMMAND);
-        let payload = match args.command {
-            SessionCommandPayload::Run { request, .. } => SessionCommandPayload::Run {
-                request,
-                message_id: message_id.clone(),
-            },
-            _ => {
-                return Err(AgentToolError::invalid(
-                    "the child Chat's first command must be a run",
-                ));
-            }
+        let payload = SessionCommandPayload::Run {
+            request,
+            message_id: message_id.clone(),
         };
         let doc_host = self.doc_host.as_ref().ok_or_else(|| {
             AgentToolError::refused(AgentToolErrorCode::Unsupported, "no chat host")
@@ -850,6 +984,39 @@ impl AgentToolsService {
             "commandId": command_id,
             "queued": queued,
         }))
+    }
+}
+
+/// The first Run of a child Chat, from the child's stored config and row
+/// only: what a composer send in that Chat would queue (its harness, model,
+/// sandbox, approval mode, and cwd; the host overwrites the cwd of an
+/// execution-bound Chat and resolves instructions at dispatch).
+fn child_run_request(
+    chat: &zeron_proto::Chat,
+    space: Option<&zeron_proto::Space>,
+    prompt: String,
+    attachments: Vec<String>,
+) -> RunRequest {
+    let config = chat.config.as_ref();
+    RunRequest {
+        prompt,
+        harness: config.map(|c| c.harness),
+        model: config.and_then(|c| c.model.clone()),
+        reasoning: config.and_then(|c| c.reasoning),
+        model_options: config.map(|c| c.model_options.clone()).unwrap_or_default(),
+        cwd: chat
+            .cwd
+            .clone()
+            .or_else(|| space.map(|s| s.path.clone()))
+            .unwrap_or_else(|| "~".into()),
+        sandbox: config
+            .map(|c| c.sandbox)
+            .unwrap_or(SandboxLevel::WorkspaceWrite),
+        auto_approve: config.is_some_and(|c| c.auto_approve),
+        resume: None,
+        attachments,
+        worktree: None,
+        instructions: None,
     }
 }
 
@@ -927,13 +1094,85 @@ mod tests {
         let launch = AgentToolsLaunch {
             command: PathBuf::from("/bin/zeron"),
             args: vec!["mcp".into()],
-            ipc_port: 27655,
+            ipc_port: Some(27655),
         };
-        let injection = launch.injection("zat_secret");
-        assert_eq!(injection.server_name, "zeron");
+        let injection = launch.injection("zat_secret").unwrap();
+        assert_eq!(injection.server_name, "zeron-agent");
         assert_eq!(injection.args, vec!["mcp".to_owned()]);
         assert_eq!(injection.env["ZERON_AGENT_TOKEN"], "zat_secret");
         assert_eq!(injection.env["ZERON_IPC_PORT"], "27655");
         assert!(!injection.args.iter().any(|a| a.contains("zat_secret")));
+        assert!(!injection.command.to_string_lossy().contains("zat_secret"));
+    }
+
+    #[test]
+    fn default_launch_dials_the_bound_port_or_injects_nothing() {
+        let launch = AgentToolsLaunch {
+            command: PathBuf::from("/bin/zeron"),
+            args: vec!["mcp".into()],
+            ipc_port: None,
+        };
+        // Process-global: this is the only unit test that touches it.
+        note_bound_ipc_port(0);
+        assert!(
+            launch.injection("zat_x").is_none(),
+            "no bound port, no tools"
+        );
+        note_bound_ipc_port(41234);
+        assert_eq!(
+            launch.injection("zat_x").unwrap().env["ZERON_IPC_PORT"],
+            "41234"
+        );
+        note_bound_ipc_port(0);
+    }
+
+    #[test]
+    fn minted_tokens_expire_absolutely_unless_renewed() {
+        let tokens = arc();
+        let lease = tokens.mint("c", "r", "s", "d");
+        let grant = tokens.authenticate(lease.token()).unwrap();
+        assert_eq!(grant.ttl, Some(DEFAULT_TOKEN_TTL));
+        let at = grant.expires_at.expect("an absolute expiry");
+        assert!(at > Instant::now() + DEFAULT_TOKEN_TTL - Duration::from_secs(60));
+
+        // Renewal pushes a live token's expiry out by its TTL.
+        let short = tokens.mint_with_ttl("c", "r2", "s", "d", Some(Duration::from_millis(200)));
+        std::thread::sleep(Duration::from_millis(120));
+        short.renew();
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            tokens.authenticate(short.token()).is_ok(),
+            "renewed in time"
+        );
+        // A driver that stops renewing loses the token though it holds the lease.
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(tokens.authenticate(short.token()).is_err());
+        short.renew();
+        assert!(tokens.authenticate(short.token()).is_err(), "never revived");
+    }
+
+    #[test]
+    fn child_runs_take_only_prompt_and_attachments_from_the_caller() {
+        let chat: zeron_proto::Chat = serde_json::from_value(json!({
+            "id": "child", "deviceId": "dev", "archived": false,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "config": { "harness": "codex", "model": "m-1", "sandbox": "read-only",
+                        "autoApprove": false },
+        }))
+        .unwrap();
+        let space: zeron_proto::Space = serde_json::from_value(json!({
+            "id": "s", "deviceId": "dev", "path": "/repo", "createdAt": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        let request =
+            child_run_request(&chat, Some(&space), "go".into(), vec!["/tmp/a.png".into()]);
+        assert_eq!(request.prompt, "go");
+        assert_eq!(request.attachments, vec!["/tmp/a.png".to_owned()]);
+        assert_eq!(request.harness, Some(zeron_proto::HarnessId::Codex));
+        assert_eq!(request.model.as_deref(), Some("m-1"));
+        assert_eq!(request.sandbox, SandboxLevel::ReadOnly);
+        assert!(!request.auto_approve);
+        assert_eq!(request.cwd, "/repo");
+        assert!(request.worktree.is_none() && request.instructions.is_none());
     }
 }

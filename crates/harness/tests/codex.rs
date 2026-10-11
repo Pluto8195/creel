@@ -1654,7 +1654,7 @@ async fn real_image_generation_smoke() {
 
 fn agent_tools_injection() -> zeron_harness::AgentToolsInjection {
     zeron_harness::AgentToolsInjection {
-        server_name: "zeron".into(),
+        server_name: "zeron-agent".into(),
         command: PathBuf::from("/opt/zeron/bin/zeron"),
         args: vec!["mcp".into()],
         env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok-1".into())]),

@@ -1247,6 +1247,9 @@ pub async fn serve_ipc(
     service: std::sync::Arc<dyn zeron_rpc::RpcService>,
 ) -> std::io::Result<tokio::task::JoinHandle<()>> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    if let Ok(addr) = listener.local_addr() {
+        agent_tools::note_bound_ipc_port(addr.port());
+    }
     tracing::info!(port, "IPC server listening");
     Ok(tokio::spawn(zeron_rpc::serve_ws_listener(
         listener, service,

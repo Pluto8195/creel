@@ -17,8 +17,9 @@
 //! with the engine (`AgentAuthenticate`), which answers with the Chat the
 //! token was minted for; nothing self-declared is trusted. Such an agent also
 //! gets the Work Outline agent tools (`AgentToolCall`), its sends are
-//! attributed to its Chat, a Chat can never message itself, and `create_chat`
-//! requires an idempotency key. Without a token (a human running `zeron mcp`
+//! attributed to its Chat, a Chat can never message itself, `create_chat`
+//! requires an idempotency key, and the original tools are scoped to its
+//! Chat (and the Chats it created), project, and device. Without a token (a human running `zeron mcp`
 //! in a terminal) the original unattributed tools work as before.
 
 mod jsonrpc;

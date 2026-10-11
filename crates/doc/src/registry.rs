@@ -14,7 +14,7 @@
 //! typed API mirrors the old `WorkspaceDoc` surface so `WorkspaceHost` is a
 //! drop-in swap.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -408,6 +408,13 @@ pub struct RegistryDoc {
     /// Bumped on every mutation (local or applied) — the engine host converts
     /// this into watch-channel publishes and snapshot debounces.
     generation: u64,
+    /// `generation` at which rows of each kind last changed (a local write,
+    /// an applied `rows` frame, or a retired batch). Lets composed watches
+    /// skip changes to kinds they do not read.
+    kind_generations: HashMap<String, u64>,
+    /// `generation` of the last change that may have touched every kind (a
+    /// hello `state` frame).
+    all_kinds_generation: u64,
 }
 
 impl RegistryDoc {
@@ -420,6 +427,8 @@ impl RegistryDoc {
             clock: HlcClock::default(),
             pending: Vec::new(),
             generation: 0,
+            kind_generations: HashMap::new(),
+            all_kinds_generation: 0,
         }
     }
 
@@ -435,6 +444,31 @@ impl RegistryDoc {
     /// Monotonic local change counter (any mutation bumps it).
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The newest [`Self::generation`] at which a row of any of `kinds` may
+    /// have changed. Unchanged between two reads ⇒ no row of those kinds
+    /// changed in between (a full `state` frame counts for every kind).
+    pub fn kinds_generation(&self, kinds: &[&str]) -> u64 {
+        kinds
+            .iter()
+            .filter_map(|kind| self.kind_generations.get(*kind))
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(self.all_kinds_generation)
+    }
+
+    /// Record that rows of `kind` changed at the current generation (call
+    /// after bumping it).
+    fn touch_kind(&mut self, kind: &str) {
+        let generation = self.generation;
+        match self.kind_generations.get_mut(kind) {
+            Some(at) => *at = generation,
+            None => {
+                self.kind_generations.insert(kind.to_owned(), generation);
+            }
+        }
     }
 
     pub fn pending_len(&self) -> usize {
@@ -507,6 +541,7 @@ impl RegistryDoc {
         rows: Vec<RegistryRow>,
     ) -> StateOutcome {
         self.generation += 1;
+        self.all_kinds_generation = self.generation;
         if !full {
             for row in rows {
                 self.put_authoritative(row);
@@ -573,6 +608,7 @@ impl RegistryDoc {
     pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) -> bool {
         self.generation += 1;
         for row in rows {
+            self.touch_kind(&row.kind);
             self.put_authoritative(row);
         }
         if seq > self.server_seq + 1 {
@@ -598,9 +634,20 @@ impl RegistryDoc {
     /// re-pulling our own batch is an idempotent LWW no-op.
     pub fn ack_batch(&mut self, batch: &str, _seq: u64) -> bool {
         let before = self.pending.len();
+        // The overlay of a retired batch's rows may change (its ops leave the
+        // pending layer), so its kinds count as touched.
+        let kinds: BTreeSet<String> = self
+            .pending
+            .iter()
+            .filter(|b| b.batch == batch)
+            .flat_map(|b| b.ops.iter().map(|op| op.kind.clone()))
+            .collect();
         self.pending.retain(|b| b.batch != batch);
         if self.pending.len() != before {
             self.generation += 1;
+            for kind in &kinds {
+                self.touch_kind(kind);
+            }
             true
         } else {
             false
@@ -705,6 +752,9 @@ impl RegistryDoc {
         // also byte-bounded: the room closes a socket whose frame exceeds
         // 1,000,000 characters, and 400 large ops can.
         self.generation += 1;
+        for op in &ops {
+            self.touch_kind(&op.kind);
+        }
         let mut chunk: Vec<RowOp> = Vec::new();
         let mut chunk_units = 0usize;
         for op in ops {
