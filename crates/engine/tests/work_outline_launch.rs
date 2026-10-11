@@ -1640,3 +1640,49 @@ async fn continue_refuses_an_assigned_unbound_chat_without_a_folder() {
     assert!(commands(&rig, "no-cwd").is_empty());
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 8: a worktree choice needs the root to be that repo's checkout
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_choice_is_refused_when_the_root_is_not_the_repository_checkout() {
+    let rig = rig().await;
+    // Root = a parent folder holding the repository (not its checkout).
+    let identity = describe(&rig, &rig.repo).await;
+    let mut p = params(&rig, "op-wt-root", "launch wt root");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": {
+                "executionRoot": rig.root.to_string_lossy(),
+                "bindings": [{
+                    "repoId": identity.repo_id, "repoFingerprint": identity.repo_fingerprint,
+                    "repoPath": identity.repo_path, "member": true, "primary": true,
+                }],
+                "schema": 1,
+            }
+        }))
+        .unwrap(),
+    );
+    p.worktree_choice = Some(WorktreeChoice::CreateNew {
+        name: "never".into(),
+    });
+    let error = launch(&rig, &p).await.expect_err("worktree choice refused");
+    assert_eq!(error.code, WorkOutlineErrorCode::Invalid, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains("execution root is the primary repository's checkout"),
+        "{error:?}"
+    );
+    // Refused before any worktree or Chat exists.
+    assert!(!rig.repo.join(".worktrees/workspace/never").exists());
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-wt-root", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    rig.core.shutdown().await;
+}

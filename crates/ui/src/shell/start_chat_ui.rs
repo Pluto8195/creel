@@ -623,9 +623,22 @@ pub(super) fn start_chat_card(
         }
     }
 
-    // Worktree choice (only when the configuration pins none).
+    // Worktree choice (only when the configuration pins none, and only when
+    // the target repository's checkout is the execution root).
+    let worktree_unavailable = match &dialog.target {
+        WorktreeTarget::Unavailable { reason } => Some(note(
+            "start-chat-worktree-unavailable",
+            reason.clone(),
+            theme.text_muted,
+        )),
+        _ => None,
+    };
     let worktree =
-        (dialog.target != WorktreeTarget::None).then(|| {
+        (!matches!(
+            dialog.target,
+            WorktreeTarget::None | WorktreeTarget::Unavailable { .. }
+        ))
+        .then(|| {
             let option =
                 |id: SharedString, label: String, pick: WorktreePick, cx: &mut Context<Shell>| {
                     let selected = dialog.pick == pick;
@@ -887,6 +900,10 @@ pub(super) fn start_chat_card(
                 .child(agents)
                 .child(section_label("Runs in", theme))
                 .child(execution)
+                .when_some(worktree_unavailable, |el, unavailable| {
+                    el.child(section_label("Worktree", theme))
+                        .child(unavailable)
+                })
                 .when_some(worktree, |el, worktree| {
                     el.child(section_label("Worktree", theme)).child(worktree)
                 })
@@ -1214,6 +1231,42 @@ mod tests {
                 Some("chat-new")
             );
         });
+    }
+
+    /// A configuration whose primary repository's checkout is not the
+    /// execution root offers no worktree choice and says why; the launch
+    /// sends none.
+    #[gpui::test]
+    fn worktree_choice_is_hidden_when_the_root_is_not_the_primary_checkout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-launch"),
+        );
+        shell
+            .update(cx, |shell, cx| shell.open_start_chat("s1", LAUNCH, cx))
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-worktree-unavailable").is_some());
+        assert!(cx.debug_bounds("start-chat-worktree-new").is_none());
+        assert!(cx.debug_bounds("start-chat-worktree-workspace").is_none());
+        assert!(calls_to(&calls, zeron_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY).is_empty());
+        set_prompt(&shell, cx, "Ship the launch page");
+        click(cx, "start-chat-start");
+        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert!(
+            creates[0].get("worktreeChoice").is_none(),
+            "{:?}",
+            creates[0]
+        );
     }
 
     /// Blocking validation shows each error's remediation and keeps Start

@@ -550,8 +550,9 @@ impl WorkItemLaunchService {
 
     /// Pin the chosen worktree on the configuration's target repository (the
     /// primary binding, else the only binding, else the repository at the
-    /// execution root). When the execution root is that repository's
-    /// checkout, the worktree becomes the execution root.
+    /// execution root). The execution root must be that repository's
+    /// checkout (else `invalid`, before any worktree exists); the worktree
+    /// becomes the execution root.
     async fn apply_worktree_choice(
         &self,
         resolved: &mut ResolvedExecutionConfiguration,
@@ -599,6 +600,22 @@ impl WorkItemLaunchService {
                 }
             }
         };
+        // The chosen worktree becomes the execution root, so the root must be
+        // that repository's checkout. Otherwise the agent would run in the
+        // root while the worktree sat unused (or outside it): refuse before
+        // any worktree is created.
+        let root_is_repo = target.is_none()
+            || same_path(&configuration.execution_root, &binding.repo_path)
+            || same_path(&configuration.execution_root, binding.checkout_path());
+        if !root_is_repo {
+            return Err(invalid(&format!(
+                "A worktree can only be chosen when the execution root is the primary \
+                 repository's checkout; the execution root {} is not {}. Start without a \
+                 worktree, or set the execution root to the repository in the execution \
+                 configuration.",
+                configuration.execution_root, binding.repo_path
+            )));
+        }
         let (worktree_id, worktree_path) = match choice {
             WorktreeChoice::UseExisting {
                 worktree_id,
@@ -611,14 +628,9 @@ impl WorkItemLaunchService {
                 (checkout_id, path)
             }
         };
-        let root_is_repo = target.is_none()
-            || same_path(&configuration.execution_root, &binding.repo_path)
-            || same_path(&configuration.execution_root, binding.checkout_path());
         binding.worktree_id = Some(worktree_id);
         binding.worktree_path = Some(worktree_path.clone());
-        if root_is_repo {
-            configuration.execution_root = worktree_path;
-        }
+        configuration.execution_root = worktree_path;
         match target {
             Some(index) => configuration.bindings[index] = binding,
             None => configuration.bindings.push(binding),
