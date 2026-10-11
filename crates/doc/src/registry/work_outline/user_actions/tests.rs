@@ -1076,16 +1076,93 @@ fn agent_may_create_children_only_under_its_item() {
 #[test]
 fn agent_may_associate_only_its_own_chat_within_its_space() {
     let mut f = fixture();
-    let (sibling, other) = (f.sibling.clone(), f.other_space_item.clone());
-    as_agent(&mut f, assign_params("as2", "c1", &sibling)).unwrap();
+    let (own, child, sibling, parent, other) = (
+        f.own.clone(),
+        f.child.clone(),
+        f.sibling.clone(),
+        f.parent.clone(),
+        f.other_space_item.clone(),
+    );
+    // Associated: never wider than its current item's subtree.
+    denied(&mut f, assign_params("as2", "c1", &sibling));
+    denied(&mut f, assign_params("as2p", "c1", &parent));
+    as_agent(&mut f, assign_params("as2c", "c1", &child)).unwrap();
+    // Now under `child`: `own` is outside the new subtree.
+    denied(&mut f, assign_params("as2o", "c1", &own));
     denied(&mut f, assign_params("as3", "c2", &sibling));
     denied(&mut f, assign_params("as4", "c1", &other));
+    // Unassociated: any item of its Space.
+    apply_as(
+        &mut f.doc,
+        &agent("c2"),
+        assign_params("as5", "c2", &sibling),
+    )
+    .unwrap();
     denied(
         &mut f,
         WorkOutlineMutation::RemoveChatFromWorkItem(RemoveChatFromWorkItemParams {
             chat_id: "c1".into(),
             operation_id: "rm".into(),
         }),
+    );
+}
+
+#[test]
+fn agent_of_an_execution_bound_chat_cannot_reassociate() {
+    let mut f = fixture();
+    let (own, child) = (f.own.clone(), f.child.clone());
+    let hlc = f.doc.mint_hlc();
+    f.doc
+        .write_ops(vec![crate::registry::RowOp {
+            kind: KIND_CHAT_EXECUTION_BINDINGS.into(),
+            id: "c1".into(),
+            op: crate::registry::OpKind::Upsert,
+            set: Some(BTreeMap::from([("spaceId".to_owned(), json!(SPACE))])),
+            hlc,
+            clocks: None,
+        }])
+        .unwrap();
+    denied(&mut f, assign_params("ab1", "c1", &child));
+    // Re-associating with the item it was started for changes nothing.
+    as_agent(&mut f, assign_params("ab2", "c1", &own)).unwrap();
+}
+
+#[test]
+fn agent_resolve_closes_only_its_own_members_of_a_dedupe_group() {
+    let mut f = fixture();
+    let own = f.own.clone();
+    assign(&mut f.doc, "as-c2", "c2", &own);
+    let mine = as_agent(&mut f, request_params("g1", &own, "c1", Some("deploy")))
+        .unwrap()
+        .user_action_request_id
+        .unwrap();
+    let theirs = apply_as(
+        &mut f.doc,
+        &agent("c2"),
+        request_params("g2", &own, "c2", Some("deploy")),
+    )
+    .unwrap()
+    .user_action_request_id
+    .unwrap();
+    let mine_again = as_agent(&mut f, request_params("g3", &own, "c1", Some("deploy")))
+        .unwrap()
+        .user_action_request_id
+        .unwrap();
+    as_agent(&mut f, resolve_params("gx", &mine, None)).unwrap();
+    let s = snap(&f.doc);
+    assert!(!s.user_action_request(&mine).unwrap().is_unresolved());
+    assert!(!s.user_action_request(&mine_again).unwrap().is_unresolved());
+    let other = s.user_action_request(&theirs).unwrap();
+    assert!(other.is_unresolved(), "another Chat's request stays open");
+    assert!(!other.deduped, "it becomes the canonical request");
+    assert_eq!(s.item(&own).unwrap().rollup.unresolved_user_action_count, 1);
+    // The user's resolve still closes the whole (remaining) group.
+    apply(&mut f.doc, resolve_params("gu", &theirs, None)).unwrap();
+    assert!(
+        !snap(&f.doc)
+            .user_action_request(&theirs)
+            .unwrap()
+            .is_unresolved()
     );
 }
 

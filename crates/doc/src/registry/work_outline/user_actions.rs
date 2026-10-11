@@ -584,6 +584,13 @@ impl RegistryDoc {
         if !request.is_open() {
             return Ok(());
         }
+        // An agent resolves only its own Chat's members of the group: a
+        // duplicate another Chat raised is that Chat's request and stays
+        // open (the user's resolve keeps whole-group behavior).
+        let agent_chat = match actor.kind {
+            WorkOutlineActorKind::Agent => Some(actor.chat_id.clone().unwrap_or_default()),
+            _ => None,
+        };
         let group: Vec<UserActionRequestView> = match &request.dedupe_key {
             None => vec![request],
             Some(key) => self
@@ -591,6 +598,7 @@ impl RegistryDoc {
                 .into_iter()
                 .map(|r| r.view)
                 .filter(|r| r.is_open() && r.dedupe_key.as_ref() == Some(key))
+                .filter(|r| agent_chat.as_ref().is_none_or(|chat| r.chat_id == *chat))
                 .collect(),
         };
         let plan = Self::plan_resolutions(&group, actor, now_ms, p.note.as_deref());
@@ -888,7 +896,9 @@ impl RegistryDoc {
     /// `chat_id` may perform `mutation`, else `unauthorized` (with the
     /// reason). Allowed, all within the Chat's Space:
     /// - `createWorkItem` under the Chat's assigned item or a descendant;
-    /// - `assignChatToWorkItem` of this Chat only;
+    /// - `assignChatToWorkItem` of this Chat only: any item of its Space while
+    ///   unassociated, else only within its assigned item's subtree; never
+    ///   for a Chat with a captured execution binding;
     /// - `updateWorkItem` that only sets status `active` / `completed` on the
     ///   assigned item or a descendant (never `resolveOpenRequests`);
     /// - `createUserActionRequest` on the assigned item with origin Chat =
@@ -952,11 +962,28 @@ impl RegistryDoc {
                 if p.chat_id != chat_id {
                     return Err(unauthorized("Agents may only associate their own Chat"));
                 }
+                // A Chat launched with a captured execution binding keeps the
+                // item it was started for (re-associating with it is a no-op).
+                if assigned.as_deref() != Some(p.work_item_id.as_str())
+                    && self.row_state(KIND_CHAT_EXECUTION_BINDINGS, chat_id) == RowState::Live
+                {
+                    return Err(unauthorized(
+                        "Agents cannot re-associate a Chat started for a work item",
+                    ));
+                }
                 match self.live_item(&p.work_item_id) {
-                    Ok(item) if item.space_id == space => Ok(()),
-                    Ok(_) => Err(unauthorized(
+                    Ok(item) if item.space_id != space => Err(unauthorized(
                         "Agents may only associate their Chat with an item in its Space",
                     )),
+                    // Unassociated: any item of its Space. Associated: only
+                    // within its current item's subtree (never wider).
+                    Ok(_) if assigned.is_none() => Ok(()),
+                    Ok(_) => in_scope(&p.work_item_id).map_err(|_| {
+                        unauthorized(
+                            "Agents may only move their Chat to an item within its current \
+                             work item",
+                        )
+                    }),
                     // Let the mutator report the missing item.
                     Err(_) => Ok(()),
                 }
