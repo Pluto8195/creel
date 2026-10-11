@@ -352,7 +352,11 @@ impl WorkItemLaunchService {
         self.claim_inputs(op, &inputs_hash)?;
 
         // ── 2. effective configuration + validation + capability ──
-        let existing_binding = self.workspace.chat_execution_binding(&chat_id);
+        let existing_binding = self
+            .workspace
+            .chat_execution_binding_state(&chat_id)
+            .checked()
+            .map_err(|error| validation_error(&[error]))?;
         let resolved = match &existing_binding {
             Some(binding) => {
                 if binding.operation_id.as_deref() != Some(op) {
@@ -873,7 +877,13 @@ impl WorkItemLaunchService {
             .chat(&p.chat_id)
             .map_err(engine_error)?
             .ok_or_else(|| error(WorkOutlineErrorCode::NotFound, "Chat not found"))?;
-        let binding = self.workspace.chat_execution_binding(&p.chat_id);
+        // A malformed binding is bound-and-invalid: refuse, never treat the
+        // Chat as unbound.
+        let binding = self
+            .workspace
+            .chat_execution_binding_state(&p.chat_id)
+            .checked()
+            .map_err(|error| validation_error(&[error]))?;
         let assigned = self
             .workspace
             .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &p.chat_id)

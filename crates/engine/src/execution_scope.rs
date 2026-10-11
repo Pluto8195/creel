@@ -832,7 +832,12 @@ impl ExecutionScopeService {
         chat_id: &str,
         caps: ExecutionHostCapabilities,
     ) -> Result<Option<ValidatedExecution>, Vec<ExecutionValidationError>> {
-        let Some(binding) = self.workspace.chat_execution_binding(chat_id) else {
+        let Some(binding) = self
+            .workspace
+            .chat_execution_binding_state(chat_id)
+            .checked()
+            .map_err(|error| vec![error])?
+        else {
             return Ok(None);
         };
         let chat = self.workspace.chat(chat_id).ok().flatten();

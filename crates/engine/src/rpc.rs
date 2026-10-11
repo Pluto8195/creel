@@ -1191,11 +1191,20 @@ impl EngineRpc {
                 .workspace
                 .resolve_execution(&scope)
                 .map_err(|e| RpcError::Failed(e.to_wire_message()))?,
-            (None, None, Some(chat_id)) => self
+            (None, None, Some(chat_id)) => match self
                 .workspace
-                .chat_execution_binding(&chat_id)
-                .map(|binding| binding.resolved)
-                .ok_or_else(|| {
+                .chat_execution_binding_state(&chat_id)
+                .checked()
+            {
+                // A malformed binding is bound-and-invalid: report it as a
+                // validation failure, never as "no binding".
+                Err(error) => {
+                    return Ok(ValidateExecutionConfigurationReply::from_result(
+                        None,
+                        Err(vec![error]),
+                    ));
+                }
+                Ok(binding) => binding.map(|binding| binding.resolved).ok_or_else(|| {
                     RpcError::Failed(
                         WorkOutlineError::new(
                             WorkOutlineErrorCode::NotFound,
@@ -1204,6 +1213,7 @@ impl EngineRpc {
                         .to_wire_message(),
                     )
                 })?,
+            },
             _ => {
                 return Err(RpcError::BadParams(
                     "set exactly one of scope, chatId, resolved".into(),
@@ -2967,7 +2977,11 @@ impl RpcService for EngineRpc {
                 let p: CreateChatWorktreeParams = parse_params(params)?;
                 // A bound Chat never moves to a new worktree (contract 6.2):
                 // refuse before creating one that could not be used.
-                if let Some(binding) = self.workspace.chat_execution_binding(&p.chat_id) {
+                let binding = self
+                    .workspace
+                    .checked_chat_execution_binding(&p.chat_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                if let Some(binding) = binding {
                     return Err(RpcError::Failed(crate::execution_scope::rejection_message(
                         &[zeron_proto::ExecutionValidationError::BoundChatRetarget {
                             chat_id: p.chat_id.clone(),

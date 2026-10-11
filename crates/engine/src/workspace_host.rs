@@ -523,6 +523,13 @@ impl WorkspaceHost {
         }
     }
 
+    /// Test seam: apply registry rows as if a peer (or a newer build) had
+    /// written them (malformed-row tests; production rows arrive via sync).
+    #[doc(hidden)]
+    pub fn apply_registry_rows(&self, seq: u64, rows: Vec<zeron_doc::RegistryRow>) -> bool {
+        self.mutate(|doc| doc.apply_rows(seq, rows))
+    }
+
     /// Dial-gate verdict for `LinkCache` (park dials to registry-dark peers).
     /// `Dark` requires positive evidence; every ambiguous state — registry
     /// room down or still in its warm-up window, unknown device, heartbeat in
@@ -825,6 +832,28 @@ impl WorkspaceHost {
         self.read(|doc| doc.chat_execution_binding(chat_id))
     }
 
+    /// The Chat's binding row as a gate reads it: a row that exists but
+    /// does not decode is bound-and-invalid, never unbound.
+    pub fn chat_execution_binding_state(
+        &self,
+        chat_id: &str,
+    ) -> zeron_proto::ChatExecutionBindingState {
+        self.read(|doc| doc.chat_execution_binding_state(chat_id))
+    }
+
+    /// Gate read of a Chat's binding: `Ok(None)` unbound, `Ok(Some)` bound,
+    /// and an `execution-scope:configInvalid` rejection for a malformed row.
+    pub fn checked_chat_execution_binding(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<zeron_proto::ChatExecutionBindingView>, EngineError> {
+        self.chat_execution_binding_state(chat_id)
+            .checked()
+            .map_err(|error| {
+                EngineError::Other(crate::execution_scope::rejection_message(&[error]))
+            })
+    }
+
     /// Every captured execution binding, by Chat id (Milestone 3).
     pub fn chat_execution_bindings(
         &self,
@@ -1001,7 +1030,7 @@ impl WorkspaceHost {
         if self.read(|doc| doc.chat(chat_id))?.is_some() {
             return Ok(());
         }
-        if self.chat_execution_binding(chat_id).is_some() {
+        if self.checked_chat_execution_binding(chat_id)?.is_some() {
             return Err(EngineError::Other(format!(
                 "Chat {chat_id} has an execution binding but no live chat row; it will not be \
                  recreated"
@@ -1538,7 +1567,7 @@ impl WorkspaceHost {
 
     /// Refuse to move a bound Chat away from its captured execution root.
     pub fn guard_bound_retarget(&self, chat_id: &str, cwd: &str) -> Result<(), EngineError> {
-        let Some(binding) = self.chat_execution_binding(chat_id) else {
+        let Some(binding) = self.checked_chat_execution_binding(chat_id)? else {
             return Ok(());
         };
         let root = binding.resolved.configuration.execution_root;

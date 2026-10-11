@@ -1533,9 +1533,11 @@ impl Inner {
     /// session. No stored session (or the explicit empty-id tombstone) starts
     /// fresh. Unbound Chats keep today's cwd-gated behavior.
     fn checked_resume_for(&self, chat_id: &str, cwd: &str) -> Result<Option<String>, EngineError> {
-        let bound = self
-            .workspace()
-            .is_some_and(|ws| ws.chat_execution_binding(chat_id).is_some());
+        // A malformed binding row is bound-and-invalid (configInvalid).
+        let bound = match self.workspace() {
+            Some(ws) => ws.checked_chat_execution_binding(chat_id)?.is_some(),
+            None => false,
+        };
         if !bound {
             return Ok(self.resume_for(chat_id, cwd));
         }

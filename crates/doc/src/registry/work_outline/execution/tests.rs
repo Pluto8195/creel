@@ -663,3 +663,47 @@ fn space_deletion_and_sweep_cover_execution_rows() {
         RowState::Tombstoned
     );
 }
+
+#[test]
+fn malformed_binding_rows_read_as_bound_and_invalid_not_unbound() {
+    let mut doc = doc_with_spaces("dev-a");
+    let w = item(&mut doc, "w", None);
+    configure(
+        &mut doc,
+        "c",
+        work_item(&w),
+        Some(config("/ws", vec![binding("ui", true)])),
+    )
+    .unwrap();
+    doc.upsert_chat(&space_chat("chat-1", Some(SPACE))).unwrap();
+    assert_eq!(
+        doc.chat_execution_binding_state("chat-1"),
+        ChatExecutionBindingState::Absent
+    );
+    capture(&mut doc, "chat-1", &work_item(&w), "launch-1").unwrap();
+    assert!(matches!(
+        doc.chat_execution_binding_state("chat-1"),
+        ChatExecutionBindingState::Bound(_)
+    ));
+    // A newer writer stores a `resolved` this build cannot decode.
+    let mut row = doc.row(KIND_CHAT_EXECUTION_BINDINGS, "chat-1").unwrap();
+    row.fields
+        .insert("resolved".into(), json!({"schema": 2, "roots": ["/ws"]}));
+    row.seq = 1_000;
+    let _ = doc.apply_rows(1_000, vec![row]);
+    let state = doc.chat_execution_binding_state("chat-1");
+    assert!(state.is_bound(), "{state:?}");
+    assert!(matches!(state, ChatExecutionBindingState::Malformed { .. }));
+    assert_eq!(state.checked().unwrap_err().code(), "configInvalid");
+    // Display reads see no binding; the gate state never reads as unbound.
+    assert!(doc.chat_execution_binding("chat-1").is_none());
+    // A row without its Space is malformed too.
+    let mut row = doc.row(KIND_CHAT_EXECUTION_BINDINGS, "chat-1").unwrap();
+    row.fields.remove("spaceId");
+    row.seq = 1_001;
+    let _ = doc.apply_rows(1_001, vec![row]);
+    assert!(matches!(
+        doc.chat_execution_binding_state("chat-1"),
+        ChatExecutionBindingState::Malformed { .. }
+    ));
+}

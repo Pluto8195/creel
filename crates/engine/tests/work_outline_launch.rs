@@ -1225,3 +1225,101 @@ async fn per_chat_worktree_is_not_an_execution_exception_but_an_override_is() {
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 2: a malformed binding is bound-and-invalid, never unbound
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_binding_rejects_every_gate_instead_of_reading_as_unbound() {
+    let rig = rig().await;
+    let reply = launch(&rig, &params(&rig, "op-bad", "launch bad"))
+        .await
+        .expect("launch");
+    let chat = reply.chat_id.clone();
+    wait_for(
+        || turns_with(&rig, "launch bad").len() == 1,
+        "the first turn",
+    )
+    .await;
+    settle(&rig, &chat).await;
+    // A newer build rewrites the binding in a shape this build cannot read.
+    let mut row = rig
+        .core
+        .workspace
+        .registry_row("chatExecutionBindings", &chat)
+        .unwrap();
+    row.fields.insert(
+        "resolved".into(),
+        json!({"schema": 2, "roots": ["/elsewhere"]}),
+    );
+    row.seq = 1_000_000;
+    rig.core.workspace.apply_registry_rows(1_000_000, vec![row]);
+    assert!(matches!(
+        rig.core.workspace.chat_execution_binding_state(&chat),
+        zeron_proto::ChatExecutionBindingState::Malformed { .. }
+    ));
+
+    // Plain Run (any device, MCP send): rejected at drain, nothing written.
+    let elsewhere = rig.root.join("elsewhere");
+    init_repo(&elsewhere, "e");
+    let messages = user_messages(&rig, &chat);
+    let id = queue_run(&rig, &chat, "launch bad raw", &elsewhere.to_string_lossy());
+    assert_rejected_with(&wait_command(&rig, &chat, &id).await, "configInvalid");
+    assert_eq!(user_messages(&rig, &chat), messages);
+    assert!(turns_with(&rig, "launch bad raw").is_empty());
+    // Work-item continue.
+    let error = continue_chat(&rig, &chat, "op-bad-next", "launch bad next")
+        .await
+        .expect_err("malformed binding blocks continue");
+    assert!(error.contains("execution-scope:configInvalid"), "{error}");
+    // Retarget and new worktree.
+    let error = rig
+        .client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "setChatCwd", "chatId": chat, "cwd": elsewhere.to_string_lossy() }),
+        )
+        .await
+        .expect_err("SetChatCwd refuses");
+    assert!(
+        error.to_string().contains("execution-scope:configInvalid"),
+        "{error}"
+    );
+    let error = rig
+        .client
+        .call(
+            methods::CREATE_CHAT_WORKTREE,
+            json!({ "chatId": chat, "repoPath": rig.repo.to_string_lossy(), "name": "nope" }),
+        )
+        .await
+        .expect_err("CreateChatWorktree refuses");
+    assert!(
+        error.to_string().contains("execution-scope:configInvalid"),
+        "{error}"
+    );
+    assert!(!rig.repo.join(".worktrees/workspace/nope").exists());
+    // The relaunch of the same operation refuses too.
+    let error = launch(&rig, &params(&rig, "op-bad", "launch bad"))
+        .await
+        .expect_err("relaunch refuses");
+    assert!(
+        error.message.contains("execution-scope:configInvalid"),
+        "{error:?}"
+    );
+    // Validation by Chat reports it rather than "no binding".
+    let value = rig
+        .client
+        .call(
+            methods::VALIDATE_EXECUTION_CONFIGURATION,
+            json!({ "chatId": chat }),
+        )
+        .await
+        .expect("validation reply");
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(
+        value["errors"][0]["error"]["code"], "configInvalid",
+        "{value}"
+    );
+    rig.core.shutdown().await;
+}

@@ -201,6 +201,7 @@ fn known_remediations() -> Vec<&'static str> {
         },
         E::SpaceMissing { space_id: s() },
         E::RootMissing { path: s() },
+        E::HomeDirectoryRoot { path: s() },
         E::RepositoryMissing {
             repo_id: s(),
             path: s(),
@@ -241,6 +242,16 @@ fn known_remediations() -> Vec<&'static str> {
         },
         E::MultiplePrimary { repo_ids: vec![] },
         E::ConfigInvalid { reason: s() },
+        E::malformed_chat_binding(""),
+        E::ResumeRootMismatch {
+            expected_path: s(),
+            found_path: s(),
+        },
+        E::BoundChatRetarget {
+            chat_id: s(),
+            execution_root: s(),
+            requested_path: s(),
+        },
     ]
     .iter()
     .map(ExecutionValidationError::remediation)

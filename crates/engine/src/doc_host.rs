@@ -1180,6 +1180,13 @@ impl DocHost {
             .map(|binding| binding.resolved.configuration.execution_root)
     }
 
+    /// Whether the Chat has a binding row at all (a malformed row counts:
+    /// it is bound-and-invalid, never unbound).
+    pub(crate) fn chat_is_bound(&self, chat_id: &str) -> bool {
+        self.workspace()
+            .is_some_and(|ws| ws.chat_execution_binding_state(chat_id).is_bound())
+    }
+
     /// The dispatch-time execution gate (contract 6.3, discoveries 11):
     /// `Ok(None)` for an unbound Chat (today's behavior applies unchanged),
     /// `Ok(Some(validated))` for a bound Chat whose binding validates on
@@ -1189,7 +1196,7 @@ impl DocHost {
         &self,
         chat_id: &str,
     ) -> Result<Option<zeron_proto::ValidatedExecution>, EngineError> {
-        if self.bound_execution_root(chat_id).is_none() {
+        if !self.chat_is_bound(chat_id) {
             return Ok(None);
         }
         let Some(scope) = self.execution_scope() else {

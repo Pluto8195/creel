@@ -29,10 +29,10 @@ use zeron_proto::work_outline::{
     WorkItemView, WorkOutlineActor, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineRepair,
 };
 use zeron_proto::work_outline_execution::{
-    ChatExecutionBindingView, ConfigureExecutionParams, ExecutionConfiguration,
-    ExecutionConfigurationView, ExecutionScope, ExecutionSpace, ResolvedExecutionConfiguration,
-    WorkItemExecutionException, check_execution_configuration, execution_limits,
-    resolve_execution_configuration,
+    ChatExecutionBindingState, ChatExecutionBindingView, ConfigureExecutionParams,
+    ExecutionConfiguration, ExecutionConfigurationView, ExecutionScope, ExecutionSpace,
+    ResolvedExecutionConfiguration, WorkItemExecutionException, check_execution_configuration,
+    execution_limits, resolve_execution_configuration,
 };
 
 use super::materialize::resolver_views;
@@ -383,10 +383,31 @@ impl RegistryDoc {
             .collect()
     }
 
-    /// The Chat's captured binding, if any.
+    /// The Chat's captured binding, if it decodes (display and diff data;
+    /// gates use [`Self::chat_execution_binding_state`], which keeps a
+    /// malformed row bound).
     pub fn chat_execution_binding(&self, chat_id: &str) -> Option<ChatExecutionBindingView> {
-        self.overlay_row(KIND_CHAT_EXECUTION_BINDINGS, chat_id)
-            .and_then(|row| decode_chat_execution_binding(&row).ok())
+        self.chat_execution_binding_state(chat_id)
+            .binding()
+            .cloned()
+    }
+
+    /// The Chat's binding row as a gate reads it: absent, bound, or a live
+    /// row that does not decode (malformed or a newer schema), which is
+    /// bound-and-invalid, never unbound.
+    pub fn chat_execution_binding_state(&self, chat_id: &str) -> ChatExecutionBindingState {
+        let Some(row) = self.overlay_row(KIND_CHAT_EXECUTION_BINDINGS, chat_id) else {
+            return ChatExecutionBindingState::Absent;
+        };
+        match decode_chat_execution_binding(&row) {
+            Ok(view) => ChatExecutionBindingState::Bound(Box::new(view)),
+            Err(repair) => ChatExecutionBindingState::Malformed {
+                detail: match repair {
+                    WorkOutlineRepair::MissingSpace { .. } => "the row has no Space".into(),
+                    _ => "the captured configuration does not decode".into(),
+                },
+            },
+        }
     }
 
     // ── writes ──────────────────────────────────────────────────────────────
