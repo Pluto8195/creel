@@ -38,6 +38,11 @@ use crate::work_outline_instructions::{
     InstructionTurnBoundary, WorkItemInstructionView, resolve_effective_instructions_in,
 };
 pub use crate::work_outline_order::MAX_ORDER_KEY_LEN;
+use crate::work_outline_user_actions::{
+    ApproveWorkItemInstructionProposalParams, CreateUserActionRequestParams,
+    ProposeWorkItemInstructionParams, RejectWorkItemInstructionProposalParams,
+    ResolveUserActionRequestParams, UserActionRequestView, WorkItemInstructionProposalView,
+};
 
 /// Hard limits enforced by typed mutators (doc crate) and the engine service,
 /// and again by the edge as a backstop. Registry audit section 6.
@@ -101,6 +106,8 @@ pub mod roles {
     pub const REQUEST: &str = "request";
     pub const INSTRUCTION: &str = "instruction";
     pub const ITEM: &str = "item";
+    /// Milestone 4: `workItemInstructionProposals` row ids.
+    pub const PROPOSAL: &str = "proposal";
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -157,7 +164,7 @@ pub fn external_reference_id(
 /// Who performed a write. Provenance only; never an authorization input on
 /// the client. On the registry row this is one JSON field (`k` is accepted as
 /// an alias of `kind`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkOutlineActor {
     #[serde(default, alias = "k")]
@@ -302,9 +309,13 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for FieldPatch<T> {
 /// `user_action_required_count` cover the item and all of its descendants
 /// (the item itself included); which descendants are counted (for example
 /// whether archived items are) is fixed by the materializer and documented
-/// there. `unresolved_user_action_count` is the item's own open requests and
-/// `associated_chat_count` its own associated Chats (both 0 until their
-/// milestones).
+/// there. The status counts use the STORED status, so an item that is
+/// `userActionRequired` also counts under its base status
+/// (`user_action_required_count` overlaps them). `unresolved_user_action_count`
+/// is the item's own unresolved (open, non-deduped) requests,
+/// `subtree_unresolved_user_action_count` the same summed over the item and
+/// its counted descendants (Milestone 4), and `associated_chat_count` its own
+/// associated Chats.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkItemRollup {
@@ -320,6 +331,8 @@ pub struct WorkItemRollup {
     pub unresolved_user_action_count: u32,
     #[serde(default)]
     pub associated_chat_count: u32,
+    #[serde(default)]
+    pub subtree_unresolved_user_action_count: u32,
 }
 
 fn default_true() -> bool {
@@ -576,10 +589,9 @@ pub enum WorkOutlineRepair {
 /// `resolveEffectiveInstructions` query). Milestone 3 added
 /// `executionSpace`, `executionConfigurations`, `chatExecutionBindings`, and
 /// `executionExceptions` (resolution on demand with
-/// [`WorkOutlineSnapshot::resolve_execution`]). Reserved for later milestones
-/// (do NOT add before their milestone; each is an additive, defaulted field):
-/// `userActionRequests` and `instructionProposals` (M4). Counts in
-/// [`WorkItemRollup`] that depend on them are 0 until then.
+/// [`WorkOutlineSnapshot::resolve_execution`]). Milestone 4 added
+/// `userActionRequests` and `instructionProposals` and populates the
+/// request-dependent [`WorkItemRollup`] counts and `effectiveStatus`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkOutlineSnapshot {
@@ -650,6 +662,17 @@ pub struct WorkOutlineSnapshot {
     /// such Chat, sorted by item id (Milestone 3).
     #[serde(default)]
     pub execution_exceptions: Vec<WorkItemExecutionException>,
+    /// Every open request of this Space (deduped duplicates included and
+    /// flagged) plus the most recently resolved ones (at most
+    /// `user_action_limits::MAX_RECENT_RESOLVED_REQUESTS`, by resolution
+    /// time), sorted by `(createdAt, id)` (Milestone 4).
+    #[serde(default)]
+    pub user_action_requests: Vec<UserActionRequestView>,
+    /// Every pending proposal of this Space plus the most recently reviewed
+    /// ones (at most `user_action_limits::MAX_RECENT_REVIEWED_PROPOSALS`, by
+    /// review time), sorted by `(createdAt, id)` (Milestone 4).
+    #[serde(default)]
+    pub instruction_proposals: Vec<WorkItemInstructionProposalView>,
 }
 
 impl WorkOutlineSnapshot {
@@ -683,6 +706,8 @@ impl WorkOutlineSnapshot {
             && self.execution_configurations == other.execution_configurations
             && self.chat_execution_bindings == other.chat_execution_bindings
             && self.execution_exceptions == other.execution_exceptions
+            && self.user_action_requests == other.user_action_requests
+            && self.instruction_proposals == other.instruction_proposals
     }
 
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
@@ -720,6 +745,28 @@ impl WorkOutlineSnapshot {
         self.chat_execution_bindings
             .iter()
             .find(|binding| binding.chat_id == chat_id)
+    }
+
+    pub fn user_action_request(&self, id: &str) -> Option<&UserActionRequestView> {
+        self.user_action_requests
+            .iter()
+            .find(|request| request.id == id)
+    }
+
+    /// Unresolved (open, non-deduped) requests of one item.
+    pub fn unresolved_user_action_requests<'a>(
+        &'a self,
+        work_item_id: &'a str,
+    ) -> impl Iterator<Item = &'a UserActionRequestView> + 'a {
+        self.user_action_requests
+            .iter()
+            .filter(move |request| request.work_item_id == work_item_id && request.is_unresolved())
+    }
+
+    pub fn instruction_proposal(&self, id: &str) -> Option<&WorkItemInstructionProposalView> {
+        self.instruction_proposals
+            .iter()
+            .find(|proposal| proposal.id == id)
     }
 
     /// The exception Chats of one item (empty when none).
@@ -788,6 +835,17 @@ pub struct WorkItemChanges {
     pub status: Option<WorkItemStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit_parent_instructions: Option<bool>,
+    /// Milestone 4: with `status: completed`, record an explicit resolution
+    /// (note [`crate::COMPLETION_RESOLUTION_NOTE`]) for every open request of
+    /// the item in the same batch. When `false` (the default) completing an
+    /// item that has open requests fails with `openUserActionRequests`.
+    /// Ignored for other statuses; agents may never set it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub resolve_open_requests: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// `updateWorkItem`.
@@ -1002,6 +1060,12 @@ pub enum WorkOutlineMutation {
     ApplyInstructionRevision(ApplyInstructionRevisionParams),
     // ── Milestone 3 ──
     ConfigureExecution(ConfigureExecutionParams),
+    // ── Milestone 4 ──
+    CreateUserActionRequest(CreateUserActionRequestParams),
+    ResolveUserActionRequest(ResolveUserActionRequestParams),
+    ProposeWorkItemInstruction(ProposeWorkItemInstructionParams),
+    ApproveWorkItemInstructionProposal(ApproveWorkItemInstructionProposalParams),
+    RejectWorkItemInstructionProposal(RejectWorkItemInstructionProposalParams),
 }
 
 impl WorkOutlineMutation {
@@ -1025,6 +1089,39 @@ impl WorkOutlineMutation {
             Self::CreateInstructionRevision(p) => &p.operation_id,
             Self::ApplyInstructionRevision(p) => &p.operation_id,
             Self::ConfigureExecution(p) => &p.operation_id,
+            Self::CreateUserActionRequest(p) => &p.operation_id,
+            Self::ResolveUserActionRequest(p) => &p.operation_id,
+            Self::ProposeWorkItemInstruction(p) => &p.operation_id,
+            Self::ApproveWorkItemInstructionProposal(p) => &p.operation_id,
+            Self::RejectWorkItemInstructionProposal(p) => &p.operation_id,
+        }
+    }
+
+    /// The wire `op` name (for logs and authorization errors).
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Self::CreateWorkItem(_) => "createWorkItem",
+            Self::UpdateWorkItem(_) => "updateWorkItem",
+            Self::MoveWorkItem(_) => "moveWorkItem",
+            Self::ArchiveWorkItem(_) => "archiveWorkItem",
+            Self::RestoreWorkItem(_) => "restoreWorkItem",
+            Self::AssignChatToWorkItem(_) => "assignChatToWorkItem",
+            Self::RemoveChatFromWorkItem(_) => "removeChatFromWorkItem",
+            Self::CreateWorkItemExternalReference(_) => "createWorkItemExternalReference",
+            Self::RemoveWorkItemExternalReference(_) => "removeWorkItemExternalReference",
+            Self::RepairWorkOutline(_) => "repairWorkOutline",
+            Self::CreateWorkItemInstruction(_) => "createWorkItemInstruction",
+            Self::UpdateWorkItemInstruction(_) => "updateWorkItemInstruction",
+            Self::MoveWorkItemInstruction(_) => "moveWorkItemInstruction",
+            Self::ArchiveWorkItemInstruction(_) => "archiveWorkItemInstruction",
+            Self::CreateInstructionRevision(_) => "createInstructionRevision",
+            Self::ApplyInstructionRevision(_) => "applyInstructionRevision",
+            Self::ConfigureExecution(_) => "configureExecution",
+            Self::CreateUserActionRequest(_) => "createUserActionRequest",
+            Self::ResolveUserActionRequest(_) => "resolveUserActionRequest",
+            Self::ProposeWorkItemInstruction(_) => "proposeWorkItemInstruction",
+            Self::ApproveWorkItemInstructionProposal(_) => "approveWorkItemInstructionProposal",
+            Self::RejectWorkItemInstructionProposal(_) => "rejectWorkItemInstructionProposal",
         }
     }
 
@@ -1048,8 +1145,11 @@ impl WorkOutlineMutation {
 /// `createWorkItemExternalReference` -> `referenceId`,
 /// `createWorkItemInstruction` -> `instructionId`,
 /// `createInstructionRevision` -> `revisionId`,
-/// `applyInstructionRevision` -> `applicationId`); every other operation
-/// replies `{}`. [`CreateWorkItemResult`] and
+/// `applyInstructionRevision` -> `applicationId`,
+/// `createUserActionRequest` -> `userActionRequestId`,
+/// `proposeWorkItemInstruction` -> `proposalId`,
+/// `approveWorkItemInstructionProposal` -> `instructionId`); every other
+/// operation replies `{}`. [`CreateWorkItemResult`] and
 /// [`CreateWorkItemExternalReferenceResult`] decode from the same reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1064,6 +1164,10 @@ pub struct WorkOutlineMutateReply {
     pub revision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub application_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_action_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_id: Option<String>,
 }
 
 impl WorkOutlineMutateReply {
@@ -1089,6 +1193,16 @@ impl WorkOutlineMutateReply {
     /// The `applyInstructionRevision` result.
     pub fn into_application_id(self) -> Result<String, WorkOutlineError> {
         Self::require(self.application_id, "applicationId")
+    }
+
+    /// The `createUserActionRequest` result.
+    pub fn into_user_action_request_id(self) -> Result<String, WorkOutlineError> {
+        Self::require(self.user_action_request_id, "userActionRequestId")
+    }
+
+    /// The `proposeWorkItemInstruction` result.
+    pub fn into_proposal_id(self) -> Result<String, WorkOutlineError> {
+        Self::require(self.proposal_id, "proposalId")
     }
 
     /// The `createWorkItem` result; `Invalid` if the host replied without an id.
@@ -1194,6 +1308,13 @@ pub enum WorkOutlineErrorCode {
     /// The harness or host cannot deliver Work Outline instructions; the
     /// message carries the upgrade path.
     Capability,
+    /// Completing a work item that still has open user action requests
+    /// without `resolveOpenRequests` (Milestone 4). The message starts with
+    /// the count ([`WorkOutlineError::open_request_count`]).
+    OpenUserActionRequests,
+    /// The originating agent is not allowed to perform this operation
+    /// (Milestone 4 agent policy, contract section 8).
+    Unauthorized,
     /// The host lacks the Work Outline capability or operation.
     #[serde(other)]
     Unsupported,
@@ -1213,6 +1334,8 @@ impl WorkOutlineErrorCode {
             Self::WritesDisabled => "writesDisabled",
             Self::RevisionIntegrity => "revisionIntegrity",
             Self::Capability => "capability",
+            Self::OpenUserActionRequests => "openUserActionRequests",
+            Self::Unauthorized => "unauthorized",
             Self::Unsupported => "unsupported",
         }
     }
@@ -1230,6 +1353,8 @@ impl WorkOutlineErrorCode {
             "writesDisabled" => Self::WritesDisabled,
             "revisionIntegrity" => Self::RevisionIntegrity,
             "capability" => Self::Capability,
+            "openUserActionRequests" => Self::OpenUserActionRequests,
+            "unauthorized" => Self::Unauthorized,
             _ => Self::Unsupported,
         }
     }
@@ -1256,6 +1381,34 @@ impl WorkOutlineError {
             code,
             message: message.into(),
         }
+    }
+
+    /// `openUserActionRequests`: "`N` open user action request(s) …".
+    pub fn open_user_action_requests(count: usize) -> Self {
+        let noun = if count == 1 { "request" } else { "requests" };
+        Self::new(
+            WorkOutlineErrorCode::OpenUserActionRequests,
+            format!(
+                "{count} open user action {noun}: resolve {} or confirm that completing the \
+                 work item resolves {}",
+                if count == 1 { "it" } else { "them" },
+                if count == 1 { "it" } else { "them" },
+            ),
+        )
+    }
+
+    /// The count an `openUserActionRequests` error carries (its message's
+    /// leading integer); `None` for any other error.
+    pub fn open_request_count(&self) -> Option<usize> {
+        if self.code != WorkOutlineErrorCode::OpenUserActionRequests {
+            return None;
+        }
+        self.message.split_whitespace().next()?.parse().ok()
+    }
+
+    /// `unauthorized` for an agent operation outside its policy.
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(WorkOutlineErrorCode::Unauthorized, message)
     }
 
     /// `work-outline/<code>: <message>`.
@@ -1488,6 +1641,7 @@ mod tests {
             description: FieldPatch::Set("d".into()),
             status: Some(WorkItemStatus::Completed),
             inherit_parent_instructions: Some(false),
+            resolve_open_requests: false,
         };
         round_trip(
             &all,
@@ -1535,6 +1689,7 @@ mod tests {
                     user_action_required_count: 4,
                     unresolved_user_action_count: 5,
                     associated_chat_count: 6,
+                    subtree_unresolved_user_action_count: 7,
                 },
             }],
             assignments: vec![WorkItemChatAssignmentView {
@@ -1572,6 +1727,10 @@ mod tests {
             execution_configurations: Vec::new(),
             chat_execution_bindings: Vec::new(),
             execution_exceptions: Vec::new(),
+            // Request and proposal shapes are pinned in
+            // `work_outline_user_actions::tests`.
+            user_action_requests: Vec::new(),
+            instruction_proposals: Vec::new(),
         };
         let actor_json =
             json!({"kind":"agent","deviceId":"dev-1","chatId":"chat-1","messageId":"msg-1"});
@@ -1610,7 +1769,8 @@ mod tests {
                         "completedCount": 3,
                         "userActionRequiredCount": 4,
                         "unresolvedUserActionCount": 5,
-                        "associatedChatCount": 6
+                        "associatedChatCount": 6,
+                        "subtreeUnresolvedUserActionCount": 7
                     }
                 }],
                 "assignments": [{
@@ -1645,7 +1805,9 @@ mod tests {
                 "revisions": [],
                 "executionConfigurations": [],
                 "chatExecutionBindings": [],
-                "executionExceptions": []
+                "executionExceptions": [],
+                "userActionRequests": [],
+                "instructionProposals": []
             }),
         );
     }
@@ -1666,8 +1828,7 @@ mod tests {
         assert!(item.child_ids.is_empty() && item.parent_work_item_id.is_none());
         // Unknown extra fields from a newer peer are ignored.
         let newer: WorkOutlineSnapshot =
-            serde_json::from_value(json!({"spaceId":"s","userActionRequests":[1,2],"future":{}}))
-                .unwrap();
+            serde_json::from_value(json!({"spaceId":"s","futureList":[1,2],"future":{}})).unwrap();
         assert_eq!(newer.space_id, "s");
     }
 
@@ -1702,7 +1863,9 @@ mod tests {
                 "revisions": [],
                 "executionConfigurations": [],
                 "chatExecutionBindings": [],
-                "executionExceptions": []
+                "executionExceptions": [],
+                "userActionRequests": [],
+                "instructionProposals": []
             })
         );
     }
@@ -1860,6 +2023,7 @@ mod tests {
                     description: FieldPatch::Clear,
                     status: Some(WorkItemStatus::Completed),
                     inherit_parent_instructions: Some(true),
+                    resolve_open_requests: false,
                 },
                 operation_id: "op".into(),
             }),

@@ -34,6 +34,13 @@
 //!   layer (paths may live on another device, so no filesystem access).
 //! - [`WorkOutlineService::capture_chat_execution_binding`]: the engine
 //!   entry point the Milestone 3 start workflow calls once per launch.
+//! - Milestone 4: every mutation takes its originating actor
+//!   ([`WorkOutlineService::mutate_as`]); `WorkOutlineMutate` over RPC is the
+//!   local user's ([`WorkOutlineService::mutate`]). Agent actors are checked
+//!   against the narrow agent policy ([`WorkOutlineService::authorize_agent`],
+//!   contract section 8) inside the registry lock, after the replay check (a
+//!   replay writes nothing). [`WorkOutlineService::agent_context`] is what an
+//!   agent may read.
 //! - `WatchWorkOutline(spaceId)`: driven by the registry change counter
 //!   (WATCH_PREVIEWS pattern): clone inputs under the lock, materialize off
 //!   the async runtime, coalesce bursts, emit only frames whose content
@@ -142,6 +149,18 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
             application_id: Some(derive_id(&p.operation_id, roles::APPLICATION)),
             ..Default::default()
         },
+        WorkOutlineMutation::CreateUserActionRequest(p) => WorkOutlineMutateReply {
+            user_action_request_id: Some(derive_id(&p.operation_id, roles::REQUEST)),
+            ..Default::default()
+        },
+        WorkOutlineMutation::ProposeWorkItemInstruction(p) => WorkOutlineMutateReply {
+            proposal_id: Some(derive_id(&p.operation_id, roles::PROPOSAL)),
+            ..Default::default()
+        },
+        WorkOutlineMutation::ApproveWorkItemInstructionProposal(p) => WorkOutlineMutateReply {
+            instruction_id: Some(derive_id(&p.proposal_id, roles::INSTRUCTION)),
+            ..Default::default()
+        },
         _ => WorkOutlineMutateReply::default(),
     }
 }
@@ -162,10 +181,109 @@ impl WorkOutlineService {
         }
     }
 
-    /// Handle one `WorkOutlineMutate` call.
+    /// The local user on this device (every RPC `WorkOutlineMutate` call).
+    pub fn local_user(&self) -> WorkOutlineActor {
+        WorkOutlineActor {
+            kind: WorkOutlineActorKind::User,
+            device_id: self.workspace.device_id().to_owned(),
+            chat_id: None,
+            message_id: None,
+        }
+    }
+
+    /// An agent acting for `chat_id` on this device (optionally from one
+    /// message), the actor agent tools pass to [`Self::mutate_as`].
+    pub fn agent_actor(&self, chat_id: &str, message_id: Option<&str>) -> WorkOutlineActor {
+        WorkOutlineActor {
+            kind: WorkOutlineActorKind::Agent,
+            device_id: self.workspace.device_id().to_owned(),
+            chat_id: Some(chat_id.to_owned()),
+            message_id: message_id.map(str::to_owned),
+        }
+    }
+
+    /// Handle one `WorkOutlineMutate` RPC call: the local user's write.
     pub fn mutate(
         &self,
         mutation: &WorkOutlineMutation,
+    ) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
+        self.mutate_as(mutation, &self.local_user())
+    }
+
+    /// Whether an agent acting for Chat `actor_chat_id` may perform
+    /// `mutation` (contract section 8), from the local replica: its assigned
+    /// item and descendants for children and status (`active` / `completed`
+    /// only, never `resolveOpenRequests`), associating only its own Chat
+    /// within its Space, requests on its assigned item with itself as origin
+    /// and resolving requests it raised, and proposals for its item, its
+    /// parent, or its Space root. Everything else is `unauthorized`.
+    /// [`Self::mutate_as`] re-checks under the registry lock, so this is a
+    /// preflight for agent tools, not a substitute.
+    pub fn authorize_agent(
+        &self,
+        actor_chat_id: &str,
+        mutation: &WorkOutlineMutation,
+    ) -> Result<(), WorkOutlineError> {
+        self.workspace
+            .authorize_agent_work_outline(actor_chat_id, mutation)
+    }
+
+    /// What an agent acting for `chat_id` may read: its assigned item (as
+    /// materialized, with effective status and rollups), the item's effective
+    /// instructions, and the open requests the Chat raised. `unauthorized`
+    /// when the Chat is missing, projectless, or not associated with a live
+    /// item.
+    pub fn agent_context(
+        &self,
+        chat_id: &str,
+    ) -> Result<zeron_proto::AgentWorkItemContext, WorkOutlineError> {
+        let denied = |message: &str| WorkOutlineError::unauthorized(message);
+        let chat = self
+            .workspace
+            .chat(chat_id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| denied("The agent's Chat no longer exists"))?;
+        let space_id = chat
+            .space_id
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| denied("The agent's Chat is not in a project"))?;
+        let snapshot = self.snapshot(&space_id);
+        let work_item_id = snapshot
+            .assignments
+            .iter()
+            .find(|a| {
+                a.chat_id == chat_id
+                    && a.state == zeron_proto::WorkItemChatAssignmentState::Associated
+            })
+            .and_then(|a| a.work_item_id.clone())
+            .ok_or_else(|| denied("The agent's Chat is not associated with a work item"))?;
+        let work_item = snapshot
+            .item(&work_item_id)
+            .cloned()
+            .ok_or_else(|| denied("The agent's Chat is not associated with a work item"))?;
+        Ok(zeron_proto::AgentWorkItemContext {
+            chat_id: chat_id.to_owned(),
+            effective_instructions: snapshot.effective_instructions(&work_item_id),
+            open_user_action_requests: snapshot
+                .user_action_requests
+                .iter()
+                .filter(|r| r.chat_id == chat_id && r.is_open())
+                .cloned()
+                .collect(),
+            space_id,
+            work_item,
+        })
+    }
+
+    /// Apply one mutation as `actor` (kill switch, replay ledger, then one
+    /// registry write). Agent actors (`kind: agent`, `chatId` required) are
+    /// authorized under the registry lock by the doc layer; user actors are
+    /// unchanged.
+    pub fn mutate_as(
+        &self,
+        mutation: &WorkOutlineMutation,
+        actor: &WorkOutlineActor,
     ) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
         if writes_disabled() {
             return Err(WorkOutlineError::new(
@@ -199,17 +317,9 @@ impl WorkOutlineService {
             recent.insert(operation_id, hash, reply.clone());
             return Ok(reply);
         }
-        // The RPC surface cannot tell agents from users yet (Milestone 4 adds
-        // per-run tokens); every Milestone 1 write is the local user's.
-        let actor = WorkOutlineActor {
-            kind: WorkOutlineActorKind::User,
-            device_id: self.workspace.device_id().to_owned(),
-            chat_id: None,
-            message_id: None,
-        };
         let reply =
             self.workspace
-                .work_outline_mutate(mutation, &actor, &[operation_key, inputs_key])?;
+                .work_outline_mutate(mutation, actor, &[operation_key, inputs_key])?;
         recent.insert(operation_id, hash, reply.clone());
         Ok(reply)
     }

@@ -15,6 +15,7 @@ pub mod work_outline_execution;
 pub mod work_outline_instructions;
 pub mod work_outline_launch;
 pub mod work_outline_order;
+pub mod work_outline_user_actions;
 pub mod workspace;
 
 pub use agent::*;
@@ -27,6 +28,7 @@ pub use work_outline_execution::*;
 pub use work_outline_instructions::*;
 pub use work_outline_launch::*;
 pub use work_outline_order::*;
+pub use work_outline_user_actions::*;
 pub use workspace::*;
 
 /// Parse "0.2.12" (tolerating a `-suffix`/`+build` tail on the last part)

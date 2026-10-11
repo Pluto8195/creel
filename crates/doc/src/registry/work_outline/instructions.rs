@@ -51,7 +51,7 @@ fn limit(message: impl Into<String>) -> WorkOutlineError {
     err(WorkOutlineErrorCode::LimitExceeded, message)
 }
 
-fn check_instruction_text(text: &str) -> Outcome<()> {
+pub(super) fn check_instruction_text(text: &str) -> Outcome<()> {
     if text.trim().is_empty() {
         return Err(invalid("An instruction needs text"));
     }
@@ -68,7 +68,9 @@ fn check_instruction_text(text: &str) -> Outcome<()> {
 /// Validate creation provenance. `contentHash` is recomputed as
 /// `sha256(excerpt)` whenever an excerpt is present (contract M2 note 5); a
 /// hash without an excerpt is kept as given. An empty source is no source.
-fn checked_source(source: Option<&InstructionSource>) -> Outcome<Option<InstructionSource>> {
+pub(super) fn checked_source(
+    source: Option<&InstructionSource>,
+) -> Outcome<Option<InstructionSource>> {
     let Some(source) = source else {
         return Ok(None);
     };
@@ -160,6 +162,22 @@ fn placement_sibling(placement: &InstructionPlacement) -> Option<&str> {
         } => Some(sibling_instruction_id),
         InstructionPlacement::First | InstructionPlacement::Last => None,
     }
+}
+
+/// A new instruction to plan ([`RegistryDoc::plan_new_instruction`]).
+pub(super) struct NewInstruction<'a> {
+    pub id: &'a str,
+    pub space_id: &'a str,
+    /// `None` = Space root (already validated).
+    pub work_item_id: Option<&'a str>,
+    pub text: &'a str,
+    pub placement: InstructionPlacement,
+    /// Already checked with [`checked_source`].
+    pub source: Option<InstructionSource>,
+    pub source_proposal_id: Option<&'a str>,
+    pub inputs_hash: &'a str,
+    /// Leads the budget error ("Adding this instruction would put …").
+    pub action: &'a str,
 }
 
 /// Order-only writes for re-keyed sibling instructions.
@@ -442,12 +460,44 @@ impl RegistryDoc {
             RowState::Absent => {}
         }
         self.require_space(&p.space_id)?;
-        let work_item_id = match &p.scope {
-            InstructionScope::SpaceRoot => None,
+        let work_item_id = self.instruction_scope_item(&p.space_id, &p.scope)?;
+        let plan = self.plan_new_instruction(
+            NewInstruction {
+                id: &id,
+                space_id: &p.space_id,
+                work_item_id: work_item_id.as_deref(),
+                text: &p.text,
+                placement: p.placement.clone().unwrap_or_default(),
+                source,
+                source_proposal_id: None,
+                inputs_hash: &hash,
+                action: "Adding this instruction",
+            },
+            actor,
+            now_ms,
+        )?;
+        let extra: Vec<(&str, &str)> = work_item_id
+            .as_deref()
+            .map(|w| (KIND_WORK_ITEMS, w))
+            .into_iter()
+            .collect();
+        self.commit(plan, &extra)?;
+        Ok(id)
+    }
+
+    /// The work item of an instruction scope, validated for a new
+    /// instruction: live, in `space_id`, not archived (`None` = Space root).
+    pub(super) fn instruction_scope_item(
+        &self,
+        space_id: &str,
+        scope: &InstructionScope,
+    ) -> Outcome<Option<String>> {
+        match scope {
+            InstructionScope::SpaceRoot => Ok(None),
             InstructionScope::WorkItem { work_item_id } => {
                 check_id("work item", work_item_id)?;
                 let item = self.live_item(work_item_id)?;
-                if item.space_id != p.space_id {
+                if item.space_id != space_id {
                     return Err(err(
                         WorkOutlineErrorCode::CrossSpace,
                         "The work item belongs to another Space",
@@ -459,11 +509,23 @@ impl RegistryDoc {
                         "The work item is archived",
                     ));
                 }
-                Some(work_item_id.clone())
+                Ok(Some(work_item_id.clone()))
             }
-        };
-        let scope = work_item_id.as_deref();
-        let mut instructions = self.instructions_of_space(&p.space_id);
+        }
+    }
+
+    /// Plan the writes of a new instruction (placement re-keys, then the
+    /// create upsert) after the per-scope cap and every affected item's
+    /// budget check. Shared by `createWorkItemInstruction` and proposal
+    /// approval (Milestone 4), which commits it in one batch with the review.
+    pub(super) fn plan_new_instruction(
+        &self,
+        new: NewInstruction<'_>,
+        actor: &WorkOutlineActor,
+        now_ms: i64,
+    ) -> Outcome<Vec<Planned>> {
+        let scope = new.work_item_id;
+        let mut instructions = self.instructions_of_space(new.space_id);
         let siblings = scope_siblings(&instructions, scope, None);
         if siblings.len() >= limits::MAX_INSTRUCTIONS_PER_SCOPE {
             return Err(limit(format!(
@@ -472,55 +534,50 @@ impl RegistryDoc {
                 limits::MAX_INSTRUCTIONS_PER_SCOPE
             )));
         }
-        let placement = p.placement.clone().unwrap_or_default();
-        let index = instruction_placement_index(&siblings, &placement)?;
+        let index = instruction_placement_index(&siblings, &new.placement)?;
         let placed = place(&siblings, index, 1)?;
         instructions.push(WorkItemInstructionView {
-            id: id.clone(),
-            space_id: p.space_id.clone(),
-            work_item_id: work_item_id.clone(),
-            text: p.text.clone(),
+            id: new.id.to_owned(),
+            space_id: new.space_id.to_owned(),
+            work_item_id: scope.map(str::to_owned),
+            text: new.text.to_owned(),
             order_key: placed.keys[0].clone(),
             created_by: Some(actor.clone()),
             created_at: now_ms,
             updated_at: now_ms,
-            source: source.clone(),
-            source_proposal_id: None,
+            source: new.source.clone(),
+            source_proposal_id: new.source_proposal_id.map(str::to_owned),
             archived_at: None,
             archived_by: None,
         });
-        self.check_instruction_budget(
-            &p.space_id,
-            scope,
-            &instructions,
-            "Adding this instruction",
-        )?;
+        self.check_instruction_budget(new.space_id, scope, &instructions, new.action)?;
 
         let mut plan = Vec::new();
         plan_instruction_rekeys(&placed.rekeys, &mut plan);
         let mut set = BTreeMap::from([
-            ("spaceId".to_owned(), json!(p.space_id)),
-            ("text".to_owned(), json!(p.text)),
+            ("spaceId".to_owned(), json!(new.space_id)),
+            ("text".to_owned(), json!(new.text)),
             ("orderKey".to_owned(), json!(placed.keys[0])),
             ("createdBy".to_owned(), actor_row_value(actor)),
             ("createdAt".to_owned(), json!(now_ms)),
             ("updatedAt".to_owned(), json!(now_ms)),
-            ("inputsHash".to_owned(), json!(hash)),
+            ("inputsHash".to_owned(), json!(new.inputs_hash)),
             ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
         ]);
-        if let Some(work_item_id) = &work_item_id {
+        if let Some(work_item_id) = scope {
             set.insert("workItemId".into(), json!(work_item_id));
         }
-        if let Some(source) = &source {
+        if let Some(source) = &new.source {
             set.insert(
                 "source".into(),
                 serde_json::to_value(source).unwrap_or(Value::Null),
             );
         }
-        plan.push(Planned::upsert(KIND_WORK_ITEM_INSTRUCTIONS, &id, set));
-        let extra: Vec<(&str, &str)> = scope.map(|w| (KIND_WORK_ITEMS, w)).into_iter().collect();
-        self.commit(plan, &extra)?;
-        Ok(id)
+        if let Some(proposal_id) = new.source_proposal_id {
+            set.insert("sourceProposalId".into(), json!(proposal_id));
+        }
+        plan.push(Planned::upsert(KIND_WORK_ITEM_INSTRUCTIONS, new.id, set));
+        Ok(plan)
     }
 
     /// `updateWorkItemInstruction`: text only (scope and source are

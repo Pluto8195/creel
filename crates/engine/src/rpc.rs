@@ -814,6 +814,12 @@ impl EngineRpc {
         }
     }
 
+    /// The Work Outline service (agent tools call `authorize_agent`,
+    /// `agent_context`, and `mutate_as` with an agent actor).
+    pub fn work_outline(&self) -> std::sync::Arc<crate::work_outline::WorkOutlineService> {
+        self.work_outline.clone()
+    }
+
     pub fn with_previews(mut self, previews: zeron_preview::PreviewService) -> Self {
         self.previews = Some(previews);
         self

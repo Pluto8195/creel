@@ -111,12 +111,17 @@ pub mod methods {
     /// removeWorkItemExternalReference|repairWorkOutline|
     /// createWorkItemInstruction|updateWorkItemInstruction|
     /// moveWorkItemInstruction|archiveWorkItemInstruction|
-    /// createInstructionRevision|applyInstructionRevision|configureExecution,
-    /// operationId, …}`) →
+    /// createInstructionRevision|applyInstructionRevision|configureExecution|
+    /// createUserActionRequest|resolveUserActionRequest|
+    /// proposeWorkItemInstruction|approveWorkItemInstructionProposal|
+    /// rejectWorkItemInstructionProposal, operationId, …}`) →
     /// `zeron_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
     /// any device may write), so — like `Mutate` — handled locally and NOT
     /// forwardable. Failures are strings `work-outline/<code>: <message>`
-    /// (`WorkOutlineError::from_wire_message`). Later milestones' execution
+    /// (`WorkOutlineError::from_wire_message`). Every RPC call is the local
+    /// user's write; agent tools call the engine's
+    /// `WorkOutlineService::mutate_as` with an agent actor instead (Milestone
+    /// 4 policy, never over this method). Later milestones' execution
     /// operations (`createChatForWorkItem` …) get their own forwardable
     /// methods instead of new `op`s here.
     pub const WORK_OUTLINE_MUTATE: &str = "WorkOutlineMutate";
