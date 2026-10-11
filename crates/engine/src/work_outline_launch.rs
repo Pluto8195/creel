@@ -323,6 +323,32 @@ impl WorkItemLaunchService {
             ));
         }
 
+        // Instruction delivery is needed only when the item has effective
+        // instructions. The decision is stable across retries: an existing
+        // Turn or launch revision of this operation fixes it; otherwise the
+        // item's current effective instructions decide. With none, the
+        // launch writes no revision or application and queues a plain Run
+        // (no selection exists, so ingestion pins nothing), so harnesses
+        // without instruction support can launch; instructions added later
+        // reach the Chat through drift + Apply.
+        let deliver_instructions = self.launch_delivers_instructions(
+            &chat_id,
+            &message_id,
+            op,
+            snapshot
+                .effective_instructions(&p.work_item_id)
+                .entries
+                .is_empty(),
+        )?;
+        // Capability before anything is written (ledger included).
+        let harness = self.doc_host.harness_for_request(
+            &chat_id,
+            &prompt_request(&p.initial_prompt, p.config.as_ref(), ""),
+        );
+        if deliver_instructions {
+            self.require_instruction_support(harness)?;
+        }
+
         self.claim_inputs(op, &inputs_hash)?;
 
         // ── 2. effective configuration + validation + capability ──
@@ -344,8 +370,6 @@ impl WorkItemLaunchService {
             .await
             .map_err(|errors| validation_error(&errors))?;
         let request = self.launch_request(p, &validated);
-        let harness = self.doc_host.harness_for_request(&chat_id, &request);
-        self.require_instruction_support(harness)?;
         self.checkpoint(LaunchStep::Validated)?;
 
         // ── 3. Chat ──
@@ -372,51 +396,59 @@ impl WorkItemLaunchService {
         }
         self.checkpoint(LaunchStep::BindingCaptured)?;
 
-        // ── 6. revision + launch application ──
-        let revision_id = self
-            .mutate(WorkOutlineMutation::CreateInstructionRevision(
-                CreateInstructionRevisionParams {
-                    work_item_id: p.work_item_id.clone(),
-                    operation_id: op.to_owned(),
-                },
-            ))?
-            .into_revision_id()?;
-        self.checkpoint(LaunchStep::RevisionCreated)?;
-        let application_id = self
-            .mutate(WorkOutlineMutation::ApplyInstructionRevision(
-                ApplyInstructionRevisionParams {
-                    chat_id: chat_id.clone(),
+        // ── 6. revision + launch application (only with instructions) ──
+        let (revision_id, application_id, payload) = if deliver_instructions {
+            let revision_id = self
+                .mutate(WorkOutlineMutation::CreateInstructionRevision(
+                    CreateInstructionRevisionParams {
+                        work_item_id: p.work_item_id.clone(),
+                        operation_id: op.to_owned(),
+                    },
+                ))?
+                .into_revision_id()?;
+            self.checkpoint(LaunchStep::RevisionCreated)?;
+            let application_id = self
+                .mutate(WorkOutlineMutation::ApplyInstructionRevision(
+                    ApplyInstructionRevisionParams {
+                        chat_id: chat_id.clone(),
+                        revision_id: revision_id.clone(),
+                        reason: InstructionApplicationReason::Launch,
+                        turn_boundary: Some(InstructionTurnBoundary {
+                            message_id: Some(message_id.clone()),
+                        }),
+                        operation_id: op.to_owned(),
+                    },
+                ))?
+                .into_application_id()?;
+            self.checkpoint(LaunchStep::RevisionApplied)?;
+            let revision = self
+                .workspace
+                .instruction_revision(&revision_id)
+                .ok_or_else(|| {
+                    error(
+                        WorkOutlineErrorCode::NotFound,
+                        "The launch instruction revision is missing",
+                    )
+                })?;
+            let payload = SessionCommandPayload::RunWithInstructions {
+                request,
+                message_id: message_id.clone(),
+                instructions: InstructionRevisionPin {
                     revision_id: revision_id.clone(),
-                    reason: InstructionApplicationReason::Launch,
-                    turn_boundary: Some(InstructionTurnBoundary {
-                        message_id: Some(message_id.clone()),
-                    }),
-                    operation_id: op.to_owned(),
+                    revision_hash: revision.body.hash.clone(),
                 },
-            ))?
-            .into_application_id()?;
-        self.checkpoint(LaunchStep::RevisionApplied)?;
+                context_reset_confirmed: false,
+            };
+            (Some(revision_id), Some(application_id), payload)
+        } else {
+            let payload = SessionCommandPayload::Run {
+                request,
+                message_id: message_id.clone(),
+            };
+            (None, None, payload)
+        };
 
         // ── 7. first Turn, last ──
-        let revision = self
-            .workspace
-            .instruction_revision(&revision_id)
-            .ok_or_else(|| {
-                error(
-                    WorkOutlineErrorCode::NotFound,
-                    "The launch instruction revision is missing",
-                )
-            })?;
-        let pin = InstructionRevisionPin {
-            revision_id: revision_id.clone(),
-            revision_hash: revision.body.hash.clone(),
-        };
-        let payload = SessionCommandPayload::RunWithInstructions {
-            request,
-            message_id: message_id.clone(),
-            instructions: pin,
-            context_reset_confirmed: false,
-        };
         self.ensure_turn_queued(&chat_id, &command_id, &message_id, payload)?;
         self.checkpoint(LaunchStep::TurnQueued)?;
 
@@ -431,6 +463,43 @@ impl WorkItemLaunchService {
             state,
             detail,
         })
+    }
+
+    /// Whether this launch delivers a Work Outline instruction revision (see
+    /// the call site). `no_effective` = the item has no effective
+    /// instructions right now.
+    fn launch_delivers_instructions(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        operation_id: &str,
+        no_effective: bool,
+    ) -> Result<bool, WorkOutlineError> {
+        if self
+            .workspace
+            .chat(chat_id)
+            .map_err(engine_error)?
+            .is_some()
+        {
+            let (latest, _) = self
+                .doc_host
+                .message_command_state(chat_id, message_id)
+                .map_err(engine_error)?;
+            match latest.map(|entry| entry.payload) {
+                Some(SessionCommandPayload::RunWithInstructions { .. }) => return Ok(true),
+                Some(SessionCommandPayload::Run { .. }) => return Ok(false),
+                _ => {}
+            }
+        }
+        let revision = derive_id(operation_id, roles::REVISION);
+        if self
+            .workspace
+            .registry_row_state(zeron_doc::KIND_INSTRUCTION_REVISIONS, &revision)
+            != RowState::Absent
+        {
+            return Ok(true);
+        }
+        Ok(!no_effective)
     }
 
     /// The configuration this launch captures: the override or the item's

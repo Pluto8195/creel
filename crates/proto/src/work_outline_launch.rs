@@ -127,8 +127,12 @@ pub struct CreateChatForWorkItemReply {
     pub chat_id: String,
     pub message_id: String,
     pub command_id: String,
-    pub revision_id: String,
-    pub application_id: String,
+    /// The launch revision and its application; absent when the item had no
+    /// effective instructions (the first Turn is then a plain `Run`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
     /// The execution root the Chat was created in (never retargeted).
     pub execution_root: String,
     pub state: WorkItemLaunchState,
@@ -223,8 +227,8 @@ mod tests {
             chat_id: "c".into(),
             message_id: "m".into(),
             command_id: "k".into(),
-            revision_id: "r".into(),
-            application_id: "a".into(),
+            revision_id: Some("r".into()),
+            application_id: Some("a".into()),
             execution_root: "/repo".into(),
             state: WorkItemLaunchState::Queued,
             detail: None,

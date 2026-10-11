@@ -94,6 +94,12 @@ fn outline_error(text: String) -> WorkOutlineError {
 }
 
 async fn rig() -> Rig {
+    rig_with(InstructionMockHarness::default(), true).await
+}
+
+/// A rig whose mock declares `mock`'s support; `instructions` adds one
+/// Space-root instruction (so every item has effective instructions).
+async fn rig_with(mock: InstructionMockHarness, instructions: bool) -> Rig {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
     let repo = root.join("repo");
@@ -101,7 +107,6 @@ async fn rig() -> Rig {
     let data = root.join("data");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(data.join("device-id"), DEVICE).unwrap();
-    let mock = InstructionMockHarness::default();
     let harnesses = HarnessRegistry::new();
     harnesses.register(Arc::new(mock.clone()));
     let core = EngineCore::assemble(&data, Arc::new(harnesses), HarnessId::Mock, None)
@@ -123,15 +128,9 @@ async fn rig() -> Rig {
         )
         .await
         .unwrap();
-    client
-        .call(
-            methods::WORK_OUTLINE_MUTATE,
-            json!({ "op": "createWorkItemInstruction", "spaceId": SPACE,
-                    "scope": { "type": "spaceRoot" }, "text": "Run the tests first.",
-                    "operationId": "op-instruction" }),
-        )
-        .await
-        .unwrap();
+    if instructions {
+        add_space_instruction(&client, "op-instruction").await;
+    }
     Rig {
         _tmp: tmp,
         core,
@@ -141,6 +140,18 @@ async fn rig() -> Rig {
         repo,
         item: derive_id("op-item", roles::ITEM),
     }
+}
+
+async fn add_space_instruction(client: &RpcClient, op: &str) {
+    client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "createWorkItemInstruction", "spaceId": SPACE,
+                    "scope": { "type": "spaceRoot" }, "text": "Run the tests first.",
+                    "operationId": op }),
+        )
+        .await
+        .unwrap();
 }
 
 fn params(rig: &Rig, op: &str, prompt: &str) -> CreateChatForWorkItemParams {
@@ -352,10 +363,13 @@ async fn launch_creates_each_record_once_and_delivers_the_pinned_revision() {
     assert_eq!(reply.chat_id, derive_id("op-launch", roles::CHAT));
     assert_eq!(reply.message_id, derive_id("op-launch", roles::MESSAGE));
     assert_eq!(reply.command_id, derive_id("op-launch", roles::COMMAND));
-    assert_eq!(reply.revision_id, derive_id("op-launch", roles::REVISION));
     assert_eq!(
-        reply.application_id,
-        derive_id("op-launch", roles::APPLICATION)
+        reply.revision_id.as_deref(),
+        Some(&*derive_id("op-launch", roles::REVISION))
+    );
+    assert_eq!(
+        reply.application_id.as_deref(),
+        Some(&*derive_id("op-launch", roles::APPLICATION))
     );
     assert_eq!(reply.execution_root, rig.repo.to_string_lossy());
     let chat = reply.chat_id.clone();
@@ -368,10 +382,7 @@ async fn launch_creates_each_record_once_and_delivers_the_pinned_revision() {
     settle(&rig, &chat).await;
     let turn = &turns_with(&rig, "launch one")[0];
     // Acceptance 10: the revision captured at queue time is the delivered one.
-    assert_eq!(
-        turn.revision_id.as_deref(),
-        Some(reply.revision_id.as_str())
-    );
+    assert_eq!(turn.revision_id.as_deref(), reply.revision_id.as_deref());
     assert_eq!(run_cwd(&rig, turn), rig.repo.to_string_lossy());
 
     // Records.
@@ -395,7 +406,10 @@ async fn launch_creates_each_record_once_and_delivers_the_pinned_revision() {
     assert!(
         rig.core
             .workspace
-            .registry_row(KIND_INSTRUCTION_REVISIONS, &reply.revision_id)
+            .registry_row(
+                KIND_INSTRUCTION_REVISIONS,
+                reply.revision_id.as_deref().unwrap()
+            )
             .is_some()
     );
     let applications = applications_of(&rig, &chat);
@@ -411,7 +425,7 @@ async fn launch_creates_each_record_once_and_delivers_the_pinned_revision() {
     assert!(matches!(
         &cmds[0].payload,
         SessionCommandPayload::RunWithInstructions { instructions, .. }
-            if instructions.revision_id == reply.revision_id
+            if Some(&instructions.revision_id) == reply.revision_id.as_ref()
     ));
     assert_eq!(user_messages(&rig, &chat), 1);
 
@@ -456,10 +470,7 @@ async fn launch_creates_each_record_once_and_delivers_the_pinned_revision() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let next = turns_with(&rig, "launch next");
     assert_eq!(next.len(), 1);
-    assert_eq!(
-        next[0].revision_id.as_deref(),
-        Some(reply.revision_id.as_str())
-    );
+    assert_eq!(next[0].revision_id.as_deref(), reply.revision_id.as_deref());
     assert_eq!(commands(&rig, &chat).len(), 2);
     rig.core.shutdown().await;
 }
@@ -519,7 +530,7 @@ async fn crash_after_each_step_then_retry_yields_exactly_one_of_each() {
         );
         assert_eq!(
             turns_with(&rig, &prompt)[0].revision_id.as_deref(),
-            Some(reply.revision_id.as_str())
+            reply.revision_id.as_deref()
         );
     }
     // Totals: one per launch.
@@ -1020,7 +1031,7 @@ async fn child_chats_inherit_assignment_binding_and_revision() {
             .workspace
             .selected_instruction_revision("child-1")
             .map(|pin| pin.revision_id),
-        Some(reply.revision_id.clone())
+        reply.revision_id.clone()
     );
     // A retried create is a no-op.
     rig.client
@@ -1085,5 +1096,132 @@ async fn harness_native_subagents_are_not_promoted_to_chats() {
     );
     let inputs = rig.core.workspace.work_outline_inputs(SPACE);
     assert_eq!(inputs.assignments.len(), 1);
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Harnesses without instruction support; per-Chat worktree exceptions
+// ---------------------------------------------------------------------------
+
+fn unsupported_mock() -> InstructionMockHarness {
+    InstructionMockHarness::new(zeron_harness::InstructionSupport::Unsupported {
+        reason: "no channel".into(),
+        upgrade_hint: None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_instructions_launch_without_delivery_on_unsupported_harnesses() {
+    let rig = rig_with(unsupported_mock(), false).await;
+    let reply = launch(&rig, &params(&rig, "op-plain-launch", "launch plain"))
+        .await
+        .expect("launches without instructions");
+    assert!(reply.revision_id.is_none() && reply.application_id.is_none());
+    let chat = reply.chat_id.clone();
+    wait_for(|| turns_with(&rig, "launch plain").len() == 1, "the turn").await;
+    settle(&rig, &chat).await;
+    assert!(turns_with(&rig, "launch plain")[0].revision_id.is_none());
+    let cmds = commands(&rig, &chat);
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(cmds[0].payload, SessionCommandPayload::Run { .. }));
+    assert_eq!(cmds[0].status, SessionCommandStatus::Applied);
+    assert!(applications_of(&rig, &chat).is_empty());
+    assert!(
+        rig.core
+            .workspace
+            .registry_row(
+                KIND_INSTRUCTION_REVISIONS,
+                &derive_id("op-plain-launch", roles::REVISION)
+            )
+            .is_none()
+    );
+    assert!(
+        rig.core
+            .workspace
+            .selected_instruction_revision(&chat)
+            .is_none()
+    );
+    assert!(rig.core.workspace.chat_execution_binding(&chat).is_some());
+    // A replay stays plain even after instructions appear.
+    add_space_instruction(&rig.client, "op-later-instruction").await;
+    let again = launch(&rig, &params(&rig, "op-plain-launch", "launch plain"))
+        .await
+        .expect("replay");
+    assert!(again.revision_id.is_none());
+    assert_eq!(commands(&rig, &chat).len(), 1);
+    // Continue: no selection exists, so ingestion pins nothing.
+    continue_chat(&rig, &chat, "op-plain-next", "launch plain next")
+        .await
+        .expect("continue");
+    wait_for(
+        || turns_with(&rig, "launch plain next").len() == 1,
+        "the next turn",
+    )
+    .await;
+    assert!(
+        commands(&rig, &chat)
+            .iter()
+            .all(|c| matches!(c.payload, SessionCommandPayload::Run { .. }))
+    );
+
+    // Non-empty instructions now: a new launch is refused before anything is
+    // written (no Chat, no ledger claim, no command).
+    let error = launch(&rig, &params(&rig, "op-needs-delivery", "launch needs"))
+        .await
+        .expect_err("capability");
+    assert_eq!(error.code, WorkOutlineErrorCode::Capability);
+    let refused = derive_id("op-needs-delivery", roles::CHAT);
+    assert!(rig.core.workspace.chat(&refused).unwrap().is_none());
+    assert!(
+        rig.core
+            .workspace
+            .chat_execution_binding(&refused)
+            .is_none()
+    );
+    // Same operation id with other inputs is NOT a conflict: nothing was
+    // claimed.
+    let error = launch(&rig, &params(&rig, "op-needs-delivery", "launch needs 2"))
+        .await
+        .expect_err("still capability");
+    assert_eq!(error.code, WorkOutlineErrorCode::Capability);
+    assert!(turns_with(&rig, "launch needs").is_empty());
+    rig.core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn per_chat_worktree_is_not_an_execution_exception_but_an_override_is() {
+    let rig = rig().await;
+    let mut p = params(&rig, "op-wt-exception", "launch wt");
+    p.worktree_choice = Some(WorktreeChoice::CreateNew {
+        name: "per chat".into(),
+    });
+    let worktree = launch(&rig, &p).await.expect("launch").chat_id;
+    let other = rig.root.join("other");
+    init_repo(&other, "o");
+    let mut q = params(&rig, "op-override-exception", "launch override");
+    q.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": { "executionRoot": other.to_string_lossy(), "schema": 1 }
+        }))
+        .unwrap(),
+    );
+    let overridden = launch(&rig, &q).await.expect("launch").chat_id;
+    let plain = launch(&rig, &params(&rig, "op-plain-exception", "launch same"))
+        .await
+        .expect("launch")
+        .chat_id;
+    let snapshot =
+        zeron_doc::materialize_work_outline(SPACE, &rig.core.workspace.work_outline_inputs(SPACE));
+    let exception = |chat: &str| snapshot.chat_execution_binding(chat).unwrap().exception;
+    assert!(
+        !exception(&worktree),
+        "a per-Chat worktree is the normal flow"
+    );
+    assert!(!exception(&plain));
+    assert!(exception(&overridden), "an override is an exception");
+    assert_eq!(
+        snapshot.execution_exception_chats(&rig.item),
+        std::slice::from_ref(&overridden)
+    );
     rig.core.shutdown().await;
 }

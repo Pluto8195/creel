@@ -753,8 +753,9 @@ Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.r
 2. **Wire shapes.** Params `{workItemId, initialPrompt: {text, attachments?}, config?: ChatConfig,
    executionOverride?: {configuration}, worktreeChoice?: {"type":"useExisting", worktreeId,
    worktreePath} | {"type":"createNew", name}, operationId, targetDeviceId?}`; reply `{chatId,
-   messageId, commandId, revisionId, applicationId, executionRoot, state: queued | started |
-   rejected, detail?}`. Continue `{chatId, prompt: {text, attachments?}, operationId}` → `{chatId,
+   messageId, commandId, revisionId?, applicationId?, executionRoot, state: queued | started |
+   rejected, detail?}` (`revisionId` / `applicationId` absent for an instruction-free launch,
+   item 4). Continue `{chatId, prompt: {text, attachments?}, operationId}` → `{chatId,
    messageId, commandId, state, detail?}`. Failures are `work-outline/<code>: …`; validation
    failures are `invalid` whose message is the `execution-scope:<code>: …` rejection text,
    harness capability failures are `capability`. `config` absent = the host's default harness.
@@ -776,10 +777,16 @@ Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.r
    is re-issued through `retry_delivery`. `state` reads the latest attempt for the derived
    message id. Crash points are injectable (`WorkItemLaunchService::inject_fault`), and the test
    retries after each of the seven steps.
-4. **Every work-item launch delivers an envelope.** The revision is always created and the first
-   Turn is always `runWithInstructions`, so a harness without instruction support (Cursor, ACP)
-   cannot launch from a work item even when no instructions apply (`capability`). Revisit if
-   such launches are wanted.
+4. **Instruction-free launches.** When the item has no effective instructions, the launch writes
+   no revision or application and queues a plain `Run` (no selection exists, so ingestion pins
+   nothing, and later Turns stay plain), so harnesses without instruction support (Cursor, ACP)
+   launch from work items. Instructions added later reach the Chat through drift + Apply, which
+   rejects on unsupported harnesses as before. The choice is stable across retries: an existing
+   Turn of the operation (plain or `runWithInstructions`) or an existing launch revision fixes
+   it; otherwise the current effective instructions decide. With effective instructions the
+   harness capability is checked FIRST, before the ledger claim and any record or worktree, so
+   a `capability` refusal writes nothing (the same `operationId` may be retried with other
+   inputs).
 5. **Worktree choice.** Applies to the primary binding, else the only binding, else the
    repository at the execution root (a binding is synthesized from `DescribeExecutionRepository`,
    `member` and `primary` true). Several bindings without a primary, or a binding that already
@@ -788,10 +795,15 @@ Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.r
    `create_chat_worktree` (`.worktrees/<label>/<slug>`, branch = slug, no `zeron/` prefix); the
    target path is claimed in the ledger (`work-outline:launch-wt:…`) before `git worktree add`, a
    retry reuses the path only when this operation claimed it and it belongs to the same
-   repository, anything else fails the launch. Consequence: the captured binding differs in
-   content from the item's resolution, so the snapshot marks every worktree-choice launch as an
-   execution exception (discoveries M3 item 5). The UI should treat per-launch worktree pins as
-   expected, or the exception rule should ignore pins added to unpinned bindings (not done).
+   repository, anything else fails the launch. Exception rule (amends M3 item 5): a captured
+   binding equal to the item's resolution except for exactly that fill (one binding unpinned in
+   the item gains `worktreeId` + `worktreePath`, root unchanged or moved from that repository's
+   checkout to the worktree; or, for an item without bindings, the synthesized root binding) is
+   NOT an exception (`zeron_proto::is_launch_worktree_fill`, used by the materializer). Any other
+   content difference is, so an `executionOverride` that changes content is an exception (an
+   override identical to the item's configuration is not distinguishable and is not). Paths
+   compare as strings, so a symlinked Space path canonicalized by the launch still reads as an
+   exception.
 6. **Dispatch hookups (item 11).** `DocHost::validate_bound_dispatch` (lazy
    `ExecutionScopeService` from workspace + repos; `set_execution_scope` injects one) runs in
    `execute_run` right after attachment resolution, before instruction resolution, worktree
@@ -824,6 +836,5 @@ Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.r
 9. **Not done.** UI for both methods, expected-hash parameters (`expectedInstructionsHash` /
    `expectedExecutionConfigHash`; the launch snapshots the item's instructions at revision time),
    additional-directory harness support, the explicit "start a new Execution Session" remedy for
-   `resumeRootMismatch` (today: start a new Chat), the exception-rule refinement in item 5, and
-   per-Run agent authorization (Milestone 4). The device-local launch ledger is never pruned
+   `resumeRootMismatch` (today: start a new Chat), and per-Run agent authorization (Milestone 4). The device-local launch ledger is never pruned
    (same as M1).

@@ -789,6 +789,79 @@ impl ValidateExecutionConfigurationReply {
 // Pure functions
 // --------------------------------------------------------------------------
 
+/// Whether `captured` is `current` with exactly the per-Chat worktree a
+/// launch's worktree choice fills in: one binding that pins no worktree in
+/// `current` gains `worktreeId` + `worktreePath` (everything else equal), and
+/// the execution root is unchanged or moved from that repository's checkout
+/// to the worktree; or, when `current` has no bindings, the launch
+/// synthesized the root repository's binding (member, primary, pinned, no
+/// expected ref) with `repoPath` = the old root and root = the worktree. Such
+/// a Chat is NOT an execution exception: per-Chat worktrees are the normal
+/// launch flow. Paths compare as strings without trailing separators (pure;
+/// a symlinked Space path that the launch canonicalized still reads as an
+/// exception).
+pub fn is_launch_worktree_fill(
+    current: &ExecutionConfiguration,
+    captured: &ExecutionConfiguration,
+) -> bool {
+    fn norm(path: &str) -> &str {
+        path.trim_end_matches(['/', '\\'])
+    }
+    fn pinned(binding: &RepositoryBinding) -> Option<&str> {
+        match (&binding.worktree_id, &binding.worktree_path) {
+            (Some(_), Some(path)) => Some(path),
+            _ => None,
+        }
+    }
+    if current.schema != captured.schema {
+        return false;
+    }
+    if current.bindings.is_empty() {
+        let [binding] = captured.bindings.as_slice() else {
+            return false;
+        };
+        let Some(worktree) = pinned(binding) else {
+            return false;
+        };
+        return binding.member
+            && binding.primary
+            && binding.expected_ref.is_none()
+            && norm(&current.execution_root) == norm(&binding.repo_path)
+            && norm(&captured.execution_root) == norm(worktree);
+    }
+    if current.bindings.len() != captured.bindings.len() {
+        return false;
+    }
+    let mut filled = None;
+    for (index, (was, now)) in current.bindings.iter().zip(&captured.bindings).enumerate() {
+        if was == now {
+            continue;
+        }
+        if filled.is_some()
+            || was.worktree_id.is_some()
+            || was.worktree_path.is_some()
+            || pinned(now).is_none()
+        {
+            return false;
+        }
+        let mut unpinned = now.clone();
+        unpinned.worktree_id = None;
+        unpinned.worktree_path = None;
+        if unpinned != *was {
+            return false;
+        }
+        filled = Some(index);
+    }
+    let Some(index) = filled else {
+        return false;
+    };
+    let was = &current.bindings[index];
+    let worktree = pinned(&captured.bindings[index]).unwrap_or_default();
+    norm(&current.execution_root) == norm(&captured.execution_root)
+        || (norm(&current.execution_root) == norm(&was.repo_path)
+            && norm(&captured.execution_root) == norm(worktree))
+}
+
 /// An absolute path on ANY device (the configuring device may run another
 /// OS than the owner): `/…`, `X:\…`, `X:/…`, or `\\…`.
 pub fn is_absolute_device_path(path: &str) -> bool {
