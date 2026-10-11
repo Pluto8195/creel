@@ -1538,3 +1538,62 @@ async fn plain_run_resume_mismatch_writes_nothing_and_queue_promotion_does_not_d
     assert!(turns_with(&rig, "plain resume").is_empty());
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 5: a createNew retry never adopts a foreign worktree
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_new_retry_refuses_a_foreign_worktree_at_the_claimed_path() {
+    let rig = rig().await;
+    let launcher = service(&rig);
+    let mut p = params(&rig, "op-foreign", "launch foreign");
+    p.worktree_choice = Some(WorktreeChoice::CreateNew {
+        name: "foreign".into(),
+    });
+    // The worktree is created, then the launch crashes.
+    launcher.inject_fault(Some(LaunchStep::Validated));
+    assert!(launcher.create_chat_for_work_item(&p).await.is_err());
+    launcher.inject_fault(None);
+    let worktree = rig.repo.join(".worktrees/workspace/foreign");
+    assert!(worktree.is_dir());
+    // Someone moves it away and puts another worktree of the same
+    // repository at the same path (a different checkout identity).
+    let moved = rig.root.join("foreign-moved");
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "move",
+            &worktree.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ],
+    );
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "intruder",
+            &worktree.to_string_lossy(),
+        ],
+    );
+    let error = launcher
+        .create_chat_for_work_item(&p)
+        .await
+        .expect_err("the foreign worktree is not adopted");
+    assert!(
+        error.message.contains("is not the one this launch created"),
+        "{error:?}"
+    );
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-foreign", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    rig.core.shutdown().await;
+}

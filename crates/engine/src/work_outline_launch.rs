@@ -75,6 +75,18 @@ fn ledger_launch_inputs_key(inputs_hash: &str, operation_id: &str) -> String {
 /// Ledger key: this operation is about to create the worktree at `path`
 /// (claimed BEFORE `git worktree add`, so a retry can tell its own worktree
 /// from someone else's).
+/// The ledger record of the exact checkout a launch created at `path`
+/// (the ledger is a key set, so the checkout id is part of the key). A retry
+/// adopts the path only when this record names the checkout found there.
+fn ledger_worktree_checkout_key(operation_id: &str, path: &Path, checkout_id: &str) -> String {
+    let role = format!("worktree-checkout:{}:{checkout_id}", path.display());
+    format!(
+        "{}launch-wt-checkout:{}",
+        crate::work_outline::LEDGER_KEY_PREFIX,
+        derive_id(operation_id, &role)
+    )
+}
+
 fn ledger_worktree_key(operation_id: &str, path: &Path) -> String {
     let role = format!("worktree:{}", path.display());
     format!(
@@ -593,13 +605,10 @@ impl WorkItemLaunchService {
                 worktree_path,
             } => (worktree_id.clone(), worktree_path.clone()),
             WorktreeChoice::CreateNew { name } => {
-                let path = self
+                let (path, checkout_id) = self
                     .create_worktree_for_operation(&binding, name, operation_id)
                     .await?;
-                let identity = describe_repository(probe, Path::new(&path))
-                    .await
-                    .map_err(engine_error)?;
-                (identity.checkout_id, path)
+                (checkout_id, path)
             }
         };
         let root_is_repo = target.is_none()
@@ -619,16 +628,18 @@ impl WorkItemLaunchService {
 
     /// Create `.worktrees/<label>/<slug(name)>` for `binding`'s repository
     /// with the existing chat-worktree flow, idempotently for this operation:
-    /// the target path is claimed in the ledger before `git worktree add`; a
-    /// retry that finds the path reuses it only if this operation claimed it
-    /// and it is a checkout of the same repository. Any failure fails the
-    /// launch (never the base checkout).
+    /// the target path is claimed in the ledger before `git worktree add`,
+    /// and the created checkout's id is recorded after it; a retry that finds
+    /// the path reuses it only if this operation claimed it AND recorded
+    /// exactly the checkout found there (a worktree someone else put at the
+    /// path is never adopted). Any failure fails the launch (never the base
+    /// checkout). Returns `(path, checkout id)`.
     async fn create_worktree_for_operation(
         &self,
         binding: &RepositoryBinding,
         name: &str,
         operation_id: &str,
-    ) -> Result<String, WorkOutlineError> {
+    ) -> Result<(String, String), WorkOutlineError> {
         let repo_path = std::path::PathBuf::from(&binding.repo_path);
         let name_owned = name.to_owned();
         let target = {
@@ -665,7 +676,22 @@ impl WorkItemLaunchService {
                     ),
                 ));
             }
-            return Ok(canonical_lenient(&path).to_string_lossy().into_owned());
+            let recorded = ledger_worktree_checkout_key(operation_id, &path, &identity.checkout_id);
+            if !self.workspace.ledger_holds(&recorded) {
+                return Err(error(
+                    WorkOutlineErrorCode::Invalid,
+                    format!(
+                        "The worktree at {} is not the one this launch created. Remove or move \
+                         it, or start the Chat with another worktree name or by selecting it as \
+                         an existing worktree.",
+                        path.display()
+                    ),
+                ));
+            }
+            return Ok((
+                canonical_lenient(&path).to_string_lossy().into_owned(),
+                identity.checkout_id,
+            ));
         }
         self.workspace.ledger_mark(&key).map_err(engine_error)?;
         let name_owned = name.to_owned();
@@ -680,9 +706,22 @@ impl WorkItemLaunchService {
                 format!("Could not create the worktree: {err}"),
             )
         })?;
-        Ok(canonical_lenient(Path::new(&created.worktree_path))
-            .to_string_lossy()
-            .into_owned())
+        let created_path = canonical_lenient(Path::new(&created.worktree_path));
+        let identity = describe_repository(self.execution_scope.probe(), &created_path)
+            .await
+            .map_err(engine_error)?;
+        // Recorded under the claimed target path (the retry looks it up there).
+        self.workspace
+            .ledger_mark(&ledger_worktree_checkout_key(
+                operation_id,
+                &path,
+                &identity.checkout_id,
+            ))
+            .map_err(engine_error)?;
+        Ok((
+            created_path.to_string_lossy().into_owned(),
+            identity.checkout_id,
+        ))
     }
 
     /// The first Turn's request: the visible prompt (attachment refs ride the
