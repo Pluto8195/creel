@@ -1469,3 +1469,72 @@ async fn bound_chat_mid_turn_at_restart_auto_resumes_in_its_root() {
     assert!(!rejected);
     core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 4: a plain Turn's resume check runs before any write
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plain_run_resume_mismatch_writes_nothing_and_queue_promotion_does_not_duplicate() {
+    // No instructions: the launch queues a plain Run.
+    let rig = rig_with(InstructionMockHarness::default(), false).await;
+    let launcher = service(&rig);
+    let p = params(&rig, "op-plain-resume", "plain resume");
+    launcher.inject_fault(Some(LaunchStep::BindingCaptured));
+    assert!(launcher.create_chat_for_work_item(&p).await.is_err());
+    launcher.inject_fault(None);
+    let chat = derive_id("op-plain-resume", roles::CHAT);
+    rig.core
+        .workspace
+        .set_chat_harness_session(&chat, "native-elsewhere", "/somewhere/else");
+
+    // Queue promotion: the row is refused before any write and goes back to
+    // the queue once; no user message lands, so a retry cannot duplicate.
+    let queued = rig
+        .core
+        .doc_host
+        .queue_message(&chat, "plain queued", Vec::new())
+        .expect("queue");
+    let queue = |rig: &Rig| {
+        rig.core
+            .doc_host
+            .open(&chat)
+            .unwrap()
+            .doc()
+            .read_queue()
+            .unwrap()
+    };
+    let error = rig
+        .core
+        .doc_host
+        .send_queued_now(&chat, &queued)
+        .await
+        .expect_err("promotion refused");
+    assert!(
+        error
+            .to_string()
+            .contains("execution-scope:resumeRootMismatch"),
+        "{error}"
+    );
+    // A drain woken by the restore may retry (and refuse) it again; either
+    // way the row settles back in the queue exactly once.
+    wait_for(|| queue(&rig).len() == 1, "the row to return to the queue").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rows = queue(&rig);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].id, queued);
+    assert_eq!(user_messages(&rig, &chat), 0);
+    assert!(turns_with(&rig, "plain queued").is_empty());
+
+    // The launch's plain Run: rejected at drain with nothing written.
+    let reply = launcher
+        .create_chat_for_work_item(&p)
+        .await
+        .expect("queued");
+    assert!(reply.revision_id.is_none(), "an instruction-free launch");
+    let entry = wait_command(&rig, &chat, &reply.command_id).await;
+    assert_rejected_with(&entry, "resumeRootMismatch");
+    assert_eq!(user_messages(&rig, &chat), 0);
+    assert!(turns_with(&rig, "plain resume").is_empty());
+    rig.core.shutdown().await;
+}

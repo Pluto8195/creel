@@ -311,6 +311,32 @@ impl SessionsEngine {
         self.inner.resolve_dispatch_cwd(chat_id, cwd)
     }
 
+    /// The bound-Chat resume check of a plain (instruction-free) dispatch,
+    /// run BEFORE anything is written: a stored native session from another
+    /// folder (`resumeRootMismatch`) or a malformed binding (`configInvalid`)
+    /// rejects here instead of after the user message landed. Unbound Chats,
+    /// explicit resumes, and instruction-bearing requests (planned by
+    /// `preflight_instructions`) pass.
+    pub(crate) fn preflight_resume(
+        &self,
+        chat_id: &str,
+        request: &RunRequest,
+    ) -> Result<(), EngineError> {
+        if request.resume.is_some() || request.instructions.is_some() {
+            return Ok(());
+        }
+        let bound = match self.inner.workspace() {
+            Some(ws) => ws.checked_chat_execution_binding(chat_id)?.is_some(),
+            None => false,
+        };
+        if !bound {
+            return Ok(());
+        }
+        self.inner
+            .checked_resume_for(chat_id, &request.cwd)
+            .map(|_| ())
+    }
+
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
         if let Some(listener) = self.inner.turn_listener.get() {
             listener(chat_id, cwd);
@@ -739,6 +765,14 @@ impl SessionsEngine {
             self.interrupt(chat_id).await?;
         }
 
+        // A plain Turn's resume decision fails BEFORE the user message is
+        // written (a bound Chat's `resumeRootMismatch` must leave nothing to
+        // retry or duplicate).
+        let plain_resume = if instruction_plan.is_none() && request.resume.is_none() {
+            Some(self.inner.checked_resume_for(chat_id, &request.cwd)?)
+        } else {
+            None
+        };
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
@@ -776,8 +810,8 @@ impl SessionsEngine {
                         EngineError::Other(format!("instruction sidecar write failed: {e}"))
                     })?;
             }
-        } else if request.resume.is_none() {
-            request.resume = self.inner.checked_resume_for(chat_id, &request.cwd)?;
+        } else if let Some(resume) = plain_resume {
+            request.resume = resume;
             resume_injected = request.resume.is_some();
         }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
