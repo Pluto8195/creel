@@ -366,6 +366,15 @@ impl RegistryDoc {
             .ok_or_else(|| not_found("Work item not found"))
     }
 
+    /// Every decodable captured binding (one registry scan; diff-sync reads
+    /// this once per reconcile pass).
+    pub fn chat_execution_bindings(&self) -> Vec<ChatExecutionBindingView> {
+        self.overlay_rows(KIND_CHAT_EXECUTION_BINDINGS)
+            .iter()
+            .filter_map(|row| decode_chat_execution_binding(row).ok())
+            .collect()
+    }
+
     /// The Chat's captured binding, if any.
     pub fn chat_execution_binding(&self, chat_id: &str) -> Option<ChatExecutionBindingView> {
         self.overlay_row(KIND_CHAT_EXECUTION_BINDINGS, chat_id)

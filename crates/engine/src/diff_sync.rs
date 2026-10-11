@@ -395,9 +395,29 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     let mut groups: HashMap<String, (CheckoutIdentity, Vec<Chat>)> = HashMap::new();
     // Dedupe resolution within this pass — many chats share one checkout.
     let mut resolved: HashMap<String, Option<CheckoutIdentity>> = HashMap::new();
+    // Work Outline execution bindings (Milestone 3): a bound Chat's member
+    // and primary repositories each get their own checkout entry, so the
+    // checkout-scoped watch (`WatchCheckoutDiffs {cwd, checkoutId}`) serves
+    // one diff per member. Member entries carry no Chats: the Chat's row and
+    // edge sidecar stay keyed to its execution root (`chat.cwd`).
+    let bindings = inner.workspace.chat_execution_bindings();
+    let mut member_paths: Vec<String> = Vec::new();
     for chat in chats {
         if chat.device_id != inner.device_id {
             continue;
+        }
+        if let Some(binding) = bindings.get(&chat.id)
+            && binding.resolved.device_id == inner.device_id
+        {
+            member_paths.extend(
+                binding
+                    .resolved
+                    .configuration
+                    .bindings
+                    .iter()
+                    .filter(|b| b.member || b.primary)
+                    .map(|b| b.checkout_path().to_owned()),
+            );
         }
         let Some(cwd) = chat.cwd.clone() else {
             continue;
@@ -427,6 +447,22 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
             .or_insert_with(|| (identity, Vec::new()))
             .1
             .push(chat);
+    }
+    for path in member_paths {
+        let identity = match resolved.get(&path) {
+            Some(identity) => identity.clone(),
+            None => {
+                let identity = resolve_identity(inner, &path, fresh).await;
+                resolved.insert(path.clone(), identity.clone());
+                identity
+            }
+        };
+        // A missing member checkout gets no entry; validation reports it.
+        if let Some(identity) = identity {
+            groups
+                .entry(identity.id.clone())
+                .or_insert_with(|| (identity, Vec::new()));
+        }
     }
 
     // Close entries whose checkout has had no chats for a full grace period;

@@ -794,6 +794,16 @@ impl WorkspaceHost {
         self.read(|doc| doc.chat_execution_binding(chat_id))
     }
 
+    /// Every captured execution binding, by Chat id (Milestone 3).
+    pub fn chat_execution_bindings(
+        &self,
+    ) -> std::collections::HashMap<String, zeron_proto::ChatExecutionBindingView> {
+        self.read(|doc| doc.chat_execution_bindings())
+            .into_iter()
+            .map(|binding| (binding.chat_id.clone(), binding))
+            .collect()
+    }
+
     /// Capture the configuration a Chat launches with (create-if-absent,
     /// keyed by Chat id; see `RegistryDoc::capture_chat_execution_binding`).
     /// An identical replay writes nothing and does not bump the change
