@@ -69,6 +69,12 @@ pub struct WorkOutlineInputs {
     pub revisions: Vec<RegistryRow>,
     /// Live session-status rows that carry an `executionSession` report.
     pub sessions: Vec<RegistryRow>,
+    /// Live `executionConfigurations` rows of this Space (Milestone 3).
+    pub execution_configurations: Vec<RegistryRow>,
+    /// Live `chatExecutionBindings` rows of this Space (Milestone 3).
+    pub chat_execution_bindings: Vec<RegistryRow>,
+    /// The Space's path and owning device (implicit execution root).
+    pub execution_space: Option<zeron_proto::work_outline_execution::ExecutionSpace>,
 }
 
 // ── lenient row decoding ────────────────────────────────────────────────────
@@ -857,6 +863,17 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         &mut repairs,
     );
 
+    let execution = super::execution::materialize_execution(
+        space_id,
+        inputs.execution_space.as_ref(),
+        &inputs.execution_configurations,
+        &inputs.chat_execution_bindings,
+        &views,
+        &associated_item,
+        &chats,
+        &mut repairs,
+    );
+
     WorkOutlineSnapshot {
         space_id: space_id.into(),
         available: true,
@@ -871,6 +888,10 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         instructions,
         chat_instruction_states,
         revisions,
+        execution_space: execution.space,
+        execution_configurations: execution.configurations,
+        chat_execution_bindings: execution.bindings,
+        execution_exceptions: execution.exceptions,
     }
 }
 

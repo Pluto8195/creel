@@ -612,3 +612,125 @@ Recorded by Milestone 2 runtime instruction delivery (branch `work-outline-instr
 12. **Claude envelope files** are content-addressed (`<store_root>/instructions/<envelopeSha256>.md`,
     0600, atomic write, rewritten if not byte-identical) rather than one file per session: identical
     bytes, no unbounded growth. The digest is re-checked before writing.
+
+## Milestone 3 execution discoveries
+
+Recorded by the Milestone 3 execution-configuration backend (`crates/proto/src/
+work_outline_execution.rs`, `crates/doc/src/registry/work_outline/execution.rs`,
+`crates/engine/src/execution_scope.rs`, edits to `work_outline.rs`, `workspace_host.rs`,
+`rpc.rs`, `diff_sync.rs`, `crates/rpc/src/lib.rs`). Each item is a reading of an ambiguous rule
+or a gap stage 2 (start workflow, dispatch hookups) must close.
+
+1. **Wire surface.** `configureExecution {scope, configuration | null, operationId}` is a
+   `WorkOutlineMutate` op (kill switch, replay ledger, shape-only checks; reply `{}`);
+   `resolveExecutionConfiguration {scope}` is a `WorkOutlineQuery` (pure, local). Validation is
+   NOT a query: it needs the owner's disk, so it is its own forwardable method
+   `ValidateExecutionConfiguration {scope | chatId | resolved, hostCapabilities}` replying
+   `{ok, validated?, errors: [{error: {code, …}, message, remediation}], resolved?}`
+   (validation failures are a normal reply, not an RPC error). A second forwardable method,
+   `DescribeExecutionRepository {path}`, returns the identity a binding must record (topology repo
+   id, root-commit fingerprint, main path, checkouts with ids): only the owning device can compute
+   fingerprints and checkout ids, so a configuring client needs it. `ExecutionScope` is tagged
+   `{"type":"space","spaceId"}` / `{"type":"workItem","workItemId"}`; `sourceScope` is
+   `workItem | spaceDefault | implicitSpaceRoot` (lenient). Capability
+   `work-outline-multi-repo-v1` is in `CURRENT`.
+2. **Error vocabulary.** The requested variants plus `hostUnsupported` (owner lacks the
+   capability). Every variant has `message()` and `remediation()`; none names an alternative
+   checkout. There are no warnings: an `expectedRef` mismatch is the blocking `branchMismatch`
+   (deviation from the audit's non-blocking `BranchDrift`), detached HEAD reads `HEAD (<sha12>)`,
+   and an `expectedRef` that looks like a sha (7-64 hex) matches a HEAD prefix. Dispatch
+   rejections render as `execution-scope:<code>: <message>. <remediation> (+N more)`
+   (`execution_scope::rejection_message`).
+3. **Rows.** `executionConfigurations` (`s:{spaceId}` / `w:{workItemId}`): `spaceId`,
+   `workItemId` (immutable, upsert only), `configuration` (one field, ≤ 8,000 UTF-16 units,
+   ≤ 16 bindings), `updatedBy`, `updatedAt`, `v`. Compare-before-write; reset tombstones; a later
+   configure of a reset scope revives the row (explicit user write, the scope id is the only
+   key; R1 exception like assignment revival). Configuring an archived item is `archived`;
+   resetting it is allowed. `chatExecutionBindings` (id = Chat id): `chatId`, `spaceId`,
+   `resolved` (the whole `ResolvedExecutionConfiguration`), `capturedAt`, `capturedBy`,
+   `operationId`, `inputsHash`, `v`; written once by
+   `WorkOutlineService::capture_chat_execution_binding` /
+   `RegistryDoc::capture_chat_execution_binding`. The row itself is the replay record (no
+   ledger key): same operation id and snapshot is a no-op on any device; another operation id,
+   or the same id with another snapshot, is `operationConflict`; a tombstoned binding is never
+   revived (`notFound`); projectless Chats cannot be bound. Both kinds are in
+   `WORK_OUTLINE_KINDS`, so the Space cascade and the orphan sweep cover them.
+4. **Resolution.** Whole-row, pure, in proto (`resolve_execution_configuration`) over
+   materialized views (repaired parents), so the client resolves from the snapshot with
+   `WorkOutlineSnapshot::resolve_execution`; the snapshot carries `executionSpace {spaceId,
+   path, deviceId}` for the implicit root. Fail closed: a nearer row that does not decode or
+   fails the shape check still wins and carries `invalidReason` (validation reports
+   `configInvalid` / `multiplePrimary`); it never falls through to an ancestor. Two primaries are
+   rejected at write time too.
+5. **Exception marker.** Not a `WorkItemView` field (the UI builds `WorkItemView` literals
+   without a default): the snapshot lists `executionExceptions [{workItemId, chatIds}]`, and each
+   `chatExecutionBindings` entry carries `workItemId` (current association) and `exception`.
+   Rule: an associated Chat whose captured configuration differs in CONTENT from the item's
+   current resolution (a different source with equal content is not an exception); a current
+   resolution that is invalid also marks it. Unassociated Chats and Chats without a binding are
+   never exceptions.
+6. **Repository identity.** `repoId` = topology `stable_id("repo", device, canonical common
+   dir)`. `repoFingerprint` = the smallest root commit of HEAD's history at describe time;
+   validation accepts when ANY current root commit equals it (a later merge of an unrelated
+   history keeps it valid); an empty fingerprint means "no commits when configured" and requires
+   that still. Root commits are cached per `(common dir, HEAD)`, never per path alone (a re-clone
+   has another HEAD). A binding path must be the checkout's top level: an uninitialized submodule
+   directory resolves to its superproject and reports `repositoryMissing`.
+7. **Worktrees.** A binding pins a checkout with both `worktreeId` and `worktreePath`, or uses
+   the checkout at `repoPath` (stage 2 offers the worktree choice; `worktreeConfigured` in the
+   reply). Main checkouts are recognized by `git-dir == git-common-dir`; a submodule's main path
+   comes from the module's `core.worktree`, never from the first `git worktree list` stanza
+   (tested). Missing path + prunable stanza = `worktreePruned`; identity found at another
+   registered path (`git worktree move` keeps the id) = `worktreeMoved`; otherwise
+   `worktreeMissing`; something else at the path is never adopted. Residual risk (audit B.7,
+   tested): a worktree removed and re-added at the same path with the same basename has the same
+   checkout id and validates unless `expectedRef` pins its branch.
+8. **Validation scope.** Device and Space failures return before any path is probed (the paths
+   belong to another device). Relative or empty roots are never probed. A root that is not a Git
+   checkout is NOT rejected (contract 6.4.4 keeps non-Git roots out of the MVP; stage 2's
+   configuration UI should not offer them). `memberOutsideRoot` applies to every binding's
+   checkout and is lifted only by `hostCapabilities.additionalDirectories`, which no caller sets
+   yet (no harness passes extra directories), so it is always blocking today.
+9. **Remote owners.** A validation for another device's Space forwards the RESOLVED snapshot
+   (`{resolved, targetDeviceId}`), so the owner never re-reads a lagging replica. Unknown owner
+   or a failed forward = `deviceOffline`; owner without the capability = `hostUnsupported`. Peer
+   liveness is not consulted (the forward attempt decides). `configureExecution` on a remote
+   Space is shape-only and works offline.
+10. **Per-member diff data.** Diff-sync reconcile adds one checkout entry per member or primary
+    binding of each bound Chat on this device (pinned worktree, else `repoPath`), resolved
+    through the same identity memo; member entries carry no Chats, so the Chat row's
+    `checkoutId` and the edge sidecar stay keyed to the execution root. A missing member gets no
+    entry (validation reports it). The per-member `cwd` / `checkoutId` / `branch` / `headSha`
+    come from the validation reply's `repositories`; the UI then uses the existing scoped
+    `WatchCheckoutDiffs {cwd, checkoutId}` per member. Not done: a Changes-pane repository
+    selector, per-member edge sidecars, PR lookup from the primary member's path.
+11. **Stage 2 hookup sites** (function names stable; line numbers are this branch's
+    `crates/engine/src/doc_host.rs` / `sessions.rs`). Call
+    `ExecutionScopeService::validate_for_dispatch(chat_id, caps)` (`Ok(None)` = unbound, keep
+    today's behavior; `Ok(Some(v))` = set `request.cwd = v.execution_root`; `Err` = reject with
+    `rejection_message`):
+    - `DocHost::execute`, `SessionCommandPayload::Run` arm (~4283): after
+      `resolve_request_attachments` (~4300) and BEFORE `request.worktree.take()` /
+      `materialize_worktree` (~4308-4311) and `claim_chat` (~4320); a bound Chat must reject a
+      request that also carries `worktree`.
+    - `DocHost::dispatch_with_source_context` (~4613), the chokepoint for queue promotion
+      (~3287), Run (~4378), steer fallback (~4467), input fallback (~4532), crash auto-resume
+      (`sessions.rs` ~867) and orphaned steer (`sessions.rs` ~2772): validate first and
+      overwrite `request.cwd` (collapses fallback F9).
+    - `SessionsEngine::resume_for` (`sessions.rs` ~1246): for bound Chats a stored
+      `harness_session_cwd` that differs from the validated root (or is empty) must be an error,
+      not a fresh session (F6).
+    - `DocHost::request_from_chat_row` (~4752): return no request instead of an empty cwd for
+      bound Chats (F4); `WorkspaceHost::claim_chat` (`workspace_host.rs` ~964) must never mint
+      a Space for a bound request (F7); `MutateParams::SetChatCwd` (`rpc.rs` ~1397) and MCP
+      `create_chat`/`send` (`crates/mcp/src/tools.rs`) must not retarget bound Chats.
+    - The start workflow captures the binding (`capture_chat_execution_binding`) before
+      queueing the first Turn and blocks a fresh launch on `deviceOffline` (decision 6.4.1).
+12. **Not done here.** `createChatForWorkItem`, every dispatch hookup above, a
+    `RunRequest.execution` snapshot field (`agent.rs` belongs to delivery), the explicit "adopt
+    the item's newer configuration" flow, the idempotent bound worktree creation (decision
+    6.4.2), UI, local-to-synced import of the new kinds, and edge `validateOp` backstops.
+13. **Pre-existing failure.** `cargo check --workspace --all-targets` fails in the `zeron-ui`
+    lib tests on this base (`ChatInstructionState` literals without `selected_revision_integrity`
+    at `crates/ui/src/work_outline/instructions.rs:539,548`); unrelated to this work. Every other
+    target checks.

@@ -25,6 +25,7 @@ pub mod chat_workspace_plan;
 pub mod context_usage;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod execution_scope;
 pub mod external_import;
 mod http_error;
 pub mod instance_lock;

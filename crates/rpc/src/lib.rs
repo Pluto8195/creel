@@ -111,7 +111,8 @@ pub mod methods {
     /// removeWorkItemExternalReference|repairWorkOutline|
     /// createWorkItemInstruction|updateWorkItemInstruction|
     /// moveWorkItemInstruction|archiveWorkItemInstruction|
-    /// createInstructionRevision|applyInstructionRevision, operationId, …}`) →
+    /// createInstructionRevision|applyInstructionRevision|configureExecution,
+    /// operationId, …}`) →
     /// `zeron_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
     /// any device may write), so — like `Mutate` — handled locally and NOT
     /// forwardable. Failures are strings `work-outline/<code>: <message>`
@@ -122,11 +123,27 @@ pub mod methods {
     /// Read-only Work Outline questions, one tagged call:
     /// `zeron_proto::WorkOutlineQueryRequest` (`{query:
     /// resolveEffectiveInstructions|compareInstructionRevisions|
-    /// getInstructionRevision, …}`) → `zeron_proto::WorkOutlineQueryResponse`
+    /// getInstructionRevision|resolveExecutionConfiguration, …}`) →
+    /// `zeron_proto::WorkOutlineQueryResponse`
     /// (tagged by the same `query`). Answered from the local registry replica,
     /// so — like `WorkOutlineMutate` — handled locally and NOT forwardable.
     /// Failures use the same `work-outline/<code>: <message>` strings.
     pub const WORK_OUTLINE_QUERY: &str = "WorkOutlineQuery";
+    /// Validate a Work Outline execution configuration on the Space's owning
+    /// device: `zeron_proto::ValidateExecutionConfigurationParams` (`{scope}`
+    /// | `{chatId}` | `{resolved}`, `hostCapabilities`) →
+    /// `zeron_proto::ValidateExecutionConfigurationReply`. Forwardable; an
+    /// engine that receives it for another device's Space forwards the
+    /// resolved snapshot to the owner when the owner advertises
+    /// `work-outline-multi-repo-v1`, else replies `hostUnsupported` /
+    /// `deviceOffline`. Read-only: never creates or switches anything.
+    pub const VALIDATE_EXECUTION_CONFIGURATION: &str = "ValidateExecutionConfiguration";
+    /// The identity a repository binding records for the checkout at
+    /// `{path}` on the target device (`zeron_proto::
+    /// DescribeExecutionRepositoryParams` → `zeron_proto::
+    /// ExecutionRepositoryIdentity`: topology repo id, root-commit
+    /// fingerprint, main path, checkouts). Forwardable.
+    pub const DESCRIBE_EXECUTION_REPOSITORY: &str = "DescribeExecutionRepository";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -501,6 +518,14 @@ mod tests {
         assert_eq!(methods::WATCH_WORK_OUTLINE, "WatchWorkOutline");
         assert_eq!(methods::WORK_OUTLINE_MUTATE, "WorkOutlineMutate");
         assert_eq!(methods::WORK_OUTLINE_QUERY, "WorkOutlineQuery");
+        assert_eq!(
+            methods::VALIDATE_EXECUTION_CONFIGURATION,
+            "ValidateExecutionConfiguration"
+        );
+        assert_eq!(
+            methods::DESCRIBE_EXECUTION_REPOSITORY,
+            "DescribeExecutionRepository"
+        );
     }
 
     struct TestService;
