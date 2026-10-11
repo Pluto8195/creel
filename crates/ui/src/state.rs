@@ -1939,18 +1939,30 @@ impl AppState {
         self.work_outlines.set(space_id, load)
     }
 
+    /// Whether `space_id` is wanted: declared visible by the Overview, or the
+    /// selected Chat's Space (the chat header drift line needs its outline
+    /// from app start, not only once the Overview exists).
     fn work_outline_visible_contains(&self, space_id: &str) -> bool {
         self.work_outline_visible
             .binary_search_by(|id| id.as_str().cmp(space_id))
             .is_ok()
+            || self.selected_chat_space_id() == Some(space_id)
     }
 
-    /// Spaces that should have a live watch: declared visible and still live.
+    /// The selected Chat's Space, when it has one.
+    fn selected_chat_space_id(&self) -> Option<&str> {
+        self.selected_chat_row()?.space_id.as_deref()
+    }
+
+    /// Spaces that should have a live watch: the union of the declared
+    /// visible set and the selected Chat's Space, restricted to live Spaces.
     fn desired_work_outline_spaces(&self) -> HashSet<String> {
         self.work_outline_visible
             .iter()
-            .filter(|id| self.spaces.iter().any(|space| &space.id == *id))
-            .cloned()
+            .map(String::as_str)
+            .chain(self.selected_chat_space_id())
+            .filter(|id| self.spaces.iter().any(|space| space.id == *id))
+            .map(str::to_owned)
             .collect()
     }
 
@@ -2384,6 +2396,8 @@ impl AppState {
                 self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
             }
         }
+        // The selected Chat's Space is always watched (chat header drift).
+        self.reconcile_work_outline_watches(cx);
         cx.notify();
     }
 
@@ -2535,6 +2549,9 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
                     state.apply_chats(parsed);
                     state.apply_pending_deep_link(cx);
                     state.reconcile_change_request_watches(cx);
+                    // A Chat's Space can arrive (or the selection vanish)
+                    // with a chats frame.
+                    state.reconcile_work_outline_watches(cx);
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -4523,6 +4540,57 @@ mod tests {
             state.declare_work_outline_visible(vec![], cx);
             assert!(state.work_outline_tasks.is_empty());
             assert!(outline_titles(state, "s1").is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn selected_chat_space_is_watched_without_the_overview(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, _requests) = tokio::sync::mpsc::channel::<String>(64);
+        let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+        let state = cx.new(|_| AppState::new());
+        let watched = |state: &AppState| {
+            let mut keys: Vec<_> = state.work_outline_tasks.keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        state.update(cx, |state, cx| {
+            state.set_test_engine(EngineHandle::from_test_client(RpcClient::new(out, inbound)));
+            state.apply_spaces(vec![
+                space("s1", "dev", "/a", 1),
+                space("s2", "dev", "/b", 2),
+            ]);
+            let mut in_s1 = chat("c1", 1, None);
+            in_s1.space_id = Some("s1".into());
+            let mut in_s2 = chat("c2", 2, None);
+            in_s2.space_id = Some("s2".into());
+            state.apply_chats(vec![in_s1, in_s2, chat("loose", 3, None)]);
+            assert!(state.work_outline_tasks.is_empty());
+
+            // No Overview yet: selecting a Chat watches its Space, and a
+            // frame for it is accepted.
+            state.select_chat(Some("c1".into()), cx);
+            assert_eq!(watched(state), ["s1"]);
+            assert!(state.apply_work_outline_frame("s1", outline_snapshot("s1", 1, "A")));
+            assert!(!state.apply_work_outline_frame("s2", outline_snapshot("s2", 1, "A")));
+
+            // The Overview's declaration is unioned, not clobbered.
+            state.declare_work_outline_visible(vec!["s2".into()], cx);
+            assert_eq!(watched(state), ["s1", "s2"]);
+            state.declare_work_outline_visible(vec![], cx);
+            assert_eq!(watched(state), ["s1"]);
+            assert_eq!(outline_titles(state, "s1").as_deref(), Some("A"));
+
+            // Switching Chats follows the selection; a Chat without a Space
+            // (or no selection) watches nothing beyond the declared set.
+            state.select_chat(Some("c2".into()), cx);
+            assert_eq!(watched(state), ["s2"]);
+            state.select_chat(Some("loose".into()), cx);
+            assert!(state.work_outline_tasks.is_empty());
         });
     }
 
