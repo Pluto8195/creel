@@ -8,6 +8,7 @@
 use gpui::{AnyElement, Render, SharedString, Window, div, prelude::*, px};
 
 use super::filter::WorkItemPathLabel;
+use super::hints::{HintKey, WithHint};
 use super::store::{WorkItemEffectiveStatus, WorkItemStatus};
 use crate::theme::Theme;
 
@@ -101,7 +102,10 @@ pub(crate) fn attention_indicator(
             .when(count > 1, |el| {
                 el.child(SharedString::from(count.to_string()))
             })
-            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tooltip.clone())).into())
+            .hint(
+                tooltip,
+                HintKey::Command(super::command::WorkOutlineCommand::OpenRequiredActions),
+            )
             .into_any_element(),
     )
 }
@@ -144,10 +148,7 @@ pub(crate) fn instruction_drift_mark(
                 .text_color(theme.warning),
         )
         .when(with_label, |el| el.child("Instructions changed"))
-        .tooltip(|_, cx| {
-            cx.new(|_| TextTooltip(INSTRUCTION_DRIFT_TOOLTIP.into()))
-                .into()
-        })
+        .hint(INSTRUCTION_DRIFT_TOOLTIP, HintKey::None)
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();

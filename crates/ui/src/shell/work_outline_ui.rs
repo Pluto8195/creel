@@ -203,23 +203,9 @@ pub(crate) fn work_outline_bindings(keymap: &KeymapConfig) -> Vec<KeyBinding> {
     WorkOutlineCommand::ALL
         .into_iter()
         .filter_map(|command| {
-            let id = command.shortcut_id();
-            let combo = keymap.get(id);
-            if combo.is_empty() {
-                return None;
-            }
-            let candidate = platform_combo(combo);
-            let resolved = if Keystroke::parse(&candidate).is_ok() {
-                candidate
-            } else {
-                let fallback = id.default_combo();
-                if fallback.is_empty() {
-                    return None;
-                }
-                platform_combo(fallback)
-            };
+            let combo = crate::work_outline::hints::command_combo(keymap, command)?;
             Some(KeyBinding::new(
-                &resolved,
+                &platform_combo(&combo),
                 RunWorkOutlineCommand(command),
                 None,
             ))

@@ -24,6 +24,7 @@ use gpui::{
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
 use super::command::WorkOutlineDriftRequest;
+use super::hints::{HintKey, WithHint};
 use super::instructions::{self, OutlineChange};
 use super::model::{
     self, ChatRow, ItemRow, NoticeTone, OutlineChat, OutlineModel, OutlineOptions, OutlineRow,
@@ -35,6 +36,7 @@ use super::store::{WorkOutlinePlacement, WorkOutlineSnapshot};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_positions;
 use crate::shell::Shell;
+use crate::shell::work_outline_ui::OutlineNavKey;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -1709,6 +1711,14 @@ impl OutlineView {
                     .size(px(10.0))
                     .text_color(theme.text_muted),
                 )
+                .hint(
+                    if collapsed { "Expand" } else { "Collapse" },
+                    HintKey::Outline(if collapsed {
+                        OutlineNavKey::Expand
+                    } else {
+                        OutlineNavKey::Collapse
+                    }),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.set_collapsed(&toggle_key, !collapsed, cx);
@@ -1867,20 +1877,10 @@ impl OutlineView {
                                 .text_color(theme.warning),
                         )
                         .child("Instructions changed")
-                        .tooltip(|_, cx| {
-                            cx.new(|_| {
-                                TextTooltip(
-                                    "Instructions changed since this Chat\u{2019}s applied revision. \
-                                     Click to compare and apply."
-                                        .into(),
-                                )
-                            })
-                            .into()
-                        })
+                        .hint(chips::INSTRUCTION_DRIFT_TOOLTIP, HintKey::None)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade)
-                            {
+                            if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade) {
                                 shell.update(cx, |shell, cx| {
                                     shell.open_instruction_compare(&chat_id, cx)
                                 });
@@ -1920,10 +1920,10 @@ impl OutlineView {
                             .text_color(theme.text_muted),
                     )
                     .child("Start Chat")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| TextTooltip("Start a Chat in this work item".into()))
-                            .into()
-                    })
+                    .hint(
+                        "Start a Chat in this work item",
+                        HintKey::Command(super::command::WorkOutlineCommand::StartChatForWorkItem),
+                    )
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -2095,7 +2095,7 @@ impl OutlineView {
                     .text_color(theme.text_muted),
             )
             .child(SharedString::from(format!("{count} proposed")))
-            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .hint(tip, HintKey::None)
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();

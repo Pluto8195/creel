@@ -228,7 +228,7 @@ impl RequiredActionsList {
         enabled: bool,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        div()
+        let button = div()
             .id(id)
             .flex_none()
             .px(px(6.0))
@@ -243,7 +243,11 @@ impl RequiredActionsList {
                     .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
             })
             .when(!enabled, |el| el.text_color(theme.text_faint))
-            .child(label)
+            .child(label);
+        match super::hints::details_button_hint(label) {
+            Some((tip, key)) => super::hints::WithHint::hint(button, tip, key),
+            None => button,
+        }
     }
 
     fn render_row(

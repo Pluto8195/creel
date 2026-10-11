@@ -31,8 +31,13 @@ use zeron_proto::{
 };
 
 use crate::work_outline::actions::{OperationSlot, expect_revision, instruction_error_text};
+use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::instructions::{self, CompareUnavailable};
 use crate::work_outline::{model, revision_diff};
+
+/// Tooltip for both Apply buttons (chat header, Compare dialog).
+const APPLY_HINT: &str =
+    "Use the current instructions from the next turn (Codex confirms a fresh session first)";
 
 /// Where a Chat stands in its Space's outline.
 pub(crate) struct ChatInstructionContext {
@@ -298,9 +303,14 @@ impl Shell {
                             ),
                     )
                     .child(
-                        link("chat-header-instructions-compare", "Compare").on_click(cx.listener(
-                            move |this, _, _, cx| this.open_instruction_compare(&compare_chat, cx),
-                        )),
+                        link("chat-header-instructions-compare", "Compare")
+                            .hint(
+                                "Compare the applied and current instructions",
+                                HintKey::None,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_instruction_compare(&compare_chat, cx)
+                            })),
                     )
                     .child(if blocker.is_some() {
                         // The host can't deliver instructions: visibly inert.
@@ -320,6 +330,7 @@ impl Shell {
                                 "Apply"
                             },
                         )
+                        .hint(APPLY_HINT, HintKey::None)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.apply_chat_instructions(&apply_chat, cx)
                         }))
@@ -892,6 +903,7 @@ pub(super) fn compare_card(
                     )
                     .id("instruction-compare-apply")
                     .debug_selector(|| "instruction-compare-apply".into())
+                    .hint(APPLY_HINT, HintKey::None)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.apply_chat_instructions(&apply_chat, cx)
                     }))
