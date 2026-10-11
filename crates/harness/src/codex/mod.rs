@@ -684,7 +684,25 @@ impl Harness for CodexHarness {
             crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
             instructions::check_transition(&request)?;
         }
-        self.run_with_mode(request, controls, false).await
+        self.run_with_mode(request, controls, false, None).await
+    }
+
+    fn supports_agent_tools(&self) -> bool {
+        true
+    }
+
+    async fn run_with_agent_tools(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+        tools: crate::AgentToolsInjection,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        if request.instructions.is_some() {
+            crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
+            instructions::check_transition(&request)?;
+        }
+        self.run_with_mode(request, controls, false, Some(tools))
+            .await
     }
 
     async fn run_title(
@@ -698,7 +716,7 @@ impl Harness for CodexHarness {
         request.attachments.clear();
         request.model_options.clear();
         request.auto_approve = false;
-        self.run_with_mode(request, controls, true).await
+        self.run_with_mode(request, controls, true, None).await
     }
 }
 
@@ -708,6 +726,7 @@ impl CodexHarness {
         mut request: RunRequest,
         controls: RunControls,
         title_only: bool,
+        agent_tools: Option<crate::AgentToolsInjection>,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
         // `auto_approve` (yolo): danger-full-access + approvalPolicy "never"
@@ -772,6 +791,7 @@ impl CodexHarness {
             event_tx,
             controls,
             request,
+            agent_tools,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
@@ -796,6 +816,8 @@ struct Session {
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     request: RunRequest,
+    /// The Zeron MCP server for this thread (Chats in a Space only).
+    agent_tools: Option<crate::AgentToolsInjection>,
     interrupt_grace: Duration,
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
@@ -956,6 +978,27 @@ fn thread_start_params(request: &RunRequest, title_only: bool) -> serde_json::Ma
     p
 }
 
+/// Add the Zeron MCP server to one thread through the `config` override
+/// layer (dotted `mcp_servers.zeron.*` keys), leaving the user's
+/// `~/.codex/config.toml` servers untouched. A no-op without an injection.
+fn with_agent_tools(
+    params: &mut serde_json::Map<String, Value>,
+    tools: Option<&crate::AgentToolsInjection>,
+) {
+    let Some(tools) = tools else {
+        return;
+    };
+    let config = params
+        .entry("config")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !config.is_object() {
+        *config = Value::Object(serde_json::Map::new());
+    }
+    if let Some(config) = config.as_object_mut() {
+        config.extend(tools.codex_config_overrides());
+    }
+}
+
 /// `thread/resume` params: the start params (instructions included, so the
 /// session's exact applied revision is always re-supplied) plus the thread id.
 fn thread_resume_params(
@@ -978,6 +1021,7 @@ async fn run_session(session: Session) {
         event_tx,
         controls,
         request,
+        agent_tools,
         interrupt_grace,
         kill_grace,
         stderr_tail,
@@ -1001,7 +1045,8 @@ async fn run_session(session: Session) {
     let approval_policy = approval_policy_for(request.auto_approve, title_only);
     let effort = to_effort(request.reasoning);
     let service_tier = service_tier(&request);
-    let start_params = thread_start_params(&request, title_only);
+    let mut start_params = thread_start_params(&request, title_only);
+    with_agent_tools(&mut start_params, agent_tools.as_ref());
 
     // ---- handshake + thread + first turn (interruptible) ------------------
     let setup = async {
@@ -2031,6 +2076,33 @@ mod tests {
         );
         assert_eq!(resumed["threadId"], json!("th-1"));
         assert_eq!(resumed["developerInstructions"], json!("ENVELOPE-1\n"));
+    }
+
+    /// The Zeron MCP server rides the thread `config` layer on thread/start
+    /// AND on every thread/resume (the resume params clone the start params).
+    #[test]
+    fn agent_tools_ride_thread_start_and_resume_config() {
+        let tools = crate::AgentToolsInjection {
+            server_name: "zeron".into(),
+            command: std::path::PathBuf::from("/opt/zeron/bin/zeron"),
+            args: vec!["mcp".into()],
+            env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok".into())]),
+        };
+        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        request.instructions = None;
+        let mut start = thread_start_params(&request, false);
+        with_agent_tools(&mut start, None);
+        assert!(start.get("config").is_none());
+        with_agent_tools(&mut start, Some(&tools));
+        assert_eq!(
+            start["config"]["mcp_servers.zeron.command"],
+            json!("/opt/zeron/bin/zeron")
+        );
+        let resumed = thread_resume_params(&start, "th-1");
+        assert_eq!(
+            resumed["config"]["mcp_servers.zeron.env"]["ZERON_AGENT_TOKEN"],
+            json!("tok")
+        );
     }
 
     #[test]

@@ -162,9 +162,31 @@ pub trait Harness: Send + Sync {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError>;
+
+    /// Whether [`Self::run_with_agent_tools`] actually gives the agent the
+    /// Zeron MCP server. Default `false`: the engine then mints no token and
+    /// calls plain [`Self::run`] (no tools, no error).
+    fn supports_agent_tools(&self) -> bool {
+        false
+    }
+
+    /// [`Self::run`] with the Zeron agent tools injected through the CLI's
+    /// own MCP mechanism, alongside the user's configuration (see
+    /// [`agent_tools`]). The default ignores the injection, so an adapter
+    /// that cannot inject runs exactly as before.
+    async fn run_with_agent_tools(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+        _tools: AgentToolsInjection,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.run(request, controls).await
+    }
 }
 
 pub mod acp;
+pub mod agent_tools;
+pub use agent_tools::AgentToolsInjection;
 pub(crate) mod adapter_install;
 pub mod archive_install;
 mod catalog;
