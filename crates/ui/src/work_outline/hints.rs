@@ -18,7 +18,7 @@ use gpui::{
 
 use super::command::WorkOutlineCommand;
 use crate::settings::{KeymapConfig, platform_combo};
-use crate::shell::work_outline_ui::{OUTLINE_NAVIGATION_KEYS, OutlineNavKey};
+use crate::shell::work_outline_ui::{OUTLINE_NAVIGATION_KEYS, OutlineKeyGroup, OutlineNavKey};
 use crate::theme::Theme;
 
 /// The app's tooltip delay (the same 350 ms the composer, queue, history and
@@ -206,6 +206,58 @@ pub(crate) trait WithHint: StatefulInteractiveElement + Sized {
 
 impl<E: StatefulInteractiveElement + Sized> WithHint for E {}
 
+/// One line of the shortcut reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShortcutRow {
+    pub label: &'static str,
+    /// Formatted key; `None` = unbound (the row shows no key).
+    pub keys: Option<String>,
+}
+
+/// A titled group of the shortcut reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShortcutGroup {
+    pub title: &'static str,
+    pub rows: Vec<ShortcutRow>,
+}
+
+/// The shortcut reference against the live keymap: the Outline keys grouped
+/// as Navigate / Edit / Restructure (table order), then every Work Outline
+/// command with its current binding.
+pub(crate) fn shortcut_reference(keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
+    shortcut_reference_on(cfg!(target_os = "macos"), keymap)
+}
+
+/// [`shortcut_reference`] for an explicit platform.
+pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
+    let outline_group = |title: &'static str, group: OutlineKeyGroup| ShortcutGroup {
+        title,
+        rows: OUTLINE_NAVIGATION_KEYS
+            .iter()
+            .filter(|(_, key)| key.group() == group)
+            .map(|(combo, key)| ShortcutRow {
+                label: key.label(),
+                keys: Some(key_label_on(mac, combo)),
+            })
+            .collect(),
+    };
+    vec![
+        outline_group("Navigate", OutlineKeyGroup::Navigate),
+        outline_group("Edit", OutlineKeyGroup::Edit),
+        outline_group("Restructure", OutlineKeyGroup::Restructure),
+        ShortcutGroup {
+            title: "Commands",
+            rows: WorkOutlineCommand::ALL
+                .into_iter()
+                .map(|command| ShortcutRow {
+                    label: command.label(),
+                    keys: hint_keys_on(mac, keymap, HintKey::Command(command)),
+                })
+                .collect(),
+        },
+    ]
+}
+
 /// Tooltip label (and binding) for a Work Item Details button, keyed by its
 /// visible label so every button built through the shared helpers gets one.
 pub(crate) fn details_button_hint(label: &str) -> Option<(&'static str, HintKey)> {
@@ -354,6 +406,38 @@ mod tests {
         assert_eq!(
             details_button_hint("Start Chat").map(|(_, key)| key),
             Some(HintKey::Command(WorkOutlineCommand::StartChatForWorkItem))
+        );
+    }
+
+    #[test]
+    fn reference_groups_every_outline_key_and_command_with_live_bindings() {
+        let mut keymap = KeymapConfig::default();
+        let groups = shortcut_reference_on(true, &keymap);
+        let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
+        assert_eq!(titles, ["Navigate", "Edit", "Restructure", "Commands"]);
+        let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
+        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len());
+        assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
+        let row = |groups: &[ShortcutGroup], label: &str| {
+            groups
+                .iter()
+                .flat_map(|group| group.rows.iter())
+                .find(|row| row.label == label)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
+        assert_eq!(row(&groups, "Indent").keys.as_deref(), Some("\u{21e5}"));
+        assert_eq!(
+            row(&groups, "Create Work Item").keys.as_deref(),
+            Some("\u{21e7}\u{2318}I")
+        );
+        assert_eq!(row(&groups, "Show Outline Shortcuts").keys, None);
+        keymap.set(ShortcutId::ShowOutlineShortcuts, "mod-alt-/".into());
+        let groups = shortcut_reference_on(false, &keymap);
+        assert_eq!(
+            row(&groups, "Show Outline Shortcuts").keys.as_deref(),
+            Some("Ctrl+Alt+/")
         );
     }
 

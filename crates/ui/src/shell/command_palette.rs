@@ -607,6 +607,7 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::MoveWorkItemDown),
                 Entry::WorkOutline(WorkOutlineCommand::IndentWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::OutdentWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::ShowOutlineShortcuts),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
             ]
@@ -638,7 +639,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // The nine spec commands plus Start Chat.
+        // The nine spec commands, Start Chat, restructuring, and the
+        // shortcut reference.
         assert_eq!(listed, WorkOutlineCommand::ALL);
         assert_eq!(
             actions_for("start chat", true),
@@ -664,7 +666,17 @@ mod tests {
             actions_for("rename work", true),
             vec![Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem)]
         );
-        assert_eq!(actions_for("outline", true).len(), 1);
+        assert_eq!(
+            actions_for("outline", true),
+            vec![
+                Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
+                Entry::WorkOutline(WorkOutlineCommand::ShowOutlineShortcuts),
+            ]
+        );
+        assert_eq!(
+            actions_for("shortcuts", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::ShowOutlineShortcuts)]
+        );
     }
 
     #[test]

@@ -854,7 +854,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// Work Outline commands registered as rebindable shortcuts (every
 /// `WorkOutlineCommand`, including the ones whose palette entry waits for a
 /// later milestone).
-pub const WORK_OUTLINE_SHORTCUTS: usize = 14;
+pub const WORK_OUTLINE_SHORTCUTS: usize = 15;
 
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
 /// or past [`JUMP_SLOTS`] has no combo and no label, so it reads as unbound
@@ -889,6 +889,7 @@ pub enum ShortcutId {
     MoveWorkItemDown,
     IndentWorkItem,
     OutdentWorkItem,
+    ShowOutlineShortcuts,
     JumpSession(usize),
 }
 
@@ -922,6 +923,7 @@ impl ShortcutId {
         ShortcutId::MoveWorkItemDown,
         ShortcutId::IndentWorkItem,
         ShortcutId::OutdentWorkItem,
+        ShortcutId::ShowOutlineShortcuts,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -968,6 +970,7 @@ impl ShortcutId {
             ShortcutId::MoveWorkItemDown => "Move work item down",
             ShortcutId::IndentWorkItem => "Indent work item",
             ShortcutId::OutdentWorkItem => "Outdent work item",
+            ShortcutId::ShowOutlineShortcuts => "Show Outline shortcuts",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1035,7 +1038,10 @@ impl ShortcutId {
             | ShortcutId::MoveWorkItemUp
             | ShortcutId::MoveWorkItemDown
             | ShortcutId::IndentWorkItem
-            | ShortcutId::OutdentWorkItem => "",
+            | ShortcutId::OutdentWorkItem
+            // The reference opens with `?` inside the Outline; the global
+            // chord is opt-in.
+            | ShortcutId::ShowOutlineShortcuts => "",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1083,6 +1089,7 @@ pub struct KeymapConfig {
     pub move_work_item_down: String,
     pub indent_work_item: String,
     pub outdent_work_item: String,
+    pub show_outline_shortcuts: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1168,6 +1175,7 @@ impl Default for KeymapConfig {
             move_work_item_down: ShortcutId::MoveWorkItemDown.default_combo().into(),
             indent_work_item: ShortcutId::IndentWorkItem.default_combo().into(),
             outdent_work_item: ShortcutId::OutdentWorkItem.default_combo().into(),
+            show_outline_shortcuts: ShortcutId::ShowOutlineShortcuts.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
         }
     }
@@ -1204,6 +1212,7 @@ impl KeymapConfig {
             ShortcutId::MoveWorkItemDown => &self.move_work_item_down,
             ShortcutId::IndentWorkItem => &self.indent_work_item,
             ShortcutId::OutdentWorkItem => &self.outdent_work_item,
+            ShortcutId::ShowOutlineShortcuts => &self.show_outline_shortcuts,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1242,6 +1251,7 @@ impl KeymapConfig {
             ShortcutId::MoveWorkItemDown => self.move_work_item_down = combo,
             ShortcutId::IndentWorkItem => self.indent_work_item = combo,
             ShortcutId::OutdentWorkItem => self.outdent_work_item = combo,
+            ShortcutId::ShowOutlineShortcuts => self.show_outline_shortcuts = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {
@@ -3282,7 +3292,7 @@ mod tests {
         assert!(conflicted_shortcuts(&keymap).is_empty());
     }
 
-    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 14] = [
+    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 15] = [
         (ShortcutId::OpenOutline, "openOutline"),
         (ShortcutId::CreateWorkItem, "createWorkItem"),
         (ShortcutId::CreateChildWorkItem, "createChildWorkItem"),
@@ -3306,6 +3316,7 @@ mod tests {
         (ShortcutId::MoveWorkItemDown, "moveWorkItemDown"),
         (ShortcutId::IndentWorkItem, "indentWorkItem"),
         (ShortcutId::OutdentWorkItem, "outdentWorkItem"),
+        (ShortcutId::ShowOutlineShortcuts, "showOutlineShortcuts"),
     ];
 
     #[test]

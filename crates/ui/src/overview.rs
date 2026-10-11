@@ -8921,6 +8921,12 @@ impl Overview {
     }
 
     #[cfg(test)]
+    /// The search field's focus handle (tests of context-scoped keys).
+    #[cfg(test)]
+    pub(crate) fn search_focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+        gpui::Focusable::focus_handle(self.search.read(cx), cx)
+    }
+
     pub(crate) fn outline_entity(&self) -> Entity<OutlineView> {
         self.outline.clone()
     }
@@ -9056,6 +9062,34 @@ impl Overview {
                 }
             }))
             .into_any_element(),
+        );
+        // The shortcut reference, on demand (also `?` in the Outline and the
+        // palette's Show Outline Shortcuts).
+        out.push(
+            div()
+                .id("outline-shortcuts")
+                .debug_selector(|| "outline-shortcuts".into())
+                .aria_label("Shortcuts")
+                .flex()
+                .items_center()
+                .px(px(6.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .bg(theme.element_hover.opacity(0.5))
+                .text_color(theme.text_muted)
+                .hover(|el| el.text_color(theme.text))
+                .child(crate::icons::icon(crate::icons::KEYBOARD).size(px(12.0)))
+                .hint(
+                    "Shortcuts",
+                    HintKey::Outline(crate::shell::work_outline_ui::OutlineNavKey::ShowShortcuts),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(shell) = this.shell.upgrade() {
+                        shell.update(cx, |shell, cx| shell.open_outline_shortcuts(cx));
+                    }
+                }))
+                .into_any_element(),
         );
         if self.hide_stale {
             let hidden = self.outline.read(cx).hidden_completed();
@@ -9424,6 +9458,16 @@ impl Overview {
         let chat_hint = self.state.read(cx).selected_chat.clone();
         let result: Result<(), &'static str> = match command {
             WorkOutlineCommand::OpenOutline => Ok(()),
+            // Normally handled by the Shell before routing here; the
+            // reference is a Shell overlay, so ask for it after this update.
+            WorkOutlineCommand::ShowOutlineShortcuts => {
+                if let Some(shell) = self.shell.upgrade() {
+                    cx.defer(move |cx| {
+                        shell.update(cx, |shell, cx| shell.open_outline_shortcuts(cx))
+                    });
+                }
+                Ok(())
+            }
             WorkOutlineCommand::CreateWorkItem => {
                 outline.update(cx, |outline, cx| outline.begin_create(false, window, cx))
             }

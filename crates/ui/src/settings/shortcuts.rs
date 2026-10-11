@@ -505,7 +505,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::MoveWorkItemUp
         | ShortcutId::MoveWorkItemDown
         | ShortcutId::IndentWorkItem
-        | ShortcutId::OutdentWorkItem => "Work Outline",
+        | ShortcutId::OutdentWorkItem
+        | ShortcutId::ShowOutlineShortcuts => "Work Outline",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -561,6 +562,9 @@ fn description(id: ShortcutId) -> &'static str {
         }
         ShortcutId::OutdentWorkItem => {
             "Move the selected work item out of its parent, right after it (Outline: Shift+Tab)."
+        }
+        ShortcutId::ShowOutlineShortcuts => {
+            "List the Outline keys and Work Outline commands (Outline: ?)."
         }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.

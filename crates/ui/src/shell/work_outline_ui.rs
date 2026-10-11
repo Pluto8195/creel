@@ -102,6 +102,8 @@ pub(super) enum WorkOutlineModal {
     FromChat(super::instructions_ui::FromChatDialog),
     /// Start Chat from a work item (`start_chat_ui`).
     StartChat(super::start_chat_ui::StartChatDialog),
+    /// The on-demand Outline shortcut reference (read-only; Esc closes).
+    Shortcuts,
 }
 
 /// How a work item reference link should open.
@@ -162,6 +164,56 @@ pub(crate) enum OutlineNavKey {
     MoveItemDown,
     IndentItem,
     OutdentItem,
+    /// Open the shortcut reference.
+    ShowShortcuts,
+}
+
+/// The shortcut reference's groups for the Outline keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutlineKeyGroup {
+    Navigate,
+    Edit,
+    Restructure,
+}
+
+impl OutlineNavKey {
+    /// Short label (shortcut reference, tooltips).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SelectParent => "Parent",
+            Self::SelectChild => "First child",
+            Self::SelectNextSibling => "Next sibling",
+            Self::SelectPreviousSibling => "Previous sibling",
+            Self::Expand => "Expand",
+            Self::Collapse => "Collapse",
+            Self::OpenSelected => "Open details",
+            Self::RenameSelected => "Rename",
+            Self::CreateSibling => "New sibling",
+            Self::CreateChild => "New child",
+            Self::MoveItemUp => "Move up",
+            Self::MoveItemDown => "Move down",
+            Self::IndentItem => "Indent",
+            Self::OutdentItem => "Outdent",
+            Self::ShowShortcuts => "Show shortcuts",
+        }
+    }
+
+    pub(crate) fn group(self) -> OutlineKeyGroup {
+        match self {
+            Self::SelectParent
+            | Self::SelectChild
+            | Self::SelectNextSibling
+            | Self::SelectPreviousSibling
+            | Self::Expand
+            | Self::Collapse
+            | Self::OpenSelected
+            | Self::ShowShortcuts => OutlineKeyGroup::Navigate,
+            Self::RenameSelected | Self::CreateSibling | Self::CreateChild => OutlineKeyGroup::Edit,
+            Self::MoveItemUp | Self::MoveItemDown | Self::IndentItem | Self::OutdentItem => {
+                OutlineKeyGroup::Restructure
+            }
+        }
+    }
 }
 
 /// Default outline keys (identical on every platform: no primary modifier is
@@ -178,7 +230,9 @@ pub(crate) enum OutlineNavKey {
 /// - Tab / Shift+Tab: indent (last child of the previous sibling) / outdent
 ///   (after its former parent). With no work item selected they propagate,
 ///   so Tab still walks focus out of the Outline.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 14] = [
+/// - ? (Shift+/ on US layouts): the shortcut reference. Bound to the typed
+///   character, so it follows the keyboard layout.
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 15] = [
     ("up", OutlineNavKey::SelectPreviousSibling),
     ("down", OutlineNavKey::SelectNextSibling),
     ("alt-up", OutlineNavKey::SelectParent),
@@ -193,6 +247,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 14] = [
     ("alt-shift-down", OutlineNavKey::MoveItemDown),
     ("tab", OutlineNavKey::IndentItem),
     ("shift-tab", OutlineNavKey::OutdentItem),
+    ("?", OutlineNavKey::ShowShortcuts),
 ];
 
 /// Bindings for the configurable Work Outline commands. An empty combo is
@@ -239,7 +294,102 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
         OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
         OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
         OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
+        OutlineNavKey::ShowShortcuts => KeyBinding::new(
+            keys,
+            RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),
+            context,
+        ),
     }));
+}
+
+/// The shortcut reference card: Outline keys (Navigate, Edit, Restructure)
+/// beside the Work Outline commands, every binding read from the live
+/// keymap. Read-only; Esc or Close dismisses it.
+fn shortcuts_card(theme: &Theme, cx: &mut Context<Shell>) -> AnyElement {
+    let keymap = crate::settings::current(cx).keymap;
+    let groups = crate::work_outline::hints::shortcut_reference(&keymap);
+    let group_el = |group: &crate::work_outline::hints::ShortcutGroup| {
+        let selector = format!("work-outline-shortcuts-{}", group.title.to_lowercase());
+        div()
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .child(
+                div()
+                    .pb(px(2.0))
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(group.title),
+            )
+            .children(group.rows.iter().map(|row| {
+                div()
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text)
+                    .child(div().min_w_0().truncate().child(row.label))
+                    .when_some(row.keys.clone(), |el, keys| {
+                        el.child(popover::kbd_hint(theme, &keys))
+                    })
+            }))
+    };
+    let (outline_groups, command_groups) = groups.split_at(3);
+    popover::dialog_card(theme)
+        .w(px(600.0))
+        .debug_selector(|| "work-outline-shortcuts".into())
+        .child(popover::dialog_title(theme, "Outline shortcuts"))
+        .child(
+            div()
+                .mt(px(12.0))
+                .flex()
+                .gap(px(24.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .children(outline_groups.iter().map(group_el)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .children(command_groups.iter().map(group_el)),
+                ),
+        )
+        .child(
+            div()
+                .mt(px(14.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_faint)
+                        .child("Outline keys work while the Outline has focus. Rebind commands in Settings \u{203a} Shortcuts."),
+                )
+                .child(
+                    popover::btn_ghost(theme, "Close", "work-outline-shortcuts-close")
+                        .id("work-outline-shortcuts-close")
+                        .debug_selector(|| "work-outline-shortcuts-close".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.resolve_work_outline_modal(false, window, cx);
+                        })),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Run the modal's decision callback (at most once).
@@ -263,7 +413,8 @@ fn deliver_decision(modal: WorkOutlineModal, accept: bool, window: &mut Window, 
         }
         WorkOutlineModal::Compare(_)
         | WorkOutlineModal::FromChat(_)
-        | WorkOutlineModal::StartChat(_) => {}
+        | WorkOutlineModal::StartChat(_)
+        | WorkOutlineModal::Shortcuts => {}
     }
 }
 
@@ -341,6 +492,16 @@ impl Shell {
         );
     }
 
+    /// Open the Outline shortcut reference (palette, `?` in the Outline,
+    /// the Outline toolbar). Rides the modal plumbing: it takes focus, Esc
+    /// closes it, and focus returns to where it was.
+    pub(crate) fn open_outline_shortcuts(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.work_outline_modal, Some(WorkOutlineModal::Shortcuts)) {
+            return;
+        }
+        self.begin_work_outline_modal(WorkOutlineModal::Shortcuts, cx);
+    }
+
     /// Show the archive dialog with its explicit descendant choice.
     pub(crate) fn open_work_outline_archive_confirm(
         &mut self,
@@ -405,6 +566,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.command_palette = None;
+        // The shortcut reference is an overlay over whatever is showing; it
+        // never switches route.
+        if command == WorkOutlineCommand::ShowOutlineShortcuts {
+            self.open_outline_shortcuts(cx);
+            return;
+        }
         // Create Instruction from Chat acts where the Chat is; only when that
         // is impossible does it fall through to the Outline (with a notice).
         if command == WorkOutlineCommand::CreateInstructionFromChat
@@ -520,6 +687,7 @@ impl Shell {
             WorkOutlineModal::StartChat(dialog) => {
                 super::start_chat_ui::start_chat_card(dialog, self, &theme, cx)
             }
+            WorkOutlineModal::Shortcuts => shortcuts_card(&theme, cx),
             WorkOutlineModal::Confirm(dialog) => {
                 let accept = if dialog.destructive {
                     popover::btn_danger(&theme, &dialog.confirm_label)
@@ -1171,5 +1339,141 @@ mod tests {
         cx.update(|window, cx| window.dispatch_action(Box::new(OpenSelected), cx));
         cx.run_until_parked();
         overview.read_with(cx, |overview, _| assert!(overview.has_work_item_details()));
+    }
+
+    fn shortcuts_open(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> bool {
+        shell.read_with(cx, |shell, _| {
+            matches!(shell.work_outline_modal, Some(WorkOutlineModal::Shortcuts))
+        })
+    }
+
+    fn redraw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+    }
+
+    #[gpui::test]
+    fn show_outline_shortcuts_opens_the_reference_and_escape_closes_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        // The palette entry runs the command through the same entry point.
+        shell.update_in(cx, |shell, window, cx| {
+            assert!(!matches!(shell.route, Route::Overview));
+            shell.run_work_outline_command(WorkOutlineCommand::ShowOutlineShortcuts, window, cx);
+            assert!(!matches!(shell.route, Route::Overview), "no route switch");
+            assert!(shell.overlay_owns_keyboard(cx));
+        });
+        assert!(shortcuts_open(&shell, cx));
+        redraw(cx);
+        assert!(cx.debug_bounds("work-outline-shortcuts").is_some());
+        for group in ["navigate", "edit", "restructure", "commands"] {
+            let selector: &'static str =
+                Box::leak(format!("work-outline-shortcuts-{group}").into_boxed_str());
+            assert!(cx.debug_bounds(selector).is_some(), "{group}");
+        }
+        shell.update_in(cx, |shell, window, cx| {
+            shell.on_key_down_capture(&escape(), window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!shortcuts_open(&shell, cx));
+        shell.update(cx, |shell, cx| assert!(!shell.overlay_owns_keyboard(cx)));
+
+        // The keymap action (a user-recorded chord) opens it too, and Close
+        // dismisses it.
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(RunWorkOutlineCommand(
+                    WorkOutlineCommand::ShowOutlineShortcuts,
+                )),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(shortcuts_open(&shell, cx));
+        redraw(cx);
+        let close = cx
+            .debug_bounds("work-outline-shortcuts-close")
+            .unwrap()
+            .center();
+        cx.simulate_click(close, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(!shortcuts_open(&shell, cx));
+    }
+
+    #[gpui::test]
+    fn question_mark_opens_the_reference_only_in_the_outline(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::outline_view::CreateSibling;
+        use crate::work_outline::store::fixture_ids::LAUNCH;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.spaces = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                ];
+            })
+        });
+        shell.update_in(cx, |shell, window, cx| {
+            shell.run_work_outline_command(WorkOutlineCommand::OpenOutline, window, cx);
+            let overview = shell.overview_page.clone().unwrap();
+            overview.update(cx, |overview, cx| {
+                overview.show_work_outline_fixture(window, cx)
+            });
+        });
+        let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
+        let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        redraw(cx);
+        let outline_focus = cx.update(|_, cx| gpui::Focusable::focus_handle(outline.read(cx), cx));
+        outline.update(cx, |outline, cx| {
+            outline.select(&row_key::item("s1", LAUNCH), cx)
+        });
+        cx.update(|window, cx| window.focus(&outline_focus, cx));
+        redraw(cx);
+
+        // `?` in the Outline opens it; Esc closes it and hands focus back.
+        cx.simulate_keystrokes("?");
+        cx.run_until_parked();
+        assert!(shortcuts_open(&shell, cx), "? opens the reference");
+        redraw(cx);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!shortcuts_open(&shell, cx), "Esc closes it");
+        redraw(cx);
+        cx.update(|window, _| assert!(outline_focus.is_focused(window), "focus restored"));
+
+        // In the inline editor (a text input) `?` is just a character.
+        cx.update(|window, cx| window.dispatch_action(Box::new(CreateSibling), cx));
+        redraw(cx);
+        outline.read_with(cx, |outline, _| assert!(outline.is_editing()));
+        cx.simulate_keystrokes("?");
+        cx.run_until_parked();
+        assert!(!shortcuts_open(&shell, cx), "never from a text input");
+        outline.update(cx, |outline, cx| outline.cancel_edit(cx));
+
+        // Outside the Outline (the Overview search field) it does nothing.
+        let search = overview.read_with(cx, |overview, cx| overview.search_focus_handle(cx));
+        cx.update(|window, cx| window.focus(&search, cx));
+        redraw(cx);
+        cx.simulate_keystrokes("?");
+        cx.run_until_parked();
+        assert!(!shortcuts_open(&shell, cx), "not outside the Outline");
+
+        // The Outline toolbar button opens it as well.
+        let button = cx.debug_bounds("outline-shortcuts").unwrap().center();
+        cx.simulate_click(button, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(shortcuts_open(&shell, cx), "toolbar button opens it");
     }
 }
