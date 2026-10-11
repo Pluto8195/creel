@@ -403,3 +403,63 @@ src/instruction_support.rs`). Each item is a decision later stages build on.
     `HarnessError::Capability {harness, detail, upgrade_hint}`; `require_instruction_support` is
     the adapter-side fail-closed check, not yet called from adapters (stage 2 wires it with
     delivery). Every `RunRequest` construction site passes `instructions: None`.
+
+## Milestone 2 delivery discoveries
+
+Recorded by Milestone 2 runtime instruction delivery (branch `work-outline-instruction-delivery`:
+`crates/harness`, `crates/doc/src/{commands,schema,queue}.rs`, `crates/engine/src/
+{instruction_delivery,sessions,doc_host,run_journal}.rs`). Each item amends or sharpens section 5.
+
+1. **Codex replace strategy is `FreshSession`.** The Milestone 2 trials (delivery audit, "Milestone 2
+   trials") passed 4 of 6 for resume-with-new-value + `thread/compact/start`, so `CompactSwap` is not
+   used. A revision change on Codex rejects the Turn with a resolution that starts with
+   `instructionContextResetRequired` (`zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED`) and writes no
+   user message; the client confirms and resends with `contextResetConfirmed: true` on the
+   `runWithInstructions` payload, and the engine starts a fresh thread. Codex support is gated on
+   `codex --version` >= 0.154.0; Claude on `claude --help` listing `--system-prompt-snapshot` and
+   the `--append-system-prompt[-file]` form (2.1.285 lists the file flag only in prose).
+2. **Command kind.** `SessionCommandPayload::RunWithInstructions { request, messageId,
+   instructions: {revisionId, revisionHash}, contextResetConfirmed? }`, kind
+   `runWithInstructions`. The sender never supplies an envelope (`request.instructions` is ignored);
+   the host resolves, verifies (`verify_revision_body`, pinned hash, `envelope_sha256`), and
+   re-renders. Hosts that predate it skip the entry (tested with an older-shaped decoder).
+3. **Ledger idempotency (audit 9 item 1) shipped.** `queue_command` is a no-op returning `false`
+   for a duplicate id; `read_commands` collapses duplicate ids (applied > other terminal >
+   pending, at the first position); `set_command_status` writes every pending duplicate and never
+   overwrites a terminal one while a pending duplicate exists.
+4. **Queued rows carry the pin as a row-map key**, not a `QueuedMessage` field (`instructions` on
+   the Loro row map; `push_queued_with_instructions`, `queued_instructions`,
+   `set_queued_instructions`). This keeps the struct literal stable for existing callers; older
+   readers ignore the key. The engine stamps the Chat's selected revision at `queue_message` time;
+   a row without a pin runs under its Execution Session's revision.
+5. **Missing revisions** wait with backoff (default 120 s, measured from the first deferral, not
+   `issuedAt`, so a command that sat offline is not rejected the moment its host returns), before the
+   processed mark, then reject with an actionable message. Relay ingestion refuses retryably while
+   the revision is missing. Integrity failures reject at once. Neither ever substitutes a revision.
+6. **Transition rule.** No native session to resume: `fresh`. A resumable native session whose
+   journal sidecar says it received the same pin: `continue`. Anything else (different pin, or a
+   session with no or unknown instructions): `replace { previousRevisionId }`, where an empty
+   `previousRevisionId` means the session had no (known) Work Outline instructions.
+7. **Turn boundary.** A `runWithInstructions` for a different revision than the working Execution
+   Session's is held in the queue (pinned) and resolves `applied` with "held until the turn ends";
+   the running Turn is never interrupted or steered. A queued row with a different pin cannot be
+   "steered now". An explicit "send now" (interrupt) still works: the user ended the Turn.
+8. **Follow-ups.** `SessionsEngine::last_request` strips `instructions`; every engine-built
+   dispatch without explicit instructions takes, in order: the Turn's pin from the journal sidecar
+   (by user message id), the live Execution Session's pin, the pin the chat's last native session
+   received. Never the selected or newest revision. A plain `Run` from an older client, for a chat
+   with a selected revision and no session record, gets the selection (host-resolved).
+9. **Sidecar.** `<journals>/<chat>.instructions.json` holds `{nativeSessionId, cwd, applied,
+   turns[{messageId, pin}]}` (last 256 turns), fsynced. Turn pins are written before spawn;
+   `applied` on `SessionStarted`. Chats that never had instructions get no sidecar.
+10. **Execution Session id** in `ExecutionSessionReport.id` is the engine run id (one harness process
+    = one Execution Session); `nativeResumeId` is the harness session id. Reported on every
+    `SessionStarted` of a chat that has instructions, a sidecar, or a selected revision.
+11. **Capabilities.** `work-outline-instruction-envelope-v1` is now in `CURRENT`; per-harness tokens
+    come from `capabilities::current_with_instruction_harnesses` via
+    `instruction_delivery::advertised_capabilities` (probes run off the async runtime) and are
+    stamped by `restamp_device_capabilities` after boot. Senders check a remote host's stamped
+    tokens (unknown device = unsupported) and the local harness's support before queueing.
+12. **Claude envelope files** are content-addressed (`<store_root>/instructions/<envelopeSha256>.md`,
+    0600, atomic write, rewritten if not byte-identical) rather than one file per session: identical
+    bytes, no unbounded growth. The digest is re-checked before writing.
