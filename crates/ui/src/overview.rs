@@ -13355,4 +13355,495 @@ mod logic_tests {
             assert!(d.has_unsaved_draft(cx));
         });
     }
+
+    // ----------------------------------------------------------------------
+    // Execution configuration (Milestone 3)
+    // ----------------------------------------------------------------------
+
+    use crate::work_outline::execution::fixture as execution_fixture;
+
+    fn identity(repo: &str, path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "repoId": repo, "repoFingerprint": format!("root-{repo}"), "repoPath": path,
+            "checkoutId": format!("checkout:{repo}"), "mainCheckout": true,
+            "worktrees": [
+                {"path": path, "checkoutId": format!("checkout:{repo}"), "branch": "main", "main": true},
+                {"path": format!("{path}-wt"), "checkoutId": format!("checkout:{repo}-wt"),
+                 "branch": "feature", "main": false},
+            ],
+        })
+    }
+
+    /// Mutations answer `{}`; `DescribeExecutionRepository` knows the fixture
+    /// repositories and refuses anything else as non-Git; validation answers
+    /// with `validate`.
+    fn execution_reply(
+        validate: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+    ) -> impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    + Send
+    + Sync
+    + 'static {
+        move |params| {
+            if params.get("op").is_some() {
+                return Ok(serde_json::json!({}));
+            }
+            if let Some(path) = params.get("path").and_then(|p| p.as_str()) {
+                return match path {
+                    "/work/alpha/ui" => Ok(identity("repo:ui", path)),
+                    "/work/alpha/flagship" => Ok(identity("repo:flagship", path)),
+                    other => Err(zeron_rpc::RpcError::Failed(format!(
+                        "{other} is not a Git repository"
+                    ))),
+                };
+            }
+            Ok(validate.lock().unwrap().clone())
+        }
+    }
+
+    fn validate_ok() -> std::sync::Arc<std::sync::Mutex<serde_json::Value>> {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            serde_json::to_value(execution_fixture::launch_validated()).unwrap(),
+        ))
+    }
+
+    fn mutations(calls: &OutlineCalls) -> Vec<serde_json::Value> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.get("op").is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// The Execution section is collapsed until opened, shows the resolved
+    /// configuration, offers Reset only for an item with its own row, and
+    /// lists exception Chats (with the compact marker on the header and on
+    /// the Outline row).
+    #[gpui::test]
+    fn execution_section_shows_resolution_reset_and_exceptions(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        // Outline rows: only API (one exception) carries the marker.
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-execution-exceptions-{}", row_key::item("s1", API))
+            )
+            .is_some()
+        );
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-execution-exceptions-{}", row_key::item("s1", UI))
+            )
+            .is_none()
+        );
+
+        let details = open_details(&overview, vcx, API);
+        assert!(vcx.debug_bounds("work-item-execution").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exceptions-marker")
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds("work-item-execution-source").is_none(),
+            "collapsed"
+        );
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-execution-source").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-repo-0").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-reset").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exception-0")
+                .is_some()
+        );
+
+        // UI inherits from Launch: no Reset, no exceptions.
+        let details = open_details(&overview, vcx, UI);
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-execution-repo-1").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-reset").is_none());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exceptions-marker")
+                .is_none()
+        );
+        assert!(vcx.debug_bounds("work-item-execution-exceptions").is_none());
+    }
+
+    /// Edit form: explicit Save/Cancel, the discard policy, the drift
+    /// confirmation for item Chats, and the written configuration.
+    #[gpui::test]
+    fn execution_edits_save_explicitly_and_confirm_drift(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, UI);
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        vcx.run_until_parked();
+        draw(vcx);
+        // Prefilled with the inherited configuration; worktree choices were
+        // described on the owning device.
+        let described: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.get("path").and_then(|p| p.as_str()).map(str::to_owned))
+            .collect();
+        assert_eq!(described, ["/work/alpha/ui", "/work/alpha/flagship"]);
+        // The Space lives on device `d`, not this app's engine: Describe is
+        // routed there (only the owner can fingerprint its repositories).
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| c["targetDeviceId"] == "d")
+        );
+        assert!(vcx.debug_bounds("work-item-execution-editor").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-worktree-1-2")
+                .is_some(),
+            "linked worktree offered"
+        );
+        details.read_with(vcx, |d, cx| {
+            assert_eq!(d.execution_draft.as_ref().unwrap().bindings.len(), 2);
+            assert!(!d.execution_draft_dirty(cx));
+        });
+
+        // Cancel discards; nothing written, nothing asked.
+        let cancel = vcx
+            .debug_bounds("work-item-execution-cancel")
+            .unwrap()
+            .center();
+        vcx.simulate_click(cancel, gpui::Modifiers::default());
+        draw(vcx);
+        details.read_with(vcx, |d, _| {
+            assert!(d.execution_draft.is_none());
+            assert!(d.captured_confirm.is_none());
+        });
+        assert!(mutations(&calls).is_empty());
+
+        // Edit: flagship becomes primary (radio: ui stops being primary) and
+        // pins its linked worktree.
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        vcx.run_until_parked();
+        draw(vcx);
+        let primary = vcx
+            .debug_bounds("work-item-execution-primary-1")
+            .unwrap()
+            .center();
+        vcx.simulate_click(primary, gpui::Modifiers::default());
+        draw(vcx);
+        let worktree = vcx
+            .debug_bounds("work-item-execution-worktree-1-2")
+            .unwrap()
+            .center();
+        vcx.simulate_click(worktree, gpui::Modifiers::default());
+        draw(vcx);
+        details.read_with(vcx, |d, cx| {
+            let draft = d.execution_draft.as_ref().unwrap();
+            let primaries: Vec<bool> = draft.bindings.iter().map(|b| b.binding.primary).collect();
+            assert_eq!(primaries, [false, true]);
+            assert_eq!(
+                draft.bindings[1].binding.worktree_path.as_deref(),
+                Some("/work/alpha/flagship-wt")
+            );
+            assert!(d.execution_draft_dirty(cx));
+        });
+
+        // Closing with the dirty draft asks; Keep Editing keeps it.
+        details.update(vcx, |d, cx| d.request_close(cx));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("asks");
+        assert_eq!(
+            request.body.as_ref(),
+            "Your execution configuration edits have not been saved."
+        );
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        vcx.run_until_parked();
+        assert!(details.read_with(vcx, |d, cx| d.has_unsaved_draft(cx)));
+        assert!(mutations(&calls).is_empty(), "blur and close never save");
+
+        // Save: chat-ui runs with UI's current configuration, so the drift
+        // confirmation states it keeps its captured configuration.
+        let save = vcx
+            .debug_bounds("work-item-execution-save")
+            .unwrap()
+            .center();
+        vcx.simulate_click(save, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("drift confirmation");
+        assert_eq!(
+            request.title.as_ref(),
+            "Change the execution configuration?"
+        );
+        assert!(request.body.contains("keep their captured configuration"));
+        assert!(request.body.contains("exceptions"));
+        assert!(mutations(&calls).is_empty(), "nothing before confirming");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["op"], "configureExecution");
+        assert_eq!(
+            written[0]["scope"],
+            serde_json::json!({"type": "workItem", "workItemId": UI})
+        );
+        let bindings = written[0]["configuration"]["bindings"].as_array().unwrap();
+        assert_eq!(bindings[1]["primary"], true);
+        assert_eq!(bindings[1]["worktreeId"], "checkout:repo:flagship-wt");
+        assert_eq!(bindings[0]["primary"], false);
+        details.read_with(vcx, |d, _| assert!(d.execution_draft.is_none()));
+    }
+
+    /// Repositories are added through the folder picker and described on the
+    /// owning device; a non-Git folder is refused. No bound Chats: no
+    /// confirmation.
+    #[gpui::test]
+    fn execution_repositories_are_described_and_non_git_folders_refused(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, HOUSEKEEPING);
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        draw(vcx);
+        details.read_with(vcx, |d, cx| {
+            assert!(d.execution_draft.as_ref().unwrap().bindings.is_empty());
+            assert_eq!(
+                d.execution_draft_configuration(cx).unwrap().execution_root,
+                "/work/alpha"
+            );
+        });
+        let pick = |vcx: &mut gpui::VisualTestContext, selector: &'static str, path: &str| {
+            let button = vcx.debug_bounds(selector).unwrap().center();
+            vcx.simulate_click(button, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let request = details
+                .update(vcx, |d, _| d.captured_folder_pick.take())
+                .expect("folder picker");
+            assert_eq!(request.device_id, "d");
+            let path = path.to_owned();
+            vcx.update(|_, cx| (request.on_pick)(path, cx));
+            vcx.run_until_parked();
+            draw(vcx);
+        };
+        pick(vcx, "work-item-execution-add-repo", "/work/alpha/docs");
+        details.read_with(vcx, |d, _| {
+            assert!(d.execution_draft.as_ref().unwrap().bindings.is_empty());
+            assert!(
+                d.execution_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("not a Git repository")
+            );
+        });
+        pick(vcx, "work-item-execution-add-repo", "/work/alpha/ui");
+        pick(vcx, "work-item-execution-choose-root", "/work/alpha/ui");
+        details.read_with(vcx, |d, cx| {
+            let draft = d.execution_draft.as_ref().unwrap();
+            assert_eq!(draft.bindings.len(), 1);
+            assert_eq!(draft.bindings[0].binding.repo_fingerprint, "root-repo:ui");
+            assert_eq!(
+                d.execution_draft_configuration(cx).unwrap().execution_root,
+                "/work/alpha/ui"
+            );
+        });
+        let save = vcx
+            .debug_bounds("work-item-execution-save")
+            .unwrap()
+            .center();
+        vcx.simulate_click(save, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        details.read_with(vcx, |d, _| assert!(d.captured_confirm.is_none()));
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            written[0]["configuration"]["executionRoot"],
+            "/work/alpha/ui"
+        );
+        assert_eq!(
+            written[0]["configuration"]["bindings"][0]["repoId"],
+            "repo:ui"
+        );
+    }
+
+    /// Validate runs on the owning device (the engine forwards; no target
+    /// device here) and shows each error's message and remediation, with
+    /// offline and unsupported owners as their own states.
+    #[gpui::test]
+    fn execution_validation_shows_remediation_and_distinct_owner_states(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let validate = validate_ok();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate.clone()),
+        );
+        let details = open_details(&overview, vcx, API);
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        let cases = [
+            (
+                zeron_proto::ExecutionValidationError::DeviceOffline {
+                    device_id: "d".into(),
+                    detail: String::new(),
+                },
+                "work-item-execution-validation-device-offline",
+            ),
+            (
+                zeron_proto::ExecutionValidationError::HostUnsupported {
+                    device_id: "d".into(),
+                    capability: "work-outline-multi-repo-v1".into(),
+                },
+                "work-item-execution-validation-host-unsupported",
+            ),
+            (
+                zeron_proto::ExecutionValidationError::WorktreeMoved {
+                    repo_id: "repo:flagship".into(),
+                    worktree_id: "wt".into(),
+                    expected_path: "/a".into(),
+                    found_path: "/b".into(),
+                },
+                "work-item-execution-validation-blocked",
+            ),
+        ];
+        for (error, selector) in cases {
+            *validate.lock().unwrap() = serde_json::to_value(
+                zeron_proto::ValidateExecutionConfigurationReply::from_result(
+                    None,
+                    Err(vec![error]),
+                ),
+            )
+            .unwrap();
+            let button = vcx
+                .debug_bounds("work-item-execution-validate")
+                .unwrap()
+                .center();
+            vcx.simulate_click(button, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            draw(vcx);
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+            assert!(vcx.debug_bounds("work-item-execution-issue-0").is_some());
+        }
+        let last = calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last["scope"],
+            serde_json::json!({"type": "workItem", "workItemId": API})
+        );
+        assert!(last.get("targetDeviceId").is_none());
+        details.read_with(vcx, |d, _| {
+            let crate::work_outline::execution::ValidationState::Done(reply) =
+                &d.execution_validation
+            else {
+                panic!("validated");
+            };
+            let issue = &crate::work_outline::execution::validation_issues(reply)[0];
+            assert!(issue.message.contains("moved from /a to /b"));
+            assert!(issue.remediation.contains("Update the worktree path"));
+        });
+        // Ready: no issues.
+        *validate.lock().unwrap() =
+            serde_json::to_value(execution_fixture::launch_validated()).unwrap();
+        let button = vcx
+            .debug_bounds("work-item-execution-validate")
+            .unwrap()
+            .center();
+        vcx.simulate_click(button, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("work-item-execution-validation-ready")
+                .is_some()
+        );
+        assert!(vcx.debug_bounds("work-item-execution-issue-0").is_none());
+
+        // A dirty draft validates the draft (as a resolved snapshot).
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        details.update(vcx, |d, cx| d.set_execution_root("/work/alpha", cx));
+        details.update(vcx, |d, cx| d.validate_execution(cx));
+        vcx.run_until_parked();
+        let last = calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last["resolved"]["configuration"]["executionRoot"],
+            "/work/alpha"
+        );
+        assert_eq!(last["resolved"]["deviceId"], "d");
+        assert!(last.get("scope").is_none());
+    }
+
+    /// Reset to inherited confirms when bound Chats would differ and writes
+    /// a null configuration; the Space-root variant edits the Space default.
+    #[gpui::test]
+    fn execution_reset_and_space_default(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, API);
+        details.update(vcx, |d, cx| d.reset_execution(cx));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("chat-auth would differ");
+        assert_eq!(request.confirm_label.as_ref(), "Reset");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert!(written[0]["configuration"].is_null());
+
+        let details = open_details(&overview, vcx, "");
+        assert!(details.read_with(vcx, |d, _| d.is_space_root()));
+        assert!(vcx.debug_bounds("work-item-execution").is_some());
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        details.update(vcx, |d, cx| {
+            d.set_execution_root("/work/alpha/ui", cx);
+            d.save_execution(cx);
+        });
+        vcx.run_until_parked();
+        // Housekeeping (implicit) and Launch? Only Housekeeping changes, and
+        // it has no Chats: no confirmation.
+        details.read_with(vcx, |d, _| assert!(d.captured_confirm.is_none()));
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 2);
+        assert_eq!(
+            written[1]["scope"],
+            serde_json::json!({"type": "space", "spaceId": "s1"})
+        );
+    }
 }

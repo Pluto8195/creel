@@ -112,6 +112,9 @@ pub(crate) struct ItemRow {
     pub unresolved_actions: u32,
     pub chat_count: u32,
     pub has_references: bool,
+    /// Associated Chats whose captured execution configuration differs from
+    /// the item's current one (`executionExceptions`).
+    pub execution_exceptions: u32,
     pub archived: bool,
     /// Shown only because something below it is visible.
     pub kept_for_descendants: bool,
@@ -452,7 +455,15 @@ fn space_children(space: &OutlineSpace, ctx: &mut Ctx<'_>, root_matched: bool) -
             .collect();
         let mut seen: HashSet<&str> = HashSet::new();
         for root in &snapshot.root_work_item_ids {
-            if let Some(node) = item_node(&space.id, root, &items, ctx, root_matched, &mut seen) {
+            if let Some(node) = item_node(
+                &space.id,
+                root,
+                &items,
+                snapshot,
+                ctx,
+                root_matched,
+                &mut seen,
+            ) {
                 children.push(node);
             }
         }
@@ -468,6 +479,7 @@ fn item_node<'s>(
     space_id: &str,
     item_id: &'s str,
     items: &HashMap<&'s str, &'s WorkItemView>,
+    snapshot: &WorkOutlineSnapshot,
     ctx: &mut Ctx<'_>,
     ancestor_matched: bool,
     seen: &mut HashSet<&'s str>,
@@ -482,7 +494,7 @@ fn item_node<'s>(
         || (!options.query.is_empty() && text_matches(&options.query, &[Some(&item.title)]));
     let mut children: Vec<Node> = Vec::new();
     for child in &item.child_ids {
-        if let Some(node) = item_node(space_id, child, items, ctx, under_match, seen) {
+        if let Some(node) = item_node(space_id, child, items, snapshot, ctx, under_match, seen) {
             children.push(node);
         }
     }
@@ -545,6 +557,7 @@ fn item_node<'s>(
                 .associated_chat_count
                 .max(item.chat_ids.len() as u32),
             has_references: !item.external_reference_ids.is_empty(),
+            execution_exceptions: snapshot.execution_exception_chats(&item.id).len() as u32,
             archived,
             kept_for_descendants: !self_visible,
         }),

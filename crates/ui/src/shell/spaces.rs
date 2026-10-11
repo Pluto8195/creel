@@ -2059,7 +2059,18 @@ pub(super) struct AddSpaceFlow {
     load_task: Option<Task<()>>,
     drives_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
+    /// Folder-pick mode (Work Outline execution root / repository): the
+    /// same browser on a fixed device, whose submit hands the open folder to
+    /// `on_pick` instead of creating a Space.
+    pick: Option<FolderPickMode>,
     _search_events: Subscription,
+}
+
+/// The pick-mode half of [`AddSpaceFlow`].
+pub(super) struct FolderPickMode {
+    title: SharedString,
+    confirm_label: SharedString,
+    on_pick: Option<Box<dyn FnOnce(String, &mut App) + 'static>>,
 }
 
 /// Segment-aware "is `path` at or under `base`" (`/media/a` is not under
@@ -5095,9 +5106,74 @@ impl Shell {
             load_task: None,
             drives_task: None,
             submit_task: None,
+            pick: None,
             _search_events: search_events,
         });
         cx.notify();
+    }
+
+    /// The New-project folder browser reused as a folder picker on the
+    /// request's device (relay-forwarded when remote), opened at
+    /// `start_path`. Its submit hands the OPEN folder to `on_pick`; closing it
+    /// any other way picks nothing. The device cannot be changed.
+    pub(crate) fn open_folder_pick(
+        &mut self,
+        request: crate::work_outline::execution::ExecutionFolderPick,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_add_space(cx);
+        let device = self
+            .state
+            .read(cx)
+            .devices
+            .iter()
+            .find(|device| device.id == request.device_id)
+            .cloned()
+            .or_else(|| {
+                serde_json::from_value(serde_json::json!({
+                    "id": request.device_id,
+                    "name": request.device_id,
+                    "platform": "",
+                    "lastSeenAt": null,
+                }))
+                .ok()
+            });
+        let Some(flow) = self.add_space.as_mut() else {
+            return;
+        };
+        flow.step = ProjectStep::Folders;
+        flow.device = device;
+        flow.location = Some(("Home".to_string(), None));
+        flow.pick = Some(FolderPickMode {
+            title: request.title,
+            confirm_label: request.confirm_label,
+            on_pick: Some(request.on_pick),
+        });
+        let search = flow.search.clone();
+        search.update(cx, |input, cx| {
+            input.set_placeholder("Search folders…", cx);
+            input.set_text("", cx);
+        });
+        self.load_space_folders(request.start_path, cx);
+    }
+
+    /// Pick mode: hand the open folder to the requester and close.
+    fn submit_folder_pick(&mut self, cx: &mut Context<Self>) {
+        let Some(flow) = self.add_space.as_mut() else {
+            return;
+        };
+        if flow.step != ProjectStep::Folders {
+            return;
+        }
+        let Some(path) = flow.browser.ready().map(|listing| listing.path.clone()) else {
+            return;
+        };
+        let on_pick = flow.pick.as_mut().and_then(|pick| pick.on_pick.take());
+        self.add_space = None;
+        cx.notify();
+        if let Some(on_pick) = on_pick {
+            on_pick(path, cx);
+        }
     }
 
     /// Selecting a device advances to its locations.
@@ -5153,6 +5229,10 @@ impl Shell {
         let Some(flow) = self.add_space.as_mut() else {
             return;
         };
+        // A folder pick is bound to its Space's device.
+        if flow.pick.is_some() && step == ProjectStep::Devices {
+            return;
+        }
         flow.focus_pending = true;
         flow.step = step;
         flow.load_task = None;
@@ -5509,6 +5589,14 @@ impl Shell {
 
     /// Create the space for the browser's current folder.
     fn submit_add_space(&mut self, cx: &mut Context<Self>) {
+        if self
+            .add_space
+            .as_ref()
+            .is_some_and(|flow| flow.pick.is_some())
+        {
+            self.submit_folder_pick(cx);
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -5727,6 +5815,10 @@ impl Shell {
         let load_error = flow.browser.error().map(str::to_string);
         let error = flow.error.clone();
         let busy = flow.submit_busy;
+        let pick_labels = flow
+            .pick
+            .as_ref()
+            .map(|pick| (pick.title.clone(), pick.confirm_label.clone()));
         let active = flow.active;
         let loading = matches!(flow.browser, Loadable::Idle | Loadable::Loading);
         let drives_loading = matches!(flow.drives, Loadable::Loading);
@@ -5939,7 +6031,9 @@ impl Shell {
             .child(
                 crumb(
                     "project-crumb-root".into(),
-                    "New project".into(),
+                    pick_labels
+                        .as_ref()
+                        .map_or_else(|| "New project".into(), |(title, _)| title.clone()),
                     None,
                     step == ProjectStep::Devices,
                 )
@@ -6084,7 +6178,11 @@ impl Shell {
                 el.child(
                     popover::btn_ghost(
                         &theme,
-                        if busy { "Adding…" } else { "Add project" },
+                        match &pick_labels {
+                            Some((_, confirm)) => confirm.as_ref(),
+                            None if busy => "Adding…",
+                            None => "Add project",
+                        },
                         "project-add",
                     )
                     .id("project-add")
@@ -6577,5 +6675,76 @@ mod project_flow_tests {
             search.update(cx, |input, cx| input.set_text("/projects/", cx));
             assert!(!shell.add_space_slash_descend(cx));
         });
+    }
+
+    /// Folder-pick mode: the same browser on a fixed device; submit hands
+    /// the open folder to the requester instead of creating a Space, and
+    /// the device can't be changed.
+    #[gpui::test]
+    fn folder_pick_hands_the_open_folder_to_the_requester(cx: &mut gpui::TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let shell = cx.new(|cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                state.devices = serde_json::from_value(serde_json::json!([
+                    {"id":"remote","name":"Server","platform":"linux","lastSeenAt":null}
+                ]))
+                .unwrap();
+                state
+            });
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: data.path().into(),
+                    ipc_port: 0,
+                    edge_url: String::new(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        let picked = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let sink = picked.clone();
+        shell.update(cx, |shell, cx| {
+            shell.open_folder_pick(
+                crate::work_outline::execution::ExecutionFolderPick {
+                    title: "Add repository".into(),
+                    confirm_label: "Add repository".into(),
+                    device_id: "remote".into(),
+                    start_path: Some("/srv/work".into()),
+                    on_pick: Box::new(move |path, _| *sink.borrow_mut() = Some(path)),
+                },
+                cx,
+            );
+            let flow = shell.add_space.as_mut().unwrap();
+            assert_eq!(flow.step, ProjectStep::Folders);
+            assert_eq!(flow.device.as_ref().unwrap().id, "remote");
+            assert_eq!(flow.browser_path.as_deref(), Some("/srv/work"));
+            flow.browser = Loadable::Ready(FolderListing {
+                path: "/srv/work/ui".into(),
+                entries: Vec::new(),
+                truncated: false,
+            });
+            // The device is fixed.
+            shell.add_space_back_to(ProjectStep::Devices, cx);
+            assert_eq!(shell.add_space.as_ref().unwrap().step, ProjectStep::Folders);
+            let spaces_before = shell.state.read(cx).spaces.len();
+            shell.submit_add_space(cx);
+            assert!(shell.add_space.is_none());
+            assert_eq!(
+                shell.state.read(cx).spaces.len(),
+                spaces_before,
+                "no Space created"
+            );
+        });
+        assert_eq!(picked.borrow().as_deref(), Some("/srv/work/ui"));
     }
 }

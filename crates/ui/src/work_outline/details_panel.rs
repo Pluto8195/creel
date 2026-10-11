@@ -45,6 +45,9 @@ use crate::theme::Theme;
 mod instructions_section;
 pub(crate) use instructions_section::InstructionDraft;
 
+#[path = "details_execution.rs"]
+mod execution_section;
+
 /// `item_id` of the Space-root variant of the details surface.
 pub(crate) const SPACE_ROOT_ITEM_ID: &str = "";
 
@@ -150,6 +153,17 @@ pub(crate) struct WorkItemDetails {
     instructions_error: Option<String>,
     /// Effective Instructions: collapsed until opened.
     pub(crate) effective_open: bool,
+    /// Execution: collapsed until opened.
+    pub(crate) execution_open: bool,
+    /// The open execution editor (explicit Save/Cancel).
+    pub(crate) execution_draft: Option<super::execution::ExecutionDraft>,
+    execution_root_input: Entity<ComposerInput>,
+    /// One expected-branch input per draft binding, in binding order.
+    execution_ref_inputs: Vec<Entity<ComposerInput>>,
+    /// Reused across retries of the same reset.
+    execution_reset_op: super::actions::OperationSlot,
+    pub(crate) execution_validation: super::execution::ValidationState,
+    pub(crate) execution_error: Option<String>,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
@@ -157,6 +171,9 @@ pub(crate) struct WorkItemDetails {
     /// Tests run without a Shell: the drift confirmation lands here.
     #[cfg(test)]
     pub(crate) captured_drift: Option<super::command::WorkOutlineDriftRequest>,
+    /// Tests run without a Shell: the folder pick lands here.
+    #[cfg(test)]
+    pub(crate) captured_folder_pick: Option<super::execution::ExecutionFolderPick>,
 }
 
 impl EventEmitter<DetailsEvent> for WorkItemDetails {}
@@ -190,8 +207,22 @@ impl WorkItemDetails {
         // the description editor), Shift+Enter breaks a line. Blur never saves.
         let instruction_input =
             cx.new(|cx| ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0));
+        let execution_root_input = cx.new(|cx| {
+            ComposerInput::with_context(
+                "/absolute/path/to/folder",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+            .with_text_metrics(12.0, 18.0)
+        });
         let is_space_root = item_id == SPACE_ROOT_ITEM_ID;
         let subscriptions = vec![
+            cx.subscribe(&execution_root_input, |this: &mut Self, _, event, cx| {
+                if matches!(event, ComposerInputEvent::Submitted) {
+                    this.save_execution(cx);
+                }
+            }),
             cx.subscribe(&instruction_input, |this: &mut Self, _, event, cx| {
                 if matches!(event, ComposerInputEvent::Submitted) {
                     this.save_instruction(cx);
@@ -238,11 +269,20 @@ impl WorkItemDetails {
             excerpts_open: HashSet::new(),
             instructions_error: None,
             effective_open: false,
+            execution_open: false,
+            execution_draft: None,
+            execution_root_input,
+            execution_ref_inputs: Vec::new(),
+            execution_reset_op: Default::default(),
+            execution_validation: Default::default(),
+            execution_error: None,
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_confirm: None,
             #[cfg(test)]
             captured_drift: None,
+            #[cfg(test)]
+            captured_folder_pick: None,
         }
     }
 
@@ -271,7 +311,7 @@ impl WorkItemDetails {
 
     /// A draft that closing would lose.
     pub(crate) fn has_unsaved_draft(&self, cx: &gpui::App) -> bool {
-        if self.instruction_draft_dirty(cx) {
+        if self.instruction_draft_dirty(cx) || self.execution_draft_dirty(cx) {
             return true;
         }
         let Some(item) = self.item() else {
@@ -312,6 +352,8 @@ impl WorkItemDetails {
             title: "Discard unsaved changes?".into(),
             body: if self.instruction_draft_dirty(cx) {
                 "Your instruction edits have not been saved.".into()
+            } else if self.execution_draft_dirty(cx) {
+                "Your execution configuration edits have not been saved.".into()
             } else {
                 "Your edits to this work item have not been saved.".into()
             },
@@ -368,6 +410,8 @@ impl WorkItemDetails {
         self.editing_description = false;
         self.adding_reference = false;
         self.instruction_draft = None;
+        self.execution_draft = None;
+        self.execution_ref_inputs.clear();
     }
 
     // ----------------------------------------------------------------------
@@ -770,6 +814,12 @@ impl Render for WorkItemDetails {
                         this.confirm_discard(cx, |_| {});
                     } else {
                         this.instruction_draft = None;
+                    }
+                } else if this.execution_draft.is_some() {
+                    if this.execution_draft_dirty(cx) {
+                        this.confirm_discard(cx, |_| {});
+                    } else {
+                        this.cancel_execution(cx);
                     }
                 } else if this.editing_title {
                     this.editing_title = false;
@@ -1363,6 +1413,7 @@ impl Render for WorkItemDetails {
                 .child(description)
                 .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
                 .child(self.render_effective_section(&item, &snapshot, &theme, cx))
+                .child(self.render_execution_section(&snapshot, &theme, cx))
                 .child(chats_section)
                 .when_some(children_section, |el, section| el.child(section))
                 .child(refs_section)

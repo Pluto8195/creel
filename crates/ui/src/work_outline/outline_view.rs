@@ -1512,6 +1512,32 @@ fn item_body(key: &str, item: &ItemRow, theme: &Theme) -> AnyElement {
                     .tooltip(move |_, cx| cx.new(|_| TextTooltip(chats_tip.clone())).into()),
             )
         })
+        .when(item.execution_exceptions > 0, |el| {
+            let tip = super::execution::exception_tooltip(item.execution_exceptions as usize);
+            el.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "outline-execution-exceptions-{key}"
+                    )))
+                    .debug_selector({
+                        let selector = format!("outline-execution-exceptions-{key}");
+                        move || selector.clone()
+                    })
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.accent)
+                    .child(
+                        crate::icons::icon(crate::icons::FOLDER_WITH_FILES)
+                            .size(px(10.0))
+                            .text_color(theme.accent),
+                    )
+                    .child(SharedString::from(item.execution_exceptions.to_string()))
+                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
+            )
+        })
         .when(item.has_references, |el| {
             el.child(
                 div()
