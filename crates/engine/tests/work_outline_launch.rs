@@ -1597,3 +1597,46 @@ async fn create_new_retry_refuses_a_foreign_worktree_at_the_claimed_path() {
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 7: continue never runs an unbound Chat in an empty cwd
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn continue_refuses_an_assigned_unbound_chat_without_a_folder() {
+    let rig = rig().await;
+    rig.client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "no-cwd", "spaceId": SPACE, "deviceId": DEVICE }),
+        )
+        .await
+        .unwrap();
+    // A row whose folder was cleared (an older client, a partial import).
+    rig.core.workspace.set_chat_cwd("no-cwd", "").unwrap();
+    assert!(
+        rig.core
+            .workspace
+            .chat("no-cwd")
+            .unwrap()
+            .unwrap()
+            .cwd
+            .is_none_or(|cwd| cwd.is_empty()),
+        "fixture: the Chat has no folder"
+    );
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "assignChatToWorkItem", "chatId": "no-cwd", "workItemId": rig.item,
+                    "operationId": "op-assign-no-cwd" }),
+        )
+        .await
+        .unwrap();
+    let error = continue_chat(&rig, "no-cwd", "op-no-cwd", "no cwd next")
+        .await
+        .expect_err("an empty cwd is refused");
+    assert!(error.contains("work-outline/invalid"), "{error}");
+    assert!(error.contains("no folder to run in"), "{error}");
+    assert!(commands(&rig, "no-cwd").is_empty());
+    rig.core.shutdown().await;
+}

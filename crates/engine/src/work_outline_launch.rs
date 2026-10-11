@@ -949,7 +949,18 @@ impl WorkItemLaunchService {
                 .map(|validated| validated.execution_root)
                 .unwrap_or_else(|| binding.resolved.configuration.execution_root.clone()),
             Some(binding) => binding.resolved.configuration.execution_root.clone(),
-            None => chat.cwd.clone().unwrap_or_default(),
+            // An empty cwd would run in the engine's own directory: refuse.
+            None => chat
+                .cwd
+                .clone()
+                .filter(|cwd| !cwd.trim().is_empty())
+                .ok_or_else(|| {
+                    error(
+                        WorkOutlineErrorCode::Invalid,
+                        "This Chat has no folder to run in. Set the Chat's folder, or start a \
+                         new Chat from the work item.",
+                    )
+                })?,
         };
         let mut request = prompt_request(&p.prompt, chat.config.as_ref(), &cwd);
         // Inputs are bound to the operation by the command itself: a replay
