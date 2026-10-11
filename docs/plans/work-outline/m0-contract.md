@@ -1059,3 +1059,86 @@ ambiguous rule or a gap later work must close.
     per-Run agent token and MCP tools (parallel agent-tools work), a query for resolved-request
     history beyond the snapshot window, local-to-synced import of the new kinds, and edge
     `validateOp` backstops.
+
+## Milestone 4 UI discoveries
+
+Recorded by the Milestone 4 user interface (`crates/ui/src/work_outline/{required_actions,
+required_actions_view,details_user_actions,required_actions_tests}.rs`,
+`shell/required_actions_ui.rs`, edits to `details_panel.rs`, `details_instructions.rs`,
+`instructions.rs`, `model.rs`, `outline_view.rs`, `actions.rs`, `command.rs`, `overview.rs`,
+`shell.rs`, `shell/command_palette.rs`). Each item is a reading of an ambiguous rule or a gap later
+work must close.
+
+1. **Surfaces.** One entity (`RequiredActionsList`) serves every view. Global: the Overview's
+   right slot, opened by palette Open Required Actions (now listed: all ten Work Outline
+   commands are in the palette), its `ShortcutId`, and an Outline toolbar pill "Required actions
+   (N)" (count in the attention token). It sits under Work Item Details (details opened from it
+   stack on top; closing them shows it again) and above the chat panel / peek; Escape and its
+   close button dismiss it. Space-level: a "Required actions (N)" section in item details
+   (scope = the item and its descendants) and in the Space-root details (scope = the Space),
+   open by default while anything is open, collapsible.
+2. **Rows.** Open rows sort oldest first (the longest wait leads); resolved history sorts by
+   resolution time, newest first, collapsed under "Resolved (N)". `deduped` open duplicates fold
+   into their canonical row ("+N retried"). The path is the item breadcrumb ("Deleted work
+   item" when gone), Space-prefixed in a multi-Space global view. The Chat reads "Chat
+   unavailable" when `originChatAvailable` is false OR the Chat row is missing/archived locally;
+   Open is then inert (the row stays inspectable and resolvable) and the path opens the item's
+   details. Open goes to the Overview chat panel (the same path as details Chat rows) and closes
+   the surface. `messageId` / `toolCallId` are not used to scroll the transcript (no anchor
+   API yet).
+3. **Resolve.** Inline optional note (≤ 1,000 characters; Enter or Resolve submits, Cancel or
+   Escape drops it). The operation id is an `OperationSlot` per request keyed by the note, so a
+   retry after a failure replays. History is only the snapshot's window (50 newest resolved;
+   registry discovery 8).
+4. **Totals.** Outline item rows show "N active · M user action required" from the rollup
+   (stored-status counts, so the blocked item counts in both; the attention part in the attention
+   token) when the counted subtree has more than the item itself or something needs the user;
+   archived rows show none. Space totals sum the live root items' rollups and appear on the Space
+   row (multi-Space) or beside "Space root instructions" (single Space).
+5. **Completion.** Choosing Completed while the item's own `unresolvedUserActionCount` > 0
+   (also re-choosing Completed on a completed item) shows the Shell confirm "Complete with open
+   requests?" with the count; Complete and resolve sends `updateWorkItem` with
+   `resolveOpenRequests: true`. A host refusal `openUserActionRequests` (a request arrived after
+   the click) shows the same confirmation with the host's count. No local echo: the base status
+   reappears when the snapshot's last request resolves.
+6. **Notifications.** `Shell::notify_user_actions` runs in `on_state_changed` right after the
+   session detector. `UserActionNotifier` keeps per Space the last snapshot (pointer-equal frames
+   skipped; unavailable snapshots ignored; the first snapshot of a Space, and of a Space re-added
+   after it stopped being watched, seeds silently), each live item's unresolved request ids, and
+   the ids already reported (kept across flapping frames; bounded at 4,096 per Space). An item
+   fires when its previous open set was empty and the new one holds an unreported id: one event
+   per item per transition (count, newest request text as the banner body when single, its origin
+   Chat for click routing when available). Output: the existing `Sound::Request` under
+   `session_sound_enabled(Request)` (master + input-sound settings; not the failure
+   `attention_sound_gate`) and `notify::post` under `notificationsEnabled` and the background-only
+   rule. Required Actions list everything regardless. So notifications work before the Overview
+   exists, the Shell declares every Space to `AppState::set_work_outline_visible` once Spaces sync
+   (the same set the Overview declares): every Space's outline is now watched from app start.
+7. **Proposals.** Nonmodal indicators only: a compact "N proposed" chip (full "N proposed
+   instructions" in the tooltip) on Outline item rows and on the Space row / single-Space entry
+   line, and "N proposed instructions · Review" in the full chat header of the origin Chat (not the
+   Overview chat-panel header). Each opens Work Item Details (Space-root variant for Space-root
+   targets; the chat header uses its first pending proposal's target) with "Proposed
+   instructions" expanded (`Overview::open_proposals`, `Shell::open_work_item_proposals`).
+   Review shows the editable text (generic composer; Approve is button-only), "Target: <path> ·
+   reaches N descendant work items" (`instructions::affected_descendant_count`), the proposer
+   Chat, and the age. Approve evaluates the new `OutlineChange::AddInstruction` (appended last)
+   and goes through the drift confirmation iff an assigned Chat's effective instructions change;
+   hand-created instructions stay ungated (M2 discovery 4). Reject is two-step: the first click
+   reveals the optional reason, the second sends. Approve / reject ids are `OperationSlot`s keyed
+   by the text / reason. An edited review counts as an unsaved draft (Keep Editing / Discard).
+   Reviewed outcomes list as "Accepted …" / "Rejected … · reason" under a collapsed History;
+   `placement` is never sent (last in scope).
+8. **Created by.** Agent-created items (`createdBy.kind == agent`) show "Created by an agent in
+   <Chat>" under the title; the Chat opens when available, else reads "Chat unavailable".
+9. **Tests.** Pure: rows/scopes/duplicates/missing Chat, totals, proposal counts, the notifier
+   (silent seed, 0→1 once, same-item batch coalesced, retries / deduped / equal sets / flapping
+   quiet, re-arm after zero, unavailable snapshots), settings gating (`notice_outputs`). gpui:
+   global list resolve / open / missing Chat / history, retry id reuse, Space-level sections,
+   completion confirmation + `resolveOpenRequests` + host refusal, totals clearing on the last
+   resolution, proposals approve-with-edit + drift and reject-with-reason + history, created-by,
+   palette lists all ten commands.
+10. **Not done.** List rows and Canvas cards carry no totals or proposal marks (they keep the M1
+    attention dot); no sidebar indicators; the Shell's notification glue itself has no gpui test
+    (the detector and the settings gate are tested pure); no transcript scroll to the request's
+    message; resolved history beyond the snapshot window needs a query.
