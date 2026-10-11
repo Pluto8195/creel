@@ -739,6 +739,9 @@ pub struct EngineRpc {
     /// `WatchWorkOutline` / `WorkOutlineMutate` / `WorkOutlineQuery` (local
     /// replica, never forwarded).
     work_outline: std::sync::Arc<crate::work_outline::WorkOutlineService>,
+    /// `ValidateExecutionConfiguration` / `DescribeExecutionRepository`
+    /// (Work Outline Milestone 3; run on the Space's owning device).
+    execution_scope: crate::execution_scope::ExecutionScopeService,
     engine_info: EngineInfo,
 }
 
@@ -768,6 +771,8 @@ impl EngineRpc {
         let work_outline = std::sync::Arc::new(crate::work_outline::WorkOutlineService::new(
             workspace.clone(),
         ));
+        let execution_scope =
+            crate::execution_scope::ExecutionScopeService::new(workspace.clone(), repos.clone());
         Self {
             sessions,
             doc_host,
@@ -791,6 +796,7 @@ impl EngineRpc {
             context_usage: None,
             subagent_transcript_cache: crate::subagent_transcript::TranscriptCache::new(),
             work_outline,
+            execution_scope,
             engine_info,
         }
     }
@@ -1144,6 +1150,103 @@ impl EngineRpc {
 
     /// Forward a device-addressed call over the target device's relay. On transport
     /// failure the cached link is invalidated so the next call re-dials.
+    /// `ValidateExecutionConfiguration`: resolve (`scope`), read the Chat's
+    /// captured binding (`chatId`), or take the carried snapshot
+    /// (`resolved`), then validate on the Space's owning device. A Space
+    /// owned elsewhere is forwarded WITH the resolved snapshot (the owner's
+    /// replica may lag; audit section 4) when the owner advertises
+    /// `work-outline-multi-repo-v1`; otherwise the reply carries
+    /// `hostUnsupported` or `deviceOffline`. Validation failures are a
+    /// normal reply (`ok: false`), not an RPC error.
+    async fn validate_execution_configuration(
+        &self,
+        p: zeron_proto::ValidateExecutionConfigurationParams,
+    ) -> Result<zeron_proto::ValidateExecutionConfigurationReply, RpcError> {
+        use zeron_proto::{
+            ExecutionValidationError, ValidateExecutionConfigurationReply, WorkOutlineError,
+            WorkOutlineErrorCode,
+        };
+        let resolved = match (p.resolved, p.scope, p.chat_id) {
+            (Some(resolved), None, None) => resolved,
+            (None, Some(scope), None) => self
+                .workspace
+                .resolve_execution(&scope)
+                .map_err(|e| RpcError::Failed(e.to_wire_message()))?,
+            (None, None, Some(chat_id)) => self
+                .workspace
+                .chat_execution_binding(&chat_id)
+                .map(|binding| binding.resolved)
+                .ok_or_else(|| {
+                    RpcError::Failed(
+                        WorkOutlineError::new(
+                            WorkOutlineErrorCode::NotFound,
+                            "This Chat has no captured execution binding",
+                        )
+                        .to_wire_message(),
+                    )
+                })?,
+            _ => {
+                return Err(RpcError::BadParams(
+                    "set exactly one of scope, chatId, resolved".into(),
+                ));
+            }
+        };
+        let owner = resolved.device_id.clone();
+        if !owner.is_empty() && owner != self.doc_host.device_id() {
+            let fail = |error: ExecutionValidationError| {
+                Ok(ValidateExecutionConfigurationReply::from_result(
+                    Some(resolved.clone()),
+                    Err(vec![error]),
+                ))
+            };
+            let device = self
+                .workspace
+                .read_devices()
+                .ok()
+                .and_then(|devices| devices.into_iter().find(|d| d.id == owner));
+            let Some(device) = device else {
+                return fail(ExecutionValidationError::DeviceOffline {
+                    device_id: owner,
+                    detail: "the device is not known to this engine".into(),
+                });
+            };
+            if !device.supports(zeron_proto::capabilities::WORK_OUTLINE_MULTI_REPO_V1) {
+                return fail(ExecutionValidationError::HostUnsupported {
+                    device_id: owner,
+                    capability: zeron_proto::capabilities::WORK_OUTLINE_MULTI_REPO_V1.into(),
+                });
+            }
+            let forwarded = zeron_proto::ValidateExecutionConfigurationParams {
+                resolved: Some(resolved.clone()),
+                host_capabilities: p.host_capabilities,
+                target_device_id: Some(owner.clone()),
+                ..Default::default()
+            };
+            let params = serde_json::to_value(&forwarded)
+                .map_err(|e| RpcError::Failed(format!("serialize params: {e}")))?;
+            return match self
+                .forward(&owner, methods::VALIDATE_EXECUTION_CONFIGURATION, params)
+                .await
+            {
+                Ok(RpcReply::Value(value)) => serde_json::from_value(value)
+                    .map_err(|e| RpcError::Failed(format!("bad validation reply: {e}"))),
+                Ok(RpcReply::Stream(_)) => Err(RpcError::Failed("unexpected stream reply".into())),
+                Err(error) => fail(ExecutionValidationError::DeviceOffline {
+                    device_id: owner,
+                    detail: error.to_string(),
+                }),
+            };
+        }
+        let result = self
+            .execution_scope
+            .validate_resolved(&resolved, p.host_capabilities)
+            .await;
+        Ok(ValidateExecutionConfigurationReply::from_result(
+            Some(resolved),
+            result,
+        ))
+    }
+
     async fn forward(
         &self,
         target: &str,
@@ -1512,6 +1615,9 @@ fn forwardable(method: &str) -> bool {
             // Updates report/apply on the device whose binary they concern.
             | methods::UPDATE_STATUS
             | methods::APPLY_UPDATE
+            // Execution configurations validate against the owner's disk.
+            | methods::VALIDATE_EXECUTION_CONFIGURATION
+            | methods::DESCRIBE_EXECUTION_REPOSITORY
     )
 }
 
@@ -2241,6 +2347,21 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                     .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
                 RpcReply::value(&reply)
+            }
+            methods::VALIDATE_EXECUTION_CONFIGURATION => {
+                let p: zeron_proto::ValidateExecutionConfigurationParams = parse_params(params)?;
+                let reply = self.validate_execution_configuration(p).await?;
+                RpcReply::value(&reply)
+            }
+            methods::DESCRIBE_EXECUTION_REPOSITORY => {
+                let p: zeron_proto::DescribeExecutionRepositoryParams = parse_params(params)?;
+                let identity = crate::execution_scope::describe_repository(
+                    self.execution_scope.probe(),
+                    std::path::Path::new(&p.path),
+                )
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&identity)
             }
             methods::WATCH_SIDEBAR_PREFERENCES => Ok(RpcReply::Stream(watch_stream(
                 self.workspace.watch_sidebar_preferences(),
@@ -3889,6 +4010,10 @@ mod tests {
         assert!(!forwardable(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WATCH_WORK_OUTLINE));
+        // Execution validation runs against the owner's disk.
+        assert!(forwardable(methods::VALIDATE_EXECUTION_CONFIGURATION));
+        assert!(forwardable(methods::DESCRIBE_EXECUTION_REPOSITORY));
+        assert!(!is_stream_method(methods::VALIDATE_EXECUTION_CONFIGURATION));
     }
 
     /// `RECLASSIFY_OTHER_CHATS` rewrites this device's import cursors and
