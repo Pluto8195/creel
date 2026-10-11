@@ -117,8 +117,11 @@ pub trait GitProbe: Send + Sync {
 pub struct ReposGitProbe {
     repos: Repos,
     device_id: String,
-    roots: Arc<Mutex<HashMap<(PathBuf, String), Vec<String>>>>,
+    roots: Arc<Mutex<RootCommitCache>>,
 }
+
+/// Root commits by `(canonical common dir, HEAD sha)`.
+type RootCommitCache = HashMap<(PathBuf, String), Vec<String>>;
 
 impl ReposGitProbe {
     pub fn new(repos: Repos, device_id: impl Into<String>) -> Self {
@@ -498,7 +501,7 @@ async fn validate_binding(
         // have none (anything else is a different history).
         roots.is_empty()
     } else {
-        roots.iter().any(|root| *root == binding.repo_fingerprint)
+        roots.contains(&binding.repo_fingerprint)
     };
     if !fingerprint_ok {
         errors.push(ExecutionValidationError::RepositoryIdentityMismatch {

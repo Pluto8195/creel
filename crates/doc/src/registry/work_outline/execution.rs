@@ -179,6 +179,7 @@ pub(crate) struct MaterializedExecution {
 /// current resolved configuration (content comparison; a changed source
 /// with equal content is not an exception). Unassociated Chats and Chats
 /// without a binding are never exceptions.
+#[allow(clippy::too_many_arguments)] // one pure step of the materializer
 pub(crate) fn materialize_execution(
     space_id: &str,
     space: Option<&ExecutionSpace>,
