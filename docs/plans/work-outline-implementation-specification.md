@@ -765,3 +765,31 @@ amendments:
   field-wise.
 - Cycle repair uses the HLC of the parent field, because registry rows have no row-level HLC.
 - Non-Git workspace roots are outside the MVP.
+
+Amendments from Milestones 1–4 (details in the discoveries sections of `work-outline/m0-contract.md`):
+
+- Operation replay protection is durable per device: completed operation ids are recorded in the
+  existing device-local processed-command ledger in the same transaction as the registry change.
+- Codex cannot swap instructions inside a thread reliably (compaction swap passed 4 of 6 trials), so
+  a Codex revision change requires the user to confirm a fresh session. Claude Code resumes the same
+  conversation with the new revision.
+- The engine pins a Chat's selected revision when a plain send is ingested, so every
+  instruction-bearing send uses the instruction command kind and hosts without the capability reject
+  it before anything is written.
+- A work item with no effective instructions launches without a revision, so harnesses without
+  instruction support can still start Chats from it.
+- A worktree chosen at launch for a binding that pins none is not an execution exception.
+- The user's home directory is refused as an execution root. Execution roots may be plain folders;
+  every configured repository must be a Git checkout.
+- A malformed Chat execution binding is treated as bound and invalid; it never reverts the Chat to
+  unbound behavior.
+- Agent tools are served by an injected `zeron-agent` MCP server authenticated by a per-Run token.
+  With a token, the pre-existing Zeron MCP tools are scoped to the caller's Space, device, and
+  Zeron-created children, never exceed the caller's sandbox, and never enable auto-approve.
+- An agent may associate its own Chat only while unassociated or within its current item's subtree,
+  never for an execution-bound Chat, and resolving a deduplicated request group closes only the
+  requests its own Chat raised.
+- Residual risks accepted for the MVP: the loopback engine IPC remains unauthenticated for its
+  general methods; registry tombstones are garbage-collected after 30 days; outline rows are not
+  copied by local-to-synced profile import; the edge should be deployed before a synced profile
+  writes outline rows.
