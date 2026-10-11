@@ -1082,6 +1082,32 @@ mod tests {
         });
     }
 
+    /// The Overview List row's drift mark opens Compare without toggling
+    /// the row.
+    #[gpui::test]
+    fn overview_drift_mark_opens_compare(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        shell.update(cx, |shell, cx| shell.open_overview(cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("overview-row-instruction-drift-chat-auth")
+                .is_none()
+        );
+        let mark = cx
+            .debug_bounds("overview-row-instruction-drift-chat-api")
+            .expect("drifted Chat is marked")
+            .center();
+        cx.simulate_click(mark, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-compare").is_some());
+        let page = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
+        page.read_with(cx, |overview, _| {
+            assert!(overview.expanded_is_empty(), "the row did not toggle")
+        });
+    }
+
     #[gpui::test]
     fn apply_creates_then_applies_with_stable_operation_ids(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

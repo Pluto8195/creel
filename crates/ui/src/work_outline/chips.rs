@@ -106,6 +106,56 @@ pub(crate) fn attention_indicator(
     )
 }
 
+/// Tooltip shared by every instruction drift mark.
+pub(crate) const INSTRUCTION_DRIFT_TOOLTIP: &str =
+    "Instructions changed since this Chat\u{2019}s applied revision. Click to compare and apply.";
+
+/// "Instructions changed" mark for a drifted Chat: the warning triangle the
+/// Outline chip and chat header use, optionally with the label. `id` doubles
+/// as the debug selector (unique per frame). It sits on an
+/// existing line (title row), so it never changes a card's size. `on_click`
+/// opens Compare; the mark stops mouse-down propagation so a Canvas card does
+/// not start a drag or toggle under it.
+pub(crate) fn instruction_drift_mark(
+    id: impl Into<SharedString>,
+    with_label: bool,
+    theme: &Theme,
+    zoom: f32,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let selector = id.to_string();
+    div()
+        .id(id)
+        .debug_selector(move || selector)
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(2.0 * zoom))
+        .px(px(2.0 * zoom))
+        .rounded(px(3.0 * zoom))
+        .cursor_pointer()
+        .text_size(crate::typography::ui_rems(10.0 * zoom))
+        .text_color(theme.warning)
+        .hover(|el| el.bg(theme.element_hover))
+        .child(
+            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                .size(px(10.0 * zoom))
+                .text_color(theme.warning),
+        )
+        .when(with_label, |el| el.child("Instructions changed"))
+        .tooltip(|_, cx| {
+            cx.new(|_| TextTooltip(INSTRUCTION_DRIFT_TOOLTIP.into()))
+                .into()
+        })
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx);
+        })
+        .into_any_element()
+}
+
 /// Glyph + label + color for an effective status (Outline rows, details).
 pub(crate) fn status_style(
     status: WorkItemEffectiveStatus,

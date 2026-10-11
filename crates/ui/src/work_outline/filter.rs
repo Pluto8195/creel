@@ -1,5 +1,6 @@
 //! Pure work-item facts for List/Canvas rows: the Chat → work item index
-//! (path chip, User Action Required), and the work-item filter (subtree
+//! (path chip, User Action Required, instruction drift), and the work-item
+//! filter (subtree
 //! semantics, stale-filter reset, persistence through the Overview's
 //! string-set files).
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -47,6 +48,9 @@ pub(crate) struct WorkItemIndex {
     /// Outline (pre-)order of live items, for the filter dropdown.
     order: Vec<String>,
     chat_item: HashMap<String, String>,
+    /// Associated Chats whose effective instructions changed since their
+    /// applied revision (`ChatInstructionState::drift`).
+    drifted_chats: HashSet<String>,
 }
 
 impl WorkItemIndex {
@@ -79,8 +83,21 @@ impl WorkItemIndex {
                     index.chat_item.insert(chat.clone(), item.id.clone());
                 }
             }
+            let assigned = super::instructions::assigned_chats(snapshot);
+            index.drifted_chats.extend(
+                snapshot
+                    .chat_instruction_states
+                    .iter()
+                    .filter(|state| state.drift && assigned.contains_key(&state.chat_id))
+                    .map(|state| state.chat_id.clone()),
+            );
         }
         index
+    }
+
+    /// Whether the Chat's instructions drifted from its applied revision.
+    pub(crate) fn instruction_drift_for_chat(&self, chat_id: &str) -> bool {
+        self.drifted_chats.contains(chat_id)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -316,6 +333,16 @@ mod tests {
         assert_eq!(index.attention_for_chat(CHAT_LOOSE_A), (false, 0));
         let choices: Vec<String> = index.choices().into_iter().map(|c| c.item_id).collect();
         assert_eq!(choices, [LAUNCH, API, API_AUTH, UI, HOUSEKEEPING]);
+    }
+
+    #[test]
+    fn drift_is_indexed_only_for_drifted_assigned_chats() {
+        let snapshot = super::super::instructions::fixture::snapshot("s1");
+        let index = WorkItemIndex::build([&snapshot]);
+        assert!(index.instruction_drift_for_chat(CHAT_API));
+        assert!(!index.instruction_drift_for_chat(CHAT_AUTH));
+        assert!(!index.instruction_drift_for_chat(CHAT_UI));
+        assert!(!index.instruction_drift_for_chat(CHAT_LOOSE_A));
     }
 
     #[test]
