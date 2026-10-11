@@ -20,6 +20,11 @@ pub mod capabilities {
     /// also stamp one [`work_outline_instruction_envelope_for`] token per
     /// harness that can deliver.
     pub const WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1: &str = "work-outline-instruction-envelope-v1";
+    /// The host stores, resolves, and validates multi-repository execution
+    /// configurations (`configureExecution`, `ValidateExecutionConfiguration`,
+    /// `DescribeExecutionRepository`). Clients forward validation only to
+    /// owners that advertise it.
+    pub const WORK_OUTLINE_MULTI_REPO_V1: &str = "work-outline-multi-repo-v1";
 
     /// Per-harness token: `work-outline-instruction-envelope-v1/<harness>`,
     /// where `<harness>` is the harness id's wire spelling (`claude-code`,
@@ -39,6 +44,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
         MESSAGE_QUEUE_EDIT_LEASE_V1,
         WORK_OUTLINE_V1,
+        WORK_OUTLINE_MULTI_REPO_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -117,7 +123,8 @@ mod tests {
                     "message-queue-attachments-v1",
                     "message-queue-clean-attachment-text-v1",
                     "message-queue-edit-lease-v1",
-                    "work-outline-v1"
+                    "work-outline-v1",
+                    "work-outline-multi-repo-v1"
                 ],
             })
         );

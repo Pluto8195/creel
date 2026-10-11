@@ -25,7 +25,15 @@
 //! - `WorkOutlineQuery`: read-only instruction questions answered from the
 //!   local replica (effective instructions over the materialized tree,
 //!   revision lookup with integrity, revision comparison of two intact
-//!   revisions). Not gated by the kill switch.
+//!   revisions) and, from Milestone 3, `resolveExecutionConfiguration`
+//!   (whole-row resolution; validation is the device-routed
+//!   `ValidateExecutionConfiguration` method in `crate::execution_scope`).
+//!   Not gated by the kill switch.
+//! - `configureExecution` (Milestone 3) is an ordinary `WorkOutlineMutate`
+//!   operation: kill switch, replay ledger, shape-only checks in the doc
+//!   layer (paths may live on another device, so no filesystem access).
+//! - [`WorkOutlineService::capture_chat_execution_binding`]: the engine
+//!   entry point the Milestone 3 start workflow calls once per launch.
 //! - `WatchWorkOutline(spaceId)`: driven by the registry change counter
 //!   (WATCH_PREVIEWS pattern): clone inputs under the lock, materialize off
 //!   the async runtime, coalesce bursts, emit only frames whose content
@@ -241,6 +249,11 @@ impl WorkOutlineService {
                     snapshot.effective_instructions(work_item_id),
                 ))
             }
+            WorkOutlineQueryRequest::ResolveExecutionConfiguration { scope } => {
+                Ok(WorkOutlineQueryResponse::ResolveExecutionConfiguration(
+                    self.workspace.resolve_execution(scope)?,
+                ))
+            }
             WorkOutlineQueryRequest::GetInstructionRevision { revision_id } => Ok(
                 WorkOutlineQueryResponse::GetInstructionRevision(revision(revision_id)?),
             ),
@@ -269,6 +282,36 @@ impl WorkOutlineService {
                 })
             }
         }
+    }
+
+    /// Capture the resolved execution configuration a Chat launches with
+    /// (contract 6.2; written once, keyed by Chat id). The start workflow
+    /// calls this with its `operationId` before queueing the first Turn.
+    /// Replay-safe without the ledger: the row itself records the operation
+    /// id and an inputs hash, so a retry with the same id and snapshot is a
+    /// no-op on any device, while another id or snapshot is
+    /// `operationConflict`. Honors the kill switch. Returns whether a write
+    /// was enqueued.
+    pub fn capture_chat_execution_binding(
+        &self,
+        chat_id: &str,
+        resolved: &zeron_proto::ResolvedExecutionConfiguration,
+        operation_id: &str,
+    ) -> Result<bool, WorkOutlineError> {
+        if writes_disabled() {
+            return Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::WritesDisabled,
+                "Work Outline changes are turned off on this device",
+            ));
+        }
+        let actor = WorkOutlineActor {
+            kind: WorkOutlineActorKind::User,
+            device_id: self.workspace.device_id().to_owned(),
+            chat_id: None,
+            message_id: None,
+        };
+        self.workspace
+            .capture_chat_execution_binding(chat_id, resolved, operation_id, &actor)
     }
 
     /// The current snapshot of one Space (revision 0).

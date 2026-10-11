@@ -1,7 +1,8 @@
 //! Work Outline registry rows: `workItems`, `workItemChatAssignments`,
-//! `workItemExternalReferences` (Milestone 1) and, in [`instructions`],
+//! `workItemExternalReferences` (Milestone 1); in [`instructions`],
 //! `workItemInstructions`, `instructionRevisions`,
-//! `instructionRevisionApplications` (Milestone 2).
+//! `instructionRevisionApplications` (Milestone 2); and in [`execution`],
+//! `executionConfigurations` and `chatExecutionBindings` (Milestone 3).
 //!
 //! Mechanism layer (registry audit section 7.11): sizes, formats, immutable
 //! field omission, same-Space and cycle checks on the RAW parent graph,
@@ -39,6 +40,7 @@ use zeron_proto::work_outline_order::order_keys_between;
 
 use super::*;
 
+pub mod execution;
 pub mod instructions;
 mod materialize;
 
@@ -51,6 +53,7 @@ pub const KIND_WORK_ITEM_EXTERNAL_REFERENCES: &str = "workItemExternalReferences
 pub const KIND_WORK_ITEM_INSTRUCTIONS: &str = "workItemInstructions";
 pub const KIND_INSTRUCTION_REVISIONS: &str = "instructionRevisions";
 pub const KIND_INSTRUCTION_REVISION_APPLICATIONS: &str = "instructionRevisionApplications";
+pub use execution::{KIND_CHAT_EXECUTION_BINDINGS, KIND_EXECUTION_CONFIGURATIONS};
 
 /// Every outline kind this build writes: the `delete_space` cascade and the
 /// orphan sweep cover exactly these. Later milestones append their kinds.
@@ -61,6 +64,8 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_WORK_ITEM_INSTRUCTIONS,
     KIND_INSTRUCTION_REVISIONS,
     KIND_INSTRUCTION_REVISION_APPLICATIONS,
+    KIND_EXECUTION_CONFIGURATIONS,
+    KIND_CHAT_EXECUTION_BINDINGS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
@@ -149,6 +154,7 @@ fn op_too_large(op: &RowOp) -> WorkOutlineError {
         Some("text") => "Instruction",
         Some("source") => "Source excerpt",
         Some("body") => "Instruction revision",
+        Some("configuration") | Some("resolved") => "Execution configuration",
         Some(other) => other,
         None => "The change",
     };
@@ -361,7 +367,12 @@ impl RegistryDoc {
     /// materialize after releasing it).
     pub fn work_outline_inputs(&self, space_id: &str, synced: bool) -> WorkOutlineInputs {
         let (applications, revisions, sessions) = self.instruction_inputs(space_id);
+        let (execution_configurations, chat_execution_bindings, execution_space) =
+            self.execution_inputs(space_id);
         WorkOutlineInputs {
+            execution_configurations,
+            chat_execution_bindings,
+            execution_space,
             space_live: self.row_state(KIND_SPACES, space_id) == RowState::Live,
             synced,
             items: self.overlay_rows(KIND_WORK_ITEMS),
@@ -730,6 +741,9 @@ impl RegistryDoc {
                     application_id: Some(id),
                     ..Default::default()
                 })
+            }
+            WorkOutlineMutation::ConfigureExecution(p) => {
+                self.configure_execution(p, actor, now_ms).map(|_| empty)
             }
         }
     }

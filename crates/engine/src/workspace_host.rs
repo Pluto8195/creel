@@ -777,6 +777,51 @@ impl WorkspaceHost {
         self.read(|doc| doc.selected_instruction_revision(chat_id))
     }
 
+    /// Whole-row resolution of an execution scope from the local replica
+    /// (Milestone 3; pure, no filesystem).
+    pub fn resolve_execution(
+        &self,
+        scope: &zeron_proto::ExecutionScope,
+    ) -> Result<zeron_proto::ResolvedExecutionConfiguration, zeron_proto::WorkOutlineError> {
+        self.read(|doc| doc.resolve_execution(scope))
+    }
+
+    /// The Chat's captured execution binding, if any (Milestone 3).
+    pub fn chat_execution_binding(
+        &self,
+        chat_id: &str,
+    ) -> Option<zeron_proto::ChatExecutionBindingView> {
+        self.read(|doc| doc.chat_execution_binding(chat_id))
+    }
+
+    /// Capture the configuration a Chat launches with (create-if-absent,
+    /// keyed by Chat id; see `RegistryDoc::capture_chat_execution_binding`).
+    /// An identical replay writes nothing and does not bump the change
+    /// counter. Returns whether a write was enqueued.
+    pub fn capture_chat_execution_binding(
+        &self,
+        chat_id: &str,
+        resolved: &zeron_proto::ResolvedExecutionConfiguration,
+        operation_id: &str,
+        actor: &zeron_proto::WorkOutlineActor,
+    ) -> Result<bool, zeron_proto::WorkOutlineError> {
+        let now = Utc::now().timestamp_millis();
+        // Dry run under the read lock first: `mutate` always bumps the
+        // change counter, which a replay must not do.
+        let replay = self.read(|doc| {
+            doc.chat_execution_binding(chat_id).is_some_and(|binding| {
+                binding.operation_id.as_deref() == Some(operation_id)
+                    && binding.resolved == *resolved
+            })
+        });
+        if replay {
+            return Ok(false);
+        }
+        self.mutate(|doc| {
+            doc.capture_chat_execution_binding(chat_id, resolved, operation_id, actor, now)
+        })
+    }
+
     /// Record what an Execution Session received on this host's session-status
     /// row (`executionSession`, contract 5.6). Idempotent: an equal report
     /// writes nothing (and does not bump the change counter). Returns whether

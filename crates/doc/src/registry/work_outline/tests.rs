@@ -1354,6 +1354,12 @@ fn inputs(rows: Vec<RegistryRow>) -> WorkOutlineInputs {
         space_live: true,
         synced: true,
         items: rows,
+        // The Space `doc_with_spaces` creates (the implicit execution root).
+        execution_space: Some(zeron_proto::work_outline_execution::ExecutionSpace {
+            space_id: SPACE.into(),
+            path: "/tmp/one".into(),
+            device_id: "dev-a".into(),
+        }),
         ..Default::default()
     }
 }

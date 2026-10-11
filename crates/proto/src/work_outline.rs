@@ -27,6 +27,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::work_outline_execution::{
+    ChatExecutionBindingView, ConfigureExecutionParams, ExecutionConfigurationView, ExecutionScope,
+    ExecutionSpace, ResolvedExecutionConfiguration, WorkItemExecutionException,
+    resolve_execution_configuration,
+};
 use crate::work_outline_instructions::{
     ChatInstructionState, EffectiveInstructions, InstructionApplicationReason,
     InstructionRevisionComparison, InstructionRevisionView, InstructionScope, InstructionSource,
@@ -568,9 +573,11 @@ pub enum WorkOutlineRepair {
 /// Milestone 2 added `instructions`, `chatInstructionStates`, and `revisions`
 /// (effective instructions are computed on demand with
 /// [`WorkOutlineSnapshot::effective_instructions`] or the
-/// `resolveEffectiveInstructions` query). Reserved for later milestones (do
-/// NOT add before their milestone; each is an additive, defaulted field):
-/// `executionConfigurations` and `chatExecutionBindings` (M3),
+/// `resolveEffectiveInstructions` query). Milestone 3 added
+/// `executionSpace`, `executionConfigurations`, `chatExecutionBindings`, and
+/// `executionExceptions` (resolution on demand with
+/// [`WorkOutlineSnapshot::resolve_execution`]). Reserved for later milestones
+/// (do NOT add before their milestone; each is an additive, defaulted field):
 /// `userActionRequests` and `instructionProposals` (M4). Counts in
 /// [`WorkItemRollup`] that depend on them are 0 until then.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -626,6 +633,23 @@ pub struct WorkOutlineSnapshot {
     /// sorted by id. Other revisions are fetched with `getInstructionRevision`.
     #[serde(default)]
     pub revisions: Vec<InstructionRevisionView>,
+    /// The Space facts behind the implicit execution root (path and owning
+    /// device); `None` when the Space is unavailable (Milestone 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_space: Option<ExecutionSpace>,
+    /// Every `executionConfigurations` row of this Space (Space default and
+    /// work-item rows), sorted by row id (Milestone 3).
+    #[serde(default)]
+    pub execution_configurations: Vec<ExecutionConfigurationView>,
+    /// Captured bindings of this Space's Chats, sorted by Chat id, each with
+    /// its exception flag (Milestone 3).
+    #[serde(default)]
+    pub chat_execution_bindings: Vec<ChatExecutionBindingView>,
+    /// Per item: associated Chats whose captured binding differs from the
+    /// item's current resolved configuration. Only items with at least one
+    /// such Chat, sorted by item id (Milestone 3).
+    #[serde(default)]
+    pub execution_exceptions: Vec<WorkItemExecutionException>,
 }
 
 impl WorkOutlineSnapshot {
@@ -655,6 +679,10 @@ impl WorkOutlineSnapshot {
             && self.instructions == other.instructions
             && self.chat_instruction_states == other.chat_instruction_states
             && self.revisions == other.revisions
+            && self.execution_space == other.execution_space
+            && self.execution_configurations == other.execution_configurations
+            && self.chat_execution_bindings == other.chat_execution_bindings
+            && self.execution_exceptions == other.execution_exceptions
     }
 
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
@@ -675,6 +703,31 @@ impl WorkOutlineSnapshot {
 
     pub fn revision(&self, id: &str) -> Option<&InstructionRevisionView> {
         self.revisions.iter().find(|revision| revision.id == id)
+    }
+
+    /// The resolved execution configuration of a scope over this snapshot
+    /// (whole-row: item, ancestors, Space default, implicit Space root).
+    /// `None` when the Space is unavailable or the item is unknown.
+    pub fn resolve_execution(
+        &self,
+        scope: &ExecutionScope,
+    ) -> Option<ResolvedExecutionConfiguration> {
+        let space = self.execution_space.as_ref()?;
+        resolve_execution_configuration(scope, space, &self.items, &self.execution_configurations)
+    }
+
+    pub fn chat_execution_binding(&self, chat_id: &str) -> Option<&ChatExecutionBindingView> {
+        self.chat_execution_bindings
+            .iter()
+            .find(|binding| binding.chat_id == chat_id)
+    }
+
+    /// The exception Chats of one item (empty when none).
+    pub fn execution_exception_chats(&self, work_item_id: &str) -> &[String] {
+        self.execution_exceptions
+            .iter()
+            .find(|exception| exception.work_item_id == work_item_id)
+            .map_or(&[], |exception| exception.chat_ids.as_slice())
     }
 }
 
@@ -947,6 +1000,8 @@ pub enum WorkOutlineMutation {
     ArchiveWorkItemInstruction(ArchiveWorkItemInstructionParams),
     CreateInstructionRevision(CreateInstructionRevisionParams),
     ApplyInstructionRevision(ApplyInstructionRevisionParams),
+    // ── Milestone 3 ──
+    ConfigureExecution(ConfigureExecutionParams),
 }
 
 impl WorkOutlineMutation {
@@ -969,6 +1024,7 @@ impl WorkOutlineMutation {
             Self::ArchiveWorkItemInstruction(p) => &p.operation_id,
             Self::CreateInstructionRevision(p) => &p.operation_id,
             Self::ApplyInstructionRevision(p) => &p.operation_id,
+            Self::ConfigureExecution(p) => &p.operation_id,
         }
     }
 
@@ -1082,6 +1138,11 @@ pub enum WorkOutlineQueryRequest {
     },
     #[serde(rename_all = "camelCase")]
     GetInstructionRevision { revision_id: String },
+    /// Milestone 3: the whole-row resolution of a scope from the local
+    /// replica (pure; no filesystem). Validation is the separate,
+    /// device-routed `ValidateExecutionConfiguration` method.
+    #[serde(rename_all = "camelCase")]
+    ResolveExecutionConfiguration { scope: ExecutionScope },
 }
 
 /// The reply of `WorkOutlineQuery`, tagged by the same `query` name as the
@@ -1097,6 +1158,7 @@ pub enum WorkOutlineQueryResponse {
         comparison: InstructionRevisionComparison,
     },
     GetInstructionRevision(InstructionRevisionView),
+    ResolveExecutionConfiguration(ResolvedExecutionConfiguration),
 }
 
 // --------------------------------------------------------------------------
@@ -1505,6 +1567,11 @@ mod tests {
             instructions: Vec::new(),
             chat_instruction_states: Vec::new(),
             revisions: Vec::new(),
+            // Execution shapes are pinned in `work_outline_execution::tests`.
+            execution_space: None,
+            execution_configurations: Vec::new(),
+            chat_execution_bindings: Vec::new(),
+            execution_exceptions: Vec::new(),
         };
         let actor_json =
             json!({"kind":"agent","deviceId":"dev-1","chatId":"chat-1","messageId":"msg-1"});
@@ -1575,7 +1642,10 @@ mod tests {
                 }],
                 "instructions": [],
                 "chatInstructionStates": [],
-                "revisions": []
+                "revisions": [],
+                "executionConfigurations": [],
+                "chatExecutionBindings": [],
+                "executionExceptions": []
             }),
         );
     }
@@ -1595,10 +1665,9 @@ mod tests {
         assert_eq!(item.title, "");
         assert!(item.child_ids.is_empty() && item.parent_work_item_id.is_none());
         // Unknown extra fields from a newer peer are ignored.
-        let newer: WorkOutlineSnapshot = serde_json::from_value(
-            json!({"spaceId":"s","executionConfigurations":[1,2],"future":{}}),
-        )
-        .unwrap();
+        let newer: WorkOutlineSnapshot =
+            serde_json::from_value(json!({"spaceId":"s","userActionRequests":[1,2],"future":{}}))
+                .unwrap();
         assert_eq!(newer.space_id, "s");
     }
 
@@ -1630,7 +1699,10 @@ mod tests {
                 "repairs": [],
                 "instructions": [],
                 "chatInstructionStates": [],
-                "revisions": []
+                "revisions": [],
+                "executionConfigurations": [],
+                "chatExecutionBindings": [],
+                "executionExceptions": []
             })
         );
     }
