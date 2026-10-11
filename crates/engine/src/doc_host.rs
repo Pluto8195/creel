@@ -1180,6 +1180,13 @@ impl DocHost {
             .map(|binding| binding.resolved.configuration.execution_root)
     }
 
+    /// Whether the Chat has a binding row at all (a malformed row counts:
+    /// it is bound-and-invalid, never unbound).
+    pub(crate) fn chat_is_bound(&self, chat_id: &str) -> bool {
+        self.workspace()
+            .is_some_and(|ws| ws.chat_execution_binding_state(chat_id).is_bound())
+    }
+
     /// The dispatch-time execution gate (contract 6.3, discoveries 11):
     /// `Ok(None)` for an unbound Chat (today's behavior applies unchanged),
     /// `Ok(Some(validated))` for a bound Chat whose binding validates on
@@ -1189,7 +1196,7 @@ impl DocHost {
         &self,
         chat_id: &str,
     ) -> Result<Option<zeron_proto::ValidatedExecution>, EngineError> {
-        if self.bound_execution_root(chat_id).is_none() {
+        if !self.chat_is_bound(chat_id) {
             return Ok(None);
         }
         let Some(scope) = self.execution_scope() else {
@@ -3757,11 +3764,11 @@ impl DocHost {
                 SteerOutcome::NotSteerable => {}
             }
         }
-        // Same reading of "busy" as the drain: a turn parked on a question is
-        // still a turn, and it has to be stopped before this one starts.
-        if send == QueueSend::Interrupt && sessions.turn_in_flight(chat_id) {
-            sessions.interrupt(chat_id).await?;
-        }
+        // Execution scope first (contract 6.3): a bound Chat's row is
+        // validated, and its resume checked, before the live turn is
+        // interrupted or anything is written, so a refused row goes back to
+        // the queue without a duplicate user message.
+        let validated = self.validate_bound_dispatch(chat_id).await?;
         let previous = sessions.last_request(chat_id);
         let request = self
             .request_from_chat_row(chat_id, &prompt)
@@ -3794,11 +3801,21 @@ impl DocHost {
             None => None,
         };
         self.apply_chat_approval(chat_id, &mut request);
+        if let Some(validated) = &validated {
+            pin_bound_request(chat_id, validated, &mut request)?;
+        }
+        sessions.preflight_resume(chat_id, &request)?;
+        // Same reading of "busy" as the drain: a turn parked on a question is
+        // still a turn, and it has to be stopped before this one starts.
+        if send == QueueSend::Interrupt && sessions.turn_in_flight(chat_id) {
+            sessions.interrupt(chat_id).await?;
+        }
         let harness = self.harness_for_request(chat_id, &request);
         if reset_confirmed {
             sessions.confirm_context_reset(&message_id);
         }
-        self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
+        // Validated above; skip the chokepoint's second validation.
+        self.dispatch_unchecked(&sessions, chat_id, harness, request, Some(message_id))
             .await?;
         Ok(())
     }
@@ -5267,6 +5284,11 @@ impl DocHost {
         {
             return Ok(self.reject_command(handle, &entry.id, err));
         }
+        // A plain Turn's bound-Chat resume check (instruction Turns were
+        // planned just above), also before the user message exists.
+        if let Err(err) = sessions.preflight_resume(chat_id, &request) {
+            return Ok(self.reject_command(handle, &entry.id, err));
+        }
         // Timestamp canonicalization: the user message lands in
         // history at the moment the user SENT it (the entry's
         // issued_at, clamped against clock skew) — not whenever this
@@ -5385,7 +5407,21 @@ impl DocHost {
         // nothing.
         let fallback = if sessions.has_live_run(chat_id) {
             None
-        } else if let Some(request) = self.steer_fallback_request(sessions, chat_id, &prompt) {
+        } else if let Some(mut request) = self.steer_fallback_request(sessions, chat_id, &prompt) {
+            // A bound Chat's scope and plain-Turn resume, checked before the
+            // user message exists (the dispatch below revalidates).
+            match self.validate_bound_dispatch(chat_id).await {
+                Ok(None) => {}
+                Ok(Some(validated)) => {
+                    if let Err(err) = pin_bound_request(chat_id, &validated, &mut request) {
+                        return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+                    }
+                }
+                Err(err) => return Ok((SessionCommandStatus::Rejected, Some(err.to_string()))),
+            }
+            if let Err(err) = sessions.preflight_resume(chat_id, &request) {
+                return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+            }
             if let Some(pin) = sessions.followup_instruction_pin(chat_id, message_id.as_deref()) {
                 let envelope = match self.resolve_instruction_pin(&pin).await {
                     Ok(envelope) => envelope,

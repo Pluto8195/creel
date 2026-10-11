@@ -1225,3 +1225,542 @@ async fn per_chat_worktree_is_not_an_execution_exception_but_an_override_is() {
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 2: a malformed binding is bound-and-invalid, never unbound
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_binding_rejects_every_gate_instead_of_reading_as_unbound() {
+    let rig = rig().await;
+    let reply = launch(&rig, &params(&rig, "op-bad", "launch bad"))
+        .await
+        .expect("launch");
+    let chat = reply.chat_id.clone();
+    wait_for(
+        || turns_with(&rig, "launch bad").len() == 1,
+        "the first turn",
+    )
+    .await;
+    settle(&rig, &chat).await;
+    // A newer build rewrites the binding in a shape this build cannot read.
+    let mut row = rig
+        .core
+        .workspace
+        .registry_row("chatExecutionBindings", &chat)
+        .unwrap();
+    row.fields.insert(
+        "resolved".into(),
+        json!({"schema": 2, "roots": ["/elsewhere"]}),
+    );
+    row.seq = 1_000_000;
+    rig.core.workspace.apply_registry_rows(1_000_000, vec![row]);
+    assert!(matches!(
+        rig.core.workspace.chat_execution_binding_state(&chat),
+        zeron_proto::ChatExecutionBindingState::Malformed { .. }
+    ));
+
+    // Plain Run (any device, MCP send): rejected at drain, nothing written.
+    let elsewhere = rig.root.join("elsewhere");
+    init_repo(&elsewhere, "e");
+    let messages = user_messages(&rig, &chat);
+    let id = queue_run(&rig, &chat, "launch bad raw", &elsewhere.to_string_lossy());
+    assert_rejected_with(&wait_command(&rig, &chat, &id).await, "configInvalid");
+    assert_eq!(user_messages(&rig, &chat), messages);
+    assert!(turns_with(&rig, "launch bad raw").is_empty());
+    // Work-item continue.
+    let error = continue_chat(&rig, &chat, "op-bad-next", "launch bad next")
+        .await
+        .expect_err("malformed binding blocks continue");
+    assert!(error.contains("execution-scope:configInvalid"), "{error}");
+    // Retarget and new worktree.
+    let error = rig
+        .client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "setChatCwd", "chatId": chat, "cwd": elsewhere.to_string_lossy() }),
+        )
+        .await
+        .expect_err("SetChatCwd refuses");
+    assert!(
+        error.to_string().contains("execution-scope:configInvalid"),
+        "{error}"
+    );
+    let error = rig
+        .client
+        .call(
+            methods::CREATE_CHAT_WORKTREE,
+            json!({ "chatId": chat, "repoPath": rig.repo.to_string_lossy(), "name": "nope" }),
+        )
+        .await
+        .expect_err("CreateChatWorktree refuses");
+    assert!(
+        error.to_string().contains("execution-scope:configInvalid"),
+        "{error}"
+    );
+    assert!(!rig.repo.join(".worktrees/workspace/nope").exists());
+    // The relaunch of the same operation refuses too.
+    let error = launch(&rig, &params(&rig, "op-bad", "launch bad"))
+        .await
+        .expect_err("relaunch refuses");
+    assert!(
+        error.message.contains("execution-scope:configInvalid"),
+        "{error:?}"
+    );
+    // Validation by Chat reports it rather than "no binding".
+    let value = rig
+        .client
+        .call(
+            methods::VALIDATE_EXECUTION_CONFIGURATION,
+            json!({ "chatId": chat }),
+        )
+        .await
+        .expect("validation reply");
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(
+        value["errors"][0]["error"]["code"], "configInvalid",
+        "{value}"
+    );
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 1: HOME is never an execution root, and never remapped
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn home_directory_root_is_rejected_not_remapped_to_the_projectless_folder() {
+    let rig = rig().await;
+    let home = std::env::var("HOME").expect("HOME is set");
+    // A launch override naming HOME is refused before any Chat exists.
+    let mut p = params(&rig, "op-home", "launch home");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": { "executionRoot": home, "bindings": [], "schema": 1 }
+        }))
+        .unwrap(),
+    );
+    let error = launch(&rig, &p).await.expect_err("HOME root is refused");
+    assert!(
+        error.message.contains("execution-scope:homeDirectoryRoot"),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .message
+            .contains("Choose a project folder inside your home directory"),
+        "{error:?}"
+    );
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-home", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    // A binding captured with HOME by an older build: a Run is rejected,
+    // never run in the per-Chat projectless folder.
+    rig.client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "home-chat", "spaceId": SPACE,
+                    "deviceId": DEVICE, "cwd": home }),
+        )
+        .await
+        .unwrap();
+    let mut resolved = rig
+        .core
+        .workspace
+        .resolve_execution(&zeron_proto::ExecutionScope::Space {
+            space_id: SPACE.into(),
+        })
+        .unwrap();
+    resolved.configuration.execution_root = home.clone();
+    resolved.configuration.bindings.clear();
+    rig.core
+        .workspace
+        .capture_chat_execution_binding(
+            "home-chat",
+            &resolved,
+            "op-home-capture",
+            &zeron_proto::WorkOutlineActor {
+                kind: zeron_proto::WorkOutlineActorKind::User,
+                device_id: DEVICE.into(),
+                chat_id: None,
+                message_id: None,
+            },
+        )
+        .unwrap();
+    let id = queue_run(&rig, "home-chat", "home raw", &home);
+    assert_rejected_with(
+        &wait_command(&rig, "home-chat", &id).await,
+        "homeDirectoryRoot",
+    );
+    assert!(turns_with(&rig, "home raw").is_empty());
+    assert_eq!(user_messages(&rig, "home-chat"), 0);
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 3: a bound Chat mid-turn at restart auto-resumes
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bound_chat_mid_turn_at_restart_auto_resumes_in_its_root() {
+    let rig = rig().await;
+    let reply = launch(&rig, &params(&rig, "op-restart", "launch restart [hold]"))
+        .await
+        .expect("launch");
+    let chat = reply.chat_id.clone();
+    wait_for(
+        || turns_with(&rig, "launch restart").len() == 1,
+        "the held turn",
+    )
+    .await;
+    assert!(rig.core.sessions.turn_in_flight(&chat));
+    let Rig {
+        _tmp,
+        core,
+        client,
+        root,
+        repo,
+        ..
+    } = rig;
+    core.shutdown().await;
+    drop(client);
+    drop(core);
+
+    // Relaunch over the same data dir: the boot recovery's auto-resume runs
+    // through the execution gate, which must already be wired.
+    let mock = InstructionMockHarness::default();
+    let harnesses = HarnessRegistry::new();
+    harnesses.register(Arc::new(mock.clone()));
+    let core = EngineCore::assemble(
+        &root.join("data"),
+        Arc::new(harnesses),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core reassembles");
+    wait_for(
+        || {
+            mock.turns()
+                .iter()
+                .any(|t| t.prompt.starts_with("launch restart"))
+        },
+        "the bound turn to auto-resume",
+    )
+    .await;
+    let turn = mock
+        .turns()
+        .into_iter()
+        .find(|t| t.prompt.starts_with("launch restart"))
+        .unwrap();
+    assert_eq!(mock.runs()[turn.run_index].cwd, repo.to_string_lossy());
+    let rejected = core
+        .doc_host
+        .open(&chat)
+        .unwrap()
+        .doc()
+        .read_commands()
+        .unwrap()
+        .into_iter()
+        .any(|c| c.status == SessionCommandStatus::Rejected);
+    assert!(!rejected);
+    core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 4: a plain Turn's resume check runs before any write
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plain_run_resume_mismatch_writes_nothing_and_queue_promotion_does_not_duplicate() {
+    // No instructions: the launch queues a plain Run.
+    let rig = rig_with(InstructionMockHarness::default(), false).await;
+    let launcher = service(&rig);
+    let p = params(&rig, "op-plain-resume", "plain resume");
+    launcher.inject_fault(Some(LaunchStep::BindingCaptured));
+    assert!(launcher.create_chat_for_work_item(&p).await.is_err());
+    launcher.inject_fault(None);
+    let chat = derive_id("op-plain-resume", roles::CHAT);
+    rig.core
+        .workspace
+        .set_chat_harness_session(&chat, "native-elsewhere", "/somewhere/else");
+
+    // Queue promotion: the row is refused before any write and goes back to
+    // the queue once; no user message lands, so a retry cannot duplicate.
+    let queued = rig
+        .core
+        .doc_host
+        .queue_message(&chat, "plain queued", Vec::new())
+        .expect("queue");
+    let queue = |rig: &Rig| {
+        rig.core
+            .doc_host
+            .open(&chat)
+            .unwrap()
+            .doc()
+            .read_queue()
+            .unwrap()
+    };
+    let error = rig
+        .core
+        .doc_host
+        .send_queued_now(&chat, &queued)
+        .await
+        .expect_err("promotion refused");
+    assert!(
+        error
+            .to_string()
+            .contains("execution-scope:resumeRootMismatch"),
+        "{error}"
+    );
+    // A drain woken by the restore may retry (and refuse) it again; either
+    // way the row settles back in the queue exactly once.
+    wait_for(|| queue(&rig).len() == 1, "the row to return to the queue").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rows = queue(&rig);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].id, queued);
+    assert_eq!(user_messages(&rig, &chat), 0);
+    assert!(turns_with(&rig, "plain queued").is_empty());
+
+    // The launch's plain Run: rejected at drain with nothing written.
+    let reply = launcher
+        .create_chat_for_work_item(&p)
+        .await
+        .expect("queued");
+    assert!(reply.revision_id.is_none(), "an instruction-free launch");
+    let entry = wait_command(&rig, &chat, &reply.command_id).await;
+    assert_rejected_with(&entry, "resumeRootMismatch");
+    assert_eq!(user_messages(&rig, &chat), 0);
+    assert!(turns_with(&rig, "plain resume").is_empty());
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 5: a createNew retry never adopts a foreign worktree
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_new_retry_refuses_a_foreign_worktree_at_the_claimed_path() {
+    let rig = rig().await;
+    let launcher = service(&rig);
+    let mut p = params(&rig, "op-foreign", "launch foreign");
+    p.worktree_choice = Some(WorktreeChoice::CreateNew {
+        name: "foreign".into(),
+    });
+    // The worktree is created, then the launch crashes.
+    launcher.inject_fault(Some(LaunchStep::Validated));
+    assert!(launcher.create_chat_for_work_item(&p).await.is_err());
+    launcher.inject_fault(None);
+    let worktree = rig.repo.join(".worktrees/workspace/foreign");
+    assert!(worktree.is_dir());
+    // Someone moves it away and puts another worktree of the same
+    // repository at the same path (a different checkout identity).
+    let moved = rig.root.join("foreign-moved");
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "move",
+            &worktree.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ],
+    );
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "intruder",
+            &worktree.to_string_lossy(),
+        ],
+    );
+    let error = launcher
+        .create_chat_for_work_item(&p)
+        .await
+        .expect_err("the foreign worktree is not adopted");
+    assert!(
+        error.message.contains("is not the one this launch created"),
+        "{error:?}"
+    );
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-foreign", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 7: continue never runs an unbound Chat in an empty cwd
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn continue_refuses_an_assigned_unbound_chat_without_a_folder() {
+    let rig = rig().await;
+    rig.client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "no-cwd", "spaceId": SPACE, "deviceId": DEVICE }),
+        )
+        .await
+        .unwrap();
+    // A row whose folder was cleared (an older client, a partial import).
+    rig.core.workspace.set_chat_cwd("no-cwd", "").unwrap();
+    assert!(
+        rig.core
+            .workspace
+            .chat("no-cwd")
+            .unwrap()
+            .unwrap()
+            .cwd
+            .is_none_or(|cwd| cwd.is_empty()),
+        "fixture: the Chat has no folder"
+    );
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "assignChatToWorkItem", "chatId": "no-cwd", "workItemId": rig.item,
+                    "operationId": "op-assign-no-cwd" }),
+        )
+        .await
+        .unwrap();
+    let error = continue_chat(&rig, "no-cwd", "op-no-cwd", "no cwd next")
+        .await
+        .expect_err("an empty cwd is refused");
+    assert!(error.contains("work-outline/invalid"), "{error}");
+    assert!(error.contains("no folder to run in"), "{error}");
+    assert!(commands(&rig, "no-cwd").is_empty());
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 8: a worktree choice needs the root to be that repo's checkout
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_choice_is_refused_when_the_root_is_not_the_repository_checkout() {
+    let rig = rig().await;
+    // Root = a parent folder holding the repository (not its checkout).
+    let identity = describe(&rig, &rig.repo).await;
+    let mut p = params(&rig, "op-wt-root", "launch wt root");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": {
+                "executionRoot": rig.root.to_string_lossy(),
+                "bindings": [{
+                    "repoId": identity.repo_id, "repoFingerprint": identity.repo_fingerprint,
+                    "repoPath": identity.repo_path, "member": true, "primary": true,
+                }],
+                "schema": 1,
+            }
+        }))
+        .unwrap(),
+    );
+    p.worktree_choice = Some(WorktreeChoice::CreateNew {
+        name: "never".into(),
+    });
+    let error = launch(&rig, &p).await.expect_err("worktree choice refused");
+    assert_eq!(error.code, WorkOutlineErrorCode::Invalid, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains("execution root is the primary repository's checkout"),
+        "{error:?}"
+    );
+    // Refused before any worktree or Chat exists.
+    assert!(!rig.repo.join(".worktrees/workspace/never").exists());
+    assert!(
+        rig.core
+            .workspace
+            .chat(&derive_id("op-wt-root", roles::CHAT))
+            .unwrap()
+            .is_none()
+    );
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Review fix 6: diff-sync never serves a member checkout that is not bound
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_sync_skips_a_member_path_whose_checkout_is_not_the_bound_one() {
+    let rig = rig().await;
+    let member = rig.repo.join(".worktrees/m/w");
+    std::fs::create_dir_all(member.parent().unwrap()).unwrap();
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "member",
+            &member.to_string_lossy(),
+        ],
+    );
+    let member = std::fs::canonicalize(&member).unwrap();
+    let repo = describe(&rig, &rig.repo).await;
+    let pinned = describe(&rig, &member).await;
+    let mut p = params(&rig, "op-member", "launch member");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": {
+                "executionRoot": rig.repo.to_string_lossy(),
+                "bindings": [{
+                    "repoId": repo.repo_id, "repoFingerprint": repo.repo_fingerprint,
+                    "repoPath": repo.repo_path, "member": true, "primary": true,
+                    "worktreeId": pinned.checkout_id,
+                    "worktreePath": member.to_string_lossy(),
+                }],
+                "schema": 1,
+            }
+        }))
+        .unwrap(),
+    );
+    let reply = launch(&rig, &p).await.expect("launch");
+    wait_for(
+        || turns_with(&rig, "launch member").len() == 1,
+        "the first turn",
+    )
+    .await;
+    settle(&rig, &reply.chat_id).await;
+    let has_diff = |id: &str| {
+        rig.core
+            .diff_sync
+            .watch_diffs()
+            .borrow()
+            .iter()
+            .any(|diff| diff.checkout_id == id)
+    };
+    // The bound member gets its own entry.
+    rig.core.diff_sync.repair_now().await;
+    wait_for(|| has_diff(&pinned.checkout_id), "the member diff").await;
+
+    // Another checkout now sits at the member path.
+    git(
+        &rig.repo,
+        &["worktree", "remove", "--force", &member.to_string_lossy()],
+    );
+    init_repo(&member, "foreign");
+    let foreign = describe(&rig, &member).await;
+    assert_ne!(foreign.checkout_id, pinned.checkout_id);
+    rig.core.diff_sync.repair_now().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        assert!(
+            !has_diff(&foreign.checkout_id),
+            "the foreign checkout must not get a member entry"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    rig.core.shutdown().await;
+}

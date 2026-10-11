@@ -91,13 +91,17 @@ pub(crate) enum WorktreeTarget {
     Binding { repo_path: String },
     /// No bindings: the repository at the execution root, if it is one.
     Root { path: String },
+    /// The target repository's checkout is not the execution root, so a
+    /// chosen worktree could not become the root (the engine refuses the
+    /// choice); the dialog explains instead of offering it.
+    Unavailable { reason: String },
 }
 
 impl WorktreeTarget {
     /// The path to describe for the worktree choices.
     pub(crate) fn describe_path(&self) -> Option<&str> {
         match self {
-            Self::None => None,
+            Self::None | Self::Unavailable { .. } => None,
             Self::Binding { repo_path } => Some(repo_path),
             Self::Root { path } => Some(path),
         }
@@ -115,6 +119,18 @@ pub(crate) fn worktree_target(configuration: &ExecutionConfiguration) -> Worktre
         });
     match target {
         Some(binding) if binding.worktree_id.is_some() => WorktreeTarget::None,
+        Some(binding)
+            if binding.repo_path.trim_end_matches('/')
+                != configuration.execution_root.trim_end_matches('/') =>
+        {
+            WorktreeTarget::Unavailable {
+                reason: format!(
+                    "A worktree can only be chosen when the execution root is the primary \
+                     repository's checkout. This item runs in {}, not {}.",
+                    configuration.execution_root, binding.repo_path
+                ),
+            }
+        }
         Some(binding) => WorktreeTarget::Binding {
             repo_path: binding.repo_path.clone(),
         },
@@ -201,6 +217,7 @@ fn known_remediations() -> Vec<&'static str> {
         },
         E::SpaceMissing { space_id: s() },
         E::RootMissing { path: s() },
+        E::HomeDirectoryRoot { path: s() },
         E::RepositoryMissing {
             repo_id: s(),
             path: s(),
@@ -241,6 +258,16 @@ fn known_remediations() -> Vec<&'static str> {
         },
         E::MultiplePrimary { repo_ids: vec![] },
         E::ConfigInvalid { reason: s() },
+        E::malformed_chat_binding(""),
+        E::ResumeRootMismatch {
+            expected_path: s(),
+            found_path: s(),
+        },
+        E::BoundChatRetarget {
+            chat_id: s(),
+            execution_root: s(),
+            requested_path: s(),
+        },
     ]
     .iter()
     .map(ExecutionValidationError::remediation)
@@ -339,11 +366,15 @@ mod tests {
     #[test]
     fn worktree_target_follows_the_engine_rule() {
         use execution_fixture::{api_configuration, binding, launch_configuration};
+        // The primary member's checkout is not the root: no worktree choice.
+        let WorktreeTarget::Unavailable { reason } = worktree_target(&launch_configuration())
+        else {
+            panic!("the root is the superproject, not the ui checkout");
+        };
+        assert!(reason.contains("/work/alpha/ui"), "{reason}");
         assert_eq!(
-            worktree_target(&launch_configuration()),
-            WorktreeTarget::Binding {
-                repo_path: "/work/alpha/ui".into()
-            }
+            worktree_target(&launch_configuration()).describe_path(),
+            None
         );
         assert_eq!(
             worktree_target(&api_configuration()),
@@ -359,7 +390,7 @@ mod tests {
         no_primary.bindings[0].primary = false;
         assert_eq!(worktree_target(&no_primary), WorktreeTarget::None);
         let only = ExecutionConfiguration {
-            execution_root: "/r".into(),
+            execution_root: "/r/x/".into(),
             bindings: vec![binding("repo:x", "/r/x", true, false)],
             schema: 1,
         };

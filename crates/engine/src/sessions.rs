@@ -359,7 +359,33 @@ impl SessionsEngine {
     /// (terminal and command discovery) must not accidentally revive the old
     /// behavior where project-less chats ran from the person's HOME.
     pub(crate) fn resolve_cwd(&self, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
-        resolve_run_cwd(&self.inner.journal, chat_id, cwd)
+        self.inner.resolve_dispatch_cwd(chat_id, cwd)
+    }
+
+    /// The bound-Chat resume check of a plain (instruction-free) dispatch,
+    /// run BEFORE anything is written: a stored native session from another
+    /// folder (`resumeRootMismatch`) or a malformed binding (`configInvalid`)
+    /// rejects here instead of after the user message landed. Unbound Chats,
+    /// explicit resumes, and instruction-bearing requests (planned by
+    /// `preflight_instructions`) pass.
+    pub(crate) fn preflight_resume(
+        &self,
+        chat_id: &str,
+        request: &RunRequest,
+    ) -> Result<(), EngineError> {
+        if request.resume.is_some() || request.instructions.is_some() {
+            return Ok(());
+        }
+        let bound = match self.inner.workspace() {
+            Some(ws) => ws.checked_chat_execution_binding(chat_id)?.is_some(),
+            None => false,
+        };
+        if !bound {
+            return Ok(());
+        }
+        self.inner
+            .checked_resume_for(chat_id, &request.cwd)
+            .map(|_| ())
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -662,7 +688,9 @@ impl SessionsEngine {
         // then probe Desktop/Documents/Music/Pictures and macOS attributes the
         // privacy prompts to Zeron. Existing `~` chats migrate automatically
         // to a stable per-chat Zeron-owned directory on their next dispatch.
-        request.cwd = resolve_run_cwd(&self.inner.journal, chat_id, &request.cwd)?;
+        // A bound Chat's cwd is its validated execution root (the dispatch
+        // chokepoint overwrote it); it is never remapped.
+        request.cwd = self.inner.resolve_dispatch_cwd(chat_id, &request.cwd)?;
         // Work Outline instructions (acceptance 9-10): an engine-built
         // follow-up carries none of its own, so it takes the revision its
         // Turn is pinned to (sidecar by message id, else the live Execution
@@ -788,6 +816,14 @@ impl SessionsEngine {
             self.interrupt(chat_id).await?;
         }
 
+        // A plain Turn's resume decision fails BEFORE the user message is
+        // written (a bound Chat's `resumeRootMismatch` must leave nothing to
+        // retry or duplicate).
+        let plain_resume = if instruction_plan.is_none() && request.resume.is_none() {
+            Some(self.inner.checked_resume_for(chat_id, &request.cwd)?)
+        } else {
+            None
+        };
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
@@ -825,8 +861,8 @@ impl SessionsEngine {
                         EngineError::Other(format!("instruction sidecar write failed: {e}"))
                     })?;
             }
-        } else if request.resume.is_none() {
-            request.resume = self.inner.checked_resume_for(chat_id, &request.cwd)?;
+        } else if let Some(resume) = plain_resume {
+            request.resume = resume;
             resume_injected = request.resume.is_some();
         }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
@@ -1579,6 +1615,21 @@ impl Inner {
         cwd_ok(&session_cwd).then_some(session_id)
     }
 
+    /// The cwd a dispatch runs in: the projectless remap of `~` / HOME for
+    /// unbound Chats, and the cwd unchanged for a bound Chat (Work Outline
+    /// contract 6.3: a bound Chat runs in its validated execution root or
+    /// not at all; validation rejects HOME as a root, so remapping it to the
+    /// projectless directory would silently run elsewhere).
+    fn resolve_dispatch_cwd(&self, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
+        let bound = self
+            .workspace()
+            .is_some_and(|ws| ws.chat_execution_binding_state(chat_id).is_bound());
+        if bound {
+            return Ok(cwd.to_owned());
+        }
+        resolve_run_cwd(&self.journal, chat_id, cwd)
+    }
+
     /// [`Self::resume_for`] with the Work Outline execution-scope rule
     /// (contract 6.3, fallback F6): for a BOUND Chat a stored native session
     /// whose cwd differs from the (validated) launch cwd, or is unknown, is
@@ -1586,9 +1637,11 @@ impl Inner {
     /// session. No stored session (or the explicit empty-id tombstone) starts
     /// fresh. Unbound Chats keep today's cwd-gated behavior.
     fn checked_resume_for(&self, chat_id: &str, cwd: &str) -> Result<Option<String>, EngineError> {
-        let bound = self
-            .workspace()
-            .is_some_and(|ws| ws.chat_execution_binding(chat_id).is_some());
+        // A malformed binding row is bound-and-invalid (configInvalid).
+        let bound = match self.workspace() {
+            Some(ws) => ws.checked_chat_execution_binding(chat_id)?.is_some(),
+            None => false,
+        };
         if !bound {
             return Ok(self.resume_for(chat_id, cwd));
         }

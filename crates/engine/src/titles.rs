@@ -54,7 +54,7 @@ pub(crate) fn branch_rename_blocked(
     workspace: &crate::workspace_host::WorkspaceHost,
     chat_id: &str,
 ) -> bool {
-    workspace.chat_execution_binding(chat_id).is_some()
+    workspace.chat_execution_binding_state(chat_id).is_bound()
 }
 
 impl TitleGenerator {

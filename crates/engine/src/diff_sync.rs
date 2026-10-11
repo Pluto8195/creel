@@ -388,6 +388,30 @@ async fn resolve_identity(
     }
 }
 
+/// Whether the checkout found at a member binding's path is the bound one:
+/// the pinned worktree's exact checkout id, else the binding's repository
+/// (topology id of the common dir) at that checkout's top level. No `git`
+/// spawn: the common dir is read from the git dir's `commondir` file.
+pub(crate) fn member_identity_matches(
+    binding: &zeron_proto::RepositoryBinding,
+    identity: &CheckoutIdentity,
+    device_id: &str,
+) -> bool {
+    if let Some(worktree_id) = &binding.worktree_id {
+        return identity.id == *worktree_id;
+    }
+    let common_dir = match std::fs::read_to_string(identity.git_dir.join("commondir")) {
+        Ok(text) => {
+            let joined = identity.git_dir.join(text.trim());
+            std::fs::canonicalize(&joined).unwrap_or(joined)
+        }
+        Err(_) => identity.git_dir.clone(),
+    };
+    crate::execution_scope::repository_id(device_id, &common_dir) == binding.repo_id
+        && crate::execution_scope::canonical_lenient(&identity.root)
+            == crate::execution_scope::canonical_lenient(Path::new(binding.checkout_path()))
+}
+
 async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     // One pass at a time — see `reconcile_gate`.
     let _gate = inner.reconcile_gate.lock().await;
@@ -401,7 +425,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     // one diff per member. Member entries carry no Chats: the Chat's row and
     // edge sidecar stay keyed to its execution root (`chat.cwd`).
     let bindings = inner.workspace.chat_execution_bindings();
-    let mut member_paths: Vec<String> = Vec::new();
+    let mut member_paths: Vec<(String, zeron_proto::RepositoryBinding)> = Vec::new();
     for chat in chats {
         if chat.device_id != inner.device_id {
             continue;
@@ -416,7 +440,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
                     .bindings
                     .iter()
                     .filter(|b| b.member || b.primary)
-                    .map(|b| b.checkout_path().to_owned()),
+                    .map(|b| (b.checkout_path().to_owned(), b.clone())),
             );
         }
         let Some(cwd) = chat.cwd.clone() else {
@@ -448,7 +472,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
             .1
             .push(chat);
     }
-    for path in member_paths {
+    for (path, binding) in member_paths {
         let identity = match resolved.get(&path) {
             Some(identity) => identity.clone(),
             None => {
@@ -458,7 +482,14 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
             }
         };
         // A missing member checkout gets no entry; validation reports it.
+        // Neither does a checkout at the path that is not the bound one (a
+        // pinned worktree replaced by another checkout, another repository,
+        // or a folder inside one): the Changes pane must never show it.
         if let Some(identity) = identity {
+            if !member_identity_matches(&binding, &identity, &inner.device_id) {
+                tracing::debug!(path = %path, "diff-sync: member checkout identity differs from its binding");
+                continue;
+            }
             groups
                 .entry(identity.id.clone())
                 .or_insert_with(|| (identity, Vec::new()));

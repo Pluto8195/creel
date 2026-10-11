@@ -29,7 +29,39 @@ pub(crate) struct ExecutionFolderPick {
     pub confirm_label: SharedString,
     pub device_id: String,
     pub start_path: Option<String>,
+    /// Refuse to confirm the device's home directory itself (execution
+    /// roots: validation rejects HOME with `homeDirectoryRoot`).
+    pub reject_home_directory: bool,
     pub on_pick: Box<dyn FnOnce(String, &mut gpui::App) + 'static>,
+}
+
+/// Why the folder picker will not confirm the home directory as an
+/// execution root (the validator's `homeDirectoryRoot` remediation).
+pub(crate) const HOME_ROOT_REFUSAL: &str = "Your home directory can't be an execution root. Choose a project folder inside your home \
+     directory.";
+
+/// Whether `path` is the device's home directory: the home the browser
+/// resolved when known, else the conventional `/Users/<name>`,
+/// `/home/<name>`, `/root`, or `~` shapes (the browser may have opened at a
+/// start path and never resolved home). Folders inside it are not.
+pub(crate) fn is_device_home(path: &str, known_home: Option<&str>) -> bool {
+    let path = path.trim_end_matches('/');
+    if path == "~" {
+        return true;
+    }
+    if let Some(home) = known_home.map(|home| home.trim_end_matches('/'))
+        && !home.is_empty()
+        && home == path
+    {
+        return true;
+    }
+    if path == "/root" {
+        return true;
+    }
+    ["/Users/", "/home/"].iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    })
 }
 
 /// What a folder pick is for.
@@ -586,6 +618,10 @@ pub(crate) struct ExecutionMember {
     pub branch: Option<String>,
     pub head_sha: Option<String>,
     pub primary: bool,
+    /// `None` when validation confirmed this checkout; otherwise why not
+    /// (the validation message and remediation, or "not confirmed yet").
+    /// Surfaces show no diff or actions for an unconfirmed member.
+    pub unconfirmed: Option<String>,
 }
 
 impl ExecutionMember {
@@ -598,10 +634,11 @@ impl ExecutionMember {
             branch: repository.branch.clone(),
             head_sha: repository.head_sha.clone(),
             primary: repository.primary,
+            unconfirmed: None,
         }
     }
 
-    fn from_binding(binding: &RepositoryBinding) -> Self {
+    fn from_binding(binding: &RepositoryBinding, unconfirmed: String) -> Self {
         Self {
             repo_id: binding.repo_id.clone(),
             name: path_name(&binding.repo_path),
@@ -610,6 +647,7 @@ impl ExecutionMember {
             branch: None,
             head_sha: None,
             primary: binding.primary,
+            unconfirmed: Some(unconfirmed),
         }
     }
 
@@ -626,11 +664,20 @@ impl ExecutionMember {
 /// The primary and member repositories of a bound Chat, primary first, then
 /// configuration order. With a successful validation reply the branch, HEAD,
 /// and checkout identity come from its `repositories`; otherwise from the
-/// captured binding (paths only).
+/// captured binding (paths only), marked unconfirmed with the reason.
 pub(crate) fn execution_members(
     binding: &ChatExecutionBindingView,
     reply: Option<&ValidateExecutionConfigurationReply>,
 ) -> Vec<ExecutionMember> {
+    let unconfirmed = || match reply.map(validation_issues).and_then(|issues| {
+        issues
+            .into_iter()
+            .next()
+            .map(|issue| format!("{}. {}", issue.message, issue.remediation))
+    }) {
+        Some(reason) => reason,
+        None => "Zeron has not confirmed this checkout yet.".to_owned(),
+    };
     let mut members: Vec<ExecutionMember> = match reply.and_then(|r| r.validated.as_ref()) {
         Some(validated) => validated
             .repositories
@@ -644,7 +691,7 @@ pub(crate) fn execution_members(
             .bindings
             .iter()
             .filter(|binding| binding.member || binding.primary)
-            .map(ExecutionMember::from_binding)
+            .map(|binding| ExecutionMember::from_binding(binding, unconfirmed()))
             .collect(),
     };
     // Stable: primary first, configuration order otherwise.
@@ -912,6 +959,21 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn home_directory_detection_for_the_root_picker() {
+        use super::is_device_home;
+        assert!(is_device_home("/Users/mikey", None));
+        assert!(is_device_home("/Users/mikey/", None));
+        assert!(is_device_home("/home/dev", None));
+        assert!(is_device_home("/root", None));
+        assert!(is_device_home("~", None));
+        assert!(is_device_home("/srv/me", Some("/srv/me")));
+        assert!(!is_device_home("/Users/mikey/Projects", None));
+        assert!(!is_device_home("/Users", None));
+        assert!(!is_device_home("/srv/me/app", Some("/srv/me")));
+        assert!(!is_device_home("/srv/work", None));
+    }
+
     use super::super::store::fixture_ids::*;
     use super::fixture::*;
     use super::*;
@@ -1102,6 +1164,23 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].checkout_path, "/work/alpha/ui");
         assert_eq!(members[0].checkout_id, None);
+        assert_eq!(
+            members[0].unconfirmed.as_deref(),
+            Some("Zeron has not confirmed this checkout yet.")
+        );
+        // A failed validation: unconfirmed with its message and remediation.
+        let failed = ValidateExecutionConfigurationReply::from_result(
+            None,
+            Err(vec![ExecutionValidationError::WorktreeMissing {
+                repo_id: REPO_UI.into(),
+                worktree_id: "wt".into(),
+                path: "/work/alpha/ui".into(),
+            }]),
+        );
+        let members = execution_members(binding, Some(&failed));
+        let reason = members[0].unconfirmed.as_deref().unwrap();
+        assert!(reason.contains("/work/alpha/ui"), "{reason}");
+        assert!(reason.contains(&failed.errors[0].remediation), "{reason}");
         // With the reply: checkout ids and refs.
         let reply = launch_validated();
         let members = execution_members(binding, Some(&reply));
@@ -1112,6 +1191,7 @@ mod tests {
             Some("checkout:repo:flagship")
         );
         assert_eq!(default_member(&members).unwrap().repo_id, REPO_UI);
+        assert!(members.iter().all(|member| member.unconfirmed.is_none()));
     }
 
     #[test]

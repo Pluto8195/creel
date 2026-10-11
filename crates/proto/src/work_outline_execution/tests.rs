@@ -274,6 +274,7 @@ fn validation_error_json_and_texts() {
         },
         ExecutionValidationError::RootMissing { path: "/r".into() },
         ExecutionValidationError::RootNotDirectory { path: "/r".into() },
+        ExecutionValidationError::HomeDirectoryRoot { path: "/r".into() },
         ExecutionValidationError::RepositoryMissing {
             repo_id: "r".into(),
             path: "/p".into(),
@@ -668,4 +669,27 @@ fn launch_worktree_fill_is_not_an_exception_but_other_changes_are() {
     member_changed.bindings[1].member = false;
     assert!(!is_launch_worktree_fill(&multi, &member_changed));
     assert!(!is_launch_worktree_fill(&multi, &multi));
+}
+
+#[test]
+fn malformed_chat_binding_state_is_bound_and_invalid() {
+    let state = ChatExecutionBindingState::Malformed {
+        detail: "resolved does not decode".into(),
+    };
+    assert!(state.is_bound());
+    assert!(state.binding().is_none());
+    let error = state.checked().unwrap_err();
+    assert_eq!(error.code(), "configInvalid");
+    assert!(error.message().contains(MALFORMED_CHAT_BINDING_REASON));
+    assert!(error.remediation().contains("start a new Chat"));
+    assert!(!ChatExecutionBindingState::Absent.is_bound());
+    assert_eq!(ChatExecutionBindingState::Absent.checked().unwrap(), None);
+    let home = ExecutionValidationError::HomeDirectoryRoot {
+        path: "/Users/me".into(),
+    };
+    assert_eq!(home.code(), "homeDirectoryRoot");
+    assert_eq!(
+        home.remediation(),
+        "Choose a project folder inside your home directory."
+    );
 }

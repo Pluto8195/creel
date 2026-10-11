@@ -263,6 +263,51 @@ pub struct ChatExecutionBindingView {
     pub exception: bool,
 }
 
+/// Reason prefix of [`ExecutionValidationError::malformed_chat_binding`].
+pub const MALFORMED_CHAT_BINDING_REASON: &str =
+    "this Chat's captured execution binding cannot be read";
+
+/// What a Chat's `chatExecutionBindings` row says, for gates. A row that
+/// exists but does not decode is `Malformed`: every gate treats it as bound
+/// and invalid (fail closed), never as unbound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatExecutionBindingState {
+    /// No live row: the Chat is unbound.
+    Absent,
+    Bound(Box<ChatExecutionBindingView>),
+    /// A live row that does not decode; `detail` says why.
+    Malformed {
+        detail: String,
+    },
+}
+
+impl ChatExecutionBindingState {
+    /// `false` only for [`Self::Absent`].
+    pub fn is_bound(&self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    /// The decoded binding (`None` for absent AND malformed rows; gates use
+    /// [`Self::checked`] instead).
+    pub fn binding(&self) -> Option<&ChatExecutionBindingView> {
+        match self {
+            Self::Bound(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    /// `Ok(None)` unbound, `Ok(Some)` bound, `Err(configInvalid)` malformed.
+    pub fn checked(self) -> Result<Option<ChatExecutionBindingView>, ExecutionValidationError> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Bound(view) => Ok(Some(*view)),
+            Self::Malformed { detail } => {
+                Err(ExecutionValidationError::malformed_chat_binding(&detail))
+            }
+        }
+    }
+}
+
 /// Per-item exception marker: associated Chats whose captured binding
 /// differs from the item's current resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +451,10 @@ pub enum ExecutionValidationError {
     RootMissing { path: String },
     #[serde(rename_all = "camelCase")]
     RootNotDirectory { path: String },
+    /// The execution root is the user's home directory: agents would probe
+    /// every personal folder, and Zeron treats HOME as projectless.
+    #[serde(rename_all = "camelCase")]
+    HomeDirectoryRoot { path: String },
     #[serde(rename_all = "camelCase")]
     RepositoryMissing { repo_id: String, path: String },
     /// The repository at the path is not the configured one (other common
@@ -497,6 +546,7 @@ impl ExecutionValidationError {
             Self::SpaceMissing { .. } => "spaceMissing",
             Self::RootMissing { .. } => "rootMissing",
             Self::RootNotDirectory { .. } => "rootNotDirectory",
+            Self::HomeDirectoryRoot { .. } => "homeDirectoryRoot",
             Self::RepositoryMissing { .. } => "repositoryMissing",
             Self::RepositoryIdentityMismatch { .. } => "repositoryIdentityMismatch",
             Self::WorktreeMissing { .. } => "worktreeMissing",
@@ -536,6 +586,9 @@ impl ExecutionValidationError {
             Self::RootMissing { path } => format!("The execution root {path} does not exist"),
             Self::RootNotDirectory { path } => {
                 format!("The execution root {path} is not a folder")
+            }
+            Self::HomeDirectoryRoot { path } => {
+                format!("The execution root {path} is your home directory")
             }
             Self::RepositoryMissing { path, .. } => {
                 format!("The repository at {path} is missing")
@@ -636,6 +689,7 @@ impl ExecutionValidationError {
                 "Restore the folder or choose another execution root in the execution \
                  configuration."
             }
+            Self::HomeDirectoryRoot { .. } => "Choose a project folder inside your home directory.",
             Self::RepositoryMissing { .. } => {
                 "Restore the repository at its path or update the repository binding."
             }
@@ -666,6 +720,10 @@ impl ExecutionValidationError {
             Self::MultiplePrimary { .. } => {
                 "Mark exactly one repository as primary in the execution configuration."
             }
+            Self::ConfigInvalid { reason } if reason.starts_with(MALFORMED_CHAT_BINDING_REASON) => {
+                "Update Zeron on this device if another device runs a newer version, or start a \
+                 new Chat from the work item. Zeron will not run this Chat without its binding."
+            }
             Self::ConfigInvalid { .. } | Self::Unknown => {
                 "Edit or reset the execution configuration."
             }
@@ -678,6 +736,18 @@ impl ExecutionValidationError {
                  Chat keeps the execution root it started with."
             }
         }
+    }
+
+    /// The `configInvalid` a gate reports for a Chat whose captured binding
+    /// row exists but cannot be read (malformed, or written by a newer
+    /// schema). Such a Chat is bound-and-invalid, never unbound.
+    pub fn malformed_chat_binding(detail: &str) -> Self {
+        let reason = if detail.is_empty() {
+            MALFORMED_CHAT_BINDING_REASON.to_owned()
+        } else {
+            format!("{MALFORMED_CHAT_BINDING_REASON} ({detail})")
+        };
+        Self::ConfigInvalid { reason }
     }
 
     /// The error with its rendered texts (the wire form of one issue).

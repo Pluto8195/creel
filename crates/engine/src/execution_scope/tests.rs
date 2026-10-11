@@ -507,6 +507,28 @@ async fn structure_errors_are_collected_with_path_errors() {
 }
 
 #[tokio::test]
+async fn home_directory_is_never_an_execution_root() {
+    let fx = Fixture::new();
+    let home = crate::repos::home_dir();
+    let errors = fx.validate(&home, vec![], caps()).await.unwrap_err();
+    assert_eq!(codes(&errors), ["homeDirectoryRoot"]);
+    assert_eq!(
+        errors[0].remediation(),
+        "Choose a project folder inside your home directory."
+    );
+    // A symlink alias of HOME is HOME.
+    #[cfg(unix)]
+    {
+        let alias = fx.root.join("home-alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let errors = fx.validate(&alias, vec![], caps()).await.unwrap_err();
+        assert_eq!(codes(&errors), ["homeDirectoryRoot"]);
+    }
+    // An ordinary folder is not.
+    assert!(!is_home_directory(&fx.root));
+}
+
+#[tokio::test]
 async fn device_and_space_checks_stop_before_touching_paths() {
     let fx = Fixture::new();
     let repo = fx.root.join("repo");

@@ -72,6 +72,13 @@ pub(crate) struct ChangesTarget {
     pub cwd: Option<String>,
     pub checkout_id: Option<String>,
     pub branch: Option<String>,
+    /// A bound Chat's selected repository that validation has not confirmed:
+    /// why (the validation remediation). The pane shows no diff and no
+    /// actions for it rather than whatever sits at the configured path.
+    pub unconfirmed: Option<String>,
+    /// Match a diff only by `checkout_id` (a validated member), never by a
+    /// cwd fallback.
+    pub exact_checkout: bool,
 }
 
 impl ChangesTarget {
@@ -82,27 +89,50 @@ impl ChangesTarget {
             cwd: chat.cwd.clone(),
             checkout_id: chat.checkout_id.clone(),
             branch: chat.branch.clone(),
+            unconfirmed: None,
+            exact_checkout: false,
         }
     }
 
     /// A bound Chat (Work Outline execution binding) shows one repository at
     /// a time: the picked member's checkout, through the same scoped
     /// `WatchCheckoutDiffs {cwd, checkoutId}`. Unbound Chats are unchanged.
+    ///
+    /// A member validation has not confirmed (validation failed or has not
+    /// answered yet) gets no target at all: no watch, no cwd fallback, no
+    /// actions; the pane explains why instead.
     fn for_chat_in(chat: &Chat, state: &AppState) -> Self {
         let mut target = Self::from_chat(chat);
         if let Some(member) = state.selected_execution_member(&chat.id) {
-            target.cwd = Some(member.checkout_path);
-            target.checkout_id = member.checkout_id;
-            target.branch = member.branch;
+            match member.unconfirmed {
+                Some(reason) => {
+                    target.cwd = None;
+                    target.checkout_id = None;
+                    target.branch = None;
+                    target.unconfirmed = Some(reason);
+                }
+                None => {
+                    target.cwd = Some(member.checkout_path);
+                    target.checkout_id = member.checkout_id;
+                    target.branch = member.branch;
+                    target.exact_checkout = true;
+                }
+            }
         }
         target
     }
 
     fn resolve<'a>(&self, diffs: &'a [CheckoutDiff]) -> Option<&'a CheckoutDiff> {
+        if self.unconfirmed.is_some() {
+            return None;
+        }
         if let Some(checkout_id) = self.checkout_id.as_deref()
             && let Some(diff) = diffs.iter().find(|diff| diff.checkout_id == checkout_id)
         {
             return Some(diff);
+        }
+        if self.exact_checkout {
+            return None;
         }
         let cwd = self.cwd.as_deref()?;
         diffs
@@ -2290,6 +2320,8 @@ impl Changes {
             .map(|chat| ChangesTarget::for_chat_in(chat, state.read(cx)))
             .or_else(|| {
                 Some(ChangesTarget {
+                    unconfirmed: None,
+                    exact_checkout: false,
                     chat_id,
                     device_id: String::new(),
                     cwd: None,
@@ -4784,6 +4816,17 @@ impl Changes {
     /// under it would never see a click. The expand and close buttons ride
     /// alongside, shell-owned (they mutate shell state).
     pub fn render_header_controls(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // An unconfirmed bound-Chat member has no diff, so no diff actions.
+        if self.pinned_cwd.is_none()
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.unconfirmed.is_some())
+        {
+            return div()
+                .debug_selector(|| "changes-header-unconfirmed".into())
+                .into_any_element();
+        }
         let theme = Theme::of(cx).clone();
         // Commit-pinned pane: the pin never changes, so a fixed identity
         // chip (mono short sha + subject) replaces the scope dropdown;
@@ -5317,6 +5360,8 @@ impl Changes {
             )
         } else if let Some(cwd) = &self.pinned_cwd {
             let target = ChangesTarget {
+                unconfirmed: None,
+                exact_checkout: false,
                 chat_id: String::new(),
                 device_id: String::new(),
                 cwd: Some(cwd.clone()),
@@ -6185,7 +6230,29 @@ impl Render for Changes {
                 }
             });
 
-        let content: AnyElement = if let Some((message, warn)) = scoped_notice {
+        let unconfirmed = self
+            .owner
+            .as_ref()
+            .filter(|_| !pinned)
+            .and_then(|owner| owner.unconfirmed.clone());
+        let content: AnyElement = if let Some(reason) = unconfirmed {
+            div()
+                .debug_selector(|| "changes-member-unconfirmed".into())
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(4.0))
+                .px(px(Theme::SPACE_LG))
+                .text_size(px(12.0))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(
+                    "No changes shown: Zeron could not confirm this repository's checkout.",
+                ))
+                .child(SharedString::from(reason))
+                .into_any_element()
+        } else if let Some((message, warn)) = scoped_notice {
             div()
                 .flex_1()
                 .flex()
@@ -7445,6 +7512,8 @@ index 1111111..2222222 160000
             diff("co-b", "device-b", "/repo/shared", "b"),
         ];
         let target = ChangesTarget {
+            unconfirmed: None,
+            exact_checkout: false,
             chat_id: "chat-a".into(),
             device_id: "device-a".into(),
             cwd: Some("/repo/shared".into()),
@@ -7454,6 +7523,8 @@ index 1111111..2222222 160000
         assert_eq!(target.resolve(&diffs).unwrap().checkout_id, "co-a");
 
         let target = ChangesTarget {
+            unconfirmed: None,
+            exact_checkout: false,
             chat_id: "chat-b".into(),
             device_id: "device-b".into(),
             cwd: Some("/repo/shared".into()),
@@ -7487,6 +7558,8 @@ index 1111111..2222222 160000
     #[test]
     fn context_names_are_derived_from_the_owned_path() {
         let target = ChangesTarget {
+            unconfirmed: None,
+            exact_checkout: false,
             chat_id: "chat".into(),
             device_id: "device".into(),
             cwd: Some("/projects/zeron/.worktrees/feature-123".into()),
@@ -7581,6 +7654,76 @@ index 1111111..2222222 160000
         });
         vcx.update(|window, cx| window.draw(cx).clear());
         assert!(vcx.debug_bounds("changes-execution-repositories").is_none());
+    }
+
+    /// A member validation did not confirm shows no diff and no actions,
+    /// with the validation remediation, never the diff of whatever sits at
+    /// the configured path; a confirmed member never falls back by cwd.
+    #[gpui::test]
+    fn unconfirmed_members_show_no_diff_and_explain_why(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::execution::fixture;
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let pruned = zeron_proto::ValidateExecutionConfigurationReply::from_result(
+            None,
+            Err(vec![
+                zeron_proto::ExecutionValidationError::WorktreePruned {
+                    repo_id: "repo:ui".into(),
+                    worktree_id: "wt".into(),
+                    path: "/work/alpha/ui".into(),
+                },
+            ]),
+        );
+        let reply = serde_json::to_value(&pruned).unwrap();
+        let (changes, vcx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                fixture::bound_state(&mut state);
+                state.work_outline_actions_override =
+                    Some(crate::work_outline::WorkOutlineActions::scripted(
+                        std::sync::Arc::new(move |_, _| Ok(reply.clone())),
+                    ));
+                state
+            });
+            Changes::for_chat(state, "chat-ui".into(), cx)
+        });
+        vcx.run_until_parked();
+        changes.update(vcx, |changes, cx| changes.sync(cx));
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd, None, "no cwd fallback to the configured path");
+            assert_eq!(owner.checkout_id, None);
+            let reason = owner.unconfirmed.as_deref().unwrap();
+            assert!(
+                reason.contains(pruned.errors[0].remediation.as_str()),
+                "{reason}"
+            );
+            // Even a diff for the configured path is never resolved.
+            let diffs = vec![diff("co-ui", "d", "/work/alpha/ui", "x")];
+            assert!(owner.resolve(&diffs).is_none());
+            assert!(!changes.started, "no diff watch");
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-member-unconfirmed").is_some());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_some());
+        changes.update(vcx, |changes, cx| {
+            let _ = changes.render_header_controls(cx);
+        });
+
+        // A confirmed member matches by checkout id only.
+        let target = ChangesTarget {
+            chat_id: "chat-ui".into(),
+            device_id: "d".into(),
+            cwd: Some("/work/alpha/ui".into()),
+            checkout_id: Some("checkout:repo:ui".into()),
+            branch: None,
+            unconfirmed: None,
+            exact_checkout: true,
+        };
+        let diffs = vec![diff("co-other", "d", "/work/alpha/ui", "x")];
+        assert!(target.resolve(&diffs).is_none());
     }
 
     #[gpui::test]
