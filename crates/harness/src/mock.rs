@@ -604,6 +604,8 @@ pub struct RecordedInstructionRun {
     /// The native session id the run reported in `SessionStarted`.
     pub session_id: String,
     pub instructions: Option<zeron_proto::InstructionDelivery>,
+    /// The working directory the run was spawned in.
+    pub cwd: String,
 }
 
 /// One Turn (the run's first prompt or a later mailbox prompt) and the
@@ -633,7 +635,9 @@ struct InstructionMockState {
 /// running until [`Self::release`]; `[crash]` ends the stream without a
 /// `Done` (the child died mid-Turn); a first prompt containing
 /// `[hang-before-start]` emits nothing (no `SessionStarted`) until
-/// [`Self::release`], like a child still starting up.
+/// [`Self::release`], like a child still starting up; `[subagent]` spawns a
+/// harness-native subagent (an `Agent:` tool call whose nested traffic
+/// arrives as tagged `AgentEvent::Subagent` events).
 #[derive(Clone)]
 pub struct InstructionMockHarness {
     support: crate::InstructionSupport,
@@ -729,6 +733,7 @@ impl Harness for InstructionMockHarness {
                 resume: request.resume.clone(),
                 session_id: session_id.clone(),
                 instructions: request.instructions.clone(),
+                cwd: request.cwd.clone(),
             });
             (state.runs.len() - 1, session_id)
         };
@@ -783,6 +788,31 @@ impl Harness for InstructionMockHarness {
                 let _ = tx.send(Ok(AgentEvent::TextDelta {
                     text: format!("ack {turn}"),
                 }));
+                if prompt.contains("[subagent]") {
+                    let spawn_id = format!("{session_id}-agent{turn}");
+                    let _ = tx.send(Ok(AgentEvent::ToolCall {
+                        id: spawn_id.clone(),
+                        call: zeron_proto::ToolCall::Unknown {
+                            name: "Agent: scout".into(),
+                            input: Some(serde_json::json!({
+                                "description": "scout",
+                                "prompt": "look around",
+                            })),
+                        },
+                    }));
+                    let _ = tx.send(Ok(AgentEvent::Subagent {
+                        parent_tool_use_id: spawn_id.clone(),
+                        event: Box::new(AgentEvent::TextDelta {
+                            text: "subagent says hi".into(),
+                        }),
+                    }));
+                    let _ = tx.send(Ok(AgentEvent::ToolResult {
+                        id: spawn_id,
+                        is_error: false,
+                        output: None,
+                        diff: None,
+                    }));
+                }
                 if prompt.contains("[crash]") {
                     return; // stream ends without Done: the child died
                 }

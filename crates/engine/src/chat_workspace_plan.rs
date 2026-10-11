@@ -252,6 +252,39 @@ pub struct ChatWorktree {
 /// synchronous/blocking (shells out to `git`) — callers run this on a
 /// blocking-safe thread (`tokio::task::spawn_blocking`), matching
 /// [`crate::pr_ticket_cache`]'s shell-out convention.
+/// Where [`create_chat_worktree`] would put the worktree for `name` (and the
+/// branch it would create), without touching anything. The Work Outline
+/// launch workflow uses it to make creation idempotent per operation.
+pub fn chat_worktree_target(
+    repo_path: &Path,
+    name: &str,
+) -> Result<(PathBuf, String), EngineError> {
+    let slug = compute_slug(name);
+    if slug.is_empty() {
+        return Err(EngineError::Other(
+            "worktree name sanitizes to an empty slug".into(),
+        ));
+    }
+    let repo_toplevel = git_toplevel(repo_path).ok_or_else(|| {
+        EngineError::Other(format!("not a git repository: {}", repo_path.display()))
+    })?;
+    let (superproject_root, label) = match superproject_working_tree(repo_path) {
+        Some(super_root) => {
+            let label = repo_toplevel
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repo".to_string());
+            (super_root, label)
+        }
+        None => (repo_toplevel, "workspace".to_string()),
+    };
+    let worktrees_base = worktrees_base_dir(&superproject_root)?;
+    Ok((
+        normalize_path(&worktrees_base.join(&label).join(&slug)),
+        slug,
+    ))
+}
+
 pub fn create_chat_worktree(repo_path: &Path, name: &str) -> Result<ChatWorktree, EngineError> {
     let slug = compute_slug(name);
     if slug.is_empty() {

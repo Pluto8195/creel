@@ -742,6 +742,9 @@ pub struct EngineRpc {
     /// `ValidateExecutionConfiguration` / `DescribeExecutionRepository`
     /// (Work Outline Milestone 3; run on the Space's owning device).
     execution_scope: crate::execution_scope::ExecutionScopeService,
+    /// `CreateChatForWorkItem` / `ContinueChatForWorkItem` and child-Chat
+    /// inheritance (Work Outline Milestone 3 stage 2).
+    launch: crate::work_outline_launch::WorkItemLaunchService,
     engine_info: EngineInfo,
 }
 
@@ -773,6 +776,15 @@ impl EngineRpc {
         ));
         let execution_scope =
             crate::execution_scope::ExecutionScopeService::new(workspace.clone(), repos.clone());
+        let launch = crate::work_outline_launch::WorkItemLaunchService::new(
+            workspace.clone(),
+            doc_host.clone(),
+            sessions.clone(),
+            doc_host
+                .execution_scope()
+                .cloned()
+                .unwrap_or_else(|| execution_scope.clone()),
+        );
         Self {
             sessions,
             doc_host,
@@ -797,6 +809,7 @@ impl EngineRpc {
             subagent_transcript_cache: crate::subagent_transcript::TranscriptCache::new(),
             work_outline,
             execution_scope,
+            launch,
             engine_info,
         }
     }
@@ -1247,6 +1260,78 @@ impl EngineRpc {
         ))
     }
 
+    /// `CreateChatForWorkItem`: run the launch workflow when this device
+    /// owns the work item's Space, else forward it to the owner. A fresh
+    /// launch is blocked (`execution-scope:deviceOffline`) when the owner
+    /// cannot be reached (contract decision 6.4.1) and never runs locally.
+    async fn create_chat_for_work_item(
+        &self,
+        p: zeron_proto::CreateChatForWorkItemParams,
+    ) -> Result<zeron_proto::CreateChatForWorkItemReply, RpcError> {
+        use zeron_proto::{ExecutionValidationError, WorkOutlineError, WorkOutlineErrorCode};
+        let fail = |error: WorkOutlineError| RpcError::Failed(error.to_wire_message());
+        let blocked = |error: ExecutionValidationError| {
+            fail(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                crate::execution_scope::rejection_message(&[error]),
+            ))
+        };
+        let owner = self
+            .workspace
+            .work_item_space(&p.work_item_id)
+            .and_then(|space_id| self.workspace.space(&space_id).ok().flatten())
+            .map(|space| space.device_id)
+            .ok_or_else(|| {
+                fail(WorkOutlineError::new(
+                    WorkOutlineErrorCode::NotFound,
+                    "Work item not found",
+                ))
+            })?;
+        if owner != self.doc_host.device_id() {
+            let device = self
+                .workspace
+                .read_devices()
+                .ok()
+                .and_then(|devices| devices.into_iter().find(|d| d.id == owner));
+            let Some(device) = device else {
+                return Err(blocked(ExecutionValidationError::DeviceOffline {
+                    device_id: owner,
+                    detail: "the device is not known to this engine".into(),
+                }));
+            };
+            if !device.supports(zeron_proto::capabilities::WORK_OUTLINE_LAUNCH_V1) {
+                return Err(blocked(ExecutionValidationError::HostUnsupported {
+                    device_id: owner,
+                    capability: zeron_proto::capabilities::WORK_OUTLINE_LAUNCH_V1.into(),
+                }));
+            }
+            let mut forwarded = p.clone();
+            forwarded.target_device_id = Some(owner.clone());
+            let params = serde_json::to_value(&forwarded)
+                .map_err(|e| RpcError::Failed(format!("serialize params: {e}")))?;
+            return match self
+                .forward(&owner, methods::CREATE_CHAT_FOR_WORK_ITEM, params)
+                .await
+            {
+                Ok(RpcReply::Value(value)) => serde_json::from_value(value)
+                    .map_err(|e| RpcError::Failed(format!("bad launch reply: {e}"))),
+                Ok(RpcReply::Stream(_)) => Err(RpcError::Failed("unexpected stream reply".into())),
+                // The owner answered with a typed failure: pass it through.
+                Err(RpcError::Failed(message)) if message.contains("work-outline/") => {
+                    Err(RpcError::Failed(message))
+                }
+                Err(error) => Err(blocked(ExecutionValidationError::DeviceOffline {
+                    device_id: owner,
+                    detail: error.to_string(),
+                })),
+            };
+        }
+        self.launch
+            .create_chat_for_work_item(&p)
+            .await
+            .map_err(fail)
+    }
+
     async fn forward(
         &self,
         target: &str,
@@ -1334,6 +1419,20 @@ impl EngineRpc {
                 cwd,
                 parent_chat_id,
             } => {
+                let parent_chat_id = parent_chat_id.filter(|p| !p.trim().is_empty());
+                // A child of a bound Chat in the same Space starts in the
+                // parent's execution root by default (acceptance 19), so it
+                // can inherit the binding; an explicit other cwd opts out of
+                // the binding (assignment and revision still inherit).
+                let cwd = match (&cwd, &parent_chat_id) {
+                    (None, Some(parent)) => self
+                        .workspace
+                        .chat_execution_binding(parent)
+                        .filter(|binding| space_id.as_deref() == Some(binding.space_id.as_str()))
+                        .map(|binding| binding.resolved.configuration.execution_root)
+                        .or(cwd),
+                    _ => cwd,
+                };
                 self.workspace
                     .create_chat_with_parent(
                         &chat_id,
@@ -1341,13 +1440,21 @@ impl EngineRpc {
                         device_id.as_deref(),
                         config,
                         cwd,
-                        parent_chat_id,
+                        parent_chat_id.clone(),
                     )
                     .map_err(failed)?;
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
                     self.workspace
                         .set_chat_branch(&chat_id, branch)
                         .map_err(failed)?;
+                }
+                if let Some(parent) = parent_chat_id
+                    && let Err(err) = self.launch.inherit_from_parent(&chat_id, &parent)
+                {
+                    // The Chat exists; a failed inheritance must not make a
+                    // caller retry into a duplicate Chat.
+                    tracing::warn!(chat = %chat_id, parent = %parent, error = %err,
+                        "child chat work-outline inheritance failed");
                 }
                 Ok(())
             }
@@ -1528,6 +1635,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         methods::CREATE_WORKTREE => Duration::from_secs(120),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
+        // Validation plus an optional `git worktree add` on the owner.
+        methods::CREATE_CHAT_FOR_WORK_ITEM => Duration::from_secs(120),
         _ => Duration::from_secs(30),
     }
 }
@@ -1621,6 +1730,8 @@ fn forwardable(method: &str) -> bool {
             // Execution configurations validate against the owner's disk.
             | methods::VALIDATE_EXECUTION_CONFIGURATION
             | methods::DESCRIBE_EXECUTION_REPOSITORY
+            // A work-item launch validates and creates on the owner's disk.
+            | methods::CREATE_CHAT_FOR_WORK_ITEM
     )
 }
 
@@ -2385,6 +2496,20 @@ impl RpcService for EngineRpc {
                 let reply = self.validate_execution_configuration(p).await?;
                 RpcReply::value(&reply)
             }
+            methods::CREATE_CHAT_FOR_WORK_ITEM => {
+                let p: zeron_proto::CreateChatForWorkItemParams = parse_params(params)?;
+                let reply = self.create_chat_for_work_item(p).await?;
+                RpcReply::value(&reply)
+            }
+            methods::CONTINUE_CHAT_FOR_WORK_ITEM => {
+                let p: zeron_proto::ContinueChatForWorkItemParams = parse_params(params)?;
+                let reply = self
+                    .launch
+                    .continue_chat_for_work_item(&p)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                RpcReply::value(&reply)
+            }
             methods::DESCRIBE_EXECUTION_REPOSITORY => {
                 let p: zeron_proto::DescribeExecutionRepositoryParams = parse_params(params)?;
                 let identity = crate::execution_scope::describe_repository(
@@ -2834,6 +2959,17 @@ impl RpcService for EngineRpc {
             }
             methods::CREATE_CHAT_WORKTREE => {
                 let p: CreateChatWorktreeParams = parse_params(params)?;
+                // A bound Chat never moves to a new worktree (contract 6.2):
+                // refuse before creating one that could not be used.
+                if let Some(binding) = self.workspace.chat_execution_binding(&p.chat_id) {
+                    return Err(RpcError::Failed(crate::execution_scope::rejection_message(
+                        &[zeron_proto::ExecutionValidationError::BoundChatRetarget {
+                            chat_id: p.chat_id.clone(),
+                            execution_root: binding.resolved.configuration.execution_root,
+                            requested_path: String::new(),
+                        }],
+                    )));
+                }
                 let repo_path = std::path::PathBuf::from(&p.repo_path);
                 let name = p.name.clone();
                 let worktree = tokio::task::spawn_blocking(move || {
