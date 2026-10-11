@@ -533,7 +533,11 @@ pub(crate) mod tests {
     /// A drawn Composer over an `AppState` with a scripted engine whose
     /// requests land in `requests`.
     pub(crate) fn harness(cx: &mut TestAppContext) -> (Harness, &mut VisualTestContext) {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        // Current-thread: the client's reader only runs inside `reply`.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let guard = runtime.enter();
         let (out, requests) = tokio::sync::mpsc::channel::<String>(16);
         let (replies, inbound) = tokio::sync::mpsc::channel::<String>(16);
@@ -585,6 +589,17 @@ pub(crate) mod tests {
     }
 
     impl Harness {
+        /// Answer `request` with `reply` and let the client route it.
+        pub(crate) fn reply(&self, request: &serde_json::Value, mut reply: serde_json::Value) {
+            reply["id"] = request["id"].clone();
+            self._runtime.block_on(async {
+                self.replies.send(reply.to_string()).await.unwrap();
+                while self.replies.capacity() < self.replies.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            });
+        }
+
         /// Every request sent so far with `method` (others, e.g. the
         /// composer's own harness listing, are dropped).
         pub(crate) fn sent(&mut self, method: &str) -> Vec<serde_json::Value> {
@@ -754,6 +769,74 @@ pub(crate) mod tests {
         assert_eq!(removed[0]["params"]["id"], "q2");
         h.composer.read_with(vcx, |composer, cx| {
             assert_eq!(composer.input.read(cx).text(), "second message");
+        });
+    }
+
+    fn host_unsupported() -> InstructionDeliveryRejection {
+        InstructionDeliveryRejection {
+            outcome: InstructionDeliveryOutcome::InstructionHostUnsupported {
+                host_device_id: "d".into(),
+                harness: HarnessId::Codex,
+                required_capability: "work-outline-instruction-envelope-v1/codex".into(),
+                reason: InstructionHostUnsupportedReason::HarnessUnsupported,
+                device_name: Some("Studio".into()),
+                device_version: None,
+            },
+            message: "Studio can\u{2019}t deliver Work Outline instructions to Codex. \
+                      Update Codex on Studio."
+                .into(),
+        }
+    }
+
+    #[test]
+    fn send_failures_prefer_the_instruction_delivery_message() {
+        let rejection = host_unsupported();
+        assert_eq!(
+            send_failure_text(&rejection.to_wire_message()),
+            rejection.message
+        );
+        assert_eq!(send_failure_text("boom"), "Send failed: boom");
+    }
+
+    /// Ingestion refuses the send: the host's actionable message shows and
+    /// the draft comes back.
+    #[gpui::test]
+    fn ingestion_refusal_shows_the_message_and_keeps_the_draft(cx: &mut TestAppContext) {
+        let (mut h, vcx) = harness(cx);
+        let _guard = h._runtime.enter();
+        h.state.update(vcx, |state, _| {
+            state.chats = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "c", "deviceId": "d", "archived": false, "cwd": "/work",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                }))
+                .unwrap(),
+            ];
+        });
+        h.composer.update(vcx, |composer, cx| {
+            composer.current_key = "c".into();
+            composer
+                .input
+                .update(cx, |input, cx| input.set_text("ship it", cx));
+            composer.on_submit(cx);
+        });
+        let rejection = host_unsupported();
+        vcx.run_until_parked();
+        let request = h
+            .sent(methods::QUEUE_COMMAND)
+            .pop()
+            .expect("the send reached QueueCommand");
+        h.reply(
+            &request,
+            serde_json::json!({ "err": rejection.to_wire_message() }),
+        );
+        vcx.run_until_parked();
+        h.composer.read_with(vcx, |composer, cx| {
+            assert_eq!(
+                composer.failure.as_deref(),
+                Some(rejection.message.as_str())
+            );
+            assert_eq!(composer.input.read(cx).text(), "ship it");
         });
     }
 }

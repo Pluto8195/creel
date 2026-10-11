@@ -7063,7 +7063,9 @@ impl Composer {
                         .client()
                         .call(methods::QUEUE_MESSAGE, params)
                         .await
-                        .map_err(|e| format!("Send failed: {e}"))?;
+                        // A pinned row the host can't deliver is refused
+                        // with an actionable instruction-delivery message.
+                        .map_err(|e| instruction_reset::send_failure_text(&e.to_string()))?;
                     let queue_id = reply
                         .get("id")
                         .and_then(serde_json::Value::as_str)
@@ -7111,7 +7113,10 @@ impl Composer {
                     std::time::Duration::from_secs(30),
                 )
                 .await
-                .map_err(|e| format!("Send failed: {e}"))?;
+                // Ingestion refuses an instruction-bearing send to a host
+                // that can't deliver it (`instructionHostUnsupported`): show
+                // its actionable message; the failure path keeps the draft.
+                .map_err(|e| instruction_reset::send_failure_text(&e))?;
                 if expects_setup_handoff
                     && let Some(command_id) = queued
                         .get("commandId")
