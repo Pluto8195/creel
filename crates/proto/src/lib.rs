@@ -13,6 +13,7 @@ pub mod view;
 pub mod work_outline;
 pub mod work_outline_execution;
 pub mod work_outline_instructions;
+pub mod work_outline_launch;
 pub mod work_outline_order;
 pub mod workspace;
 
@@ -24,6 +25,7 @@ pub use sidebar_pins::*;
 pub use work_outline::*;
 pub use work_outline_execution::*;
 pub use work_outline_instructions::*;
+pub use work_outline_launch::*;
 pub use work_outline_order::*;
 pub use workspace::*;
 

@@ -598,3 +598,74 @@ fn absolute_device_paths() {
     assert!(!is_absolute_device_path("~/a"));
     assert!(!is_absolute_device_path(""));
 }
+
+#[test]
+fn launch_worktree_fill_is_not_an_exception_but_other_changes_are() {
+    let pin = |mut b: RepositoryBinding, path: &str| {
+        b.worktree_id = Some("wt".into());
+        b.worktree_path = Some(path.into());
+        b
+    };
+    // Implicit root: the launch synthesized the root repository's binding.
+    let implicit = config("/ws/ui", vec![]);
+    let filled = config(
+        "/ws/ui/.worktrees/workspace/t",
+        vec![pin(
+            RepositoryBinding {
+                repo_path: "/ws/ui/".into(),
+                ..binding("ui", true)
+            },
+            "/ws/ui/.worktrees/workspace/t",
+        )],
+    );
+    assert!(is_launch_worktree_fill(&implicit, &filled));
+    let mut constrained = filled.clone();
+    constrained.bindings[0].expected_ref = Some("main".into());
+    assert!(!is_launch_worktree_fill(&implicit, &constrained));
+    let mut elsewhere = filled.clone();
+    elsewhere.execution_root = "/somewhere".into();
+    assert!(!is_launch_worktree_fill(&implicit, &elsewhere));
+
+    // Bindings: one unpinned binding gains a pin; the root moves with it
+    // only when the root was that repository's checkout.
+    let multi = config("/ws", vec![binding("ui", true), binding("flagship", false)]);
+    let pinned = config(
+        "/ws",
+        vec![
+            pin(binding("ui", true), "/ws/.worktrees/ui/t"),
+            binding("flagship", false),
+        ],
+    );
+    assert!(is_launch_worktree_fill(&multi, &pinned));
+    let moved = config("/ws/.worktrees/ui/t", pinned.bindings.clone());
+    assert!(!is_launch_worktree_fill(&multi, &moved));
+    let single = config("/ws/ui", vec![binding("ui", true)]);
+    let single_moved = config(
+        "/ws/ui/.worktrees/x",
+        vec![pin(binding("ui", true), "/ws/ui/.worktrees/x")],
+    );
+    assert!(is_launch_worktree_fill(&single, &single_moved));
+    // Two pins, a re-pin, or any other field change are exceptions.
+    let both = config(
+        "/ws",
+        vec![
+            pin(binding("ui", true), "/a"),
+            pin(binding("flagship", false), "/b"),
+        ],
+    );
+    assert!(!is_launch_worktree_fill(&multi, &both));
+    assert!(!is_launch_worktree_fill(
+        &pinned,
+        &config(
+            "/ws",
+            vec![
+                pin(binding("ui", true), "/other"),
+                binding("flagship", false),
+            ]
+        )
+    ));
+    let mut member_changed = pinned.clone();
+    member_changed.bindings[1].member = false;
+    assert!(!is_launch_worktree_fill(&multi, &member_changed));
+    assert!(!is_launch_worktree_fill(&multi, &multi));
+}

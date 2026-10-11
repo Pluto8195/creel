@@ -177,8 +177,9 @@ pub(crate) struct MaterializedExecution {
 /// Configurations and bindings of `space_id`, with the exception rule: a
 /// Chat associated with item X whose captured configuration differs from X's
 /// current resolved configuration (content comparison; a changed source
-/// with equal content is not an exception). Unassociated Chats and Chats
-/// without a binding are never exceptions.
+/// with equal content is not an exception, and neither is a per-Chat
+/// worktree filled in at launch, see `is_launch_worktree_fill`). Unassociated
+/// Chats and Chats without a binding are never exceptions.
 #[allow(clippy::too_many_arguments)] // one pure step of the materializer
 pub(crate) fn materialize_execution(
     space_id: &str,
@@ -241,8 +242,14 @@ pub(crate) fn materialize_execution(
                     &configurations,
                 )
             });
+            // A worktree the launch filled in for an unpinned binding is the
+            // normal per-Chat flow, not an exception.
             view.exception = current.is_some_and(|current| {
-                current.configuration != view.resolved.configuration
+                (current.configuration != view.resolved.configuration
+                    && !zeron_proto::is_launch_worktree_fill(
+                        &current.configuration,
+                        &view.resolved.configuration,
+                    ))
                     || current.invalid_reason.is_some()
             });
             if view.exception {

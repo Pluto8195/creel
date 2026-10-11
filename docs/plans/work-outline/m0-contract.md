@@ -760,3 +760,107 @@ or a gap stage 2 (start workflow, dispatch hookups) must close.
     lib tests on this base (`ChatInstructionState` literals without `selected_revision_integrity`
     at `crates/ui/src/work_outline/instructions.rs:539,548`); unrelated to this work. Every other
     target checks.
+
+## Milestone 3 launch discoveries
+
+Recorded by Milestone 3 stage 2, engine (`crates/proto/src/work_outline_launch.rs`,
+`crates/engine/src/work_outline_launch.rs`, edits to `doc_host.rs`, `sessions.rs`,
+`workspace_host.rs`, `rpc.rs`, `titles.rs`, `chat_workspace_plan.rs`, `execution_scope.rs`,
+`crates/harness/src/mock.rs`). Each item is a reading of an ambiguous rule or a gap.
+
+1. **Dedicated methods, not `WorkOutlineMutate` ops.** `CreateChatForWorkItem` (forwardable,
+   120 s forward deadline) and `ContinueChatForWorkItem` (local). The launch must run on the
+   Space's owner: the receiving engine forwards it there itself (owner unknown or forward failure
+   = `execution-scope:deviceOffline`, owner without `work-outline-launch-v1` =
+   `hostUnsupported`; a typed `work-outline/…` failure from the owner passes through) and never
+   launches locally for another device's Space. Continue queues durably from any device; it
+   validates up front only when this device hosts the Chat (decision 6.4.1), else the host
+   revalidates at drain. New capability `work-outline-launch-v1` is in `CURRENT`.
+2. **Wire shapes.** Params `{workItemId, initialPrompt: {text, attachments?}, config?: ChatConfig,
+   executionOverride?: {configuration}, worktreeChoice?: {"type":"useExisting", worktreeId,
+   worktreePath} | {"type":"createNew", name}, operationId, targetDeviceId?}`; reply `{chatId,
+   messageId, commandId, revisionId?, applicationId?, executionRoot, state: queued | started |
+   rejected, detail?}` (`revisionId` / `applicationId` absent for an instruction-free launch,
+   item 4). Continue `{chatId, prompt: {text, attachments?}, operationId}` → `{chatId,
+   messageId, commandId, state, detail?}`. Failures are `work-outline/<code>: …`; validation
+   failures are `invalid` whose message is the `execution-scope:<code>: …` rejection text,
+   harness capability failures are `capability`. `config` absent = the host's default harness.
+   Attachment refs ride the prompt text with the composer's trailer (`queued_message_prompt`)
+   and `request.attachments`.
+3. **State machine as implemented.** Inputs (everything but `operationId` and
+   `targetDeviceId`) are claimed in the device-local ledger BEFORE any write
+   (`work-outline:launch-in:{inputsHash}:{op}` then `work-outline:launch:{op}`, immediate SQLite
+   inserts), so a replay with other inputs is `operationConflict` even after a pre-write failure.
+   Then: resolve (the captured binding when one exists, else override / item resolution plus the
+   worktree choice), validate on the owner, check `instruction_support` of the harness, create
+   the Chat (`cwd` = validated root; an existing row must match Space and root), assign (only when
+   no assignment row exists; another item or an explicit removal is `operationConflict`, never
+   stomped), capture the binding, `createInstructionRevision` and `applyInstructionRevision`
+   (reason `launch`, turn boundary = derived message id) with the launch `operationId`, then
+   queue `runWithInstructions` with the derived command id (`DocHost::queue_command_with_id`,
+   a no-op for an existing id). Registry sub-steps use no ledger keys; they are replay-safe in
+   the doc layer. A Turn whose latest attempt was rejected or expired before its message landed
+   is re-issued through `retry_delivery`. `state` reads the latest attempt for the derived
+   message id. Crash points are injectable (`WorkItemLaunchService::inject_fault`), and the test
+   retries after each of the seven steps.
+4. **Instruction-free launches.** When the item has no effective instructions, the launch writes
+   no revision or application and queues a plain `Run` (no selection exists, so ingestion pins
+   nothing, and later Turns stay plain), so harnesses without instruction support (Cursor, ACP)
+   launch from work items. Instructions added later reach the Chat through drift + Apply, which
+   rejects on unsupported harnesses as before. The choice is stable across retries: an existing
+   Turn of the operation (plain or `runWithInstructions`) or an existing launch revision fixes
+   it; otherwise the current effective instructions decide. With effective instructions the
+   harness capability is checked FIRST, before the ledger claim and any record or worktree, so
+   a `capability` refusal writes nothing (the same `operationId` may be retried with other
+   inputs).
+5. **Worktree choice.** Applies to the primary binding, else the only binding, else the
+   repository at the execution root (a binding is synthesized from `DescribeExecutionRepository`,
+   `member` and `primary` true). Several bindings without a primary, or a binding that already
+   pins a worktree, is `invalid`. When the root is that repository's checkout the chosen worktree
+   becomes the execution root. `createNew {name}` uses `chat_worktree_target` +
+   `create_chat_worktree` (`.worktrees/<label>/<slug>`, branch = slug, no `zeron/` prefix); the
+   target path is claimed in the ledger (`work-outline:launch-wt:…`) before `git worktree add`, a
+   retry reuses the path only when this operation claimed it and it belongs to the same
+   repository, anything else fails the launch. Exception rule (amends M3 item 5): a captured
+   binding equal to the item's resolution except for exactly that fill (one binding unpinned in
+   the item gains `worktreeId` + `worktreePath`, root unchanged or moved from that repository's
+   checkout to the worktree; or, for an item without bindings, the synthesized root binding) is
+   NOT an exception (`zeron_proto::is_launch_worktree_fill`, used by the materializer). Any other
+   content difference is, so an `executionOverride` that changes content is an exception (an
+   override identical to the item's configuration is not distinguishable and is not). Paths
+   compare as strings, so a symlinked Space path canonicalized by the launch still reads as an
+   exception.
+6. **Dispatch hookups (item 11).** `DocHost::validate_bound_dispatch` (lazy
+   `ExecutionScopeService` from workspace + repos; `set_execution_scope` injects one) runs in
+   `execute_run` right after attachment resolution, before instruction resolution, worktree
+   materialization, `claim_chat`, and the user message (rejections write nothing), and at
+   `dispatch_with_source_context`, which overwrites `request.cwd` with the validated root;
+   `execute_run` then calls the unchecked dispatch to avoid validating twice. A bound request
+   carrying a `WorktreeSpec` is `boundChatRetarget`. `request_from_chat_row` uses the bound root
+   and returns `None` for an empty one. `SessionsEngine::checked_resume_for` replaces
+   `resume_for` in `plan_instructions` and `dispatch_inner`: for bound Chats a stored native
+   session whose cwd differs (canonical comparison) or is empty is `resumeRootMismatch`; no
+   stored session, or the empty-id tombstone, starts fresh. `claim_chat` refuses a bound Chat
+   without a live row. `WorkspaceHost::set_chat_cwd` / `set_chat_target` refuse any cwd other
+   than the bound root (covers `SetChatCwd`, the worktree-spec stamp, and any internal caller);
+   `CreateChatWorktree` refuses a bound Chat before creating anything. Auto-titling skips the
+   `zeron/*` branch rename for bound Chats (the title itself is still set). The MCP tools need no
+   change: `create_chat` cannot retarget an existing Chat (`createChat` early-returns) and a
+   `send` Run's cwd is overwritten at the chokepoint.
+7. **New validation errors** (additive, lenient decode): `resumeRootMismatch {expectedPath,
+   foundPath}` and `boundChatRetarget {chatId, executionRoot, requestedPath}`. When a chosen
+   worktree IS the execution root and is pruned, moved, or missing, validation reports the
+   worktree error instead of the generic `rootMissing`.
+8. **Child Chats.** `Mutate createChat` with `parentChatId` in the parent's Space: the child's
+   cwd defaults to the parent's bound root; after creation the engine assigns the child to the
+   parent's item (if the child has no assignment), captures the parent's resolved binding (only
+   when the child's cwd is that root; an explicit other cwd opts out of the binding), and applies
+   the parent's selected revision with reason `forkInherit`. Ids derive from
+   `derive_id(childId, "fork-inherit")`, so a retried create is a no-op. Failures are logged, not
+   returned (the Chat exists; an error would make an agent retry into a duplicate). Harness-native
+   subagents never create Chat rows (tested with the mock's new `[subagent]` directive).
+9. **Not done.** UI for both methods, expected-hash parameters (`expectedInstructionsHash` /
+   `expectedExecutionConfigHash`; the launch snapshots the item's instructions at revision time),
+   additional-directory harness support, the explicit "start a new Execution Session" remedy for
+   `resumeRootMismatch` (today: start a new Chat), and per-Run agent authorization (Milestone 4). The device-local launch ledger is never pruned
+   (same as M1).
