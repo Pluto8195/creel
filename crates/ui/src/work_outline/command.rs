@@ -1,4 +1,4 @@
-//! Seam 1: the fourteen Work Outline commands and the confirmation request type.
+//! Seam 1: the fifteen Work Outline commands and the confirmation request type.
 //!
 //! Every entry point (command palette, keymap actions, Outline toolbar) forwards
 //! to `Shell::run_work_outline_command`, which routes to
@@ -31,10 +31,12 @@ pub(crate) enum WorkOutlineCommand {
     IndentWorkItem,
     /// Restructuring: after the former parent, one level up.
     OutdentWorkItem,
+    /// Discoverability: the on-demand Outline shortcut reference.
+    ShowOutlineShortcuts,
 }
 
 impl WorkOutlineCommand {
-    pub(crate) const ALL: [WorkOutlineCommand; 14] = [
+    pub(crate) const ALL: [WorkOutlineCommand; 15] = [
         Self::OpenOutline,
         Self::CreateWorkItem,
         Self::CreateChildWorkItem,
@@ -49,6 +51,7 @@ impl WorkOutlineCommand {
         Self::MoveWorkItemDown,
         Self::IndentWorkItem,
         Self::OutdentWorkItem,
+        Self::ShowOutlineShortcuts,
     ];
 
     /// Palette / menu label (sentence-style, matches the existing palette).
@@ -68,6 +71,7 @@ impl WorkOutlineCommand {
             Self::MoveWorkItemDown => "Move Work Item Down",
             Self::IndentWorkItem => "Indent Work Item",
             Self::OutdentWorkItem => "Outdent Work Item",
+            Self::ShowOutlineShortcuts => "Show Outline Shortcuts",
         }
     }
 
@@ -87,6 +91,7 @@ impl WorkOutlineCommand {
             Self::MoveWorkItemDown => icons::ARROW_DOWN,
             Self::IndentWorkItem => icons::ARROW_RIGHT,
             Self::OutdentWorkItem => icons::ARROW_LEFT,
+            Self::ShowOutlineShortcuts => icons::KEYBOARD,
         }
     }
 
@@ -109,6 +114,7 @@ impl WorkOutlineCommand {
             Self::MoveWorkItemDown => "moveWorkItemDown",
             Self::IndentWorkItem => "indentWorkItem",
             Self::OutdentWorkItem => "outdentWorkItem",
+            Self::ShowOutlineShortcuts => "showOutlineShortcuts",
         }
     }
 
@@ -130,6 +136,7 @@ impl WorkOutlineCommand {
             Self::MoveWorkItemDown => ShortcutId::MoveWorkItemDown,
             Self::IndentWorkItem => ShortcutId::IndentWorkItem,
             Self::OutdentWorkItem => ShortcutId::OutdentWorkItem,
+            Self::ShowOutlineShortcuts => ShortcutId::ShowOutlineShortcuts,
         }
     }
 
@@ -248,12 +255,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn fourteen_commands_with_unique_labels_and_ids() {
-        assert_eq!(WorkOutlineCommand::ALL.len(), 14);
+    fn fifteen_commands_with_unique_labels_and_ids() {
+        assert_eq!(WorkOutlineCommand::ALL.len(), 15);
         let ids: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.id()).collect();
         let labels: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.label()).collect();
-        assert_eq!(ids.len(), 14);
-        assert_eq!(labels.len(), 14);
+        assert_eq!(ids.len(), 15);
+        assert_eq!(labels.len(), 15);
         assert!(
             WorkOutlineCommand::ALL
                 .iter()
@@ -285,6 +292,7 @@ mod tests {
                 "moveWorkItemDown",
                 "indentWorkItem",
                 "outdentWorkItem",
+                "showOutlineShortcuts",
             ]
         );
     }

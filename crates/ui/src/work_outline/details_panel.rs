@@ -822,12 +822,14 @@ impl WorkItemDetails {
             .child(SharedString::from(label))
     }
 
+    /// A compact details button. Its hover tooltip (label + live binding)
+    /// comes from [`super::hints::details_button_hint`], keyed by the label.
     fn small_button(
         id: impl Into<gpui::ElementId>,
         label: &'static str,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        div()
+        let button = div()
             .id(id)
             .flex_none()
             .px(px(6.0))
@@ -839,7 +841,11 @@ impl WorkItemDetails {
             .text_size(crate::typography::ui_rems(10.5))
             .text_color(theme.text_muted)
             .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
-            .child(label)
+            .child(label);
+        match super::hints::details_button_hint(label) {
+            Some((tip, key)) => super::hints::WithHint::hint(button, tip, key),
+            None => button,
+        }
     }
 
     fn input_frame(input: &Entity<ComposerInput>, theme: &Theme) -> gpui::Div {

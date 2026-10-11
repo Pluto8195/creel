@@ -87,6 +87,7 @@ use crate::theme::Theme;
 use crate::transcript::Transcript;
 use crate::work_outline::details_panel::{DetailsEvent, WorkItemDetails};
 use crate::work_outline::filter::{self as work_item_filter, WorkItemIndex, WorkItemPathLabel};
+use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::model::{OutlineChat, OutlineOptions, OutlineSpace, row_key};
 use crate::work_outline::outline_view::{OutlineEvent, OutlineInputs, OutlineView};
 use crate::work_outline::store::WorkOutlineSnapshot;
@@ -6304,6 +6305,7 @@ impl Render for Overview {
                             .bg(theme.element_hover.opacity(0.5))
                             .child(
                                 toggle(OverviewMode::List, "List".into(), self.view_mode)
+                                    .hint("List view", HintKey::None)
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
@@ -6313,6 +6315,7 @@ impl Render for Overview {
                             )
                             .child(
                                 toggle(OverviewMode::Canvas, "Canvas".into(), self.view_mode)
+                                    .hint("Canvas view", HintKey::None)
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
@@ -6322,6 +6325,10 @@ impl Render for Overview {
                             )
                             .child(
                                 toggle(OverviewMode::Outline, "Outline".into(), self.view_mode)
+                                    .hint(
+                                        "Outline: work items and their Chats",
+                                        HintKey::Command(WorkOutlineCommand::OpenOutline),
+                                    )
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, window, cx| {
@@ -6411,16 +6418,18 @@ impl Render for Overview {
             .rounded(px(6.0))
             .bg(theme.element_hover.opacity(0.5))
             .child(
-                pill("overview-hide-stale", "Hide stale".into(), self.hide_stale).on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.hide_stale = !this.hide_stale;
-                        this.view_prefs_changed(cx);
-                        this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
-                        cx.notify();
-                    }),
-                ),
+                pill("overview-hide-stale", "Hide stale".into(), self.hide_stale)
+                    .hint("Hide stale chats and completed work items", HintKey::None)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.hide_stale = !this.hide_stale;
+                            this.view_prefs_changed(cx);
+                            this.rows_dirty = true;
+                            this.grouped_layout_cache = None;
+                            cx.notify();
+                        }),
+                    ),
             )
             .child(
                 pill(
@@ -6428,6 +6437,7 @@ impl Render for Overview {
                     "Show archived".into(),
                     self.show_archived,
                 )
+                .hint("Show archived chats and work items, dimmed", HintKey::None)
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
@@ -6442,6 +6452,7 @@ impl Render for Overview {
 
         let repo_filter = self.render_repo_filter(&theme, cx);
         let key_toggle = pill("overview-legend-toggle", "Key".into(), self.legend_open)
+            .hint("Explain the colors and marks", HintKey::None)
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -6692,6 +6703,7 @@ impl Overview {
                 "{} ▾",
                 repo_filter_label(hidden)
             )))
+            .hint("Filter by repository", HintKey::None)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.repo_filter.note_trigger_press()),
@@ -8909,6 +8921,12 @@ impl Overview {
     }
 
     #[cfg(test)]
+    /// The search field's focus handle (tests of context-scoped keys).
+    #[cfg(test)]
+    pub(crate) fn search_focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+        gpui::Focusable::focus_handle(self.search.read(cx), cx)
+    }
+
     pub(crate) fn outline_entity(&self) -> Entity<OutlineView> {
         self.outline.clone()
     }
@@ -9004,6 +9022,11 @@ impl Overview {
         };
         let mut out = vec![
             pill("outline-new-item", "New item".into(), false)
+                .debug_selector(|| "outline-new-item".into())
+                .hint(
+                    "Create a work item",
+                    HintKey::Command(WorkOutlineCommand::CreateWorkItem),
+                )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.run_work_outline_command(WorkOutlineCommand::CreateWorkItem, window, cx);
                 }))
@@ -9024,6 +9047,10 @@ impl Overview {
                 self.required_actions_panel.is_some(),
             )
             .debug_selector(|| "outline-required-actions".into())
+            .hint(
+                "Requests waiting on you",
+                HintKey::Command(WorkOutlineCommand::OpenRequiredActions),
+            )
             .when(open > 0, |el| {
                 el.text_color(crate::work_outline::chips::attention_color(theme))
             })
@@ -9036,6 +9063,34 @@ impl Overview {
             }))
             .into_any_element(),
         );
+        // The shortcut reference, on demand (also `?` in the Outline and the
+        // palette's Show Outline Shortcuts).
+        out.push(
+            div()
+                .id("outline-shortcuts")
+                .debug_selector(|| "outline-shortcuts".into())
+                .aria_label("Shortcuts")
+                .flex()
+                .items_center()
+                .px(px(6.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .bg(theme.element_hover.opacity(0.5))
+                .text_color(theme.text_muted)
+                .hover(|el| el.text_color(theme.text))
+                .child(crate::icons::icon(crate::icons::KEYBOARD).size(px(12.0)))
+                .hint(
+                    "Shortcuts",
+                    HintKey::Outline(crate::shell::work_outline_ui::OutlineNavKey::ShowShortcuts),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(shell) = this.shell.upgrade() {
+                        shell.update(cx, |shell, cx| shell.open_outline_shortcuts(cx));
+                    }
+                }))
+                .into_any_element(),
+        );
         if self.hide_stale {
             let hidden = self.outline.read(cx).hidden_completed();
             let label = if self.outline_show_completed {
@@ -9045,6 +9100,14 @@ impl Overview {
             };
             out.push(
                 pill("outline-show-completed", label, self.outline_show_completed)
+                    .hint(
+                        if self.outline_show_completed {
+                            "Hide completed work items again"
+                        } else {
+                            "Show the completed work items Hide stale hides"
+                        },
+                        HintKey::None,
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.outline_show_completed = !this.outline_show_completed;
                         this.outline_dirty = true;
@@ -9077,6 +9140,7 @@ impl Overview {
                 "{} ▾",
                 work_item_filter::filter_label(&self.work_item_filter)
             )))
+            .hint("Filter by work item", HintKey::None)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.work_item_filter_popup.note_trigger_press()),
@@ -9394,6 +9458,16 @@ impl Overview {
         let chat_hint = self.state.read(cx).selected_chat.clone();
         let result: Result<(), &'static str> = match command {
             WorkOutlineCommand::OpenOutline => Ok(()),
+            // Normally handled by the Shell before routing here; the
+            // reference is a Shell overlay, so ask for it after this update.
+            WorkOutlineCommand::ShowOutlineShortcuts => {
+                if let Some(shell) = self.shell.upgrade() {
+                    cx.defer(move |cx| {
+                        shell.update(cx, |shell, cx| shell.open_outline_shortcuts(cx))
+                    });
+                }
+                Ok(())
+            }
             WorkOutlineCommand::CreateWorkItem => {
                 outline.update(cx, |outline, cx| outline.begin_create(false, window, cx))
             }
@@ -14222,5 +14296,10 @@ mod logic_tests {
     /// drop); shares this module's fixtures.
     mod restructure_tests {
         include!("work_outline/restructure_tests.rs");
+    }
+
+    /// First-use empty state of the Outline; shares this module's fixtures.
+    mod guidance_tests {
+        include!("work_outline/guidance_tests.rs");
     }
 }

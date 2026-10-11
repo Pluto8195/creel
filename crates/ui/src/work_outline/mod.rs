@@ -29,6 +29,7 @@ pub(crate) mod command;
 pub(crate) mod details_panel;
 pub(crate) mod execution;
 pub(crate) mod filter;
+pub(crate) mod hints;
 pub(crate) mod instructions;
 pub(crate) mod launch;
 pub(crate) mod model;
