@@ -399,6 +399,9 @@ struct OverviewRow {
     /// (Work Outline drift). Never feeds `tile_size`: the mark shares the
     /// title line.
     instruction_drift: bool,
+    /// The Chat captured an execution configuration that differs from its
+    /// item's current one (Work Outline exception). Shares the title line.
+    execution_exception: bool,
 }
 
 impl OverviewRow {
@@ -2661,6 +2664,9 @@ pub struct Overview {
     /// Expand Effective Instructions once details for this `(space, item)`
     /// open (palette "Open Effective Instructions" across a discard prompt).
     pending_effective: Option<(String, String)>,
+    /// Tests run without a Shell: Start Chat requests land here.
+    #[cfg(test)]
+    pub(crate) captured_start_chat: Option<(String, String)>,
     _details_events: Option<Subscription>,
     _outline_events: Subscription,
     _observe: Subscription,
@@ -2760,6 +2766,13 @@ impl Overview {
                     cx,
                 );
             }
+            OutlineEvent::StartChat { space_id, item_id } => {
+                if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
         });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
         // loop idiom as the composer's queue-lease renewal. Ends on its own
@@ -2858,6 +2871,8 @@ impl Overview {
             work_item_filter_popup: popover::Popup::default(),
             work_item_details: None,
             pending_effective: None,
+            #[cfg(test)]
+            captured_start_chat: None,
             _details_events: None,
             _outline_events: outline_events,
             _observe: observe,
@@ -3264,6 +3279,7 @@ impl Overview {
             let (user_action_required, user_action_count) =
                 work_item_index.attention_for_chat(&chat.id);
             let instruction_drift = work_item_index.instruction_drift_for_chat(&chat.id);
+            let execution_exception = work_item_index.execution_exception_for_chat(&chat.id);
             all.push(OverviewRow {
                 status,
                 chat,
@@ -3283,6 +3299,7 @@ impl Overview {
                 user_action_required,
                 user_action_count,
                 instruction_drift,
+                execution_exception,
             });
         }
         self.known_repos = known_repos;
@@ -7234,6 +7251,13 @@ impl Overview {
             theme,
             1.0,
         );
+        let exception_mark = row.execution_exception.then(|| {
+            crate::work_outline::chips::execution_exception_mark(
+                format!("overview-row-execution-exception-{chat_id}"),
+                theme,
+                1.0,
+            )
+        });
         let drift_mark = row.instruction_drift.then(|| {
             self.instruction_drift_mark(
                 format!("overview-row-instruction-drift-{chat_id}"),
@@ -7345,6 +7369,7 @@ impl Overview {
                                             .child(title),
                                     )
                                     .children(drift_mark)
+                                    .children(exception_mark)
                                     .when_some(attention, |el, attention| el.child(attention)),
                             )
                             .child(
@@ -7476,6 +7501,13 @@ impl Overview {
             theme,
             zoom,
         );
+        let exception_mark = row.execution_exception.then(|| {
+            crate::work_outline::chips::execution_exception_mark(
+                format!("overview-tile-execution-exception-{}", row.chat.id),
+                theme,
+                zoom,
+            )
+        });
         let drift_mark = row.instruction_drift.then(|| {
             self.instruction_drift_mark(
                 format!("overview-tile-instruction-drift-{}", row.chat.id),
@@ -7576,6 +7608,7 @@ impl Overview {
                             .child(title),
                     )
                     .children(drift_mark)
+                    .children(exception_mark)
                     .when_some(attention, |el, attention| el.child(attention)),
             )
             .child(
@@ -9248,6 +9281,13 @@ impl Overview {
             DetailsEvent::OpenItem { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
             }
+            DetailsEvent::StartChat { space_id, item_id } => {
+                if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
         });
         self.outline
             .update(cx, |outline, cx| outline.select(&key, cx));
@@ -9327,6 +9367,12 @@ impl Overview {
             WorkOutlineCommand::OpenRequiredActions => {
                 Err("Required Actions arrive in a later update")
             }
+            WorkOutlineCommand::StartChatForWorkItem => {
+                match self.outline.read(cx).selected_item() {
+                    Some((space_id, item_id)) => self.start_chat_for_item(space_id, item_id, cx),
+                    None => Err("Select a work item first"),
+                }
+            }
         };
         if let Err(notice) = result {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
@@ -9360,6 +9406,45 @@ impl Overview {
             .filter_map(|row| row.chat())
             .find(|chat| chat.chat.id == chat_id)
             .and_then(|chat| chat.work_item.clone())
+    }
+
+    /// Start Chat in a work item (Outline row action, details button,
+    /// palette). When the item's instructions changed since its last launch,
+    /// Effective Instructions open in details first (the pre-launch check);
+    /// the Shell's Start Chat dialog then shows them expanded too.
+    pub(crate) fn start_chat_for_item(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let snapshot = self
+            .outline_snapshot(&space_id, cx)
+            .ok_or("This project's outline is not loaded")?;
+        let item = snapshot.item(&item_id).ok_or("That work item is gone")?;
+        if item.archived_at.is_some() {
+            return Err("Restore the work item to start a Chat in it");
+        }
+        if crate::work_outline::launch::instructions_changed_since_last_launch(&snapshot, &item_id)
+        {
+            self.open_effective_instructions(space_id.clone(), item_id.clone(), cx);
+        }
+        #[cfg(test)]
+        if self.shell.upgrade().is_none() {
+            self.captured_start_chat = Some((space_id, item_id));
+            return Ok(());
+        }
+        let shell = self
+            .shell
+            .upgrade()
+            .ok_or("Starting a Chat needs the app window")?;
+        // Deferred: the palette path runs inside a Shell update.
+        cx.defer(move |cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_start_chat_or_notice(&space_id, &item_id, cx)
+            });
+        });
+        Ok(())
     }
 
     /// Open Work Item Details for the item with Effective Instructions
@@ -11347,6 +11432,7 @@ mod logic_tests {
             user_action_required: false,
             user_action_count: 0,
             instruction_drift: false,
+            execution_exception: false,
         }
     }
 
@@ -12700,6 +12786,44 @@ mod logic_tests {
         assert_eq!(with, without);
     }
 
+    /// Execution exceptions: only the exception Chat carries the compact
+    /// mark on List rows and Canvas cards, and it never changes a card's
+    /// size; the work-item filter keeps bound Chats with their item.
+    #[gpui::test]
+    fn execution_exception_marks_fit_list_and_canvas_without_changing_tile_size(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        let sizes = |o: &mut Overview, cx: &mut Context<Overview>| {
+            o.rows(cx)
+                .iter()
+                .map(|r| (r.chat.id.clone(), r.tile_size()))
+                .collect::<Vec<_>>()
+        };
+        let marks = |vcx: &mut gpui::VisualTestContext, prefix: &str| {
+            [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
+                .into_iter()
+                .filter(|id| row_bounds(vcx, format!("{prefix}{id}")).is_some())
+                .collect::<Vec<_>>()
+        };
+        let without = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(None), cx);
+            sizes(o, cx)
+        });
+        let with = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(execution_fixture::snapshot("s1"))), cx);
+            sizes(o, cx)
+        });
+        assert_eq!(with, without, "the exception mark never feeds tile size");
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::List, cx));
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-row-execution-exception-"), [CHAT_API]);
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-tile-execution-exception-"), [CHAT_API]);
+    }
+
     /// Drift marks: only drifted Chats carry one, on List rows, Canvas cards,
     /// and the chat-panel header, and the mark never changes a card's size.
     #[gpui::test]
@@ -13354,5 +13478,585 @@ mod logic_tests {
             assert!(d.instruction_draft.is_some(), "the draft survives");
             assert!(d.has_unsaved_draft(cx));
         });
+    }
+
+    // ----------------------------------------------------------------------
+    // Execution configuration (Milestone 3)
+    // ----------------------------------------------------------------------
+
+    use crate::work_outline::execution::fixture as execution_fixture;
+
+    fn identity(repo: &str, path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "repoId": repo, "repoFingerprint": format!("root-{repo}"), "repoPath": path,
+            "checkoutId": format!("checkout:{repo}"), "mainCheckout": true,
+            "worktrees": [
+                {"path": path, "checkoutId": format!("checkout:{repo}"), "branch": "main", "main": true},
+                {"path": format!("{path}-wt"), "checkoutId": format!("checkout:{repo}-wt"),
+                 "branch": "feature", "main": false},
+            ],
+        })
+    }
+
+    /// Mutations answer `{}`; `DescribeExecutionRepository` knows the fixture
+    /// repositories and refuses anything else as non-Git; validation answers
+    /// with `validate`.
+    fn execution_reply(
+        validate: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+    ) -> impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    + Send
+    + Sync
+    + 'static {
+        move |params| {
+            if params.get("op").is_some() {
+                return Ok(serde_json::json!({}));
+            }
+            if let Some(path) = params.get("path").and_then(|p| p.as_str()) {
+                return match path {
+                    "/work/alpha/ui" => Ok(identity("repo:ui", path)),
+                    "/work/alpha/flagship" => Ok(identity("repo:flagship", path)),
+                    other => Err(zeron_rpc::RpcError::Failed(format!(
+                        "{other} is not a Git repository"
+                    ))),
+                };
+            }
+            Ok(validate.lock().unwrap().clone())
+        }
+    }
+
+    fn validate_ok() -> std::sync::Arc<std::sync::Mutex<serde_json::Value>> {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            serde_json::to_value(execution_fixture::launch_validated()).unwrap(),
+        ))
+    }
+
+    fn mutations(calls: &OutlineCalls) -> Vec<serde_json::Value> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.get("op").is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// The Execution section is collapsed until opened, shows the resolved
+    /// configuration, offers Reset only for an item with its own row, and
+    /// lists exception Chats (with the compact marker on the header and on
+    /// the Outline row).
+    #[gpui::test]
+    fn execution_section_shows_resolution_reset_and_exceptions(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        // Outline rows: only API (one exception) carries the marker.
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-execution-exceptions-{}", row_key::item("s1", API))
+            )
+            .is_some()
+        );
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-execution-exceptions-{}", row_key::item("s1", UI))
+            )
+            .is_none()
+        );
+
+        let details = open_details(&overview, vcx, API);
+        assert!(vcx.debug_bounds("work-item-execution").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exceptions-marker")
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds("work-item-execution-source").is_none(),
+            "collapsed"
+        );
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-execution-source").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-repo-0").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-reset").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exception-0")
+                .is_some()
+        );
+
+        // UI inherits from Launch: no Reset, no exceptions.
+        let details = open_details(&overview, vcx, UI);
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-execution-repo-1").is_some());
+        assert!(vcx.debug_bounds("work-item-execution-reset").is_none());
+        assert!(
+            vcx.debug_bounds("work-item-execution-exceptions-marker")
+                .is_none()
+        );
+        assert!(vcx.debug_bounds("work-item-execution-exceptions").is_none());
+    }
+
+    /// Edit form: explicit Save/Cancel, the discard policy, the drift
+    /// confirmation for item Chats, and the written configuration.
+    #[gpui::test]
+    fn execution_edits_save_explicitly_and_confirm_drift(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, UI);
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        vcx.run_until_parked();
+        draw(vcx);
+        // Prefilled with the inherited configuration; worktree choices were
+        // described on the owning device.
+        let described: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.get("path").and_then(|p| p.as_str()).map(str::to_owned))
+            .collect();
+        assert_eq!(described, ["/work/alpha/ui", "/work/alpha/flagship"]);
+        // The Space lives on device `d`, not this app's engine: Describe is
+        // routed there (only the owner can fingerprint its repositories).
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| c["targetDeviceId"] == "d")
+        );
+        assert!(vcx.debug_bounds("work-item-execution-editor").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-execution-worktree-1-2")
+                .is_some(),
+            "linked worktree offered"
+        );
+        details.read_with(vcx, |d, cx| {
+            assert_eq!(d.execution_draft.as_ref().unwrap().bindings.len(), 2);
+            assert!(!d.execution_draft_dirty(cx));
+        });
+
+        // Cancel discards; nothing written, nothing asked.
+        let cancel = vcx
+            .debug_bounds("work-item-execution-cancel")
+            .unwrap()
+            .center();
+        vcx.simulate_click(cancel, gpui::Modifiers::default());
+        draw(vcx);
+        details.read_with(vcx, |d, _| {
+            assert!(d.execution_draft.is_none());
+            assert!(d.captured_confirm.is_none());
+        });
+        assert!(mutations(&calls).is_empty());
+
+        // Edit: flagship becomes primary (radio: ui stops being primary) and
+        // pins its linked worktree.
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        vcx.run_until_parked();
+        draw(vcx);
+        let primary = vcx
+            .debug_bounds("work-item-execution-primary-1")
+            .unwrap()
+            .center();
+        vcx.simulate_click(primary, gpui::Modifiers::default());
+        draw(vcx);
+        let worktree = vcx
+            .debug_bounds("work-item-execution-worktree-1-2")
+            .unwrap()
+            .center();
+        vcx.simulate_click(worktree, gpui::Modifiers::default());
+        draw(vcx);
+        details.read_with(vcx, |d, cx| {
+            let draft = d.execution_draft.as_ref().unwrap();
+            let primaries: Vec<bool> = draft.bindings.iter().map(|b| b.binding.primary).collect();
+            assert_eq!(primaries, [false, true]);
+            assert_eq!(
+                draft.bindings[1].binding.worktree_path.as_deref(),
+                Some("/work/alpha/flagship-wt")
+            );
+            assert!(d.execution_draft_dirty(cx));
+        });
+
+        // Closing with the dirty draft asks; Keep Editing keeps it.
+        details.update(vcx, |d, cx| d.request_close(cx));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("asks");
+        assert_eq!(
+            request.body.as_ref(),
+            "Your execution configuration edits have not been saved."
+        );
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        vcx.run_until_parked();
+        assert!(details.read_with(vcx, |d, cx| d.has_unsaved_draft(cx)));
+        assert!(mutations(&calls).is_empty(), "blur and close never save");
+
+        // Save: chat-ui runs with UI's current configuration, so the drift
+        // confirmation states it keeps its captured configuration.
+        let save = vcx
+            .debug_bounds("work-item-execution-save")
+            .unwrap()
+            .center();
+        vcx.simulate_click(save, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("drift confirmation");
+        assert_eq!(
+            request.title.as_ref(),
+            "Change the execution configuration?"
+        );
+        assert!(request.body.contains("keep their captured configuration"));
+        assert!(request.body.contains("exceptions"));
+        assert!(mutations(&calls).is_empty(), "nothing before confirming");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["op"], "configureExecution");
+        assert_eq!(
+            written[0]["scope"],
+            serde_json::json!({"type": "workItem", "workItemId": UI})
+        );
+        let bindings = written[0]["configuration"]["bindings"].as_array().unwrap();
+        assert_eq!(bindings[1]["primary"], true);
+        assert_eq!(bindings[1]["worktreeId"], "checkout:repo:flagship-wt");
+        assert_eq!(bindings[0]["primary"], false);
+        details.read_with(vcx, |d, _| assert!(d.execution_draft.is_none()));
+    }
+
+    /// Repositories are added through the folder picker and described on the
+    /// owning device; a non-Git folder is refused. No bound Chats: no
+    /// confirmation.
+    #[gpui::test]
+    fn execution_repositories_are_described_and_non_git_folders_refused(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, HOUSEKEEPING);
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        draw(vcx);
+        details.read_with(vcx, |d, cx| {
+            assert!(d.execution_draft.as_ref().unwrap().bindings.is_empty());
+            assert_eq!(
+                d.execution_draft_configuration(cx).unwrap().execution_root,
+                "/work/alpha"
+            );
+        });
+        let pick = |vcx: &mut gpui::VisualTestContext, selector: &'static str, path: &str| {
+            let button = vcx.debug_bounds(selector).unwrap().center();
+            vcx.simulate_click(button, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let request = details
+                .update(vcx, |d, _| d.captured_folder_pick.take())
+                .expect("folder picker");
+            assert_eq!(request.device_id, "d");
+            let path = path.to_owned();
+            vcx.update(|_, cx| (request.on_pick)(path, cx));
+            vcx.run_until_parked();
+            draw(vcx);
+        };
+        pick(vcx, "work-item-execution-add-repo", "/work/alpha/docs");
+        details.read_with(vcx, |d, _| {
+            assert!(d.execution_draft.as_ref().unwrap().bindings.is_empty());
+            assert!(
+                d.execution_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("not a Git repository")
+            );
+        });
+        pick(vcx, "work-item-execution-add-repo", "/work/alpha/ui");
+        pick(vcx, "work-item-execution-choose-root", "/work/alpha/ui");
+        details.read_with(vcx, |d, cx| {
+            let draft = d.execution_draft.as_ref().unwrap();
+            assert_eq!(draft.bindings.len(), 1);
+            assert_eq!(draft.bindings[0].binding.repo_fingerprint, "root-repo:ui");
+            assert_eq!(
+                d.execution_draft_configuration(cx).unwrap().execution_root,
+                "/work/alpha/ui"
+            );
+        });
+        let save = vcx
+            .debug_bounds("work-item-execution-save")
+            .unwrap()
+            .center();
+        vcx.simulate_click(save, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        details.read_with(vcx, |d, _| assert!(d.captured_confirm.is_none()));
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            written[0]["configuration"]["executionRoot"],
+            "/work/alpha/ui"
+        );
+        assert_eq!(
+            written[0]["configuration"]["bindings"][0]["repoId"],
+            "repo:ui"
+        );
+    }
+
+    /// Validate runs on the owning device (the engine forwards; no target
+    /// device here) and shows each error's message and remediation, with
+    /// offline and unsupported owners as their own states.
+    #[gpui::test]
+    fn execution_validation_shows_remediation_and_distinct_owner_states(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let validate = validate_ok();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate.clone()),
+        );
+        let details = open_details(&overview, vcx, API);
+        details.update(vcx, |d, cx| {
+            d.execution_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        let cases = [
+            (
+                zeron_proto::ExecutionValidationError::DeviceOffline {
+                    device_id: "d".into(),
+                    detail: String::new(),
+                },
+                "work-item-execution-validation-device-offline",
+            ),
+            (
+                zeron_proto::ExecutionValidationError::HostUnsupported {
+                    device_id: "d".into(),
+                    capability: "work-outline-multi-repo-v1".into(),
+                },
+                "work-item-execution-validation-host-unsupported",
+            ),
+            (
+                zeron_proto::ExecutionValidationError::WorktreeMoved {
+                    repo_id: "repo:flagship".into(),
+                    worktree_id: "wt".into(),
+                    expected_path: "/a".into(),
+                    found_path: "/b".into(),
+                },
+                "work-item-execution-validation-blocked",
+            ),
+        ];
+        for (error, selector) in cases {
+            *validate.lock().unwrap() = serde_json::to_value(
+                zeron_proto::ValidateExecutionConfigurationReply::from_result(
+                    None,
+                    Err(vec![error]),
+                ),
+            )
+            .unwrap();
+            let button = vcx
+                .debug_bounds("work-item-execution-validate")
+                .unwrap()
+                .center();
+            vcx.simulate_click(button, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            draw(vcx);
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+            assert!(vcx.debug_bounds("work-item-execution-issue-0").is_some());
+        }
+        let last = calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last["scope"],
+            serde_json::json!({"type": "workItem", "workItemId": API})
+        );
+        assert!(last.get("targetDeviceId").is_none());
+        details.read_with(vcx, |d, _| {
+            let crate::work_outline::execution::ValidationState::Done(reply) =
+                &d.execution_validation
+            else {
+                panic!("validated");
+            };
+            let issue = &crate::work_outline::execution::validation_issues(reply)[0];
+            assert!(issue.message.contains("moved from /a to /b"));
+            assert!(issue.remediation.contains("Update the worktree path"));
+        });
+        // Ready: no issues.
+        *validate.lock().unwrap() =
+            serde_json::to_value(execution_fixture::launch_validated()).unwrap();
+        let button = vcx
+            .debug_bounds("work-item-execution-validate")
+            .unwrap()
+            .center();
+        vcx.simulate_click(button, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("work-item-execution-validation-ready")
+                .is_some()
+        );
+        assert!(vcx.debug_bounds("work-item-execution-issue-0").is_none());
+
+        // A dirty draft validates the draft (as a resolved snapshot).
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        details.update(vcx, |d, cx| d.set_execution_root("/work/alpha", cx));
+        details.update(vcx, |d, cx| d.validate_execution(cx));
+        vcx.run_until_parked();
+        let last = calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last["resolved"]["configuration"]["executionRoot"],
+            "/work/alpha"
+        );
+        assert_eq!(last["resolved"]["deviceId"], "d");
+        assert!(last.get("scope").is_none());
+    }
+
+    /// Reset to inherited confirms when bound Chats would differ and writes
+    /// a null configuration; the Space-root variant edits the Space default.
+    #[gpui::test]
+    fn execution_reset_and_space_default(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            execution_fixture::snapshot("s1"),
+            execution_reply(validate_ok()),
+        );
+        let details = open_details(&overview, vcx, API);
+        details.update(vcx, |d, cx| d.reset_execution(cx));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("chat-auth would differ");
+        assert_eq!(request.confirm_label.as_ref(), "Reset");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 1);
+        assert!(written[0]["configuration"].is_null());
+
+        let details = open_details(&overview, vcx, "");
+        assert!(details.read_with(vcx, |d, _| d.is_space_root()));
+        assert!(vcx.debug_bounds("work-item-execution").is_some());
+        vcx.update(|window, cx| details.update(cx, |d, cx| d.begin_execution_draft(window, cx)));
+        details.update(vcx, |d, cx| {
+            d.set_execution_root("/work/alpha/ui", cx);
+            d.save_execution(cx);
+        });
+        vcx.run_until_parked();
+        // Housekeeping (implicit) and Launch? Only Housekeeping changes, and
+        // it has no Chats: no confirmation.
+        details.read_with(vcx, |d, _| assert!(d.captured_confirm.is_none()));
+        let written = mutations(&calls);
+        assert_eq!(written.len(), 2);
+        assert_eq!(
+            written[1]["scope"],
+            serde_json::json!({"type": "space", "spaceId": "s1"})
+        );
+    }
+
+    /// Start Chat entry points: the Outline row action on the selected item,
+    /// the Work Item Details button, and the palette command (which needs a
+    /// selected item). Changed instructions open Effective Instructions in
+    /// details first.
+    #[gpui::test]
+    fn start_chat_entry_points_reach_the_shell_and_review_changed_instructions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = execution_fixture::snapshot("s1");
+        let instructions = instruction_fixture::snapshot("s1");
+        snapshot.instructions = instructions.instructions;
+        snapshot.chat_instruction_states = instructions.chat_instruction_states;
+        snapshot.revisions = instructions.revisions;
+        let (overview, _calls, vcx) =
+            instruction_overview(cx, dir.path(), snapshot, execution_reply(validate_ok()));
+
+        // Palette without a selection: a notice, no request.
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::StartChatForWorkItem, window, cx)
+            })
+        });
+        draw(vcx);
+        assert!(overview.read_with(vcx, |o, _| o.captured_start_chat.is_none()));
+
+        // Outline row action on the selected item (Auth: instructions
+        // current, so details stay closed).
+        let auth_key = row_key::item("s1", API_AUTH);
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.select(&auth_key, cx))
+        });
+        draw(vcx);
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-start-chat-{}", row_key::item("s1", API))
+            )
+            .is_none()
+        );
+        let action = row_bounds(vcx, format!("outline-start-chat-{auth_key}"))
+            .unwrap()
+            .center();
+        vcx.simulate_click(action, gpui::Modifiers::default());
+        draw(vcx);
+        overview.update(vcx, |o, _| {
+            assert_eq!(
+                o.captured_start_chat.take(),
+                Some(("s1".to_string(), API_AUTH.to_string()))
+            );
+            assert!(o.work_item_details.is_none());
+        });
+
+        // Palette with API selected: API's instructions changed since its
+        // last launch, so Effective Instructions open in details first.
+        let api_key = row_key::item("s1", API);
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.select(&api_key, cx))
+        });
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(WorkOutlineCommand::StartChatForWorkItem, window, cx)
+            })
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        let details = overview.update(vcx, |o, _| {
+            assert_eq!(
+                o.captured_start_chat.take(),
+                Some(("s1".to_string(), API.to_string()))
+            );
+            o.work_item_details
+                .clone()
+                .expect("Effective Instructions opened")
+        });
+        assert!(details.read_with(vcx, |d, _| d.effective_open));
+
+        // The details button.
+        let button = vcx.debug_bounds("work-item-start-chat").unwrap().center();
+        vcx.simulate_click(button, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            overview.update(vcx, |o, _| o.captured_start_chat.take()),
+            Some(("s1".to_string(), API.to_string()))
+        );
     }
 }

@@ -11,18 +11,20 @@
 //!   token is kept. An optional absolute expiry backs up the lease.
 //! - [`AgentToolsService`]: `AgentAuthenticate` / `AgentToolCall`. Every call
 //!   authenticates by token; the originating Chat is the token's, never a
-//!   client-supplied id. Mutations run as `Actor { kind: agent, chatId }`,
-//!   pass the agent policy ([`AgentToolsService::authorize_agent`]), and
-//!   derive their `operationId` from `(token Chat, idempotencyKey)`, so a
-//!   retry with the same key dedupes across Runs and processes.
+//!   client-supplied id. Mutations run through
+//!   `WorkOutlineService::mutate_as` with `agent_actor(chatId)`, which
+//!   enforces the shared agent policy (`authorize_agent`) under the registry
+//!   lock, and derive their `operationId` from `(token Chat, idempotencyKey)`,
+//!   so a retry with the same key dedupes across Runs and processes.
 //!
-//! The policy mirrors `WorkOutlineService::authorize_agent` (owned by the
-//! user-actions branch) for the operations that exist on this branch:
-//! read the Chat's item and effective instructions; create a child under the
-//! Chat's item or a descendant; associate only the calling Chat; set status
-//! `active` / `completed` on the Chat's item or a descendant (completing an
-//! item with open requests is refused, never auto-resolved). Everything else
-//! is refused.
+//! The policy (contract section 8): read the Chat's item and effective
+//! instructions; create a child under the Chat's item or a descendant;
+//! associate only the calling Chat; set status `active` / `completed` on the
+//! Chat's item or a descendant (completing an item with open requests is
+//! `openUserActionRequests`, never auto-resolved); create requests on the
+//! Chat's item with the Chat as origin; resolve requests the Chat raised;
+//! propose instructions for the item, its parent, or the Space root.
+//! Everything else is `unauthorized`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,16 +37,17 @@ use sha2::{Digest, Sha256};
 use zeron_doc::SessionCommandPayload;
 use zeron_harness::AgentToolsInjection;
 use zeron_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolErrorCode, tools};
-use zeron_proto::work_outline::{WorkOutlineErrorCode, derive_id, roles};
+use zeron_proto::work_outline::{derive_id, roles};
 use zeron_proto::{
-    AssignChatToWorkItemParams, CreateWorkItemParams, UpdateWorkItemParams, WorkItemChanges,
-    WorkItemChatAssignmentState, WorkItemEffectiveStatus, WorkItemStatus, WorkItemView,
-    WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError, WorkOutlineMutateReply,
-    WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
+    AssignChatToWorkItemParams, CreateUserActionRequestParams, CreateWorkItemParams,
+    InstructionProposalOrigin, InstructionProposalTarget, ProposeWorkItemInstructionParams,
+    ResolveUserActionRequestParams, UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges,
+    WorkItemChatAssignmentState, WorkItemStatus, WorkItemView, WorkOutlineError,
+    WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
 };
 
 use crate::doc_host::DocHost;
-use crate::work_outline::{ledger_inputs_key, ledger_operation_key, writes_disabled};
+use crate::work_outline::WorkOutlineService;
 use crate::workspace_host::WorkspaceHost;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -363,6 +366,8 @@ struct CreateUserActionRequestArgs {
     #[serde(default)]
     dedupe_key: Option<String>,
     #[serde(default)]
+    message_id: Option<String>,
+    #[serde(default)]
     tool_call_id: Option<String>,
 }
 
@@ -381,6 +386,8 @@ struct ProposeInstructionArgs {
     #[serde(default)]
     target: Option<String>,
     text: String,
+    #[serde(default)]
+    message_id: Option<String>,
     #[serde(default)]
     tool_call_id: Option<String>,
 }
@@ -402,7 +409,8 @@ fn parse_args<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<T, Ag
         .map_err(|e| AgentToolError::invalid(format!("invalid arguments: {e}")))
 }
 
-/// The authenticated caller plus its Space's current outline.
+/// The authenticated caller plus its Space's current outline (for argument
+/// defaults and the read view; authorization is the shared policy's).
 struct CallContext {
     grant: AgentGrant,
     snapshot: WorkOutlineSnapshot,
@@ -411,7 +419,21 @@ struct CallContext {
 impl CallContext {
     /// The work item the calling Chat is associated with, if any.
     fn current_item(&self) -> Option<&WorkItemView> {
-        current_item_of(&self.snapshot, &self.grant.chat_id)
+        let assignment = self.snapshot.assignments.iter().find(|assignment| {
+            assignment.chat_id == self.grant.chat_id
+                && assignment.state == WorkItemChatAssignmentState::Associated
+        })?;
+        self.snapshot.item(assignment.work_item_id.as_deref()?)
+    }
+
+    /// The Chat's item, or `unauthorized` naming what the agent tried.
+    fn require_item(&self, what: &str) -> Result<&WorkItemView, AgentToolError> {
+        self.current_item().ok_or_else(|| {
+            WorkOutlineError::unauthorized(format!(
+                "This Chat is not associated with a work item; associate it before {what}"
+            ))
+            .into()
+        })
     }
 
     fn operation_id(&self, arguments: &Value) -> Result<String, AgentToolError> {
@@ -420,76 +442,32 @@ impl CallContext {
             .map_err(AgentToolError::invalid)?;
         Ok(agent_tools::operation_id(&self.grant.chat_id, key))
     }
-
-    fn actor(&self) -> WorkOutlineActor {
-        WorkOutlineActor {
-            kind: WorkOutlineActorKind::Agent,
-            device_id: self.grant.device_id.clone(),
-            chat_id: Some(self.grant.chat_id.clone()),
-            message_id: None,
-        }
-    }
 }
 
-fn current_item_of<'a>(
-    snapshot: &'a WorkOutlineSnapshot,
-    chat_id: &str,
-) -> Option<&'a WorkItemView> {
-    let assignment = snapshot.assignments.iter().find(|assignment| {
-        assignment.chat_id == chat_id && assignment.state == WorkItemChatAssignmentState::Associated
-    })?;
-    snapshot.item(assignment.work_item_id.as_deref()?)
-}
-
-/// Whether `candidate` is `root` or one of its descendants (repaired tree).
-fn within_subtree(snapshot: &WorkOutlineSnapshot, root: &str, candidate: &str) -> bool {
-    let mut cursor = Some(candidate.to_owned());
-    let mut steps = 0usize;
-    while let Some(id) = cursor {
-        if id == root {
-            return true;
-        }
-        steps += 1;
-        if steps > snapshot.items.len() + 1 {
-            return false;
-        }
-        cursor = snapshot
-            .item(&id)
-            .and_then(|item| item.parent_work_item_id.clone());
-    }
-    false
-}
-
-fn denied(message: impl Into<String>) -> WorkOutlineError {
-    WorkOutlineError::new(WorkOutlineErrorCode::Invalid, message)
-}
-
-fn has_open_requests(item: &WorkItemView) -> bool {
-    item.rollup.unresolved_user_action_count > 0
-        || item.effective_status == WorkItemEffectiveStatus::UserActionRequired
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|v| !v.trim().is_empty())
 }
 
 /// The engine's agent RPC surface (one per `EngineRpc`).
 pub struct AgentToolsService {
     tokens: Arc<AgentTokens>,
     workspace: WorkspaceHost,
+    work_outline: Arc<WorkOutlineService>,
     doc_host: Option<DocHost>,
-    /// Serializes replay-check-then-apply so two concurrent retries of one
-    /// key cannot both pass the ledger check.
-    gate: Mutex<()>,
 }
 
 impl AgentToolsService {
     pub fn new(
         tokens: Arc<AgentTokens>,
         workspace: WorkspaceHost,
+        work_outline: Arc<WorkOutlineService>,
         doc_host: Option<DocHost>,
     ) -> Self {
         Self {
             tokens,
             workspace,
+            work_outline,
             doc_host,
-            gate: Mutex::new(()),
         }
     }
 
@@ -515,8 +493,7 @@ impl AgentToolsService {
         if chat.space_id.as_deref() != Some(grant.space_id.as_str()) {
             return Err(AgentToolError::unauthenticated());
         }
-        let inputs = self.workspace.work_outline_inputs(&grant.space_id);
-        let snapshot = zeron_doc::materialize_work_outline(&grant.space_id, &inputs);
+        let snapshot = self.work_outline.snapshot(&grant.space_id);
         Ok(CallContext { grant, snapshot })
     }
 
@@ -544,111 +521,68 @@ impl AgentToolsService {
         }
     }
 
-    /// The agent policy for one Work Outline mutation by `actor_chat_id`.
-    /// Mirrors `WorkOutlineService::authorize_agent`; denials are `invalid`
-    /// with a message naming the rule.
-    pub fn authorize_agent(
-        &self,
-        actor_chat_id: &str,
-        mutation: &WorkOutlineMutation,
-    ) -> Result<(), WorkOutlineError> {
-        let space_id = self
-            .workspace
-            .chat(actor_chat_id)
-            .ok()
-            .flatten()
-            .and_then(|chat| chat.space_id)
-            .ok_or_else(|| {
-                WorkOutlineError::new(
-                    WorkOutlineErrorCode::Projectless,
-                    "Agent tools need a Chat in a Space",
-                )
-            })?;
-        let inputs = self.workspace.work_outline_inputs(&space_id);
-        let snapshot = zeron_doc::materialize_work_outline(&space_id, &inputs);
-        authorize_agent_in(&snapshot, actor_chat_id, mutation)
-    }
-
-    /// Apply one authorized mutation as the agent: kill switch, durable
-    /// replay ledger (same keys as `WorkOutlineMutate`), one registry write.
+    /// Apply one mutation as the token's Chat: `mutate_as` with the agent
+    /// actor runs the shared policy under the registry lock, then the kill
+    /// switch, the durable replay ledger, and one registry write.
     fn apply(
         &self,
         context: &CallContext,
         mutation: &WorkOutlineMutation,
     ) -> Result<WorkOutlineMutateReply, AgentToolError> {
-        authorize_agent_in(&context.snapshot, &context.grant.chat_id, mutation)?;
-        if writes_disabled() {
-            return Err(WorkOutlineError::new(
-                WorkOutlineErrorCode::WritesDisabled,
-                "Work Outline changes are turned off on this device",
-            )
-            .into());
-        }
-        let operation_id = mutation.operation_id().to_owned();
-        let hash = zeron_doc::registry::work_outline::inputs_hash(mutation);
-        let _gate = lock(&self.gate);
-        let operation_key = ledger_operation_key(&operation_id);
-        let inputs_key = ledger_inputs_key(&hash, &operation_id);
-        if self.workspace.ledger_holds(&operation_key) {
-            if !self.workspace.ledger_holds(&inputs_key) {
-                return Err(WorkOutlineError::new(
-                    WorkOutlineErrorCode::OperationConflict,
-                    "idempotencyKey was already used by this Chat for a different change",
-                )
-                .into());
-            }
-            return Ok(replay_reply(mutation));
-        }
-        Ok(self.workspace.work_outline_mutate(
-            mutation,
-            &context.actor(),
-            &[operation_key, inputs_key],
-        )?)
+        let actor = self.work_outline.agent_actor(&context.grant.chat_id, None);
+        Ok(self.work_outline.mutate_as(mutation, &actor)?)
     }
 
     // ---- tools ---------------------------------------------------------------
 
     fn read_current(&self, context: &CallContext) -> Value {
-        let item = context.current_item();
-        let path: Vec<Value> = item
-            .map(|item| {
-                let mut chain = Vec::new();
-                let mut cursor = Some(item.id.clone());
-                while let Some(id) = cursor {
-                    let Some(node) = context.snapshot.item(&id) else {
-                        break;
-                    };
-                    chain.push(json!({ "id": node.id, "title": node.title }));
-                    if chain.len() > context.snapshot.items.len() {
-                        break;
-                    }
-                    cursor = node.parent_work_item_id.clone();
-                }
-                chain.reverse();
-                chain
-            })
-            .unwrap_or_default();
-        let children: Vec<Value> = item
-            .map(|item| {
-                item.child_ids
-                    .iter()
-                    .filter_map(|id| context.snapshot.item(id))
-                    .filter(|child| child.archived_at.is_none())
-                    .map(|child| {
-                        json!({
-                            "id": child.id,
-                            "title": child.title,
-                            "status": child.status,
-                            "effectiveStatus": child.effective_status,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        json!({
+        let unassociated = json!({
             "chatId": context.grant.chat_id,
             "spaceId": context.grant.space_id,
-            "workItem": item.map(|item| json!({
+            "workItem": null,
+            "effectiveInstructions": null,
+            "openUserActionRequests": [],
+            "note": "This Chat is not associated with a work item. Use \
+                     work_outline_associate_current_chat to associate it with one of this \
+                     Space's items before using the other Work Outline tools.",
+        });
+        // The shared read model: the item, its effective instructions, and
+        // the open requests this Chat raised.
+        let Ok(agent) = self.work_outline.agent_context(&context.grant.chat_id) else {
+            return unassociated;
+        };
+        let item = &agent.work_item;
+        let mut path = Vec::new();
+        let mut cursor = Some(item.id.clone());
+        while let Some(id) = cursor {
+            let Some(node) = context.snapshot.item(&id) else {
+                break;
+            };
+            path.push(json!({ "id": node.id, "title": node.title }));
+            if path.len() > context.snapshot.items.len() {
+                break;
+            }
+            cursor = node.parent_work_item_id.clone();
+        }
+        path.reverse();
+        let children: Vec<Value> = item
+            .child_ids
+            .iter()
+            .filter_map(|id| context.snapshot.item(id))
+            .filter(|child| child.archived_at.is_none())
+            .map(|child| {
+                json!({
+                    "id": child.id,
+                    "title": child.title,
+                    "status": child.status,
+                    "effectiveStatus": child.effective_status,
+                })
+            })
+            .collect();
+        json!({
+            "chatId": agent.chat_id,
+            "spaceId": agent.space_id,
+            "workItem": {
                 "id": item.id,
                 "title": item.title,
                 "description": item.description,
@@ -658,20 +592,13 @@ impl AgentToolsService {
                 "archived": item.archived_at.is_some(),
                 "path": path,
                 "children": children,
-            })),
-            "effectiveInstructions": item.map(|item| {
-                serde_json::to_value(context.snapshot.effective_instructions(&item.id))
-                    .unwrap_or(Value::Null)
-            }),
-            "note": if item.is_some() {
-                "You may create children under this item or its descendants, set their status \
-                 to active or completed, ask the user for an action on this item, and propose \
-                 instructions for it, its parent, or the Space root."
-            } else {
-                "This Chat is not associated with a work item. Use \
-                 work_outline_associate_current_chat to associate it with one of this Space's \
-                 items before using the other Work Outline tools."
             },
+            "effectiveInstructions": agent.effective_instructions,
+            "openUserActionRequests": agent.open_user_action_requests,
+            "note": "You may create children under this item or its descendants, set their \
+                     status to active or completed, ask the user for an action on this item, \
+                     resolve requests you raised, and propose instructions for it, its parent, \
+                     or the Space root.",
         })
     }
 
@@ -691,7 +618,7 @@ impl AgentToolsService {
                 )));
             }
         };
-        let parent = match args.parent_work_item_id.filter(|id| !id.trim().is_empty()) {
+        let parent = match non_empty(args.parent_work_item_id) {
             Some(id) => Some(id),
             None => context.current_item().map(|item| item.id.clone()),
         };
@@ -700,7 +627,7 @@ impl AgentToolsService {
             parent_work_item_id: parent.clone(),
             placement: args.placement.unwrap_or_default(),
             title: args.title,
-            description: args.description.filter(|d| !d.trim().is_empty()),
+            description: non_empty(args.description),
             status,
             operation_id,
         });
@@ -744,18 +671,12 @@ impl AgentToolsService {
                 )));
             }
         };
-        let target = match args.work_item_id.filter(|id| !id.trim().is_empty()) {
+        let target = match non_empty(args.work_item_id) {
             Some(id) => id,
-            None => context
-                .current_item()
-                .map(|item| item.id.clone())
-                .ok_or_else(|| {
-                    AgentToolError::from(denied(
-                        "This Chat is not associated with a work item; pass workItemId or \
-                         associate the Chat first",
-                    ))
-                })?,
+            None => context.require_item("changing status")?.id.clone(),
         };
+        // `resolveOpenRequests` stays false: completing an item with open
+        // requests fails (`openUserActionRequests`), never auto-resolves.
         let mutation = WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
             work_item_id: target.clone(),
             changes: WorkItemChanges {
@@ -779,24 +700,28 @@ impl AgentToolsService {
             return Err(AgentToolError::invalid("request is empty"));
         }
         // Requests are created on the Chat's own item, with the Chat as origin.
-        let item = context.current_item().ok_or_else(|| {
-            AgentToolError::from(denied(
-                "This Chat is not associated with a work item; associate it before asking the \
-                 user for an action",
-            ))
-        })?;
-        pending_operation(
-            tools::CREATE_USER_ACTION_REQUEST,
-            json!({
-                "workItemId": item.id,
-                "originChatId": context.grant.chat_id,
-                "request": args.request,
-                "detail": args.detail,
-                "dedupeKey": args.dedupe_key,
-                "toolCallId": args.tool_call_id,
-                "operationId": operation_id,
-            }),
-        )
+        let work_item_id = context
+            .require_item("asking the user for an action")?
+            .id
+            .clone();
+        let mutation =
+            WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
+                work_item_id: work_item_id.clone(),
+                origin: UserActionRequestOrigin {
+                    chat_id: context.grant.chat_id.clone(),
+                    message_id: non_empty(args.message_id),
+                    tool_call_id: non_empty(args.tool_call_id),
+                },
+                text: args.request,
+                info: non_empty(args.detail),
+                dedupe_key: non_empty(args.dedupe_key),
+                operation_id,
+            });
+        let reply = self.apply(context, &mutation)?;
+        Ok(json!({
+            "userActionRequestId": reply.user_action_request_id,
+            "workItemId": work_item_id,
+        }))
     }
 
     fn resolve_user_action_request(
@@ -809,15 +734,14 @@ impl AgentToolsService {
         if args.user_action_request_id.trim().is_empty() {
             return Err(AgentToolError::invalid("userActionRequestId is empty"));
         }
-        pending_operation(
-            tools::RESOLVE_USER_ACTION_REQUEST,
-            json!({
-                "userActionRequestId": args.user_action_request_id,
-                "resolverChatId": context.grant.chat_id,
-                "resolution": args.resolution,
-                "operationId": operation_id,
-            }),
-        )
+        let mutation =
+            WorkOutlineMutation::ResolveUserActionRequest(ResolveUserActionRequestParams {
+                user_action_request_id: args.user_action_request_id.clone(),
+                note: non_empty(args.resolution),
+                operation_id,
+            });
+        self.apply(context, &mutation)?;
+        Ok(json!({ "userActionRequestId": args.user_action_request_id, "resolved": true }))
     }
 
     fn propose_instruction(
@@ -830,40 +754,45 @@ impl AgentToolsService {
         if args.text.trim().is_empty() {
             return Err(AgentToolError::invalid("text is empty"));
         }
-        let item = context.current_item().ok_or_else(|| {
-            AgentToolError::from(denied(
-                "This Chat is not associated with a work item; associate it before proposing \
-                 instructions",
-            ))
-        })?;
-        let scope = match args.target.as_deref().map(str::trim).unwrap_or("item") {
-            "item" => json!({ "type": "workItem", "workItemId": item.id }),
-            "spaceRoot" => json!({ "type": "spaceRoot" }),
-            "parent" if item.parent_work_item_id.is_some() => {
-                json!({ "type": "workItem", "workItemId": item.parent_work_item_id })
-            }
-            "parent" => {
-                return Err(AgentToolError::from(denied(
-                    "This Chat's work item has no parent; propose for the item or the Space root",
-                )));
-            }
+        let item = context.require_item("proposing instructions")?;
+        let target = match args.target.as_deref().map(str::trim).unwrap_or("item") {
+            "item" => InstructionProposalTarget::work_item(item.id.clone()),
+            "spaceRoot" => InstructionProposalTarget::space_root(),
+            "parent" => match &item.parent_work_item_id {
+                Some(parent) => InstructionProposalTarget::work_item(parent.clone()),
+                None => {
+                    return Err(WorkOutlineError::unauthorized(
+                        "This Chat's work item has no parent; propose for the item or the \
+                         Space root",
+                    )
+                    .into());
+                }
+            },
             other => {
                 return Err(AgentToolError::invalid(format!(
                     "target must be item, parent, or spaceRoot, not {other:?}"
                 )));
             }
         };
-        pending_operation(
-            tools::PROPOSE_INSTRUCTION,
-            json!({
-                "spaceId": context.grant.space_id,
-                "scope": scope,
-                "originChatId": context.grant.chat_id,
-                "text": args.text,
-                "toolCallId": args.tool_call_id,
-                "operationId": operation_id,
-            }),
-        )
+        let mutation =
+            WorkOutlineMutation::ProposeWorkItemInstruction(ProposeWorkItemInstructionParams {
+                space_id: Some(context.grant.space_id.clone()),
+                target: target.clone(),
+                origin: InstructionProposalOrigin {
+                    chat_id: Some(context.grant.chat_id.clone()),
+                    message_id: non_empty(args.message_id),
+                    tool_call_id: non_empty(args.tool_call_id),
+                },
+                text: args.text,
+                operation_id,
+            });
+        let reply = self.apply(context, &mutation)?;
+        Ok(json!({
+            "proposalId": reply.proposal_id,
+            "target": target,
+            "state": "pending",
+            "note": "The user reviews the proposal; nothing changes until they accept it.",
+        }))
     }
 
     /// Queue the first Turn of a child Chat created by the MCP `create_chat`
@@ -921,122 +850,6 @@ impl AgentToolsService {
             "commandId": command_id,
             "queued": queued,
         }))
-    }
-}
-
-/// The reply of an already-applied agent mutation, recomputed from its
-/// inputs (every id an agent mutation returns is derived).
-fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
-    match mutation {
-        WorkOutlineMutation::CreateWorkItem(p) => WorkOutlineMutateReply {
-            work_item_id: Some(derive_id(&p.operation_id, roles::ITEM)),
-            ..Default::default()
-        },
-        _ => WorkOutlineMutateReply::default(),
-    }
-}
-
-/// Request, resolve, and proposal tools validate their arguments, authorize
-/// against the Chat's item, and derive their `operationId`, then stop here
-/// with the would-be mutation's fields in `params`: at the merge of
-/// `work-outline-user-actions`, the integrator replaces this call with the
-/// `createUserActionRequest` / `resolveUserActionRequest` /
-/// `proposeWorkItemInstruction` mutation built from `params` (actor = the
-/// agent, origin = the token's Chat) applied through `AgentToolsService::apply`,
-/// and switches `authorize_agent_in` to `WorkOutlineService::authorize_agent`.
-fn pending_operation(tool: &str, params: Value) -> Result<Value, AgentToolError> {
-    tracing::debug!(tool, %params, "agent operation not available on this host");
-    Err(AgentToolError::refused(
-        AgentToolErrorCode::Unsupported,
-        format!("{tool} is not available on this Zeron version yet"),
-    ))
-}
-
-/// The agent policy over one materialized Space (see the module docs).
-fn authorize_agent_in(
-    snapshot: &WorkOutlineSnapshot,
-    actor_chat_id: &str,
-    mutation: &WorkOutlineMutation,
-) -> Result<(), WorkOutlineError> {
-    let current = current_item_of(snapshot, actor_chat_id);
-    let require_subtree = |target: &str, what: &str| -> Result<(), WorkOutlineError> {
-        let current = current.ok_or_else(|| {
-            denied(format!(
-                "This Chat is not associated with a work item, so agents cannot {what}"
-            ))
-        })?;
-        if snapshot.item(target).is_none() {
-            return Err(WorkOutlineError::new(
-                WorkOutlineErrorCode::NotFound,
-                "Work item not found in this Chat's Space",
-            ));
-        }
-        if !within_subtree(snapshot, &current.id, target) {
-            return Err(denied(format!(
-                "Agents can only {what} on this Chat's work item ({}) or its descendants",
-                current.title
-            )));
-        }
-        Ok(())
-    };
-    match mutation {
-        WorkOutlineMutation::CreateWorkItem(p) => {
-            if p.space_id != snapshot.space_id {
-                return Err(WorkOutlineError::new(
-                    WorkOutlineErrorCode::CrossSpace,
-                    "Agents can only create items in their Chat's Space",
-                ));
-            }
-            if p.status == Some(WorkItemStatus::Completed) {
-                return Err(denied("Agents cannot create completed items"));
-            }
-            let parent = p.parent_work_item_id.as_deref().ok_or_else(|| {
-                denied("Agents cannot create items at the Space root; create a child of this Chat's work item")
-            })?;
-            require_subtree(parent, "create items")
-        }
-        WorkOutlineMutation::AssignChatToWorkItem(p) => {
-            if p.chat_id != actor_chat_id {
-                return Err(denied("Agents can only associate their own Chat"));
-            }
-            if snapshot.item(&p.work_item_id).is_none() {
-                return Err(WorkOutlineError::new(
-                    WorkOutlineErrorCode::NotFound,
-                    "Work item not found in this Chat's Space",
-                ));
-            }
-            Ok(())
-        }
-        WorkOutlineMutation::UpdateWorkItem(p) => {
-            let changes = &p.changes;
-            let status = match changes.status {
-                Some(status @ (WorkItemStatus::Active | WorkItemStatus::Completed))
-                    if changes.title.is_none()
-                        && changes.description.is_unchanged()
-                        && changes.inherit_parent_instructions.is_none() =>
-                {
-                    status
-                }
-                _ => {
-                    return Err(denied("Agents can only mark items active or completed"));
-                }
-            };
-            require_subtree(&p.work_item_id, "change status")?;
-            if status == WorkItemStatus::Completed
-                && snapshot
-                    .item(&p.work_item_id)
-                    .is_some_and(has_open_requests)
-            {
-                return Err(denied(
-                    "This item has open user action requests; they must be resolved before it \
-                     can be completed (agents never resolve them implicitly)",
-                ));
-            }
-            Ok(())
-        }
-        _ => Err(denied(
-            "This Work Outline change is not available to agents",
-        )),
     }
 }
 
@@ -1107,43 +920,6 @@ mod tests {
         let lease = tokens.mint("c", "r", "s", "d");
         drop(tokens);
         drop(lease);
-    }
-
-    fn outline_with_open_request() -> WorkOutlineSnapshot {
-        serde_json::from_value(json!({
-            "spaceId": "s",
-            "available": true,
-            "items": [
-                { "id": "root", "spaceId": "s", "title": "Root", "childIds": ["kid"],
-                  "rollup": { "unresolvedUserActionCount": 1 },
-                  "effectiveStatus": "userActionRequired" },
-                { "id": "kid", "spaceId": "s", "parentWorkItemId": "root", "title": "Kid" },
-                { "id": "other", "spaceId": "s", "title": "Other" }
-            ],
-            "assignments": [
-                { "chatId": "chat", "spaceId": "s", "workItemId": "root", "state": "associated" }
-            ]
-        }))
-        .unwrap()
-    }
-
-    fn status(item: &str, status: &str) -> WorkOutlineMutation {
-        serde_json::from_value(json!({ "op": "updateWorkItem", "workItemId": item,
-            "changes": { "status": status }, "operationId": "op" }))
-        .unwrap()
-    }
-
-    #[test]
-    fn completing_an_item_with_open_requests_is_refused_never_auto_resolved() {
-        let snapshot = outline_with_open_request();
-        let err = authorize_agent_in(&snapshot, "chat", &status("root", "completed")).unwrap_err();
-        assert!(err.message.contains("open user action requests"), "{err:?}");
-        assert!(authorize_agent_in(&snapshot, "chat", &status("root", "active")).is_ok());
-        assert!(authorize_agent_in(&snapshot, "chat", &status("kid", "completed")).is_ok());
-        assert!(authorize_agent_in(&snapshot, "chat", &status("other", "active")).is_err());
-        assert!(authorize_agent_in(&snapshot, "chat", &status("kid", "pending")).is_err());
-        // A Chat without an association owns no subtree.
-        assert!(authorize_agent_in(&snapshot, "stranger", &status("kid", "active")).is_err());
     }
 
     #[test]

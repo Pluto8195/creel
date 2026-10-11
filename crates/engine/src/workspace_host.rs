@@ -746,6 +746,16 @@ impl WorkspaceHost {
         })
     }
 
+    /// The Milestone 4 agent policy over the local replica (see
+    /// `RegistryDoc::authorize_agent_mutation`).
+    pub fn authorize_agent_work_outline(
+        &self,
+        chat_id: &str,
+        mutation: &zeron_proto::WorkOutlineMutation,
+    ) -> Result<(), zeron_proto::WorkOutlineError> {
+        self.read(|doc| doc.authorize_agent_mutation(chat_id, mutation))
+    }
+
     /// Whether the durable processed-command ledger holds `key` (a reserved
     /// `work-outline:` key; see `crate::work_outline`). Read errors count as
     /// "not processed": the doc-layer mutators are replay-safe on their own.

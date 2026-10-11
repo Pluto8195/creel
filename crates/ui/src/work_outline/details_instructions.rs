@@ -833,6 +833,7 @@ impl WorkItemDetails {
             );
         };
         let section = self.render_instructions_section(None, &snapshot, theme, cx);
+        let execution = self.render_execution_section(&snapshot, theme, cx);
         frame.child(header).child(
             div()
                 .id("work-item-details-body")
@@ -852,7 +853,8 @@ impl WorkItemDetails {
                         .text_color(theme.text)
                         .child("Space root"),
                 )
-                .child(section),
+                .child(section)
+                .child(execution),
         )
     }
 }

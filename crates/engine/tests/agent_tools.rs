@@ -371,10 +371,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     )
     .await
     .unwrap_err();
-    assert!(
-        err.contains("work-outline/invalid") && err.contains("not associated"),
-        "{err}"
-    );
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
 
     // Associate ONLY the calling Chat.
     let associated = tool(
@@ -395,7 +392,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     assert!(snap.assignments.iter().all(|a| a.chat_id != OTHER_CHAT));
     let service = rig.core.rpc_service();
     let err = service
-        .agent_tools()
+        .work_outline()
         .authorize_agent(
             CHAT,
             &serde_json::from_value(json!({ "op": "assignChatToWorkItem",
@@ -403,8 +400,9 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
             .unwrap(),
         )
         .unwrap_err();
-    assert!(
-        err.message.contains("only associate their own Chat"),
+    assert_eq!(
+        err.code,
+        zeron_proto::WorkOutlineErrorCode::Unauthorized,
         "{err:?}"
     );
 
@@ -449,12 +447,9 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     )
     .await
     .unwrap_err();
-    assert!(
-        err.contains("work-outline/invalid") && err.contains("descendants"),
-        "{err}"
-    );
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
     let err = service
-        .agent_tools()
+        .work_outline()
         .authorize_agent(
             CHAT,
             &serde_json::from_value(json!({ "op": "createWorkItem", "spaceId": SPACE,
@@ -462,7 +457,11 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
             .unwrap(),
         )
         .unwrap_err();
-    assert!(err.message.contains("Space root"), "{err:?}");
+    assert_eq!(
+        err.code,
+        zeron_proto::WorkOutlineErrorCode::Unauthorized,
+        "{err:?}"
+    );
     let err = tool(
         &rig,
         &token,
@@ -507,7 +506,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("work-outline/invalid"), "{err}");
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
     let err = tool(
         &rig,
         &token,
@@ -533,37 +532,92 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     ] {
         let mutation = serde_json::from_value(forbidden.clone()).unwrap();
         let err = service
-            .agent_tools()
+            .work_outline()
             .authorize_agent(CHAT, &mutation)
             .unwrap_err();
         assert_eq!(
             err.code,
-            zeron_proto::WorkOutlineErrorCode::Invalid,
+            zeron_proto::WorkOutlineErrorCode::Unauthorized,
             "{forbidden}"
         );
     }
 
-    // Request / resolve / propose: argument-checked and authorized, then
-    // `unsupported` until the user-actions operations merge.
-    for (name, args) in [
-        (
-            "work_outline_create_user_action_request",
-            json!({ "request": "Approve the plan?", "idempotencyKey": "r1" }),
-        ),
-        (
-            "work_outline_resolve_user_action_request",
-            json!({ "userActionRequestId": "req-1", "idempotencyKey": "r2" }),
-        ),
-        (
-            "work_outline_propose_instruction",
-            json!({ "target": "spaceRoot", "text": "Prefer small PRs", "idempotencyKey": "r3" }),
-        ),
-    ] {
-        let err = tool(&rig, &token, name, args).await.unwrap_err();
-        assert!(err.contains("agent-tools/unsupported"), "{name}: {err}");
-        let err = tool(&rig, &token, name, json!({})).await.unwrap_err();
-        assert!(err.contains("agent-tools/invalid"), "{name}: {err}");
-    }
+    // Requests: created on the Chat's item with the Chat as origin; an
+    // item with an open request cannot be completed (never auto-resolved);
+    // only the originating Chat resolves it.
+    let request = tool(
+        &rig,
+        &token,
+        "work_outline_create_user_action_request",
+        json!({ "request": "Approve the plan?", "detail": "Two options", "idempotencyKey": "r1" }),
+    )
+    .await
+    .unwrap();
+    let request_id = request["userActionRequestId"].as_str().unwrap().to_owned();
+    assert_eq!(request["workItemId"], root_a);
+    let read = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["workItem"]["effectiveStatus"], "userActionRequired");
+    assert_eq!(read["openUserActionRequests"][0]["id"], request_id);
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "completed", "idempotencyKey": "s5" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/openUserActionRequests"), "{err}");
+    let snap = snapshot(&rig);
+    assert_eq!(
+        snap.item(&root_a).unwrap().status,
+        zeron_proto::WorkItemStatus::Active
+    );
+    let other =
+        rig.core
+            .sessions
+            .agent_tokens()
+            .mint(OTHER_CHAT, "run-9", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        other.token(),
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "idempotencyKey": "r2" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    tool(
+        &rig,
+        &token,
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "resolution": "User approved in chat",
+                "idempotencyKey": "r2" }),
+    )
+    .await
+    .unwrap();
+    tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "completed", "idempotencyKey": "s6" }),
+    )
+    .await
+    .unwrap();
+
+    // Proposals: for the item, its parent, or the Space root; pending until
+    // the user reviews them (no instruction is written).
+    let proposal = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "target": "spaceRoot", "text": "Prefer small PRs", "idempotencyKey": "r3" }),
+    )
+    .await
+    .unwrap();
+    assert!(proposal["proposalId"].is_string(), "{proposal}");
+    assert!(snapshot(&rig).instructions.is_empty());
     let err = tool(
         &rig,
         &token,
@@ -573,6 +627,14 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     .await
     .unwrap_err();
     assert!(err.contains("no parent"), "{err}");
+    for name in [
+        "work_outline_create_user_action_request",
+        "work_outline_resolve_user_action_request",
+        "work_outline_propose_instruction",
+    ] {
+        let err = tool(&rig, &token, name, json!({})).await.unwrap_err();
+        assert!(err.contains("agent-tools/invalid"), "{name}: {err}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
