@@ -434,6 +434,9 @@ const MAX_REMEMBERED_REQUEST_IDS: usize = 4_096;
 ///   the same ids never re-notify). All of its new requests are one event.
 /// - A resolve that brings the item to zero re-arms it: a later new request
 ///   fires again.
+/// - Requests on archived (or deleted) items are seeded as they are seen, so
+///   restoring an item with old open requests stays quiet: only requests the
+///   detector never saw can fire (an archived item cannot gain new ones).
 /// - Unavailable snapshots are ignored (no observation).
 #[derive(Debug, Default)]
 pub(crate) struct UserActionNotifier {
@@ -526,10 +529,15 @@ impl UserActionNotifier {
                 .collect();
             seen.notified.retain(|id| listed.contains(id.as_str()));
         }
-        for requests in open.values() {
-            seen.notified
-                .extend(requests.iter().map(|request| request.id.clone()));
-        }
+        // Every unresolved request seen counts as reported, including those
+        // on archived or deleted items (restoring an item is not news).
+        seen.notified.extend(
+            snapshot
+                .user_action_requests
+                .iter()
+                .filter(|request| request.is_unresolved())
+                .map(|request| request.id.clone()),
+        );
         notices.sort_by(|a, b| a.work_item_id.cmp(&b.work_item_id));
         notices
     }
@@ -975,6 +983,47 @@ mod tests {
         notifier.retain_spaces(|_| false);
         let r3 = request("r3", "s1", API, CHAT_API, "New");
         assert!(notifier.observe("s1", &with(vec![r3])).is_empty());
+    }
+
+    #[test]
+    fn restoring_an_archived_item_with_old_requests_stays_quiet() {
+        let archived_ui = |requests: Vec<UserActionRequestView>, archived: bool| {
+            let mut snapshot = base();
+            for item in &mut snapshot.items {
+                if item.id == UI {
+                    item.archived_at = archived.then_some(NOW);
+                }
+            }
+            snapshot.user_action_requests = requests;
+            Arc::new(snapshot)
+        };
+        let mut notifier = UserActionNotifier::default();
+        notifier.observe("s1", &with(vec![]));
+        let r1 = request("r1", "s1", UI, CHAT_UI, "Old question");
+        // Seen while the item is archived: no alert, and none on restore.
+        assert!(
+            notifier
+                .observe("s1", &archived_ui(vec![r1.clone()], true))
+                .is_empty()
+        );
+        assert!(
+            notifier
+                .observe("s1", &archived_ui(vec![r1.clone()], false))
+                .is_empty(),
+            "a restore is not a new request"
+        );
+        // Back at zero, a genuinely new request on the restored item fires.
+        let mut resolved = r1.clone();
+        resolve(&mut resolved, NOW + 1, None);
+        assert!(
+            notifier
+                .observe("s1", &archived_ui(vec![resolved.clone()], false))
+                .is_empty()
+        );
+        let r2 = request("r2", "s1", UI, CHAT_UI, "New question");
+        let notices = notifier.observe("s1", &archived_ui(vec![resolved, r2], false));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].body(), "New question");
     }
 
     #[test]
