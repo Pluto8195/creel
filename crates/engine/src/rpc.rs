@@ -745,6 +745,9 @@ pub struct EngineRpc {
     /// `CreateChatForWorkItem` / `ContinueChatForWorkItem` and child-Chat
     /// inheritance (Work Outline Milestone 3 stage 2).
     launch: crate::work_outline_launch::WorkItemLaunchService,
+    /// `AgentAuthenticate` / `AgentToolCall` (Work Outline Milestone 4):
+    /// token-authenticated agent tools, local to this engine.
+    agent_tools: std::sync::Arc<crate::agent_tools::AgentToolsService>,
     engine_info: EngineInfo,
 }
 
@@ -785,6 +788,11 @@ impl EngineRpc {
                 .cloned()
                 .unwrap_or_else(|| execution_scope.clone()),
         );
+        let agent_tools = std::sync::Arc::new(crate::agent_tools::AgentToolsService::new(
+            sessions.agent_tokens(),
+            workspace.clone(),
+            Some(doc_host.clone()),
+        ));
         Self {
             sessions,
             doc_host,
@@ -810,8 +818,14 @@ impl EngineRpc {
             work_outline,
             execution_scope,
             launch,
+            agent_tools,
             engine_info,
         }
+    }
+
+    /// The token-authenticated agent tool surface.
+    pub fn agent_tools(&self) -> &std::sync::Arc<crate::agent_tools::AgentToolsService> {
+        &self.agent_tools
     }
 
     pub fn with_previews(mut self, previews: zeron_preview::PreviewService) -> Self {
@@ -2486,6 +2500,25 @@ impl RpcService for EngineRpc {
                 let query: zeron_proto::WorkOutlineQueryRequest = parse_params(params)?;
                 let service = self.work_outline.clone();
                 let reply = tokio::task::spawn_blocking(move || service.query(&query))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                RpcReply::value(&reply)
+            }
+            // Agent tools: local to the engine that minted the token (not in
+            // `forwardable`, so `targetDeviceId` is ignored).
+            zeron_proto::agent_tools::AUTHENTICATE_METHOD => {
+                let p: zeron_proto::agent_tools::AgentAuthenticateParams = parse_params(params)?;
+                let origin = self
+                    .agent_tools
+                    .authenticate(&p.token)
+                    .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                RpcReply::value(&origin)
+            }
+            zeron_proto::agent_tools::TOOL_CALL_METHOD => {
+                let p: zeron_proto::agent_tools::AgentToolCallParams = parse_params(params)?;
+                let service = self.agent_tools.clone();
+                let reply = tokio::task::spawn_blocking(move || service.call(&p))
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                     .map_err(|e| RpcError::Failed(e.to_wire_message()))?;

@@ -29,8 +29,8 @@ use zeron_doc::{
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
 use zeron_harness::{
-    CancellationToken, Harness, InstructionReplaceStrategy, InstructionSupport, RunControls,
-    SteerMessage,
+    AgentToolsInjection, CancellationToken, Harness, InstructionReplaceStrategy,
+    InstructionSupport, RunControls, SteerMessage,
 };
 use zeron_proto::{
     AgentEvent, DoneStatus, ExecutionSessionReport, HarnessId, InstructionDelivery,
@@ -38,6 +38,7 @@ use zeron_proto::{
     UserInputAnswer, UserInputQuestion,
 };
 
+use crate::agent_tools::{AgentTokenLease, AgentTokens, AgentToolsLaunch};
 use crate::doc_host::{ChatDocHandle, DocHost};
 use crate::registry::{HarnessDescriptor, HarnessRegistry};
 use crate::run_journal::RunJournal;
@@ -172,6 +173,12 @@ struct Inner {
     /// User message ids whose sender confirmed a context reset (a revision
     /// change on a `FreshSession` harness starts a new native session).
     context_reset_confirmed: Mutex<std::collections::HashSet<String>>,
+    /// Live per-Run agent-tool tokens (Work Outline Milestone 4); shared
+    /// with the engine's agent RPC surface.
+    agent_tokens: Arc<AgentTokens>,
+    /// How injected `zeron mcp` servers reach this engine; `None` disables
+    /// agent tools.
+    agent_tools_launch: Mutex<Option<AgentToolsLaunch>>,
 }
 
 /// An instruction-bearing dispatch's decision about the native session.
@@ -222,8 +229,52 @@ impl SessionsEngine {
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 context_reset_confirmed: Mutex::new(std::collections::HashSet::new()),
+                agent_tokens: AgentTokens::new(),
+                agent_tools_launch: Mutex::new(AgentToolsLaunch::from_current_exe()),
             }),
         }
+    }
+
+    /// The live per-Run agent-tool tokens (the agent RPC surface
+    /// authenticates against these).
+    pub fn agent_tokens(&self) -> Arc<AgentTokens> {
+        self.inner.agent_tokens.clone()
+    }
+
+    /// Override how injected `zeron mcp` servers reach this engine (`None`
+    /// turns agent tools off). Default: this executable's `mcp` subcommand
+    /// on `ZERON_IPC_PORT`.
+    pub fn set_agent_tools_launch(&self, launch: Option<AgentToolsLaunch>) {
+        *lock(&self.inner.agent_tools_launch) = launch;
+    }
+
+    /// The token lease and injection for one Run: only for a Chat in a
+    /// Space, on a harness that injects MCP servers, with agent tools on.
+    /// Projectless Chats and other harnesses get nothing (no error).
+    fn agent_tools_for(
+        &self,
+        chat_id: &str,
+        run_id: &str,
+        harness: &dyn Harness,
+    ) -> Option<(AgentTokenLease, AgentToolsInjection)> {
+        if !harness.supports_agent_tools() {
+            return None;
+        }
+        let launch = lock(&self.inner.agent_tools_launch).clone()?;
+        let space_id = self
+            .inner
+            .workspace()?
+            .chat(chat_id)
+            .ok()
+            .flatten()?
+            .space_id
+            .filter(|space| !space.is_empty())?;
+        let lease = self
+            .inner
+            .agent_tokens
+            .mint(chat_id, run_id, &space_id, &self.inner.device_id);
+        let injection = launch.injection(lease.token());
+        Some((lease, injection))
     }
 
     /// Wire the doc host (called once at engine assembly; the two services are mutually
@@ -781,6 +832,7 @@ impl SessionsEngine {
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
 
         let run_id = new_id();
+        let agent_tools = self.agent_tools_for(chat_id, &run_id, harness.as_ref());
         let (steer_tx, steer_rx) = mpsc::channel::<SteerMessage>(32);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (engine_tx, engine_rx) = mpsc::unbounded_channel::<AgentEvent>();
@@ -852,6 +904,7 @@ impl SessionsEngine {
                 resume_injected,
                 startup_retry,
             },
+            agent_tools,
         ));
         Ok(run_id)
     }
@@ -2137,7 +2190,14 @@ async fn drive_run(
     mut engine_rx: mpsc::UnboundedReceiver<AgentEvent>,
     mut cancel_rx: watch::Receiver<bool>,
     resume_state: RunResumeState,
+    agent_tools: Option<(AgentTokenLease, AgentToolsInjection)>,
 ) {
+    // The token lives exactly as long as this Run's driver: dropping the
+    // lease (any return path below) revokes it.
+    let (_agent_token, agent_tools) = match agent_tools {
+        Some((lease, injection)) => (Some(lease), Some(injection)),
+        None => (None, None),
+    };
     let device_id = inner.device_id.clone();
     // The revision this Execution Session receives (reported on SessionStarted).
     let instruction_pin = request.instructions.as_ref().map(|d| d.envelope.pin());
@@ -2171,7 +2231,10 @@ async fn drive_run(
         Ok(())
     };
     let started = match prepared {
-        Ok(()) => harness.run(request, controls).await,
+        Ok(()) => match agent_tools {
+            Some(tools) => harness.run_with_agent_tools(request, controls, tools).await,
+            None => harness.run(request, controls).await,
+        },
         Err(error) => Err(error),
     };
     let mut stream = match started {
