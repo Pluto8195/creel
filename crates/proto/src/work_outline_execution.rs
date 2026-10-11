@@ -463,6 +463,25 @@ pub enum ExecutionValidationError {
     MultiplePrimary { repo_ids: Vec<String> },
     #[serde(rename_all = "camelCase")]
     ConfigInvalid { reason: String },
+    /// A bound Chat's stored native session ran in another directory (or in
+    /// an unknown one), so resuming it would continue a conversation from
+    /// elsewhere. Never converted into a silent fresh session.
+    #[serde(rename_all = "camelCase")]
+    ResumeRootMismatch {
+        expected_path: String,
+        #[serde(default)]
+        found_path: String,
+    },
+    /// Something tried to move a bound Chat to another directory (a cwd
+    /// change, a worktree directive, a new worktree). A bound Chat keeps the
+    /// execution root it captured at launch.
+    #[serde(rename_all = "camelCase")]
+    BoundChatRetarget {
+        chat_id: String,
+        execution_root: String,
+        #[serde(default)]
+        requested_path: String,
+    },
     #[doc(hidden)]
     #[serde(other)]
     Unknown,
@@ -487,6 +506,8 @@ impl ExecutionValidationError {
             Self::MemberOutsideRoot { .. } => "memberOutsideRoot",
             Self::MultiplePrimary { .. } => "multiplePrimary",
             Self::ConfigInvalid { .. } => "configInvalid",
+            Self::ResumeRootMismatch { .. } => "resumeRootMismatch",
+            Self::BoundChatRetarget { .. } => "boundChatRetarget",
             Self::Unknown => "unknown",
         }
     }
@@ -563,6 +584,36 @@ impl ExecutionValidationError {
             Self::ConfigInvalid { reason } => {
                 format!("The execution configuration is invalid: {reason}")
             }
+            Self::ResumeRootMismatch {
+                expected_path,
+                found_path,
+            } if found_path.is_empty() => format!(
+                "This Chat's previous session has no recorded folder, so it cannot be resumed in \
+                 {expected_path}"
+            ),
+            Self::ResumeRootMismatch {
+                expected_path,
+                found_path,
+            } => format!(
+                "This Chat's previous session ran in {found_path}, not its execution root \
+                 {expected_path}"
+            ),
+            Self::BoundChatRetarget {
+                execution_root,
+                requested_path,
+                ..
+            } if requested_path.is_empty() => format!(
+                "This Chat is bound to its execution root {execution_root} and cannot get a new \
+                 worktree"
+            ),
+            Self::BoundChatRetarget {
+                execution_root,
+                requested_path,
+                ..
+            } => format!(
+                "This Chat is bound to its execution root {execution_root} and cannot move to \
+                 {requested_path}"
+            ),
             Self::Unknown => "The execution configuration cannot be used".into(),
         }
     }
@@ -617,6 +668,14 @@ impl ExecutionValidationError {
             }
             Self::ConfigInvalid { .. } | Self::Unknown => {
                 "Edit or reset the execution configuration."
+            }
+            Self::ResumeRootMismatch { .. } => {
+                "Start a new Chat from the work item to begin a fresh session in the execution \
+                 root. Zeron will not resume or restart this conversation elsewhere."
+            }
+            Self::BoundChatRetarget { .. } => {
+                "Start a new Chat from the work item with the folder or worktree you want; this \
+                 Chat keeps the execution root it started with."
             }
         }
     }
@@ -729,6 +788,79 @@ impl ValidateExecutionConfigurationReply {
 // --------------------------------------------------------------------------
 // Pure functions
 // --------------------------------------------------------------------------
+
+/// Whether `captured` is `current` with exactly the per-Chat worktree a
+/// launch's worktree choice fills in: one binding that pins no worktree in
+/// `current` gains `worktreeId` + `worktreePath` (everything else equal), and
+/// the execution root is unchanged or moved from that repository's checkout
+/// to the worktree; or, when `current` has no bindings, the launch
+/// synthesized the root repository's binding (member, primary, pinned, no
+/// expected ref) with `repoPath` = the old root and root = the worktree. Such
+/// a Chat is NOT an execution exception: per-Chat worktrees are the normal
+/// launch flow. Paths compare as strings without trailing separators (pure;
+/// a symlinked Space path that the launch canonicalized still reads as an
+/// exception).
+pub fn is_launch_worktree_fill(
+    current: &ExecutionConfiguration,
+    captured: &ExecutionConfiguration,
+) -> bool {
+    fn norm(path: &str) -> &str {
+        path.trim_end_matches(['/', '\\'])
+    }
+    fn pinned(binding: &RepositoryBinding) -> Option<&str> {
+        match (&binding.worktree_id, &binding.worktree_path) {
+            (Some(_), Some(path)) => Some(path),
+            _ => None,
+        }
+    }
+    if current.schema != captured.schema {
+        return false;
+    }
+    if current.bindings.is_empty() {
+        let [binding] = captured.bindings.as_slice() else {
+            return false;
+        };
+        let Some(worktree) = pinned(binding) else {
+            return false;
+        };
+        return binding.member
+            && binding.primary
+            && binding.expected_ref.is_none()
+            && norm(&current.execution_root) == norm(&binding.repo_path)
+            && norm(&captured.execution_root) == norm(worktree);
+    }
+    if current.bindings.len() != captured.bindings.len() {
+        return false;
+    }
+    let mut filled = None;
+    for (index, (was, now)) in current.bindings.iter().zip(&captured.bindings).enumerate() {
+        if was == now {
+            continue;
+        }
+        if filled.is_some()
+            || was.worktree_id.is_some()
+            || was.worktree_path.is_some()
+            || pinned(now).is_none()
+        {
+            return false;
+        }
+        let mut unpinned = now.clone();
+        unpinned.worktree_id = None;
+        unpinned.worktree_path = None;
+        if unpinned != *was {
+            return false;
+        }
+        filled = Some(index);
+    }
+    let Some(index) = filled else {
+        return false;
+    };
+    let was = &current.bindings[index];
+    let worktree = pinned(&captured.bindings[index]).unwrap_or_default();
+    norm(&current.execution_root) == norm(&captured.execution_root)
+        || (norm(&current.execution_root) == norm(&was.repo_path)
+            && norm(&captured.execution_root) == norm(worktree))
+}
 
 /// An absolute path on ANY device (the configuring device may run another
 /// OS than the owner): `/…`, `X:\…`, `X:/…`, or `\\…`.

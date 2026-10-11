@@ -753,6 +753,19 @@ impl WorkspaceHost {
         self.inner.store.is_processed(key).unwrap_or(false)
     }
 
+    /// Claim `key` in the durable processed-command ledger now (its own
+    /// SQLite write, not deferred to the next snapshot). `true` when this
+    /// call inserted it. Used by the Work Outline launch workflow, whose
+    /// steps span the registry and session docs.
+    pub fn ledger_mark(&self, key: &str) -> Result<bool, EngineError> {
+        Ok(self.inner.store.mark_processed(key)?)
+    }
+
+    /// Whether a registry row is absent, live, or tombstoned (rule R1).
+    pub fn registry_row_state(&self, kind: &str, id: &str) -> zeron_doc::RowState {
+        self.read(|doc| doc.row_state(kind, id))
+    }
+
     /// One overlay registry row with its clocks (diagnostics and tests).
     pub fn registry_row(&self, kind: &str, id: &str) -> Option<zeron_doc::RegistryRow> {
         self.read(|doc| doc.row(kind, id))
@@ -969,9 +982,20 @@ impl WorkspaceHost {
     /// Resolve project cwd claims to a space. The portable home marker `~`
     /// is the composer's projectless target; preserve it without minting a
     /// project when the run outruns createChat on the registry channel.
+    ///
+    /// A Chat with a captured execution binding is never claimed: its row is
+    /// written by the launch workflow before any command, so a bound Chat
+    /// without a live row was deleted, and claiming would revive it under a
+    /// possibly freshly minted Space (fallback F7).
     pub fn claim_chat(&self, chat_id: &str, cwd: Option<&str>) -> Result<(), EngineError> {
         if self.read(|doc| doc.chat(chat_id))?.is_some() {
             return Ok(());
+        }
+        if self.chat_execution_binding(chat_id).is_some() {
+            return Err(EngineError::Other(format!(
+                "Chat {chat_id} has an execution binding but no live chat row; it will not be \
+                 recreated"
+            )));
         }
         let space_id = match cwd {
             Some("~" | "~/") => None,
@@ -1493,8 +1517,36 @@ impl WorkspaceHost {
 
     /// Retarget a chat onto another folder (mid-session switch to an existing
     /// worktree). Resume is cwd-scoped — the next run there starts fresh.
+    ///
+    /// A Chat with a captured execution binding is never retargeted (contract
+    /// 6.2): any cwd other than its execution root is refused with
+    /// `execution-scope:boundChatRetarget`.
     pub fn set_chat_cwd(&self, chat_id: &str, cwd: &str) -> Result<bool, EngineError> {
+        self.guard_bound_retarget(chat_id, cwd)?;
         Ok(self.mutate(|doc| doc.set_chat_cwd(chat_id, cwd))?)
+    }
+
+    /// Refuse to move a bound Chat away from its captured execution root.
+    pub fn guard_bound_retarget(&self, chat_id: &str, cwd: &str) -> Result<(), EngineError> {
+        let Some(binding) = self.chat_execution_binding(chat_id) else {
+            return Ok(());
+        };
+        let root = binding.resolved.configuration.execution_root;
+        let same = !cwd.is_empty()
+            && crate::execution_scope::canonical_lenient(std::path::Path::new(&root))
+                == crate::execution_scope::canonical_lenient(std::path::Path::new(cwd));
+        if same {
+            return Ok(());
+        }
+        Err(EngineError::Other(
+            crate::execution_scope::rejection_message(&[
+                zeron_proto::ExecutionValidationError::BoundChatRetarget {
+                    chat_id: chat_id.to_owned(),
+                    execution_root: root,
+                    requested_path: cwd.to_owned(),
+                },
+            ]),
+        ))
     }
 
     /// Atomically retarget a chat to a cwd and the identity resolved for that
@@ -1505,6 +1557,7 @@ impl WorkspaceHost {
         cwd: &str,
         checkout_id: Option<&str>,
     ) -> Result<bool, EngineError> {
+        self.guard_bound_retarget(chat_id, cwd)?;
         Ok(self.mutate(|doc| doc.set_chat_target(chat_id, cwd, checkout_id))?)
     }
 

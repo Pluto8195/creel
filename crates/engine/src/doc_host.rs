@@ -272,6 +272,10 @@ struct DocHostInner {
     workspace: OnceLock<WorkspaceHost>,
     /// Worktree materialization for Run commands (see `set_repos`).
     repos: OnceLock<crate::repos::Repos>,
+    /// Work Outline execution-scope gate (contract 6.3): validates a bound
+    /// Chat's captured binding at every dispatch. Built lazily from the
+    /// workspace host and repos unless a test wires its own probe.
+    execution_scope: OnceLock<crate::execution_scope::ExecutionScopeService>,
     project_action_runtime: OnceLock<(ProjectActionsStore, Terminals)>,
     /// Cancels every worker spawned through `spawn_worker` — the loops'
     /// own exit conditions (weak handle death, closed channels) don't cover
@@ -578,7 +582,7 @@ const ATTACHMENT_PROMPT_HEADER: &str = "Attached images (local files — open th
 /// Older clients stored the already-expanded prompt in `text`; recognize the
 /// exact trailer implied by `attachments` so those rows are not expanded a
 /// second time after an upgrade.
-fn queued_message_prompt(text: &str, attachments: &[String]) -> String {
+pub(crate) fn queued_message_prompt(text: &str, attachments: &[String]) -> String {
     if attachments.is_empty() {
         return text.to_string();
     }
@@ -595,6 +599,28 @@ fn queued_message_prompt(text: &str, attachments: &[String]) -> String {
         body
     };
     format!("{body}{trailer}")
+}
+
+/// Point a bound Chat's request at its validated execution root. A request
+/// that also asks for a new worktree is refused: a bound Chat never moves.
+pub(crate) fn pin_bound_request(
+    chat_id: &str,
+    validated: &zeron_proto::ValidatedExecution,
+    request: &mut zeron_proto::RunRequest,
+) -> Result<(), EngineError> {
+    if request.worktree.is_some() {
+        return Err(EngineError::Other(
+            crate::execution_scope::rejection_message(&[
+                zeron_proto::ExecutionValidationError::BoundChatRetarget {
+                    chat_id: chat_id.to_owned(),
+                    execution_root: validated.execution_root.clone(),
+                    requested_path: String::new(),
+                },
+            ]),
+        ));
+    }
+    request.cwd = validated.execution_root.clone();
+    Ok(())
 }
 
 fn queue_text_hash(text: &str) -> String {
@@ -964,6 +990,7 @@ impl DocHost {
                 sessions: Mutex::new(None),
                 workspace: OnceLock::new(),
                 repos: OnceLock::new(),
+                execution_scope: OnceLock::new(),
                 project_action_runtime: OnceLock::new(),
                 shutdown: CancellationToken::new(),
                 edge_disconnected: AtomicBool::new(false),
@@ -1122,6 +1149,64 @@ impl DocHost {
     /// Run commands carrying a [`zeron_proto::WorktreeSpec`].
     pub fn set_repos(&self, repos: crate::repos::Repos) {
         let _ = self.inner.repos.set(repos);
+    }
+
+    /// Wire the execution-scope gate (tests inject a probe; production
+    /// builds it lazily from the workspace host and repos). First set wins.
+    pub fn set_execution_scope(&self, scope: crate::execution_scope::ExecutionScopeService) {
+        let _ = self.inner.execution_scope.set(scope);
+    }
+
+    /// The execution-scope gate, once the workspace host and repos exist.
+    pub(crate) fn execution_scope(&self) -> Option<&crate::execution_scope::ExecutionScopeService> {
+        if let Some(scope) = self.inner.execution_scope.get() {
+            return Some(scope);
+        }
+        let workspace = self.workspace()?.clone();
+        let repos = self.inner.repos.get()?.clone();
+        Some(
+            self.inner.execution_scope.get_or_init(|| {
+                crate::execution_scope::ExecutionScopeService::new(workspace, repos)
+            }),
+        )
+    }
+
+    /// The bound execution root of a Chat (its captured binding's
+    /// configuration root), `None` for unbound Chats. Cheap registry read;
+    /// no validation.
+    pub(crate) fn bound_execution_root(&self, chat_id: &str) -> Option<String> {
+        self.workspace()?
+            .chat_execution_binding(chat_id)
+            .map(|binding| binding.resolved.configuration.execution_root)
+    }
+
+    /// The dispatch-time execution gate (contract 6.3, discoveries 11):
+    /// `Ok(None)` for an unbound Chat (today's behavior applies unchanged),
+    /// `Ok(Some(validated))` for a bound Chat whose binding validates on
+    /// this device (run with `cwd = validated.execution_root`), else an
+    /// `execution-scope:<code>: …` rejection. Never falls back.
+    pub(crate) async fn validate_bound_dispatch(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<zeron_proto::ValidatedExecution>, EngineError> {
+        if self.bound_execution_root(chat_id).is_none() {
+            return Ok(None);
+        }
+        let Some(scope) = self.execution_scope() else {
+            return Err(EngineError::Other(
+                crate::execution_scope::rejection_message(&[
+                    zeron_proto::ExecutionValidationError::ConfigInvalid {
+                        reason: "execution validation is not available on this host".into(),
+                    },
+                ]),
+            ));
+        };
+        scope
+            .validate_for_dispatch(chat_id, zeron_proto::ExecutionHostCapabilities::default())
+            .await
+            .map_err(|errors| {
+                EngineError::Other(crate::execution_scope::rejection_message(&errors))
+            })
     }
 
     pub fn set_project_action_runtime(
@@ -2731,8 +2816,73 @@ impl DocHost {
         payload: SessionCommandPayload,
         transfers: Vec<crate::uploads::AttachmentTransfer>,
     ) -> Result<String, EngineError> {
+        self.queue_command_inner(chat_id, new_id(), payload, transfers)
+            .map(|(id, _)| id)
+    }
+
+    /// [`Self::queue_command`] with a caller-derived command id (the Work
+    /// Outline launch workflow derives it from its `operationId`).
+    /// Idempotent by id: when an entry with `command_id` already exists the
+    /// call writes nothing and returns `false`.
+    pub fn queue_command_with_id(
+        &self,
+        chat_id: &str,
+        command_id: &str,
+        payload: SessionCommandPayload,
+    ) -> Result<bool, EngineError> {
         let handle = self.open(chat_id)?;
-        let id = new_id();
+        if handle
+            .doc
+            .read_commands()?
+            .iter()
+            .any(|c| c.id == command_id)
+        {
+            return Ok(false);
+        }
+        self.queue_command_inner(chat_id, command_id.to_owned(), payload, Vec::new())
+            .map(|(_, appended)| appended)
+    }
+
+    /// The latest command attempt carrying the user message `message_id`
+    /// (a Run, an instruction-bearing Run, or a Steer), plus whether the
+    /// message already landed in the transcript.
+    pub fn message_command_state(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<(Option<SessionCommandEntry>, bool), EngineError> {
+        let handle = self.open(chat_id)?;
+        let landed = handle
+            .doc
+            .read_entries()?
+            .iter()
+            .any(|entry| entry.id == message_id);
+        let latest = handle
+            .doc
+            .read_commands()?
+            .into_iter()
+            .filter(|c| match &c.payload {
+                SessionCommandPayload::Run { message_id: m, .. }
+                | SessionCommandPayload::RunWithInstructions { message_id: m, .. } => {
+                    m == message_id
+                }
+                SessionCommandPayload::Steer { message_id: m, .. } => {
+                    m.as_deref() == Some(message_id)
+                }
+                _ => false,
+            })
+            .next_back();
+        Ok((latest, landed))
+    }
+
+    fn queue_command_inner(
+        &self,
+        chat_id: &str,
+        id: String,
+        payload: SessionCommandPayload,
+        transfers: Vec<crate::uploads::AttachmentTransfer>,
+    ) -> Result<(String, bool), EngineError> {
+        let handle = self.open(chat_id)?;
         let now = now_ms();
         let based_on = handle.doc.read_entries()?.last().map(|m| CommandBasedOn {
             turn_id: Some(m.id.clone()),
@@ -2756,7 +2906,9 @@ impl DocHost {
             status: SessionCommandStatus::Pending,
             resolution: None,
         };
-        handle.doc.queue_command(&entry)?;
+        if !handle.doc.queue_command(&entry)? {
+            return Ok((id, false)); // an entry with this id already exists
+        }
         // Sending a message revives an archived chat: the user is acting in it
         // again, so the LWW row flips back to active on every device. Best-
         // effort — the command itself is durable regardless.
@@ -2769,7 +2921,7 @@ impl DocHost {
         // for any other reason still executes it).
         self.nudge_remote_host(chat_id);
         self.spawn_command_delivery(chat_id, entry, transfers);
-        Ok(id)
+        Ok((id, true))
     }
 
     /// Capture at ingestion (contract 5.3, "a queued command captures the
@@ -4922,6 +5074,20 @@ impl DocHost {
         // dispatches — the drain already gated on the bytes being
         // present, so every ref resolves here.
         self.resolve_request_attachments(&mut request);
+        // Work Outline execution scope (contract 6.3): a bound Chat runs only
+        // in its validated execution root, BEFORE any worktree is
+        // materialized, any row is claimed, or the user message is written.
+        // A failure rejects the command; it never falls back to another
+        // directory. Unbound Chats are unaffected.
+        match self.validate_bound_dispatch(chat_id).await {
+            Ok(None) => {}
+            Ok(Some(validated)) => {
+                if let Err(err) = pin_bound_request(chat_id, &validated, &mut request) {
+                    return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+                }
+            }
+            Err(err) => return Ok((SessionCommandStatus::Rejected, Some(err.to_string()))),
+        }
         // Work Outline instructions (contract 5.3/5.5): resolve the pinned
         // revision, verify it, and check the harness BEFORE anything is
         // written. A plain Run that reaches the host (an older sender, or one
@@ -5112,7 +5278,9 @@ impl DocHost {
         {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
-        self.dispatch_with_source_context(
+        // The execution scope was validated above (before any write), so
+        // skip the chokepoint's second validation.
+        self.dispatch_unchecked(
             sessions,
             chat_id,
             harness,
@@ -5366,7 +5534,30 @@ impl DocHost {
     /// dispatch so the conversation records the checkout the harness will
     /// actually observe, rather than whichever checkout state was current on
     /// an earlier turn.
+    ///
+    /// It is also the execution-scope chokepoint (contract 6.3): a bound
+    /// Chat's binding is validated here and `request.cwd` is overwritten with
+    /// the validated execution root, whatever the caller rebuilt the request
+    /// from (last request, chat row, queue row). A failure is an error, never
+    /// a fallback.
     pub(crate) async fn dispatch_with_source_context(
+        &self,
+        sessions: &SessionsEngine,
+        chat_id: &str,
+        harness: HarnessId,
+        mut request: zeron_proto::RunRequest,
+        message_id: Option<String>,
+    ) -> Result<String, EngineError> {
+        if let Some(validated) = self.validate_bound_dispatch(chat_id).await? {
+            pin_bound_request(chat_id, &validated, &mut request)?;
+        }
+        self.dispatch_unchecked(sessions, chat_id, harness, request, message_id)
+            .await
+    }
+
+    /// [`Self::dispatch_with_source_context`] for a request whose execution
+    /// scope the caller already validated.
+    async fn dispatch_unchecked(
         &self,
         sessions: &SessionsEngine,
         chat_id: &str,
@@ -5518,6 +5709,17 @@ impl DocHost {
                 return None;
             }
         };
+        // A bound Chat runs in its captured execution root (the dispatch
+        // chokepoint validates it); it never gets an empty cwd that a harness
+        // would resolve against the engine's own directory (fallback F4).
+        let cwd = match self.bound_execution_root(chat_id) {
+            Some(root) if root.is_empty() => {
+                tracing::warn!(chat = %chat_id, "bound chat has an empty execution root");
+                return None;
+            }
+            Some(root) => root,
+            None => chat.cwd.unwrap_or_default(),
+        };
         let config = chat.config;
         Some(zeron_proto::RunRequest {
             prompt: prompt.to_string(),
@@ -5528,7 +5730,7 @@ impl DocHost {
                 .as_ref()
                 .map(|c| c.model_options.clone())
                 .unwrap_or_default(),
-            cwd: chat.cwd.unwrap_or_default(),
+            cwd,
             sandbox: config
                 .as_ref()
                 .map(|c| c.sandbox)

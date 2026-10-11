@@ -48,6 +48,15 @@ pub struct TitleGenerator {
     inner: Arc<Inner>,
 }
 
+/// Whether automatic `zeron/*` branch renaming is off for this Chat (it has
+/// a captured Work Outline execution binding).
+pub(crate) fn branch_rename_blocked(
+    workspace: &crate::workspace_host::WorkspaceHost,
+    chat_id: &str,
+) -> bool {
+    workspace.chat_execution_binding(chat_id).is_some()
+}
+
 impl TitleGenerator {
     pub fn new(workspace: WorkspaceHost, registry: Arc<HarnessRegistry>, repos: Repos) -> Self {
         Self {
@@ -131,8 +140,12 @@ impl TitleGenerator {
 
         // Rename the worktree branch when the chat still sits on its original
         // zeron/<name> branch (guards live inside rename_worktree_branch).
+        // Never for a Chat with a Work Outline execution binding: its
+        // checkout (and any `expectedRef`) was captured at launch, and Zeron
+        // does not rename or switch its branches (contract 6.3).
         if let (Some(chat_cwd), Some(branch)) = (&latest.cwd, &latest.branch)
             && branch.starts_with("zeron/")
+            && !branch_rename_blocked(&self.inner.workspace, chat_id)
         {
             match self
                 .inner

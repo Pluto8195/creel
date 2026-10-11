@@ -658,6 +658,24 @@ pub async fn validate(
         }
     }
 
+    // A launch into a chosen worktree uses that worktree as its root: when
+    // the worktree itself is reported (pruned, moved, missing), that is the
+    // actionable error, not the generic "root missing".
+    let root_is_reported_worktree = |errors: &[ExecutionValidationError]| {
+        errors.iter().any(|error| match error {
+            ExecutionValidationError::WorktreeMissing { path, .. }
+            | ExecutionValidationError::WorktreePruned { path, .. } => {
+                canonical_lenient(Path::new(path)) == canonical_lenient(root_input)
+            }
+            ExecutionValidationError::WorktreeMoved { expected_path, .. } => {
+                canonical_lenient(Path::new(expected_path)) == canonical_lenient(root_input)
+            }
+            _ => false,
+        })
+    };
+    if root.is_none() && root_is_reported_worktree(&errors) {
+        errors.retain(|error| !matches!(error, ExecutionValidationError::RootMissing { .. }));
+    }
     if !errors.is_empty() {
         return Err(errors);
     }

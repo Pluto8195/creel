@@ -467,10 +467,10 @@ impl SessionsEngine {
         {
             return Err(EngineError::Other(TURN_BOUNDARY_MESSAGE.into()));
         }
-        let resume = request
-            .resume
-            .clone()
-            .or_else(|| self.inner.resume_for(chat_id, &request.cwd));
+        let resume = match request.resume.clone() {
+            Some(resume) => Some(resume),
+            None => self.inner.checked_resume_for(chat_id, &request.cwd)?,
+        };
         let transition = match &resume {
             None => InstructionTransition::Fresh,
             Some(native) => {
@@ -775,7 +775,7 @@ impl SessionsEngine {
                     })?;
             }
         } else if request.resume.is_none() {
-            request.resume = self.inner.resume_for(chat_id, &request.cwd);
+            request.resume = self.inner.checked_resume_for(chat_id, &request.cwd)?;
             resume_injected = request.resume.is_some();
         }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
@@ -1524,6 +1524,58 @@ impl Inner {
         // Cache the journal hit (memory + row) so later dispatches skip the scan.
         self.remember_harness_session(chat_id, &session_id, &session_cwd);
         cwd_ok(&session_cwd).then_some(session_id)
+    }
+
+    /// [`Self::resume_for`] with the Work Outline execution-scope rule
+    /// (contract 6.3, fallback F6): for a BOUND Chat a stored native session
+    /// whose cwd differs from the (validated) launch cwd, or is unknown, is
+    /// an `execution-scope:resumeRootMismatch` error, never a silent fresh
+    /// session. No stored session (or the explicit empty-id tombstone) starts
+    /// fresh. Unbound Chats keep today's cwd-gated behavior.
+    fn checked_resume_for(&self, chat_id: &str, cwd: &str) -> Result<Option<String>, EngineError> {
+        let bound = self
+            .workspace()
+            .is_some_and(|ws| ws.chat_execution_binding(chat_id).is_some());
+        if !bound {
+            return Ok(self.resume_for(chat_id, cwd));
+        }
+        let Some((session_id, session_cwd)) = self.stored_harness_session(chat_id) else {
+            return Ok(None);
+        };
+        if session_id.is_empty() {
+            return Ok(None);
+        }
+        let same = !session_cwd.is_empty()
+            && crate::execution_scope::canonical_lenient(std::path::Path::new(&session_cwd))
+                == crate::execution_scope::canonical_lenient(std::path::Path::new(cwd));
+        if same {
+            return Ok(Some(session_id));
+        }
+        Err(EngineError::Other(
+            crate::execution_scope::rejection_message(&[
+                zeron_proto::ExecutionValidationError::ResumeRootMismatch {
+                    expected_path: cwd.to_owned(),
+                    found_path: session_cwd,
+                },
+            ]),
+        ))
+    }
+
+    /// The chat's stored native session `(id, cwd)` from the same sources
+    /// as [`Self::resume_for`] (memory, chat row, journal), without the cwd
+    /// gate.
+    fn stored_harness_session(&self, chat_id: &str) -> Option<(String, String)> {
+        if let Some(known) = lock(&self.harness_sessions).get(chat_id).cloned() {
+            return Some((known.session_id, known.cwd));
+        }
+        if let Some(ws) = self.workspace()
+            && let Some((session_id, session_cwd)) = ws.chat_harness_session(chat_id)
+        {
+            return Some((session_id, session_cwd.unwrap_or_default()));
+        }
+        let (session_id, session_cwd) = self.journal_harness_session(chat_id)?;
+        self.remember_harness_session(chat_id, &session_id, &session_cwd);
+        Some((session_id, session_cwd))
     }
 
     /// The last harness session id named anywhere in the chat's journal, with
