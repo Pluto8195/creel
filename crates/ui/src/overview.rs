@@ -399,6 +399,9 @@ struct OverviewRow {
     /// (Work Outline drift). Never feeds `tile_size`: the mark shares the
     /// title line.
     instruction_drift: bool,
+    /// The Chat captured an execution configuration that differs from its
+    /// item's current one (Work Outline exception). Shares the title line.
+    execution_exception: bool,
 }
 
 impl OverviewRow {
@@ -3264,6 +3267,7 @@ impl Overview {
             let (user_action_required, user_action_count) =
                 work_item_index.attention_for_chat(&chat.id);
             let instruction_drift = work_item_index.instruction_drift_for_chat(&chat.id);
+            let execution_exception = work_item_index.execution_exception_for_chat(&chat.id);
             all.push(OverviewRow {
                 status,
                 chat,
@@ -3283,6 +3287,7 @@ impl Overview {
                 user_action_required,
                 user_action_count,
                 instruction_drift,
+                execution_exception,
             });
         }
         self.known_repos = known_repos;
@@ -7234,6 +7239,13 @@ impl Overview {
             theme,
             1.0,
         );
+        let exception_mark = row.execution_exception.then(|| {
+            crate::work_outline::chips::execution_exception_mark(
+                format!("overview-row-execution-exception-{chat_id}"),
+                theme,
+                1.0,
+            )
+        });
         let drift_mark = row.instruction_drift.then(|| {
             self.instruction_drift_mark(
                 format!("overview-row-instruction-drift-{chat_id}"),
@@ -7345,6 +7357,7 @@ impl Overview {
                                             .child(title),
                                     )
                                     .children(drift_mark)
+                                    .children(exception_mark)
                                     .when_some(attention, |el, attention| el.child(attention)),
                             )
                             .child(
@@ -7476,6 +7489,13 @@ impl Overview {
             theme,
             zoom,
         );
+        let exception_mark = row.execution_exception.then(|| {
+            crate::work_outline::chips::execution_exception_mark(
+                format!("overview-tile-execution-exception-{}", row.chat.id),
+                theme,
+                zoom,
+            )
+        });
         let drift_mark = row.instruction_drift.then(|| {
             self.instruction_drift_mark(
                 format!("overview-tile-instruction-drift-{}", row.chat.id),
@@ -7576,6 +7596,7 @@ impl Overview {
                             .child(title),
                     )
                     .children(drift_mark)
+                    .children(exception_mark)
                     .when_some(attention, |el, attention| el.child(attention)),
             )
             .child(
@@ -11347,6 +11368,7 @@ mod logic_tests {
             user_action_required: false,
             user_action_count: 0,
             instruction_drift: false,
+            execution_exception: false,
         }
     }
 
@@ -12698,6 +12720,44 @@ mod logic_tests {
             (with, without)
         });
         assert_eq!(with, without);
+    }
+
+    /// Execution exceptions: only the exception Chat carries the compact
+    /// mark on List rows and Canvas cards, and it never changes a card's
+    /// size; the work-item filter keeps bound Chats with their item.
+    #[gpui::test]
+    fn execution_exception_marks_fit_list_and_canvas_without_changing_tile_size(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _state, vcx) = outline_overview(cx, dir.path());
+        let sizes = |o: &mut Overview, cx: &mut Context<Overview>| {
+            o.rows(cx)
+                .iter()
+                .map(|r| (r.chat.id.clone(), r.tile_size()))
+                .collect::<Vec<_>>()
+        };
+        let marks = |vcx: &mut gpui::VisualTestContext, prefix: &str| {
+            [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
+                .into_iter()
+                .filter(|id| row_bounds(vcx, format!("{prefix}{id}")).is_some())
+                .collect::<Vec<_>>()
+        };
+        let without = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(None), cx);
+            sizes(o, cx)
+        });
+        let with = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(execution_fixture::snapshot("s1"))), cx);
+            sizes(o, cx)
+        });
+        assert_eq!(with, without, "the exception mark never feeds tile size");
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::List, cx));
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-row-execution-exception-"), [CHAT_API]);
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-tile-execution-exception-"), [CHAT_API]);
     }
 
     /// Drift marks: only drifted Chats carry one, on List rows, Canvas cards,

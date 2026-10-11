@@ -156,6 +156,40 @@ pub(crate) fn instruction_drift_mark(
         .into_any_element()
 }
 
+/// The execution-exception mark for a Chat running with a captured
+/// configuration that differs from its item's current one (List rows,
+/// Canvas cards). Compact (no label) so it shares the title line and never
+/// feeds `tile_size`.
+pub(crate) fn execution_exception_mark(
+    id: impl Into<SharedString>,
+    theme: &Theme,
+    zoom: f32,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let selector = id.to_string();
+    div()
+        .id(id)
+        .debug_selector(move || selector)
+        .flex_none()
+        .flex()
+        .items_center()
+        .px(px(2.0 * zoom))
+        .child(
+            crate::icons::icon(crate::icons::FOLDER_WITH_FILES)
+                .size(px(10.0 * zoom))
+                .text_color(theme.accent),
+        )
+        .tooltip(|_, cx| {
+            cx.new(|_| {
+                TextTooltip(
+                    "This Chat uses a different execution configuration than its work item".into(),
+                )
+            })
+            .into()
+        })
+        .into_any_element()
+}
+
 /// Glyph + label + color for an effective status (Outline rows, details).
 pub(crate) fn status_style(
     status: WorkItemEffectiveStatus,
