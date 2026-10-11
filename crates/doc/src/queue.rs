@@ -75,10 +75,30 @@ pub enum QueueDeliveryGate {
         since_ms: i64,
         base_text_hash: String,
     },
+    /// The host refused to start this row: its pinned Work Outline
+    /// instruction revision differs from what the harness's native session
+    /// carries, and the harness can only apply it in a fresh session
+    /// (`instructionContextResetRequired`). The row waits, blocking the
+    /// queue head, until the user confirms with the
+    /// `confirmInstructionContextReset` command (which clears this gate and
+    /// marks the row confirmed) or edits / removes the row. Older hosts read
+    /// the unknown kind as `ReviewRequired` (fail closed).
+    InstructionContextResetRequired {
+        harness: zeron_proto::HarnessId,
+        revision_id: String,
+        revision_hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_revision_id: Option<String>,
+        since_ms: i64,
+    },
 }
 
 /// Row-map key holding a queued row's captured instruction revision pin.
 const QUEUED_INSTRUCTIONS_KEY: &str = "instructions";
+
+/// Row-map key: the user confirmed a context reset for this row's revision
+/// (kept on the row so the confirmation survives the Turn boundary).
+const QUEUED_CONTEXT_RESET_CONFIRMED_KEY: &str = "contextResetConfirmed";
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -379,6 +399,46 @@ impl SessionDoc {
         Ok(true)
     }
 
+    /// Whether the user confirmed a context reset for this row.
+    pub fn queued_context_reset_confirmed(&self, id: &str) -> bool {
+        let queue = self.doc().get_movable_list("queue");
+        let Some(index) = index_of(&queue, id) else {
+            return false;
+        };
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
+        else {
+            return false;
+        };
+        matches!(
+            map.get(QUEUED_CONTEXT_RESET_CONFIRMED_KEY),
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))
+        )
+    }
+
+    /// Record (or clear) a row's context-reset confirmation. `false` when
+    /// there is no such row.
+    pub fn set_queued_context_reset_confirmed(
+        &self,
+        id: &str,
+        confirmed: bool,
+    ) -> Result<bool, DocError> {
+        let queue = self.doc().get_movable_list("queue");
+        let Some(index) = index_of(&queue, id) else {
+            return Ok(false);
+        };
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
+        else {
+            return Ok(false);
+        };
+        if confirmed {
+            map.insert(QUEUED_CONTEXT_RESET_CONFIRMED_KEY, true)?;
+        } else {
+            map.delete(QUEUED_CONTEXT_RESET_CONFIRMED_KEY)?;
+        }
+        self.doc().commit();
+        Ok(true)
+    }
+
     /// Remove and return the head — the host's turn-end flush.
     pub fn take_queue_head(&self) -> Result<Option<QueuedMessage>, DocError> {
         let Some(head) = self.read_queue()?.into_iter().next() else {
@@ -498,6 +558,33 @@ mod tests {
         assert_eq!(doc.queued_instructions("q1"), None);
         assert!(doc.set_queued_instructions("q1", &pin).unwrap());
         assert_eq!(doc.queued_instructions("q1"), Some(pin));
+    }
+
+    #[test]
+    fn context_reset_gate_and_confirmation_round_trip() {
+        let doc = SessionDoc::init("chat").unwrap();
+        doc.push_queued(&QueuedMessage::new("q1", "first", "dev"))
+            .unwrap();
+        let gate = QueueDeliveryGate::InstructionContextResetRequired {
+            harness: zeron_proto::HarnessId::Codex,
+            revision_id: "rev-b".into(),
+            revision_hash: "hb".into(),
+            previous_revision_id: Some("rev-a".into()),
+            since_ms: 7,
+        };
+        assert!(doc.set_queued_delivery_gate("q1", Some(&gate)).unwrap());
+        assert_eq!(doc.read_queue().unwrap()[0].delivery_gate, Some(gate));
+        // A gated row is not takeable.
+        assert!(doc.take_queued("q1").unwrap().is_none());
+        assert!(!doc.queued_context_reset_confirmed("q1"));
+        assert!(doc.set_queued_context_reset_confirmed("q1", true).unwrap());
+        assert!(doc.queued_context_reset_confirmed("q1"));
+        assert!(doc.set_queued_context_reset_confirmed("q1", false).unwrap());
+        assert!(!doc.queued_context_reset_confirmed("q1"));
+        assert!(
+            !doc.set_queued_context_reset_confirmed("missing", true)
+                .unwrap()
+        );
     }
 
     fn doc() -> SessionDoc {

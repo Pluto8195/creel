@@ -337,18 +337,123 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Put a taken queue row back after a failed send, with the instruction pin
-/// it captured at queue time.
+/// it captured at queue time and its context-reset confirmation. A send the
+/// host refused with `instructionContextResetRequired` gets the typed gate
+/// on the row (durable and visible; it blocks the queue head until the user
+/// confirms) and returns `true`.
 fn restore_queued(
     handle: &ChatDocHandle,
     index: usize,
     item: &QueuedMessage,
     pin: Option<&InstructionRevisionPin>,
-) {
+    reset_confirmed: bool,
+    error: Option<&EngineError>,
+) -> bool {
     let _ = handle.doc.insert_queued(index, item);
     if let Some(pin) = pin {
         let _ = handle.doc.set_queued_instructions(&item.id, pin);
     }
+    if reset_confirmed {
+        let _ = handle
+            .doc
+            .set_queued_context_reset_confirmed(&item.id, true);
+    }
+    let gated = match error {
+        Some(EngineError::InstructionDelivery(zeron_proto::InstructionDeliveryRejection {
+            outcome:
+                zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+                    harness,
+                    revision_id,
+                    revision_hash,
+                    previous_revision_id,
+                    ..
+                },
+            ..
+        })) => {
+            let gate = QueueDeliveryGate::InstructionContextResetRequired {
+                harness: *harness,
+                revision_id: revision_id.clone(),
+                revision_hash: revision_hash.clone(),
+                previous_revision_id: previous_revision_id.clone(),
+                since_ms: now_ms(),
+            };
+            handle
+                .doc
+                .set_queued_delivery_gate(&item.id, Some(&gate))
+                .unwrap_or(false)
+        }
+        _ => false,
+    };
     handle.publish_queue();
+    gated
+}
+
+/// Refused sends still waiting on the user: `run` / `runWithInstructions`
+/// commands the host rejected with a typed outcome, whose message never
+/// landed, with no later command for the same message id, within the
+/// command TTL. Cheap when nothing was refused (the transcript is read only
+/// when a candidate exists).
+fn rejected_sends(doc: &SessionDoc, now: i64) -> Vec<zeron_proto::InstructionRejectedSend> {
+    let outcomes = doc.command_outcomes();
+    if outcomes.is_empty() {
+        return Vec::new();
+    }
+    let Ok(commands) = doc.read_commands() else {
+        return Vec::new();
+    };
+    let message_of = |c: &SessionCommandEntry| match &c.payload {
+        SessionCommandPayload::Run {
+            request,
+            message_id,
+        }
+        | SessionCommandPayload::RunWithInstructions {
+            request,
+            message_id,
+            ..
+        } => Some((message_id.clone(), request.clone())),
+        _ => None,
+    };
+    let candidates: Vec<_> = commands
+        .iter()
+        .filter(|c| {
+            c.status == SessionCommandStatus::Rejected
+                && now.saturating_sub(c.issued_at) < COMMAND_DEFAULT_TTL_MS
+        })
+        .filter_map(|c| {
+            let outcome = outcomes.get(&c.id)?.clone();
+            let (message_id, request) = message_of(c)?;
+            let superseded = commands.iter().any(|o| {
+                o.id != c.id
+                    && o.issued_at >= c.issued_at
+                    && message_of(o).is_some_and(|(mid, _)| mid == message_id)
+            });
+            (!superseded).then_some((c, message_id, request, outcome))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let landed: HashSet<String> = doc
+        .read_entries()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|(_, message_id, _, _)| !landed.contains(message_id))
+        .map(|(c, message_id, mut request, outcome)| {
+            request.instructions = None;
+            zeron_proto::InstructionRejectedSend {
+                command_id: c.id.clone(),
+                message_id,
+                request,
+                issued_at: c.issued_at,
+                outcome,
+                message: c.resolution.clone().unwrap_or_default(),
+            }
+        })
+        .collect()
 }
 
 /// The queued-attachment transfers a command's `pending://` refs imply —
@@ -575,6 +680,9 @@ pub struct ChatDocHandle {
     /// of short rows — so unlike the transcript mirror it publishes on every
     /// change without a dirty flag.
     queue_tx: watch::Sender<Vec<QueuedMessage>>,
+    /// Sends the host refused with a typed instruction-delivery outcome that
+    /// still need the user (`rejectedSends` on WatchQueue frames).
+    rejected_tx: watch::Sender<Vec<zeron_proto::InstructionRejectedSend>>,
     /// Serializes everything that TAKES from the queue. Both the doc-change
     /// task and the turn-end status watcher call `drain_queue`, and nothing
     /// keeps those two apart: without this they interleave across the
@@ -686,6 +794,28 @@ impl ChatDocHandle {
         let rx = self.queue_tx.subscribe();
         self.publish_queue();
         rx
+    }
+
+    /// Refused-send watch (WatchQueue `rejectedSends`), re-sent on change.
+    pub fn watch_rejected_sends(
+        &self,
+    ) -> watch::Receiver<Vec<zeron_proto::InstructionRejectedSend>> {
+        self.touch();
+        let rx = self.rejected_tx.subscribe();
+        self.publish_rejected_sends();
+        rx
+    }
+
+    fn publish_rejected_sends(&self) {
+        let rejected = rejected_sends(&self.doc, now_ms());
+        self.rejected_tx.send_if_modified(|slot| {
+            if *slot == rejected {
+                false
+            } else {
+                *slot = rejected;
+                true
+            }
+        });
     }
 
     fn publish_queue(&self) {
@@ -1460,6 +1590,7 @@ impl DocHost {
         // appended after the handle exists retain the normal automatic drain.
         let recovered_queue_pending = !initial_queue.is_empty();
         let (queue_tx, _) = watch::channel(initial_queue);
+        let (rejected_tx, _) = watch::channel(rejected_sends(&doc, now_ms()));
 
         let handle = Arc::new(ChatDocHandle {
             chat_id: chat_id.to_string(),
@@ -1469,6 +1600,7 @@ impl DocHost {
             transcript_import: Mutex::default(),
             transcript_history,
             queue_tx,
+            rejected_tx,
             drain_lock: tokio::sync::Mutex::new(()),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
@@ -2606,6 +2738,7 @@ impl DocHost {
             turn_id: Some(m.id.clone()),
             frontier: None,
         });
+        let payload = self.capture_selected_revision(chat_id, payload);
         let is_message = matches!(
             payload,
             SessionCommandPayload::Run { .. }
@@ -2639,10 +2772,44 @@ impl DocHost {
         Ok(id)
     }
 
-    /// Sender preflight for instruction-bearing commands (contract 5.5): a
-    /// remote host must advertise instruction delivery for the harness, and a
-    /// local host must be able to deliver right now. Rejects with an upgrade
-    /// message instead of queueing work that would sit Pending forever.
+    /// Capture at ingestion (contract 5.3, "a queued command captures the
+    /// revision"): a user-authored plain `Run` for a Chat with a selected
+    /// revision becomes `runWithInstructions` pinned to that selection before
+    /// it is written, so a revision applied after an earlier Turn reaches the
+    /// next Turn instead of the session's previous one. Clients keep sending
+    /// plain `Run`; engine-built follow-ups never pass through here and keep
+    /// the session / sidecar pin.
+    fn capture_selected_revision(
+        &self,
+        chat_id: &str,
+        payload: SessionCommandPayload,
+    ) -> SessionCommandPayload {
+        match payload {
+            SessionCommandPayload::Run {
+                request,
+                message_id,
+            } => match self.selected_instruction_revision(chat_id) {
+                Some(instructions) => SessionCommandPayload::RunWithInstructions {
+                    request,
+                    message_id,
+                    instructions,
+                    context_reset_confirmed: false,
+                },
+                None => SessionCommandPayload::Run {
+                    request,
+                    message_id,
+                },
+            },
+            other => other,
+        }
+    }
+
+    /// Ingestion preflight for instruction-bearing commands (contract 5.5),
+    /// before anything is written: a remote host must advertise
+    /// `work-outline-instruction-envelope-v1/<harness>` (an older or offline
+    /// host would otherwise skip the command or run without instructions),
+    /// and a local host must be able to deliver right now. Refuses with a
+    /// typed `instructionHostUnsupported` outcome and an actionable message.
     fn preflight_instruction_command(
         &self,
         chat_id: &str,
@@ -2652,6 +2819,15 @@ impl DocHost {
             return Ok(());
         };
         let harness = self.harness_for_request(chat_id, request);
+        self.preflight_instruction_host(chat_id, harness)
+    }
+
+    /// [`Self::preflight_instruction_command`] for one harness.
+    fn preflight_instruction_host(
+        &self,
+        chat_id: &str,
+        harness: HarnessId,
+    ) -> Result<(), EngineError> {
         match self.remote_host_for(chat_id) {
             Some(host_id) => {
                 let devices = self
@@ -2661,7 +2837,7 @@ impl DocHost {
                     .unwrap_or_default();
                 let host = devices.iter().find(|d| d.id == host_id);
                 instruction_delivery::remote_host_preflight(host, &host_id, harness)
-                    .map_err(EngineError::Other)
+                    .map_err(EngineError::InstructionDelivery)
             }
             None => {
                 let Some(sessions) = self.sessions() else {
@@ -2672,8 +2848,9 @@ impl DocHost {
                     zeron_harness::InstructionSupport::Unsupported {
                         reason,
                         upgrade_hint,
-                    } => Err(EngineError::Other(
-                        instruction_delivery::capability_message(
+                    } => Err(EngineError::InstructionDelivery(
+                        instruction_delivery::local_harness_unsupported(
+                            &self.inner.config.device_id,
                             harness,
                             &reason,
                             upgrade_hint.as_deref(),
@@ -2728,6 +2905,11 @@ impl DocHost {
         // revision the Chat had selected when the user queued it, even if a
         // newer one is applied before it drains.
         let instructions = self.selected_instruction_revision(chat_id);
+        // A pinned row needs a host that can deliver it (an older host would
+        // ignore the pin and run the row without instructions).
+        if instructions.is_some() {
+            self.preflight_instruction_host(chat_id, self.harness_for(chat_id))?;
+        }
         handle.doc.push_queued_with_instructions(
             &QueuedMessage {
                 id: id.clone(),
@@ -3012,7 +3194,9 @@ impl DocHost {
                     base_text_hash,
                     ..
                 }) => (previous_lease_id, base_text_hash),
-                None => return Ok(FinishQueueEditOutcome::Lost),
+                Some(QueueDeliveryGate::InstructionContextResetRequired { .. }) | None => {
+                    return Ok(FinishQueueEditOutcome::Lost);
+                }
             };
             if current_lease != lease_id {
                 return Ok(FinishQueueEditOutcome::Lost);
@@ -3178,13 +3362,14 @@ impl DocHost {
             ));
         }
         let pin = handle.doc.queued_instructions(id);
+        let confirmed = handle.doc.queued_context_reset_confirmed(id);
         let Some(item) = handle.doc.take_queued(id)? else {
             return Ok(false);
         };
         let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
         handle.publish_queue();
         if let Err(err) = self
-            .dispatch_queued(&handle, &item, pin.clone(), QueueSend::Interrupt)
+            .dispatch_queued(&handle, &item, pin.clone(), confirmed, QueueSend::Interrupt)
             .await
         {
             if was_paused {
@@ -3192,7 +3377,7 @@ impl DocHost {
             }
             // Put it back rather than swallowing what the user typed — at the
             // head, because the user just said this one was the urgent one.
-            restore_queued(&handle, 0, &item, pin.as_ref());
+            restore_queued(&handle, 0, &item, pin.as_ref(), confirmed, Some(&err));
             return Err(err);
         }
         Ok(true)
@@ -3249,6 +3434,7 @@ impl DocHost {
                 crate::sessions::TURN_BOUNDARY_MESSAGE.into(),
             ));
         }
+        let confirmed = handle.doc.queued_context_reset_confirmed(id);
         let Some(item) = handle.doc.take_queued(id)? else {
             return Ok(false);
         };
@@ -3258,13 +3444,13 @@ impl DocHost {
         // `dispatch_queued` falls through to NextTurn; if a new turn appeared
         // after our capability check, the prompt steers that turn instead.
         if let Err(err) = self
-            .dispatch_queued(&handle, &item, pin.clone(), QueueSend::Steer)
+            .dispatch_queued(&handle, &item, pin.clone(), confirmed, QueueSend::Steer)
             .await
         {
             if was_paused {
                 handle.queue_paused.store(true, Ordering::Release);
             }
-            restore_queued(&handle, 0, &item, pin.as_ref());
+            restore_queued(&handle, 0, &item, pin.as_ref(), confirmed, Some(&err));
             return Err(err);
         }
         Ok(true)
@@ -3322,7 +3508,11 @@ impl DocHost {
                     self.arm_queue_edit_expiry(handle, &head.id, lease_id, *expires_at_ms);
                     return;
                 }
-                Some(QueueDeliveryGate::ReviewRequired { .. }) => return,
+                // Waits on the user's confirmation (the reason is on the row).
+                Some(
+                    QueueDeliveryGate::ReviewRequired { .. }
+                    | QueueDeliveryGate::InstructionContextResetRequired { .. },
+                ) => return,
                 None => {}
             }
             // In flight, not just Working: an agent parked on a question owns
@@ -3334,16 +3524,24 @@ impl DocHost {
             }
             let send = QueueSend::NextTurn;
             let pin = handle.doc.queued_instructions(&head.id);
+            let confirmed = handle.doc.queued_context_reset_confirmed(&head.id);
             // Take it only once we know it is going out — a row that stays in
             // the queue on a failed send is recoverable; a vanished one is not.
             let Ok(Some(item)) = handle.doc.take_queued(&head.id) else {
                 return;
             };
             handle.publish_queue();
-            if let Err(err) = self.dispatch_queued(handle, &item, pin.clone(), send).await {
+            if let Err(err) = self
+                .dispatch_queued(handle, &item, pin.clone(), confirmed, send)
+                .await
+            {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");
-                handle.queue_paused.store(true, Ordering::Release);
-                restore_queued(handle, 0, &item, pin.as_ref());
+                // A context reset waiting on the user gates the row itself
+                // (durable, visible, head-of-line); anything else pauses the
+                // queue as before.
+                if !restore_queued(handle, 0, &item, pin.as_ref(), confirmed, Some(&err)) {
+                    handle.queue_paused.store(true, Ordering::Release);
+                }
                 return;
             }
         }
@@ -3377,11 +3575,13 @@ impl DocHost {
 
     /// Send one taken queue row. `pin` is the instruction revision the row
     /// captured at queue time; it is delivered exactly (never a newer one).
+    /// `reset_confirmed`: the user confirmed a context reset for this row.
     async fn dispatch_queued(
         &self,
         handle: &Arc<ChatDocHandle>,
         item: &QueuedMessage,
         pin: Option<InstructionRevisionPin>,
+        reset_confirmed: bool,
         send: QueueSend,
     ) -> Result<(), EngineError> {
         let Some(sessions) = self.sessions() else {
@@ -3443,6 +3643,9 @@ impl DocHost {
         };
         self.apply_chat_approval(chat_id, &mut request);
         let harness = self.harness_for_request(chat_id, &request);
+        if reset_confirmed {
+            sessions.confirm_context_reset(&message_id);
+        }
         self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
             .await?;
         Ok(())
@@ -4375,7 +4578,7 @@ impl DocHost {
                 CommandDisposition::Execute => {
                     let (status, resolution) = match self.execute(&sessions, handle, &entry).await {
                         Ok(outcome) => outcome,
-                        Err(err) => (SessionCommandStatus::Rejected, Some(err.to_string())),
+                        Err(err) => self.reject_command(handle, &entry.id, err),
                     };
                     self.resolve_command(handle, &entry.id, status, resolution.as_deref());
                 }
@@ -4526,6 +4729,33 @@ impl DocHost {
         out
     }
 
+    /// Resolution for a command that failed with `err`. A typed
+    /// instruction-delivery refusal resolves with its message and records the
+    /// typed outcome on the command row (`outcome` key), which is what makes
+    /// it actionable for clients (WatchQueue `rejectedSends`).
+    fn reject_command(
+        &self,
+        handle: &ChatDocHandle,
+        command_id: &str,
+        err: EngineError,
+    ) -> (SessionCommandStatus, Option<String>) {
+        match err {
+            EngineError::InstructionDelivery(rejection) => {
+                // A relayed entry may not be in this doc yet; its outcome
+                // then travels only in the relay reply.
+                if let Err(err) = handle
+                    .doc
+                    .set_command_outcome(command_id, &rejection.outcome)
+                {
+                    tracing::debug!(chat = %handle.chat_id, command = %command_id, error = %err,
+                        "command outcome not recorded");
+                }
+                (SessionCommandStatus::Rejected, Some(rejection.message))
+            }
+            other => (SessionCommandStatus::Rejected, Some(other.to_string())),
+        }
+    }
+
     /// Host-only outcome write (ledger rule 2).
     fn resolve_command(
         &self,
@@ -4582,6 +4812,7 @@ impl DocHost {
                 self.deliver_prompt(
                     sessions,
                     handle,
+                    &entry.id,
                     prompt,
                     message_id.clone(),
                     entry.issued_at,
@@ -4591,6 +4822,13 @@ impl DocHost {
             SessionCommandPayload::Interrupt {} => {
                 self.interrupt_and_pause_queue(sessions, handle).await?;
                 Ok((SessionCommandStatus::Applied, None))
+            }
+            SessionCommandPayload::ConfirmInstructionContextReset {
+                queued_message_id,
+                revision_id,
+            } => {
+                self.confirm_queued_context_reset(handle, queued_message_id, revision_id)
+                    .await
             }
             SessionCommandPayload::RespondInput {
                 request_id,
@@ -4686,9 +4924,12 @@ impl DocHost {
         self.resolve_request_attachments(&mut request);
         // Work Outline instructions (contract 5.3/5.5): resolve the pinned
         // revision, verify it, and check the harness BEFORE anything is
-        // written. A plain Run for a chat with a selected revision but no
-        // Execution Session record gets the selection (host-resolved);
-        // otherwise dispatch keeps the session's revision.
+        // written. A plain Run that reaches the host (an older sender, or one
+        // whose registry had not synced the selection) is still a NEW
+        // user-authored message: it takes the Chat's selected revision over
+        // the session's previous one (a replacement at the Turn boundary).
+        // Only a re-execution of a message that already dispatched keeps its
+        // own Turn pin.
         let pinned = match pinned {
             Some((pin, confirmed)) => {
                 match instruction_delivery::resolve_pin(self.instruction_registry().as_deref(), pin)
@@ -4705,27 +4946,35 @@ impl DocHost {
                     }
                 }
             }
-            None => match self.selected_instruction_revision(chat_id) {
-                Some(selected)
-                    if sessions
-                        .followup_instruction_pin(chat_id, Some(message_id))
-                        .is_none() =>
-                {
-                    match self.resolve_instruction_pin(&selected).await {
-                        Ok(envelope) => Some((envelope, false)),
-                        Err(err) => {
-                            return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
-                        }
+            None => match sessions
+                .turn_instruction_pin(chat_id, message_id)
+                .or_else(|| self.selected_instruction_revision(chat_id))
+            {
+                Some(pin) => match self.resolve_instruction_pin(&pin).await {
+                    Ok(envelope) => Some((envelope, false)),
+                    Err(err) => {
+                        return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
                     }
-                }
-                _ => None,
+                },
+                None => None,
             },
         };
         if let Some((envelope, confirmed)) = &pinned {
             let harness = self.harness_for_request(chat_id, &request);
             let support = sessions.instruction_support(harness)?;
             if let Err(message) = instruction_delivery::check_support(harness, &support, envelope) {
-                return Ok((SessionCommandStatus::Rejected, Some(message)));
+                let mut rejection = instruction_delivery::local_harness_unsupported(
+                    &self.inner.config.device_id,
+                    harness,
+                    "",
+                    None,
+                );
+                rejection.message = message;
+                return Ok(self.reject_command(
+                    handle,
+                    &entry.id,
+                    EngineError::InstructionDelivery(rejection),
+                ));
             }
             request.instructions = Some(InstructionDelivery {
                 envelope: envelope.clone(),
@@ -4758,6 +5007,13 @@ impl DocHost {
                     },
                     Some(&envelope.pin()),
                 )?;
+                // A confirmed context reset rides the row across the Turn
+                // boundary instead of an in-memory flag.
+                if *confirmed {
+                    handle
+                        .doc
+                        .set_queued_context_reset_confirmed(message_id, true)?;
+                }
                 handle.publish_queue();
                 return Ok((
                     SessionCommandStatus::Applied,
@@ -4839,10 +5095,11 @@ impl DocHost {
                 chat_id,
                 harness,
                 &request,
+                Some(message_id),
                 pinned.as_ref().is_some_and(|(_, confirmed)| *confirmed),
             )
         {
-            return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+            return Ok(self.reject_command(handle, &entry.id, err));
         }
         // Timestamp canonicalization: the user message lands in
         // history at the moment the user SENT it (the entry's
@@ -4870,6 +5127,61 @@ impl DocHost {
         Ok((SessionCommandStatus::Applied, None))
     }
 
+    /// `confirmInstructionContextReset`: the user agreed that the queued row
+    /// may start a fresh native session for its pinned revision. Marks the
+    /// row confirmed (the mark travels into the sidecar turn entry when it
+    /// dispatches), clears its reset gate, and drains the queue.
+    async fn confirm_queued_context_reset(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        queued_message_id: &str,
+        revision_id: &str,
+    ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
+        {
+            let _drain = handle.drain_lock.lock().await;
+            let Some(row) = handle
+                .doc
+                .read_queue()?
+                .into_iter()
+                .find(|row| row.id == queued_message_id)
+            else {
+                return Ok((
+                    SessionCommandStatus::Rejected,
+                    Some("the queued message is no longer in the queue".into()),
+                ));
+            };
+            let pinned = handle.doc.queued_instructions(queued_message_id);
+            if pinned.as_ref().map(|pin| pin.revision_id.as_str()) != Some(revision_id) {
+                return Ok((
+                    SessionCommandStatus::Rejected,
+                    Some(
+                        "the queued message is pinned to a different Work Outline instruction \
+                         revision"
+                            .into(),
+                    ),
+                ));
+            }
+            handle
+                .doc
+                .set_queued_context_reset_confirmed(queued_message_id, true)?;
+            if matches!(
+                row.delivery_gate,
+                Some(QueueDeliveryGate::InstructionContextResetRequired { .. })
+            ) {
+                handle
+                    .doc
+                    .set_queued_delivery_gate(queued_message_id, None)?;
+            }
+            handle.publish_queue();
+        }
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let host = self.clone();
+            let handle = handle.clone();
+            self.spawn_worker(async move { host.drain_queue(&handle).await });
+        }
+        Ok((SessionCommandStatus::Applied, None))
+    }
+
     /// Put a typed prompt in front of a live agent: steer it in, or — with no
     /// live steerable run — deliver the durable command as the next turn.
     /// After an engine restart `last_request` is empty too, so rebuild the run
@@ -4883,6 +5195,7 @@ impl DocHost {
         &self,
         sessions: &SessionsEngine,
         handle: &Arc<ChatDocHandle>,
+        command_id: &str,
         prompt: &str,
         message_id: Option<String>,
         issued_at: i64,
@@ -4897,6 +5210,40 @@ impl DocHost {
                 Some("held until the turn ends".into()),
             ));
         }
+        // No live run: this steer can only start a new Turn (the fallback
+        // below), under the Turn's pinned revision. Plan that Turn's
+        // instructions BEFORE the user message exists, so a refusal
+        // (capability, integrity, missing revision, context reset) writes
+        // nothing.
+        let fallback = if sessions.has_live_run(chat_id) {
+            None
+        } else if let Some(request) = self.steer_fallback_request(sessions, chat_id, &prompt) {
+            if let Some(pin) = sessions.followup_instruction_pin(chat_id, message_id.as_deref()) {
+                let envelope = match self.resolve_instruction_pin(&pin).await {
+                    Ok(envelope) => envelope,
+                    Err(err) => return Ok((SessionCommandStatus::Rejected, Some(err.to_string()))),
+                };
+                let mut probe = request.clone();
+                probe.cwd = sessions.resolve_cwd(chat_id, &probe.cwd)?;
+                probe.instructions = Some(InstructionDelivery {
+                    envelope,
+                    transition: InstructionTransition::Fresh,
+                });
+                let harness = self.harness_for_request(chat_id, &probe);
+                if let Err(err) = sessions.preflight_instructions(
+                    chat_id,
+                    harness,
+                    &probe,
+                    message_id.as_deref(),
+                    false,
+                ) {
+                    return Ok(self.reject_command(handle, command_id, err));
+                }
+            }
+            Some(request)
+        } else {
+            None
+        };
         if let Some(message_id) = message_id.as_deref()
             && let Err(err) =
                 handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
@@ -4909,21 +5256,14 @@ impl DocHost {
                 Ok((SessionCommandStatus::Applied, None))
             }
             SteerOutcome::NotSteerable => {
-                let request = sessions
-                    .last_request(chat_id)
-                    .or_else(|| self.request_from_chat_row(chat_id, &prompt));
-                let Some(mut request) = request else {
+                let request =
+                    fallback.or_else(|| self.steer_fallback_request(sessions, chat_id, &prompt));
+                let Some(request) = request else {
                     return Ok((
                         SessionCommandStatus::Rejected,
                         Some("no live run and no prior run config".into()),
                     ));
                 };
-                request.prompt = prompt;
-                request.resume = None; // dispatch re-derives the harness session
-                // A reused config must not re-inline the PREVIOUS turn's
-                // images; this prompt's own refs (if any) ride its text.
-                request.attachments = Vec::new();
-                self.apply_chat_approval(chat_id, &mut request);
                 let harness = self.harness_for_request(chat_id, &request);
                 self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
                     .await?;
@@ -4934,6 +5274,26 @@ impl DocHost {
                 ))
             }
         }
+    }
+
+    /// The run config a steer that falls back to a new Turn dispatches with:
+    /// the last request (instructions stripped), else the chat row.
+    fn steer_fallback_request(
+        &self,
+        sessions: &SessionsEngine,
+        chat_id: &str,
+        prompt: &str,
+    ) -> Option<zeron_proto::RunRequest> {
+        let mut request = sessions
+            .last_request(chat_id)
+            .or_else(|| self.request_from_chat_row(chat_id, prompt))?;
+        request.prompt = prompt.to_string();
+        request.resume = None; // dispatch re-derives the harness session
+        // A reused config must not re-inline the PREVIOUS turn's images;
+        // this prompt's own refs (if any) ride its text.
+        request.attachments = Vec::new();
+        self.apply_chat_approval(chat_id, &mut request);
+        Some(request)
     }
 
     /// Put `prompt` in the pending-message queue instead of a run mailbox when
@@ -5671,6 +6031,7 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                 let _ = tokio::task::spawn_blocking(move || {
                     publishing.publish_messages_if_watched();
                     publishing.publish_queue();
+                    publishing.publish_rejected_sends();
                 }).await;
                 host.drain_commands(&handle).await;
                 host.drain_queue(&handle).await;

@@ -5,7 +5,8 @@
 //! - `messages`: LoroList of LoroMap {
 //!   id, role, parts: LoroList<part map>, createdAt, deviceId, status?, continuationOf? }
 //! - `commands`: LoroList of LoroMap {
-//!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
+//!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution?,
+//!   outcome? }
 //! - `queue`:    LoroMovableList of LoroMap {
 //!   id, text, attachments?, issuedBy, issuedAt, editedAt? }        (any device writes)
 //!
@@ -22,6 +23,9 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{SessionCommandEntry, SessionCommandStatus};
 use crate::constants::{SESSION_SCHEMA_VERSION, TAIL_MESSAGE_COUNT};
 use crate::parts::{MessagePart, MessageStatus, SubagentStatus};
+
+/// Command-row key holding a typed `zeron_proto::InstructionDeliveryOutcome`.
+const COMMAND_OUTCOME_KEY: &str = "outcome";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocError {
@@ -574,6 +578,59 @@ impl SessionDoc {
         }
         self.doc.commit();
         Ok(())
+    }
+
+    /// Attach a typed instruction-delivery outcome to a command row (additive
+    /// `outcome` map key beside the host-written `status` / `resolution`;
+    /// readers that predate it ignore the key). Host-only, like the status.
+    pub fn set_command_outcome(
+        &self,
+        command_id: &str,
+        outcome: &zeron_proto::InstructionDeliveryOutcome,
+    ) -> Result<(), DocError> {
+        let commands = self.doc.get_list("commands");
+        let value = loro_value_from_json(&serde_json::to_value(outcome)?);
+        let mut found = false;
+        for i in 0..commands.len() {
+            if let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) =
+                commands.get(i)
+                && matches!(
+                    map.get("id"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == command_id
+                )
+            {
+                map.insert(COMMAND_OUTCOME_KEY, value.clone())?;
+                found = true;
+            }
+        }
+        if !found {
+            return Err(DocError::Schema(format!("command {command_id} not found")));
+        }
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// Typed instruction-delivery outcomes by command id (rows without one,
+    /// or with an outcome this build cannot read, are absent).
+    pub fn command_outcomes(&self) -> HashMap<String, zeron_proto::InstructionDeliveryOutcome> {
+        let commands = self
+            .doc
+            .get_list("commands")
+            .get_deep_value()
+            .to_json_value();
+        let mut out = HashMap::new();
+        for row in commands.as_array().into_iter().flatten() {
+            let (Some(id), Some(outcome)) = (
+                row.get("id").and_then(serde_json::Value::as_str),
+                row.get(COMMAND_OUTCOME_KEY),
+            ) else {
+                continue;
+            };
+            if let Ok(outcome) = serde_json::from_value(outcome.clone()) {
+                out.insert(id.to_string(), outcome);
+            }
+        }
+        out
     }
 
     /// Stamp a terminal status on an existing message entry by id (recovery:
@@ -1971,6 +2028,19 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].status, SessionCommandStatus::Applied);
         assert_eq!(commands[0].payload, entry.payload);
+        // Typed outcome: an additive key the entry decoder ignores.
+        assert!(doc.command_outcomes().is_empty());
+        let outcome = zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+            harness: zeron_proto::HarnessId::Codex,
+            message_id: Some("m1".into()),
+            revision_id: "rev-b".into(),
+            revision_hash: "hb".into(),
+            previous_revision_id: None,
+        };
+        doc.set_command_outcome("c1", &outcome).unwrap();
+        assert_eq!(doc.command_outcomes().get("c1"), Some(&outcome));
+        assert_eq!(doc.read_commands().unwrap()[0].payload, entry.payload);
+        assert!(doc.set_command_outcome("missing", &outcome).is_err());
     }
 
     fn command(id: &str, payload: crate::commands::SessionCommandPayload) -> SessionCommandEntry {

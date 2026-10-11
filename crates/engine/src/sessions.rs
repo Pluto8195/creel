@@ -410,6 +410,16 @@ impl SessionsEngine {
         lock(&self.inner.context_reset_confirmed).insert(message_id.to_string());
     }
 
+    /// The revision a Turn (by user message id) was already dispatched with,
+    /// from the journal sidecar.
+    pub(crate) fn turn_instruction_pin(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Option<InstructionRevisionPin> {
+        self.inner.journal.instruction_turn(chat_id, message_id)
+    }
+
     /// The revision an engine-built follow-up Turn runs under: the Turn's own
     /// pin (journal sidecar, keyed by user message id), else the live
     /// Execution Session's, else what the chat's last native session
@@ -440,6 +450,7 @@ impl SessionsEngine {
         chat_id: &str,
         harness_id: HarnessId,
         request: &RunRequest,
+        message_id: Option<&str>,
         context_reset_confirmed: bool,
     ) -> Result<Option<InstructionPlan>, EngineError> {
         let Some(delivery) = &request.instructions else {
@@ -479,12 +490,25 @@ impl SessionsEngine {
                 }
             }
         };
-        if matches!(transition, InstructionTransition::Replace { .. })
+        if let InstructionTransition::Replace {
+            previous_revision_id,
+        } = &transition
             && strategy == InstructionReplaceStrategy::FreshSession
         {
             if !context_reset_confirmed {
-                return Err(EngineError::Other(
-                    crate::instruction_delivery::context_reset_message(harness_id),
+                return Err(EngineError::InstructionDelivery(
+                    zeron_proto::InstructionDeliveryRejection {
+                        outcome:
+                            zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+                                harness: harness_id,
+                                message_id: message_id.map(str::to_string),
+                                revision_id: pin.revision_id.clone(),
+                                revision_hash: pin.revision_hash.clone(),
+                                previous_revision_id: Some(previous_revision_id.clone())
+                                    .filter(|id| !id.is_empty()),
+                            },
+                        message: crate::instruction_delivery::context_reset_message(harness_id),
+                    },
                 ));
             }
             return Ok(Some(InstructionPlan {
@@ -503,10 +527,17 @@ impl SessionsEngine {
         chat_id: &str,
         harness_id: HarnessId,
         request: &RunRequest,
+        message_id: Option<&str>,
         context_reset_confirmed: bool,
     ) -> Result<(), EngineError> {
-        self.plan_instructions(chat_id, harness_id, request, context_reset_confirmed)
-            .map(|_| ())
+        self.plan_instructions(
+            chat_id,
+            harness_id,
+            request,
+            message_id,
+            context_reset_confirmed,
+        )
+        .map(|_| ())
     }
 
     /// Subscribe to a chat's live event stream: returns the journal replay after
@@ -599,11 +630,26 @@ impl SessionsEngine {
                 transition: InstructionTransition::Fresh,
             });
         }
-        let context_reset_confirmed = message_id
-            .as_ref()
-            .is_some_and(|mid| lock(&self.inner.context_reset_confirmed).contains(mid));
-        let instruction_plan =
-            self.plan_instructions(chat_id, harness_id, &request, context_reset_confirmed)?;
+        // The confirmation is in memory from the command that carried it,
+        // and durable in the sidecar turn entry once a dispatch got that far:
+        // a crash or restart before the Turn's session starts keeps it.
+        let context_reset_confirmed = message_id.as_ref().is_some_and(|mid| {
+            lock(&self.inner.context_reset_confirmed).contains(mid)
+                || request.instructions.as_ref().is_some_and(|delivery| {
+                    self.inner.journal.instruction_turn_reset_confirmed(
+                        chat_id,
+                        mid,
+                        &delivery.envelope.pin(),
+                    )
+                })
+        });
+        let instruction_plan = self.plan_instructions(
+            chat_id,
+            harness_id,
+            &request,
+            message_id.as_deref(),
+            context_reset_confirmed,
+        )?;
         // Every dispatched prompt is a turn — routed steer or fresh run alike.
         self.note_turn_start(chat_id, &request.cwd);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
@@ -647,6 +693,7 @@ impl SessionsEngine {
                         chat_id,
                         &user_id,
                         &delivery.envelope.pin(),
+                        false,
                     )
                 {
                     tracing::warn!(chat = %chat_id, error = %err, "instruction sidecar write failed");
@@ -712,15 +759,21 @@ impl SessionsEngine {
             if let Some(delivery) = request.instructions.as_mut() {
                 delivery.transition = plan.transition.clone();
                 // Durable before spawn: a crash from here on revives this Turn
-                // with exactly this revision.
+                // with exactly this revision, and with its context-reset
+                // confirmation until the session starts (cleared on
+                // `SessionStarted`, not here).
                 self.inner
                     .journal
-                    .note_instruction_turn(chat_id, &user_id, &delivery.envelope.pin())
+                    .note_instruction_turn(
+                        chat_id,
+                        &user_id,
+                        &delivery.envelope.pin(),
+                        context_reset_confirmed,
+                    )
                     .map_err(|e| {
                         EngineError::Other(format!("instruction sidecar write failed: {e}"))
                     })?;
             }
-            lock(&self.inner.context_reset_confirmed).remove(&user_id);
         } else if request.resume.is_none() {
             request.resume = self.inner.resume_for(chat_id, &request.cwd);
             resume_injected = request.resume.is_some();
@@ -1547,6 +1600,19 @@ impl Inner {
                     revision_hash: pin.map(|p| p.revision_hash.clone()),
                 },
             );
+        }
+    }
+
+    /// Drop a Turn's context-reset confirmation (memory and sidecar) once
+    /// its session started.
+    fn spend_context_reset(&self, chat_id: &str, message_id: &str) {
+        let was_confirmed = lock(&self.context_reset_confirmed).remove(message_id);
+        if (was_confirmed || self.journal.instruction_sidecar(chat_id).is_some())
+            && let Err(err) = self
+                .journal
+                .clear_instruction_turn_reset_confirmation(chat_id, message_id)
+        {
+            tracing::warn!(chat = %chat_id, error = %err, "instruction sidecar write failed");
         }
     }
 
@@ -2832,6 +2898,9 @@ async fn drive_run(
                     cwd,
                     instruction_pin.as_ref(),
                 );
+                // The Turn's session exists now: a context reset it was
+                // confirmed for is spent.
+                inner.spend_context_reset(&chat_id, &resume_state.user_message_id);
             }
             AgentEvent::Done {
                 session_id: Some(session_id),

@@ -110,6 +110,9 @@ pub struct TitleSettings {
 }
 
 type Factory = Box<dyn Fn() -> Result<Arc<dyn Harness>, HarnessError> + Send + Sync>;
+/// Called after the registry's harness set or enablement changes (and after
+/// an install), e.g. to restamp this device's capability tokens.
+pub type ChangeListener = Arc<dyn Fn() + Send + Sync>;
 type InstalledProbe = Box<dyn Fn() -> bool + Send + Sync>;
 
 enum Slot {
@@ -130,6 +133,7 @@ pub struct HarnessRegistry {
     prefs: Mutex<HarnessPrefsFile>,
     /// Where the prefs persist; `None` (tests, bare registries) skips writes.
     prefs_path: Mutex<Option<PathBuf>>,
+    listeners: Mutex<Vec<ChangeListener>>,
 }
 
 impl Default for HarnessRegistry {
@@ -145,6 +149,29 @@ impl HarnessRegistry {
             order: Mutex::new(Vec::new()),
             prefs: Mutex::new(HarnessPrefsFile::default()),
             prefs_path: Mutex::new(None),
+            listeners: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a change listener (see [`ChangeListener`]). Listeners must
+    /// not block: they run on the caller's thread.
+    pub fn on_change(&self, listener: ChangeListener) {
+        self.listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(listener);
+    }
+
+    /// Tell listeners the harness set changed (registration, enablement, or
+    /// an install that may have changed a CLI on disk).
+    pub fn notify_changed(&self) {
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for listener in listeners {
+            listener();
         }
     }
 
@@ -248,6 +275,7 @@ impl HarnessRegistry {
             _ => return Ok(()),
         }
         self.persist_prefs();
+        self.notify_changed();
         Ok(())
     }
 
@@ -297,6 +325,7 @@ impl HarnessRegistry {
         if self.slots().insert(id, Slot::Ready(harness)).is_none() {
             self.order().push(id);
         }
+        self.notify_changed();
     }
 
     /// Register a slot resolved on first `resolve` (the factory result is
@@ -323,6 +352,7 @@ impl HarnessRegistry {
         {
             self.order().push(id);
         }
+        self.notify_changed();
     }
 
     pub fn resolve(&self, id: HarnessId) -> Result<Arc<dyn Harness>, HarnessError> {

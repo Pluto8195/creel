@@ -722,6 +722,136 @@ pub struct InstructionDelivery {
 /// `contextResetConfirmed: true`.
 pub const INSTRUCTION_CONTEXT_RESET_REQUIRED: &str = "instructionContextResetRequired";
 
+/// Code of [`InstructionDeliveryOutcome::InstructionHostUnsupported`].
+pub const INSTRUCTION_HOST_UNSUPPORTED: &str = "instructionHostUnsupported";
+
+/// Prefix of an RPC failure string that carries an
+/// [`InstructionDeliveryRejection`] as compact JSON
+/// (`instruction-delivery/{"code":…,…,"message":…}`).
+pub const INSTRUCTION_DELIVERY_ERROR_PREFIX: &str = "instruction-delivery/";
+
+/// Why the chat's host cannot take an instruction-bearing send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstructionHostUnsupportedReason {
+    /// The host device is not in this workspace's registry yet (offline
+    /// since before it registered, or not synced): nothing is known about it.
+    UnknownDevice,
+    /// The host's Zeron predates instruction delivery
+    /// (`work-outline-instruction-envelope-v1` missing).
+    ZeronUpgradeRequired,
+    /// The host's Zeron delivers instructions but not for this harness
+    /// (`work-outline-instruction-envelope-v1/<harness>` missing: harness not
+    /// installed, too old, or its probe failed).
+    HarnessUnsupported,
+}
+
+/// Typed outcome of an instruction-bearing send the engine refused, tagged by
+/// `code`. Carried by an ingestion-time RPC failure
+/// ([`InstructionDeliveryRejection::to_wire_message`]), by the session-doc
+/// command row (additive `outcome` key beside `status: rejected`), and by
+/// `WatchQueue` frames (`rejectedSends`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "code",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum InstructionDeliveryOutcome {
+    /// The harness must start a fresh native session to apply `revisionId`
+    /// (replace strategy `FreshSession`); the user has to confirm first. No
+    /// user message was written. Confirm a send by resending
+    /// `runWithInstructions {…, instructions: {revisionId, revisionHash},
+    /// contextResetConfirmed: true}`; confirm a queued row with the
+    /// `confirmInstructionContextReset` command.
+    InstructionContextResetRequired {
+        harness: HarnessId,
+        /// The refused user message (absent when not known).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        revision_id: String,
+        revision_hash: String,
+        /// The revision the native session carries (absent: none or unknown).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_revision_id: Option<String>,
+    },
+    /// The chat's host cannot deliver Work Outline instructions for
+    /// `harness`; nothing was written. Show `message` (it names the upgrade).
+    InstructionHostUnsupported {
+        host_device_id: String,
+        harness: HarnessId,
+        /// The capability token the host must advertise.
+        required_capability: String,
+        reason: InstructionHostUnsupportedReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_version: Option<String>,
+    },
+}
+
+impl InstructionDeliveryOutcome {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InstructionContextResetRequired { .. } => INSTRUCTION_CONTEXT_RESET_REQUIRED,
+            Self::InstructionHostUnsupported { .. } => INSTRUCTION_HOST_UNSUPPORTED,
+        }
+    }
+}
+
+/// An [`InstructionDeliveryOutcome`] plus its user-facing message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionDeliveryRejection {
+    #[serde(flatten)]
+    pub outcome: InstructionDeliveryOutcome,
+    pub message: String,
+}
+
+impl InstructionDeliveryRejection {
+    /// `instruction-delivery/` + compact JSON of `self`.
+    pub fn to_wire_message(&self) -> String {
+        format!(
+            "{INSTRUCTION_DELIVERY_ERROR_PREFIX}{}",
+            serde_json::to_string(self).unwrap_or_default()
+        )
+    }
+
+    /// Inverse of [`Self::to_wire_message`]; `None` for any other string.
+    pub fn from_wire_message(text: &str) -> Option<Self> {
+        let json = text
+            .trim()
+            .strip_prefix(INSTRUCTION_DELIVERY_ERROR_PREFIX)?;
+        serde_json::from_str(json).ok()
+    }
+}
+
+impl std::fmt::Display for InstructionDeliveryRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_wire_message())
+    }
+}
+
+impl std::error::Error for InstructionDeliveryRejection {}
+
+/// A user send the host refused with a typed outcome and that is still
+/// actionable: its message never landed and no later command for the same
+/// `messageId` exists. Listed on `WatchQueue` frames as `rejectedSends`
+/// (newest last; rejections older than the command TTL drop out).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionRejectedSend {
+    pub command_id: String,
+    pub message_id: String,
+    /// The request as sent (`instructions` is always `None`); reuse it for
+    /// the confirmed resend.
+    pub request: crate::agent::RunRequest,
+    /// The command's `issuedAt` (epoch millis).
+    pub issued_at: i64,
+    pub outcome: InstructionDeliveryOutcome,
+    pub message: String,
+}
+
 /// Host-reported Execution Session (contract 5.6): an additive
 /// `executionSession` field on the host-written session-status row, written on
 /// `SessionStarted`. The UI shows delivery from this, never from selection.

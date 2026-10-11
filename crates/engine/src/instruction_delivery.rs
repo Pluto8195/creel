@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use zeron_harness::{InstructionReplaceStrategy, InstructionSupport};
 use zeron_proto::{
-    HarnessId, InstructionEnvelope, InstructionRevisionIntegrity, InstructionRevisionPin,
-    envelope_sha256,
+    HarnessId, InstructionDeliveryOutcome, InstructionDeliveryRejection, InstructionEnvelope,
+    InstructionRevisionIntegrity, InstructionRevisionPin, envelope_sha256,
 };
 
 use crate::EngineError;
@@ -238,13 +238,56 @@ pub fn advertised_capabilities(registry: &HarnessRegistry) -> Vec<String> {
     ))
 }
 
+/// The capability list this process last stamped from the probes (served by
+/// the pre-profile `EngineInfo`).
+static LAST_ADVERTISED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+pub fn last_advertised_capabilities() -> Option<Vec<String>> {
+    LAST_ADVERTISED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Restamp now (off the runtime) and again on every harness registry
+/// change. The listener holds the registry weakly (the registry owns it).
+pub fn restamp_on_registry_change(
+    workspace: &crate::workspace_host::WorkspaceHost,
+    registry: &Arc<HarnessRegistry>,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        restamp_device_capabilities(workspace, registry);
+        return;
+    };
+    let restamp = {
+        let workspace = workspace.clone();
+        let registry = Arc::downgrade(registry);
+        let runtime = runtime.clone();
+        Arc::new(move || {
+            let workspace = workspace.clone();
+            let registry = registry.clone();
+            runtime.spawn_blocking(move || {
+                if let Some(registry) = registry.upgrade() {
+                    restamp_device_capabilities(&workspace, &registry);
+                }
+            });
+        })
+    };
+    restamp();
+    registry.on_change(restamp);
+}
+
 /// Restamp this device's registry row with [`advertised_capabilities`]
-/// (boot stamps only the static list). Blocking: runs the CLI probes.
+/// (boot keeps the previous per-harness tokens until this runs). Blocking:
+/// runs the CLI probes (cached per executable identity).
 pub fn restamp_device_capabilities(
     workspace: &crate::workspace_host::WorkspaceHost,
     registry: &HarnessRegistry,
 ) {
     let capabilities = advertised_capabilities(registry);
+    *LAST_ADVERTISED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(capabilities.clone());
     let device_id = workspace.device_id().to_string();
     let Ok(devices) = workspace.read_devices() else {
         return;
@@ -259,18 +302,36 @@ pub fn restamp_device_capabilities(
     workspace.upsert_device_row(&device);
 }
 
-/// Sender preflight against a REMOTE host's stamped capabilities: the host
-/// must understand instruction envelopes and advertise the harness token.
-/// Unknown devices count as unsupported.
+/// Ingestion preflight against a REMOTE host's stamped capabilities: the
+/// host must understand instruction envelopes and advertise the harness
+/// token. Unknown devices count as unsupported. The refusal is typed
+/// (`instructionHostUnsupported`) with an actionable message.
 pub fn remote_host_preflight(
     host: Option<&zeron_proto::Device>,
     host_id: &str,
     harness: HarnessId,
-) -> Result<(), String> {
+) -> Result<(), InstructionDeliveryRejection> {
+    use zeron_proto::InstructionHostUnsupportedReason as Reason;
+    let token = zeron_proto::capabilities::work_outline_instruction_envelope_for(harness);
+    let reject = |reason: Reason, message: String| InstructionDeliveryRejection {
+        outcome: InstructionDeliveryOutcome::InstructionHostUnsupported {
+            host_device_id: host_id.to_string(),
+            harness,
+            required_capability: token.clone(),
+            reason,
+            device_name: host.map(|d| d.name.clone()),
+            device_version: host.and_then(|d| d.version.clone()),
+        },
+        message,
+    };
     let Some(device) = host else {
-        return Err(format!(
-            "The device hosting this chat ({host_id}) is unknown here, so Work Outline \
-             instructions cannot be sent to it. Wait for it to sync, or update Zeron on it"
+        return Err(reject(
+            Reason::UnknownDevice,
+            format!(
+                "The device hosting this chat ({host_id}) is unknown here, so Work Outline \
+                 instructions cannot be sent to it. Wait for it to come online and sync, or \
+                 update Zeron on it. Nothing was sent"
+            ),
         ));
     };
     let running = device
@@ -279,22 +340,51 @@ pub fn remote_host_preflight(
         .map(|v| format!(" (running {v})"))
         .unwrap_or_default();
     if !device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
-        return Err(format!(
-            "Update Zeron on {}{running} to send Work Outline instructions to it",
-            device.name
+        return Err(reject(
+            Reason::ZeronUpgradeRequired,
+            format!(
+                "Update Zeron on {}{running} to send Work Outline instructions to it. Nothing \
+                 was sent",
+                device.name
+            ),
         ));
     }
-    let token = zeron_proto::capabilities::work_outline_instruction_envelope_for(harness);
     if !device.supports(&token) {
-        return Err(format!(
-            "{} on {} cannot deliver Work Outline instructions. Update {} on {}",
-            harness_label(harness),
-            device.name,
-            harness_label(harness),
-            device.name
+        return Err(reject(
+            Reason::HarnessUnsupported,
+            format!(
+                "{} on {} cannot deliver Work Outline instructions. Update {} on {}. Nothing \
+                 was sent",
+                harness_label(harness),
+                device.name,
+                harness_label(harness),
+                device.name
+            ),
         ));
     }
     Ok(())
+}
+
+/// The typed refusal for a harness on THIS device that cannot deliver.
+pub fn local_harness_unsupported(
+    device_id: &str,
+    harness: HarnessId,
+    reason: &str,
+    upgrade_hint: Option<&str>,
+) -> InstructionDeliveryRejection {
+    InstructionDeliveryRejection {
+        outcome: InstructionDeliveryOutcome::InstructionHostUnsupported {
+            host_device_id: device_id.to_string(),
+            harness,
+            required_capability: zeron_proto::capabilities::work_outline_instruction_envelope_for(
+                harness,
+            ),
+            reason: zeron_proto::InstructionHostUnsupportedReason::HarnessUnsupported,
+            device_name: None,
+            device_version: None,
+        },
+        message: capability_message(harness, reason, upgrade_hint),
+    }
 }
 
 #[cfg(test)]
@@ -519,15 +609,33 @@ mod tests {
             "version": "0.2.81"
         }))
         .unwrap();
-        let message = remote_host_preflight(Some(&device), "d2", HarnessId::Codex).unwrap_err();
+        let rejection = remote_host_preflight(Some(&device), "d2", HarnessId::Codex).unwrap_err();
+        assert!(
+            rejection
+                .message
+                .starts_with("Update Zeron on Studio (running 0.2.81) to send Work Outline"),
+            "{}",
+            rejection.message
+        );
         assert_eq!(
-            message,
-            "Update Zeron on Studio (running 0.2.81) to send Work Outline instructions to it"
+            rejection.outcome,
+            InstructionDeliveryOutcome::InstructionHostUnsupported {
+                host_device_id: "d2".into(),
+                harness: HarnessId::Codex,
+                required_capability: "work-outline-instruction-envelope-v1/codex".into(),
+                reason: zeron_proto::InstructionHostUnsupportedReason::ZeronUpgradeRequired,
+                device_name: Some("Studio".into()),
+                device_version: Some("0.2.81".into()),
+            }
         );
         device.capabilities =
             vec![zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
-        let message = remote_host_preflight(Some(&device), "d2", HarnessId::Codex).unwrap_err();
-        assert!(message.contains("Update Codex on Studio"), "{message}");
+        let rejection = remote_host_preflight(Some(&device), "d2", HarnessId::Codex).unwrap_err();
+        assert!(
+            rejection.message.contains("Update Codex on Studio"),
+            "{}",
+            rejection.message
+        );
         device.capabilities.push(
             zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex),
         );

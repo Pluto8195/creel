@@ -60,6 +60,26 @@ pub mod capabilities {
         }
         all
     }
+
+    /// Whether `token` is a per-harness instruction token.
+    pub fn is_instruction_harness_token(token: &str) -> bool {
+        token
+            .strip_prefix(WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1)
+            .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+    }
+
+    /// [`current`] plus the per-harness instruction tokens a previous stamp
+    /// advertised: boot re-registration keeps them until the probes restamp,
+    /// so a restart never briefly reports "no harness can deliver".
+    pub fn current_preserving_instruction_harnesses(previous: &[String]) -> Vec<String> {
+        let mut all = current();
+        for token in previous {
+            if is_instruction_harness_token(token) && !all.contains(token) {
+                all.push(token.clone());
+            }
+        }
+        all
+    }
 }
 
 /// The fixed data boundary selected when an engine runtime is assembled.
@@ -137,6 +157,24 @@ mod tests {
                     "work-outline-instruction-envelope-v1"
                 ],
             })
+        );
+    }
+
+    #[test]
+    fn boot_keeps_previously_stamped_instruction_harness_tokens() {
+        let previous = vec![
+            "work-outline-instruction-envelope-v1/codex".to_string(),
+            "work-outline-instruction-envelope-v1".to_string(),
+            "work-outline-instruction-envelope-v1/".to_string(),
+            "retired-capability".to_string(),
+        ];
+        let stamped = capabilities::current_preserving_instruction_harnesses(&previous);
+        let mut expected = capabilities::current();
+        expected.push("work-outline-instruction-envelope-v1/codex".into());
+        assert_eq!(stamped, expected);
+        assert_eq!(
+            capabilities::current_preserving_instruction_harnesses(&[]),
+            capabilities::current()
         );
     }
 

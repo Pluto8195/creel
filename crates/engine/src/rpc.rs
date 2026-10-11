@@ -1409,6 +1409,9 @@ where
     install()
         .await
         .map_err(|error| RpcError::Failed(error.to_string()))?;
+    // A new or upgraded CLI can change which harnesses deliver Work Outline
+    // instructions; listeners restamp the device's capability tokens.
+    registry.notify_changed();
     Ok(registry.descriptors())
 }
 
@@ -1828,7 +1831,21 @@ impl RpcService for EngineRpc {
                 .await;
         }
         match method {
-            methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
+            methods::ENGINE_INFO => {
+                // Capabilities are dynamic (per-harness instruction tokens
+                // follow the probes): serve what this device's registry row
+                // currently advertises.
+                let mut info = self.engine_info.clone();
+                if let Some(device) = self.workspace.read_devices().ok().and_then(|devices| {
+                    devices
+                        .into_iter()
+                        .find(|device| device.id == self.engine_info.device_id)
+                }) && !device.capabilities.is_empty()
+                {
+                    info.capabilities = device.capabilities;
+                }
+                RpcReply::value(&info)
+            }
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
             methods::INSTALL_HARNESS => {
@@ -1955,15 +1972,30 @@ impl RpcService for EngineRpc {
                     .open(&p.chat_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let rx = handle.watch_queue();
+                let rejected = handle.watch_rejected_sends();
+                // Frame: `{items: QueuedMessage[], rejectedSends:
+                // InstructionRejectedSend[]}` — sends the host refused with a
+                // typed instruction-delivery outcome ride beside the queue
+                // (additive; older viewports ignore the key).
                 Ok(RpcReply::Stream(
-                    futures::stream::unfold((rx, true), |(mut rx, first)| async move {
-                        if !first {
-                            rx.changed().await.ok()?;
-                        }
-                        let items = rx.borrow_and_update().clone();
-                        let value = serde_json::json!({ "items": items });
-                        Some((value, (rx, false)))
-                    })
+                    futures::stream::unfold(
+                        (rx, rejected, true),
+                        |(mut rx, mut rejected, first)| async move {
+                            if !first {
+                                tokio::select! {
+                                    changed = rx.changed() => changed.ok()?,
+                                    changed = rejected.changed() => changed.ok()?,
+                                }
+                            }
+                            let items = rx.borrow_and_update().clone();
+                            let rejected_sends = rejected.borrow_and_update().clone();
+                            let value = serde_json::json!({
+                                "items": items,
+                                "rejectedSends": rejected_sends,
+                            });
+                            Some((value, (rx, rejected, false)))
+                        },
+                    )
                     .boxed(),
                 ))
             }

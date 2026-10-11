@@ -22,6 +22,7 @@ pub enum SessionCommandKind {
     Interrupt,
     RespondInput,
     RunWithInstructions,
+    ConfirmInstructionContextReset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +73,17 @@ pub enum SessionCommandPayload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         context_reset_confirmed: bool,
     },
+    /// The user confirmed starting a fresh native session for a queued row
+    /// the host gated with `instructionContextResetRequired`
+    /// (`QueueDeliveryGate::InstructionContextResetRequired`). The host
+    /// clears the gate, marks the row confirmed, and drains the queue.
+    /// Rejected when the row is gone or pinned to another revision. Hosts
+    /// that predate it skip the entry.
+    #[serde(rename_all = "camelCase")]
+    ConfirmInstructionContextReset {
+        queued_message_id: String,
+        revision_id: String,
+    },
 }
 
 impl SessionCommandPayload {
@@ -83,6 +95,9 @@ impl SessionCommandPayload {
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
             SessionCommandPayload::RunWithInstructions { .. } => {
                 SessionCommandKind::RunWithInstructions
+            }
+            SessionCommandPayload::ConfirmInstructionContextReset { .. } => {
+                SessionCommandKind::ConfirmInstructionContextReset
             }
         }
     }
@@ -196,6 +211,31 @@ pub fn evaluate_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirm_instruction_context_reset_wire_shape_is_pinned() {
+        let payload = SessionCommandPayload::ConfirmInstructionContextReset {
+            queued_message_id: "q1".into(),
+            revision_id: "rev-b".into(),
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "confirmInstructionContextReset",
+                "queuedMessageId": "q1",
+                "revisionId": "rev-b"
+            })
+        );
+        assert_eq!(
+            payload.kind(),
+            SessionCommandKind::ConfirmInstructionContextReset
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionCommandPayload>(value).unwrap(),
+            payload
+        );
+    }
 
     #[test]
     fn run_with_instructions_wire_shape_is_pinned() {

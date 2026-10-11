@@ -318,6 +318,86 @@ async fn fresh_run_warm_turn_and_explicit_change_deliver_exact_revisions() {
 }
 
 // ---------------------------------------------------------------------------
+// Capture at ingestion: clients send plain `Run`
+// ---------------------------------------------------------------------------
+
+fn plain(prompt: &str, message_id: &str) -> SessionCommandPayload {
+    SessionCommandPayload::Run {
+        request: run_request(prompt),
+        message_id: message_id.into(),
+    }
+}
+
+/// Append a command as another device's (possibly older) sender would: it
+/// never passes through this engine's ingestion.
+fn write_foreign_command(core: &EngineCore, id: &str, payload: SessionCommandPayload) {
+    core.doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .queue_command(&SessionCommandEntry {
+            id: id.into(),
+            payload,
+            issued_by: "other-device".into(),
+            issued_at: chrono::Utc::now().timestamp_millis(),
+            based_on: None,
+            expires_at: None,
+            status: SessionCommandStatus::Pending,
+            resolution: None,
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_plain_run_after_apply_delivers_the_new_revision_at_the_next_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+
+    let first = queue(&rig.core, plain("first", "m-1"));
+    // The ingesting engine captured the selection on the written command.
+    assert!(matches!(
+        command(&rig.core, &first).unwrap().payload,
+        SessionCommandPayload::RunWithInstructions { ref instructions, .. } if *instructions == a
+    ));
+    wait_turns(&rig, 1, "the first Turn").await;
+    assert_eq!(revision_of(&rig.mock.turns()[0]), Some("rev-a"));
+
+    // The user applies rev-b; the composer still sends a plain Run.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    queue(&rig.core, plain("second", "m-2"));
+    wait_turns(&rig, 2, "the Turn after Apply").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2, "a new Execution Session at the boundary");
+    assert_eq!(runs[1].resume.as_deref(), Some("mock-session-1"));
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(
+        delivery.envelope.pin(),
+        b,
+        "the new revision, not the session's"
+    );
+    assert_eq!(
+        delivery.transition,
+        InstructionTransition::Replace {
+            previous_revision_id: "rev-a".into()
+        }
+    );
+
+    // A plain Run from a sender that skipped capture is still a new user
+    // message on the host: it prefers the selection too.
+    let c = rig.registry.add("rev-c", "Explain before editing");
+    rig.registry.select(&c);
+    write_foreign_command(&rig.core, "cmd-foreign", plain("third", "m-3"));
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    rig.core.doc_host.drain_commands(&handle).await;
+    wait_turns(&rig, 3, "the foreign plain Run").await;
+    assert_eq!(revision_of(&rig.mock.turns()[2]), Some("rev-c"));
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // Acceptance 9 + 10: queued Turn keeps the revision captured at queue time
 // ---------------------------------------------------------------------------
 
@@ -493,15 +573,16 @@ async fn a_crash_respawn_continues_with_the_sessions_revision() {
     queue(&rig.core, pinned("[crash] boom", "m-2", &a));
     wait_for(|| !rig.core.sessions.has_live_run(CHAT), "the child to die").await;
 
-    // A newer revision is selected meanwhile; the follow-up below is an
-    // older client's plain Run, so the engine picks the revision.
+    // A newer revision is selected meanwhile; the follow-up below is a
+    // steer that falls back to a new Turn (engine-built), so it keeps the
+    // session's revision.
     let b = rig.registry.add("rev-b", "Write tests first");
     rig.registry.select(&b);
     queue(
         &rig.core,
-        SessionCommandPayload::Run {
-            request: run_request("after the crash"),
-            message_id: "m-3".into(),
+        SessionCommandPayload::Steer {
+            prompt: "after the crash".into(),
+            message_id: Some("m-3".into()),
         },
     );
     wait_turns(&rig, 3, "the respawned Turn").await;
@@ -714,5 +795,582 @@ async fn a_fresh_session_harness_requires_a_confirmed_context_reset() {
     let delivery = runs[1].instructions.as_ref().unwrap();
     assert_eq!(delivery.envelope.pin(), b);
     assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// FreshSession: durable reset-required outcomes and confirmation
+// ---------------------------------------------------------------------------
+
+fn fresh_session_rig(dir: &std::path::Path) -> Rig {
+    let rig = assemble(
+        dir,
+        InstructionMockHarness::new(InstructionSupport::Supported {
+            channel: InstructionChannel::Test,
+            replace_strategy: InstructionReplaceStrategy::FreshSession,
+            max_bytes: 64 * 1024,
+        }),
+        Arc::new(FakeRegistry::default()),
+    );
+    pre_title(&rig.core);
+    rig
+}
+
+fn rejected_sends(core: &EngineCore) -> Vec<zeron_proto::InstructionRejectedSend> {
+    core.doc_host
+        .open(CHAT)
+        .unwrap()
+        .watch_rejected_sends()
+        .borrow()
+        .clone()
+}
+
+fn queue_row(core: &EngineCore, id: &str) -> Option<zeron_doc::QueuedMessage> {
+    core.doc_host
+        .open(CHAT)
+        .ok()?
+        .doc()
+        .read_queue()
+        .ok()?
+        .into_iter()
+        .find(|row| row.id == id)
+}
+
+#[tokio::test]
+async fn a_plain_send_after_apply_on_a_fresh_session_harness_needs_a_confirmed_reset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+
+    // Apply rev-b; the composer sends a plain Run.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let refused = queue(&rig.core, plain("second", "m-2"));
+    let resolved = wait_resolved(&rig.core, &refused).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Rejected);
+    assert!(
+        resolved
+            .resolution
+            .as_deref()
+            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+        "{resolved:?}"
+    );
+    // Durable, typed outcome on the command row.
+    let expected = zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+        harness: HarnessId::Mock,
+        message_id: Some("m-2".into()),
+        revision_id: "rev-b".into(),
+        revision_hash: b.revision_hash.clone(),
+        previous_revision_id: Some("rev-a".into()),
+    };
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    assert_eq!(
+        handle.doc().command_outcomes().get(&refused),
+        Some(&expected)
+    );
+    // No user message, no new Execution Session.
+    assert!(!has_user_message(&rig.core, "m-2"));
+    assert_eq!(rig.mock.runs().len(), 1);
+    // Clients see it on the WatchQueue feed.
+    wait_for(
+        || rejected_sends(&rig.core).len() == 1,
+        "the refused send on the feed",
+    )
+    .await;
+    let rejected = rejected_sends(&rig.core).remove(0);
+    assert_eq!(rejected.command_id, refused);
+    assert_eq!(rejected.message_id, "m-2");
+    assert_eq!(rejected.outcome, expected);
+    assert_eq!(rejected.request.prompt, "second");
+
+    // Confirmed resend (same message id): a fresh native session with rev-b.
+    queue(
+        &rig.core,
+        SessionCommandPayload::RunWithInstructions {
+            request: rejected.request.clone(),
+            message_id: rejected.message_id.clone(),
+            instructions: b.clone(),
+            context_reset_confirmed: true,
+        },
+    );
+    wait_turns(&rig, 2, "the confirmed Turn").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].resume.is_none(), "a fresh native session");
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    assert!(has_user_message(&rig.core, "m-2"));
+    wait_for(
+        || rejected_sends(&rig.core).is_empty(),
+        "the feed to drop the resent message",
+    )
+    .await;
+    rig.core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_queued_row_needing_a_reset_is_gated_with_its_reason_until_confirmed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("[hold] working", "m-1"));
+    wait_for(|| rig.mock.turns().len() == 1, "the held Turn").await;
+
+    // Apply rev-b and queue while the Turn runs: the row captures rev-b.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let queued = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "queued after apply", Vec::new())
+        .unwrap();
+    rig.mock.release();
+
+    // At the boundary the host refuses to start it and gates the row.
+    wait_for(
+        || {
+            queue_row(&rig.core, &queued).is_some_and(|row| {
+                matches!(
+                    row.delivery_gate,
+                    Some(zeron_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
+                )
+            })
+        },
+        "the reset gate on the row",
+    )
+    .await;
+    match queue_row(&rig.core, &queued)
+        .unwrap()
+        .delivery_gate
+        .unwrap()
+    {
+        zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+            harness,
+            revision_id,
+            revision_hash,
+            previous_revision_id,
+            ..
+        } => {
+            assert_eq!(harness, HarnessId::Mock);
+            assert_eq!(revision_id, "rev-b");
+            assert_eq!(revision_hash, b.revision_hash);
+            assert_eq!(previous_revision_id.as_deref(), Some("rev-a"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!has_user_message(&rig.core, &queued));
+    assert_eq!(rig.mock.runs().len(), 1);
+
+    // Confirm: the gate clears and the row drains into a fresh session.
+    let confirm = queue(
+        &rig.core,
+        SessionCommandPayload::ConfirmInstructionContextReset {
+            queued_message_id: queued.clone(),
+            revision_id: "rev-b".into(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &confirm).await.status,
+        SessionCommandStatus::Applied
+    );
+    wait_turns(&rig, 2, "the confirmed queued Turn").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].prompt, "queued after apply");
+    assert!(runs[1].resume.is_none());
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    assert!(queue_row(&rig.core, &queued).is_none());
+
+    // Confirming a row that is gone rejects.
+    let stale = queue(
+        &rig.core,
+        SessionCommandPayload::ConfirmInstructionContextReset {
+            queued_message_id: queued.clone(),
+            revision_id: "rev-b".into(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &stale).await.status,
+        SessionCommandStatus::Rejected
+    );
+    rig.core.shutdown().await;
+}
+
+fn find_file(dir: &std::path::Path, suffix: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, suffix) {
+                return Some(found);
+            }
+        } else if path.to_string_lossy().ends_with(suffix) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn confirmed(
+    prompt: &str,
+    message_id: &str,
+    pin: &InstructionRevisionPin,
+) -> SessionCommandPayload {
+    SessionCommandPayload::RunWithInstructions {
+        request: run_request(prompt),
+        message_id: message_id.into(),
+        instructions: pin.clone(),
+        context_reset_confirmed: true,
+    }
+}
+
+#[tokio::test]
+async fn a_confirmed_send_held_mid_turn_keeps_its_confirmation_through_the_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("[hold] working", "m-1"));
+    wait_for(|| rig.mock.turns().len() == 1, "the held Turn").await;
+
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let held = queue(&rig.core, confirmed("next, confirmed", "m-2", &b));
+    let resolved = wait_resolved(&rig.core, &held).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Applied);
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    assert_eq!(handle.doc().queued_instructions("m-2"), Some(b.clone()));
+    assert!(
+        handle.doc().queued_context_reset_confirmed("m-2"),
+        "the confirmation is on the row"
+    );
+
+    rig.mock.release();
+    wait_turns(&rig, 2, "the confirmed Turn after the boundary").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].prompt, "next, confirmed");
+    assert!(runs[1].resume.is_none(), "a fresh native session");
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    rig.core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_restart_before_session_start_keeps_the_context_reset_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let registry = Arc::new(FakeRegistry::default());
+    let fresh = || {
+        InstructionMockHarness::new(InstructionSupport::Supported {
+            channel: InstructionChannel::Test,
+            replace_strategy: InstructionReplaceStrategy::FreshSession,
+            max_bytes: 64 * 1024,
+        })
+    };
+    let a = registry.add("rev-a", "Prefer small commits");
+    let b = registry.add("rev-b", "Write tests first");
+    registry.select(&a);
+    {
+        let rig = assemble(&dir, fresh(), registry.clone());
+        pre_title(&rig.core);
+        queue(&rig.core, plain("first", "m-1"));
+        wait_turns(&rig, 1, "the first Turn").await;
+        registry.select(&b);
+        // Confirmed, then the process dies before the new session starts.
+        queue(
+            &rig.core,
+            confirmed("[hang-before-start] after apply", "m-2", &b),
+        );
+        wait_for(|| rig.mock.runs().len() == 2, "the second spawn").await;
+        assert!(has_user_message(&rig.core, "m-2"));
+        rig.core.shutdown().await;
+    }
+
+    let rig = assemble(&dir, fresh(), registry.clone());
+    wait_for(
+        || !rig.mock.runs().is_empty(),
+        "boot recovery to re-dispatch",
+    )
+    .await;
+    let run = &rig.mock.runs()[0];
+    assert_eq!(run.prompt, "[hang-before-start] after apply");
+    assert!(
+        run.resume.is_none(),
+        "still a fresh native session, not a reset-required rejection"
+    );
+    let delivery = run.instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    // Once the session starts, the confirmation is spent.
+    rig.mock.release();
+    wait_for(
+        || !rig.core.sessions.turn_in_flight(CHAT) && rig.mock.turns().len() == 1,
+        "the revived Turn",
+    )
+    .await;
+    let sidecar = find_file(&dir, ".instructions.json").expect("the chat's sidecar");
+    let sidecar = std::fs::read_to_string(sidecar).unwrap();
+    assert!(sidecar.contains("rev-b"), "{sidecar}");
+    assert!(!sidecar.contains("contextResetConfirmed"), "{sidecar}");
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion: a remote host must advertise the per-harness token
+// ---------------------------------------------------------------------------
+
+fn host_rejection(error: zeron_engine::EngineError) -> zeron_proto::InstructionDeliveryRejection {
+    let wire = error.to_string();
+    let parsed = zeron_proto::InstructionDeliveryRejection::from_wire_message(&wire)
+        .unwrap_or_else(|| panic!("not a typed rejection: {wire}"));
+    match error {
+        zeron_engine::EngineError::InstructionDelivery(rejection) => {
+            assert_eq!(rejection, parsed);
+            rejection
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+fn host_reason(
+    rejection: &zeron_proto::InstructionDeliveryRejection,
+) -> zeron_proto::InstructionHostUnsupportedReason {
+    match &rejection.outcome {
+        zeron_proto::InstructionDeliveryOutcome::InstructionHostUnsupported {
+            reason,
+            host_device_id,
+            required_capability,
+            ..
+        } => {
+            assert_eq!(host_device_id, "device-b");
+            assert_eq!(
+                required_capability,
+                "work-outline-instruction-envelope-v1/mock"
+            );
+            *reason
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
+    use zeron_proto::InstructionHostUnsupportedReason as Reason;
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = assemble(
+        tmp.path(),
+        InstructionMockHarness::default(),
+        Arc::new(FakeRegistry::default()),
+    );
+    // Hosted by another device (no Space: the row names the host).
+    rig.core
+        .workspace
+        .create_chat(CHAT, None, Some("device-b"), None, Some("/tmp".into()))
+        .unwrap();
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    let commands = |core: &EngineCore| {
+        core.doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .read_commands()
+            .unwrap()
+    };
+
+    // Unknown host.
+    let refused = rig
+        .core
+        .doc_host
+        .queue_command(CHAT, plain("hello", "m-1"))
+        .unwrap_err();
+    assert_eq!(host_reason(&host_rejection(refused)), Reason::UnknownDevice);
+
+    // A host on an older Zeron.
+    let mut device: zeron_proto::Device = serde_json::from_value(serde_json::json!({
+        "id": "device-b", "name": "Studio", "platform": "macos", "lastSeenAt": null,
+        "version": "0.2.81"
+    }))
+    .unwrap();
+    rig.core.workspace.upsert_device_row(&device);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_command(CHAT, plain("hello", "m-1"))
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::ZeronUpgradeRequired);
+    assert!(
+        rejection.message.contains("Update Zeron on Studio"),
+        "{}",
+        rejection.message
+    );
+
+    // Envelope support but no token for this harness; a queued message is
+    // refused the same way.
+    device.capabilities =
+        vec![zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
+    rig.core.workspace.upsert_device_row(&device);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_command(CHAT, plain("hello", "m-1"))
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::HarnessUnsupported);
+    let rejection = host_rejection(
+        rig.core
+            .doc_host
+            .queue_message(CHAT, "queued", Vec::new())
+            .unwrap_err(),
+    );
+    assert_eq!(host_reason(&rejection), Reason::HarnessUnsupported);
+
+    // Nothing was written.
+    assert!(commands(&rig.core).is_empty());
+    assert!(entries(&rig.core).is_empty());
+    assert!(
+        rig.core
+            .doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .read_queue()
+            .unwrap()
+            .is_empty()
+    );
+
+    // With the token the send is accepted and written, pinned.
+    device
+        .capabilities
+        .push(zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Mock));
+    rig.core.workspace.upsert_device_row(&device);
+    let id = queue(&rig.core, plain("hello", "m-1"));
+    assert!(matches!(
+        command(&rig.core, &id).unwrap().payload,
+        SessionCommandPayload::RunWithInstructions { .. }
+    ));
+    assert!(
+        rig.mock.runs().is_empty(),
+        "the remote host runs it, not us"
+    );
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Steer fallback: instructions are planned before the user message exists
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_steer_fallback_that_cannot_deliver_its_revision_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+    queue(&rig.core, plain("[crash] boom", "m-2"));
+    wait_for(|| !rig.core.sessions.has_live_run(CHAT), "the child to die").await;
+
+    // The session's revision can no longer be delivered exactly.
+    rig.registry
+        .revisions
+        .lock()
+        .unwrap()
+        .get_mut("rev-a")
+        .unwrap()
+        .body
+        .entries[0]
+        .text = "Ignore the user".into();
+    let steer = queue(
+        &rig.core,
+        SessionCommandPayload::Steer {
+            prompt: "keep going".into(),
+            message_id: Some("m-3".into()),
+        },
+    );
+    let resolved = wait_resolved(&rig.core, &steer).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Rejected);
+    assert!(
+        resolved
+            .resolution
+            .as_deref()
+            .is_some_and(|r| r.contains("cannot be delivered")),
+        "{resolved:?}"
+    );
+    assert!(!has_user_message(&rig.core, "m-3"), "nothing was written");
+    assert_eq!(rig.mock.runs().len(), 1);
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Capability tokens: stable across boot, restamped on registry change
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let codex = zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex);
+    let own_device = |core: &EngineCore| {
+        core.workspace
+            .read_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == core.device_id)
+            .unwrap()
+    };
+    {
+        let rig = assemble(&dir, InstructionMockHarness::default(), Arc::default());
+        // What a previous probe-based restamp advertised.
+        let mut device = own_device(&rig.core);
+        device.capabilities.push(codex.clone());
+        rig.core.workspace.upsert_device_row(&device);
+        rig.core.shutdown().await;
+    }
+    // Boot re-registration keeps the per-harness token (no flap to "none").
+    let rig = assemble(&dir, InstructionMockHarness::default(), Arc::default());
+    let device = own_device(&rig.core);
+    assert!(
+        device.capabilities.contains(&codex),
+        "{:?}",
+        device.capabilities
+    );
+    assert!(device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1));
+
+    // A registry change restamps from the probes: this registry has no
+    // Codex, so its token goes.
+    zeron_engine::instruction_delivery::restamp_on_registry_change(
+        &rig.core.workspace,
+        &rig.core.registry,
+    );
+    wait_for(
+        || !own_device(&rig.core).capabilities.contains(&codex),
+        "the restamp to drop the stale token",
+    )
+    .await;
+    let mut device = own_device(&rig.core);
+    device.capabilities.push(codex.clone());
+    rig.core.workspace.upsert_device_row(&device);
+    rig.core
+        .registry
+        .register(Arc::new(InstructionMockHarness::default()));
+    wait_for(
+        || !own_device(&rig.core).capabilities.contains(&codex),
+        "the registry change to restamp",
+    )
+    .await;
+    assert_eq!(
+        zeron_engine::instruction_delivery::last_advertised_capabilities(),
+        Some(zeron_proto::capabilities::current())
+    );
     rig.core.shutdown().await;
 }

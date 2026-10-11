@@ -81,6 +81,12 @@ pub struct InstructionSidecar {
 pub struct InstructionTurnPin {
     pub message_id: String,
     pub pin: InstructionRevisionPin,
+    /// The user confirmed that this Turn may start a fresh native session
+    /// to apply `pin` (`FreshSession` harnesses). Kept until the Turn's
+    /// session starts, so a crash or restart before `SessionStarted` revives
+    /// the Turn without asking again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_reset_confirmed: bool,
 }
 
 impl InstructionSidecar {
@@ -131,25 +137,76 @@ impl RunJournal {
     }
 
     /// Record a Turn's pin BEFORE its run spawns (fsynced), so a crash at any
-    /// later point revives the Turn with exactly this revision.
+    /// later point revives the Turn with exactly this revision. A context
+    /// reset confirmation for the same pin is sticky until
+    /// [`Self::clear_instruction_turn_reset_confirmation`].
     pub fn note_instruction_turn(
         &self,
         chat_id: &str,
         message_id: &str,
         pin: &InstructionRevisionPin,
+        context_reset_confirmed: bool,
     ) -> Result<(), JournalError> {
         self.update_instruction_sidecar(chat_id, |sidecar| {
-            if sidecar.turn(message_id) == Some(pin) {
+            let existing = sidecar
+                .turns
+                .iter()
+                .rev()
+                .find(|t| t.message_id == message_id)
+                .filter(|t| t.pin == *pin)
+                .map(|t| t.context_reset_confirmed);
+            if existing.is_some_and(|confirmed| confirmed || !context_reset_confirmed) {
                 return false;
             }
             sidecar.turns.retain(|t| t.message_id != message_id);
             sidecar.turns.push(InstructionTurnPin {
                 message_id: message_id.to_string(),
                 pin: pin.clone(),
+                context_reset_confirmed,
             });
             let excess = sidecar.turns.len().saturating_sub(INSTRUCTION_TURNS_KEPT);
             sidecar.turns.drain(..excess);
             true
+        })
+    }
+
+    /// Whether the Turn's user confirmed a context reset for exactly `pin`.
+    pub fn instruction_turn_reset_confirmed(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        pin: &InstructionRevisionPin,
+    ) -> bool {
+        self.instruction_sidecar(chat_id).is_some_and(|sidecar| {
+            sidecar
+                .turns
+                .iter()
+                .rev()
+                .find(|t| t.message_id == message_id)
+                .is_some_and(|t| t.pin == *pin && t.context_reset_confirmed)
+        })
+    }
+
+    /// The Turn's session started: its context reset is spent.
+    pub fn clear_instruction_turn_reset_confirmation(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<(), JournalError> {
+        if self.instruction_sidecar(chat_id).is_none() {
+            return Ok(());
+        }
+        self.update_instruction_sidecar(chat_id, |sidecar| {
+            let mut changed = false;
+            for turn in sidecar
+                .turns
+                .iter_mut()
+                .filter(|t| t.message_id == message_id && t.context_reset_confirmed)
+            {
+                turn.context_reset_confirmed = false;
+                changed = true;
+            }
+            changed
         })
     }
 
@@ -512,13 +569,13 @@ mod tests {
         let journal = RunJournal::open(dir.path()).unwrap();
         assert!(journal.instruction_sidecar("chat").is_none());
         journal
-            .note_instruction_turn("chat", "m1", &pin("a"))
+            .note_instruction_turn("chat", "m1", &pin("a"), false)
             .unwrap();
         journal
             .note_instruction_session("chat", "native-1", "/w", Some(&pin("a")))
             .unwrap();
         journal
-            .note_instruction_turn("chat", "m2", &pin("b"))
+            .note_instruction_turn("chat", "m2", &pin("b"), false)
             .unwrap();
         // Survives a reopen (a restart).
         let journal = RunJournal::open(dir.path()).unwrap();
@@ -533,12 +590,39 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_context_reset_confirmation_is_sticky_until_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        journal
+            .note_instruction_turn("chat", "m1", &pin("b"), true)
+            .unwrap();
+        // A later unconfirmed write of the same pin (a retry) keeps it.
+        journal
+            .note_instruction_turn("chat", "m1", &pin("b"), false)
+            .unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(journal.instruction_turn_reset_confirmed("chat", "m1", &pin("b")));
+        assert!(!journal.instruction_turn_reset_confirmed("chat", "m1", &pin("c")));
+        assert!(!journal.instruction_turn_reset_confirmed("chat", "m2", &pin("b")));
+        journal
+            .clear_instruction_turn_reset_confirmation("chat", "m1")
+            .unwrap();
+        assert!(!journal.instruction_turn_reset_confirmed("chat", "m1", &pin("b")));
+        assert_eq!(journal.instruction_turn("chat", "m1"), Some(pin("b")));
+        // A different pin replaces the entry with its own confirmation.
+        journal
+            .note_instruction_turn("chat", "m1", &pin("c"), true)
+            .unwrap();
+        assert!(journal.instruction_turn_reset_confirmed("chat", "m1", &pin("c")));
+    }
+
+    #[test]
     fn instruction_turn_pins_are_bounded_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
         let journal = RunJournal::open(dir.path()).unwrap();
         for i in 0..(INSTRUCTION_TURNS_KEPT + 3) {
             journal
-                .note_instruction_turn("chat", &format!("m{i}"), &pin("a"))
+                .note_instruction_turn("chat", &format!("m{i}"), &pin("a"), false)
                 .unwrap();
         }
         let sidecar = journal.instruction_sidecar("chat").unwrap();
