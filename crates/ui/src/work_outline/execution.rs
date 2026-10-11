@@ -652,6 +652,30 @@ pub(crate) fn execution_members(
     members
 }
 
+/// Per bound Chat: the latest per-member validation and the picked member.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ChatExecutionState {
+    pub reply: Option<ValidateExecutionConfigurationReply>,
+    pub error: Option<String>,
+    pub loading: bool,
+    /// Repository id picked in the branch indicator or Changes pane.
+    pub selected: Option<String>,
+    /// The binding capture the reply belongs to.
+    pub binding_key: String,
+}
+
+/// The member after `current` in display order (wrapping), for the branch
+/// indicator's click-to-cycle.
+pub(crate) fn next_member<'a>(
+    members: &'a [ExecutionMember],
+    current: Option<&str>,
+) -> Option<&'a ExecutionMember> {
+    let ix = current
+        .and_then(|repo| members.iter().position(|m| m.repo_id == repo))
+        .map_or(0, |ix| (ix + 1) % members.len().max(1));
+    members.get(ix)
+}
+
 /// The member to show when none was picked: the primary, else the first.
 pub(crate) fn default_member(members: &[ExecutionMember]) -> Option<&ExecutionMember> {
     members
@@ -808,6 +832,47 @@ pub(crate) mod fixture {
             chat_ids: vec![CHAT_API.into()],
         }];
         snapshot
+    }
+
+    /// An `AppState` whose `chat-ui` (bound to Launch's configuration) and
+    /// `chat-loose-a` (unbound) live in Space `s1` with this fixture loaded;
+    /// validation answers [`launch_validated`]. Returns the recorded
+    /// `(method, params)` calls.
+    pub(crate) fn bound_state(
+        state: &mut crate::state::AppState,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> {
+        state.spaces = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "s1", "deviceId": DEVICE, "path": ROOT,
+                "createdAt": "2026-01-01T00:00:00Z"
+            }))
+            .unwrap(),
+        ];
+        state.chats = [CHAT_UI, CHAT_LOOSE_A]
+            .iter()
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "deviceId": DEVICE, "archived": false, "spaceId": "s1",
+                    "cwd": ROOT, "branch": "main", "checkoutId": "checkout:root",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                }))
+                .unwrap()
+            })
+            .collect();
+        state.set_work_outline_visible(vec!["s1".into()]);
+        assert!(state.apply_work_outline_frame("s1", snapshot("s1")));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = calls.clone();
+        state.work_outline_actions_override =
+            Some(crate::work_outline::WorkOutlineActions::scripted(
+                std::sync::Arc::new(move |method, params| {
+                    sink.lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    Ok(serde_json::to_value(launch_validated()).unwrap())
+                }),
+            ));
+        calls
     }
 
     /// A successful validation of the Launch configuration (chat-ui).

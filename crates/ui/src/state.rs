@@ -772,6 +772,10 @@ pub struct AppState {
     /// Tests: answer every Work Outline mutation/query with this facade.
     #[cfg(test)]
     pub(crate) work_outline_actions_override: Option<crate::work_outline::WorkOutlineActions>,
+    /// Per bound Chat: the latest `ValidateExecutionConfiguration {chatId}`
+    /// reply and the repository picked for branch/diff (Milestone 3). Shared
+    /// by the composer's branch indicator and the Changes pane.
+    chat_execution: HashMap<String, crate::work_outline::execution::ChatExecutionState>,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -854,6 +858,7 @@ impl AppState {
             work_outline_runtime: None,
             #[cfg(test)]
             work_outline_actions_override: None,
+            chat_execution: HashMap::new(),
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,
@@ -1950,6 +1955,145 @@ impl AppState {
     /// color is produced in Milestone 1.
     pub(crate) fn work_outline_unresolved_user_actions(&self) -> HashMap<String, u32> {
         self.work_outlines.unresolved_user_action_totals()
+    }
+
+    /// The captured execution binding of a Chat, from its Space's outline
+    /// snapshot (`None` = unbound or the snapshot is not loaded).
+    pub(crate) fn chat_execution_binding(
+        &self,
+        chat_id: &str,
+    ) -> Option<&zeron_proto::ChatExecutionBindingView> {
+        let space_id = self
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)?
+            .space_id
+            .as_deref()?;
+        self.work_outlines
+            .snapshot(space_id)?
+            .chat_execution_binding(chat_id)
+    }
+
+    /// The primary and member repositories of a bound Chat (empty when
+    /// unbound), with branch/HEAD from the latest validation reply.
+    pub(crate) fn chat_execution_members(
+        &self,
+        chat_id: &str,
+    ) -> Vec<crate::work_outline::execution::ExecutionMember> {
+        let Some(binding) = self.chat_execution_binding(chat_id) else {
+            return Vec::new();
+        };
+        let entry = self
+            .chat_execution
+            .get(chat_id)
+            .filter(|entry| entry.binding_key == execution_binding_key(binding));
+        crate::work_outline::execution::execution_members(
+            binding,
+            entry.and_then(|entry| entry.reply.as_ref()),
+        )
+    }
+
+    /// The member the branch indicator and Changes pane show: the picked
+    /// one, else the primary, else the first. `None` for unbound Chats.
+    pub(crate) fn selected_execution_member(
+        &self,
+        chat_id: &str,
+    ) -> Option<crate::work_outline::execution::ExecutionMember> {
+        let members = self.chat_execution_members(chat_id);
+        let picked = self
+            .chat_execution
+            .get(chat_id)
+            .and_then(|entry| entry.selected.as_deref());
+        picked
+            .and_then(|repo| members.iter().find(|member| member.repo_id == repo))
+            .or_else(|| crate::work_outline::execution::default_member(&members))
+            .cloned()
+    }
+
+    pub(crate) fn chat_execution_state(
+        &self,
+        chat_id: &str,
+    ) -> Option<&crate::work_outline::execution::ChatExecutionState> {
+        self.chat_execution.get(chat_id)
+    }
+
+    /// Pick the repository a bound Chat's branch indicator and Changes pane
+    /// show.
+    pub(crate) fn select_chat_execution_member(
+        &mut self,
+        chat_id: &str,
+        repo_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = self.chat_execution.entry(chat_id.to_owned()).or_default();
+        if entry.selected.as_deref() != Some(repo_id) {
+            entry.selected = Some(repo_id.to_owned());
+            cx.notify();
+        }
+    }
+
+    /// Fetch the bound Chat's per-member branch/HEAD and checkout identities
+    /// (`ValidateExecutionConfiguration {chatId}`; the engine forwards to the
+    /// owning device). `force` refetches (a surface opening); otherwise only
+    /// a Chat without a reply for its current binding fetches. Unbound Chats
+    /// do nothing.
+    pub(crate) fn refresh_chat_execution(
+        &mut self,
+        chat_id: &str,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(binding) = self.chat_execution_binding(chat_id) else {
+            return;
+        };
+        let key = execution_binding_key(binding);
+        let entry = self.chat_execution.entry(chat_id.to_owned()).or_default();
+        let current = entry.binding_key == key;
+        if current && entry.loading {
+            return;
+        }
+        if current && !force && (entry.reply.is_some() || entry.error.is_some()) {
+            return;
+        }
+        if !current {
+            entry.reply = None;
+            entry.error = None;
+            entry.binding_key = key.clone();
+        }
+        entry.loading = true;
+        let task = self.work_outline_actions().validate_execution(
+            zeron_proto::ValidateExecutionConfigurationParams {
+                chat_id: Some(chat_id.to_owned()),
+                ..Default::default()
+            },
+        );
+        let chat_id = chat_id.to_owned();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |state, cx| {
+                let Some(entry) = state.chat_execution.get_mut(&chat_id) else {
+                    return;
+                };
+                if entry.binding_key != key {
+                    return;
+                }
+                entry.loading = false;
+                match result {
+                    Ok(reply) => {
+                        entry.reply = Some(reply);
+                        entry.error = None;
+                    }
+                    Err(error) => {
+                        entry.error =
+                            Some(crate::work_outline::execution::execution_error_text(&error));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Mutation facade bound to the current engine connection.
@@ -5468,4 +5612,13 @@ impl AppState {
         };
         self.change_requests.store(key, snapshot);
     }
+}
+
+/// Identity of a captured binding (a reply for another capture is stale).
+fn execution_binding_key(binding: &zeron_proto::ChatExecutionBindingView) -> String {
+    format!(
+        "{}|{}",
+        binding.operation_id.as_deref().unwrap_or(""),
+        binding.captured_at
+    )
 }

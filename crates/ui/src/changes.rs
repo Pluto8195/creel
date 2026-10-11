@@ -85,6 +85,19 @@ impl ChangesTarget {
         }
     }
 
+    /// A bound Chat (Work Outline execution binding) shows one repository at
+    /// a time: the picked member's checkout, through the same scoped
+    /// `WatchCheckoutDiffs {cwd, checkoutId}`. Unbound Chats are unchanged.
+    fn for_chat_in(chat: &Chat, state: &AppState) -> Self {
+        let mut target = Self::from_chat(chat);
+        if let Some(member) = state.selected_execution_member(&chat.id) {
+            target.cwd = Some(member.checkout_path);
+            target.checkout_id = member.checkout_id;
+            target.branch = member.branch;
+        }
+        target
+    }
+
     fn resolve<'a>(&self, diffs: &'a [CheckoutDiff]) -> Option<&'a CheckoutDiff> {
         if let Some(checkout_id) = self.checkout_id.as_deref()
             && let Some(diff) = diffs.iter().find(|diff| diff.checkout_id == checkout_id)
@@ -2265,12 +2278,16 @@ impl Changes {
         chat_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Opening refreshes a bound Chat's per-member branch/HEAD.
+        state.update(cx, |state, cx| {
+            state.refresh_chat_execution(&chat_id, true, cx)
+        });
         let owner = state
             .read(cx)
             .chats
             .iter()
             .find(|chat| chat.id == chat_id)
-            .map(ChangesTarget::from_chat)
+            .map(|chat| ChangesTarget::for_chat_in(chat, state.read(cx)))
             .or_else(|| {
                 Some(ChangesTarget {
                     chat_id,
@@ -2453,16 +2470,11 @@ impl Changes {
         let Some(owner) = self.owner.as_ref() else {
             return false;
         };
-        let Some(chat) = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == owner.chat_id)
-        else {
+        let state = self.state.read(cx);
+        let Some(chat) = state.chats.iter().find(|chat| chat.id == owner.chat_id) else {
             return false;
         };
-        let next = ChangesTarget::from_chat(chat);
+        let next = ChangesTarget::for_chat_in(chat, state);
         if self.owner.as_ref() == Some(&next) {
             return false;
         }
@@ -2984,6 +2996,16 @@ impl Changes {
 
     /// Reconcile parsed content with the currently-active diff.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        // A binding that arrives after the pane opened still gets its
+        // per-member data (idempotent once fetched).
+        if self.pinned_cwd.is_none()
+            && self.commit.is_none()
+            && let Some(chat_id) = self.owner_chat_id_owned()
+        {
+            self.state.update(cx, |state, cx| {
+                state.refresh_chat_execution(&chat_id, false, cx)
+            });
+        }
         self.sync_owner(cx);
         self.discard_stale_draft(cx);
         // The watch follows the selected chat's host device (idempotent when
@@ -5318,6 +5340,115 @@ impl Changes {
         Some((repo, worktree, branch, format!("{path}\n{freshness}")))
     }
 
+    /// Bound Chats: one pill per primary/member repository with its branch
+    /// or HEAD; picking one retargets the diff (shared with the composer's
+    /// branch indicator through `AppState`).
+    fn render_execution_selector(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.pinned_cwd.is_some() || self.commit.is_some() {
+            return None;
+        }
+        let chat_id = self.owner_chat_id_owned()?;
+        let state = self.state.read(cx);
+        let members = state.chat_execution_members(&chat_id);
+        if members.is_empty() {
+            return None;
+        }
+        let selected = state
+            .selected_execution_member(&chat_id)
+            .map(|member| member.repo_id);
+        let status = state.chat_execution_state(&chat_id);
+        let loading = status.is_some_and(|status| status.loading);
+        let error = status.and_then(|status| status.error.clone()).or_else(|| {
+            status
+                .and_then(|status| status.reply.as_ref())
+                .filter(|reply| !reply.ok)
+                .and_then(|reply| {
+                    crate::work_outline::execution::validation_issues(reply)
+                        .into_iter()
+                        .next()
+                })
+                .map(|issue| format!("{} {}", issue.message, issue.remediation))
+        });
+        Some(
+            div()
+                .debug_selector(|| "changes-execution-repositories".into())
+                .flex_none()
+                .px(px(Theme::SPACE_LG))
+                .py(px(4.0))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(4.0))
+                .border_b_1()
+                .border_color(crate::theme::hairline(0.06))
+                .children(members.into_iter().enumerate().map(|(ix, member)| {
+                    let active = selected.as_deref() == Some(member.repo_id.as_str());
+                    let repo_id = member.repo_id.clone();
+                    let chat_id = chat_id.clone();
+                    let tip: SharedString = member.checkout_path.clone().into();
+                    div()
+                        .id(("changes-execution-repo", ix))
+                        .debug_selector(move || format!("changes-execution-repo-{ix}"))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(if active { theme.accent } else { theme.border })
+                        .when(active, |el| el.bg(theme.accent.opacity(0.08)))
+                        .cursor_pointer()
+                        .text_size(px(11.0))
+                        .text_color(if active { theme.text } else { theme.text_muted })
+                        .hover(|el| el.bg(theme.element_hover))
+                        .child(
+                            crate::icons::icon(crate::icons::GIT_BRANCH)
+                                .size(px(10.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from(member.label()))
+                        .when(member.primary, |el| {
+                            el.child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .text_color(theme.text_faint)
+                                    .child("primary"),
+                            )
+                        })
+                        .tooltip(move |_, cx| cx.new(|_| DiffHeaderTooltip(tip.clone())).into())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.select_chat_execution_member(&chat_id, &repo_id, cx)
+                            });
+                        }))
+                }))
+                .when(loading, |el| {
+                    el.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.text_faint)
+                            .child("Reading branches\u{2026}"),
+                    )
+                })
+                .when_some(error, |el, error| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .text_size(px(10.5))
+                            .text_color(theme.warning)
+                            .child(SharedString::from(error)),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     fn render_context_chrome(&self, theme: &Theme, cx: &App) -> Option<AnyElement> {
         let (repo, worktree, branch, tooltip) = self.context_details(cx)?;
         let freshness = tooltip
@@ -6005,6 +6136,7 @@ impl Render for Changes {
                 .flex()
                 .flex_col()
                 .children(self.render_context_chrome(&theme, cx))
+                .children(self.render_execution_selector(&theme, cx))
                 .child(history)
                 .into_any_element();
         }
@@ -6151,6 +6283,7 @@ impl Render for Changes {
             // paths, hunks, gutters, and source runs keep their mono overrides.
             .font_family(theme.font_sans_fixed.clone())
             .children(self.render_context_chrome(&theme, cx))
+            .children(self.render_execution_selector(&theme, cx))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -7364,6 +7497,90 @@ index 1111111..2222222 160000
             target.repo_and_worktree(),
             ("zeron".into(), "feature-123".into())
         );
+    }
+
+    /// Acceptance 15: a bound Chat's Changes pane lists primary + members
+    /// with their branch/HEAD (from the validation reply fetched on open) and
+    /// diffs the picked member through the scoped `{cwd, checkoutId}` watch.
+    /// Unbound Chats keep their own checkout.
+    #[gpui::test]
+    fn bound_chats_diff_the_selected_member_repository(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::execution::fixture;
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = calls.clone();
+        let (changes, vcx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                *sink.lock().unwrap() = Some(fixture::bound_state(&mut state));
+                state
+            });
+            Changes::for_chat(state, "chat-ui".into(), cx)
+        });
+        vcx.run_until_parked();
+        let calls = calls.lock().unwrap().clone().unwrap();
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 1, "refreshed once on open");
+            assert_eq!(
+                calls[0].0,
+                zeron_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION
+            );
+            assert_eq!(calls[0].1["chatId"], "chat-ui");
+        }
+        changes.update(vcx, |changes, cx| changes.sync(cx));
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some("/work/alpha/ui"));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:repo:ui"));
+            assert_eq!(owner.branch.as_deref(), Some("feature/ui"));
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_some());
+        assert!(vcx.debug_bounds("changes-execution-repo-1").is_some());
+
+        // Picking flagship retargets the diff watch to its checkout.
+        let flagship = vcx
+            .debug_bounds("changes-execution-repo-1")
+            .unwrap()
+            .center();
+        vcx.simulate_click(flagship, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some("/work/alpha/flagship"));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:repo:flagship"));
+            assert_eq!(owner.branch, None, "detached HEAD");
+            assert_eq!(
+                watch_checkout_params(None, owner.checkout_id.as_deref(), owner.cwd.as_deref()),
+                serde_json::json!({
+                    "checkoutId": "checkout:repo:flagship",
+                    "cwd": "/work/alpha/flagship",
+                })
+            );
+        });
+        assert_eq!(calls.lock().unwrap().len(), 1, "no refetch on selection");
+
+        // An unbound Chat keeps its own checkout and shows no selector.
+        let state = changes.read_with(vcx, |changes, _| changes.state.clone());
+        let (unbound, vcx) = vcx.add_window_view(|_, cx| {
+            Changes::for_chat(
+                state,
+                crate::work_outline::store::fixture_ids::CHAT_LOOSE_A.into(),
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        unbound.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some("/work/alpha"));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:root"));
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_none());
     }
 
     #[gpui::test]
