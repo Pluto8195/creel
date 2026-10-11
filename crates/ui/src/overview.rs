@@ -9433,6 +9433,13 @@ impl Overview {
                     None => Err("Select a work item first"),
                 }
             }
+            WorkOutlineCommand::MoveWorkItemUp
+            | WorkOutlineCommand::MoveWorkItemDown
+            | WorkOutlineCommand::IndentWorkItem
+            | WorkOutlineCommand::OutdentWorkItem => match command.restructure_op() {
+                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selected(op, cx)),
+                None => Ok(()),
+            },
         };
         if let Err(notice) = result {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));

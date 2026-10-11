@@ -603,6 +603,10 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::CreateInstructionFromChat),
                 Entry::WorkOutline(WorkOutlineCommand::OpenRequiredActions),
                 Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::MoveWorkItemUp),
+                Entry::WorkOutline(WorkOutlineCommand::MoveWorkItemDown),
+                Entry::WorkOutline(WorkOutlineCommand::IndentWorkItem),
+                Entry::WorkOutline(WorkOutlineCommand::OutdentWorkItem),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
             ]

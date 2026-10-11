@@ -351,3 +351,62 @@ fn restructuring_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
     assert!(calls.lock().unwrap().is_empty());
     assert!(outline.read_with(vcx, |outline, _| outline.notice().is_none()));
 }
+
+/// The four palette commands run the same restructuring as the keys; with
+/// no work item selected they leave a notice instead of doing nothing.
+#[gpui::test]
+fn palette_commands_restructure_the_selected_item(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (overview, outline, calls, vcx) =
+        restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    let run = |command: WorkOutlineCommand, vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| o.run_work_outline_command(command, window, cx))
+        });
+        vcx.run_until_parked();
+    };
+    let expected = [
+        (
+            WorkOutlineCommand::MoveWorkItemUp,
+            UI,
+            serde_json::json!(LAUNCH),
+            placement("before", Some(API)),
+        ),
+        (
+            WorkOutlineCommand::MoveWorkItemDown,
+            API,
+            serde_json::json!(LAUNCH),
+            placement("after", Some(UI)),
+        ),
+        (
+            WorkOutlineCommand::IndentWorkItem,
+            HOUSEKEEPING,
+            serde_json::json!(LAUNCH),
+            placement("last", None),
+        ),
+        (
+            WorkOutlineCommand::OutdentWorkItem,
+            API_AUTH,
+            serde_json::json!(LAUNCH),
+            placement("after", Some(API)),
+        ),
+    ];
+    for (ix, (command, item, parent, place)) in expected.into_iter().enumerate() {
+        select_item(&outline, vcx, item);
+        run(command, vcx);
+        assert_eq!(move_at(&calls, ix), (parent, place, item.to_owned()));
+        refresh(&overview, vcx, fixture("s1"));
+    }
+
+    // No selection: a notice, no request.
+    outline.update(vcx, |outline, cx| {
+        outline.select(&row_key::chat(CHAT_UI), cx)
+    });
+    run(WorkOutlineCommand::IndentWorkItem, vcx);
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    assert_eq!(
+        outline.read_with(vcx, |outline, _| outline.notice().map(str::to_owned)),
+        Some("Select a work item first".to_owned())
+    );
+}
