@@ -395,6 +395,10 @@ struct OverviewRow {
     user_action_required: bool,
     /// Its unresolved user-action request count (0 until Milestone 4).
     user_action_count: u32,
+    /// The Chat's effective instructions changed since its applied revision
+    /// (Work Outline drift). Never feeds `tile_size`: the mark shares the
+    /// title line.
+    instruction_drift: bool,
 }
 
 impl OverviewRow {
@@ -3259,6 +3263,7 @@ impl Overview {
                 .and_then(|item| work_item_index.path_label(item));
             let (user_action_required, user_action_count) =
                 work_item_index.attention_for_chat(&chat.id);
+            let instruction_drift = work_item_index.instruction_drift_for_chat(&chat.id);
             all.push(OverviewRow {
                 status,
                 chat,
@@ -3277,6 +3282,7 @@ impl Overview {
                 work_item_path,
                 user_action_required,
                 user_action_count,
+                instruction_drift,
             });
         }
         self.known_repos = known_repos;
@@ -4580,6 +4586,36 @@ impl Overview {
     /// the panel's "Open full chat →" actually leaves the overview.
     /// Tile/row body clicks toggle expand in place instead — see
     /// `toggle_expanded`.
+    #[cfg(test)]
+    pub(crate) fn expanded_is_empty(&self) -> bool {
+        self.expanded.is_empty()
+    }
+
+    /// The Work Outline drift mark for a drifted Chat; clicking opens the
+    /// Shell's Compare dialog (where Apply lives).
+    fn instruction_drift_mark(
+        &self,
+        id: String,
+        chat_id: &str,
+        with_label: bool,
+        theme: &Theme,
+        zoom: f32,
+    ) -> gpui::AnyElement {
+        let shell = self.shell.clone();
+        let chat_id = chat_id.to_owned();
+        crate::work_outline::chips::instruction_drift_mark(
+            id,
+            with_label,
+            theme,
+            zoom,
+            move |_, _, cx| {
+                shell
+                    .update(cx, |shell, cx| shell.open_instruction_compare(&chat_id, cx))
+                    .ok();
+            },
+        )
+    }
+
     fn open_chat_button(
         &self,
         chat_id: String,
@@ -4664,6 +4700,18 @@ impl Overview {
                 &path.full,
             ));
         }
+        let drift_mark = self
+            .work_item_index
+            .instruction_drift_for_chat(&chat_id)
+            .then(|| {
+                self.instruction_drift_mark(
+                    "overview-chat-panel-instruction-drift".into(),
+                    &chat_id,
+                    true,
+                    theme,
+                    1.0,
+                )
+            });
         let classification_shell = self.shell.clone();
         let classification_chat_id = chat_id.clone();
         // The chat route drives these per frame (`render_main`); it doesn't
@@ -4742,6 +4790,7 @@ impl Overview {
                                 .flex()
                                 .items_center()
                                 .justify_between()
+                                .gap(px(8.0))
                                 .child(
                                     div()
                                         .flex_1()
@@ -4751,6 +4800,7 @@ impl Overview {
                                         .text_color(theme.text)
                                         .child(title),
                                 )
+                                .children(drift_mark)
                                 .child(
                                     div()
                                         .flex_none()
@@ -7184,6 +7234,15 @@ impl Overview {
             theme,
             1.0,
         );
+        let drift_mark = row.instruction_drift.then(|| {
+            self.instruction_drift_mark(
+                format!("overview-row-instruction-drift-{chat_id}"),
+                &chat_id,
+                false,
+                theme,
+                1.0,
+            )
+        });
         let path_chip = row.work_item_path.as_ref().map(|path| {
             crate::work_outline::chips::path_chip(
                 format!("overview-row-work-item-{chat_id}"),
@@ -7285,6 +7344,7 @@ impl Overview {
                                             .text_color(theme.text)
                                             .child(title),
                                     )
+                                    .children(drift_mark)
                                     .when_some(attention, |el, attention| el.child(attention)),
                             )
                             .child(
@@ -7416,6 +7476,15 @@ impl Overview {
             theme,
             zoom,
         );
+        let drift_mark = row.instruction_drift.then(|| {
+            self.instruction_drift_mark(
+                format!("overview-tile-instruction-drift-{}", row.chat.id),
+                &row.chat.id,
+                false,
+                theme,
+                zoom,
+            )
+        });
         let path_chip = row.work_item_path.as_ref().map(|path| {
             crate::work_outline::chips::path_chip(
                 format!("overview-tile-work-item-{}", row.chat.id),
@@ -7506,6 +7575,7 @@ impl Overview {
                             })
                             .child(title),
                     )
+                    .children(drift_mark)
                     .when_some(attention, |el, attention| el.child(attention)),
             )
             .child(
@@ -11276,6 +11346,7 @@ mod logic_tests {
             work_item_path: None,
             user_action_required: false,
             user_action_count: 0,
+            instruction_drift: false,
         }
     }
 
@@ -12627,6 +12698,71 @@ mod logic_tests {
             (with, without)
         });
         assert_eq!(with, without);
+    }
+
+    /// Drift marks: only drifted Chats carry one, on List rows, Canvas cards,
+    /// and the chat-panel header, and the mark never changes a card's size.
+    #[gpui::test]
+    fn drift_marks_flag_only_drifted_chats_without_changing_tile_size(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, state, vcx) = outline_overview(cx, dir.path());
+        let drifted = instruction_fixture::snapshot("s1");
+        let mut current = drifted.clone();
+        for chat_state in &mut current.chat_instruction_states {
+            chat_state.drift = false;
+        }
+        let sizes = |o: &mut Overview, cx: &mut Context<Overview>| {
+            o.rows(cx)
+                .iter()
+                .map(|r| (r.chat.id.clone(), r.tile_size()))
+                .collect::<Vec<_>>()
+        };
+        let marks = |vcx: &mut gpui::VisualTestContext, prefix: &str| {
+            [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
+                .into_iter()
+                .filter(|id| row_bounds(vcx, format!("{prefix}{id}")).is_some())
+                .collect::<Vec<_>>()
+        };
+        let without = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(current)), cx);
+            sizes(o, cx)
+        });
+        let with = overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(drifted)), cx);
+            let rows = o.rows(cx);
+            let flagged: Vec<_> = rows
+                .iter()
+                .filter(|r| r.instruction_drift)
+                .map(|r| r.chat.id.as_str())
+                .collect();
+            assert_eq!(flagged, [CHAT_API]);
+            sizes(o, cx)
+        });
+        assert_eq!(with, without, "the drift mark never feeds tile size");
+
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-row-instruction-drift-"), [CHAT_API]);
+        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
+        draw(vcx);
+        assert_eq!(marks(vcx, "overview-tile-instruction-drift-"), [CHAT_API]);
+
+        // The chat-panel header: marked for the drifted Chat only.
+        for (chat, expected) in [(CHAT_AUTH, false), (CHAT_API, true)] {
+            state.update(vcx, |state, _| state.selected_chat = Some(chat.into()));
+            overview.update(vcx, |o, cx| {
+                o.chat_panel_open = true;
+                cx.notify();
+            });
+            draw(vcx);
+            assert_eq!(
+                vcx.debug_bounds("overview-chat-panel-instruction-drift")
+                    .is_some(),
+                expected,
+                "{chat}"
+            );
+        }
     }
 
     /// Spec "Integrate with the existing overview": associating, moving, or
