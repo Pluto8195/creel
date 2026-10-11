@@ -441,6 +441,29 @@ mod tests {
         );
     }
 
+    /// `docs/work-outline.md` spells every Outline key and every default
+    /// command binding exactly as the app shows them, on both platforms.
+    #[test]
+    fn user_guide_bindings_match_the_code_defaults() {
+        let doc = include_str!("../../../../docs/work-outline.md");
+        for mac in [true, false] {
+            for (combo, key) in OUTLINE_NAVIGATION_KEYS {
+                let label = key_label_on(mac, combo);
+                assert!(doc.contains(&format!("`{label}`")), "{key:?}: `{label}`");
+            }
+            for command in WorkOutlineCommand::ALL {
+                let combo = command.shortcut_id().default_combo_on(mac);
+                if !combo.is_empty() {
+                    let label = key_label_on(mac, combo);
+                    assert!(
+                        doc.contains(&format!("`{label}`")),
+                        "{command:?}: `{label}`"
+                    );
+                }
+            }
+        }
+    }
+
     #[gpui::test]
     fn tooltip_view_reads_the_live_keymap(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
