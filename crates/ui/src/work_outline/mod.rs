@@ -36,6 +36,7 @@ pub(crate) mod nav;
 pub(crate) mod outline_view;
 pub(crate) mod required_actions;
 pub(crate) mod required_actions_view;
+pub(crate) mod restructure;
 pub(crate) mod revision_diff;
 pub(crate) mod store;
 

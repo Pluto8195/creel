@@ -30,6 +30,7 @@ use super::model::{
     OutlineRowKind, OutlineSpace, row_key,
 };
 use super::nav::{self, NavCommand};
+use super::restructure::{self, DropZone, MovePlan, RestructureOp};
 use super::store::{WorkOutlinePlacement, WorkOutlineSnapshot};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_positions;
@@ -59,6 +60,10 @@ actions!(
         RenameSelected,
         CreateSibling,
         CreateChild,
+        MoveItemUp,
+        MoveItemDown,
+        IndentItem,
+        OutdentItem,
     ]
 );
 
@@ -82,6 +87,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-n", CreateChild, ctx),
         KeyBinding::new("home", SelectFirst, ctx),
         KeyBinding::new("end", SelectLast, ctx),
+        KeyBinding::new("alt-shift-up", MoveItemUp, ctx),
+        KeyBinding::new("alt-shift-down", MoveItemDown, ctx),
+        KeyBinding::new("tab", IndentItem, ctx),
+        KeyBinding::new("shift-tab", OutdentItem, ctx),
     ]
 }
 
@@ -191,6 +200,117 @@ struct OutlinePicker {
     purpose: PickerPurpose,
     operation_id: String,
     submitting: bool,
+    /// Move picker only: place the item first ("Top") instead of last
+    /// ("Bottom") under the chosen parent.
+    place_first: bool,
+}
+
+/// A direct restructuring mutation (keyboard, palette, drag and drop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectMutation {
+    Move(MovePlan),
+    AssignChat {
+        chat_id: String,
+        work_item_id: String,
+    },
+}
+
+impl DirectMutation {
+    fn change(&self) -> OutlineChange {
+        match self {
+            Self::Move(plan) => OutlineChange::MoveItem {
+                work_item_id: plan.work_item_id.clone(),
+                new_parent: plan.destination_parent.clone(),
+            },
+            Self::AssignChat {
+                chat_id,
+                work_item_id,
+            } => OutlineChange::AssignChat {
+                chat_id: chat_id.clone(),
+                work_item_id: work_item_id.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptState {
+    /// Sent; no reply yet. Further restructuring waits.
+    InFlight,
+    /// Acknowledged; waiting for the snapshot that shows it, so the next
+    /// press plans from the new order rather than a stale one.
+    AwaitingRefresh,
+    /// Failed: retrying the same mutation reuses `operation_id`.
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct MutationAttempt {
+    mutation: DirectMutation,
+    space_id: String,
+    operation_id: String,
+    state: AttemptState,
+    /// Address of the Space's snapshot when sent (refresh detection).
+    sent_snapshot: usize,
+}
+
+/// How long an acknowledged restructuring blocks the next one when no new
+/// snapshot arrives (a host that coalesces the frame).
+const AWAIT_REFRESH: Duration = Duration::from_secs(2);
+
+/// What an in-progress drag over the Outline would do (drawn as the drop
+/// indicator; absent for refused targets).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DropHint {
+    /// Row key of the target work item.
+    pub key: String,
+    pub zone: DropZone,
+}
+
+/// The drag payload of an Outline row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OutlineDrag {
+    Item {
+        space_id: String,
+        item_id: String,
+        title: String,
+    },
+    Chat {
+        chat_id: String,
+        space_id: String,
+        title: String,
+    },
+}
+
+impl OutlineDrag {
+    fn title(&self) -> &str {
+        match self {
+            Self::Item { title, .. } | Self::Chat { title, .. } => title,
+        }
+    }
+}
+
+/// The ghost that follows the pointer while dragging a row.
+struct OutlineDragGhost {
+    title: SharedString,
+}
+
+impl Render for OutlineDragGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .max_w(px(260.0))
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text)
+            .truncate()
+            .child(self.title.clone())
+    }
 }
 
 pub(crate) struct OutlineView {
@@ -216,6 +336,12 @@ pub(crate) struct OutlineView {
     panel_chat: Option<String>,
     /// Owner of the drift confirmation and the revision comparison.
     shell: Option<WeakEntity<Shell>>,
+    /// The latest direct restructuring (keyboard, palette, drop).
+    attempt: Option<MutationAttempt>,
+    /// Reveal this row once a refresh moves it (selection follows a move).
+    follow: Option<String>,
+    /// The drop indicator of an in-progress drag.
+    drop_hint: Option<DropHint>,
     _editor_events: Subscription,
     /// Tests run without a Shell: the drift confirmation lands here.
     #[cfg(test)]
@@ -266,6 +392,9 @@ impl OutlineView {
             details_key: None,
             panel_chat: None,
             shell: None,
+            attempt: None,
+            follow: None,
+            drop_hint: None,
             _editor_events: editor_events,
             #[cfg(test)]
             captured_drift: None,
@@ -285,8 +414,29 @@ impl OutlineView {
     pub(crate) fn set_inputs(&mut self, inputs: OutlineInputs, cx: &mut Context<Self>) {
         self.ensure_collapsed_loaded(cx);
         self.inputs = inputs;
+        let refreshed = self.attempt.as_ref().is_some_and(|attempt| {
+            attempt.state == AttemptState::AwaitingRefresh
+                && self.snapshot_address(&attempt.space_id) != attempt.sent_snapshot
+        });
+        if refreshed {
+            self.attempt = None;
+        }
         self.reflatten();
+        if refreshed {
+            // The frame showing the move has been applied (and revealed).
+            self.follow = None;
+        }
         cx.notify();
+    }
+
+    /// Identity of a Space's current snapshot (0 = none loaded).
+    fn snapshot_address(&self, space_id: &str) -> usize {
+        self.inputs
+            .spaces
+            .iter()
+            .find(|space| space.id == space_id)
+            .and_then(|space| space.load.snapshot())
+            .map_or(0, |snapshot| std::sync::Arc::as_ptr(snapshot) as usize)
     }
 
     pub(crate) fn set_highlights(
@@ -328,6 +478,20 @@ impl OutlineView {
             &self.collapsed,
             &self.inputs.options,
         );
+        if let Some(follow) = self.follow.clone() {
+            let place =
+                |model: &OutlineModel| model.position(&follow).map(|ix| (ix, model.rows[ix].depth));
+            let before = place(&previous);
+            if let Some((after, depth)) = place(&self.model) {
+                if before != Some((after, depth)) {
+                    // The moved item's new place: select and reveal it.
+                    self.selected = Some(follow);
+                    self.follow = None;
+                    self.scroll.scroll_to_item(after, ScrollStrategy::Nearest);
+                    return;
+                }
+            }
+        }
         if let Some(pending) = self.pending_select.clone() {
             if self.model.position(&pending).is_some() {
                 self.selected = Some(pending);
@@ -852,6 +1016,7 @@ impl OutlineView {
             purpose,
             operation_id: new_operation_id(),
             submitting: false,
+            place_first: false,
         });
         window.focus(&self.picker_focus, cx);
         cx.notify();
@@ -1007,6 +1172,197 @@ impl OutlineView {
                         picker.submitting = false;
                     }
                     this.show_notice(error.message.clone(), cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // ----------------------------------------------------------------------
+    // Direct restructuring (keyboard, palette, drag and drop)
+    // ----------------------------------------------------------------------
+
+    /// Move up / down, indent or outdent the selected work item (with its
+    /// descendants). A boundary no-op is `Ok` and sends nothing; `Err`
+    /// carries the notice to show.
+    pub(crate) fn restructure_selected(
+        &mut self,
+        op: RestructureOp,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let (space_id, item_id) = self.selected_item().ok_or("Select a work item first")?;
+        let snapshot = self
+            .snapshot(&space_id)
+            .ok_or("This project's outline is not loaded")?;
+        if snapshot
+            .item(&item_id)
+            .is_some_and(|item| item.archived_at.is_some())
+        {
+            return Err("Restore this work item before moving it");
+        }
+        let model = &self.model;
+        let plan = restructure::plan(snapshot, &item_id, op, |id| {
+            model.position(&row_key::item(&space_id, id)).is_some()
+        });
+        if let Some(plan) = plan {
+            self.submit_direct(space_id, DirectMutation::Move(plan), cx);
+        }
+        Ok(())
+    }
+
+    /// Key handler for the restructuring actions. Without a selected work
+    /// item the key propagates (Tab / Shift+Tab then walk focus as usual).
+    fn restructure_key(&mut self, op: RestructureOp, cx: &mut Context<Self>) {
+        if self.is_editing() || self.selected_item().is_none() {
+            cx.propagate();
+            return;
+        }
+        if let Err(notice) = self.restructure_selected(op, cx) {
+            self.show_notice(notice, cx);
+        }
+    }
+
+    /// Whether a direct restructuring is in flight or awaiting its refresh.
+    pub(crate) fn restructuring_busy(&self) -> bool {
+        self.attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.state != AttemptState::Failed)
+    }
+
+    /// Send `mutation` after the drift confirmation when it changes an
+    /// assigned Chat's effective instructions. Ignored while the previous
+    /// restructuring has not landed yet (it would plan from a stale order).
+    pub(crate) fn submit_direct(
+        &mut self,
+        space_id: String,
+        mutation: DirectMutation,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restructuring_busy() {
+            return;
+        }
+        let change = mutation.change();
+        let impact = self
+            .snapshot(&space_id)
+            .map(|snapshot| instructions::drift_impact(snapshot, &change))
+            .unwrap_or_default();
+        if impact.needs_confirmation() {
+            let weak = cx.entity().downgrade();
+            let request = WorkOutlineDriftRequest {
+                title: change.title().into(),
+                confirm_label: change.confirm_label().into(),
+                impact,
+                on_decision: Box::new(move |confirmed, _, cx| {
+                    if confirmed {
+                        weak.update(cx, |this, cx| this.send_direct(space_id, mutation, cx))
+                            .ok();
+                    }
+                }),
+            };
+            self.request_drift_confirm(request, cx);
+            return;
+        }
+        self.send_direct(space_id, mutation, cx);
+    }
+
+    fn send_direct(&mut self, space_id: String, mutation: DirectMutation, cx: &mut Context<Self>) {
+        if self.restructuring_busy() {
+            return;
+        }
+        // A retry of the failed mutation replays its operation id.
+        let operation_id = match self.attempt.as_ref() {
+            Some(attempt) if attempt.mutation == mutation => attempt.operation_id.clone(),
+            _ => new_operation_id(),
+        };
+        let actions = self.state.read(cx).work_outline_actions();
+        let (task, follow_key, expand_key) = match &mutation {
+            DirectMutation::Move(plan) => (
+                actions.move_work_item(plan.params(operation_id.clone())),
+                row_key::item(&space_id, &plan.work_item_id),
+                plan.destination_parent
+                    .as_deref()
+                    .map(|parent| row_key::item(&space_id, parent)),
+            ),
+            DirectMutation::AssignChat {
+                chat_id,
+                work_item_id,
+            } => (
+                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                    chat_id: chat_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                    operation_id: operation_id.clone(),
+                }),
+                row_key::chat(chat_id),
+                Some(row_key::item(&space_id, work_item_id)),
+            ),
+        };
+        let sent_snapshot = self.snapshot_address(&space_id);
+        self.attempt = Some(MutationAttempt {
+            mutation,
+            space_id: space_id.clone(),
+            operation_id: operation_id.clone(),
+            state: AttemptState::InFlight,
+            sent_snapshot,
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let acknowledged = this
+                .update(cx, |this, cx| {
+                    let ours = this
+                        .attempt
+                        .as_ref()
+                        .is_some_and(|attempt| attempt.operation_id == operation_id);
+                    match result {
+                        Ok(_) => {
+                            if let Some(key) = expand_key.as_deref() {
+                                this.set_collapsed(key, false, cx);
+                            }
+                            if this.snapshot_address(&space_id) != sent_snapshot {
+                                // The frame already landed: reveal now.
+                                if ours {
+                                    this.attempt = None;
+                                }
+                                this.select(&follow_key, cx);
+                                false
+                            } else {
+                                if ours {
+                                    if let Some(attempt) = this.attempt.as_mut() {
+                                        attempt.state = AttemptState::AwaitingRefresh;
+                                    }
+                                }
+                                this.follow = Some(follow_key.clone());
+                                if this.model.position(&follow_key).is_some() {
+                                    this.selected = Some(follow_key.clone());
+                                }
+                                cx.notify();
+                                true
+                            }
+                        }
+                        Err(error) => {
+                            if ours {
+                                if let Some(attempt) = this.attempt.as_mut() {
+                                    attempt.state = AttemptState::Failed;
+                                }
+                            }
+                            this.show_notice(error.message.clone(), cx);
+                            false
+                        }
+                    }
+                })
+                .unwrap_or(false);
+            if !acknowledged {
+                return;
+            }
+            cx.background_executor().timer(AWAIT_REFRESH).await;
+            this.update(cx, |this, _| {
+                if this.attempt.as_ref().is_some_and(|attempt| {
+                    attempt.operation_id == operation_id
+                        && attempt.state == AttemptState::AwaitingRefresh
+                }) {
+                    this.attempt = None;
+                    this.follow = None;
                 }
             })
             .ok();
@@ -1990,6 +2346,18 @@ impl Render for OutlineView {
                 if let Err(notice) = this.begin_create(false, window, cx) {
                     this.show_notice(notice, cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &MoveItemUp, _, cx| {
+                this.restructure_key(RestructureOp::MoveUp, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveItemDown, _, cx| {
+                this.restructure_key(RestructureOp::MoveDown, cx)
+            }))
+            .on_action(cx.listener(|this, _: &IndentItem, _, cx| {
+                this.restructure_key(RestructureOp::Indent, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OutdentItem, _, cx| {
+                this.restructure_key(RestructureOp::Outdent, cx)
             }))
             .on_action(cx.listener(|this, _: &CreateChild, window, cx| {
                 if this.is_editing() {

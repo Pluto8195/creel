@@ -14210,4 +14210,10 @@ mod logic_tests {
     mod required_actions_tests {
         include!("work_outline/required_actions_tests.rs");
     }
+
+    /// Direct restructuring (keyboard, palette, picker placement, drag and
+    /// drop); shares this module's fixtures.
+    mod restructure_tests {
+        include!("work_outline/restructure_tests.rs");
+    }
 }
