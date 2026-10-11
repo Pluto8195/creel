@@ -447,6 +447,37 @@ impl WorkOutlineActions {
         self.mutate(WorkOutlineMutation::ApplyInstructionRevision(params))
     }
 
+    // ── Milestone 4: user action requests and instruction proposals ──
+
+    /// Resolve one request (and its open duplicates); reply `{}`.
+    pub(crate) fn resolve_user_action_request(
+        &self,
+        params: zeron_proto::ResolveUserActionRequestParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::ResolveUserActionRequest(params))
+    }
+
+    /// Approve a proposal with the reviewed text; reply carries
+    /// `instruction_id` (`derive_id(proposalId, "instruction")`).
+    pub(crate) fn approve_instruction_proposal(
+        &self,
+        params: zeron_proto::ApproveWorkItemInstructionProposalParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::ApproveWorkItemInstructionProposal(
+            params,
+        ))
+    }
+
+    /// Reject a proposal (optional reason); reply `{}`.
+    pub(crate) fn reject_instruction_proposal(
+        &self,
+        params: zeron_proto::RejectWorkItemInstructionProposalParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::RejectWorkItemInstructionProposal(
+            params,
+        ))
+    }
+
     // ── Milestone 3: execution configuration ──
 
     /// Write (`configuration`) or reset (`None`) one scope's configuration.

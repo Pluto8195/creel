@@ -171,6 +171,13 @@ pub(crate) enum OutlineChange {
     ArchiveInstruction {
         instruction_id: String,
     },
+    /// A new instruction appended to `work_item_id` (`None` = the Space
+    /// root): approving an agent proposal (Milestone 4). Creating an
+    /// instruction by hand stays ungated (Milestone 2 discovery 4).
+    AddInstruction {
+        work_item_id: Option<String>,
+        text: String,
+    },
 }
 
 impl OutlineChange {
@@ -182,6 +189,7 @@ impl OutlineChange {
             Self::SetInheritance { .. } => "Change inherited instructions?",
             Self::EditInstruction { .. } => "Save instruction change?",
             Self::ArchiveInstruction { .. } => "Archive instruction?",
+            Self::AddInstruction { .. } => "Approve proposed instruction?",
         }
     }
 
@@ -192,6 +200,7 @@ impl OutlineChange {
             Self::SetInheritance { .. } => "Change",
             Self::EditInstruction { .. } => "Save",
             Self::ArchiveInstruction { .. } => "Archive",
+            Self::AddInstruction { .. } => "Approve",
         }
     }
 }
@@ -308,6 +317,39 @@ pub(crate) fn drift_impact(snapshot: &WorkOutlineSnapshot, change: &OutlineChang
             };
             instruction.archived_at = Some(instruction.updated_at.max(1));
             scope_candidates(snapshot, instruction.work_item_id.as_deref())
+        }
+        OutlineChange::AddInstruction { work_item_id, text } => {
+            if work_item_id
+                .as_deref()
+                .is_some_and(|id| snapshot.item(id).is_none())
+            {
+                return DriftImpact::default();
+            }
+            // Appended last in its scope.
+            let last_key = after
+                .instructions
+                .iter()
+                .filter(|instruction| instruction.work_item_id == *work_item_id)
+                .map(|instruction| instruction.order_key.clone())
+                .max()
+                .unwrap_or_default();
+            after
+                .instructions
+                .push(zeron_proto::WorkItemInstructionView {
+                    id: "\u{0}proposed".to_owned(),
+                    space_id: snapshot.space_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                    text: text.clone(),
+                    order_key: format!("{last_key}~"),
+                    created_by: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    source: None,
+                    source_proposal_id: None,
+                    archived_at: None,
+                    archived_by: None,
+                });
+            scope_candidates(snapshot, work_item_id.as_deref())
         }
     };
 

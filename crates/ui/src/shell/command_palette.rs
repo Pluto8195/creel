@@ -47,8 +47,7 @@ enum Entry {
     MyPrs,
     ImportSessionCanvasSessions,
     Theme(AppearanceMode),
-    /// A Work Outline command (all but Open Required Actions, which waits for
-    /// Milestone 4; see `WorkOutlineCommand::in_palette`).
+    /// A Work Outline command (all ten, Open Required Actions included).
     WorkOutline(WorkOutlineCommand),
     Chat(String),
 }
@@ -602,6 +601,7 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::AssociateChatWithWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::OpenEffectiveInstructions),
                 Entry::WorkOutline(WorkOutlineCommand::CreateInstructionFromChat),
+                Entry::WorkOutline(WorkOutlineCommand::OpenRequiredActions),
                 Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_lists_nine_work_outline_commands_and_hides_required_actions() {
+    fn palette_lists_every_work_outline_command_including_required_actions() {
         let entries = actions_for("", true);
         let listed: Vec<_> = entries
             .iter()
@@ -634,13 +634,16 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(listed.len(), 9);
+        // The nine spec commands plus Start Chat.
+        assert_eq!(listed, WorkOutlineCommand::ALL);
         assert_eq!(
             actions_for("start chat", true),
             vec![Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem)]
         );
-        assert!(!listed.contains(&WorkOutlineCommand::OpenRequiredActions));
-        assert!(actions_for(WorkOutlineCommand::OpenRequiredActions.label(), true).is_empty());
+        assert_eq!(
+            actions_for("required actions", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::OpenRequiredActions)]
+        );
         assert_eq!(
             actions_for("effective instructions", true),
             vec![Entry::WorkOutline(

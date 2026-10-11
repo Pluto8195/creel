@@ -96,6 +96,11 @@ pub(crate) enum OutlineEvent {
     OpenSpaceRoot { space_id: String },
     /// Start a Chat in the work item (Milestone 3).
     StartChat { space_id: String, item_id: String },
+    /// Review proposed instructions (Milestone 4); `item_id` empty = the
+    /// Space root.
+    OpenProposals { space_id: String, item_id: String },
+    /// Open the Required Actions surface (Milestone 4).
+    OpenRequiredActions,
 }
 
 /// What the Overview feeds the Outline each time its inputs change.
@@ -1174,6 +1179,15 @@ impl OutlineView {
         let body: AnyElement = match &row.kind {
             OutlineRowKind::Space { label, space_id } => {
                 let open_space = space_id.clone();
+                let (totals, proposals) = self
+                    .snapshot(space_id)
+                    .map(|snapshot| {
+                        (
+                            super::required_actions::space_totals(snapshot),
+                            super::required_actions::pending_proposal_count(snapshot, None),
+                        )
+                    })
+                    .unwrap_or_default();
                 div()
                     .flex_1()
                     .min_w_0()
@@ -1189,6 +1203,16 @@ impl OutlineView {
                             .text_color(theme.text)
                             .child(SharedString::from(label.clone())),
                     )
+                    .when_some(totals, |el, totals| {
+                        el.child(status_totals_element(
+                            format!("outline-totals-{key}"),
+                            totals,
+                            theme,
+                        ))
+                    })
+                    .when(proposals > 0, |el| {
+                        el.child(self.proposals_chip(&key, space_id, "", proposals, theme, cx))
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -1258,7 +1282,17 @@ impl OutlineView {
                     let submitting = self.editing.as_ref().is_some_and(|edit| edit.submitting);
                     self.editor_box(submitting, theme, cx)
                 } else {
-                    item_body(&key, item, theme)
+                    let proposals = (item.pending_proposals > 0).then(|| {
+                        self.proposals_chip(
+                            &key,
+                            &item.space_id,
+                            &item.item_id,
+                            item.pending_proposals,
+                            theme,
+                            cx,
+                        )
+                    });
+                    item_body(&key, item, proposals, theme)
                 }
             }
             OutlineRowKind::Chat(chat) => {
@@ -1413,6 +1447,58 @@ impl OutlineView {
             .into_any_element()
     }
 
+    /// "N proposed instructions" (compact: icon + count, full text in the
+    /// tooltip); opens the review in details. `item_id` empty = Space root.
+    fn proposals_chip(
+        &self,
+        key: &str,
+        space_id: &str,
+        item_id: &str,
+        count: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tip: SharedString = format!(
+            "{} \u{2014} click to review",
+            super::required_actions::proposals_label(count)
+        )
+        .into();
+        let selector = format!("outline-proposals-{key}");
+        let space_id = space_id.to_owned();
+        let item_id = item_id.to_owned();
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .px(px(3.0))
+            .rounded(px(3.0))
+            .cursor_pointer()
+            .text_size(crate::typography::ui_rems(10.0))
+            .text_color(theme.text_muted)
+            .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
+            .child(
+                crate::icons::icon(crate::icons::DOCUMENT)
+                    .size(px(10.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(SharedString::from(format!("{count} proposed")))
+            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                if !this.is_editing() {
+                    cx.emit(OutlineEvent::OpenProposals {
+                        space_id: space_id.clone(),
+                        item_id: item_id.clone(),
+                    });
+                }
+            }))
+            .into_any_element()
+    }
+
     fn render_picker(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let picker = self.picker.as_ref()?;
         let rows = picker.entries.iter().enumerate().map(|(ix, entry)| {
@@ -1497,7 +1583,50 @@ impl OutlineView {
     }
 }
 
-fn item_body(key: &str, item: &ItemRow, theme: &Theme) -> AnyElement {
+/// The compact descendant totals ("3 active · 1 user action required"):
+/// faint text, the attention part in the attention token.
+fn status_totals_element(
+    id: String,
+    totals: super::required_actions::StatusTotals,
+    theme: &Theme,
+) -> AnyElement {
+    let tip: SharedString = format!("Including descendants: {}", totals.label()).into();
+    let selector = id.clone();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(3.0))
+        .text_size(crate::typography::ui_rems(10.0))
+        .text_color(theme.text_faint)
+        .when_some(totals.active_label(), |el, label| {
+            el.child(SharedString::from(label))
+        })
+        .when(totals.active > 0 && totals.user_action_required > 0, |el| {
+            el.child("\u{b7}")
+        })
+        .when_some(totals.attention_label(), |el, label| {
+            el.child(
+                div()
+                    .text_color(chips::attention_color(theme))
+                    .child(SharedString::from(label)),
+            )
+        })
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .into_any_element()
+}
+
+fn item_body(
+    key: &str,
+    item: &ItemRow,
+    proposals: Option<AnyElement>,
+    theme: &Theme,
+) -> AnyElement {
+    let totals = (!item.archived)
+        .then(|| super::required_actions::status_totals(&item.rollup))
+        .flatten();
     let (glyph, label, color) = chips::status_style(item.effective_status, theme);
     let status_tip: SharedString = format!("Status: {label}").into();
     let chats_tip: SharedString = format!(
@@ -1540,6 +1669,14 @@ fn item_body(key: &str, item: &ItemRow, theme: &Theme) -> AnyElement {
             ),
             |el, indicator| el.child(indicator),
         )
+        .when_some(totals, |el, totals| {
+            el.child(status_totals_element(
+                format!("outline-totals-{key}"),
+                totals,
+                theme,
+            ))
+        })
+        .children(proposals)
         .when(item.chat_count > 0, |el| {
             el.child(
                 div()
@@ -1720,6 +1857,19 @@ impl Render for OutlineView {
             [space] => space.load.snapshot().map(|snapshot| {
                 let count = instructions::live_instructions(snapshot, None).len();
                 let space_id = space.id.clone();
+                // Milestone 4: Space-wide totals and Space-root proposals.
+                let totals = super::required_actions::space_totals(snapshot);
+                let proposals = super::required_actions::pending_proposal_count(snapshot, None);
+                let proposals_chip = (proposals > 0).then(|| {
+                    self.proposals_chip(
+                        &model::row_key::space(&space.id),
+                        &space.id,
+                        "",
+                        proposals,
+                        &theme,
+                        cx,
+                    )
+                });
                 div()
                     .id("outline-space-root-entry")
                     .debug_selector(|| "outline-space-root-entry".into())
@@ -1741,6 +1891,15 @@ impl Render for OutlineView {
                     .child(SharedString::from(format!(
                         "Space root instructions ({count})"
                     )))
+                    .children(proposals_chip)
+                    .child(div().flex_1())
+                    .when_some(totals, |el, totals| {
+                        el.child(status_totals_element(
+                            "outline-totals-space-root".into(),
+                            totals,
+                            &theme,
+                        ))
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.is_editing() {
                             cx.emit(OutlineEvent::OpenSpaceRoot {

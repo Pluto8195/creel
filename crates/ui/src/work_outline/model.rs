@@ -115,6 +115,10 @@ pub(crate) struct ItemRow {
     /// Associated Chats whose captured execution configuration differs from
     /// the item's current one (`executionExceptions`).
     pub execution_exceptions: u32,
+    /// Subtree rollup (descendant status totals, Milestone 4).
+    pub rollup: zeron_proto::WorkItemRollup,
+    /// Pending instruction proposals targeting this item (Milestone 4).
+    pub pending_proposals: usize,
     pub archived: bool,
     /// Shown only because something below it is visible.
     pub kept_for_descendants: bool,
@@ -558,6 +562,11 @@ fn item_node<'s>(
                 .max(item.chat_ids.len() as u32),
             has_references: !item.external_reference_ids.is_empty(),
             execution_exceptions: snapshot.execution_exception_chats(&item.id).len() as u32,
+            rollup: item.rollup.clone(),
+            pending_proposals: super::required_actions::pending_proposal_count(
+                snapshot,
+                Some(&item.id),
+            ),
             archived,
             kept_for_descendants: !self_visible,
         }),
