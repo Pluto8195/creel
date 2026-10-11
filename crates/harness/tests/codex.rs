@@ -1651,3 +1651,52 @@ async fn real_image_generation_smoke() {
     assert!(std::path::Path::new(path).is_file());
     assert!(serde_json::to_vec(&events).unwrap().len() < 64 * 1024);
 }
+
+fn agent_tools_injection() -> zeron_harness::AgentToolsInjection {
+    zeron_harness::AgentToolsInjection {
+        server_name: "zeron".into(),
+        command: PathBuf::from("/opt/zeron/bin/zeron"),
+        args: vec!["mcp".into()],
+        env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok-1".into())]),
+    }
+}
+
+fn text_of(events: &[AgentEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Codex gets the Zeron MCP server through the thread's `config` override
+/// layer only when the engine injects it; a plain run carries no
+/// `mcp_servers` keys at all (the user's `config.toml` stays authoritative).
+#[tokio::test]
+async fn agent_tools_ride_thread_start_config_only_when_injected() {
+    let harness = harness();
+    assert!(harness.supports_agent_tools());
+
+    let (controls_a, _steer_a, _token_a) = controls("Yes");
+    let stream = harness
+        .run_with_agent_tools(
+            request("scenario:agent-tools"),
+            controls_a,
+            agent_tools_injection(),
+        )
+        .await
+        .expect("run starts");
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(|r| r.expect("stream event")).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("run finished in time");
+    assert_eq!(text_of(&events), "tools:yes", "{events:?}");
+
+    let (controls_b, _steer_b, _token_b) = controls("Yes");
+    let events = run_to_end(&harness, request("scenario:agent-tools"), controls_b).await;
+    assert_eq!(text_of(&events), "tools:no", "{events:?}");
+}

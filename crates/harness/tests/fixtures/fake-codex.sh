@@ -99,6 +99,21 @@ case "$turnline" in
   ;;
 
 
+*scenario:agent-tools*)
+  # Report whether thread/start carried the Zeron MCP server overrides.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  if has "$thread_line" '"mcp_servers.zeron.command":"/opt/zeron/bin/zeron"' \
+    && has "$thread_line" '"mcp_servers.zeron.args":["mcp"]' \
+    && has "$thread_line" '"mcp_servers.zeron.env":{"ZERON_AGENT_TOKEN":"tok-1"}'; then
+    emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:yes"}}'
+  elif has "$thread_line" 'mcp_servers'; then
+    emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:partial"}}'
+  else
+    emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:no"}}'
+  fi
+  emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-1"}}}'
+  ;;
+
 *scenario:reasoning*)
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"item/started","params":{"threadId":"th-1","item":{"id":"call_alpha","type":"subAgentActivity","kind":"spawned","agentThreadId":"child-1","agentPath":"/root/alpha"}}}'

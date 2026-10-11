@@ -110,6 +110,9 @@ pub struct ClaudeHarness {
     instruction_dir: Option<PathBuf>,
     /// `claude --help` instruction-flag probe, cached per executable identity.
     instruction_probe: crate::instruction_support::ProbeCache,
+    /// Zeron-owned directory for per-Run `--mcp-config` files (see
+    /// [`crate::agent_tools`]); defaults beside the model-discovery directory.
+    agent_tools_dir: Option<PathBuf>,
 }
 
 impl Default for ClaudeHarness {
@@ -124,6 +127,7 @@ impl Default for ClaudeHarness {
             commands_cache: discovery::CommandsCache::default(),
             instruction_dir: None,
             instruction_probe: Default::default(),
+            agent_tools_dir: None,
         }
     }
 }
@@ -149,6 +153,40 @@ impl ClaudeHarness {
     pub fn with_instruction_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.instruction_dir = Some(path.into());
         self
+    }
+
+    /// Write per-Run agent-tools MCP config files under this Zeron-owned
+    /// directory.
+    pub fn with_agent_tools_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.agent_tools_dir = Some(path.into());
+        self
+    }
+
+    fn agent_tools_dir(&self) -> PathBuf {
+        self.agent_tools_dir
+            .clone()
+            .unwrap_or_else(|| crate::agent_tools::default_dir(self.model_discovery_cwd.as_deref()))
+    }
+
+    /// `--mcp-config <file>` for a Run with agent tools, plus the file guard
+    /// the Run holds until it ends. Never `--strict-mcp-config`: the user's
+    /// own MCP servers keep loading beside Zeron's.
+    fn agent_tools_args(
+        &self,
+        tools: Option<&crate::AgentToolsInjection>,
+    ) -> Result<
+        (
+            Vec<std::ffi::OsString>,
+            Option<crate::agent_tools::McpConfigFile>,
+        ),
+        HarnessError,
+    > {
+        let Some(tools) = tools else {
+            return Ok((Vec::new(), None));
+        };
+        let file = crate::agent_tools::write_claude_mcp_config(&self.agent_tools_dir(), tools)?;
+        let args = vec!["--mcp-config".into(), file.path().as_os_str().to_owned()];
+        Ok((args, Some(file)))
     }
 
     fn instruction_dir(&self) -> PathBuf {
@@ -555,7 +593,24 @@ impl Harness for ClaudeHarness {
         if request.instructions.is_some() {
             crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
         }
-        self.run_with_mode(request, controls, false).await
+        self.run_with_mode(request, controls, false, None).await
+    }
+
+    fn supports_agent_tools(&self) -> bool {
+        true
+    }
+
+    async fn run_with_agent_tools(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+        tools: crate::AgentToolsInjection,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        if request.instructions.is_some() {
+            crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
+        }
+        self.run_with_mode(request, controls, false, Some(&tools))
+            .await
     }
 
     async fn run_title(
@@ -569,7 +624,7 @@ impl Harness for ClaudeHarness {
         request.attachments.clear();
         request.model_options.clear();
         request.auto_approve = false;
-        self.run_with_mode(request, controls, true).await
+        self.run_with_mode(request, controls, true, None).await
     }
 }
 
@@ -579,10 +634,13 @@ impl ClaudeHarness {
         request: RunRequest,
         controls: RunControls,
         title_only: bool,
+        agent_tools: Option<&crate::AgentToolsInjection>,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let instruction_args = self.instruction_args(&request)?;
-        let mut cmd = self.build_command(&exe, &request, instruction_args);
+        let mut extra_args = self.instruction_args(&request)?;
+        let (tool_args, mcp_config_file) = self.agent_tools_args(agent_tools)?;
+        extra_args.extend(tool_args);
+        let mut cmd = self.build_command(&exe, &request, extra_args);
         if title_only {
             cmd.args([
                 "--system-prompt",
@@ -641,7 +699,7 @@ impl ClaudeHarness {
         let _ = stdin_tx.send(StdinMsg::Line(first));
 
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
-        tokio::spawn(run_session(Session {
+        let session = run_session(Session {
             title_only,
             child,
             stdout_lines: BufReader::new(stdout).lines(),
@@ -652,7 +710,12 @@ impl ClaudeHarness {
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
-        }));
+        });
+        tokio::spawn(async move {
+            session.await;
+            // The agent-tools config file lives exactly as long as the Run.
+            drop(mcp_config_file);
+        });
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
             rx.recv().await.map(|ev| (ev, rx))
@@ -1088,6 +1151,66 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn plain_request() -> RunRequest {
+        serde_json::from_value(json!({
+            "prompt": "p", "model": null, "reasoning": null, "cwd": "",
+            "sandbox": "workspace-write", "resume": null
+        }))
+        .unwrap()
+    }
+
+    fn tools_injection() -> crate::AgentToolsInjection {
+        crate::AgentToolsInjection {
+            server_name: "zeron".into(),
+            command: PathBuf::from("/opt/zeron/bin/zeron"),
+            args: vec!["mcp".into()],
+            env: std::collections::BTreeMap::from([(
+                "ZERON_AGENT_TOKEN".into(),
+                "secret-token".into(),
+            )]),
+        }
+    }
+
+    /// Agent tools ride `--mcp-config <Zeron-owned file>` only when the
+    /// engine injects them, never `--strict-mcp-config` (the user's own MCP
+    /// servers keep loading), and the token never reaches argv.
+    #[cfg(unix)]
+    #[test]
+    fn agent_tools_add_an_mcp_config_file_without_touching_user_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools_dir = dir.path().join("agent-tools");
+        let harness = ClaudeHarness::new().with_agent_tools_dir(&tools_dir);
+        let request = plain_request();
+
+        let without = argv(&harness, &request);
+        assert!(
+            !without.iter().any(|a| a.contains("mcp-config")),
+            "{without:?}"
+        );
+
+        let (extra, file) = harness.agent_tools_args(Some(&tools_injection())).unwrap();
+        let file = file.expect("a config file");
+        let args: Vec<String> = harness
+            .build_command(&PathBuf::from("/bin/claude"), &request, extra)
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|a| a == "--mcp-config").expect("flag");
+        assert_eq!(args[at + 1], file.path().to_string_lossy());
+        assert!(file.path().starts_with(&tools_dir));
+        assert!(!args.iter().any(|a| a == "--strict-mcp-config"), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("secret-token")), "{args:?}");
+        let body: Value =
+            serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(body["mcpServers"]["zeron"]["args"], json!(["mcp"]));
+        assert_eq!(
+            body["mcpServers"]["zeron"]["env"]["ZERON_AGENT_TOKEN"],
+            "secret-token"
+        );
+        assert!(harness.supports_agent_tools());
     }
 
     /// Every spawn path (fresh Run, native resume, crash respawn, explicit

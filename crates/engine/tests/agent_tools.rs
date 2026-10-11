@@ -1,0 +1,730 @@
+//! Work Outline agent tools (Milestone 4) against a real offline engine:
+//! - a Run of a Chat in a Space gets the Zeron MCP injection with a token
+//!   bound to that Chat and Run, revoked when the Run ends; a projectless
+//!   Chat's Run gets plain `run()` and no token;
+//! - `AgentToolCall` authenticates by token only (forged / absent / revoked
+//!   tokens are refused) and enforces the agent policy per tool;
+//! - mutations run as `Actor { kind: agent, chatId }` and dedupe by
+//!   `(token Chat, idempotencyKey)` across Runs.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use serde_json::{Value, json};
+use tokio::sync::Notify;
+
+use zeron_doc::SessionCommandPayload;
+use zeron_engine::{EngineCore, HarnessRegistry};
+use zeron_harness::{AgentToolsInjection, Harness, HarnessError, RunControls};
+use zeron_proto::{
+    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
+    SteeringMode, WorkOutlineActorKind, WorkOutlineSnapshot, derive_id, roles,
+};
+use zeron_rpc::{RpcClient, methods};
+
+const SPACE: &str = "space-1";
+const CHAT: &str = "chat-agent";
+const OTHER_CHAT: &str = "chat-other";
+const PROJECTLESS: &str = "chat-projectless";
+
+#[derive(Debug, Clone)]
+enum Spawn {
+    Plain {
+        prompt: String,
+    },
+    WithTools {
+        prompt: String,
+        tools: AgentToolsInjection,
+    },
+}
+
+/// Records how each Run was spawned and holds the Run open until released.
+#[derive(Clone, Default)]
+struct GatedHarness {
+    spawns: Arc<Mutex<Vec<Spawn>>>,
+    release: Arc<Notify>,
+}
+
+impl GatedHarness {
+    fn stream(&self, request: &RunRequest) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+        let release = self.release.clone();
+        let cwd = request.cwd.clone();
+        let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
+            harness: HarnessId::Mock,
+            model: "mock".into(),
+            tools: vec![],
+            cwd,
+            session_id: "sess-agent".into(),
+            assistant_message_id: "a-1".into(),
+        })]);
+        let done = futures::stream::once(async move {
+            release.notified().await;
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some("sess-agent".into()),
+            })
+        });
+        started.chain(done).boxed()
+    }
+}
+
+#[async_trait]
+impl Harness for GatedHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Gated"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[ReasoningLevel::Medium]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    fn supports_agent_tools(&self) -> bool {
+        true
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        _controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.spawns.lock().unwrap().push(Spawn::Plain {
+            prompt: request.prompt.clone(),
+        });
+        Ok(self.stream(&request))
+    }
+    async fn run_with_agent_tools(
+        &self,
+        request: RunRequest,
+        _controls: RunControls,
+        tools: AgentToolsInjection,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.spawns.lock().unwrap().push(Spawn::WithTools {
+            prompt: request.prompt.clone(),
+            tools,
+        });
+        Ok(self.stream(&request))
+    }
+}
+
+struct Rig {
+    _tmp: tempfile::TempDir,
+    core: EngineCore,
+    client: RpcClient,
+    harness: GatedHarness,
+    space_path: String,
+}
+
+async fn rig() -> Rig {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let space_path = root.join("project");
+    std::fs::create_dir_all(&space_path).unwrap();
+    let harness = GatedHarness::default();
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(harness.clone()));
+    let core = EngineCore::assemble(
+        &root.join("data"),
+        Arc::new(registry),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core assembles");
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    let space_path = space_path.to_string_lossy().into_owned();
+    client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createSpace", "spaceId": SPACE, "deviceId": core.device_id,
+                    "path": space_path }),
+        )
+        .await
+        .unwrap();
+    for chat in [CHAT, OTHER_CHAT] {
+        client
+            .call(
+                methods::MUTATE,
+                json!({ "op": "createChat", "chatId": chat, "spaceId": SPACE,
+                        "deviceId": core.device_id }),
+            )
+            .await
+            .unwrap();
+    }
+    client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": PROJECTLESS, "deviceId": core.device_id }),
+        )
+        .await
+        .unwrap();
+    Rig {
+        _tmp: tmp,
+        core,
+        client,
+        harness,
+        space_path,
+    }
+}
+
+async fn wait_for<F: FnMut() -> bool>(mut predicate: F, what: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !predicate() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+}
+
+fn run_command(prompt: &str, cwd: &str) -> SessionCommandPayload {
+    SessionCommandPayload::Run {
+        request: RunRequest {
+            prompt: prompt.into(),
+            harness: Some(HarnessId::Mock),
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            cwd: cwd.into(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            auto_approve: true,
+            resume: None,
+            attachments: Vec::new(),
+            worktree: None,
+            instructions: None,
+        },
+        message_id: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+async fn create_item(rig: &Rig, op: &str, title: &str, parent: Option<&str>) -> String {
+    let mut params = json!({ "op": "createWorkItem", "spaceId": SPACE, "title": title,
+                             "operationId": op });
+    if let Some(parent) = parent {
+        params["parentWorkItemId"] = json!(parent);
+    }
+    rig.client
+        .call(methods::WORK_OUTLINE_MUTATE, params)
+        .await
+        .unwrap();
+    derive_id(op, roles::ITEM)
+}
+
+async fn tool(rig: &Rig, token: &str, name: &str, arguments: Value) -> Result<Value, String> {
+    rig.client
+        .call(
+            zeron_proto::agent_tools::TOOL_CALL_METHOD,
+            json!({ "token": token, "tool": name, "arguments": arguments }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn snapshot(rig: &Rig) -> WorkOutlineSnapshot {
+    let inputs = rig.core.workspace.work_outline_inputs(SPACE);
+    zeron_doc::materialize_work_outline(SPACE, &inputs)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn space_chat_runs_get_a_run_scoped_token_and_projectless_runs_get_none() {
+    let rig = rig().await;
+    let tokens = rig.core.sessions.agent_tokens();
+
+    rig.core
+        .doc_host
+        .queue_command(CHAT, run_command("hello", &rig.space_path))
+        .unwrap();
+    wait_for(
+        || !rig.harness.spawns.lock().unwrap().is_empty(),
+        "space run",
+    )
+    .await;
+    let spawn = rig.harness.spawns.lock().unwrap()[0].clone();
+    let Spawn::WithTools { prompt, tools } = spawn else {
+        panic!("a Chat in a Space must get agent tools: {spawn:?}");
+    };
+    assert_eq!(prompt, "hello");
+    assert_eq!(tools.server_name, "zeron");
+    assert_eq!(tools.args, vec!["mcp".to_owned()]);
+    let token = tools.env["ZERON_AGENT_TOKEN"].clone();
+    assert!(tools.env.contains_key("ZERON_IPC_PORT"));
+    assert_eq!(tokens.live_count(), 1);
+
+    let origin = rig
+        .client
+        .call(
+            zeron_proto::agent_tools::AUTHENTICATE_METHOD,
+            json!({ "token": token }),
+        )
+        .await
+        .expect("a live Run's token authenticates");
+    assert_eq!(origin["chatId"], CHAT);
+    assert_eq!(origin["spaceId"], SPACE);
+    assert_eq!(origin["deviceId"], rig.core.device_id);
+    assert!(!origin["runId"].as_str().unwrap().is_empty());
+
+    // The Run ends: its token is revoked with it.
+    rig.harness.release.notify_one();
+    wait_for(|| tokens.live_count() == 0, "token revocation").await;
+    let err = rig
+        .client
+        .call(
+            zeron_proto::agent_tools::AUTHENTICATE_METHOD,
+            json!({ "token": token }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("agent-tools/unauthenticated"), "{err}");
+    let err = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent-tools/unauthenticated"), "{err}");
+
+    // A projectless Chat keeps today's behavior: plain run, no token.
+    rig.core
+        .doc_host
+        .queue_command(PROJECTLESS, run_command("solo", "~"))
+        .unwrap();
+    wait_for(
+        || rig.harness.spawns.lock().unwrap().len() == 2,
+        "projectless run",
+    )
+    .await;
+    let spawn = rig.harness.spawns.lock().unwrap()[1].clone();
+    assert!(
+        matches!(&spawn, Spawn::Plain { prompt } if prompt == "solo"),
+        "{spawn:?}"
+    );
+    assert_eq!(tokens.live_count(), 0);
+    rig.harness.release.notify_one();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forged_or_absent_tokens_reach_no_tool() {
+    let rig = rig().await;
+    let lease = rig
+        .core
+        .sessions
+        .agent_tokens()
+        .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    for token in ["", "zat_forged", &format!("{}0", lease.token())] {
+        let err = tool(&rig, token, "work_outline_read_current", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("agent-tools/unauthenticated"),
+            "{token:?}: {err}"
+        );
+    }
+    // A missing token field is a malformed call, never an anonymous one.
+    assert!(
+        rig.client
+            .call(
+                zeron_proto::agent_tools::TOOL_CALL_METHOD,
+                json!({ "tool": "work_outline_read_current" }),
+            )
+            .await
+            .is_err()
+    );
+    // Unknown tools are refused even with a valid token.
+    let err = tool(&rig, lease.token(), "delete_everything", json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent-tools/unsupported"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
+    let rig = rig().await;
+    let root_a = create_item(&rig, "op-a", "Feature A", None).await;
+    let root_b = create_item(&rig, "op-b", "Feature B", None).await;
+    let a_child = create_item(&rig, "op-a1", "A step", Some(&root_a)).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    // Unassociated: reads show no item; subtree tools are refused.
+    let read = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["workItem"], Value::Null);
+    assert_eq!(read["chatId"], CHAT);
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "x", "parentWorkItemId": root_a, "idempotencyKey": "k0" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+
+    // Associate ONLY the calling Chat.
+    let associated = tool(
+        &rig,
+        &token,
+        "work_outline_associate_current_chat",
+        json!({ "workItemId": root_a, "idempotencyKey": "assoc" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(associated["chatId"], CHAT);
+    let snap = snapshot(&rig);
+    let assignment = snap.assignments.iter().find(|a| a.chat_id == CHAT).unwrap();
+    assert_eq!(assignment.work_item_id.as_deref(), Some(root_a.as_str()));
+    let actor = assignment.assigned_by.as_ref().unwrap();
+    assert_eq!(actor.kind, WorkOutlineActorKind::Agent);
+    assert_eq!(actor.chat_id.as_deref(), Some(CHAT));
+    assert!(snap.assignments.iter().all(|a| a.chat_id != OTHER_CHAT));
+    let service = rig.core.rpc_service();
+    let err = service
+        .work_outline()
+        .authorize_agent(
+            CHAT,
+            &serde_json::from_value(json!({ "op": "assignChatToWorkItem",
+                "chatId": OTHER_CHAT, "workItemId": root_a, "operationId": "x" }))
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.code,
+        zeron_proto::WorkOutlineErrorCode::Unauthorized,
+        "{err:?}"
+    );
+
+    // Read: the item, its path, and effective instructions.
+    let read = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["workItem"]["id"], root_a);
+    assert_eq!(read["workItem"]["children"][0]["id"], a_child);
+    assert_eq!(read["effectiveInstructions"]["workItemId"], root_a);
+
+    // Create a child under the Chat's item (default parent) and under a
+    // descendant; never under another subtree or at the Space root.
+    let created = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "Agent step", "idempotencyKey": "child-1" }),
+    )
+    .await
+    .unwrap();
+    let child = created["workItemId"].as_str().unwrap().to_owned();
+    assert_eq!(created["parentWorkItemId"], root_a);
+    let view = snapshot(&rig).item(&child).cloned().unwrap();
+    let creator = view.created_by.unwrap();
+    assert_eq!(creator.kind, WorkOutlineActorKind::Agent);
+    assert_eq!(creator.chat_id.as_deref(), Some(CHAT));
+    tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "Deeper", "parentWorkItemId": a_child, "idempotencyKey": "child-2",
+                "status": "active" }),
+    )
+    .await
+    .unwrap();
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "Elsewhere", "parentWorkItemId": root_b, "idempotencyKey": "child-3" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    let err = service
+        .work_outline()
+        .authorize_agent(
+            CHAT,
+            &serde_json::from_value(json!({ "op": "createWorkItem", "spaceId": SPACE,
+                "title": "Root", "operationId": "x" }))
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.code,
+        zeron_proto::WorkOutlineErrorCode::Unauthorized,
+        "{err:?}"
+    );
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "Done already", "status": "completed", "idempotencyKey": "child-4" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent-tools/invalid"), "{err}");
+
+    // Status: active/completed inside the subtree only.
+    tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "active", "idempotencyKey": "s1" }),
+    )
+    .await
+    .unwrap();
+    tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "workItemId": child, "status": "completed", "idempotencyKey": "s2" }),
+    )
+    .await
+    .unwrap();
+    let snap = snapshot(&rig);
+    assert_eq!(
+        snap.item(&root_a).unwrap().status,
+        zeron_proto::WorkItemStatus::Active
+    );
+    assert_eq!(
+        snap.item(&child).unwrap().status,
+        zeron_proto::WorkItemStatus::Completed
+    );
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "workItemId": root_b, "status": "active", "idempotencyKey": "s3" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "pending", "idempotencyKey": "s4" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent-tools/invalid"), "{err}");
+
+    // Everything outside the allow-list is refused by the policy.
+    for forbidden in [
+        json!({ "op": "updateWorkItem", "workItemId": root_a,
+                "changes": { "title": "Renamed" }, "operationId": "x" }),
+        json!({ "op": "moveWorkItem", "workItemId": a_child, "operationId": "x" }),
+        json!({ "op": "archiveWorkItem", "workItemId": a_child,
+                "descendantArchivePolicy": { "type": "archiveDescendants" }, "operationId": "x" }),
+        json!({ "op": "removeChatFromWorkItem", "chatId": CHAT, "operationId": "x" }),
+        json!({ "op": "createWorkItemInstruction", "spaceId": SPACE,
+                "scope": { "type": "spaceRoot" }, "text": "x", "operationId": "x" }),
+        json!({ "op": "configureExecution", "scope": { "type": "workItem", "workItemId": root_a },
+                "configuration": null, "operationId": "x" }),
+    ] {
+        let mutation = serde_json::from_value(forbidden.clone()).unwrap();
+        let err = service
+            .work_outline()
+            .authorize_agent(CHAT, &mutation)
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            zeron_proto::WorkOutlineErrorCode::Unauthorized,
+            "{forbidden}"
+        );
+    }
+
+    // Requests: created on the Chat's item with the Chat as origin; an
+    // item with an open request cannot be completed (never auto-resolved);
+    // only the originating Chat resolves it.
+    let request = tool(
+        &rig,
+        &token,
+        "work_outline_create_user_action_request",
+        json!({ "request": "Approve the plan?", "detail": "Two options", "idempotencyKey": "r1" }),
+    )
+    .await
+    .unwrap();
+    let request_id = request["userActionRequestId"].as_str().unwrap().to_owned();
+    assert_eq!(request["workItemId"], root_a);
+    let read = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["workItem"]["effectiveStatus"], "userActionRequired");
+    assert_eq!(read["openUserActionRequests"][0]["id"], request_id);
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "completed", "idempotencyKey": "s5" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/openUserActionRequests"), "{err}");
+    let snap = snapshot(&rig);
+    assert_eq!(
+        snap.item(&root_a).unwrap().status,
+        zeron_proto::WorkItemStatus::Active
+    );
+    let other =
+        rig.core
+            .sessions
+            .agent_tokens()
+            .mint(OTHER_CHAT, "run-9", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        other.token(),
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "idempotencyKey": "r2" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    tool(
+        &rig,
+        &token,
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "resolution": "User approved in chat",
+                "idempotencyKey": "r2" }),
+    )
+    .await
+    .unwrap();
+    tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "completed", "idempotencyKey": "s6" }),
+    )
+    .await
+    .unwrap();
+
+    // Proposals: for the item, its parent, or the Space root; pending until
+    // the user reviews them (no instruction is written).
+    let proposal = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "target": "spaceRoot", "text": "Prefer small PRs", "idempotencyKey": "r3" }),
+    )
+    .await
+    .unwrap();
+    assert!(proposal["proposalId"].is_string(), "{proposal}");
+    assert!(snapshot(&rig).instructions.is_empty());
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "target": "parent", "text": "x", "idempotencyKey": "r4" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("no parent"), "{err}");
+    for name in [
+        "work_outline_create_user_action_request",
+        "work_outline_resolve_user_action_request",
+        "work_outline_propose_instruction",
+    ] {
+        let err = tool(&rig, &token, name, json!({})).await.unwrap_err();
+        assert!(err.contains("agent-tools/invalid"), "{name}: {err}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retries_with_one_key_dedupe_across_runs_and_conflict_on_new_inputs() {
+    let rig = rig().await;
+    let root = create_item(&rig, "op-root", "Root", None).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let first = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    tool(
+        &rig,
+        first.token(),
+        "work_outline_associate_current_chat",
+        json!({ "workItemId": root, "idempotencyKey": "assoc" }),
+    )
+    .await
+    .unwrap();
+
+    let err = tool(
+        &rig,
+        first.token(),
+        "work_outline_create_child",
+        json!({ "title": "Step" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("agent-tools/invalid") && err.contains("idempotencyKey"),
+        "{err}"
+    );
+
+    let args = json!({ "title": "Step", "idempotencyKey": "step-1" });
+    let a = tool(
+        &rig,
+        first.token(),
+        "work_outline_create_child",
+        args.clone(),
+    )
+    .await
+    .unwrap();
+    let b = tool(
+        &rig,
+        first.token(),
+        "work_outline_create_child",
+        args.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(a["workItemId"], b["workItemId"]);
+    let count = |rig: &Rig| snapshot(rig).items.len();
+    assert_eq!(count(&rig), 2);
+
+    // A later Run of the same Chat retrying the same key: same item.
+    drop(first);
+    let second = tokens.mint(CHAT, "run-2", SPACE, &rig.core.device_id);
+    let c = tool(&rig, second.token(), "work_outline_create_child", args)
+        .await
+        .unwrap();
+    assert_eq!(a["workItemId"], c["workItemId"]);
+    assert_eq!(count(&rig), 2);
+
+    // Same key, different inputs: a conflict, never a second item.
+    let err = tool(
+        &rig,
+        second.token(),
+        "work_outline_create_child",
+        json!({ "title": "Other", "idempotencyKey": "step-1" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/operationConflict"), "{err}");
+    assert_eq!(count(&rig), 2);
+
+    // Another Chat using the same key gets its own operation.
+    let other = tokens.mint(OTHER_CHAT, "run-3", SPACE, &rig.core.device_id);
+    tool(
+        &rig,
+        other.token(),
+        "work_outline_associate_current_chat",
+        json!({ "workItemId": root, "idempotencyKey": "assoc" }),
+    )
+    .await
+    .unwrap();
+    let d = tool(
+        &rig,
+        other.token(),
+        "work_outline_create_child",
+        json!({ "title": "Step", "idempotencyKey": "step-1" }),
+    )
+    .await
+    .unwrap();
+    assert_ne!(a["workItemId"], d["workItemId"]);
+    assert_eq!(count(&rig), 3);
+}

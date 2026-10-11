@@ -647,3 +647,191 @@ mod generated_image_tests {
         assert_eq!(serde_json::from_value::<AgentEvent>(value).unwrap(), event);
     }
 }
+
+/// Engine-authenticated agent tools (Work Outline Milestone 4): the wire
+/// contract shared by the engine's agent RPC surface and the `zeron mcp`
+/// server it injects into Claude Code and Codex runs of Chats in a Space.
+///
+/// Authentication: the engine mints a random per-Run capability token bound
+/// to `(chatId, runId, spaceId)` when it spawns the Run, hands it to the MCP
+/// server in [`TOKEN_ENV`], and revokes it when the Run ends. Every agent
+/// call carries the token; the engine derives the originating Chat from it
+/// and never trusts a client-supplied Chat id. Both methods are local to the
+/// engine that minted the token (never device-forwarded).
+pub mod agent_tools {
+    use serde::{Deserialize, Serialize};
+
+    /// MCP server name (Claude tools surface as `mcp__zeron__<tool>`).
+    pub const SERVER_NAME: &str = "zeron";
+    /// Environment variable carrying the per-Run capability token.
+    pub const TOKEN_ENV: &str = "ZERON_AGENT_TOKEN";
+    /// Environment variable naming the engine's loopback IPC port.
+    pub const IPC_PORT_ENV: &str = "ZERON_IPC_PORT";
+    /// `{token}` → [`AgentOrigin`]. Fails with `agent-tools/unauthenticated`
+    /// for an unknown, revoked, or expired token.
+    pub const AUTHENTICATE_METHOD: &str = "AgentAuthenticate";
+    /// [`AgentToolCallParams`] → the tool's JSON result. Failures are
+    /// `agent-tools/<code>: …` ([`AgentToolErrorCode`]) or a Work Outline
+    /// `work-outline/<code>: …` string from the underlying operation.
+    pub const TOOL_CALL_METHOD: &str = "AgentToolCall";
+    /// Longest accepted `idempotencyKey`.
+    pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 200;
+
+    /// Tool wire names. Every mutating tool requires an `idempotencyKey`.
+    pub mod tools {
+        /// The Chat's work item, its effective instructions, and the Space.
+        pub const READ_CURRENT: &str = "work_outline_read_current";
+        /// Create a child under the Chat's item or one of its descendants.
+        pub const CREATE_CHILD: &str = "work_outline_create_child";
+        /// Associate the calling Chat (only) with an item of its Space.
+        pub const ASSOCIATE_CURRENT_CHAT: &str = "work_outline_associate_current_chat";
+        /// Mark the Chat's item or a descendant active or completed.
+        pub const SET_STATUS: &str = "work_outline_set_status";
+        /// Ask the user for an action on the Chat's item.
+        pub const CREATE_USER_ACTION_REQUEST: &str = "work_outline_create_user_action_request";
+        /// Resolve a request this Chat created.
+        pub const RESOLVE_USER_ACTION_REQUEST: &str = "work_outline_resolve_user_action_request";
+        /// Propose an instruction for the item, its parent, or the Space root.
+        pub const PROPOSE_INSTRUCTION: &str = "work_outline_propose_instruction";
+        /// Engine-internal (not an MCP tool): queue the first Turn of a child
+        /// Chat the MCP `create_chat` tool created, with ids derived from the
+        /// calling Chat and its idempotency key so retries never duplicate it.
+        pub const QUEUE_CHILD_CHAT_TURN: &str = "chat_queue_child_turn";
+
+        /// The Work Outline tools, in catalog order.
+        pub const WORK_OUTLINE: [&str; 7] = [
+            READ_CURRENT,
+            CREATE_CHILD,
+            ASSOCIATE_CURRENT_CHAT,
+            SET_STATUS,
+            CREATE_USER_ACTION_REQUEST,
+            RESOLVE_USER_ACTION_REQUEST,
+            PROPOSE_INSTRUCTION,
+        ];
+    }
+
+    /// Params of [`AUTHENTICATE_METHOD`].
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AgentAuthenticateParams {
+        pub token: String,
+    }
+
+    /// Who a valid token speaks for (engine-derived, never client-declared).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AgentOrigin {
+        pub chat_id: String,
+        pub run_id: String,
+        pub space_id: String,
+        pub device_id: String,
+    }
+
+    /// Params of [`TOOL_CALL_METHOD`].
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AgentToolCallParams {
+        pub token: String,
+        pub tool: String,
+        #[serde(default)]
+        pub arguments: serde_json::Value,
+    }
+
+    /// Why an agent call was refused before reaching a Work Outline operation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub enum AgentToolErrorCode {
+        /// Absent, unknown, revoked, or expired token.
+        Unauthenticated,
+        /// The token is valid but the policy does not allow this target.
+        Forbidden,
+        /// Malformed arguments (including a missing `idempotencyKey`).
+        Invalid,
+        /// Unknown tool, or an operation this host cannot perform yet.
+        #[serde(other)]
+        Unsupported,
+    }
+
+    impl AgentToolErrorCode {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Unauthenticated => "unauthenticated",
+                Self::Forbidden => "forbidden",
+                Self::Invalid => "invalid",
+                Self::Unsupported => "unsupported",
+            }
+        }
+    }
+
+    /// Prefix of a wire-encoded [`AgentToolErrorCode`] failure.
+    pub const ERROR_PREFIX: &str = "agent-tools/";
+
+    /// `agent-tools/<code>: <message>`.
+    pub fn error_wire_message(code: AgentToolErrorCode, message: &str) -> String {
+        format!("{ERROR_PREFIX}{}: {message}", code.as_str())
+    }
+
+    /// The Work Outline `operationId` of an agent mutation: derived from the
+    /// token's Chat and the agent-supplied key only, so a retry with the same
+    /// key dedupes across Runs (and processes) of that Chat, and two Chats
+    /// can never collide. 32 lowercase hex characters.
+    pub fn operation_id(chat_id: &str, idempotency_key: &str) -> String {
+        crate::work_outline::derive_id(
+            &format!("zeron-agent-tool\u{0}{chat_id}\u{0}{idempotency_key}"),
+            "agent-operation",
+        )
+    }
+
+    /// Trimmed key, or why it is unusable.
+    pub fn validate_idempotency_key(key: Option<&str>) -> Result<&str, String> {
+        let key = key.map(str::trim).unwrap_or_default();
+        if key.is_empty() {
+            return Err(
+                "idempotencyKey is required: pass a stable key (for example a short \
+                 description of this step) and reuse it when you retry the same call"
+                    .into(),
+            );
+        }
+        if key.chars().count() > MAX_IDEMPOTENCY_KEY_CHARS {
+            return Err(format!(
+                "idempotencyKey is longer than {MAX_IDEMPOTENCY_KEY_CHARS} characters"
+            ));
+        }
+        Ok(key)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn operation_ids_are_per_chat_and_stable() {
+            let a = operation_id("chat-a", "step-1");
+            assert_eq!(a, operation_id("chat-a", "step-1"));
+            assert_eq!(a.len(), 32);
+            assert_ne!(a, operation_id("chat-b", "step-1"));
+            assert_ne!(a, operation_id("chat-a", "step-2"));
+            // The separator keeps `(ab, c)` and `(a, bc)` apart.
+            assert_ne!(operation_id("ab", "c"), operation_id("a", "bc"));
+        }
+
+        #[test]
+        fn idempotency_keys_are_required_and_bounded() {
+            assert!(validate_idempotency_key(None).is_err());
+            assert!(validate_idempotency_key(Some("  ")).is_err());
+            assert_eq!(validate_idempotency_key(Some(" k ")).unwrap(), "k");
+            let long = "x".repeat(MAX_IDEMPOTENCY_KEY_CHARS + 1);
+            assert!(validate_idempotency_key(Some(&long)).is_err());
+        }
+
+        #[test]
+        fn error_codes_are_lenient() {
+            let code: AgentToolErrorCode = serde_json::from_str("\"newer\"").unwrap();
+            assert_eq!(code, AgentToolErrorCode::Unsupported);
+            assert_eq!(
+                error_wire_message(AgentToolErrorCode::Forbidden, "no"),
+                "agent-tools/forbidden: no"
+            );
+        }
+    }
+}

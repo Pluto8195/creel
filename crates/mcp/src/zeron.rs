@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, mpsc};
 use zeron_doc::{
     SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
 };
+use zeron_proto::agent_tools::{self, AgentOrigin};
 use zeron_proto::{
     Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
 };
@@ -28,27 +29,14 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(15);
 /// boundary (chat2 cutover etc.) — the same contract the UI follows.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_millis(300);
 
-/// Which chat this server speaks for, when the engine injected it into a
-/// harness. Unset when a human runs `zeron mcp` from a terminal.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Origin {
-    pub chat_id: Option<String>,
-    pub device_id: Option<String>,
-}
-
-impl Origin {
-    pub fn from_env() -> Self {
-        let read = |key: &str| {
-            std::env::var(key)
-                .ok()
-                .map(|v| v.trim().to_owned())
-                .filter(|v| !v.is_empty())
-        };
-        Self {
-            chat_id: read("ZERON_CHAT_ID"),
-            device_id: read("ZERON_DEVICE_ID"),
-        }
-    }
+/// The per-Run capability token the engine injected (`ZERON_AGENT_TOKEN`),
+/// if any. A self-declared origin (the old `ZERON_CHAT_ID`) is never read:
+/// who this server speaks for is whatever the engine says the token is.
+pub fn token_from_env() -> Option<String> {
+    std::env::var(agent_tools::TOKEN_ENV)
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
 }
 
 /// `ListHarnesses` row — the engine's `HarnessDescriptor`, re-declared here
@@ -106,32 +94,63 @@ pub enum TurnOutcome {
 
 pub struct Zeron {
     url: String,
-    origin: Origin,
+    token: Option<String>,
     rpc: Mutex<Option<Arc<RpcClient>>>,
 }
 
 impl Zeron {
     /// Lazy dialer: nothing connects until the first tool call, so `zeron
     /// mcp` starts (and answers `initialize`) even before the engine is up.
-    pub fn new(url: String, origin: Origin) -> Self {
+    pub fn new(url: String, token: Option<String>) -> Self {
         Self {
             url,
-            origin,
+            token,
             rpc: Mutex::new(None),
         }
     }
 
     /// Wrap an already-connected client (tests, in-process embedding).
-    pub fn with_client(client: RpcClient, origin: Origin) -> Self {
+    pub fn with_client(client: RpcClient, token: Option<String>) -> Self {
         Self {
             url: String::new(),
-            origin,
+            token,
             rpc: Mutex::new(Some(Arc::new(client))),
         }
     }
 
-    pub fn origin(&self) -> &Origin {
-        &self.origin
+    /// Whether the engine injected this server into an agent Run.
+    pub fn has_token(&self) -> bool {
+        self.token.is_some()
+    }
+
+    /// Who this server speaks for, re-authenticated with the engine on every
+    /// call: `None` without a token (a human running `zeron mcp` from a
+    /// terminal), the token's Chat when the engine accepts it, an error when
+    /// it does not (revoked when its Run ended, or forged).
+    pub async fn authenticate(&self) -> anyhow::Result<Option<AgentOrigin>> {
+        let Some(token) = self.token.as_deref() else {
+            return Ok(None);
+        };
+        let value = self
+            .call(agent_tools::AUTHENTICATE_METHOD, json!({ "token": token }))
+            .await
+            .map_err(|e| anyhow!("Zeron refused this agent's token: {e}"))?;
+        let origin =
+            serde_json::from_value(value).context("AgentAuthenticate: unexpected shape")?;
+        Ok(Some(origin))
+    }
+
+    /// One token-authenticated agent tool call (the engine derives the
+    /// originating Chat from the token).
+    pub async fn agent_tool(&self, tool: &str, arguments: Value) -> anyhow::Result<Value> {
+        let token = self.token.as_deref().ok_or_else(|| {
+            anyhow!("{tool} is only available to agents Zeron started in a project's chat")
+        })?;
+        self.call(
+            agent_tools::TOOL_CALL_METHOD,
+            json!({ "token": token, "tool": tool, "arguments": arguments }),
+        )
+        .await
     }
 
     async fn client(&self) -> anyhow::Result<Arc<RpcClient>> {

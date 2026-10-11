@@ -17,8 +17,8 @@ use crate::tools::Tools;
 /// Protocol revisions this server knows. The client's requested revision
 /// is echoed when it is one of these; otherwise the newest is offered and
 /// the client decides whether to continue (per the MCP handshake rules).
-const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const LATEST_PROTOCOL: &str = "2025-06-18";
+const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const LATEST_PROTOCOL: &str = "2025-11-25";
 
 const INSTRUCTIONS: &str = "\
 Zeron runs coding agents in chats, each hosted on a device inside a project \
@@ -31,7 +31,14 @@ Chats are referenced by full id, a unique id prefix, or an exact title. Use \
 attributed to it and a chat cannot message itself. For request/response \
 with another chat, call `send_message` with `wait: true` (or `wait_for_turn` \
 later) — it returns the assistant's reply once that chat's turn finishes. \
-If a chat is `awaitingInput`, answer it with `respond_to_input`.";
+If a chat is `awaitingInput`, answer it with `respond_to_input`.\n\
+\n\
+Inside a Zeron chat that belongs to a project you also get Work Outline \
+tools (`work_outline_*`): read your chat's work item and its instructions, \
+create child items, mark items active or completed, associate your chat, \
+ask the user for an action, and propose instructions. Each mutating call \
+(and `create_chat`) needs an idempotency key: reuse the key when retrying \
+the same change, use a new key for a new change.";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
