@@ -9,6 +9,11 @@
 //!   request as `runWithInstructions { …, contextResetConfirmed: true }` under
 //!   the SAME message id (the host then drops it from `rejectedSends`);
 //!   Cancel puts the text back in the draft.
+//! - **Queued rows.** A queued row the host gated with
+//!   `QueueDeliveryGate::InstructionContextResetRequired` shows the reason with
+//!   Confirm (the `confirmInstructionContextReset` command: the host clears the
+//!   gate, marks the row confirmed, and drains it) and Cancel (the row leaves
+//!   the queue and its text returns to the draft).
 //! - **Host unsupported.** An ingestion-time refusal
 //!   (`instruction-delivery/{…}` on the RPC failure,
 //!   `instructionHostUnsupported`) shows the host's own actionable message;
@@ -30,6 +35,9 @@ use crate::theme::Theme;
 pub(crate) const CONTEXT_RESET_PROMPT: &str = "Start a fresh session with the new instructions? \
      The agent loses this conversation\u{2019}s context.";
 
+/// The reason a gated queued row shows ahead of its text.
+pub(crate) const QUEUED_CONTEXT_RESET_REASON: &str = "New instructions need a fresh session";
+
 /// How many recent sends keep their typed text for a Cancel hand-back.
 const SENT_DRAFTS_CAP: usize = 32;
 
@@ -43,6 +51,8 @@ pub(crate) struct InstructionResetState {
     /// Refusals answered here (by command id): hidden until the next frame
     /// drops them (a confirmed resend supersedes the command host-side).
     answered: HashSet<String>,
+    /// Queued rows whose context-reset confirmation is in flight.
+    confirming_rows: HashSet<String>,
 }
 
 impl InstructionResetState {
@@ -96,7 +106,181 @@ pub(crate) fn confirmed_resend(
     })
 }
 
+/// The command that confirms a gated queued row's context reset.
+pub(crate) fn confirm_queued_reset_command(
+    queued_message_id: &str,
+    revision_id: &str,
+) -> SessionCommandPayload {
+    SessionCommandPayload::ConfirmInstructionContextReset {
+        queued_message_id: queued_message_id.to_owned(),
+        revision_id: revision_id.to_owned(),
+    }
+}
+
 impl Composer {
+    /// Put `text` back in the draft (appended when the user has typed
+    /// something since, never twice).
+    fn restore_into_draft(&mut self, text: String, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            let current = input.text().to_owned();
+            let restored = if current.trim().is_empty() {
+                text
+            } else if current.contains(text.as_str()) {
+                current
+            } else {
+                format!("{current}\n\n{text}")
+            };
+            input.set_text(restored, cx);
+        });
+    }
+
+    /// Confirm a gated queued row: `confirmInstructionContextReset`.
+    pub(crate) fn confirm_queued_context_reset(
+        &mut self,
+        id: String,
+        revision_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(engine), Some(chat_id)) = (
+            self.state.read(cx).engine().cloned(),
+            self.state.read(cx).selected_chat.clone(),
+        ) else {
+            return;
+        };
+        if !self.instruction_reset.confirming_rows.insert(id.clone()) {
+            return;
+        }
+        let Ok(command) = serde_json::to_value(confirm_queued_reset_command(&id, &revision_id))
+        else {
+            return;
+        };
+        cx.notify();
+        let params = serde_json::json!({ "chatId": chat_id, "command": command });
+        cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                methods::QUEUE_COMMAND,
+                params,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |composer, cx| {
+                composer.instruction_reset.confirming_rows.remove(&id);
+                if let Err(raw) = result {
+                    composer.failure =
+                        Some(format!("Couldn\u{2019}t start a fresh session: {raw}").into());
+                    composer.failure_key = Some(chat_id.clone());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Cancel a gated queued row: it leaves the queue and its text returns
+    /// to the draft (attachments stay on the host).
+    pub(crate) fn cancel_queued_context_reset(
+        &mut self,
+        id: String,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let supported = {
+            let state = self.state.read(cx);
+            state.selected_chat.as_deref().is_some_and(|chat_id| {
+                state.chat_host_supports(
+                    chat_id,
+                    zeron_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1,
+                )
+            })
+        };
+        if supported && text != crate::attachments::ATTACHMENT_ONLY_TEXT {
+            self.restore_into_draft(text, cx);
+        }
+        self.remove_queued(id, cx);
+    }
+
+    /// Confirm / Cancel for a row gated on a context reset.
+    pub(crate) fn queued_context_reset_actions(
+        &self,
+        id: &str,
+        revision_id: &str,
+        text: String,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let confirming = self.instruction_reset.confirming_rows.contains(id);
+        let removing = self.queue_removing.contains(id);
+        let busy = confirming || removing;
+        let button = |selector: String, label: &'static str, primary: bool| {
+            let debug = selector.clone();
+            div()
+                .id(SharedString::from(selector))
+                .debug_selector(move || debug)
+                .flex_none()
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(5.0))
+                .text_size(px(11.5))
+                .when(primary, |el| {
+                    el.bg(theme.accent.opacity(0.15)).text_color(theme.accent)
+                })
+                .when(!primary, |el| el.text_color(theme.text_muted))
+                .when(busy, |el| el.opacity(0.5))
+                .when(!busy, |el| {
+                    el.cursor_pointer()
+                        .hover(|el| el.bg(theme.element_hover))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                })
+                .child(label)
+        };
+        let confirm_id = id.to_owned();
+        let confirm_revision = revision_id.to_owned();
+        let cancel_id = id.to_owned();
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .child(
+                button(format!("queue-reset-cancel-{id}"), "Cancel", false).when(!busy, |el| {
+                    el.on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.cancel_queued_context_reset(cancel_id.clone(), text.clone(), cx);
+                    }))
+                }),
+            )
+            .child(
+                button(
+                    format!("queue-reset-confirm-{id}"),
+                    if confirming {
+                        "Starting\u{2026}"
+                    } else {
+                        "Start fresh session"
+                    },
+                    true,
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| crate::work_outline::chips::TextTooltip(CONTEXT_RESET_PROMPT.into()))
+                        .into()
+                })
+                .when(!busy, |el| {
+                    el.on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.confirm_queued_context_reset(
+                            confirm_id.clone(),
+                            confirm_revision.clone(),
+                            cx,
+                        );
+                    }))
+                }),
+            )
+            .into_any_element()
+    }
+
     /// The newest refused send of the selected chat that waits on a context
     /// reset confirmation, unless already answered here.
     pub(crate) fn pending_context_reset(&self, cx: &gpui::App) -> Option<InstructionRejectedSend> {
@@ -220,17 +404,7 @@ impl Composer {
             .get(&rejected.message_id)
             .cloned()
             .unwrap_or_else(|| rejected.request.prompt.clone());
-        self.input.update(cx, |input, cx| {
-            let current = input.text().to_owned();
-            let restored = if current.trim().is_empty() {
-                text
-            } else if current.contains(text.as_str()) {
-                current
-            } else {
-                format!("{current}\n\n{text}")
-            };
-            input.set_text(restored, cx);
-        });
+        self.restore_into_draft(text, cx);
         cx.notify();
     }
 
@@ -513,5 +687,73 @@ pub(crate) mod tests {
         });
         draw(vcx);
         assert!(vcx.debug_bounds("composer-context-reset").is_none());
+    }
+
+    #[gpui::test]
+    fn gated_queued_rows_confirm_or_cancel_the_context_reset(cx: &mut TestAppContext) {
+        let (mut h, vcx) = harness(cx);
+        let _guard = h._runtime.enter();
+        let gate = zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+            harness: HarnessId::Codex,
+            revision_id: "rev-b".into(),
+            revision_hash: "hash-b".into(),
+            previous_revision_id: Some("rev-a".into()),
+            since_ms: 1,
+        };
+        h.state.update(vcx, |state, _| {
+            state.chats = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "c", "deviceId": "d", "archived": false,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                }))
+                .unwrap(),
+            ];
+            state.devices = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "d", "name": "Studio", "platform": "macos", "lastSeenAt": null,
+                    "capabilities": [zeron_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1],
+                }))
+                .unwrap(),
+            ];
+            let mut first = zeron_doc::QueuedMessage::new("q1", "first message", "d");
+            first.delivery_gate = Some(gate.clone());
+            let mut second = zeron_doc::QueuedMessage::new("q2", "second message", "d");
+            second.delivery_gate = Some(gate);
+            let plain = zeron_doc::QueuedMessage::new("q3", "plain", "d");
+            state.queue = vec![first, second, plain];
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("queue-reset-confirm-q1").is_some());
+        assert!(vcx.debug_bounds("queue-reset-cancel-q1").is_some());
+        assert!(
+            vcx.debug_bounds("queue-reset-confirm-q3").is_none(),
+            "ungated rows keep their usual actions"
+        );
+        h.sent(methods::QUEUE_COMMAND);
+
+        click(vcx, "queue-reset-confirm-q1");
+        let sent = h.sent(methods::QUEUE_COMMAND);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["params"]["chatId"], "c");
+        assert_eq!(
+            sent[0]["params"]["command"],
+            serde_json::json!({
+                "kind": "confirmInstructionContextReset",
+                "queuedMessageId": "q1",
+                "revisionId": "rev-b",
+            })
+        );
+        // In flight: a second click sends nothing.
+        click(vcx, "queue-reset-confirm-q1");
+        assert!(h.sent(methods::QUEUE_COMMAND).is_empty());
+
+        // Cancel: the row is removed and its text returns to the draft.
+        click(vcx, "queue-reset-cancel-q2");
+        let removed = h.sent(methods::REMOVE_QUEUED_MESSAGE);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0]["params"]["id"], "q2");
+        h.composer.read_with(vcx, |composer, cx| {
+            assert_eq!(composer.input.read(cx).text(), "second message");
+        });
     }
 }

@@ -33,7 +33,7 @@ use zeron_rpc::{RpcError, methods};
 
 use crate::appshots::{self, CapturedAppshot};
 
-mod instruction_reset;
+pub(crate) mod instruction_reset;
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::notice::{NoticeChipIcon, notice_chip};
