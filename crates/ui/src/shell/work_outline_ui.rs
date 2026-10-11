@@ -1028,6 +1028,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn drift_modal_shows_counts_and_reports_the_decision(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let decisions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for (selector, expected) in [
+            ("work-outline-drift-confirm", true),
+            ("work-outline-drift-cancel", false),
+        ] {
+            let sink = decisions.clone();
+            shell.update(cx, |shell, cx| {
+                shell.open_work_outline_drift_confirm(
+                    WorkOutlineDriftRequest {
+                        title: "Move and change instructions?".into(),
+                        confirm_label: "Move".into(),
+                        impact: DriftImpact {
+                            chat_ids: vec!["c1".into(), "c2".into()],
+                            item_ids: vec!["w1".into()],
+                        },
+                        on_decision: Box::new(move |ok, _, _| sink.borrow_mut().push(ok)),
+                    },
+                    cx,
+                );
+                assert!(shell.overlay_owns_keyboard(cx));
+            });
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            assert!(cx.debug_bounds("work-outline-drift").is_some());
+            assert!(cx.debug_bounds("work-outline-drift-counts").is_some());
+            let center = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_click(center, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(decisions.borrow().last(), Some(&expected), "{selector}");
+        }
+    }
+
+    #[gpui::test]
     fn commands_route_to_the_overview(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());

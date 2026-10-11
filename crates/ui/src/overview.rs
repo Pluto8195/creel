@@ -2654,6 +2654,9 @@ pub struct Overview {
     /// `chat_panel_open`, `subagent_peek`, and the selection untouched, so
     /// closing it restores the previous layout.
     work_item_details: Option<Entity<WorkItemDetails>>,
+    /// Expand Effective Instructions once details for this `(space, item)`
+    /// open (palette "Open Effective Instructions" across a discard prompt).
+    pending_effective: Option<(String, String)>,
     _details_events: Option<Subscription>,
     _outline_events: Subscription,
     _observe: Subscription,
@@ -2738,13 +2741,20 @@ impl Overview {
                 cx.notify();
             }
         });
-        let outline = cx.new(|cx| OutlineView::new(state.clone(), cx));
+        let outline = cx.new(|cx| OutlineView::new(state.clone(), cx).with_shell(shell.clone()));
         let outline_events = cx.subscribe(&outline, |this: &mut Self, _, event, cx| match event {
             OutlineEvent::OpenChat(chat_id) => {
                 this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
             }
             OutlineEvent::OpenDetails { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
+            }
+            OutlineEvent::OpenSpaceRoot { space_id } => {
+                this.open_work_item_details(
+                    space_id.clone(),
+                    crate::work_outline::details_panel::SPACE_ROOT_ITEM_ID.into(),
+                    cx,
+                );
             }
         });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
@@ -2843,6 +2853,7 @@ impl Overview {
             work_item_filter_needs_validation: false,
             work_item_filter_popup: popover::Popup::default(),
             work_item_details: None,
+            pending_effective: None,
             _details_events: None,
             _outline_events: outline_events,
             _observe: observe,
@@ -9170,6 +9181,13 @@ impl Overview {
         });
         self.outline
             .update(cx, |outline, cx| outline.select(&key, cx));
+        if let Some((space, item)) = self.pending_effective.take() {
+            details.update(cx, |details, cx| {
+                if details.space_id == space && details.item_id == item {
+                    details.open_effective(cx);
+                }
+            });
+        }
         self.work_item_details = Some(details);
         self._details_events = Some(events);
         cx.notify();
@@ -9222,9 +9240,19 @@ impl Overview {
             WorkOutlineCommand::AssociateChatWithWorkItem => outline.update(cx, |outline, cx| {
                 outline.open_associate_picker(chat_hint, window, cx)
             }),
-            WorkOutlineCommand::OpenEffectiveInstructions
-            | WorkOutlineCommand::CreateInstructionFromChat => {
-                Err("Work item instructions arrive in a later update")
+            WorkOutlineCommand::OpenEffectiveInstructions => {
+                match self.effective_instructions_target(chat_hint.as_deref(), cx) {
+                    Some((space_id, item_id)) => {
+                        self.open_effective_instructions(space_id, item_id, cx);
+                        Ok(())
+                    }
+                    None => Err("Select a work item first"),
+                }
+            }
+            // Handled by the Shell where the Chat is; reaching here means no
+            // Chat (or no excerpt) was available.
+            WorkOutlineCommand::CreateInstructionFromChat => {
+                Err("Open a Chat and select text to create an instruction from it")
             }
             WorkOutlineCommand::OpenRequiredActions => {
                 Err("Required Actions arrive in a later update")
@@ -9234,6 +9262,54 @@ impl Overview {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
         }
         cx.notify();
+    }
+
+    /// The item Open Effective Instructions targets: the selected work item,
+    /// else the selected Chat row's item, else the app's selected Chat's item.
+    fn effective_instructions_target(
+        &self,
+        chat_hint: Option<&str>,
+        cx: &gpui::App,
+    ) -> Option<(String, String)> {
+        let outline = self.outline.read(cx);
+        if let Some(target) = outline.selected_item() {
+            return Some(target);
+        }
+        if let Some(target) = outline
+            .selected_row()
+            .and_then(|row| row.chat())
+            .and_then(|chat| chat.work_item.clone())
+        {
+            return Some(target);
+        }
+        let chat_id = chat_hint?;
+        outline
+            .model()
+            .rows
+            .iter()
+            .filter_map(|row| row.chat())
+            .find(|chat| chat.chat.id == chat_id)
+            .and_then(|chat| chat.work_item.clone())
+    }
+
+    /// Open Work Item Details for the item with Effective Instructions
+    /// expanded (the explicit open path; Milestone 3's pre-launch check
+    /// reuses it).
+    pub(crate) fn open_effective_instructions(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(details) = self.work_item_details.as_ref().filter(|details| {
+            let details = details.read(cx);
+            details.space_id == space_id && details.item_id == item_id
+        }) {
+            details.update(cx, |details, cx| details.open_effective(cx));
+            return;
+        }
+        self.pending_effective = Some((space_id.clone(), item_id.clone()));
+        self.open_work_item_details(space_id, item_id, cx);
     }
 
     /// Replace the per-Space outline loads (tests and the offline fixture;
@@ -12595,6 +12671,521 @@ mod logic_tests {
                 let now = o.tile_positions.get(id).copied().unwrap();
                 assert!(now.x == pos.x && now.y == pos.y, "{id} kept its slot");
             }
+        });
+    }
+
+    // ----------------------------------------------------------------------
+    // Work Outline instructions (Milestone 2)
+    // ----------------------------------------------------------------------
+
+    use crate::work_outline::instructions::fixture as instruction_fixture;
+
+    type OutlineCalls = std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+    /// The instruction fixture installed, and a scripted engine that records
+    /// every Work Outline call and answers through `reply`.
+    fn instruction_overview<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+        snapshot: WorkOutlineSnapshot,
+        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> (
+        Entity<Overview>,
+        OutlineCalls,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let (overview, state, vcx) = outline_overview(cx, dir);
+        let calls: OutlineCalls = Default::default();
+        let sink = calls.clone();
+        state.update(vcx, |state, _| {
+            state.work_outline_actions_override =
+                Some(crate::work_outline::WorkOutlineActions::scripted(
+                    std::sync::Arc::new(move |_, params| {
+                        sink.lock().unwrap().push(params.clone());
+                        reply(&params)
+                    }),
+                ));
+        });
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(snapshot)), cx);
+            o.set_mode(OverviewMode::Outline, cx);
+        });
+        draw(vcx);
+        (overview, calls, vcx)
+    }
+
+    fn reply_ok(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+        Ok(match params["op"].as_str() {
+            Some("createWorkItemInstruction") => serde_json::json!({"instructionId": "i-new"}),
+            _ => serde_json::json!({}),
+        })
+    }
+
+    fn open_details(
+        overview: &Entity<Overview>,
+        vcx: &mut gpui::VisualTestContext,
+        item: &str,
+    ) -> Entity<WorkItemDetails> {
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), item.into(), cx)
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap())
+    }
+
+    fn ops(calls: &OutlineCalls) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c["op"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// Acceptance 28: an instruction is saved only by Save; Cancel discards;
+    /// closing or switching with an unsaved draft asks first and never saves.
+    #[gpui::test]
+    fn instruction_drafts_save_only_on_save_and_ask_before_discarding(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let details = open_details(&overview, vcx, UI);
+        // Collapsed until opened.
+        assert!(vcx.debug_bounds("work-item-instructions").is_some());
+        assert!(vcx.debug_bounds("work-item-instruction-add").is_none());
+        details.update(vcx, |d, cx| {
+            d.instructions_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-instruction-add").is_some());
+
+        // New draft, then Cancel: nothing is written, nothing asked.
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| {
+                d.begin_instruction_draft(None, window, cx);
+                d.set_instruction_text("Keep the UI accessible.", cx);
+            })
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("work-item-instruction-save").is_some());
+        let cancel = vcx
+            .debug_bounds("work-item-instruction-cancel")
+            .unwrap()
+            .center();
+        vcx.simulate_click(cancel, gpui::Modifiers::default());
+        draw(vcx);
+        details.read_with(vcx, |d, _| {
+            assert!(d.instruction_draft.is_none());
+            assert!(d.captured_confirm.is_none());
+        });
+        assert!(calls.lock().unwrap().is_empty());
+
+        // Draft, then close: asks; Keep Editing keeps it; no write.
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| {
+                d.begin_instruction_draft(None, window, cx);
+                d.set_instruction_text("Keep the UI accessible.", cx);
+            })
+        });
+        // Blur (focus moves to the outline) never saves.
+        vcx.update(|window, cx| {
+            let outline = overview.read(cx).outline.clone();
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx);
+        });
+        draw(vcx);
+        assert!(calls.lock().unwrap().is_empty(), "blur does not save");
+        details.update(vcx, |d, cx| d.request_close(cx));
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("closing with a draft asks");
+        assert_eq!(
+            request.body.as_ref(),
+            "Your instruction edits have not been saved."
+        );
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        vcx.run_until_parked();
+        assert!(overview.read_with(vcx, |o, _| o.work_item_details.is_some()));
+        assert!(details.read_with(vcx, |d, cx| d.has_unsaved_draft(cx)));
+
+        // Switching items asks too; Discard switches and drops the draft.
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details("s1".into(), API.into(), cx)
+        });
+        let request = details
+            .update(vcx, |d, _| d.captured_confirm.take())
+            .expect("switching with a draft asks");
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let shown = overview.read_with(vcx, |o, cx| {
+            o.work_item_details
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .item_id
+                .clone()
+        });
+        assert_eq!(shown, API);
+        assert!(calls.lock().unwrap().is_empty(), "discard never saves");
+
+        // Save (explicit) writes once, then closes the editor.
+        let details = overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap());
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| {
+                d.begin_instruction_draft(None, window, cx);
+                d.set_instruction_text("Version every endpoint.", cx);
+            })
+        });
+        draw(vcx);
+        let save = vcx
+            .debug_bounds("work-item-instruction-save")
+            .unwrap()
+            .center();
+        vcx.simulate_click(save, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0]["op"], "createWorkItemInstruction");
+        assert_eq!(recorded[0]["scope"]["workItemId"], API);
+        assert_eq!(recorded[0]["text"], "Version every endpoint.");
+        details.read_with(vcx, |d, _| assert!(d.instruction_draft.is_none()));
+    }
+
+    /// Editing an inherited instruction that changes assigned Chats asks for
+    /// the drift confirmation before writing; Cancel writes nothing.
+    #[gpui::test]
+    fn editing_and_archiving_inherited_instructions_confirm_drift(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let details = open_details(&overview, vcx, LAUNCH);
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| {
+                d.begin_instruction_draft(Some(instruction_fixture::I_LAUNCH.into()), window, cx);
+                d.set_instruction_text("Ship behind the beta flag.", cx);
+                d.save_instruction(cx);
+            })
+        });
+        let request = details
+            .update(vcx, |d, _| d.captured_drift.take())
+            .expect("drift confirmation");
+        // chat-api, chat-auth, chat-ui sit below Launch.
+        assert_eq!(request.impact.chat_ids.len(), 3);
+        assert_eq!(request.impact.item_ids.len(), 4);
+        vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+        vcx.run_until_parked();
+        assert!(calls.lock().unwrap().is_empty());
+        details.update(vcx, |d, cx| d.save_instruction(cx));
+        let request = details.update(vcx, |d, _| d.captured_drift.take()).unwrap();
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        assert_eq!(ops(&calls), ["updateWorkItemInstruction"]);
+        assert_eq!(
+            calls.lock().unwrap()[0]["instructionId"],
+            instruction_fixture::I_LAUNCH
+        );
+
+        // Archiving the Space-root instruction from the Space-root details.
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details(
+                "s1".into(),
+                crate::work_outline::details_panel::SPACE_ROOT_ITEM_ID.into(),
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        assert!(vcx.debug_bounds("space-root-details").is_some());
+        assert!(vcx.debug_bounds("work-item-instruction-0").is_some());
+        let details = overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap());
+        details.update(vcx, |d, cx| {
+            d.archive_instruction(instruction_fixture::I_ROOT.into(), cx)
+        });
+        let request = details.update(vcx, |d, _| d.captured_drift.take()).unwrap();
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            ops(&calls),
+            ["updateWorkItemInstruction", "archiveWorkItemInstruction"]
+        );
+
+        // A Space root without Chats below would not ask: with no
+        // instructions at all an edit is not a drift.
+        let mut bare = instruction_fixture::snapshot("s1");
+        bare.instructions
+            .retain(|i| i.work_item_id.as_deref() == Some(HOUSEKEEPING));
+        bare.instructions.push(instruction_fixture::instruction(
+            "i-house",
+            "s1",
+            Some(HOUSEKEEPING),
+            "a0",
+            "Tidy up.",
+        ));
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(bare)), cx)
+        });
+        let details = open_details(&overview, vcx, HOUSEKEEPING);
+        details.update(vcx, |d, cx| d.archive_instruction("i-house".into(), cx));
+        vcx.run_until_parked();
+        assert!(details.read_with(vcx, |d, _| d.captured_drift.is_none()));
+        assert_eq!(
+            ops(&calls).last().map(String::as_str),
+            Some("archiveWorkItemInstruction")
+        );
+    }
+
+    #[gpui::test]
+    fn inheritance_toggle_and_association_confirm_only_when_effective_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let details = open_details(&overview, vcx, API_AUTH);
+        details.update(vcx, |d, cx| {
+            d.instructions_open = true;
+            cx.notify();
+        });
+        draw(vcx);
+        let toggle = vcx
+            .debug_bounds("work-item-inherit-toggle")
+            .unwrap()
+            .center();
+        vcx.simulate_click(toggle, gpui::Modifiers::default());
+        let request = details
+            .update(vcx, |d, _| d.captured_drift.take())
+            .expect("turning inheritance off drifts chat-auth");
+        assert_eq!(request.impact.chat_ids, [CHAT_AUTH]);
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded[0]["op"], "updateWorkItem");
+        assert_eq!(recorded[0]["changes"]["inheritParentInstructions"], false);
+
+        // Associating a loose chat with Housekeeping gains the Space-root
+        // instruction: asks. Without instructions: sends directly.
+        let mut outline_calls = 1;
+        for (snapshot, asks) in [
+            (instruction_fixture::snapshot("s1"), true),
+            (crate::work_outline::store::fixture_snapshot("s1"), false),
+        ] {
+            overview.update(vcx, |o, cx| {
+                o.set_outline_loads(fixture_loads(Some(snapshot)), cx)
+            });
+            draw(vcx);
+            let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+            outline.update(vcx, |outline, cx| {
+                outline.select(&row_key::item("s1", HOUSEKEEPING), cx)
+            });
+            vcx.update(|window, cx| {
+                outline.update(cx, |outline, cx| {
+                    outline.open_associate_picker(None, window, cx).unwrap();
+                    let ix = 0; // first unassociated chat
+                    outline.choose_picker_entry(ix, window, cx);
+                })
+            });
+            vcx.run_until_parked();
+            let captured = outline.update(vcx, |outline, _| outline.captured_drift.take());
+            assert_eq!(captured.is_some(), asks);
+            if !asks {
+                outline_calls += 1;
+            }
+            assert_eq!(calls.lock().unwrap().len(), outline_calls);
+            outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
+        }
+    }
+
+    #[gpui::test]
+    fn moving_an_item_confirms_drift_only_when_assigned_chats_change(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+        let move_to_top = |item: &str, vcx: &mut gpui::VisualTestContext| {
+            outline.update(vcx, |outline, cx| {
+                outline.select(&row_key::item("s1", item), cx)
+            });
+            vcx.update(|window, cx| {
+                outline.update(cx, |outline, cx| {
+                    outline.open_move_picker(window, cx).unwrap();
+                    // Entry 0 is the top level.
+                    outline.choose_picker_entry(0, window, cx);
+                })
+            });
+            vcx.run_until_parked();
+            outline.update(vcx, |outline, _| outline.captured_drift.take())
+        };
+        // API (chat-api, and chat-auth below) loses Launch's instruction.
+        let request = move_to_top(API, vcx).expect("asks");
+        assert_eq!(request.impact.summary(), "2 Chats and 2 work items");
+        assert!(calls.lock().unwrap().is_empty());
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+        assert_eq!(ops(&calls), ["moveWorkItem"]);
+        // Housekeeping is already top level with no Chats: no confirmation.
+        outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
+        assert!(move_to_top(HOUSEKEEPING, vcx).is_none());
+        assert_eq!(ops(&calls), ["moveWorkItem", "moveWorkItem"]);
+    }
+
+    #[gpui::test]
+    fn effective_view_orders_entries_marks_inherited_and_shows_budget(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, _calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let details = open_details(&overview, vcx, API_AUTH);
+        assert!(vcx.debug_bounds("work-item-effective").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-effective-entry-0").is_none(),
+            "collapsed until opened"
+        );
+        details.update(vcx, |d, cx| d.open_effective(cx));
+        draw(vcx);
+        for ix in 0..4 {
+            assert!(row_bounds(vcx, format!("work-item-effective-entry-{ix}")).is_some());
+        }
+        assert!(vcx.debug_bounds("work-item-effective-entry-4").is_none());
+        // Root-to-child order, top to bottom.
+        let y = |vcx: &mut gpui::VisualTestContext, ix: usize| {
+            row_bounds(vcx, format!("work-item-effective-entry-{ix}"))
+                .unwrap()
+                .origin
+                .y
+        };
+        assert!(y(vcx, 0) < y(vcx, 1) && y(vcx, 2) < y(vcx, 3));
+        let effective = instruction_fixture::snapshot("s1").effective_instructions(API_AUTH);
+        assert_eq!(
+            effective
+                .entries
+                .iter()
+                .map(|e| (e.scope_title.as_str(), e.inherited))
+                .collect::<Vec<_>>(),
+            [
+                ("Space root", true),
+                ("Launch v2", true),
+                ("API", true),
+                ("Auth endpoints", false)
+            ]
+        );
+        assert!(vcx.debug_bounds("work-item-effective-budget").is_some());
+        assert!(vcx.debug_bounds("work-item-effective-precedence").is_some());
+        assert!(
+            vcx.debug_bounds("work-item-effective-budget-error")
+                .is_none()
+        );
+
+        // Over budget: 33 entries.
+        let mut big = instruction_fixture::snapshot("s1");
+        for i in 0..30 {
+            big.instructions.push(instruction_fixture::instruction(
+                &format!("i-extra-{i:02}"),
+                "s1",
+                Some(API_AUTH),
+                &format!("b{i:02}"),
+                "Extra.",
+            ));
+        }
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(big)), cx)
+        });
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("work-item-effective-budget-error")
+                .is_some()
+        );
+
+        // The palette command opens the selected item's view expanded.
+        overview.update(vcx, |o, cx| o.close_work_item_details(cx));
+        let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+        outline.update(vcx, |outline, cx| {
+            outline.select(&row_key::item("s1", API), cx)
+        });
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| {
+                o.run_work_outline_command(
+                    WorkOutlineCommand::OpenEffectiveInstructions,
+                    window,
+                    cx,
+                )
+            })
+        });
+        vcx.run_until_parked();
+        overview.read_with(vcx, |o, cx| {
+            let details = o.work_item_details.as_ref().unwrap().read(cx);
+            assert_eq!(details.item_id, API);
+            assert!(details.effective_open);
+        });
+    }
+
+    #[gpui::test]
+    fn outline_chat_rows_flag_drift_only_for_drifted_chats(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (_overview, _calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        assert!(row_bounds(vcx, format!("outline-drift-{}", row_key::chat(CHAT_API))).is_some());
+        assert!(row_bounds(vcx, format!("outline-drift-{}", row_key::chat(CHAT_AUTH))).is_none());
+        assert!(row_bounds(vcx, format!("outline-drift-{}", row_key::chat(CHAT_UI))).is_none());
+    }
+
+    #[gpui::test]
+    fn unsupported_engine_shows_a_calm_instruction_error(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) =
+            instruction_overview(cx, dir.path(), instruction_fixture::snapshot("s1"), |_| {
+                Err(zeron_rpc::RpcError::Failed(
+                    "work-outline/unsupported: instruction operations are not available".into(),
+                ))
+            });
+        let details = open_details(&overview, vcx, UI);
+        vcx.update(|window, cx| {
+            details.update(cx, |d, cx| {
+                d.begin_instruction_draft(None, window, cx);
+                d.set_instruction_text("Anything.", cx);
+                d.save_instruction(cx);
+            })
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(vcx.debug_bounds("work-item-instructions-error").is_some());
+        details.read_with(vcx, |d, cx| {
+            assert!(d.instruction_draft.is_some(), "the draft survives");
+            assert!(d.has_unsaved_draft(cx));
         });
     }
 }

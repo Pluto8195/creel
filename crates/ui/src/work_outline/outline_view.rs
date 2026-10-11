@@ -17,12 +17,14 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding,
-    ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, actions, div,
-    prelude::*, px,
+    ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    actions, div, prelude::*, px,
 };
 
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
+use super::command::WorkOutlineDriftRequest;
+use super::instructions::{self, OutlineChange};
 use super::model::{
     self, ChatRow, ItemRow, NoticeTone, OutlineChat, OutlineModel, OutlineOptions, OutlineRow,
     OutlineRowKind, OutlineSpace, row_key,
@@ -31,6 +33,7 @@ use super::nav::{self, NavCommand};
 use super::store::{WorkOutlinePlacement, WorkOutlineSnapshot};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_positions;
+use crate::shell::Shell;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -89,6 +92,8 @@ pub(crate) enum OutlineEvent {
     OpenChat(String),
     /// Open Work Item Details.
     OpenDetails { space_id: String, item_id: String },
+    /// Open the Space-root details (Space-root instructions).
+    OpenSpaceRoot { space_id: String },
 }
 
 /// What the Overview feeds the Outline each time its inputs change.
@@ -202,7 +207,12 @@ pub(crate) struct OutlineView {
     details_key: Option<String>,
     /// Chat shown in the Overview's chat panel (row highlight).
     panel_chat: Option<String>,
+    /// Owner of the drift confirmation and the revision comparison.
+    shell: Option<WeakEntity<Shell>>,
     _editor_events: Subscription,
+    /// Tests run without a Shell: the drift confirmation lands here.
+    #[cfg(test)]
+    pub(crate) captured_drift: Option<WorkOutlineDriftRequest>,
 }
 
 impl EventEmitter<OutlineEvent> for OutlineView {}
@@ -248,8 +258,17 @@ impl OutlineView {
             notice_seq: 0,
             details_key: None,
             panel_chat: None,
+            shell: None,
             _editor_events: editor_events,
+            #[cfg(test)]
+            captured_drift: None,
         }
+    }
+
+    /// The Shell that owns the drift confirmation and revision comparison.
+    pub(crate) fn with_shell(mut self, shell: WeakEntity<Shell>) -> Self {
+        self.shell = Some(shell);
+        self
     }
 
     // ----------------------------------------------------------------------
@@ -344,6 +363,16 @@ impl OutlineView {
             .find(|space| space.id == space_id)
             .and_then(|space| space.load.snapshot())
             .map(|snapshot| snapshot.as_ref())
+    }
+
+    /// The loaded snapshot that contains `item_id`.
+    fn snapshot_with_item(&self, item_id: &str) -> Option<&WorkOutlineSnapshot> {
+        self.inputs
+            .spaces
+            .iter()
+            .filter_map(|space| space.load.snapshot())
+            .map(|snapshot| snapshot.as_ref())
+            .find(|snapshot| snapshot.item(item_id).is_some())
     }
 
     // ----------------------------------------------------------------------
@@ -821,14 +850,103 @@ impl OutlineView {
         cx.notify();
     }
 
-    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.picker.take().is_some() {
             window.focus(&self.focus, cx);
             cx.notify();
         }
     }
 
-    fn choose_picker_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose_picker_entry(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        if picker.submitting {
+            return;
+        }
+        let Some(entry) = picker.entries.get(ix).cloned() else {
+            return;
+        };
+        let purpose = picker.purpose.clone();
+        let change = match &purpose {
+            PickerPurpose::Move { item_id } => Some(OutlineChange::MoveItem {
+                work_item_id: item_id.clone(),
+                new_parent: entry.value.clone(),
+            }),
+            PickerPurpose::AssociateChat { chat_id } => {
+                entry.value.clone().map(|item| OutlineChange::AssignChat {
+                    chat_id: chat_id.clone(),
+                    work_item_id: item,
+                })
+            }
+            PickerPurpose::AssociateWithItem { item_id } => {
+                entry.value.clone().map(|chat| OutlineChange::AssignChat {
+                    chat_id: chat,
+                    work_item_id: item_id.clone(),
+                })
+            }
+        };
+        let snapshot = match &purpose {
+            PickerPurpose::Move { item_id } | PickerPurpose::AssociateWithItem { item_id } => {
+                self.snapshot_with_item(item_id)
+            }
+            PickerPurpose::AssociateChat { chat_id } => self
+                .inputs
+                .chats
+                .iter()
+                .find(|chat| &chat.id == chat_id)
+                .and_then(|chat| chat.space_id.as_deref())
+                .and_then(|space| self.snapshot(space)),
+        };
+        let impact = change
+            .as_ref()
+            .zip(snapshot)
+            .map(|(change, snapshot)| instructions::drift_impact(snapshot, change))
+            .unwrap_or_default();
+        if let (true, Some(change)) = (impact.needs_confirmation(), change) {
+            let weak = cx.entity().downgrade();
+            let request = WorkOutlineDriftRequest {
+                title: change.title().into(),
+                confirm_label: change.confirm_label().into(),
+                impact,
+                on_decision: Box::new(move |confirmed, window, cx| {
+                    if confirmed {
+                        weak.update(cx, |this, cx| this.send_picker_entry(ix, window, cx))
+                            .ok();
+                    }
+                }),
+            };
+            self.request_drift_confirm(request, cx);
+            return;
+        }
+        self.send_picker_entry(ix, window, cx);
+    }
+
+    /// Hand a drift confirmation to the Shell (tests: capture it).
+    fn request_drift_confirm(&mut self, request: WorkOutlineDriftRequest, cx: &mut Context<Self>) {
+        if let Some(shell) = self.shell.as_ref().and_then(WeakEntity::upgrade) {
+            shell.update(cx, |shell, cx| {
+                shell.open_work_outline_drift_confirm(request, cx)
+            });
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.captured_drift = Some(request);
+        }
+        #[cfg(not(test))]
+        {
+            drop(request);
+            self.show_notice("This change needs the app window to confirm", cx);
+        }
+    }
+
+    fn send_picker_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -1052,21 +1170,55 @@ impl OutlineView {
             div().flex_none().size(px(14.0)).into_any_element()
         };
         let body: AnyElement = match &row.kind {
-            OutlineRowKind::Space { label, .. } => div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
-                        .child(SharedString::from(label.clone())),
-                )
-                .into_any_element(),
+            OutlineRowKind::Space { label, space_id } => {
+                let open_space = space_id.clone();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(SharedString::from(label.clone())),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "outline-space-instructions-{key}"
+                            )))
+                            .debug_selector({
+                                let selector = format!("outline-space-instructions-{space_id}");
+                                move || selector.clone()
+                            })
+                            .flex_none()
+                            .px(px(4.0))
+                            .rounded(px(3.0))
+                            .cursor_pointer()
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.text_faint)
+                            .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
+                            .child("Instructions")
+                            .tooltip(|_, cx| {
+                                cx.new(|_| TextTooltip("Space-root instructions".into()))
+                                    .into()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if !this.is_editing() {
+                                    cx.emit(OutlineEvent::OpenSpaceRoot {
+                                        space_id: open_space.clone(),
+                                    });
+                                }
+                            })),
+                    )
+                    .into_any_element()
+            }
             OutlineRowKind::Unassociated { label, .. } => div()
                 .flex_1()
                 .min_w_0()
@@ -1107,7 +1259,60 @@ impl OutlineView {
                     item_body(&key, item, theme)
                 }
             }
-            OutlineRowKind::Chat(chat) => chat_body(&key, chat, theme),
+            OutlineRowKind::Chat(chat) => {
+                let drift = chat
+                    .work_item
+                    .as_ref()
+                    .and_then(|(space, _)| self.snapshot(space))
+                    .and_then(|snapshot| snapshot.chat_instruction_state(&chat.chat.id))
+                    .is_some_and(|state| state.drift);
+                let chip = (drift && !chat.dangling).then(|| {
+                    let chat_id = chat.chat.id.clone();
+                    div()
+                        .id(SharedString::from(format!("outline-drift-{key}")))
+                        .debug_selector({
+                            let selector = format!("outline-drift-{key}");
+                            move || selector.clone()
+                        })
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .px(px(4.0))
+                        .rounded(px(3.0))
+                        .cursor_pointer()
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .text_color(theme.warning)
+                        .hover(|el| el.bg(theme.element_hover))
+                        .child(
+                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                .size(px(10.0))
+                                .text_color(theme.warning),
+                        )
+                        .child("Instructions changed")
+                        .tooltip(|_, cx| {
+                            cx.new(|_| {
+                                TextTooltip(
+                                    "Instructions changed since this Chat\u{2019}s applied revision. \
+                                     Click to compare and apply."
+                                        .into(),
+                                )
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade)
+                            {
+                                shell.update(cx, |shell, cx| {
+                                    shell.open_instruction_compare(&chat_id, cx)
+                                });
+                            }
+                        }))
+                        .into_any_element()
+                });
+                chat_body(&key, chat, chip, theme)
+            }
         };
         let open_row = row.clone();
         let click_key = key.clone();
@@ -1326,7 +1531,7 @@ fn item_body(key: &str, item: &ItemRow, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-fn chat_body(key: &str, row: &ChatRow, theme: &Theme) -> AnyElement {
+fn chat_body(key: &str, row: &ChatRow, drift: Option<AnyElement>, theme: &Theme) -> AnyElement {
     let chat = &row.chat;
     if row.dangling {
         let tip: SharedString = format!(
@@ -1373,6 +1578,7 @@ fn chat_body(key: &str, row: &ChatRow, theme: &Theme) -> AnyElement {
                 .text_color(theme.text_muted)
                 .child(SharedString::from(chat.title.clone())),
         )
+        .when_some(drift, |el, drift| el.child(drift))
         .when_some(chat.branch.clone(), |el, branch| {
             el.child(
                 div()
