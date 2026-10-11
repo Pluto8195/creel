@@ -63,18 +63,21 @@ pub(crate) fn chat_instruction_context(
 }
 
 /// Why the Chat's host cannot take Work Outline instructions (with an
-/// upgrade hint), or `None` when it advertises
-/// `work-outline-instruction-envelope-v1` on its device row. Apply is
-/// disabled while this is `Some`.
+/// upgrade hint), or `None` when its device row advertises
+/// `work-outline-instruction-envelope-v1` and the per-harness token for the
+/// Chat's harness. Apply is disabled while this is `Some`.
 pub(crate) fn instruction_host_blocker(state: &AppState, chat_id: &str) -> Option<String> {
-    if state.chat_host_delivers_instructions(chat_id) {
+    use crate::state::InstructionHostSupport;
+    let support = state.chat_host_instruction_support(chat_id);
+    if support == InstructionHostSupport::Supported {
         return None;
     }
-    let device_id = &state
+    let device_id = state
         .chats
         .iter()
-        .find(|chat| chat.id == chat_id)?
-        .device_id;
+        .find(|chat| chat.id == chat_id)
+        .map(|chat| chat.device_id.as_str())
+        .unwrap_or_default();
     let host = if state.is_local_device(device_id) {
         "this device".to_owned()
     } else {
@@ -83,10 +86,24 @@ pub(crate) fn instruction_host_blocker(state: &AppState, chat_id: &str) -> Optio
             .map(str::to_owned)
             .unwrap_or_else(|| "its host".to_owned())
     };
-    Some(format!(
-        "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
-         Update Zeron on {host} to apply them."
-    ))
+    Some(match support {
+        InstructionHostSupport::Supported => unreachable!(),
+        InstructionHostSupport::UnknownDevice => format!(
+            "This Chat\u{2019}s host hasn\u{2019}t synced to this workspace yet, so it can\u{2019}t \
+             take Work Outline instructions. Open Zeron on {host} to apply them."
+        ),
+        InstructionHostSupport::ZeronUpgradeRequired => format!(
+            "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
+             Update Zeron on {host} to apply them."
+        ),
+        InstructionHostSupport::HarnessUnsupported(harness) => {
+            let cli = crate::settings::harnesses::cli_name(harness);
+            format!(
+                "This Chat\u{2019}s agent ({cli}) on {host} can\u{2019}t receive Work Outline \
+                 instructions. Update {cli} on {host} to apply them."
+            )
+        }
+    })
 }
 
 fn chat_is_working(state: &AppState, chat_id: &str) -> bool {
@@ -1342,6 +1359,60 @@ mod tests {
         assert!(shell.read_with(cx, |shell, cx| {
             instruction_host_blocker(shell.state.read(cx), CHAT_API).is_none()
         }));
+    }
+
+    /// The per-harness token decides too: a host whose Zeron delivers
+    /// instructions but not for this Chat's harness says so and keeps Apply
+    /// inert until it advertises `work-outline-instruction-envelope-v1/<harness>`.
+    #[gpui::test]
+    fn harness_without_instruction_delivery_disables_apply(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        let blocker = |shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext| {
+            shell.read_with(cx, |shell, cx| {
+                instruction_host_blocker(shell.state.read(cx), CHAT_API)
+            })
+        };
+        // No harness known (no config): the base token is enough.
+        assert_eq!(blocker(&shell, cx), None);
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.chats[0].config = Some(zeron_proto::ChatConfig {
+                    harness: zeron_proto::HarnessId::Codex,
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    auto_approve: false,
+                });
+            });
+        });
+        assert_eq!(
+            blocker(&shell, cx).as_deref(),
+            Some(
+                "This Chat\u{2019}s agent (codex) on Studio can\u{2019}t receive Work Outline \
+                 instructions. Update codex on Studio to apply them."
+            )
+        );
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("instruction-compare-apply-disabled")
+                .is_some()
+        );
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.devices[0].capabilities.push(
+                    zeron_proto::capabilities::work_outline_instruction_envelope_for(
+                        zeron_proto::HarnessId::Codex,
+                    ),
+                );
+            });
+        });
+        assert_eq!(blocker(&shell, cx), None);
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-compare-apply").is_some());
     }
 
     #[gpui::test]

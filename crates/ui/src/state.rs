@@ -710,6 +710,10 @@ pub struct AppState {
     /// agent was busy, in the order it will be sent. Device-agnostic: the
     /// chat's doc holds them (every device sees the same queue).
     pub queue: Vec<zeron_doc::QueuedMessage>,
+    /// The selected chat's sends the host refused with a typed Work Outline
+    /// instruction-delivery outcome that still need the user (`WatchQueue`
+    /// `rejectedSends`): a context reset waiting on confirmation.
+    pub rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
     pub context_usage: Option<zeron_proto::ContextUsage>,
     /// The selected chat has a transcript from a `WatchDocMessages` reset
     /// (including a retained reset from an earlier visit). An
@@ -821,6 +825,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             queue: Vec::new(),
+            rejected_sends: Vec::new(),
             context_usage: None,
             transcript_replayed: false,
             transcript_baselines: HashMap::new(),
@@ -986,6 +991,7 @@ impl AppState {
             self.transcript_replayed = false;
             self.transcript_task = None;
             self.queue.clear();
+            self.rejected_sends.clear();
             self.queue_task = None;
         }
     }
@@ -1184,19 +1190,32 @@ impl AppState {
             .is_some_and(|device| device.supports(capability))
     }
 
-    /// Whether the Chat's host advertises Work Outline instruction delivery
-    /// (`work-outline-instruction-envelope-v1`). Read from the synced device
-    /// row for every host, the local engine included: `EngineInfo` is fixed at
-    /// boot, while the row is restamped once the harness delivery probes run.
-    /// An unknown device is unsupported.
-    pub(crate) fn chat_host_delivers_instructions(&self, chat_id: &str) -> bool {
-        self.chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .and_then(|chat| self.devices.iter().find(|d| d.id == chat.device_id))
-            .is_some_and(|device| {
-                device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1)
-            })
+    /// Whether the Chat's host can take Work Outline instructions: its device
+    /// row must advertise `work-outline-instruction-envelope-v1` and, when the
+    /// Chat's harness is known (its config), the per-harness token
+    /// `work-outline-instruction-envelope-v1/<harness>`. Read from the synced
+    /// device row for every host, the local engine included: `EngineInfo` is
+    /// fixed at boot, while the row is restamped once the harness delivery
+    /// probes run. An unknown device is unsupported.
+    pub(crate) fn chat_host_instruction_support(&self, chat_id: &str) -> InstructionHostSupport {
+        use zeron_proto::capabilities::{
+            WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1, work_outline_instruction_envelope_for,
+        };
+        let Some(chat) = self.chats.iter().find(|chat| chat.id == chat_id) else {
+            return InstructionHostSupport::UnknownDevice;
+        };
+        let Some(device) = self.devices.iter().find(|d| d.id == chat.device_id) else {
+            return InstructionHostSupport::UnknownDevice;
+        };
+        if !device.supports(WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
+            return InstructionHostSupport::ZeronUpgradeRequired;
+        }
+        match chat.config.as_ref().map(|config| config.harness) {
+            Some(harness) if !device.supports(&work_outline_instruction_envelope_for(harness)) => {
+                InstructionHostSupport::HarnessUnsupported(harness)
+            }
+            _ => InstructionHostSupport::Supported,
+        }
     }
 
     /// Whether `device_id` is the device this app's engine runs on.
@@ -1479,6 +1498,23 @@ impl AppState {
                 self.transcript_revision = self.transcript_revision.wrapping_add(1);
             }
         }
+    }
+
+    /// One `WatchQueue` frame for the selected chat. A refused send's message
+    /// never lands, so its optimistic echo and Working overlay drop here
+    /// (the composer offers the confirmation instead).
+    pub(crate) fn apply_queue_frame(
+        &mut self,
+        chat_id: &str,
+        items: Vec<zeron_doc::QueuedMessage>,
+        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
+    ) {
+        self.queue = items;
+        for rejected in &rejected_sends {
+            self.remove_echo(chat_id, &rejected.message_id);
+            self.end_pending_send(chat_id, &rejected.message_id);
+        }
+        self.rejected_sends = rejected_sends;
     }
 
     /// Composer send fired: overlay the chat as Working until the host writes
@@ -2391,6 +2427,7 @@ impl AppState {
         }
         self.transcript_task = None;
         self.queue.clear();
+        self.rejected_sends.clear();
         self.queue_task = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its project (or the lack of one); `select_chat(None)`
@@ -2599,6 +2636,19 @@ pub use zeron_proto::version_triple;
 struct WorkOutlineRuntime {
     state: WeakEntity<AppState>,
     app: AsyncApp,
+}
+
+/// Whether a Chat's host can take Work Outline instructions
+/// ([`AppState::chat_host_instruction_support`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstructionHostSupport {
+    Supported,
+    /// The host's device row is not synced (or the Chat is unknown).
+    UnknownDevice,
+    /// The host's Zeron predates instruction delivery.
+    ZeronUpgradeRequired,
+    /// The host delivers instructions, but not for this harness.
+    HarnessUnsupported(zeron_proto::HarnessId),
 }
 
 /// Backoff before resubscribing a failed `WatchWorkOutline`: 2 s doubling to
@@ -2985,6 +3035,9 @@ fn spawn_queue_watch(
     struct QueueFrame {
         #[serde(default)]
         items: Vec<zeron_doc::QueuedMessage>,
+        /// Additive: older hosts omit it.
+        #[serde(default, rename = "rejectedSends")]
+        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
     }
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -3016,7 +3069,7 @@ fn spawn_queue_watch(
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                        state.queue = frame.items;
+                        state.apply_queue_frame(&chat_id, frame.items, frame.rejected_sends);
                         cx.notify();
                     }
                 });

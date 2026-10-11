@@ -533,9 +533,11 @@ ambiguous rule or a gap later milestones must close.
    should call. The inheritance toggle is hidden on root items (nothing to inherit).
 9. **Drift surfaces.** Full-chat header: one compact line with Compare / Apply. Outline Chat rows:
    an "Instructions changed" chip (warning token and icon) that opens Compare, where Apply lives;
-   two inline buttons would not fit the compact row. Not marked: List/Canvas cards and the
-   Overview chat-panel header. The header shows drift only while the Chat's Space outline is
-   watched (the Overview declares every Space visible once its page exists).
+   two inline buttons would not fit the compact row. List rows, Canvas cards, and the Overview
+   chat-panel header carry the same warning-triangle mark (`chips::instruction_drift_mark`; label
+   only in the panel header) on their title line, so it never feeds `tile_size`; clicking opens
+   Compare. `AppState` watches the selected Chat's Space in addition to the Spaces the Overview
+   declares (union), so the header shows drift from app start, before the Overview exists.
 10. **Create Instruction from Chat.** The palette command acts in place (Shell modal) when a Chat
     is active; otherwise it falls back to the Outline with a notice. The excerpt is the global
     markdown selection when its anchor key (`{rowId}:…` or `{rowId}-code…`) belongs to a row of
@@ -552,6 +554,30 @@ ambiguous rule or a gap later milestones must close.
 12. **Palette.** Eight Work Outline entries; Open Required Actions stays out until Milestone 4.
 13. **Tests.** `WorkOutlineActions::scripted` and `AppState::work_outline_actions_override`
     (test-only) answer mutations and queries synchronously and record their params.
+14. **Host capability (Part A/B).** Compare and the header Apply read the Chat host's synced device
+    row, the local engine included (its `EngineInfo` predates the harness restamp):
+    `work-outline-instruction-envelope-v1`, plus `work-outline-instruction-envelope-v1/<harness>`
+    when the Chat's config names its harness (no config: the base token decides). Missing, Apply is
+    inert and the surface says why: unsynced host ("Open Zeron on …"), outdated Zeron ("Update
+    Zeron on …"), or the agent CLI ("Update codex on …"). `apply_chat_instructions` refuses too.
+    The engine's own ingestion check stays authoritative.
+15. **Context reset (Part B).** The composer keeps sending plain `Run` (the engine pins the
+    selection at ingestion). A refused send arrives as `WatchQueue` `rejectedSends`
+    (`AppState::rejected_sends`); its echo and Working overlay drop. For
+    `instructionContextResetRequired` the composer shows "Start a fresh session with the new
+    instructions? The agent loses this conversation's context." Start fresh session resends
+    `runWithInstructions { request, messageId (same), instructions: {revisionId, revisionHash},
+    contextResetConfirmed: true }` via `QueueCommand`; Cancel restores the typed text (remembered
+    per message id for recent sends, else the request prompt) into the draft. Answered refusals
+    stay hidden locally until the host drops them.
+16. **Queued reset gate (Part B).** A row gated with `InstructionContextResetRequired` reads "New
+    instructions need a fresh session · <text>" and offers Start fresh session
+    (`confirmInstructionContextReset { queuedMessageId, revisionId }` via `QueueCommand`) and Cancel
+    (removes the row, its text returns to the draft; attachments stay on the host) instead of the
+    usual actions.
+17. **Ingestion refusal (Part B).** A `QueueCommand` / `QueueMessage` failure carrying
+    `instruction-delivery/{…}` (`instructionHostUnsupported`) shows the rejection's `message`
+    instead of "Send failed: …"; the failed-send path keeps the draft, attachments, and comments.
 
 ## Milestone 2 delivery discoveries
 

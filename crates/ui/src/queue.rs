@@ -405,8 +405,30 @@ impl Composer {
             Some(QueueDeliveryGate::ReviewRequired { .. }) if !being_edited => {
                 SharedString::from("Needs review")
             }
+            Some(QueueDeliveryGate::InstructionContextResetRequired { .. }) if !being_edited => {
+                SharedString::from(format!(
+                    "{} \u{b7} {}",
+                    crate::composer::instruction_reset::QUEUED_CONTEXT_RESET_REASON,
+                    one_line(&queue_visible_text(&item.text, &item.attachments))
+                ))
+            }
             _ => one_line(&queue_visible_text(&item.text, &item.attachments)),
         };
+        // A row gated on a context reset offers Confirm / Cancel instead of
+        // the usual actions.
+        let reset_actions =
+            match &item.delivery_gate {
+                Some(QueueDeliveryGate::InstructionContextResetRequired {
+                    revision_id, ..
+                }) if !being_edited => Some(self.queued_context_reset_actions(
+                    &item.id,
+                    revision_id,
+                    queue_visible_text(&item.text, &item.attachments),
+                    theme,
+                    cx,
+                )),
+                _ => None,
+            };
 
         let edit_id = item.id.clone();
         let edit = self.queue_action(
@@ -630,8 +652,9 @@ impl Composer {
                         .child(cancel),
                 )
             })
-            .when(!being_edited, |el| {
-                el.child(
+            .when(!being_edited, |el| match reset_actions {
+                Some(actions) => el.child(actions),
+                None => el.child(
                     div()
                         .flex_none()
                         .flex()
@@ -641,7 +664,7 @@ impl Composer {
                         .child(discard)
                         .child(edit)
                         .child(primary),
-                )
+                ),
             });
 
         let Some((from, over, prev_over, epoch)) = drag else {
