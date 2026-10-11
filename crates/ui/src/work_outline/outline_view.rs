@@ -1619,6 +1619,102 @@ impl OutlineView {
         8.0 + depth as f32 * 14.0
     }
 
+    /// First use: every loaded, available Space in the Outline has no live
+    /// work item, nothing is being searched or created. The line and its two
+    /// actions disappear as soon as an item exists (no permanent hints).
+    pub(crate) fn shows_first_use(&self, _cx: &App) -> bool {
+        if !self.inputs.options.query.is_empty()
+            || matches!(
+                self.editing.as_ref().map(|edit| &edit.kind),
+                Some(EditKind::Create { .. })
+            )
+        {
+            return false;
+        }
+        let mut loaded = self
+            .inputs
+            .spaces
+            .iter()
+            .filter_map(|space| space.load.snapshot())
+            .filter(|snapshot| snapshot.available)
+            .peekable();
+        loaded.peek().is_some()
+            && loaded.all(|snapshot| snapshot.items.iter().all(|item| item.archived_at.is_some()))
+    }
+
+    /// The first-use line: what work items are for, "Create work item"
+    /// (with its live binding) and "Learn more" (the shortcut reference).
+    fn render_first_use(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let keymap = crate::settings::current(cx).keymap;
+        let create_keys = super::hints::hint_keys(
+            &keymap,
+            HintKey::Command(super::command::WorkOutlineCommand::CreateWorkItem),
+        );
+        let button = |id: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .px(px(7.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .text_color(theme.text_muted)
+                .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
+        };
+        div()
+            .debug_selector(|| "outline-first-use".into())
+            .flex_none()
+            .mx(px(14.0))
+            .my(px(6.0))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text_muted)
+            .child("No work items yet \u{2014} group Chats and share instructions under one.")
+            .child(
+                button("outline-first-use-create")
+                    .child("Create work item")
+                    .when_some(create_keys, |el, keys| {
+                        el.child(crate::popover::kbd_hint(theme, &keys))
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Err(notice) = this.begin_create(false, window, cx) {
+                            this.show_notice(notice, cx);
+                        }
+                    })),
+            )
+            .child(
+                button("outline-first-use-learn-more")
+                    .child("Learn more")
+                    .hint(
+                        "Outline keys and commands",
+                        HintKey::Outline(OutlineNavKey::ShowShortcuts),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade) {
+                            shell.update(cx, |shell, cx| shell.open_outline_shortcuts(cx));
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Commit the inline editor with `title` (tests).
+    #[cfg(test)]
+    pub(crate) fn commit_title_for_test(&mut self, title: &str, cx: &mut Context<Self>) {
+        self.editor
+            .update(cx, |input, cx| input.set_text(title, cx));
+        self.commit_edit(cx);
+    }
+
     fn render_editor_row(
         &self,
         depth: u16,
@@ -2574,7 +2670,19 @@ impl Render for OutlineView {
         };
         let notice = self.notice.clone();
         let _ = window;
-        let list: AnyElement = if count == 0 {
+        let mut first_use = self
+            .shows_first_use(cx)
+            .then(|| self.render_first_use(&theme, cx));
+        let list: AnyElement = if count == 0 && first_use.is_some() {
+            // First use: the compact line takes the empty tree's place.
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(first_use.take())
+                .into_any_element()
+        } else if count == 0 {
             div()
                 .flex_1()
                 .flex()
@@ -2688,6 +2796,8 @@ impl Render for OutlineView {
             })
             .when_some(space_root_entry, |el, entry| el.child(entry))
             .when_some(picker, |el, picker| el.child(picker))
+            // With only Chats in the tree, the first-use line sits above them.
+            .children(first_use)
             .child(list)
     }
 }

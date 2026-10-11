@@ -14297,4 +14297,9 @@ mod logic_tests {
     mod restructure_tests {
         include!("work_outline/restructure_tests.rs");
     }
+
+    /// First-use empty state of the Outline; shares this module's fixtures.
+    mod guidance_tests {
+        include!("work_outline/guidance_tests.rs");
+    }
 }
