@@ -745,6 +745,14 @@ impl RegistryDoc {
             WorkOutlineMutation::ConfigureExecution(p) => {
                 self.configure_execution(p, actor, now_ms).map(|_| empty)
             }
+            WorkOutlineMutation::CreateUserActionRequest(_)
+            | WorkOutlineMutation::ResolveUserActionRequest(_)
+            | WorkOutlineMutation::ProposeWorkItemInstruction(_)
+            | WorkOutlineMutation::ApproveWorkItemInstructionProposal(_)
+            | WorkOutlineMutation::RejectWorkItemInstructionProposal(_) => Err(err(
+                WorkOutlineErrorCode::Unsupported,
+                "User action requests and proposals are not available yet",
+            )),
         }
     }
 

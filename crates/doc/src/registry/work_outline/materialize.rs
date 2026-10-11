@@ -892,6 +892,8 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         execution_configurations: execution.configurations,
         chat_execution_bindings: execution.bindings,
         execution_exceptions: execution.exceptions,
+        user_action_requests: Vec::new(),
+        instruction_proposals: Vec::new(),
     }
 }
 
