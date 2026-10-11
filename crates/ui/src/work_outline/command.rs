@@ -1,4 +1,4 @@
-//! Seam 1: the nine Work Outline commands and the confirmation request type.
+//! Seam 1: the ten Work Outline commands and the confirmation request type.
 //!
 //! Every entry point (command palette, keymap actions, Outline toolbar) forwards
 //! to `Shell::run_work_outline_command`, which routes to
@@ -21,10 +21,12 @@ pub(crate) enum WorkOutlineCommand {
     OpenEffectiveInstructions,
     CreateInstructionFromChat,
     OpenRequiredActions,
+    /// Milestone 3: start a Chat in the selected work item.
+    StartChatForWorkItem,
 }
 
 impl WorkOutlineCommand {
-    pub(crate) const ALL: [WorkOutlineCommand; 9] = [
+    pub(crate) const ALL: [WorkOutlineCommand; 10] = [
         Self::OpenOutline,
         Self::CreateWorkItem,
         Self::CreateChildWorkItem,
@@ -34,6 +36,7 @@ impl WorkOutlineCommand {
         Self::OpenEffectiveInstructions,
         Self::CreateInstructionFromChat,
         Self::OpenRequiredActions,
+        Self::StartChatForWorkItem,
     ];
 
     /// Palette / menu label (sentence-style, matches the existing palette).
@@ -48,6 +51,7 @@ impl WorkOutlineCommand {
             Self::OpenEffectiveInstructions => "Open Effective Instructions",
             Self::CreateInstructionFromChat => "Create Instruction from Chat",
             Self::OpenRequiredActions => "Open Required Actions",
+            Self::StartChatForWorkItem => "Start Chat in Work Item",
         }
     }
 
@@ -62,6 +66,7 @@ impl WorkOutlineCommand {
             Self::AssociateChatWithWorkItem => icons::CHAT_ROUND_LINE,
             Self::OpenEffectiveInstructions | Self::CreateInstructionFromChat => icons::DOCUMENT,
             Self::OpenRequiredActions => icons::BELL,
+            Self::StartChatForWorkItem => icons::ACTION_PLAY,
         }
     }
 
@@ -79,6 +84,7 @@ impl WorkOutlineCommand {
             Self::OpenEffectiveInstructions => "openEffectiveInstructions",
             Self::CreateInstructionFromChat => "createInstructionFromChat",
             Self::OpenRequiredActions => "openRequiredActions",
+            Self::StartChatForWorkItem => "startChatForWorkItem",
         }
     }
 
@@ -95,6 +101,7 @@ impl WorkOutlineCommand {
             Self::OpenEffectiveInstructions => ShortcutId::OpenEffectiveInstructions,
             Self::CreateInstructionFromChat => ShortcutId::CreateInstructionFromChat,
             Self::OpenRequiredActions => ShortcutId::OpenRequiredActions,
+            Self::StartChatForWorkItem => ShortcutId::StartChatForWorkItem,
         }
     }
 
@@ -127,6 +134,7 @@ impl WorkOutlineCommand {
                 | Self::MoveWorkItem
                 | Self::OpenEffectiveInstructions
                 | Self::OpenRequiredActions
+                | Self::StartChatForWorkItem
         )
     }
 
@@ -198,12 +206,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn nine_commands_with_unique_labels_and_ids() {
-        assert_eq!(WorkOutlineCommand::ALL.len(), 9);
+    fn ten_commands_with_unique_labels_and_ids() {
+        assert_eq!(WorkOutlineCommand::ALL.len(), 10);
         let ids: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.id()).collect();
         let labels: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.label()).collect();
-        assert_eq!(ids.len(), 9);
-        assert_eq!(labels.len(), 9);
+        assert_eq!(ids.len(), 10);
+        assert_eq!(labels.len(), 10);
         assert!(
             WorkOutlineCommand::ALL
                 .iter()
@@ -230,6 +238,7 @@ mod tests {
                 "openEffectiveInstructions",
                 "createInstructionFromChat",
                 "openRequiredActions",
+                "startChatForWorkItem",
             ]
         );
     }
@@ -249,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_commands_are_in_the_palette_and_required_actions_waits() {
+    fn nine_commands_are_in_the_palette_and_required_actions_waits() {
         let listed: Vec<_> = WorkOutlineCommand::ALL
             .into_iter()
             .filter(|c| c.in_palette())
@@ -265,6 +274,7 @@ mod tests {
                 WorkOutlineCommand::AssociateChatWithWorkItem,
                 WorkOutlineCommand::OpenEffectiveInstructions,
                 WorkOutlineCommand::CreateInstructionFromChat,
+                WorkOutlineCommand::StartChatForWorkItem,
             ]
         );
         assert!(!WorkOutlineCommand::OpenRequiredActions.in_palette());

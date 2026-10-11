@@ -51,6 +51,9 @@ pub(crate) struct WorkItemIndex {
     /// Associated Chats whose effective instructions changed since their
     /// applied revision (`ChatInstructionState::drift`).
     drifted_chats: HashSet<String>,
+    /// Associated Chats whose captured execution configuration differs from
+    /// their item's current one (`ChatExecutionBindingView::exception`).
+    exception_chats: HashSet<String>,
 }
 
 impl WorkItemIndex {
@@ -91,6 +94,13 @@ impl WorkItemIndex {
                     .filter(|state| state.drift && assigned.contains_key(&state.chat_id))
                     .map(|state| state.chat_id.clone()),
             );
+            index.exception_chats.extend(
+                snapshot
+                    .chat_execution_bindings
+                    .iter()
+                    .filter(|binding| binding.exception)
+                    .map(|binding| binding.chat_id.clone()),
+            );
         }
         index
     }
@@ -98,6 +108,11 @@ impl WorkItemIndex {
     /// Whether the Chat's instructions drifted from its applied revision.
     pub(crate) fn instruction_drift_for_chat(&self, chat_id: &str) -> bool {
         self.drifted_chats.contains(chat_id)
+    }
+
+    /// Whether the Chat runs with a configuration other than its item's.
+    pub(crate) fn execution_exception_for_chat(&self, chat_id: &str) -> bool {
+        self.exception_chats.contains(chat_id)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -356,5 +371,26 @@ mod tests {
             overview_positions::load_string_set(dir.path(), overview_positions::UI_FLAGS_FILE)
                 .is_empty()
         );
+    }
+
+    /// Bound Chats are ordinary associated Chats to the work-item filter:
+    /// the subtree filter keeps them with their item, and only exception
+    /// Chats are flagged.
+    #[test]
+    fn the_work_item_filter_composes_with_bound_chats() {
+        let snapshot = super::super::execution::fixture::snapshot("s1");
+        let index = WorkItemIndex::build([&snapshot]);
+        // chat-ui (bound, current), chat-auth (bound, current), chat-api
+        // (bound, exception) all follow their items.
+        let launch = set(&[LAUNCH]);
+        for chat in [CHAT_UI, CHAT_AUTH, CHAT_API] {
+            assert!(chat_passes(&launch, &index, chat), "{chat}");
+        }
+        assert!(chat_passes(&set(&[API]), &index, CHAT_AUTH));
+        assert!(!chat_passes(&set(&[UI]), &index, CHAT_API));
+        assert!(!chat_passes(&set(&[UNASSOCIATED_KEY]), &index, CHAT_UI));
+        assert!(index.execution_exception_for_chat(CHAT_API));
+        assert!(!index.execution_exception_for_chat(CHAT_UI));
+        assert!(!index.execution_exception_for_chat(CHAT_LOOSE_A));
     }
 }

@@ -1060,6 +1060,52 @@ impl Pickers {
         }
     }
 
+    /// The agents a Start Chat from a work item can use: the composer's
+    /// resolved harness first (with its model, reasoning, and options), then
+    /// every other offered harness with its host defaults. Reuses the
+    /// composer's harness catalog and sticky defaults.
+    pub(crate) fn launch_agents(&self, cx: &App) -> Vec<crate::work_outline::launch::LaunchAgent> {
+        let resolved = self.resolved(cx);
+        let offered = self
+            .harnesses
+            .ready()
+            .map(|list| offered_harnesses(list))
+            .unwrap_or_default();
+        let name_of = |id: HarnessId| {
+            offered
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| format!("{id:?}"))
+        };
+        let mut agents = Vec::new();
+        if let Some(config) = resolved.chat_config() {
+            agents.push(crate::work_outline::launch::LaunchAgent {
+                harness: config.harness,
+                name: name_of(config.harness),
+                config,
+            });
+        }
+        for descriptor in &offered {
+            if agents.iter().any(|agent| agent.harness == descriptor.id) {
+                continue;
+            }
+            agents.push(crate::work_outline::launch::LaunchAgent {
+                harness: descriptor.id,
+                name: descriptor.name.clone(),
+                config: ChatConfig {
+                    harness: descriptor.id,
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: SandboxLevel::WorkspaceWrite,
+                    auto_approve: resolved.auto_approve,
+                },
+            });
+        }
+        agents
+    }
+
     // ---- the per-chat approval chip (see [`approval`]) ----
 
     /// The approval flag the next send carries (and the chip shows).
@@ -3863,6 +3909,70 @@ impl Pickers {
         )
     }
 
+    /// The branch indicator of a bound Chat: the selected repository's
+    /// `name · branch`; click cycles to the next member. `None` when unbound.
+    fn execution_branch_indicator(
+        &mut self,
+        chat_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let members = self.state.read(cx).chat_execution_members(chat_id);
+        if members.is_empty() {
+            return None;
+        }
+        self.state.update(cx, |state, cx| {
+            state.refresh_chat_execution(chat_id, false, cx)
+        });
+        let selected = self.state.read(cx).selected_execution_member(chat_id)?;
+        let tooltip: SharedString = members
+            .iter()
+            .map(|member| {
+                format!(
+                    "{} {}{}",
+                    if member.repo_id == selected.repo_id {
+                        "\u{2022}"
+                    } else {
+                        " "
+                    },
+                    member.label(),
+                    if member.primary { " (primary)" } else { "" }
+                )
+            })
+            .chain(std::iter::once(
+                "Click to show the next repository".to_owned(),
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into();
+        let chat_id = chat_id.to_owned();
+        let current = selected.repo_id.clone();
+        Some(
+            Self::footer_label(
+                crate::icons::GIT_BRANCH,
+                SharedString::from(selected.label()),
+                theme,
+            )
+            .id("composer-execution-branch")
+            .debug_selector(|| "composer-execution-branch".into())
+            .cursor_pointer()
+            .hover(|el| el.text_color(theme.text_muted))
+            .tooltip(move |_, cx| cx.new(|_| WorkspaceChipTooltip(tooltip.clone())).into())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    let members = state.chat_execution_members(&chat_id);
+                    if let Some(next) =
+                        crate::work_outline::execution::next_member(&members, Some(&current))
+                    {
+                        let repo = next.repo_id.clone();
+                        state.select_chat_execution_member(&chat_id, &repo, cx);
+                    }
+                });
+            }))
+            .into_any_element(),
+        )
+    }
+
     /// The composer footer row: checkout-kind + ref, LEFT-aligned, only when
     /// the picked (or session's) project has git. New sessions use the floating
     /// chip clusters; sessions name their target in the titlebar.
@@ -3900,7 +4010,14 @@ impl Pickers {
             // Sessions never move: read-only checkout-kind + ref labels,
             // LEFT-aligned, only when the session's project has git. The
             // target (project @ device) lives in the titlebar now.
-            let Some(space) = space.as_ref().filter(|s| s.git_detected) else {
+            // A bound Chat's repositories are Git even when its execution
+            // root (a workspace folder) is not.
+            let bound = !self
+                .state
+                .read(cx)
+                .chat_execution_members(&chat.id)
+                .is_empty();
+            let Some(space) = space.as_ref().filter(|s| s.git_detected || bound) else {
                 return None;
             };
             let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
@@ -3920,20 +4037,29 @@ impl Pickers {
                     SharedString::from(label),
                     &theme,
                 ));
-            let right = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .min_w_0()
-                .child(Self::footer_label(
+            // A bound Chat (Work Outline execution binding) names one
+            // repository's branch at a time; click cycles through primary and
+            // members, the tooltip lists them all (shared with the Changes
+            // pane's selector through AppState).
+            let branch_label = match self.execution_branch_indicator(&chat.id, &theme, cx) {
+                Some(indicator) => indicator,
+                None => Self::footer_label(
                     crate::icons::GIT_BRANCH,
                     chat.branch
                         .clone()
                         .map(SharedString::from)
                         .unwrap_or_else(|| SharedString::from("No ref")),
                     &theme,
-                ));
+                )
+                .into_any_element(),
+            };
+            let right = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .min_w_0()
+                .child(branch_label);
             // The worktree chip's outcome for a chat this session sent
             // (pending "Deciding…" → "worktree: <branch>" / "main checkout").
             let right = right.children(self.render_workspace_outcome(&chat.id, &theme));
@@ -6201,6 +6327,61 @@ mod tests {
         let rows = vec![bare_model("first", "First")];
         assert_eq!(selected_catalog_model(&rows, None).unwrap().id, "first");
         assert!(selected_catalog_model(&rows, Some("saved")).is_none());
+    }
+
+    /// A bound Chat's branch indicator names the selected repository and
+    /// cycles primary → members; unbound Chats keep the plain branch label.
+    #[gpui::test]
+    fn bound_chat_branch_indicator_names_and_cycles_member_repositories(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::work_outline::execution::{fixture, next_member};
+        use crate::work_outline::store::fixture_ids::{CHAT_LOOSE_A, CHAT_UI};
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            fixture::bound_state(&mut state);
+            state.selected_chat = Some(CHAT_UI.into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            let theme = Theme::dark();
+            assert!(
+                pickers
+                    .execution_branch_indicator(CHAT_UI, &theme, cx)
+                    .is_some()
+            );
+            assert!(
+                pickers
+                    .execution_branch_indicator(CHAT_LOOSE_A, &theme, cx)
+                    .is_none()
+            );
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            let selected = state.selected_execution_member(CHAT_UI).unwrap();
+            assert_eq!(
+                selected.label(),
+                "ui \u{b7} feature/ui",
+                "the reply arrived"
+            );
+            let members = state.chat_execution_members(CHAT_UI);
+            let next = next_member(&members, Some(&selected.repo_id))
+                .unwrap()
+                .repo_id
+                .clone();
+            state.select_chat_execution_member(CHAT_UI, &next, cx);
+            assert_eq!(
+                state.selected_execution_member(CHAT_UI).unwrap().label(),
+                "flagship \u{b7} HEAD (0123456)"
+            );
+            let members = state.chat_execution_members(CHAT_UI);
+            assert_eq!(
+                next_member(&members, Some(&next)).unwrap().repo_id,
+                "repo:ui"
+            );
+        });
     }
 
     #[gpui::test]

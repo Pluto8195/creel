@@ -21,12 +21,14 @@ use std::time::Duration;
 use gpui::{BackgroundExecutor, Task};
 use zeron_proto::{
     ApplyInstructionRevisionParams, ArchiveWorkItemInstructionParams, ArchiveWorkItemParams,
-    AssignChatToWorkItemParams, CreateInstructionRevisionParams,
+    AssignChatToWorkItemParams, ConfigureExecutionParams, CreateInstructionRevisionParams,
     CreateWorkItemExternalReferenceParams, CreateWorkItemInstructionParams, CreateWorkItemParams,
-    EffectiveInstructions, InstructionRevisionComparison, InstructionRevisionView,
-    MoveWorkItemInstructionParams, MoveWorkItemParams, RemoveChatFromWorkItemParams,
-    RemoveWorkItemExternalReferenceParams, RepairWorkOutlineParams, RestoreWorkItemParams,
-    UpdateWorkItemInstructionParams, UpdateWorkItemParams, WorkOutlineError, WorkOutlineErrorCode,
+    DescribeExecutionRepositoryParams, EffectiveInstructions, ExecutionRepositoryIdentity,
+    InstructionRevisionComparison, InstructionRevisionView, MoveWorkItemInstructionParams,
+    MoveWorkItemParams, RemoveChatFromWorkItemParams, RemoveWorkItemExternalReferenceParams,
+    RepairWorkOutlineParams, RestoreWorkItemParams, UpdateWorkItemInstructionParams,
+    UpdateWorkItemParams, ValidateExecutionConfigurationParams,
+    ValidateExecutionConfigurationReply, WorkOutlineError, WorkOutlineErrorCode,
     WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlineQueryRequest, WorkOutlineQueryResponse,
 };
 use zeron_rpc::{RpcError, methods};
@@ -164,6 +166,18 @@ fn decode_reply(value: serde_json::Value) -> Result<WorkOutlineMutateReply, Work
         WorkOutlineError::new(
             WorkOutlineErrorCode::Invalid,
             format!("malformed Work Outline reply: {error}"),
+        )
+    })
+}
+
+/// Decode a typed reply of a non-mutation method.
+fn decode_json<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, WorkOutlineError> {
+    serde_json::from_value(value).map_err(|error| {
+        WorkOutlineError::new(
+            WorkOutlineErrorCode::Invalid,
+            format!("malformed reply: {error}"),
         )
     })
 }
@@ -431,6 +445,75 @@ impl WorkOutlineActions {
         params: ApplyInstructionRevisionParams,
     ) -> ActionTask {
         self.mutate(WorkOutlineMutation::ApplyInstructionRevision(params))
+    }
+
+    // ── Milestone 3: execution configuration ──
+
+    /// Write (`configuration`) or reset (`None`) one scope's configuration.
+    /// Shape-only on the host; reply `{}`.
+    pub(crate) fn configure_execution(&self, params: ConfigureExecutionParams) -> ActionTask {
+        self.mutate(WorkOutlineMutation::ConfigureExecution(params))
+    }
+
+    /// `ValidateExecutionConfiguration` (forwardable; the engine forwards to
+    /// the Space's owning device itself, so the caller never sets
+    /// `targetDeviceId`). Validation failures are a normal reply.
+    pub(crate) fn validate_execution(
+        &self,
+        params: ValidateExecutionConfigurationParams,
+    ) -> Task<Result<ValidateExecutionConfigurationReply, WorkOutlineError>> {
+        match serde_json::to_value(&params) {
+            Ok(value) => self.call(
+                methods::VALIDATE_EXECUTION_CONFIGURATION,
+                value,
+                decode_json::<ValidateExecutionConfigurationReply>,
+            ),
+            Err(error) => Task::ready(Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                error.to_string(),
+            ))),
+        }
+    }
+
+    /// `CreateChatForWorkItem` (forwardable; the engine forwards to the
+    /// Space's owner itself). Transport retries resend the same params, so
+    /// the same `operationId`; the host completes missing steps and returns
+    /// the same ids.
+    pub(crate) fn create_chat_for_work_item(
+        &self,
+        params: zeron_proto::CreateChatForWorkItemParams,
+    ) -> Task<Result<zeron_proto::CreateChatForWorkItemReply, WorkOutlineError>> {
+        match serde_json::to_value(&params) {
+            Ok(value) => self.call(
+                methods::CREATE_CHAT_FOR_WORK_ITEM,
+                value,
+                decode_json::<zeron_proto::CreateChatForWorkItemReply>,
+            ),
+            Err(error) => Task::ready(Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                error.to_string(),
+            ))),
+        }
+    }
+
+    /// `DescribeExecutionRepository`: the identity a binding records for the
+    /// checkout at `path`. The caller sets `targetDeviceId` when the Space
+    /// lives on another device (only the owner can fingerprint it).
+    pub(crate) fn describe_repository(
+        &self,
+        params: DescribeExecutionRepositoryParams,
+    ) -> Task<Result<ExecutionRepositoryIdentity, WorkOutlineError>> {
+        match serde_json::to_value(&params) {
+            Ok(value) => self.call(
+                methods::DESCRIBE_EXECUTION_REPOSITORY,
+                value,
+                decode_json::<ExecutionRepositoryIdentity>,
+            ),
+            Err(error) => Task::ready(Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                error.to_string(),
+            ))),
+        }
     }
 }
 
@@ -714,5 +797,64 @@ mod tests {
         });
         let error = futures::executor::block_on(task).unwrap_err();
         assert_eq!(error.message, "Engine not connected");
+    }
+
+    #[test]
+    fn execution_calls_use_their_own_methods_and_decode_replies() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let actions = WorkOutlineActions::scripted(std::sync::Arc::new(move |method, params| {
+            sink.lock()
+                .unwrap()
+                .push((method.to_owned(), params.clone()));
+            Ok(match method {
+                methods::VALIDATE_EXECUTION_CONFIGURATION => {
+                    serde_json::json!({"ok": false, "errors": [{
+                        "error": {"code": "deviceOffline", "deviceId": "d"},
+                        "message": "Device d is offline", "remediation": "Bring it online."
+                    }]})
+                }
+                methods::DESCRIBE_EXECUTION_REPOSITORY => {
+                    serde_json::json!({"repoId": "repo:x", "repoPath": "/x"})
+                }
+                _ => serde_json::json!({}),
+            })
+        }));
+        let reply = futures::executor::block_on(actions.validate_execution(
+            ValidateExecutionConfigurationParams {
+                chat_id: Some("chat".into()),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        assert!(!reply.ok);
+        assert_eq!(reply.errors[0].error.code(), "deviceOffline");
+        let identity = futures::executor::block_on(actions.describe_repository(
+            DescribeExecutionRepositoryParams {
+                path: "/x".into(),
+                target_device_id: Some("d".into()),
+            },
+        ))
+        .unwrap();
+        assert_eq!(identity.repo_id, "repo:x");
+        futures::executor::block_on(actions.configure_execution(ConfigureExecutionParams {
+            scope: zeron_proto::ExecutionScope::Space {
+                space_id: "s".into(),
+            },
+            configuration: None,
+            operation_id: "op".into(),
+        }))
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].0, methods::VALIDATE_EXECUTION_CONFIGURATION);
+        assert_eq!(
+            seen[0].1,
+            serde_json::json!({"chatId": "chat", "hostCapabilities": {"additionalDirectories": false}})
+        );
+        assert_eq!(seen[1].0, methods::DESCRIBE_EXECUTION_REPOSITORY);
+        assert_eq!(seen[1].1["targetDeviceId"], "d");
+        assert_eq!(seen[2].0, methods::WORK_OUTLINE_MUTATE);
+        assert_eq!(seen[2].1["op"], "configureExecution");
+        assert!(seen[2].1["configuration"].is_null());
     }
 }

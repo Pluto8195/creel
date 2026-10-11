@@ -602,6 +602,7 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::AssociateChatWithWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::OpenEffectiveInstructions),
                 Entry::WorkOutline(WorkOutlineCommand::CreateInstructionFromChat),
+                Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem),
                 Entry::ImportSessionCanvasSessions,
                 Entry::Theme(AppearanceMode::Light)
             ]
@@ -624,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_lists_eight_work_outline_commands_and_hides_required_actions() {
+    fn palette_lists_nine_work_outline_commands_and_hides_required_actions() {
         let entries = actions_for("", true);
         let listed: Vec<_> = entries
             .iter()
@@ -633,7 +634,11 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(listed.len(), 8);
+        assert_eq!(listed.len(), 9);
+        assert_eq!(
+            actions_for("start chat", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem)]
+        );
         assert!(!listed.contains(&WorkOutlineCommand::OpenRequiredActions));
         assert!(actions_for(WorkOutlineCommand::OpenRequiredActions.label(), true).is_empty());
         assert_eq!(

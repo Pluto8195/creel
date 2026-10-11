@@ -500,7 +500,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::AssociateChatWithWorkItem
         | ShortcutId::OpenEffectiveInstructions
         | ShortcutId::CreateInstructionFromChat
-        | ShortcutId::OpenRequiredActions => "Work Outline",
+        | ShortcutId::OpenRequiredActions
+        | ShortcutId::StartChatForWorkItem => "Work Outline",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -538,6 +539,9 @@ fn description(id: ShortcutId) -> &'static str {
         }
         ShortcutId::CreateInstructionFromChat => {
             "Turn the current session into an instruction for a work item."
+        }
+        ShortcutId::StartChatForWorkItem => {
+            "Start a chat in the selected work item, with its execution configuration."
         }
         ShortcutId::OpenRequiredActions => {
             "Show the actions waiting on you for the selected work item."
