@@ -25,8 +25,8 @@ use zeron_proto::work_outline_instructions::{
     ChatInstructionState, ExecutionSessionReport, INSTRUCTION_ENVELOPE_VERSION,
     InstructionApplicationReason, InstructionApplicationResult, InstructionRevisionApplicationView,
     InstructionRevisionBody, InstructionRevisionIntegrity, InstructionRevisionView,
-    InstructionTurnBoundary, WorkItemInstructionView, canonical_revision_hash,
-    resolve_effective_instructions, verify_revision_body,
+    InstructionTurnBoundary, SelectedRevisionIntegrity, WorkItemInstructionView,
+    canonical_revision_hash, resolve_effective_instructions, verify_revision_body,
 };
 use zeron_proto::work_outline_order::valid_order_key;
 
@@ -503,40 +503,51 @@ pub(crate) fn decode_application(row: &RegistryRow) -> Option<DecodedApplication
     })
 }
 
-/// What the selection rule knows about an application's revision.
+/// What a reader knows about the selected application's revision.
 pub(crate) enum RevisionCheck {
     /// Present, in the Chat's Space, and integrity-ok: its canonical hash.
     Valid(String),
-    /// Present but corrupt or in another Space: never selected.
-    Excluded,
+    /// Present but corrupt or in another Space: its stored (unverified) hash.
+    Corrupt(String),
     /// Not synced (yet) to this replica.
     Missing,
 }
 
-/// The Chat's selected revision (contract 5.6): the latest accepted
-/// application by `(appliedHlc, id)`, skipping applications whose revision
-/// is excluded (corrupt or cross-Space). An application whose revision has
-/// not synced yet still wins when it recorded the revision hash (the
-/// delivery side waits for that exact row and never substitutes another).
-/// Returns the application and the revision hash.
-pub(crate) fn select_application<'a>(
-    mut applications: Vec<&'a DecodedApplication>,
-    mut check: impl FnMut(&str) -> RevisionCheck,
-) -> Option<(&'a DecodedApplication, String)> {
+/// The newest accepted application of a Chat by `(appliedHlc, id)`.
+pub(crate) fn newest_application<'a>(
+    applications: impl IntoIterator<Item = &'a DecodedApplication>,
+) -> Option<&'a DecodedApplication> {
     applications
-        .sort_by(|a, b| (&b.view.applied_hlc, &b.view.id).cmp(&(&a.view.applied_hlc, &a.view.id)));
-    for application in applications {
-        match check(&application.view.revision_id) {
-            RevisionCheck::Valid(hash) => return Some((application, hash)),
-            RevisionCheck::Excluded => continue,
-            RevisionCheck::Missing => {
-                if let Some(hash) = &application.revision_hash {
-                    return Some((application, hash.clone()));
-                }
-            }
-        }
-    }
-    None
+        .into_iter()
+        .max_by(|a, b| (&a.view.applied_hlc, &a.view.id).cmp(&(&b.view.applied_hlc, &b.view.id)))
+}
+
+/// The Chat's selected revision (contract 5.6): the newest accepted
+/// application by `(appliedHlc, id)`, never substituted (contract 5.3). Its
+/// revision's state is reported instead: `ok`, `missing` (not synced yet),
+/// or `corrupt` (fails integrity or belongs to another Space). The pinned
+/// hash is the verified revision hash when `ok`, otherwise the hash the
+/// application recorded when it was written (falling back to the stored
+/// one), so delivery of a missing or corrupt revision fails closed on the
+/// integrity check. Returns the application, its integrity, and the hash.
+pub(crate) fn select_application<'a>(
+    applications: impl IntoIterator<Item = &'a DecodedApplication>,
+    check: impl FnOnce(&str) -> RevisionCheck,
+) -> Option<(&'a DecodedApplication, SelectedRevisionIntegrity, String)> {
+    let application = newest_application(applications)?;
+    let recorded = application.revision_hash.clone();
+    let (integrity, hash) = match check(&application.view.revision_id) {
+        RevisionCheck::Valid(hash) => (SelectedRevisionIntegrity::Ok, hash),
+        RevisionCheck::Missing => (
+            SelectedRevisionIntegrity::Missing,
+            recorded.unwrap_or_default(),
+        ),
+        RevisionCheck::Corrupt(stored) => (
+            SelectedRevisionIntegrity::Corrupt,
+            recorded.unwrap_or(stored),
+        ),
+    };
+    Some((application, integrity, hash))
 }
 
 /// The fields of a materialized item the instruction resolver reads
@@ -874,10 +885,12 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
 ///   associated item's effective instructions; `drift` is "a selection exists
 ///   and differs", or "no selection but the item has effective
 ///   instructions"; a Chat without an associated item never drifts.
-/// - Revisions are verified lazily, only those the selection walk or a
-///   delivery touches; a corrupt one gets `corruptRevision`, is never
-///   selected, and the walk falls back to the next older application.
-/// - `revisions` lists the selected and delivered revisions of this Space.
+/// - The selection is the newest application, never substituted; its
+///   revision's state is `selectedRevisionIntegrity`. Only selected and
+///   delivered revisions are verified; a corrupt one gets `corruptRevision`.
+/// - `revisions` lists only the currently selected and delivered revisions
+///   of this Space (flagged when corrupt), so frames do not grow with
+///   launches.
 fn materialize_instructions(
     space_id: &str,
     inputs: &WorkOutlineInputs,
@@ -1001,13 +1014,18 @@ fn materialize_instructions(
                 {
                     RevisionCheck::Valid(view.body.hash)
                 }
-                Some(_) => RevisionCheck::Excluded,
+                Some(view) => RevisionCheck::Corrupt(view.body.hash),
             }
         });
-        let (selected_revision_id, selected_revision_hash) = match selected {
-            Some((application, hash)) => (Some(application.view.revision_id.clone()), Some(hash)),
-            None => (None, None),
-        };
+        let (selected_revision_id, selected_revision_integrity, selected_revision_hash) =
+            match selected {
+                Some((application, integrity, hash)) => (
+                    Some(application.view.revision_id.clone()),
+                    Some(integrity),
+                    Some(hash),
+                ),
+                None => (None, None, None),
+            };
         let drift = match (&selected_revision_hash, &current) {
             (Some(selected), Some((current, _))) => selected != current,
             (None, Some((_, count))) => *count > 0,
@@ -1027,6 +1045,7 @@ fn materialize_instructions(
             chat_id: chat_id.to_owned(),
             selected_revision_id,
             selected_revision_hash,
+            selected_revision_integrity,
             current_effective_hash: current.map(|(hash, _)| hash),
             drift,
             delivered_revision_id,

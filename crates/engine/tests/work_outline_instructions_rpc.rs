@@ -215,6 +215,10 @@ async fn instruction_mutations_queries_and_snapshot_state_over_rpc() {
     .await;
     let chat = selected.chat_instruction_state("chat-1").unwrap();
     assert!(!chat.drift);
+    assert_eq!(
+        chat.selected_revision_integrity,
+        Some(zeron_proto::SelectedRevisionIntegrity::Ok)
+    );
     assert_eq!(selected.instructions.len(), 3);
     assert_eq!(
         selected.revision(&revision).unwrap().integrity,

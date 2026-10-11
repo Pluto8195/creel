@@ -517,7 +517,7 @@ fn build_revision_body_enforces_budgets() {
                 .collect()
         )
         .message
-        .contains("too large to save")
+        .contains("revision size limit")
     );
 }
 
@@ -901,6 +901,7 @@ fn revision_wire_names_are_pinned() {
             chat_id: "c".into(),
             selected_revision_id: Some("r".into()),
             selected_revision_hash: Some("h".into()),
+            selected_revision_integrity: Some(SelectedRevisionIntegrity::Ok),
             current_effective_hash: Some("h2".into()),
             drift: true,
             delivered_revision_id: Some("r0".into()),
@@ -908,7 +909,7 @@ fn revision_wire_names_are_pinned() {
         },
         json!({
             "chatId":"c","selectedRevisionId":"r","selectedRevisionHash":"h",
-            "currentEffectiveHash":"h2","drift":true,"deliveredRevisionId":"r0",
+            "selectedRevisionIntegrity":"ok","currentEffectiveHash":"h2","drift":true,"deliveredRevisionId":"r0",
             "deliveredRevisionHash":"h0"
         }),
     );
@@ -919,6 +920,17 @@ fn revision_wire_names_are_pinned() {
         },
         json!({"chatId":"c","drift":false}),
     );
+    for (wire, integrity) in [
+        ("ok", SelectedRevisionIntegrity::Ok),
+        ("missing", SelectedRevisionIntegrity::Missing),
+        ("corrupt", SelectedRevisionIntegrity::Corrupt),
+        ("fromTheFuture", SelectedRevisionIntegrity::Corrupt),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<SelectedRevisionIntegrity>(json!(wire)).unwrap(),
+            integrity
+        );
+    }
 }
 
 #[test]

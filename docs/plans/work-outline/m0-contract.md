@@ -408,7 +408,10 @@ src/instruction_support.rs`). Each item is a decision later stages build on.
 
 Recorded by the Milestone 2 registry backend (`crates/doc/src/registry/work_outline/instructions.rs`,
 `.../materialize.rs`, `crates/engine/src/work_outline.rs`, `crates/engine/src/workspace_host.rs`).
-No wire type in `crates/proto` changed; the additions below are registry row fields and behavior.
+One additive proto change: `ChatInstructionState.selectedRevisionIntegrity` (optional,
+`SelectedRevisionIntegrity = ok | missing | corrupt`, lenient: unknown reads `corrupt`), and the
+`build_revision_body` body-size message now explains per-entry overhead. Everything else below is
+registry row fields and behavior.
 
 1. **Additive row fields.** `workItemInstructions`, `instructionRevisions`, and
    `instructionRevisionApplications` carry an immutable `inputsHash` (as `workItems` does), so a
@@ -417,13 +420,15 @@ No wire type in `crates/proto` changed; the additions below are registry row fie
    `reason` is written in wire spelling (`launch`, `explicit`, `forkInherit`); `result` is always
    `accepted`; `appliedHlc` equals the clock of the op that wrote it. `sessionRef` is never written
    (the request has no Execution Session target).
-2. **Selection rule.** The selected revision is the newest application by `(appliedHlc, id)` whose
-   revision is not corrupt and not in another Space; a corrupt one is skipped and the next older
-   application wins. An application whose revision has not synced yet is still selected, pinned by
-   its `revisionHash` (the delivery side waits for that exact row). Applying observes every
-   existing application of the Chat first, so an application made after seeing another device's
-   always sorts after it. The doc reader `selected_instruction_revision` and the snapshot use the
-   same rule.
+2. **Selection rule.** The selected revision is the newest accepted application by
+   `(appliedHlc, id)`, never substituted (section 5.3): when its revision is missing (not synced) or
+   corrupt (fails integrity or belongs to another Space), the snapshot reports it through
+   `selectedRevisionIntegrity` and `InstructionRegistry::selected_instruction_revision` still
+   returns that pin, carrying the hash the application recorded (`revisionHash`), so delivery fails
+   closed on the integrity check instead of delivering an older revision. Re-applying an intact
+   revision is the user's remedy. Applying observes every existing application of the Chat first,
+   so an application made after seeing another device's always sorts after it. The doc reader and
+   the snapshot use the same rule.
 3. **Budget enforcement.** Text <= 6,000 and excerpt <= 1,500 characters are checked on every
    write. Create checks every item whose effective instructions include the scope (the item and
    its descendants; for the Space root every item plus the root alone) with `build_revision_body`,
@@ -433,7 +438,9 @@ No wire type in `crates/proto` changed; the additions below are registry row fie
    concurrently); archive is never checked. Two observations: the 50-per-scope cap is unreachable
    through the API because the 32-entry revision cap binds first (it guards rows written by other
    writers), and about 180 units of JSON overhead per entry mean many-entry sets hit the
-   14,000-unit body cap well before 9,000 characters.
+   14,000-unit body cap well before 9,000 characters; that error reads "Instructions exceed the
+   revision size limit (N of 14000 units after encoding; each instruction adds about 200 units of
+   overhead beyond its text, …)".
 4. **Errors.** Creating an instruction on an archived item is `archived`; editing or moving an
    archived instruction is `archived`; archiving twice is a no-op. `applyInstructionRevision`:
    missing Chat or revision `notFound`, projectless Chat `projectless`, Chat without a live
@@ -450,12 +457,12 @@ No wire type in `crates/proto` changed; the additions below are registry row fie
    included (orphans also get `orphanInstruction` and are never effective).
    `chatInstructionStates` covers Chats of the Space that are associated or have an application
    here. A Chat without an associated item has no `currentEffectiveHash` and never drifts; an
-   associated Chat with no selection drifts iff its item has effective instructions. Revisions are
-   verified lazily, only those the selection walk or a delivery touches (revision rows are never
-   pruned, so verifying all of them per frame would grow without bound); `corruptRevision` is
-   reported for those. `revisions` lists the selected and delivered revisions of the Space.
-   Materializer inputs carry this Space's applications, only the referenced revision rows, and
-   session rows that have an `executionSession`.
+   associated Chat with no selection drifts iff its item has effective instructions. Only the
+   currently selected and delivered revisions are verified and listed in `revisions` (corrupt ones
+   flagged and reported as `corruptRevision`); revision rows are never pruned, so frames must not
+   grow with launches. Materializer inputs carry only each Chat's newest application in this
+   Space, the revision rows those and the session reports reference, and session rows that have
+   an `executionSession`.
 8. **Execution Session report.** `WorkspaceHost::report_execution_session` writes only the
    `executionSession` field with an `update` (so status writes and reports never clobber each
    other), observes the row's clocks first, writes nothing for an equal report (no change-counter

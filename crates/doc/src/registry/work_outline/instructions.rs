@@ -188,11 +188,26 @@ impl RegistryDoc {
         &self,
         space_id: &str,
     ) -> (Vec<RegistryRow>, Vec<RegistryRow>, Vec<RegistryRow>) {
-        let applications: Vec<RegistryRow> = self
-            .overlay_rows(KIND_INSTRUCTION_REVISION_APPLICATIONS)
-            .into_iter()
-            .filter(|row| row.fields.get("spaceId").and_then(Value::as_str) == Some(space_id))
-            .collect();
+        // Only each Chat's newest application decides its selection, so only
+        // those rows (and their revisions) are cloned: frames stay the same
+        // size however many revisions a Chat has applied over time.
+        let mut newest: BTreeMap<String, (DecodedApplication, RegistryRow)> = BTreeMap::new();
+        for row in self.overlay_rows(KIND_INSTRUCTION_REVISION_APPLICATIONS) {
+            if row.fields.get("spaceId").and_then(Value::as_str) != Some(space_id) {
+                continue;
+            }
+            let Some(decoded) = decode_application(&row) else {
+                continue;
+            };
+            let replace = newest.get(&decoded.view.chat_id).is_none_or(|(kept, _)| {
+                (&decoded.view.applied_hlc, &decoded.view.id)
+                    > (&kept.view.applied_hlc, &kept.view.id)
+            });
+            if replace {
+                newest.insert(decoded.view.chat_id.clone(), (decoded, row));
+            }
+        }
+        let applications: Vec<RegistryRow> = newest.into_values().map(|(_, row)| row).collect();
         let sessions: Vec<RegistryRow> = self
             .overlay_rows(KIND_SESSIONS)
             .into_iter()
@@ -230,10 +245,11 @@ impl RegistryDoc {
         self.live_item(work_item_id).ok().map(|item| item.space_id)
     }
 
-    /// The Chat's selected revision: the latest accepted application by
-    /// `(appliedHlc, id)` among this Space's applications whose revision is
-    /// not corrupt or cross-Space (the same rule as the snapshot's
-    /// `chatInstructionStates`).
+    /// The Chat's selected revision: the newest accepted application by
+    /// `(appliedHlc, id)` among this Space's applications, never substituted
+    /// (the same rule as the snapshot's `chatInstructionStates`). A missing
+    /// or corrupt revision still returns its pin (hash as recorded by the
+    /// application) so delivery fails closed on the integrity check.
     pub fn selected_instruction_revision(&self, chat_id: &str) -> Option<InstructionRevisionPin> {
         let space_id = self
             .chat(chat_id)
@@ -247,18 +263,16 @@ impl RegistryDoc {
             .filter_map(decode_application)
             .filter(|a| a.view.chat_id == chat_id && a.view.space_id == space_id)
             .collect();
-        let (application, hash) =
-            select_application(applications.iter().collect(), |id| {
-                match self.instruction_revision(id) {
-                    None => RevisionCheck::Missing,
-                    Some(view)
-                        if view.space_id == space_id
-                            && view.integrity == InstructionRevisionIntegrity::Ok =>
-                    {
-                        RevisionCheck::Valid(view.body.hash)
-                    }
-                    Some(_) => RevisionCheck::Excluded,
+        let (application, _integrity, hash) =
+            select_application(&applications, |id| match self.instruction_revision(id) {
+                None => RevisionCheck::Missing,
+                Some(view)
+                    if view.space_id == space_id
+                        && view.integrity == InstructionRevisionIntegrity::Ok =>
+                {
+                    RevisionCheck::Valid(view.body.hash)
                 }
+                Some(view) => RevisionCheck::Corrupt(view.body.hash),
             })?;
         Some(InstructionRevisionPin {
             revision_id: application.view.revision_id.clone(),

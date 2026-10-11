@@ -11,6 +11,7 @@ use zeron_proto::HarnessId;
 use zeron_proto::work_outline::{AssignChatToWorkItemParams, CreateWorkItemParams};
 use zeron_proto::work_outline_instructions::{
     InstructionApplicationReason, InstructionSourceKind, InstructionTurnBoundary,
+    SelectedRevisionIntegrity,
 };
 
 const SPACE: &str = "sp-1";
@@ -597,6 +598,25 @@ fn entry_budget_counts_inherited_entries() {
     }
     let over = try_instruct(&mut doc, "c", Some(&c), "c").unwrap_err();
     assert_eq!(over.code, WorkOutlineErrorCode::LimitExceeded);
+    // Many entries reach the body-size cap below 9,000 characters, and the
+    // error says why.
+    let mut many = doc_with_spaces("dev-a");
+    let text = "s".repeat(290);
+    let mut created = 0;
+    let error = loop {
+        match try_instruct(&mut many, &format!("s{created}"), None, &text) {
+            Ok(_) => created += 1,
+            Err(error) => break error,
+        }
+    };
+    assert!(created * 290 < limits::MAX_EFFECTIVE_INSTRUCTION_CHARS);
+    assert_eq!(error.code, WorkOutlineErrorCode::LimitExceeded);
+    assert!(
+        error.message.contains("revision size limit")
+            && error.message.contains("each instruction adds"),
+        "{}",
+        error.message
+    );
     // The Space root alone is budgeted too (no item needed).
     let mut empty = doc_with_spaces("dev-a");
     instruct(&mut empty, "r1", None, &"r".repeat(6_000));
@@ -924,13 +944,14 @@ fn tamper(doc: &mut RegistryDoc, revision: &str, edit: impl FnOnce(&mut Value)) 
 }
 
 #[test]
-fn corrupt_revisions_are_flagged_and_never_selected() {
+fn corrupt_selected_revision_is_reported_never_substituted() {
     let (mut doc, a, _b, c) = three_levels();
     instruct(&mut doc, "i", Some(&a), "keep secrets out of logs");
     let good = revise(&mut doc, "good", &c).unwrap();
     apply_revision(&mut doc, "app1", "chat-1", &good).unwrap();
     instruct(&mut doc, "i2", Some(&c), "more");
     let bad = revise(&mut doc, "bad", &c).unwrap();
+    let bad_hash = doc.instruction_revision(&bad).unwrap().body.hash;
     apply_revision(&mut doc, "app2", "chat-1", &bad).unwrap();
     let mut server = HashMap::new();
     let mut seq = 0;
@@ -953,14 +974,27 @@ fn corrupt_revisions_are_flagged_and_never_selected() {
     let chat = state(&s, "chat-1");
     assert_eq!(
         chat.selected_revision_id.as_deref(),
-        Some(good.as_str()),
-        "falls back to the newest intact application"
+        Some(bad.as_str()),
+        "never falls back to an older revision (contract 5.3)"
     );
     assert_eq!(
-        doc.selected_instruction_revision("chat-1")
-            .unwrap()
-            .revision_id,
-        good
+        chat.selected_revision_integrity,
+        Some(SelectedRevisionIntegrity::Corrupt)
+    );
+    // The pin carries the hash verified when it was applied, so delivery
+    // re-verifies the tampered row against it and fails closed.
+    let pin = doc.selected_instruction_revision("chat-1").unwrap();
+    assert_eq!(pin.revision_id, bad);
+    assert_eq!(
+        Some(&pin.revision_hash),
+        chat.selected_revision_hash.as_ref()
+    );
+    assert_eq!(pin.revision_hash, bad_hash);
+    let listed = s.revision(&bad).unwrap();
+    assert_eq!(listed.integrity, InstructionRevisionIntegrity::Corrupt);
+    assert!(
+        s.revision(&good).is_none(),
+        "an older application is history"
     );
     assert_eq!(
         apply_revision(&mut doc, "app3", "chat-1", &bad)
@@ -968,13 +1002,60 @@ fn corrupt_revisions_are_flagged_and_never_selected() {
             .code,
         WorkOutlineErrorCode::RevisionIntegrity
     );
-    // An undecodable body is corrupt too.
+    // Re-applying the intact revision selects it again.
+    apply_revision(&mut doc, "app4", "chat-1", &good).unwrap();
+    let s = snap(&doc);
+    assert_eq!(
+        state(&s, "chat-1").selected_revision_integrity,
+        Some(SelectedRevisionIntegrity::Ok)
+    );
+    // An undecodable body is corrupt too, and still selected.
     tamper(&mut doc, &good, |body| *body = json!({ "entries": "nope" }));
     assert_eq!(
         doc.instruction_revision(&good).unwrap().integrity,
         InstructionRevisionIntegrity::Corrupt
     );
-    assert!(state(&snap(&doc), "chat-1").selected_revision_id.is_none());
+    let s = snap(&doc);
+    let chat = state(&s, "chat-1");
+    assert_eq!(chat.selected_revision_id.as_deref(), Some(good.as_str()));
+    assert_eq!(
+        chat.selected_revision_integrity,
+        Some(SelectedRevisionIntegrity::Corrupt)
+    );
+}
+
+#[test]
+fn snapshot_revisions_stay_bounded_to_current_selection_and_delivery() {
+    let (mut doc, _a, _b, c) = three_levels();
+    doc.upsert_chat(&space_chat("chat-2", Some(SPACE))).unwrap();
+    assign(&mut doc, "op-assign-2", "chat-2", &c);
+    let mut revisions = Vec::new();
+    for i in 0..5 {
+        instruct(&mut doc, &format!("i{i}"), Some(&c), &format!("rule {i}"));
+        let revision = revise(&mut doc, &format!("rev{i}"), &c).unwrap();
+        apply_revision(&mut doc, &format!("app{i}"), "chat-1", &revision).unwrap();
+        revisions.push(revision);
+    }
+    let inputs = doc.work_outline_inputs(SPACE, true);
+    assert_eq!(inputs.applications.len(), 1, "only the newest application");
+    assert_eq!(inputs.revisions.len(), 1);
+    let s = snap(&doc);
+    let listed: Vec<&str> = s.revisions.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(listed, [revisions[4].as_str()]);
+    // A delivered revision and another Chat's selection are listed too.
+    doc.report_execution_session("chat-1", &report(Some(&revisions[0]), "h"), NOW)
+        .unwrap();
+    apply_revision(&mut doc, "app-2", "chat-2", &revisions[2]).unwrap();
+    let s = snap(&doc);
+    let mut expected = vec![
+        revisions[0].as_str(),
+        revisions[2].as_str(),
+        revisions[4].as_str(),
+    ];
+    expected.sort();
+    let listed: Vec<&str> = s.revisions.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(listed, expected);
+    assert_eq!(doc.work_outline_inputs(SPACE, true).revisions.len(), 3);
 }
 
 #[test]
@@ -1002,6 +1083,16 @@ fn selection_waits_for_an_unsynced_revision_with_its_recorded_hash() {
         Some(revision.as_str())
     );
     assert_eq!(chat.selected_revision_hash.as_deref(), Some(hash.as_str()));
+    assert_eq!(
+        chat.selected_revision_integrity,
+        Some(SelectedRevisionIntegrity::Missing)
+    );
+    assert_eq!(
+        b.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_hash,
+        hash
+    );
     assert!(s.revisions.is_empty(), "not synced, so not listed");
 }
 
