@@ -410,6 +410,16 @@ impl SessionsEngine {
         lock(&self.inner.context_reset_confirmed).insert(message_id.to_string());
     }
 
+    /// The revision a Turn (by user message id) was already dispatched with,
+    /// from the journal sidecar.
+    pub(crate) fn turn_instruction_pin(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Option<InstructionRevisionPin> {
+        self.inner.journal.instruction_turn(chat_id, message_id)
+    }
+
     /// The revision an engine-built follow-up Turn runs under: the Turn's own
     /// pin (journal sidecar, keyed by user message id), else the live
     /// Execution Session's, else what the chat's last native session

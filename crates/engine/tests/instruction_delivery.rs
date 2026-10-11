@@ -318,6 +318,86 @@ async fn fresh_run_warm_turn_and_explicit_change_deliver_exact_revisions() {
 }
 
 // ---------------------------------------------------------------------------
+// Capture at ingestion: clients send plain `Run`
+// ---------------------------------------------------------------------------
+
+fn plain(prompt: &str, message_id: &str) -> SessionCommandPayload {
+    SessionCommandPayload::Run {
+        request: run_request(prompt),
+        message_id: message_id.into(),
+    }
+}
+
+/// Append a command as another device's (possibly older) sender would: it
+/// never passes through this engine's ingestion.
+fn write_foreign_command(core: &EngineCore, id: &str, payload: SessionCommandPayload) {
+    core.doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .queue_command(&SessionCommandEntry {
+            id: id.into(),
+            payload,
+            issued_by: "other-device".into(),
+            issued_at: chrono::Utc::now().timestamp_millis(),
+            based_on: None,
+            expires_at: None,
+            status: SessionCommandStatus::Pending,
+            resolution: None,
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_plain_run_after_apply_delivers_the_new_revision_at_the_next_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+
+    let first = queue(&rig.core, plain("first", "m-1"));
+    // The ingesting engine captured the selection on the written command.
+    assert!(matches!(
+        command(&rig.core, &first).unwrap().payload,
+        SessionCommandPayload::RunWithInstructions { ref instructions, .. } if *instructions == a
+    ));
+    wait_turns(&rig, 1, "the first Turn").await;
+    assert_eq!(revision_of(&rig.mock.turns()[0]), Some("rev-a"));
+
+    // The user applies rev-b; the composer still sends a plain Run.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    queue(&rig.core, plain("second", "m-2"));
+    wait_turns(&rig, 2, "the Turn after Apply").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2, "a new Execution Session at the boundary");
+    assert_eq!(runs[1].resume.as_deref(), Some("mock-session-1"));
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(
+        delivery.envelope.pin(),
+        b,
+        "the new revision, not the session's"
+    );
+    assert_eq!(
+        delivery.transition,
+        InstructionTransition::Replace {
+            previous_revision_id: "rev-a".into()
+        }
+    );
+
+    // A plain Run from a sender that skipped capture is still a new user
+    // message on the host: it prefers the selection too.
+    let c = rig.registry.add("rev-c", "Explain before editing");
+    rig.registry.select(&c);
+    write_foreign_command(&rig.core, "cmd-foreign", plain("third", "m-3"));
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    rig.core.doc_host.drain_commands(&handle).await;
+    wait_turns(&rig, 3, "the foreign plain Run").await;
+    assert_eq!(revision_of(&rig.mock.turns()[2]), Some("rev-c"));
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // Acceptance 9 + 10: queued Turn keeps the revision captured at queue time
 // ---------------------------------------------------------------------------
 
@@ -493,15 +573,16 @@ async fn a_crash_respawn_continues_with_the_sessions_revision() {
     queue(&rig.core, pinned("[crash] boom", "m-2", &a));
     wait_for(|| !rig.core.sessions.has_live_run(CHAT), "the child to die").await;
 
-    // A newer revision is selected meanwhile; the follow-up below is an
-    // older client's plain Run, so the engine picks the revision.
+    // A newer revision is selected meanwhile; the follow-up below is a
+    // steer that falls back to a new Turn (engine-built), so it keeps the
+    // session's revision.
     let b = rig.registry.add("rev-b", "Write tests first");
     rig.registry.select(&b);
     queue(
         &rig.core,
-        SessionCommandPayload::Run {
-            request: run_request("after the crash"),
-            message_id: "m-3".into(),
+        SessionCommandPayload::Steer {
+            prompt: "after the crash".into(),
+            message_id: Some("m-3".into()),
         },
     );
     wait_turns(&rig, 3, "the respawned Turn").await;

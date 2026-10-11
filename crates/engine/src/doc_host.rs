@@ -2606,6 +2606,7 @@ impl DocHost {
             turn_id: Some(m.id.clone()),
             frontier: None,
         });
+        let payload = self.capture_selected_revision(chat_id, payload);
         let is_message = matches!(
             payload,
             SessionCommandPayload::Run { .. }
@@ -2637,6 +2638,38 @@ impl DocHost {
         self.nudge_remote_host(chat_id);
         self.spawn_command_delivery(chat_id, entry, transfers);
         Ok(id)
+    }
+
+    /// Capture at ingestion (contract 5.3, "a queued command captures the
+    /// revision"): a user-authored plain `Run` for a Chat with a selected
+    /// revision becomes `runWithInstructions` pinned to that selection before
+    /// it is written, so a revision applied after an earlier Turn reaches the
+    /// next Turn instead of the session's previous one. Clients keep sending
+    /// plain `Run`; engine-built follow-ups never pass through here and keep
+    /// the session / sidecar pin.
+    fn capture_selected_revision(
+        &self,
+        chat_id: &str,
+        payload: SessionCommandPayload,
+    ) -> SessionCommandPayload {
+        match payload {
+            SessionCommandPayload::Run {
+                request,
+                message_id,
+            } => match self.selected_instruction_revision(chat_id) {
+                Some(instructions) => SessionCommandPayload::RunWithInstructions {
+                    request,
+                    message_id,
+                    instructions,
+                    context_reset_confirmed: false,
+                },
+                None => SessionCommandPayload::Run {
+                    request,
+                    message_id,
+                },
+            },
+            other => other,
+        }
     }
 
     /// Sender preflight for instruction-bearing commands (contract 5.5): a
@@ -4686,9 +4719,12 @@ impl DocHost {
         self.resolve_request_attachments(&mut request);
         // Work Outline instructions (contract 5.3/5.5): resolve the pinned
         // revision, verify it, and check the harness BEFORE anything is
-        // written. A plain Run for a chat with a selected revision but no
-        // Execution Session record gets the selection (host-resolved);
-        // otherwise dispatch keeps the session's revision.
+        // written. A plain Run that reaches the host (an older sender, or one
+        // whose registry had not synced the selection) is still a NEW
+        // user-authored message: it takes the Chat's selected revision over
+        // the session's previous one (a replacement at the Turn boundary).
+        // Only a re-execution of a message that already dispatched keeps its
+        // own Turn pin.
         let pinned = match pinned {
             Some((pin, confirmed)) => {
                 match instruction_delivery::resolve_pin(self.instruction_registry().as_deref(), pin)
@@ -4705,20 +4741,17 @@ impl DocHost {
                     }
                 }
             }
-            None => match self.selected_instruction_revision(chat_id) {
-                Some(selected)
-                    if sessions
-                        .followup_instruction_pin(chat_id, Some(message_id))
-                        .is_none() =>
-                {
-                    match self.resolve_instruction_pin(&selected).await {
-                        Ok(envelope) => Some((envelope, false)),
-                        Err(err) => {
-                            return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
-                        }
+            None => match sessions
+                .turn_instruction_pin(chat_id, message_id)
+                .or_else(|| self.selected_instruction_revision(chat_id))
+            {
+                Some(pin) => match self.resolve_instruction_pin(&pin).await {
+                    Ok(envelope) => Some((envelope, false)),
+                    Err(err) => {
+                        return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
                     }
-                }
-                _ => None,
+                },
+                None => None,
             },
         };
         if let Some((envelope, confirmed)) = &pinned {
