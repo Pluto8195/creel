@@ -1221,3 +1221,89 @@ work must close.
     attention dot); no sidebar indicators; the Shell's notification glue itself has no gpui test
     (the detector and the settings gate are tested pure); no transcript scroll to the request's
     message; resolved history beyond the snapshot window needs a query.
+
+## Milestone 4 review fixes
+
+Recorded by the Milestone 4 review-fix pass (`crates/mcp/src/tools.rs`, `crates/engine/src/
+agent_tools.rs`, `crates/doc/src/registry/work_outline/user_actions.rs`, `crates/doc/src/
+registry.rs`, `crates/engine/src/work_outline.rs`, `crates/harness/src/agent_tools.rs`,
+`crates/ui/src/work_outline/required_actions.rs`, small hunks of `sessions.rs`, `lib.rs`,
+`workspace_host.rs`). Each item amends the Milestone 4 discoveries above.
+
+1. **Legacy MCP tools are scoped in agent mode** (amends agent tool discovery 7). With a token,
+   `create_chat` creates only children of the caller, only in the token's Space (`project`
+   defaults to it; another one is refused) on the token's device (a `device` argument naming
+   another is refused), with `cwd` absolute, `..`-free, and inside the Space folder or the
+   caller's cwd, a sandbox never wider than the caller's (`chat.config.sandbox`, default
+   `workspace-write`; an omitted sandbox is capped at the caller's, a wider explicit one is
+   refused), and `autoApprove` always false. `send_message`, `interrupt_chat`,
+   `respond_to_input`, `wait_for_turn`, and `archive_chat` reach only Chats whose
+   `parentChatId` is the caller (Zeron-created children; only `createChat` with a parent
+   writes that field); `get_chat` and `read_chat` also the caller itself; `list_chats` lists
+   only the caller and its children (its `parent` filter resolves within that set);
+   `list_projects` / `list_devices` list only the token's Space / device. Chat keys resolve
+   within the reachable set, so a foreign Chat is neither targeted nor revealed by an
+   ambiguity error. Unscoped, because they reach no Chat or Space: `whoami`,
+   `list_harnesses`, `list_models`. Nothing is excluded from the injected surface.
+   Token-less (terminal) behavior is unchanged. Residual risk 8 still holds: these checks
+   live in the MCP server, and the loopback IPC methods stay unauthenticated.
+2. **`create_chat` replay with other inputs** is `work-outline/operationConflict`. The MCP
+   hashes the resolved inputs (Space, device, config, parent, title, branch, cwd, prompt;
+   not `wait` / `timeout_secs`) and calls the engine-internal agent tool
+   `chat_claim_child {idempotencyKey, inputsHash}`, which binds the key's operation id to the
+   hash in the durable processed-command ledger (`agent-child-chat:op:{op}` /
+   `agent-child-chat:in:{hash}:{op}`, marked immediately, inputs key first, serialized by a
+   mutex). A Chat created before claims existed adopts the hash of its first claim.
+3. **Child first Turn rebuilt engine-side.** `chat_queue_child_turn` now takes
+   `{chatId, idempotencyKey, prompt, attachments?}` (≤ 16 absolute paths) and builds the
+   `RunRequest` from the child Chat's stored config and row (harness, model, reasoning,
+   options, sandbox, approval mode, cwd = Chat cwd else Space path; no worktree, no
+   instructions; the host still overwrites a bound Chat's cwd and resolves instructions).
+   Unknown caller fields (`command`, `sandbox`, …) are ignored.
+4. **Dedupe-group resolve for agents** (amends registry discovery 3). An agent's
+   `resolveUserActionRequest` resolves only the open group members whose origin Chat is the
+   agent's; another Chat's duplicate stays open (and becomes canonical). A user's resolve
+   keeps whole-group behavior.
+5. **Agent self-association narrowed** (amends registry discovery 10). An agent may
+   associate its Chat with any item of its Space only while the Chat has no live
+   assignment; once associated, only with an item in its assigned item's subtree. A Chat
+   with a live `chatExecutionBindings` row may not be re-associated (re-associating with
+   its current item is a no-op and allowed).
+6. **Agent authentication cost.** `AgentAuthenticate` / `AgentToolCall` authenticate by
+   token lookup plus the Chat row's Space and never materialize the outline. The Chat's item
+   comes from `chat_assigned_work_item` (the policy's lookup), the proposal "parent" target
+   from the repaired tree (`effective_work_item_parent`); only `work_outline_read_current`
+   builds a snapshot, once (`WorkOutlineService::agent_context_in`). The MCP no longer
+   calls `AgentAuthenticate` before a Work Outline tool (the tool call authenticates).
+7. **Watch cost.** `RegistryDoc` records, per row kind, the generation of its last change
+   (local writes, applied `rows`, retired batches; a hello `state` frame counts for every
+   kind); `work_outline_inputs_generation` covers the outline kinds plus `spaces`, `chats`,
+   `sessions`. `WatchWorkOutline` skips the recompute while that marker and `synced` are
+   unchanged (device rows, pins, seen markers, PR links, … no longer recompute every
+   watched Space), and reads inputs inside `spawn_blocking` with the marker taken under the
+   same lock (a marker never claims newer state than its inputs). Chat and session rows
+   still trigger recomputes (unsure ⇒ recompute).
+8. **Injected server name** is `zeron-agent` (Claude tools `mcp__zeron-agent__<tool>`,
+   Codex `mcp_servers.zeron-agent.*`), so a user-defined `zeron` server never collides.
+9. **Config files.** The agent-tools directory (profile `agent-tools/` or the temp-dir
+   fallback `zeron-agent-tools-<pid>`) is created `0700` and verified: a symlink, a
+   non-directory, or another user's directory is refused; one of ours that is too open is
+   tightened. Each Run's `mcp.json` (`0600`) lives in its own random `run-*` `0700`
+   directory, removed with the file. The token stays in the file's `env` and the server
+   env, never argv.
+10. **Token expiry and port** (amends agent tool discovery 1–2). Engine-minted tokens carry
+    a 24 h absolute expiry (`DEFAULT_TOKEN_TTL`), renewed on every Run-driver heartbeat
+    (`AgentTokenLease::renew`); a lapsed token is never revived. `AgentToolsLaunch.ipc_port`
+    is `Option`: `None` (the default) dials the port `serve_ipc` actually bound
+    (`note_bound_ipc_port`, process-global, latest bind wins); with no bound port nothing is
+    injected. `ZERON_IPC_PORT` no longer decides the injected port.
+11. **Restore is seeding** (amends UI discovery 6). The notifier records every unresolved
+    request it sees as reported, including those on archived or deleted items, so restoring
+    an item with old open requests does not alert.
+12. **Tests.** MCP: agent allow / deny matrix (alpha / self / child × seven chat tools),
+    list scoping, create_chat Space / device / cwd / sandbox bounds, replay conflict (stub and
+    real engine). Engine: child first Turn ignores smuggled settings; token renew / lapse;
+    bound-port injection; watch never misses outline writes interleaved with device renames.
+    Doc: per-kind generations; agent dedupe resolve; associate subtree / unassociated / bound
+    matrix. Harness: per-Run directories, symlink / foreign-owner refusal, fallback path. UI:
+    restore stays quiet, a new request after zero still fires.
