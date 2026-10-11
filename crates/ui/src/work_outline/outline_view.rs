@@ -1130,12 +1130,37 @@ impl OutlineView {
         };
         let actions = self.state.read(cx).work_outline_actions();
         let operation_id = picker.operation_id.clone();
-        let task = match picker.purpose.clone() {
+        let place_first = picker.place_first;
+        let purpose = picker.purpose.clone();
+        // A move: the moved row is followed (and its new parent expanded).
+        let moved = match &purpose {
+            PickerPurpose::Move { item_id } => self
+                .snapshot_with_item(item_id)
+                .map(|snapshot| snapshot.space_id.clone())
+                .map(|space| {
+                    (
+                        row_key::item(&space, item_id),
+                        entry
+                            .value
+                            .as_deref()
+                            .map(|parent| row_key::item(&space, parent)),
+                    )
+                }),
+            _ => None,
+        };
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let task = match purpose {
             PickerPurpose::Move { item_id } => {
                 actions.move_work_item(zeron_proto::MoveWorkItemParams {
                     work_item_id: item_id,
                     destination_parent_work_item_id: entry.value.clone(),
-                    placement: WorkOutlinePlacement::Last,
+                    placement: if place_first {
+                        WorkOutlinePlacement::First
+                    } else {
+                        WorkOutlinePlacement::Last
+                    },
                     operation_id,
                 })
             }
@@ -1166,7 +1191,16 @@ impl OutlineView {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| match result {
-                Ok(_) => this.close_picker(window, cx),
+                Ok(_) => {
+                    if let Some((key, parent)) = moved {
+                        if let Some(parent) = parent {
+                            this.set_collapsed(&parent, false, cx);
+                        }
+                        this.selected = Some(key.clone());
+                        this.follow = Some(key);
+                    }
+                    this.close_picker(window, cx)
+                }
                 Err(error) => {
                     if let Some(picker) = this.picker.as_mut() {
                         picker.submitting = false;
@@ -1370,6 +1404,20 @@ impl OutlineView {
         .detach();
     }
 
+    /// Move picker: put the item at the top (`true`) or bottom of the
+    /// chosen parent. A changed request gets a fresh operation id.
+    pub(crate) fn set_picker_place_first(&mut self, first: bool, cx: &mut Context<Self>) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        if picker.submitting || picker.place_first == first {
+            return;
+        }
+        picker.place_first = first;
+        picker.operation_id = new_operation_id();
+        cx.notify();
+    }
+
     fn picker_key(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -1380,9 +1428,12 @@ impl OutlineView {
             return;
         };
         let last = picker.entries.len().saturating_sub(1);
+        let is_move = matches!(picker.purpose, PickerPurpose::Move { .. });
         match event.keystroke.key.as_str() {
             "down" => picker.active = (picker.active + 1).min(last),
             "up" => picker.active = picker.active.saturating_sub(1),
+            "left" if is_move => self.set_picker_place_first(true, cx),
+            "right" if is_move => self.set_picker_place_first(false, cx),
             "enter" => {
                 let ix = picker.active;
                 self.choose_picker_entry(ix, window, cx);
@@ -1857,6 +1908,47 @@ impl OutlineView {
 
     fn render_picker(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let picker = self.picker.as_ref()?;
+        // Move only: where under the chosen parent ("Top" / "Bottom"; Left /
+        // Right switch it from the keyboard).
+        let placement = matches!(picker.purpose, PickerPurpose::Move { .. }).then(|| {
+            let chip = |label: &'static str, first: bool, cx: &mut Context<Self>| {
+                let active = picker.place_first == first;
+                let selector = format!("outline-picker-place-{}", label.to_lowercase());
+                div()
+                    .id(SharedString::from(selector.clone()))
+                    .debug_selector(move || selector.clone())
+                    .px(px(6.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .when(active, |el| {
+                        el.bg(theme.element_active).text_color(theme.text)
+                    })
+                    .when(!active, |el| el.hover(|el| el.bg(theme.element_hover)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_picker_place_first(first, cx);
+                    }))
+            };
+            div()
+                .id("outline-picker-placement")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child("Place at")
+                .child(chip("Top", true, cx))
+                .child(chip("Bottom", false, cx))
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        TextTooltip(
+                            "Where the item goes among the new parent\u{2019}s children \
+                             (\u{2190} / \u{2192})"
+                                .into(),
+                        )
+                    })
+                    .into()
+                })
+        });
         let rows = picker.entries.iter().enumerate().map(|(ix, entry)| {
             let active = ix == picker.active;
             div()
@@ -1911,7 +2003,14 @@ impl OutlineView {
                         .pb(px(4.0))
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(picker.title.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(picker.title.clone())),
+                        )
+                        .children(placement)
                         .child(
                             div()
                                 .id("outline-picker-cancel")

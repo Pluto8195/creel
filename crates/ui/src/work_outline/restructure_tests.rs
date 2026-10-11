@@ -410,3 +410,78 @@ fn palette_commands_restructure_the_selected_item(cx: &mut gpui::TestAppContext)
         Some("Select a work item first".to_owned())
     );
 }
+
+/// The move picker places at the bottom by default; "Top" (or Left) puts
+/// the item first under the chosen parent.
+#[gpui::test]
+fn move_picker_places_at_top_or_bottom(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (overview, outline, calls, vcx) =
+        restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    let open = |vcx: &mut gpui::VisualTestContext| {
+        select_item(&outline, vcx, HOUSEKEEPING);
+        outline.update_in(vcx, |outline, window, cx| {
+            outline.open_move_picker(window, cx).unwrap()
+        });
+        draw(vcx);
+    };
+    // Entry 1 is Launch v2 (entry 0 is the top level).
+    let choose_launch = |vcx: &mut gpui::VisualTestContext| {
+        outline.update_in(vcx, |outline, window, cx| {
+            outline.choose_picker_entry(1, window, cx)
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+    };
+
+    open(vcx);
+    choose_launch(vcx);
+    assert_eq!(
+        move_at(&calls, 0),
+        (
+            serde_json::json!(LAUNCH),
+            placement("last", None),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    open(vcx);
+    let top = row_bounds(vcx, "outline-picker-place-top".into())
+        .expect("placement chips render for a move")
+        .center();
+    vcx.simulate_click(top, gpui::Modifiers::default());
+    choose_launch(vcx);
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("first", None),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    {
+        let calls = calls.lock().unwrap();
+        assert_ne!(calls[0]["operationId"], calls[1]["operationId"]);
+    }
+    refresh(&overview, vcx, fixture("s1"));
+
+    // Keyboard: Left = Top, Right = Bottom.
+    open(vcx);
+    press(vcx, "left");
+    press(vcx, "right");
+    press(vcx, "left");
+    choose_launch(vcx);
+    assert_eq!(move_at(&calls, 2).1, placement("first", None));
+
+    // The associate picker has no placement.
+    outline.update(vcx, |outline, cx| {
+        outline.select(&row_key::chat(CHAT_LOOSE_A), cx)
+    });
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.open_associate_picker(None, window, cx).unwrap()
+    });
+    draw(vcx);
+    assert!(row_bounds(vcx, "outline-picker-place-top".into()).is_none());
+}
