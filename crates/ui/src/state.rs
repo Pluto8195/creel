@@ -710,6 +710,10 @@ pub struct AppState {
     /// agent was busy, in the order it will be sent. Device-agnostic: the
     /// chat's doc holds them (every device sees the same queue).
     pub queue: Vec<zeron_doc::QueuedMessage>,
+    /// The selected chat's sends the host refused with a typed Work Outline
+    /// instruction-delivery outcome that still need the user (`WatchQueue`
+    /// `rejectedSends`): a context reset waiting on confirmation.
+    pub rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
     pub context_usage: Option<zeron_proto::ContextUsage>,
     /// The selected chat has a transcript from a `WatchDocMessages` reset
     /// (including a retained reset from an earlier visit). An
@@ -821,6 +825,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             queue: Vec::new(),
+            rejected_sends: Vec::new(),
             context_usage: None,
             transcript_replayed: false,
             transcript_baselines: HashMap::new(),
@@ -986,6 +991,7 @@ impl AppState {
             self.transcript_replayed = false;
             self.transcript_task = None;
             self.queue.clear();
+            self.rejected_sends.clear();
             self.queue_task = None;
         }
     }
@@ -1479,6 +1485,23 @@ impl AppState {
                 self.transcript_revision = self.transcript_revision.wrapping_add(1);
             }
         }
+    }
+
+    /// One `WatchQueue` frame for the selected chat. A refused send's message
+    /// never lands, so its optimistic echo and Working overlay drop here
+    /// (the composer offers the confirmation instead).
+    pub(crate) fn apply_queue_frame(
+        &mut self,
+        chat_id: &str,
+        items: Vec<zeron_doc::QueuedMessage>,
+        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
+    ) {
+        self.queue = items;
+        for rejected in &rejected_sends {
+            self.remove_echo(chat_id, &rejected.message_id);
+            self.end_pending_send(chat_id, &rejected.message_id);
+        }
+        self.rejected_sends = rejected_sends;
     }
 
     /// Composer send fired: overlay the chat as Working until the host writes
@@ -2391,6 +2414,7 @@ impl AppState {
         }
         self.transcript_task = None;
         self.queue.clear();
+        self.rejected_sends.clear();
         self.queue_task = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its project (or the lack of one); `select_chat(None)`
@@ -2985,6 +3009,9 @@ fn spawn_queue_watch(
     struct QueueFrame {
         #[serde(default)]
         items: Vec<zeron_doc::QueuedMessage>,
+        /// Additive: older hosts omit it.
+        #[serde(default, rename = "rejectedSends")]
+        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
     }
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -3016,7 +3043,7 @@ fn spawn_queue_watch(
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                        state.queue = frame.items;
+                        state.apply_queue_frame(&chat_id, frame.items, frame.rejected_sends);
                         cx.notify();
                     }
                 });

@@ -32,6 +32,8 @@ use zeron_proto::{
 use zeron_rpc::{RpcError, methods};
 
 use crate::appshots::{self, CapturedAppshot};
+
+mod instruction_reset;
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::notice::{NoticeChipIcon, notice_chip};
@@ -4218,6 +4220,8 @@ pub struct Composer {
     /// under their own chat — a blanket clear-on-switch erased the one
     /// visible trace of a failed send (2026-08-19).
     failure_key: Option<String>,
+    /// Work Outline instruction refusals (context reset confirmation).
+    instruction_reset: instruction_reset::InstructionResetState,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
     /// Requests already answered locally (suppresses the panel until the doc
@@ -4473,6 +4477,7 @@ impl Composer {
             wizard_focus: cx.focus_handle(),
             answered_requests: HashSet::new(),
             failure_key: None,
+            instruction_reset: Default::default(),
             action_task: None,
             advance_task: None,
             send_task: None,
@@ -6517,6 +6522,7 @@ impl Composer {
         let text = crate::comments::with_comments(&text, &comments);
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
+        self.instruction_reset.remember_send(&message_id, &typed);
         let created_at = chrono::Utc::now().timestamp_millis();
         // Existing busy chats always queue; compatibility was checked before
         // taking the draft, attachments, or review comments.
@@ -7932,6 +7938,7 @@ impl Render for Composer {
                 (text, offline)
             })
         };
+        let context_reset = self.render_context_reset_prompt(&theme, cx);
         // Centered composer column (zeron `mx-auto w-full max-w-3xl`).
         let container = div()
             .w_full()
@@ -7966,6 +7973,7 @@ impl Render for Composer {
                     })),
                 )
             })
+            .children(context_reset)
             .when_some(queue_notice, |el, (notice, offline)| {
                 // Not a warning box (v0.2.12 feedback: the amber Notice read
                 // as an error and flashed on every blip — pre-grace). One
