@@ -1404,6 +1404,140 @@ impl OutlineView {
         .detach();
     }
 
+    // ----------------------------------------------------------------------
+    // Drag and drop
+    // ----------------------------------------------------------------------
+
+    /// The drag payload of `row`, or `None` when the row cannot be dragged:
+    /// archived work items, Chats without a project or whose row is gone.
+    fn drag_payload(row: &OutlineRow) -> Option<OutlineDrag> {
+        match &row.kind {
+            OutlineRowKind::Item(item) if !item.archived => Some(OutlineDrag::Item {
+                space_id: item.space_id.clone(),
+                item_id: item.item_id.clone(),
+                title: item.title.clone(),
+            }),
+            OutlineRowKind::Chat(chat) if !chat.dangling => {
+                chat.chat
+                    .space_id
+                    .clone()
+                    .map(|space_id| OutlineDrag::Chat {
+                        chat_id: chat.chat.id.clone(),
+                        space_id,
+                        title: chat.chat.title.clone(),
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    /// What dropping `drag` on work item `target_id` of `space_id` in `zone`
+    /// sends, or `None` when the drop is refused (self / descendant targets,
+    /// archived items, another Space, a move that changes nothing, a Chat
+    /// already in that item, or a restructuring still landing).
+    fn drop_mutation(
+        &self,
+        drag: &OutlineDrag,
+        space_id: &str,
+        target_id: &str,
+        zone: DropZone,
+    ) -> Option<DirectMutation> {
+        if self.is_editing() || self.restructuring_busy() {
+            return None;
+        }
+        let snapshot = self.snapshot(space_id)?;
+        match drag {
+            OutlineDrag::Item {
+                space_id: from,
+                item_id,
+                ..
+            } => {
+                if from != space_id {
+                    return None;
+                }
+                restructure::drop_plan(snapshot, item_id, target_id, zone).map(DirectMutation::Move)
+            }
+            OutlineDrag::Chat {
+                chat_id,
+                space_id: from,
+                ..
+            } => {
+                let target = snapshot
+                    .item(target_id)
+                    .filter(|item| item.archived_at.is_none())?;
+                if from != space_id || target.chat_ids.iter().any(|id| id == chat_id) {
+                    return None;
+                }
+                Some(DirectMutation::AssignChat {
+                    chat_id: chat_id.clone(),
+                    work_item_id: target_id.to_string(),
+                })
+            }
+        }
+    }
+
+    /// The drop indicator of an in-progress drag (tests).
+    pub(crate) fn drop_hint(&self) -> Option<&DropHint> {
+        self.drop_hint.as_ref()
+    }
+
+    /// The pointer moved during a drag; `bounds` are those of work item row
+    /// `key`. Shows the indicator for an accepted drop on that row, none for
+    /// a refused one, and clears it when the pointer leaves the row.
+    fn drag_over_item(
+        &mut self,
+        key: &str,
+        target: (&str, &str),
+        drag: &OutlineDrag,
+        position: gpui::Point<gpui::Pixels>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = if bounds.contains(&position) {
+            let zone = match drag {
+                // A Chat goes into the item wherever it lands on the row.
+                OutlineDrag::Chat { .. } => DropZone::Into,
+                OutlineDrag::Item { .. } => restructure::drop_zone(
+                    f32::from(position.y - bounds.top()),
+                    f32::from(bounds.size.height),
+                ),
+            };
+            self.drop_mutation(drag, target.0, target.1, zone)
+                .map(|_| DropHint {
+                    key: key.to_string(),
+                    zone,
+                })
+        } else if self.drop_hint.as_ref().is_some_and(|hint| hint.key != key) {
+            // Another row owns the indicator.
+            return;
+        } else {
+            None
+        };
+        if self.drop_hint != hint {
+            self.drop_hint = hint;
+            cx.notify();
+        }
+    }
+
+    /// `drag` was released over work item row `key`: send what its
+    /// indicator showed (nothing when it showed none).
+    fn drop_on_item(
+        &mut self,
+        key: &str,
+        target: (&str, &str),
+        drag: &OutlineDrag,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = self.drop_hint.take();
+        cx.notify();
+        let Some(hint) = hint.filter(|hint| hint.key == key) else {
+            return;
+        };
+        if let Some(mutation) = self.drop_mutation(drag, target.0, target.1, hint.zone) {
+            self.submit_direct(target.0.to_string(), mutation, cx);
+        }
+    }
+
     /// Move picker: put the item at the top (`true`) or bottom of the
     /// chosen parent. A changed request gets a fresh operation id.
     pub(crate) fn set_picker_place_first(&mut self, first: bool, cx: &mut Context<Self>) {
@@ -1809,6 +1943,40 @@ impl OutlineView {
             || row
                 .chat()
                 .is_some_and(|chat| chat.chat.archived || chat.dangling);
+        // Drag and drop: rows drag while nothing is being edited; live work
+        // items are the drop targets. The indicator is static (no motion).
+        let drag = (!renaming && self.editing.is_none())
+            .then(|| Self::drag_payload(row))
+            .flatten();
+        let drop_target = row
+            .item()
+            .filter(|item| !item.archived)
+            .map(|item| (item.space_id.clone(), item.item_id.clone()));
+        let drop_zone = self
+            .drop_hint
+            .as_ref()
+            .filter(|hint| hint.key == key)
+            .map(|hint| hint.zone);
+        let drop_line = drop_zone
+            .filter(|zone| *zone != DropZone::Into)
+            .map(|zone| {
+                let edge = if zone == DropZone::Before {
+                    "before"
+                } else {
+                    "after"
+                };
+                let selector = format!("outline-drop-{edge}-{key}");
+                div()
+                    .debug_selector(move || selector.clone())
+                    .absolute()
+                    .left(px(Self::indent(row.depth)))
+                    .right(px(4.0))
+                    .h(px(2.0))
+                    .rounded(px(1.0))
+                    .bg(theme.accent)
+                    .when(zone == DropZone::Before, |el| el.top_0())
+                    .when(zone == DropZone::After, |el| el.bottom_0())
+            });
         div()
             .id(SharedString::from(format!("outline-row-{key}")))
             .debug_selector(move || selector.clone())
@@ -1830,7 +1998,41 @@ impl OutlineView {
                 el.hover(|el| el.bg(theme.element_hover.opacity(0.6)))
             })
             .when(dimmed, |el| el.opacity(0.6))
+            .relative()
+            .when(drop_zone == Some(DropZone::Into), |el| {
+                el.bg(theme.accent_wash).border_color(theme.accent)
+            })
             .cursor_pointer()
+            .when_some(drag, |el, drag| {
+                el.on_drag(drag, |drag, _, _, cx| {
+                    cx.stop_propagation();
+                    let title = SharedString::from(drag.title().to_string());
+                    cx.new(|_| OutlineDragGhost { title })
+                })
+            })
+            .when_some(drop_target, |el, (space_id, item_id)| {
+                let move_key = key.clone();
+                let move_target = (space_id.clone(), item_id.clone());
+                let drop_key = key.clone();
+                el.on_drag_move::<OutlineDrag>(cx.listener(
+                    move |this, event: &gpui::DragMoveEvent<OutlineDrag>, _, cx| {
+                        let drag = event.drag(cx).clone();
+                        this.drag_over_item(
+                            &move_key,
+                            (&move_target.0, &move_target.1),
+                            &drag,
+                            event.event.position,
+                            event.bounds,
+                            cx,
+                        );
+                    },
+                ))
+                .on_drop::<OutlineDrag>(cx.listener(
+                    move |this, drag: &OutlineDrag, _, cx| {
+                        this.drop_on_item(&drop_key, (&space_id, &item_id), drag, cx);
+                    },
+                ))
+            })
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -1851,6 +2053,7 @@ impl OutlineView {
             .child(disclosure)
             .child(body)
             .children(start_chat)
+            .children(drop_line)
             .into_any_element()
     }
 
@@ -2300,6 +2503,10 @@ impl Render for OutlineView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let editing = self.is_editing();
+        // A drag released outside a row (or cancelled) leaves no indicator.
+        if self.drop_hint.is_some() && !cx.has_active_drag() {
+            self.drop_hint = None;
+        }
         let count = self.model.len()
             + usize::from(matches!(
                 self.editing.as_ref().map(|edit| &edit.kind),

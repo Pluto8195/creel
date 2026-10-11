@@ -485,3 +485,234 @@ fn move_picker_places_at_top_or_bottom(cx: &mut gpui::TestAppContext) {
     draw(vcx);
     assert!(row_bounds(vcx, "outline-picker-place-top".into()).is_none());
 }
+
+/// Where on a target row a drag is released.
+#[derive(Clone, Copy)]
+enum Spot {
+    Upper,
+    Middle,
+    Lower,
+}
+
+fn row_selector(key: &str) -> String {
+    format!("outline-row-{key}")
+}
+
+/// Press on row `from`, drag onto row `to` at `spot`, and stop there (the
+/// button is still down). Returns the release point.
+fn drag_over(
+    vcx: &mut gpui::VisualTestContext,
+    from: &str,
+    to: &str,
+    spot: Spot,
+) -> gpui::Point<Pixels> {
+    let start = row_bounds(vcx, row_selector(from))
+        .unwrap_or_else(|| panic!("{from} is shown"))
+        .center();
+    let target = row_bounds(vcx, row_selector(to)).unwrap_or_else(|| panic!("{to} is shown"));
+    let end = match spot {
+        Spot::Upper => gpui::point(target.center().x, target.top() + px(2.0)),
+        Spot::Middle => target.center(),
+        Spot::Lower => gpui::point(target.center().x, target.bottom() - px(2.0)),
+    };
+    let left = Some(gpui::MouseButton::Left);
+    vcx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(
+        start + gpui::point(px(0.0), px(6.0)),
+        left,
+        gpui::Modifiers::default(),
+    );
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    draw(vcx);
+    end
+}
+
+fn release(vcx: &mut gpui::VisualTestContext, at: gpui::Point<Pixels>) {
+    vcx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    draw(vcx);
+}
+
+fn hint(
+    outline: &Entity<OutlineView>,
+    vcx: &mut gpui::VisualTestContext,
+) -> Option<(String, crate::work_outline::restructure::DropZone)> {
+    outline.read_with(vcx, |outline, _| {
+        outline
+            .drop_hint()
+            .map(|hint| (hint.key.clone(), hint.zone))
+    })
+}
+
+/// Dropping a work item on another item's middle makes it the target's last
+/// child; the upper / lower edge band puts it before / after the target
+/// under the target's parent. Each drop is one moveWorkItem, the indicator
+/// shows first, and the selection follows the moved item.
+#[gpui::test]
+fn drag_onto_items_and_edges_sends_moves(cx: &mut gpui::TestAppContext) {
+    use crate::work_outline::restructure::DropZone;
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (overview, outline, calls, vcx) =
+        restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    let item = |id: &str| row_key::item("s1", id);
+
+    // Middle of API: last child of API.
+    let at = drag_over(vcx, &item(HOUSEKEEPING), &item(API), Spot::Middle);
+    assert_eq!(hint(&outline, vcx), Some((item(API), DropZone::Into)));
+    release(vcx, at);
+    assert_eq!(
+        move_at(&calls, 0),
+        (
+            serde_json::json!(API),
+            placement("last", None),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    assert_eq!(hint(&outline, vcx), None, "the indicator goes on release");
+    assert_eq!(selected(&outline, vcx), Some(item(HOUSEKEEPING)));
+    refresh(&overview, vcx, fixture("s1"));
+
+    // Upper band of UI: before UI, under Launch v2.
+    let at = drag_over(vcx, &item(HOUSEKEEPING), &item(UI), Spot::Upper);
+    assert_eq!(hint(&outline, vcx), Some((item(UI), DropZone::Before)));
+    assert!(row_bounds(vcx, format!("outline-drop-before-{}", item(UI))).is_some());
+    release(vcx, at);
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("before", Some(UI)),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    // Lower band of API: after API, under Launch v2.
+    let at = drag_over(vcx, &item(HOUSEKEEPING), &item(API), Spot::Lower);
+    assert!(row_bounds(vcx, format!("outline-drop-after-{}", item(API))).is_some());
+    release(vcx, at);
+    assert_eq!(
+        move_at(&calls, 2),
+        (
+            serde_json::json!(LAUNCH),
+            placement("after", Some(API)),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    // Only moves: nothing else (Canvas positions included) is written.
+    assert_eq!(ops(&calls), ["moveWorkItem"; 3]);
+}
+
+/// A work item cannot be dropped on itself or its descendants: no
+/// indicator, and releasing there sends nothing.
+#[gpui::test]
+fn drag_onto_self_or_descendant_is_refused(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let item = |id: &str| row_key::item("s1", id);
+    for (target, spot) in [
+        (API_AUTH, Spot::Middle),
+        (API, Spot::Upper),
+        (UI, Spot::Lower),
+        (LAUNCH, Spot::Middle),
+    ] {
+        let at = drag_over(vcx, &item(LAUNCH), &item(target), spot);
+        assert_eq!(hint(&outline, vcx), None, "{target} is refused");
+        assert!(row_bounds(vcx, format!("outline-drop-before-{}", item(target))).is_none());
+        assert!(row_bounds(vcx, format!("outline-drop-after-{}", item(target))).is_none());
+        release(vcx, at);
+    }
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+/// Dragging a Chat row onto a work item associates it (the same
+/// assignChatToWorkItem the picker sends); its current item is refused.
+#[gpui::test]
+fn dragging_a_chat_onto_an_item_associates_it(cx: &mut gpui::TestAppContext) {
+    use crate::work_outline::restructure::DropZone;
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let item = |id: &str| row_key::item("s1", id);
+
+    // Its own item: nothing to do.
+    let at = drag_over(vcx, &row_key::chat(CHAT_UI), &item(UI), Spot::Middle);
+    assert_eq!(hint(&outline, vcx), None);
+    release(vcx, at);
+    assert!(calls.lock().unwrap().is_empty());
+
+    // Any spot on another item's row means "into".
+    let at = drag_over(
+        vcx,
+        &row_key::chat(CHAT_UI),
+        &item(HOUSEKEEPING),
+        Spot::Upper,
+    );
+    assert_eq!(
+        hint(&outline, vcx),
+        Some((item(HOUSEKEEPING), DropZone::Into))
+    );
+    release(vcx, at);
+    let call = calls.lock().unwrap()[0].clone();
+    assert_eq!(call["op"], "assignChatToWorkItem", "{call}");
+    assert_eq!(call["chatId"], CHAT_UI);
+    assert_eq!(call["workItemId"], HOUSEKEEPING);
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+}
+
+/// A drop that changes an assigned Chat's effective instructions goes
+/// through the drift confirmation; a same-parent reorder does not.
+#[gpui::test]
+fn drops_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    let item = |id: &str| row_key::item("s1", id);
+
+    // API before Launch v2 (top level) loses Launch's instruction.
+    let at = drag_over(vcx, &item(API), &item(LAUNCH), Spot::Upper);
+    release(vcx, at);
+    let request = outline
+        .update(vcx, |outline, _| outline.captured_drift.take())
+        .expect("asks");
+    assert!(calls.lock().unwrap().is_empty());
+    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+    vcx.run_until_parked();
+    assert_eq!(
+        move_at(&calls, 0),
+        (
+            serde_json::Value::Null,
+            placement("before", Some(LAUNCH)),
+            API.to_owned()
+        )
+    );
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+
+    // UI before API: same parent, no question.
+    let at = drag_over(vcx, &item(UI), &item(API), Spot::Upper);
+    release(vcx, at);
+    assert!(outline.read_with(vcx, |outline, _| outline.captured_drift.is_none()));
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("before", Some(API)),
+            UI.to_owned()
+        )
+    );
+}
