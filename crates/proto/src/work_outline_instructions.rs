@@ -592,6 +592,24 @@ pub struct InstructionRevisionApplicationView {
     pub created_at: i64,
 }
 
+/// Whether the Chat's selected revision can be delivered as selected
+/// (Milestone 2 registry addition). The selection is never substituted: a
+/// missing or corrupt selected revision is reported here and delivery fails
+/// closed. Lenient: unknown reads as `corrupt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectedRevisionIntegrity {
+    /// The revision row is present, in the Chat's Space, and verifies.
+    Ok,
+    /// The revision row has not synced to this replica (yet).
+    Missing,
+    /// The revision row fails its integrity check or belongs to another
+    /// Space. Declared last because `#[serde(other)]` must sit on the last
+    /// variant.
+    #[serde(other)]
+    Corrupt,
+}
+
 /// Per-Chat instruction state in the snapshot: what is selected, whether the
 /// item's current effective instructions drifted from it, and what the host
 /// reports as actually delivered (never inferred from the selection).
@@ -603,6 +621,9 @@ pub struct ChatInstructionState {
     pub selected_revision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_revision_hash: Option<String>,
+    /// Integrity of the selected revision (present iff a selection exists).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_revision_integrity: Option<SelectedRevisionIntegrity>,
     /// [`canonical_revision_hash`] of the assigned item's current effective
     /// entries (absent when the Chat has no live assigned item).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -961,9 +982,11 @@ pub fn build_revision_body(
         .count();
     if units > limits::MAX_REVISION_BODY_UTF16_UNITS {
         return Err(limit_exceeded(format!(
-            "These instructions are too large to save as one revision ({units} of {} units after \
-             encoding). Shorten or archive instructions",
-            limits::MAX_REVISION_BODY_UTF16_UNITS
+            "Instructions exceed the revision size limit ({units} of {} units after encoding; each \
+             instruction adds about 200 units of overhead beyond its text, so this limit can be \
+             reached below {} characters). Shorten, combine, or archive instructions",
+            limits::MAX_REVISION_BODY_UTF16_UNITS,
+            limits::MAX_EFFECTIVE_INSTRUCTION_CHARS
         )));
     }
     Ok(body)

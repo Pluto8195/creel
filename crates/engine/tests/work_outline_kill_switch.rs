@@ -44,6 +44,21 @@ async fn kill_switch_refuses_writes_and_keeps_reads() {
     let at = err.find("work-outline/").expect("wire-encoded error");
     let parsed = WorkOutlineError::from_wire_message(&err[at..]).unwrap();
     assert_eq!(parsed.code, WorkOutlineErrorCode::WritesDisabled);
+    // Instruction operations are covered by the same switch.
+    let err = client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({
+                "op": "createWorkItemInstruction", "spaceId": "space-1",
+                "scope": { "type": "spaceRoot" }, "text": "No", "operationId": "op-2",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    let at = err.find("work-outline/").expect("wire-encoded error");
+    let parsed = WorkOutlineError::from_wire_message(&err[at..]).unwrap();
+    assert_eq!(parsed.code, WorkOutlineErrorCode::WritesDisabled);
 
     let mut stream = client
         .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))

@@ -1,5 +1,6 @@
 //! Pure Work Outline materialization (registry audit section 8, steps 0-6, 8,
-//! 10 for the Milestone 1 kinds). No I/O and no lock: the engine clones the
+//! 10 for the Milestone 1 kinds; steps 7 and 9 for instructions, revisions,
+//! and applications in Milestone 2). No I/O and no lock: the engine clones the
 //! inputs under the registry lock and materializes after releasing it.
 //!
 //! Output is fully deterministic (every list sorted, no hash-map iteration
@@ -12,7 +13,7 @@
 //! descendants still are). `associated_chat_count` is the item's own Chats in
 //! state `associated`. Action-request counts stay 0 until Milestone 4.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::Value;
 use zeron_proto::work_outline::{
@@ -20,9 +21,19 @@ use zeron_proto::work_outline::{
     WorkItemEffectiveStatus, WorkItemExternalReferenceView, WorkItemRollup, WorkItemStatus,
     WorkItemView, WorkOutlineActor, WorkOutlineRepair, WorkOutlineSnapshot,
 };
+use zeron_proto::work_outline_instructions::{
+    ChatInstructionState, ExecutionSessionReport, INSTRUCTION_ENVELOPE_VERSION,
+    InstructionApplicationReason, InstructionApplicationResult, InstructionRevisionApplicationView,
+    InstructionRevisionBody, InstructionRevisionIntegrity, InstructionRevisionView,
+    InstructionTurnBoundary, SelectedRevisionIntegrity, WorkItemInstructionView,
+    canonical_revision_hash, resolve_effective_instructions, verify_revision_body,
+};
 use zeron_proto::work_outline_order::valid_order_key;
 
-use super::{KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES, KIND_WORK_ITEMS};
+use super::{
+    KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES,
+    KIND_WORK_ITEM_INSTRUCTIONS, KIND_WORK_ITEMS,
+};
 use crate::registry::RegistryRow;
 
 /// The slice of a Chat row the outline needs.
@@ -48,6 +59,16 @@ pub struct WorkOutlineInputs {
     pub references: Vec<RegistryRow>,
     /// Live Chats of every Space (dangling detection is by id).
     pub chats: Vec<OutlineChat>,
+    /// Live `workItemInstructions` rows (every Space; the reader filters).
+    pub instructions: Vec<RegistryRow>,
+    /// Live `instructionRevisionApplications` rows of this Space.
+    pub applications: Vec<RegistryRow>,
+    /// Live `instructionRevisions` rows referenced by `applications` or by a
+    /// session row's `executionSession` (not every revision: they are only
+    /// written, never pruned, and each can be ~14 KB).
+    pub revisions: Vec<RegistryRow>,
+    /// Live session-status rows that carry an `executionSession` report.
+    pub sessions: Vec<RegistryRow>,
 }
 
 // ── lenient row decoding ────────────────────────────────────────────────────
@@ -374,6 +395,227 @@ impl OutlineTree {
     }
 }
 
+// ── instruction rows (Milestone 2) ──────────────────────────────────────────
+
+/// One `workItemInstructions` row, decoded leniently (R7): only an
+/// undecidable `spaceId` drops the row.
+pub(crate) fn decode_instruction(
+    row: &RegistryRow,
+) -> Result<WorkItemInstructionView, WorkOutlineRepair> {
+    let space_id = space_of(row, KIND_WORK_ITEM_INSTRUCTIONS)?;
+    let archived_at = i64_field(row, "archivedAt");
+    let created_at = i64_field(row, "createdAt").unwrap_or(0);
+    Ok(WorkItemInstructionView {
+        id: row.id.clone(),
+        space_id,
+        work_item_id: str_field(row, "workItemId").filter(|w| !w.is_empty()),
+        text: str_field(row, "text").unwrap_or_default(),
+        order_key: str_field(row, "orderKey").unwrap_or_default(),
+        created_by: actor_field(row, "createdBy"),
+        created_at,
+        updated_at: i64_field(row, "updatedAt").unwrap_or(created_at),
+        source: row
+            .fields
+            .get("source")
+            .filter(|v| v.is_object())
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        source_proposal_id: str_field(row, "sourceProposalId").filter(|s| !s.is_empty()),
+        archived_at,
+        archived_by: archived_at.and_then(|_| actor_field(row, "archivedBy")),
+    })
+}
+
+fn empty_revision_body() -> InstructionRevisionBody {
+    InstructionRevisionBody {
+        entries: Vec::new(),
+        envelope_version: 0,
+        envelope_sha256: String::new(),
+        hash: String::new(),
+    }
+}
+
+/// One `instructionRevisions` row with its integrity verified (registry
+/// audit 7.8: recompute on every read). An undecodable body reads as an
+/// empty, `corrupt` revision (fail closed).
+pub(crate) fn decode_revision(row: &RegistryRow) -> InstructionRevisionView {
+    let body = row
+        .fields
+        .get("body")
+        .filter(|v| v.is_object())
+        .and_then(|v| serde_json::from_value::<InstructionRevisionBody>(v.clone()).ok());
+    let integrity = match &body {
+        Some(body) if verify_revision_body(body).is_ok() => InstructionRevisionIntegrity::Ok,
+        _ => InstructionRevisionIntegrity::Corrupt,
+    };
+    InstructionRevisionView {
+        id: row.id.clone(),
+        space_id: str_field(row, "spaceId").unwrap_or_default(),
+        work_item_id: str_field(row, "workItemId").unwrap_or_default(),
+        body: body.unwrap_or_else(empty_revision_body),
+        created_by: actor_field(row, "createdBy"),
+        created_at: i64_field(row, "createdAt").unwrap_or(0),
+        integrity,
+    }
+}
+
+/// One `instructionRevisionApplications` row plus the revision hash the
+/// writer verified (`revisionHash`, an additive field: it lets the selection
+/// be pinned before the revision row itself has synced).
+#[derive(Debug, Clone)]
+pub(crate) struct DecodedApplication {
+    pub view: InstructionRevisionApplicationView,
+    pub revision_hash: Option<String>,
+}
+
+/// `None` when the row cannot name a Chat and a revision.
+pub(crate) fn decode_application(row: &RegistryRow) -> Option<DecodedApplication> {
+    let chat_id = str_field(row, "chatId").filter(|c| !c.is_empty())?;
+    let revision_id = str_field(row, "revisionId").filter(|r| !r.is_empty())?;
+    let reason = row
+        .fields
+        .get("reason")
+        .and_then(|v| serde_json::from_value::<InstructionApplicationReason>(v.clone()).ok())
+        .unwrap_or_default();
+    let turn_boundary = row
+        .fields
+        .get("turnBoundary")
+        .filter(|v| v.is_object())
+        .and_then(|v| serde_json::from_value::<InstructionTurnBoundary>(v.clone()).ok())
+        .unwrap_or_default();
+    Some(DecodedApplication {
+        view: InstructionRevisionApplicationView {
+            id: row.id.clone(),
+            space_id: str_field(row, "spaceId").unwrap_or_default(),
+            chat_id,
+            work_item_id: str_field(row, "workItemId").unwrap_or_default(),
+            revision_id,
+            session_ref: str_field(row, "sessionRef").filter(|s| !s.is_empty()),
+            turn_boundary,
+            reason,
+            // Only `accepted` is ever written; every stored value reads so.
+            result: InstructionApplicationResult::Accepted,
+            idempotency_key: str_field(row, "idempotencyKey").unwrap_or_default(),
+            applied_hlc: str_field(row, "appliedHlc").unwrap_or_default(),
+            created_by: actor_field(row, "createdBy"),
+            created_at: i64_field(row, "createdAt").unwrap_or(0),
+        },
+        revision_hash: str_field(row, "revisionHash").filter(|h| !h.is_empty()),
+    })
+}
+
+/// What a reader knows about the selected application's revision.
+pub(crate) enum RevisionCheck {
+    /// Present, in the Chat's Space, and integrity-ok: its canonical hash.
+    Valid(String),
+    /// Present but corrupt or in another Space: its stored (unverified) hash.
+    Corrupt(String),
+    /// Not synced (yet) to this replica.
+    Missing,
+}
+
+/// The newest accepted application of a Chat by `(appliedHlc, id)`.
+pub(crate) fn newest_application<'a>(
+    applications: impl IntoIterator<Item = &'a DecodedApplication>,
+) -> Option<&'a DecodedApplication> {
+    applications
+        .into_iter()
+        .max_by(|a, b| (&a.view.applied_hlc, &a.view.id).cmp(&(&b.view.applied_hlc, &b.view.id)))
+}
+
+/// The Chat's selected revision (contract 5.6): the newest accepted
+/// application by `(appliedHlc, id)`, never substituted (contract 5.3). Its
+/// revision's state is reported instead: `ok`, `missing` (not synced yet),
+/// or `corrupt` (fails integrity or belongs to another Space). The pinned
+/// hash is the verified revision hash when `ok`, otherwise the hash the
+/// application recorded when it was written (falling back to the stored
+/// one), so delivery of a missing or corrupt revision fails closed on the
+/// integrity check. Returns the application, its integrity, and the hash.
+pub(crate) fn select_application<'a>(
+    applications: impl IntoIterator<Item = &'a DecodedApplication>,
+    check: impl FnOnce(&str) -> RevisionCheck,
+) -> Option<(&'a DecodedApplication, SelectedRevisionIntegrity, String)> {
+    let application = newest_application(applications)?;
+    let recorded = application.revision_hash.clone();
+    let (integrity, hash) = match check(&application.view.revision_id) {
+        RevisionCheck::Valid(hash) => (SelectedRevisionIntegrity::Ok, hash),
+        RevisionCheck::Missing => (
+            SelectedRevisionIntegrity::Missing,
+            recorded.unwrap_or_default(),
+        ),
+        RevisionCheck::Corrupt(stored) => (
+            SelectedRevisionIntegrity::Corrupt,
+            recorded.unwrap_or(stored),
+        ),
+    };
+    Some((application, integrity, hash))
+}
+
+/// The fields of a materialized item the instruction resolver reads
+/// (effective parent, title, inheritance flag), identical to the snapshot's
+/// views so a revision written now hashes like the snapshot's current
+/// effective hash.
+pub(crate) fn resolver_views(tree: &OutlineTree) -> Vec<WorkItemView> {
+    tree.items
+        .values()
+        .map(|item| {
+            bare_view(
+                &item.id,
+                &item.space_id,
+                tree.parent.get(&item.id).cloned().flatten(),
+                item.title.clone().unwrap_or_else(|| "Untitled".into()),
+                item.inherit_parent_instructions,
+            )
+        })
+        .collect()
+}
+
+/// A view carrying only what the resolver reads.
+pub(crate) fn bare_view(
+    id: &str,
+    space_id: &str,
+    parent_work_item_id: Option<String>,
+    title: String,
+    inherit_parent_instructions: bool,
+) -> WorkItemView {
+    WorkItemView {
+        id: id.to_owned(),
+        space_id: space_id.to_owned(),
+        parent_work_item_id,
+        raw_parent_work_item_id: None,
+        order_key: String::new(),
+        title,
+        description: None,
+        status: WorkItemStatus::Pending,
+        effective_status: WorkItemEffectiveStatus::Pending,
+        archived_at: None,
+        archived_by: None,
+        archive_cause: None,
+        inherit_parent_instructions,
+        created_by: None,
+        created_at: 0,
+        updated_at: 0,
+        child_ids: Vec::new(),
+        depth: 0,
+        chat_ids: Vec::new(),
+        external_reference_ids: Vec::new(),
+        rollup: WorkItemRollup::default(),
+    }
+}
+
+/// `(canonical hash, entry count)` of `work_item_id`'s current effective
+/// instructions: the hash a revision created now would carry.
+pub(crate) fn effective_hash<'a>(
+    work_item_id: &str,
+    items_by_id: impl Fn(&str) -> Option<&'a WorkItemView>,
+    instructions: &[WorkItemInstructionView],
+) -> (String, usize) {
+    let effective = resolve_effective_instructions(work_item_id, items_by_id, instructions);
+    (
+        canonical_revision_hash(&effective.revision_entries(), INSTRUCTION_ENVELOPE_VERSION),
+        effective.entries.len(),
+    )
+}
+
 // ── the snapshot ────────────────────────────────────────────────────────────
 
 fn status_effective(status: WorkItemStatus) -> WorkItemEffectiveStatus {
@@ -417,6 +659,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
     let mut item_chats: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut item_associated: BTreeMap<&str, u32> = BTreeMap::new();
     let mut associated_chats: BTreeSet<&str> = BTreeSet::new();
+    let mut associated_item: BTreeMap<&str, &str> = BTreeMap::new();
     for row in &inputs.assignments {
         let chat_id = row.id.as_str();
         let chat_space = chats.get(chat_id).copied();
@@ -474,6 +717,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             if state == WorkItemChatAssignmentState::Associated {
                 *item_associated.entry(key.as_str()).or_default() += 1;
                 associated_chats.insert(chat_id);
+                associated_item.insert(chat_id, key.as_str());
             }
         }
         assignments.push(WorkItemChatAssignmentView {
@@ -604,6 +848,15 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         .into_iter()
         .collect();
 
+    let (instructions, chat_instruction_states, revisions) = materialize_instructions(
+        space_id,
+        inputs,
+        &tree,
+        &views,
+        &associated_item,
+        &mut repairs,
+    );
+
     WorkOutlineSnapshot {
         space_id: space_id.into(),
         available: true,
@@ -615,9 +868,194 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         unassociated_chat_ids,
         external_references: references,
         repairs: repairs.into_iter().collect(),
-        // Milestone 2 instruction rows are not materialized yet.
-        instructions: Vec::new(),
-        chat_instruction_states: Vec::new(),
-        revisions: Vec::new(),
+        instructions,
+        chat_instruction_states,
+        revisions,
     }
+}
+
+/// Registry audit section 8 steps 7 and 9 (instructions, revisions,
+/// selected revision per Chat) plus the host-reported delivery.
+///
+/// - Every instruction of this Space is listed (archived flagged); one whose
+///   work item is missing or in another Space also gets `orphanInstruction`
+///   and is never effective (the resolver only follows this Space's items).
+/// - One [`ChatInstructionState`] per Chat of this Space that is associated
+///   or has an application here. `currentEffectiveHash` is the hash of the
+///   associated item's effective instructions; `drift` is "a selection exists
+///   and differs", or "no selection but the item has effective
+///   instructions"; a Chat without an associated item never drifts.
+/// - The selection is the newest application, never substituted; its
+///   revision's state is `selectedRevisionIntegrity`. Only selected and
+///   delivered revisions are verified; a corrupt one gets `corruptRevision`.
+/// - `revisions` lists only the currently selected and delivered revisions
+///   of this Space (flagged when corrupt), so frames do not grow with
+///   launches.
+fn materialize_instructions(
+    space_id: &str,
+    inputs: &WorkOutlineInputs,
+    tree: &OutlineTree,
+    views: &[WorkItemView],
+    associated_item: &BTreeMap<&str, &str>,
+    repairs: &mut BTreeSet<WorkOutlineRepair>,
+) -> (
+    Vec<WorkItemInstructionView>,
+    Vec<ChatInstructionState>,
+    Vec<InstructionRevisionView>,
+) {
+    let mut instructions: Vec<WorkItemInstructionView> = Vec::new();
+    for row in &inputs.instructions {
+        let instruction = match decode_instruction(row) {
+            Ok(instruction) => instruction,
+            Err(repair) => {
+                // Only attributable when its work item lives here.
+                if str_field(row, "workItemId").is_some_and(|w| tree.items.contains_key(&w)) {
+                    repairs.insert(repair);
+                }
+                continue;
+            }
+        };
+        if instruction.space_id != space_id {
+            continue;
+        }
+        if let Some(item) = &instruction.work_item_id
+            && !tree.items.contains_key(item)
+        {
+            repairs.insert(WorkOutlineRepair::OrphanInstruction {
+                instruction_id: instruction.id.clone(),
+                work_item_id: item.clone(),
+            });
+        }
+        instructions.push(instruction);
+    }
+    instructions.sort_by(|a, b| {
+        (&a.work_item_id, &a.order_key, &a.id).cmp(&(&b.work_item_id, &b.order_key, &b.id))
+    });
+
+    let views_by_id: HashMap<&str, &WorkItemView> =
+        views.iter().map(|view| (view.id.as_str(), view)).collect();
+    let mut effective: BTreeMap<&str, (String, usize)> = BTreeMap::new();
+
+    let revision_rows: BTreeMap<&str, &RegistryRow> = inputs
+        .revisions
+        .iter()
+        .map(|row| (row.id.as_str(), row))
+        .collect();
+    let mut decoded: BTreeMap<String, Option<InstructionRevisionView>> = BTreeMap::new();
+    // A revision of another Space is never selected or listed here (and is
+    // that Space's repair to report, not this one's).
+    let mut revision = |id: &str, repairs: &mut BTreeSet<WorkOutlineRepair>| {
+        decoded
+            .entry(id.to_owned())
+            .or_insert_with(|| revision_rows.get(id).map(|row| decode_revision(row)))
+            .clone()
+            .inspect(|view| {
+                if view.space_id == space_id && view.integrity != InstructionRevisionIntegrity::Ok {
+                    repairs.insert(WorkOutlineRepair::CorruptRevision {
+                        revision_id: view.id.clone(),
+                    });
+                }
+            })
+    };
+
+    let applications: Vec<DecodedApplication> = inputs
+        .applications
+        .iter()
+        .filter_map(decode_application)
+        .filter(|a| a.view.space_id == space_id)
+        .collect();
+    let mut by_chat: BTreeMap<&str, Vec<&DecodedApplication>> = BTreeMap::new();
+    for application in &applications {
+        by_chat
+            .entry(application.view.chat_id.as_str())
+            .or_default()
+            .push(application);
+    }
+    let delivered: BTreeMap<&str, ExecutionSessionReport> = inputs
+        .sessions
+        .iter()
+        .filter_map(|row| {
+            let report = row.fields.get("executionSession")?;
+            Some((
+                row.id.as_str(),
+                serde_json::from_value(report.clone()).ok()?,
+            ))
+        })
+        .collect();
+
+    let chats: BTreeSet<&str> = inputs
+        .chats
+        .iter()
+        .filter(|c| c.space_id.as_deref() == Some(space_id))
+        .map(|c| c.id.as_str())
+        .collect();
+    let mut wanted_revisions: BTreeSet<String> = BTreeSet::new();
+    let mut states = Vec::new();
+    for chat_id in chats {
+        let item = associated_item.get(chat_id).copied();
+        let chat_applications = by_chat.remove(chat_id).unwrap_or_default();
+        if item.is_none() && chat_applications.is_empty() {
+            continue;
+        }
+        let current = item.map(|item| {
+            effective
+                .entry(item)
+                .or_insert_with(|| {
+                    effective_hash(item, |id| views_by_id.get(id).copied(), &instructions)
+                })
+                .clone()
+        });
+        let selected = select_application(chat_applications, |revision_id| {
+            match revision(revision_id, repairs) {
+                None => RevisionCheck::Missing,
+                Some(view)
+                    if view.space_id == space_id
+                        && view.integrity == InstructionRevisionIntegrity::Ok =>
+                {
+                    RevisionCheck::Valid(view.body.hash)
+                }
+                Some(view) => RevisionCheck::Corrupt(view.body.hash),
+            }
+        });
+        let (selected_revision_id, selected_revision_integrity, selected_revision_hash) =
+            match selected {
+                Some((application, integrity, hash)) => (
+                    Some(application.view.revision_id.clone()),
+                    Some(integrity),
+                    Some(hash),
+                ),
+                None => (None, None, None),
+            };
+        let drift = match (&selected_revision_hash, &current) {
+            (Some(selected), Some((current, _))) => selected != current,
+            (None, Some((_, count))) => *count > 0,
+            (_, None) => false,
+        };
+        let report = delivered.get(chat_id);
+        let delivered_revision_id = report.and_then(|r| r.revision_id.clone());
+        if let Some(id) = &delivered_revision_id {
+            // Flags a corrupt delivered revision too.
+            let _ = revision(id, repairs);
+            wanted_revisions.insert(id.clone());
+        }
+        if let Some(id) = &selected_revision_id {
+            wanted_revisions.insert(id.clone());
+        }
+        states.push(ChatInstructionState {
+            chat_id: chat_id.to_owned(),
+            selected_revision_id,
+            selected_revision_hash,
+            selected_revision_integrity,
+            current_effective_hash: current.map(|(hash, _)| hash),
+            drift,
+            delivered_revision_id,
+            delivered_revision_hash: report.and_then(|r| r.revision_hash.clone()),
+        });
+    }
+    let revisions = wanted_revisions
+        .iter()
+        .filter_map(|id| revision(id, repairs))
+        .filter(|view| view.space_id == space_id)
+        .collect();
+    (instructions, states, revisions)
 }

@@ -22,6 +22,10 @@
 //! the profile store on this device. It is device-local: the same id replayed
 //! against another device's engine is guarded only by the doc layer's
 //! replay-safe mutators (create-if-absent, compare-before-write).
+//! - `WorkOutlineQuery`: read-only instruction questions answered from the
+//!   local replica (effective instructions over the materialized tree,
+//!   revision lookup with integrity, revision comparison of two intact
+//!   revisions). Not gated by the kill switch.
 //! - `WatchWorkOutline(spaceId)`: driven by the registry change counter
 //!   (WATCH_PREVIEWS pattern): clone inputs under the lock, materialize off
 //!   the async runtime, coalesce bursts, emit only frames whose content
@@ -35,6 +39,9 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use zeron_proto::work_outline::{
     DISABLE_WRITES_ENV, WorkOutlineErrorCode, derive_id, external_reference_id, roles,
+};
+use zeron_proto::work_outline_instructions::{
+    InstructionRevisionIntegrity, compare_instruction_revisions,
 };
 use zeron_proto::{
     WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError, WorkOutlineMutateReply,
@@ -98,15 +105,6 @@ pub fn ledger_inputs_key(inputs_hash: &str, operation_id: &str) -> String {
     format!("{LEDGER_KEY_PREFIX}in:{inputs_hash}:{operation_id}")
 }
 
-/// The answer to instruction operations and queries until the instruction
-/// service ships.
-fn instructions_unsupported() -> WorkOutlineError {
-    WorkOutlineError::new(
-        WorkOutlineErrorCode::Unsupported,
-        "Work Outline instructions are not supported by this version of Zeron yet",
-    )
-}
-
 /// The reply of an already-applied mutation, recomputed without touching the
 /// registry: every id a mutation returns is derived from its inputs.
 fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
@@ -122,6 +120,18 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
                 &p.reference_type,
                 &p.external_id,
             )),
+            ..Default::default()
+        },
+        WorkOutlineMutation::CreateWorkItemInstruction(p) => WorkOutlineMutateReply {
+            instruction_id: Some(derive_id(&p.operation_id, roles::INSTRUCTION)),
+            ..Default::default()
+        },
+        WorkOutlineMutation::CreateInstructionRevision(p) => WorkOutlineMutateReply {
+            revision_id: Some(derive_id(&p.operation_id, roles::REVISION)),
+            ..Default::default()
+        },
+        WorkOutlineMutation::ApplyInstructionRevision(p) => WorkOutlineMutateReply {
+            application_id: Some(derive_id(&p.operation_id, roles::APPLICATION)),
             ..Default::default()
         },
         _ => WorkOutlineMutateReply::default(),
@@ -149,12 +159,6 @@ impl WorkOutlineService {
         &self,
         mutation: &WorkOutlineMutation,
     ) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
-        // Milestone 2 instruction operations: the wire contract exists, the
-        // service does not yet. Refuse before touching the replay ledger so a
-        // later build can apply the same operation id.
-        if mutation.is_instruction_operation() {
-            return Err(instructions_unsupported());
-        }
         if writes_disabled() {
             return Err(WorkOutlineError::new(
                 WorkOutlineErrorCode::WritesDisabled,
@@ -202,13 +206,69 @@ impl WorkOutlineService {
         Ok(reply)
     }
 
-    /// Handle one `WorkOutlineQuery` call. Not served yet (Milestone 2 stage
-    /// 1 ships the wire contract only).
+    /// Handle one `WorkOutlineQuery` call.
+    ///
+    /// - `resolveEffectiveInstructions`: the item's effective instructions
+    ///   over this Space's materialized (repaired) tree; `notFound` for an
+    ///   unknown item or a suppressed Space.
+    /// - `getInstructionRevision`: the revision with its integrity flag (a
+    ///   corrupt revision is returned flagged, not as an error).
+    /// - `compareInstructionRevisions`: both revisions must exist and verify
+    ///   (`revisionIntegrity` otherwise).
     pub fn query(
         &self,
-        _query: &WorkOutlineQueryRequest,
+        query: &WorkOutlineQueryRequest,
     ) -> Result<WorkOutlineQueryResponse, WorkOutlineError> {
-        Err(instructions_unsupported())
+        let not_found = |what: &str| {
+            WorkOutlineError::new(WorkOutlineErrorCode::NotFound, format!("{what} not found"))
+        };
+        let revision = |id: &str| {
+            self.workspace
+                .instruction_revision(id)
+                .ok_or_else(|| not_found("Instruction revision"))
+        };
+        match query {
+            WorkOutlineQueryRequest::ResolveEffectiveInstructions { work_item_id } => {
+                let space_id = self
+                    .workspace
+                    .work_item_space(work_item_id)
+                    .ok_or_else(|| not_found("Work item"))?;
+                let snapshot = self.snapshot(&space_id);
+                if snapshot.item(work_item_id).is_none() {
+                    return Err(not_found("Work item"));
+                }
+                Ok(WorkOutlineQueryResponse::ResolveEffectiveInstructions(
+                    snapshot.effective_instructions(work_item_id),
+                ))
+            }
+            WorkOutlineQueryRequest::GetInstructionRevision { revision_id } => Ok(
+                WorkOutlineQueryResponse::GetInstructionRevision(revision(revision_id)?),
+            ),
+            WorkOutlineQueryRequest::CompareInstructionRevisions {
+                source_revision_id,
+                target_revision_id,
+            } => {
+                let source = revision(source_revision_id)?;
+                let target = revision(target_revision_id)?;
+                for view in [&source, &target] {
+                    if view.integrity != InstructionRevisionIntegrity::Ok {
+                        return Err(WorkOutlineError::new(
+                            WorkOutlineErrorCode::RevisionIntegrity,
+                            format!(
+                                "Instruction revision {} failed its integrity check",
+                                view.id
+                            ),
+                        ));
+                    }
+                }
+                let comparison = compare_instruction_revisions(&source.body, &target.body)?;
+                Ok(WorkOutlineQueryResponse::CompareInstructionRevisions {
+                    source_revision_id: source_revision_id.clone(),
+                    target_revision_id: target_revision_id.clone(),
+                    comparison,
+                })
+            }
+        }
     }
 
     /// The current snapshot of one Space (revision 0).

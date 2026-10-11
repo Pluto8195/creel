@@ -43,8 +43,10 @@ mod sidebar_pins;
 mod sidebar_sections;
 pub mod work_outline;
 pub use work_outline::{
-    KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES, KIND_WORK_ITEMS,
-    OutlineChat, WORK_OUTLINE_KINDS, WorkOutlineInputs, materialize_work_outline,
+    KIND_INSTRUCTION_REVISION_APPLICATIONS, KIND_INSTRUCTION_REVISIONS,
+    KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES,
+    KIND_WORK_ITEM_INSTRUCTIONS, KIND_WORK_ITEMS, OutlineChat, WORK_OUTLINE_KINDS,
+    WorkOutlineInputs, materialize_work_outline,
 };
 
 /// Whether a row exists in the overlay view, and if not, whether it was
