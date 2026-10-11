@@ -144,6 +144,27 @@ pub mod methods {
     /// ExecutionRepositoryIdentity`: topology repo id, root-commit
     /// fingerprint, main path, checkouts). Forwardable.
     pub const DESCRIBE_EXECUTION_REPOSITORY: &str = "DescribeExecutionRepository";
+    /// Start a Chat from a work item as ONE recoverable, idempotent workflow
+    /// (`zeron_proto::CreateChatForWorkItemParams` →
+    /// `zeron_proto::CreateChatForWorkItemReply`): validate the execution
+    /// configuration and harness capability on the Space's owning device,
+    /// create the Chat at the validated execution root, assign it, capture
+    /// its execution binding, create and apply the launch instruction
+    /// revision, and queue the first Turn last (`runWithInstructions`). Ids
+    /// derive from `operationId`; a retry completes missing steps. Forwardable:
+    /// a non-owner forwards to the owner (`work-outline-launch-v1`) and never
+    /// launches locally; an unreachable owner is `deviceOffline`. Errors are
+    /// `work-outline/<code>: …` (`execution-scope:<code>: …` inside the message
+    /// for validation failures).
+    pub const CREATE_CHAT_FOR_WORK_ITEM: &str = "CreateChatForWorkItem";
+    /// Queue the next Turn of a work-item Chat (`zeron_proto::
+    /// ContinueChatForWorkItemParams` → `zeron_proto::
+    /// ContinueChatForWorkItemReply`): message and command ids derive from
+    /// `operationId` (retry-safe); the engine pins the Chat's selected
+    /// revision. The binding is validated now when this device hosts the
+    /// Chat; otherwise the Turn queues durably and the host revalidates at
+    /// drain. Local (not forwardable).
+    pub const CONTINUE_CHAT_FOR_WORK_ITEM: &str = "ContinueChatForWorkItem";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -525,6 +546,11 @@ mod tests {
         assert_eq!(
             methods::DESCRIBE_EXECUTION_REPOSITORY,
             "DescribeExecutionRepository"
+        );
+        assert_eq!(methods::CREATE_CHAT_FOR_WORK_ITEM, "CreateChatForWorkItem");
+        assert_eq!(
+            methods::CONTINUE_CHAT_FOR_WORK_ITEM,
+            "ContinueChatForWorkItem"
         );
     }
 

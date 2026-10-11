@@ -463,6 +463,25 @@ pub enum ExecutionValidationError {
     MultiplePrimary { repo_ids: Vec<String> },
     #[serde(rename_all = "camelCase")]
     ConfigInvalid { reason: String },
+    /// A bound Chat's stored native session ran in another directory (or in
+    /// an unknown one), so resuming it would continue a conversation from
+    /// elsewhere. Never converted into a silent fresh session.
+    #[serde(rename_all = "camelCase")]
+    ResumeRootMismatch {
+        expected_path: String,
+        #[serde(default)]
+        found_path: String,
+    },
+    /// Something tried to move a bound Chat to another directory (a cwd
+    /// change, a worktree directive, a new worktree). A bound Chat keeps the
+    /// execution root it captured at launch.
+    #[serde(rename_all = "camelCase")]
+    BoundChatRetarget {
+        chat_id: String,
+        execution_root: String,
+        #[serde(default)]
+        requested_path: String,
+    },
     #[doc(hidden)]
     #[serde(other)]
     Unknown,
@@ -487,6 +506,8 @@ impl ExecutionValidationError {
             Self::MemberOutsideRoot { .. } => "memberOutsideRoot",
             Self::MultiplePrimary { .. } => "multiplePrimary",
             Self::ConfigInvalid { .. } => "configInvalid",
+            Self::ResumeRootMismatch { .. } => "resumeRootMismatch",
+            Self::BoundChatRetarget { .. } => "boundChatRetarget",
             Self::Unknown => "unknown",
         }
     }
@@ -563,6 +584,36 @@ impl ExecutionValidationError {
             Self::ConfigInvalid { reason } => {
                 format!("The execution configuration is invalid: {reason}")
             }
+            Self::ResumeRootMismatch {
+                expected_path,
+                found_path,
+            } if found_path.is_empty() => format!(
+                "This Chat's previous session has no recorded folder, so it cannot be resumed in \
+                 {expected_path}"
+            ),
+            Self::ResumeRootMismatch {
+                expected_path,
+                found_path,
+            } => format!(
+                "This Chat's previous session ran in {found_path}, not its execution root \
+                 {expected_path}"
+            ),
+            Self::BoundChatRetarget {
+                execution_root,
+                requested_path,
+                ..
+            } if requested_path.is_empty() => format!(
+                "This Chat is bound to its execution root {execution_root} and cannot get a new \
+                 worktree"
+            ),
+            Self::BoundChatRetarget {
+                execution_root,
+                requested_path,
+                ..
+            } => format!(
+                "This Chat is bound to its execution root {execution_root} and cannot move to \
+                 {requested_path}"
+            ),
             Self::Unknown => "The execution configuration cannot be used".into(),
         }
     }
@@ -617,6 +668,14 @@ impl ExecutionValidationError {
             }
             Self::ConfigInvalid { .. } | Self::Unknown => {
                 "Edit or reset the execution configuration."
+            }
+            Self::ResumeRootMismatch { .. } => {
+                "Start a new Chat from the work item to begin a fresh session in the execution \
+                 root. Zeron will not resume or restart this conversation elsewhere."
+            }
+            Self::BoundChatRetarget { .. } => {
+                "Start a new Chat from the work item with the folder or worktree you want; this \
+                 Chat keeps the execution root it started with."
             }
         }
     }
