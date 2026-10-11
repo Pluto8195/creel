@@ -1686,3 +1686,81 @@ async fn worktree_choice_is_refused_when_the_root_is_not_the_repository_checkout
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 6: diff-sync never serves a member checkout that is not bound
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_sync_skips_a_member_path_whose_checkout_is_not_the_bound_one() {
+    let rig = rig().await;
+    let member = rig.repo.join(".worktrees/m/w");
+    std::fs::create_dir_all(member.parent().unwrap()).unwrap();
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "member",
+            &member.to_string_lossy(),
+        ],
+    );
+    let member = std::fs::canonicalize(&member).unwrap();
+    let repo = describe(&rig, &rig.repo).await;
+    let pinned = describe(&rig, &member).await;
+    let mut p = params(&rig, "op-member", "launch member");
+    p.execution_override = Some(
+        serde_json::from_value(json!({
+            "configuration": {
+                "executionRoot": rig.repo.to_string_lossy(),
+                "bindings": [{
+                    "repoId": repo.repo_id, "repoFingerprint": repo.repo_fingerprint,
+                    "repoPath": repo.repo_path, "member": true, "primary": true,
+                    "worktreeId": pinned.checkout_id,
+                    "worktreePath": member.to_string_lossy(),
+                }],
+                "schema": 1,
+            }
+        }))
+        .unwrap(),
+    );
+    let reply = launch(&rig, &p).await.expect("launch");
+    wait_for(
+        || turns_with(&rig, "launch member").len() == 1,
+        "the first turn",
+    )
+    .await;
+    settle(&rig, &reply.chat_id).await;
+    let has_diff = |id: &str| {
+        rig.core
+            .diff_sync
+            .watch_diffs()
+            .borrow()
+            .iter()
+            .any(|diff| diff.checkout_id == id)
+    };
+    // The bound member gets its own entry.
+    rig.core.diff_sync.repair_now().await;
+    wait_for(|| has_diff(&pinned.checkout_id), "the member diff").await;
+
+    // Another checkout now sits at the member path.
+    git(
+        &rig.repo,
+        &["worktree", "remove", "--force", &member.to_string_lossy()],
+    );
+    init_repo(&member, "foreign");
+    let foreign = describe(&rig, &member).await;
+    assert_ne!(foreign.checkout_id, pinned.checkout_id);
+    rig.core.diff_sync.repair_now().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        assert!(
+            !has_diff(&foreign.checkout_id),
+            "the foreign checkout must not get a member entry"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    rig.core.shutdown().await;
+}
