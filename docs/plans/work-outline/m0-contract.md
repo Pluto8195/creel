@@ -1353,3 +1353,29 @@ registry.rs`, `crates/engine/src/work_outline.rs`, `crates/harness/src/agent_too
     Doc: per-kind generations; agent dedupe resolve; associate subtree / unassociated / bound
     matrix. Harness: per-Run directories, symlink / foreign-owner refusal, fallback path. UI:
     restore stays quiet, a new request after zero still fires.
+
+## Restructuring UI
+
+UI-only; every change is one existing `moveWorkItem` (or `assignChatToWorkItem`) request.
+
+1. **Keys** (Outline key context, never in text inputs): `⌥⇧↑` / `⌥⇧↓` move the selected
+   work item before the previous / after the next shown sibling; `Tab` makes it the last
+   child of its previous sibling; `⇧Tab` moves it to its grandparent right after the
+   former parent. Boundaries are silent no-ops; Tab / ⇧Tab without a selected work item
+   propagate. Palette commands Move Work Item Up / Down, Indent / Outdent Work Item run the
+   same path, are rebindable, and are unbound globally.
+2. **Drag and drop.** Live work item rows drag onto other live work items of the same
+   Space: middle = last child of the target; upper / lower quarter of the row = `Before` /
+   `After` the target under the target's parent. An accent line (edges) or accent-washed,
+   accent-bordered row (middle) shows the drop. Self, descendant, archived, cross-Space,
+   no-op targets, and drops while a restructuring is landing show no indicator and send
+   nothing. A Chat row dropped anywhere on a work item row associates it (refused for its
+   current item).
+3. **Move picker placement.** Compact "Place at Top / Bottom" (`←` / `→`); Bottom (`Last`)
+   is the default, Top sends `First`. Changing it mints a new operation id.
+4. **Shared semantics.** Descendants travel with the item. Each request goes through the
+   M2 drift confirmation when it changes an assigned Chat's effective instructions; a
+   failed request retried unchanged replays its operation id. One restructuring at a time:
+   the next waits for the acknowledging snapshot (2 s fallback). The selection follows the
+   moved item and its new parent expands. Nothing animates (reduced motion has nothing to
+   suppress); Canvas positions are never written.
