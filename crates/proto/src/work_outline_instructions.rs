@@ -694,6 +694,13 @@ pub struct InstructionDelivery {
     pub transition: InstructionTransition,
 }
 
+/// Prefix of a command resolution (and error text) meaning the harness must
+/// start a fresh native session to apply a different revision, which the user
+/// has to confirm first (replace strategy `FreshSession`, contract 5.7).
+/// Clients offer the confirmation and resend the run with
+/// `contextResetConfirmed: true`.
+pub const INSTRUCTION_CONTEXT_RESET_REQUIRED: &str = "instructionContextResetRequired";
+
 /// Host-reported Execution Session (contract 5.6): an additive
 /// `executionSession` field on the host-written session-status row, written on
 /// `SessionStarted`. The UI shows delivery from this, never from selection.

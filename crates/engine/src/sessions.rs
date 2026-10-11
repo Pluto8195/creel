@@ -28,10 +28,14 @@ use zeron_doc::{
     DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
-use zeron_harness::{CancellationToken, Harness, RunControls, SteerMessage};
+use zeron_harness::{
+    CancellationToken, Harness, InstructionReplaceStrategy, InstructionSupport, RunControls,
+    SteerMessage,
+};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
-    UserInputQuestion,
+    AgentEvent, DoneStatus, ExecutionSessionReport, HarnessId, InstructionDelivery,
+    InstructionRevisionPin, InstructionTransition, RunRequest, Session, SessionStatus,
+    UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -81,6 +85,11 @@ struct RuntimeConfig {
     sandbox: zeron_proto::SandboxLevel,
     auto_approve: bool,
     worktree: Option<zeron_proto::WorktreeSpec>,
+    /// The Work Outline revision this Execution Session received. A prompt
+    /// for a different revision is never routed into the live mailbox: the
+    /// revision changes only by starting a new Execution Session at a Turn
+    /// boundary (`m0-contract.md` 5.7).
+    instructions: Option<InstructionRevisionPin>,
 }
 
 impl RuntimeConfig {
@@ -94,6 +103,7 @@ impl RuntimeConfig {
             sandbox: request.sandbox,
             auto_approve: request.auto_approve,
             worktree: request.worktree.clone(),
+            instructions: request.instructions.as_ref().map(|d| d.envelope.pin()),
         }
     }
 
@@ -159,7 +169,23 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// User message ids whose sender confirmed a context reset (a revision
+    /// change on a `FreshSession` harness starts a new native session).
+    context_reset_confirmed: Mutex<std::collections::HashSet<String>>,
 }
+
+/// An instruction-bearing dispatch's decision about the native session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstructionPlan {
+    /// The native session to resume (`None`: a fresh one).
+    resume: Option<String>,
+    transition: InstructionTransition,
+}
+
+/// Why an instruction-bearing prompt cannot reach a working Execution
+/// Session that received a different revision.
+pub const TURN_BOUNDARY_MESSAGE: &str = "A different Work Outline instruction revision applies \
+    from the next Turn; it is never inserted into the Turn that is running";
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -195,6 +221,7 @@ impl SessionsEngine {
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                context_reset_confirmed: Mutex::new(std::collections::HashSet::new()),
             }),
         }
     }
@@ -345,8 +372,141 @@ impl SessionsEngine {
     }
 
     /// The last request dispatched for a chat (steer→new-turn fallback).
+    ///
+    /// Its Work Outline instructions are stripped: every follow-up built from
+    /// it takes the revision its own Turn is pinned to (dispatch resolves it
+    /// from the live Execution Session or the journal sidecar), never a copy
+    /// of whatever the previous request carried.
     pub fn last_request(&self, chat_id: &str) -> Option<RunRequest> {
-        lock(&self.inner.last_requests).get(chat_id).cloned()
+        lock(&self.inner.last_requests)
+            .get(chat_id)
+            .cloned()
+            .map(|mut request| {
+                request.instructions = None;
+                request
+            })
+    }
+
+    /// The harness's instruction-delivery declaration (may run a cached CLI
+    /// probe on first use).
+    pub fn instruction_support(
+        &self,
+        harness: HarnessId,
+    ) -> Result<InstructionSupport, EngineError> {
+        Ok(self.inner.registry.resolve(harness)?.instruction_support())
+    }
+
+    /// The revision the chat's LIVE Execution Session received: `None` when
+    /// no run is live, `Some(None)` for a live session without instructions.
+    pub fn live_instruction_pin(&self, chat_id: &str) -> Option<Option<InstructionRevisionPin>> {
+        lock(&self.inner.runs)
+            .get(chat_id)
+            .map(|h| h.runtime_config.instructions.clone())
+    }
+
+    /// The sender confirmed that applying a new revision may start a fresh
+    /// native session for this user message (`FreshSession` harnesses).
+    pub fn confirm_context_reset(&self, message_id: &str) {
+        lock(&self.inner.context_reset_confirmed).insert(message_id.to_string());
+    }
+
+    /// The revision an engine-built follow-up Turn runs under: the Turn's own
+    /// pin (journal sidecar, keyed by user message id), else the live
+    /// Execution Session's, else what the chat's last native session
+    /// received. Never the newest or selected revision.
+    pub(crate) fn followup_instruction_pin(
+        &self,
+        chat_id: &str,
+        message_id: Option<&str>,
+    ) -> Option<InstructionRevisionPin> {
+        if let Some(pin) =
+            message_id.and_then(|mid| self.inner.journal.instruction_turn(chat_id, mid))
+        {
+            return Some(pin);
+        }
+        if let Some(live) = self.live_instruction_pin(chat_id) {
+            return live;
+        }
+        self.inner.journal.instruction_sidecar(chat_id)?.applied
+    }
+
+    /// Decide what an instruction-bearing dispatch does with the native
+    /// session, failing BEFORE anything is written: capability, the
+    /// turn-boundary rule, and the context-reset confirmation of
+    /// `FreshSession` harnesses. `Ok(None)` for requests without
+    /// instructions.
+    fn plan_instructions(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        request: &RunRequest,
+        context_reset_confirmed: bool,
+    ) -> Result<Option<InstructionPlan>, EngineError> {
+        let Some(delivery) = &request.instructions else {
+            return Ok(None);
+        };
+        let support = self.instruction_support(harness_id)?;
+        let strategy =
+            crate::instruction_delivery::check_support(harness_id, &support, &delivery.envelope)
+                .map_err(EngineError::Other)?;
+        let pin = delivery.envelope.pin();
+        if let Some(live) = self.live_instruction_pin(chat_id)
+            && live.as_ref() != Some(&pin)
+            && self.turn_in_flight(chat_id)
+        {
+            return Err(EngineError::Other(TURN_BOUNDARY_MESSAGE.into()));
+        }
+        let resume = request
+            .resume
+            .clone()
+            .or_else(|| self.inner.resume_for(chat_id, &request.cwd));
+        let transition = match &resume {
+            None => InstructionTransition::Fresh,
+            Some(native) => {
+                let applied = self
+                    .inner
+                    .journal
+                    .instruction_sidecar(chat_id)
+                    .filter(|s| s.native_session_id.as_deref() == Some(native.as_str()))
+                    .and_then(|s| s.applied);
+                match applied {
+                    Some(previous) if previous == pin => InstructionTransition::Continue,
+                    // Unknown or none: the native session may carry anything
+                    // (or nothing), so it is a replacement.
+                    previous => InstructionTransition::Replace {
+                        previous_revision_id: previous.map(|p| p.revision_id).unwrap_or_default(),
+                    },
+                }
+            }
+        };
+        if matches!(transition, InstructionTransition::Replace { .. })
+            && strategy == InstructionReplaceStrategy::FreshSession
+        {
+            if !context_reset_confirmed {
+                return Err(EngineError::Other(
+                    crate::instruction_delivery::context_reset_message(harness_id),
+                ));
+            }
+            return Ok(Some(InstructionPlan {
+                resume: None,
+                transition: InstructionTransition::Fresh,
+            }));
+        }
+        Ok(Some(InstructionPlan { resume, transition }))
+    }
+
+    /// The same checks dispatch runs, with no side effects: callers that
+    /// write a user message before dispatching (the command executor) run
+    /// this first so a rejected run never leaves an orphan prompt.
+    pub(crate) fn preflight_instructions(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        request: &RunRequest,
+        context_reset_confirmed: bool,
+    ) -> Result<(), EngineError> {
+        self.plan_instructions(chat_id, harness_id, request, context_reset_confirmed)
+            .map(|_| ())
     }
 
     /// Subscribe to a chat's live event stream: returns the journal replay after
@@ -421,6 +581,29 @@ impl SessionsEngine {
         // privacy prompts to Zeron. Existing `~` chats migrate automatically
         // to a stable per-chat Zeron-owned directory on their next dispatch.
         request.cwd = resolve_run_cwd(&self.inner.journal, chat_id, &request.cwd)?;
+        // Work Outline instructions (acceptance 9-10): an engine-built
+        // follow-up carries none of its own, so it takes the revision its
+        // Turn is pinned to (sidecar by message id, else the live Execution
+        // Session, else what the native session received) — never dropped,
+        // never the newest. Everything here fails before any write.
+        if request.instructions.is_none()
+            && let Some(pin) = self.followup_instruction_pin(chat_id, message_id.as_deref())
+        {
+            let host = self
+                .inner
+                .doc_host()
+                .ok_or_else(|| EngineError::Other("doc host not wired".into()))?;
+            let envelope = host.resolve_instruction_pin(&pin).await?;
+            request.instructions = Some(InstructionDelivery {
+                envelope,
+                transition: InstructionTransition::Fresh,
+            });
+        }
+        let context_reset_confirmed = message_id
+            .as_ref()
+            .is_some_and(|mid| lock(&self.inner.context_reset_confirmed).contains(mid));
+        let instruction_plan =
+            self.plan_instructions(chat_id, harness_id, &request, context_reset_confirmed)?;
         // Every dispatched prompt is a turn — routed steer or fresh run alike.
         self.note_turn_start(chat_id, &request.cwd);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
@@ -457,6 +640,17 @@ impl SessionsEngine {
             if accepted {
                 let handle = self.doc_handle(chat_id)?;
                 handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                // A warm Turn continues the session's revision; record its pin
+                // so a crash mid-Turn revives it with the same one.
+                if let Some(delivery) = &request.instructions
+                    && let Err(err) = self.inner.journal.note_instruction_turn(
+                        chat_id,
+                        &user_id,
+                        &delivery.envelope.pin(),
+                    )
+                {
+                    tracing::warn!(chat = %chat_id, error = %err, "instruction sidecar write failed");
+                }
                 if self.is_live(chat_id, &run_id) {
                     // Working BEFORE the lastMessageAt bump: both ride the
                     // workspace doc from this one peer, so causal order makes it
@@ -509,7 +703,25 @@ impl SessionsEngine {
         // problem now (`session/load` falls back to `session/new` internally),
         // and starting the retry fresh silently dropped a good conversation.
         let mut resume_injected = false;
-        if request.resume.is_none() {
+        if let Some(plan) = &instruction_plan {
+            // The plan already decided the native session (a confirmed
+            // context reset deliberately resumes nothing).
+            let explicit_resume = request.resume.is_some();
+            request.resume = plan.resume.clone();
+            resume_injected = !explicit_resume && request.resume.is_some();
+            if let Some(delivery) = request.instructions.as_mut() {
+                delivery.transition = plan.transition.clone();
+                // Durable before spawn: a crash from here on revives this Turn
+                // with exactly this revision.
+                self.inner
+                    .journal
+                    .note_instruction_turn(chat_id, &user_id, &delivery.envelope.pin())
+                    .map_err(|e| {
+                        EngineError::Other(format!("instruction sidecar write failed: {e}"))
+                    })?;
+            }
+            lock(&self.inner.context_reset_confirmed).remove(&user_id);
+        } else if request.resume.is_none() {
             request.resume = self.inner.resume_for(chat_id, &request.cwd);
             resume_injected = request.resume.is_some();
         }
@@ -1296,6 +1508,48 @@ impl Inner {
         found
     }
 
+    /// An Execution Session started: record what its native session received
+    /// (journal sidecar) and report it to the registry (`m0-contract.md` 5.6).
+    /// Chats that never had Work Outline instructions are left alone.
+    fn note_execution_session(
+        &self,
+        chat_id: &str,
+        run_id: &str,
+        harness: HarnessId,
+        native_session_id: &str,
+        cwd: &str,
+        pin: Option<&InstructionRevisionPin>,
+    ) {
+        let registry = self.doc_host().and_then(|host| host.instruction_registry());
+        let relevant = pin.is_some()
+            || self.journal.instruction_sidecar(chat_id).is_some()
+            || registry
+                .as_ref()
+                .is_some_and(|r| r.selected_instruction_revision(chat_id).is_some());
+        if !relevant {
+            return;
+        }
+        if let Err(err) =
+            self.journal
+                .note_instruction_session(chat_id, native_session_id, cwd, pin)
+        {
+            tracing::warn!(chat = %chat_id, error = %err, "instruction sidecar write failed");
+        }
+        if let Some(registry) = registry {
+            registry.report_execution_session(
+                chat_id,
+                ExecutionSessionReport {
+                    id: run_id.to_string(),
+                    native_resume_id: Some(native_session_id.to_string()),
+                    harness,
+                    execution_root: cwd.to_string(),
+                    revision_id: pin.map(|p| p.revision_id.clone()),
+                    revision_hash: pin.map(|p| p.revision_hash.clone()),
+                },
+            );
+        }
+    }
+
     fn remove_run(&self, chat_id: &str, run_id: &str) {
         let mut runs = lock(&self.runs);
         if runs.get(chat_id).is_some_and(|h| h.run_id == run_id) {
@@ -1767,6 +2021,8 @@ async fn drive_run(
     resume_state: RunResumeState,
 ) {
     let device_id = inner.device_id.clone();
+    // The revision this Execution Session receives (reported on SessionStarted).
+    let instruction_pin = request.instructions.as_ref().map(|d| d.envelope.pin());
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
     let user_prompt = request.prompt.clone();
@@ -2568,6 +2824,14 @@ async fn drive_run(
                 // The event's own cwd (where the harness actually created the
                 // session) scopes the stored id, not the request's.
                 inner.remember_harness_session(&chat_id, session_id, cwd);
+                inner.note_execution_session(
+                    &chat_id,
+                    &run_id,
+                    harness_id,
+                    session_id,
+                    cwd,
+                    instruction_pin.as_ref(),
+                );
             }
             AgentEvent::Done {
                 session_id: Some(session_id),

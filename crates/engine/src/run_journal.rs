@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::AgentEvent;
+use zeron_proto::{AgentEvent, InstructionRevisionPin};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -46,6 +46,51 @@ struct ChatJournal {
 pub struct RunJournal {
     dir: PathBuf,
     open_files: Mutex<HashMap<String, ChatJournal>>,
+    /// Serializes read-modify-write of the instruction sidecars.
+    instruction_lock: Mutex<()>,
+}
+
+/// Turn pins kept per chat (oldest dropped first): enough for every Turn a
+/// crash, retry, or queue promotion can still revive.
+const INSTRUCTION_TURNS_KEPT: usize = 256;
+
+/// Host-local Work Outline delivery record for one chat
+/// (`<journals>/<chat>.instructions.json`, `m0-instruction-delivery.md` 7):
+/// which revision each Turn was pinned to and which revision the chat's
+/// native session actually received. Engine-built follow-up runs (crash
+/// recovery, retries, steer fallbacks, queue promotion after a restart) take
+/// their revision from here, never from the newest revision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionSidecar {
+    /// Native session the `applied` field describes.
+    #[serde(default)]
+    pub native_session_id: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// What that native session received (`None`: no instructions).
+    #[serde(default)]
+    pub applied: Option<InstructionRevisionPin>,
+    /// Turn pins by user message id, oldest first.
+    #[serde(default)]
+    pub turns: Vec<InstructionTurnPin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionTurnPin {
+    pub message_id: String,
+    pub pin: InstructionRevisionPin,
+}
+
+impl InstructionSidecar {
+    pub fn turn(&self, message_id: &str) -> Option<&InstructionRevisionPin> {
+        self.turns
+            .iter()
+            .rev()
+            .find(|t| t.message_id == message_id)
+            .map(|t| &t.pin)
+    }
 }
 
 impl RunJournal {
@@ -55,7 +100,110 @@ impl RunJournal {
         Ok(Self {
             dir,
             open_files: Mutex::new(HashMap::new()),
+            instruction_lock: Mutex::new(()),
         })
+    }
+
+    fn instructions_path(&self, chat_id: &str) -> PathBuf {
+        self.dir
+            .join(format!("{}.instructions.json", sanitize_id(chat_id)))
+    }
+
+    /// The chat's instruction sidecar, if one was ever written.
+    pub fn instruction_sidecar(&self, chat_id: &str) -> Option<InstructionSidecar> {
+        let bytes = std::fs::read(self.instructions_path(chat_id)).ok()?;
+        match serde_json::from_slice(&bytes) {
+            Ok(sidecar) => Some(sidecar),
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "unreadable instruction sidecar");
+                None
+            }
+        }
+    }
+
+    /// The revision a Turn (by user message id) was pinned to.
+    pub fn instruction_turn(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Option<InstructionRevisionPin> {
+        self.instruction_sidecar(chat_id)?.turn(message_id).cloned()
+    }
+
+    /// Record a Turn's pin BEFORE its run spawns (fsynced), so a crash at any
+    /// later point revives the Turn with exactly this revision.
+    pub fn note_instruction_turn(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        pin: &InstructionRevisionPin,
+    ) -> Result<(), JournalError> {
+        self.update_instruction_sidecar(chat_id, |sidecar| {
+            if sidecar.turn(message_id) == Some(pin) {
+                return false;
+            }
+            sidecar.turns.retain(|t| t.message_id != message_id);
+            sidecar.turns.push(InstructionTurnPin {
+                message_id: message_id.to_string(),
+                pin: pin.clone(),
+            });
+            let excess = sidecar.turns.len().saturating_sub(INSTRUCTION_TURNS_KEPT);
+            sidecar.turns.drain(..excess);
+            true
+        })
+    }
+
+    /// Record what a native session received (on `SessionStarted`).
+    pub fn note_instruction_session(
+        &self,
+        chat_id: &str,
+        native_session_id: &str,
+        cwd: &str,
+        applied: Option<&InstructionRevisionPin>,
+    ) -> Result<(), JournalError> {
+        self.update_instruction_sidecar(chat_id, |sidecar| {
+            let next = (
+                Some(native_session_id.to_string()),
+                Some(cwd.to_string()),
+                applied.cloned(),
+            );
+            if (
+                sidecar.native_session_id.clone(),
+                sidecar.cwd.clone(),
+                sidecar.applied.clone(),
+            ) == next
+            {
+                return false;
+            }
+            (sidecar.native_session_id, sidecar.cwd, sidecar.applied) = next;
+            true
+        })
+    }
+
+    fn update_instruction_sidecar(
+        &self,
+        chat_id: &str,
+        update: impl FnOnce(&mut InstructionSidecar) -> bool,
+    ) -> Result<(), JournalError> {
+        let _guard = self
+            .instruction_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut sidecar = self.instruction_sidecar(chat_id).unwrap_or_default();
+        if !update(&mut sidecar) {
+            return Ok(());
+        }
+        let path = self.instructions_path(chat_id);
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        {
+            let mut file = File::create(&tmp)?;
+            file.write_all(&serde_json::to_vec(&sidecar)?)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
+        Ok(())
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<String, ChatJournal>> {
@@ -350,6 +498,58 @@ fn sanitize_id(chat_id: &str) -> String {
 mod tests {
     use super::*;
     use zeron_proto::DoneStatus;
+
+    fn pin(id: &str) -> InstructionRevisionPin {
+        InstructionRevisionPin {
+            revision_id: id.into(),
+            revision_hash: format!("{id}-hash"),
+        }
+    }
+
+    #[test]
+    fn instruction_sidecar_records_turn_pins_and_the_applied_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(journal.instruction_sidecar("chat").is_none());
+        journal
+            .note_instruction_turn("chat", "m1", &pin("a"))
+            .unwrap();
+        journal
+            .note_instruction_session("chat", "native-1", "/w", Some(&pin("a")))
+            .unwrap();
+        journal
+            .note_instruction_turn("chat", "m2", &pin("b"))
+            .unwrap();
+        // Survives a reopen (a restart).
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert_eq!(journal.instruction_turn("chat", "m1"), Some(pin("a")));
+        assert_eq!(journal.instruction_turn("chat", "m2"), Some(pin("b")));
+        assert_eq!(journal.instruction_turn("chat", "m3"), None);
+        let sidecar = journal.instruction_sidecar("chat").unwrap();
+        assert_eq!(sidecar.native_session_id.as_deref(), Some("native-1"));
+        assert_eq!(sidecar.applied, Some(pin("a")));
+        // Not a journal: scans for stale runs ignore it.
+        assert!(journal.stale_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn instruction_turn_pins_are_bounded_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        for i in 0..(INSTRUCTION_TURNS_KEPT + 3) {
+            journal
+                .note_instruction_turn("chat", &format!("m{i}"), &pin("a"))
+                .unwrap();
+        }
+        let sidecar = journal.instruction_sidecar("chat").unwrap();
+        assert_eq!(sidecar.turns.len(), INSTRUCTION_TURNS_KEPT);
+        assert!(sidecar.turn("m0").is_none());
+        assert!(
+            sidecar
+                .turn(&format!("m{}", INSTRUCTION_TURNS_KEPT + 2))
+                .is_some()
+        );
+    }
 
     fn text(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }
