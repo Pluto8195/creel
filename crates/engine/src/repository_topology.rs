@@ -20,13 +20,15 @@ const NESTED_REPO_SCAN_MAX_DEPTH: usize = 12;
 const NESTED_REPO_SCAN_MAX_REPOS: usize = 128;
 const WORKSPACE_ROOT_MARKER: &str = ".workspace-root";
 
+/// One stanza of `git worktree list --porcelain -z` (also read by the
+/// execution-scope validator, `crate::execution_scope`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WorktreeRecord {
-    path: PathBuf,
-    head_sha: Option<String>,
-    branch: Option<String>,
-    locked: bool,
-    prunable: bool,
+pub(crate) struct WorktreeRecord {
+    pub(crate) path: PathBuf,
+    pub(crate) head_sha: Option<String>,
+    pub(crate) branch: Option<String>,
+    pub(crate) locked: bool,
+    pub(crate) prunable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -428,7 +430,7 @@ async fn submodule_paths(repos: &Repos, repo: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn parse_worktree_porcelain_z(output: &str) -> Vec<WorktreeRecord> {
+pub(crate) fn parse_worktree_porcelain_z(output: &str) -> Vec<WorktreeRecord> {
     output
         .split("\0\0")
         .filter_map(|stanza| {
@@ -527,7 +529,10 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     normalized
 }
 
-fn stable_id(prefix: &str, device_id: &str, path: &Path) -> String {
+/// `{prefix}:` + sha256(device NUL path). With prefix `repo` and the
+/// canonical git common dir this is the topology repository id that
+/// execution configurations bind to.
+pub(crate) fn stable_id(prefix: &str, device_id: &str, path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(device_id.as_bytes());
     hasher.update([0]);
