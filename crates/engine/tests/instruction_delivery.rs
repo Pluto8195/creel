@@ -797,3 +797,208 @@ async fn a_fresh_session_harness_requires_a_confirmed_context_reset() {
     assert_eq!(delivery.transition, InstructionTransition::Fresh);
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// FreshSession: durable reset-required outcomes and confirmation
+// ---------------------------------------------------------------------------
+
+fn fresh_session_rig(dir: &std::path::Path) -> Rig {
+    let rig = assemble(
+        dir,
+        InstructionMockHarness::new(InstructionSupport::Supported {
+            channel: InstructionChannel::Test,
+            replace_strategy: InstructionReplaceStrategy::FreshSession,
+            max_bytes: 64 * 1024,
+        }),
+        Arc::new(FakeRegistry::default()),
+    );
+    pre_title(&rig.core);
+    rig
+}
+
+fn rejected_sends(core: &EngineCore) -> Vec<zeron_proto::InstructionRejectedSend> {
+    core.doc_host
+        .open(CHAT)
+        .unwrap()
+        .watch_rejected_sends()
+        .borrow()
+        .clone()
+}
+
+fn queue_row(core: &EngineCore, id: &str) -> Option<zeron_doc::QueuedMessage> {
+    core.doc_host
+        .open(CHAT)
+        .ok()?
+        .doc()
+        .read_queue()
+        .ok()?
+        .into_iter()
+        .find(|row| row.id == id)
+}
+
+#[tokio::test]
+async fn a_plain_send_after_apply_on_a_fresh_session_harness_needs_a_confirmed_reset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+
+    // Apply rev-b; the composer sends a plain Run.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let refused = queue(&rig.core, plain("second", "m-2"));
+    let resolved = wait_resolved(&rig.core, &refused).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Rejected);
+    assert!(
+        resolved
+            .resolution
+            .as_deref()
+            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+        "{resolved:?}"
+    );
+    // Durable, typed outcome on the command row.
+    let expected = zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+        harness: HarnessId::Mock,
+        message_id: Some("m-2".into()),
+        revision_id: "rev-b".into(),
+        revision_hash: b.revision_hash.clone(),
+        previous_revision_id: Some("rev-a".into()),
+    };
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    assert_eq!(
+        handle.doc().command_outcomes().get(&refused),
+        Some(&expected)
+    );
+    // No user message, no new Execution Session.
+    assert!(!has_user_message(&rig.core, "m-2"));
+    assert_eq!(rig.mock.runs().len(), 1);
+    // Clients see it on the WatchQueue feed.
+    wait_for(
+        || rejected_sends(&rig.core).len() == 1,
+        "the refused send on the feed",
+    )
+    .await;
+    let rejected = rejected_sends(&rig.core).remove(0);
+    assert_eq!(rejected.command_id, refused);
+    assert_eq!(rejected.message_id, "m-2");
+    assert_eq!(rejected.outcome, expected);
+    assert_eq!(rejected.request.prompt, "second");
+
+    // Confirmed resend (same message id): a fresh native session with rev-b.
+    queue(
+        &rig.core,
+        SessionCommandPayload::RunWithInstructions {
+            request: rejected.request.clone(),
+            message_id: rejected.message_id.clone(),
+            instructions: b.clone(),
+            context_reset_confirmed: true,
+        },
+    );
+    wait_turns(&rig, 2, "the confirmed Turn").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].resume.is_none(), "a fresh native session");
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    assert!(has_user_message(&rig.core, "m-2"));
+    wait_for(
+        || rejected_sends(&rig.core).is_empty(),
+        "the feed to drop the resent message",
+    )
+    .await;
+    rig.core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_queued_row_needing_a_reset_is_gated_with_its_reason_until_confirmed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("[hold] working", "m-1"));
+    wait_for(|| rig.mock.turns().len() == 1, "the held Turn").await;
+
+    // Apply rev-b and queue while the Turn runs: the row captures rev-b.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let queued = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "queued after apply", Vec::new())
+        .unwrap();
+    rig.mock.release();
+
+    // At the boundary the host refuses to start it and gates the row.
+    wait_for(
+        || {
+            queue_row(&rig.core, &queued).is_some_and(|row| {
+                matches!(
+                    row.delivery_gate,
+                    Some(zeron_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
+                )
+            })
+        },
+        "the reset gate on the row",
+    )
+    .await;
+    match queue_row(&rig.core, &queued)
+        .unwrap()
+        .delivery_gate
+        .unwrap()
+    {
+        zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+            harness,
+            revision_id,
+            revision_hash,
+            previous_revision_id,
+            ..
+        } => {
+            assert_eq!(harness, HarnessId::Mock);
+            assert_eq!(revision_id, "rev-b");
+            assert_eq!(revision_hash, b.revision_hash);
+            assert_eq!(previous_revision_id.as_deref(), Some("rev-a"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!has_user_message(&rig.core, &queued));
+    assert_eq!(rig.mock.runs().len(), 1);
+
+    // Confirm: the gate clears and the row drains into a fresh session.
+    let confirm = queue(
+        &rig.core,
+        SessionCommandPayload::ConfirmInstructionContextReset {
+            queued_message_id: queued.clone(),
+            revision_id: "rev-b".into(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &confirm).await.status,
+        SessionCommandStatus::Applied
+    );
+    wait_turns(&rig, 2, "the confirmed queued Turn").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].prompt, "queued after apply");
+    assert!(runs[1].resume.is_none());
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    assert!(queue_row(&rig.core, &queued).is_none());
+
+    // Confirming a row that is gone rejects.
+    let stale = queue(
+        &rig.core,
+        SessionCommandPayload::ConfirmInstructionContextReset {
+            queued_message_id: queued.clone(),
+            revision_id: "rev-b".into(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &stale).await.status,
+        SessionCommandStatus::Rejected
+    );
+    rig.core.shutdown().await;
+}

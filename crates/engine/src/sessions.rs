@@ -450,6 +450,7 @@ impl SessionsEngine {
         chat_id: &str,
         harness_id: HarnessId,
         request: &RunRequest,
+        message_id: Option<&str>,
         context_reset_confirmed: bool,
     ) -> Result<Option<InstructionPlan>, EngineError> {
         let Some(delivery) = &request.instructions else {
@@ -489,12 +490,25 @@ impl SessionsEngine {
                 }
             }
         };
-        if matches!(transition, InstructionTransition::Replace { .. })
+        if let InstructionTransition::Replace {
+            previous_revision_id,
+        } = &transition
             && strategy == InstructionReplaceStrategy::FreshSession
         {
             if !context_reset_confirmed {
-                return Err(EngineError::Other(
-                    crate::instruction_delivery::context_reset_message(harness_id),
+                return Err(EngineError::InstructionDelivery(
+                    zeron_proto::InstructionDeliveryRejection {
+                        outcome:
+                            zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+                                harness: harness_id,
+                                message_id: message_id.map(str::to_string),
+                                revision_id: pin.revision_id.clone(),
+                                revision_hash: pin.revision_hash.clone(),
+                                previous_revision_id: Some(previous_revision_id.clone())
+                                    .filter(|id| !id.is_empty()),
+                            },
+                        message: crate::instruction_delivery::context_reset_message(harness_id),
+                    },
                 ));
             }
             return Ok(Some(InstructionPlan {
@@ -513,10 +527,17 @@ impl SessionsEngine {
         chat_id: &str,
         harness_id: HarnessId,
         request: &RunRequest,
+        message_id: Option<&str>,
         context_reset_confirmed: bool,
     ) -> Result<(), EngineError> {
-        self.plan_instructions(chat_id, harness_id, request, context_reset_confirmed)
-            .map(|_| ())
+        self.plan_instructions(
+            chat_id,
+            harness_id,
+            request,
+            message_id,
+            context_reset_confirmed,
+        )
+        .map(|_| ())
     }
 
     /// Subscribe to a chat's live event stream: returns the journal replay after
@@ -612,8 +633,13 @@ impl SessionsEngine {
         let context_reset_confirmed = message_id
             .as_ref()
             .is_some_and(|mid| lock(&self.inner.context_reset_confirmed).contains(mid));
-        let instruction_plan =
-            self.plan_instructions(chat_id, harness_id, &request, context_reset_confirmed)?;
+        let instruction_plan = self.plan_instructions(
+            chat_id,
+            harness_id,
+            &request,
+            message_id.as_deref(),
+            context_reset_confirmed,
+        )?;
         // Every dispatched prompt is a turn — routed steer or fresh run alike.
         self.note_turn_start(chat_id, &request.cwd);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {

@@ -1274,3 +1274,60 @@ fn snapshot_carries_instruction_state_in_same_content_as() {
     assert!(!base.same_content_as(&revisions));
     assert!(revisions.revision("r").is_some());
 }
+
+#[test]
+fn delivery_outcomes_have_stable_wire_shapes() {
+    let reset = InstructionDeliveryRejection {
+        outcome: InstructionDeliveryOutcome::InstructionContextResetRequired {
+            harness: HarnessId::Codex,
+            message_id: Some("m-2".into()),
+            revision_id: "rev-b".into(),
+            revision_hash: "hb".into(),
+            previous_revision_id: Some("rev-a".into()),
+        },
+        message: "confirm".into(),
+    };
+    round_trip(
+        &reset,
+        json!({
+            "code": "instructionContextResetRequired",
+            "harness": "codex",
+            "messageId": "m-2",
+            "revisionId": "rev-b",
+            "revisionHash": "hb",
+            "previousRevisionId": "rev-a",
+            "message": "confirm"
+        }),
+    );
+    assert_eq!(reset.outcome.code(), INSTRUCTION_CONTEXT_RESET_REQUIRED);
+    let wire = reset.to_wire_message();
+    assert!(wire.starts_with("instruction-delivery/{"));
+    assert_eq!(
+        InstructionDeliveryRejection::from_wire_message(&wire),
+        Some(reset)
+    );
+    assert_eq!(
+        InstructionDeliveryRejection::from_wire_message("unknown method: X"),
+        None
+    );
+
+    let host = InstructionDeliveryOutcome::InstructionHostUnsupported {
+        host_device_id: "d2".into(),
+        harness: HarnessId::ClaudeCode,
+        required_capability: "work-outline-instruction-envelope-v1/claude-code".into(),
+        reason: InstructionHostUnsupportedReason::ZeronUpgradeRequired,
+        device_name: Some("Studio".into()),
+        device_version: None,
+    };
+    round_trip(
+        &host,
+        json!({
+            "code": "instructionHostUnsupported",
+            "hostDeviceId": "d2",
+            "harness": "claude-code",
+            "requiredCapability": "work-outline-instruction-envelope-v1/claude-code",
+            "reason": "zeronUpgradeRequired",
+            "deviceName": "Studio"
+        }),
+    );
+}

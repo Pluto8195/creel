@@ -1955,15 +1955,30 @@ impl RpcService for EngineRpc {
                     .open(&p.chat_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let rx = handle.watch_queue();
+                let rejected = handle.watch_rejected_sends();
+                // Frame: `{items: QueuedMessage[], rejectedSends:
+                // InstructionRejectedSend[]}` — sends the host refused with a
+                // typed instruction-delivery outcome ride beside the queue
+                // (additive; older viewports ignore the key).
                 Ok(RpcReply::Stream(
-                    futures::stream::unfold((rx, true), |(mut rx, first)| async move {
-                        if !first {
-                            rx.changed().await.ok()?;
-                        }
-                        let items = rx.borrow_and_update().clone();
-                        let value = serde_json::json!({ "items": items });
-                        Some((value, (rx, false)))
-                    })
+                    futures::stream::unfold(
+                        (rx, rejected, true),
+                        |(mut rx, mut rejected, first)| async move {
+                            if !first {
+                                tokio::select! {
+                                    changed = rx.changed() => changed.ok()?,
+                                    changed = rejected.changed() => changed.ok()?,
+                                }
+                            }
+                            let items = rx.borrow_and_update().clone();
+                            let rejected_sends = rejected.borrow_and_update().clone();
+                            let value = serde_json::json!({
+                                "items": items,
+                                "rejectedSends": rejected_sends,
+                            });
+                            Some((value, (rx, rejected, false)))
+                        },
+                    )
                     .boxed(),
                 ))
             }

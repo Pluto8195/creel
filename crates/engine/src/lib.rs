@@ -104,6 +104,12 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+    /// A typed Work Outline instruction-delivery refusal. Its display is the
+    /// wire form (`instruction-delivery/{json}`), so RPC failures carry the
+    /// typed outcome; command resolutions use `message` and store the
+    /// outcome on the command row.
+    #[error(transparent)]
+    InstructionDelivery(zeron_proto::InstructionDeliveryRejection),
 }
 
 /// Epoch millis now — the doc/journal timestamp base.
