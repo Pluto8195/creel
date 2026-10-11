@@ -65,6 +65,7 @@ mod command_palette;
 mod files_panel;
 mod instructions_ui;
 mod project_icon;
+mod required_actions_ui;
 mod sidebar_pins;
 mod sidebar_sections;
 pub(crate) mod spaces;
@@ -1696,6 +1697,12 @@ pub struct Shell {
     /// Last seen session status per chat — the chime trigger compares against
     /// it (a row's FIRST appearance never chimes, so boot stays silent).
     sound_prev: std::collections::HashMap<String, crate::sound::SessionNotificationState>,
+    /// Work Outline user action requests (Milestone 4): the per-work-item
+    /// zero-to-nonzero detector, fed every watched Space's snapshot.
+    user_action_notifier: crate::work_outline::required_actions::UserActionNotifier,
+    /// Spaces this Shell asked `AppState` to watch (so notifications and
+    /// Required Actions work before the Overview exists).
+    user_action_watch: Option<Vec<String>>,
     /// Startup-aware durable connectivity notification baseline.
     connectivity_notifications: crate::sound::ConnectivityNotificationState,
     /// Persistent across AppState observer callbacks so simultaneous session
@@ -2108,6 +2115,8 @@ impl Shell {
             sidebar_pin_write_notice: None,
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
+            user_action_notifier: Default::default(),
+            user_action_watch: None,
             connectivity_notifications: Default::default(),
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
@@ -2414,6 +2423,7 @@ impl Shell {
                     }
                 }
             }
+            self.notify_user_actions(state, app_focused, cx);
             if let Some(sound) = self.connectivity_notifications.update(
                 connectivity,
                 connectivity_observed,
@@ -4271,6 +4281,7 @@ impl Shell {
             classification.and_then(|entry| entry.origin.as_deref()),
         );
         let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
+        let proposal_status = self.render_chat_proposal_status(&chat_id, theme, cx);
         Some(
             div()
                 .id("full-chat-header-metadata-wrap")
@@ -4300,6 +4311,7 @@ impl Shell {
                     )
                 })
                 .when_some(instruction_status, |el, status| el.child(status))
+                .when_some(proposal_status, |el, status| el.child(status))
                 .into_any_element(),
         )
     }
