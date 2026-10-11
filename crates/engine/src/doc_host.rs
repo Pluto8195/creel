@@ -4812,6 +4812,7 @@ impl DocHost {
                 self.deliver_prompt(
                     sessions,
                     handle,
+                    &entry.id,
                     prompt,
                     message_id.clone(),
                     entry.issued_at,
@@ -5194,6 +5195,7 @@ impl DocHost {
         &self,
         sessions: &SessionsEngine,
         handle: &Arc<ChatDocHandle>,
+        command_id: &str,
         prompt: &str,
         message_id: Option<String>,
         issued_at: i64,
@@ -5208,6 +5210,40 @@ impl DocHost {
                 Some("held until the turn ends".into()),
             ));
         }
+        // No live run: this steer can only start a new Turn (the fallback
+        // below), under the Turn's pinned revision. Plan that Turn's
+        // instructions BEFORE the user message exists, so a refusal
+        // (capability, integrity, missing revision, context reset) writes
+        // nothing.
+        let fallback = if sessions.has_live_run(chat_id) {
+            None
+        } else if let Some(request) = self.steer_fallback_request(sessions, chat_id, &prompt) {
+            if let Some(pin) = sessions.followup_instruction_pin(chat_id, message_id.as_deref()) {
+                let envelope = match self.resolve_instruction_pin(&pin).await {
+                    Ok(envelope) => envelope,
+                    Err(err) => return Ok((SessionCommandStatus::Rejected, Some(err.to_string()))),
+                };
+                let mut probe = request.clone();
+                probe.cwd = sessions.resolve_cwd(chat_id, &probe.cwd)?;
+                probe.instructions = Some(InstructionDelivery {
+                    envelope,
+                    transition: InstructionTransition::Fresh,
+                });
+                let harness = self.harness_for_request(chat_id, &probe);
+                if let Err(err) = sessions.preflight_instructions(
+                    chat_id,
+                    harness,
+                    &probe,
+                    message_id.as_deref(),
+                    false,
+                ) {
+                    return Ok(self.reject_command(handle, command_id, err));
+                }
+            }
+            Some(request)
+        } else {
+            None
+        };
         if let Some(message_id) = message_id.as_deref()
             && let Err(err) =
                 handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
@@ -5220,21 +5256,14 @@ impl DocHost {
                 Ok((SessionCommandStatus::Applied, None))
             }
             SteerOutcome::NotSteerable => {
-                let request = sessions
-                    .last_request(chat_id)
-                    .or_else(|| self.request_from_chat_row(chat_id, &prompt));
-                let Some(mut request) = request else {
+                let request =
+                    fallback.or_else(|| self.steer_fallback_request(sessions, chat_id, &prompt));
+                let Some(request) = request else {
                     return Ok((
                         SessionCommandStatus::Rejected,
                         Some("no live run and no prior run config".into()),
                     ));
                 };
-                request.prompt = prompt;
-                request.resume = None; // dispatch re-derives the harness session
-                // A reused config must not re-inline the PREVIOUS turn's
-                // images; this prompt's own refs (if any) ride its text.
-                request.attachments = Vec::new();
-                self.apply_chat_approval(chat_id, &mut request);
                 let harness = self.harness_for_request(chat_id, &request);
                 self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
                     .await?;
@@ -5245,6 +5274,26 @@ impl DocHost {
                 ))
             }
         }
+    }
+
+    /// The run config a steer that falls back to a new Turn dispatches with:
+    /// the last request (instructions stripped), else the chat row.
+    fn steer_fallback_request(
+        &self,
+        sessions: &SessionsEngine,
+        chat_id: &str,
+        prompt: &str,
+    ) -> Option<zeron_proto::RunRequest> {
+        let mut request = sessions
+            .last_request(chat_id)
+            .or_else(|| self.request_from_chat_row(chat_id, prompt))?;
+        request.prompt = prompt.to_string();
+        request.resume = None; // dispatch re-derives the harness session
+        // A reused config must not re-inline the PREVIOUS turn's images;
+        // this prompt's own refs (if any) ride its text.
+        request.attachments = Vec::new();
+        self.apply_chat_approval(chat_id, &mut request);
+        Some(request)
     }
 
     /// Put `prompt` in the pending-message queue instead of a run mailbox when

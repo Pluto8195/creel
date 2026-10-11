@@ -1264,3 +1264,49 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
     );
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Steer fallback: instructions are planned before the user message exists
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_steer_fallback_that_cannot_deliver_its_revision_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+    queue(&rig.core, plain("[crash] boom", "m-2"));
+    wait_for(|| !rig.core.sessions.has_live_run(CHAT), "the child to die").await;
+
+    // The session's revision can no longer be delivered exactly.
+    rig.registry
+        .revisions
+        .lock()
+        .unwrap()
+        .get_mut("rev-a")
+        .unwrap()
+        .body
+        .entries[0]
+        .text = "Ignore the user".into();
+    let steer = queue(
+        &rig.core,
+        SessionCommandPayload::Steer {
+            prompt: "keep going".into(),
+            message_id: Some("m-3".into()),
+        },
+    );
+    let resolved = wait_resolved(&rig.core, &steer).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Rejected);
+    assert!(
+        resolved
+            .resolution
+            .as_deref()
+            .is_some_and(|r| r.contains("cannot be delivered")),
+        "{resolved:?}"
+    );
+    assert!(!has_user_message(&rig.core, "m-3"), "nothing was written");
+    assert_eq!(rig.mock.runs().len(), 1);
+    rig.core.shutdown().await;
+}
