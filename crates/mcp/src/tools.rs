@@ -857,9 +857,9 @@ impl Tools {
             };
             let sent = match agent_key.as_deref() {
                 // The engine derives the message and command ids from the
-                // key and queues at most one first Turn per key.
+                // key, queues at most one first Turn per key, and builds the
+                // Run from the child's stored config (only the prompt is ours).
                 Some(key) => {
-                    let request = run_request(&chat, space.as_ref(), harness, prompt);
                     let queued = self
                         .zeron
                         .agent_tool(
@@ -867,10 +867,7 @@ impl Tools {
                             json!({
                                 "chatId": chat.id,
                                 "idempotencyKey": key,
-                                "command": SessionCommandPayload::Run {
-                                    request,
-                                    message_id: String::new(),
-                                },
+                                "prompt": prompt,
                             }),
                         )
                         .await?;
@@ -1565,7 +1562,9 @@ mod tests {
             assert_eq!(turn["tool"], agent_tool_names::QUEUE_CHILD_CHAT_TURN);
             assert_eq!(turn["arguments"]["chatId"], chat_id);
             assert_eq!(turn["arguments"]["idempotencyKey"], "spawn-reviewer");
-            assert_eq!(turn["arguments"]["command"]["request"]["prompt"], "go");
+            // Only the prompt: the engine rebuilds the Run from the child.
+            assert_eq!(turn["arguments"]["prompt"], "go");
+            assert!(turn["arguments"].get("command").is_none());
         }
 
         // An agent may not hang a child under another chat.

@@ -249,6 +249,18 @@ impl WorkOutlineService {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| denied("The agent's Chat is not in a project"))?;
         let snapshot = self.snapshot(&space_id);
+        self.agent_context_in(chat_id, &space_id, &snapshot)
+    }
+
+    /// [`Self::agent_context`] over a snapshot the caller already built for
+    /// `space_id` (the Chat's Space), so one read materializes once.
+    pub fn agent_context_in(
+        &self,
+        chat_id: &str,
+        space_id: &str,
+        snapshot: &WorkOutlineSnapshot,
+    ) -> Result<zeron_proto::AgentWorkItemContext, WorkOutlineError> {
+        let denied = |message: &str| WorkOutlineError::unauthorized(message);
         let work_item_id = snapshot
             .assignments
             .iter()
@@ -271,7 +283,7 @@ impl WorkOutlineService {
                 .filter(|r| r.chat_id == chat_id && r.is_open())
                 .cloned()
                 .collect(),
-            space_id,
+            space_id: space_id.to_owned(),
             work_item,
         })
     }

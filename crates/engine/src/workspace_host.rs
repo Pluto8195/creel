@@ -746,6 +746,17 @@ impl WorkspaceHost {
         })
     }
 
+    /// The live work item `chat_id` is assigned to in `space_id` (the lookup
+    /// the agent policy uses; one row read, no materialization).
+    pub fn chat_assigned_work_item(&self, chat_id: &str, space_id: &str) -> Option<String> {
+        self.read(|doc| doc.chat_assigned_work_item(chat_id, space_id))
+    }
+
+    /// The effective (repaired) parent of a work item in `space_id`.
+    pub fn effective_work_item_parent(&self, space_id: &str, work_item_id: &str) -> Option<String> {
+        self.read(|doc| doc.effective_work_item_parent(space_id, work_item_id))
+    }
+
     /// The Milestone 4 agent policy over the local replica (see
     /// `RegistryDoc::authorize_agent_mutation`).
     pub fn authorize_agent_work_outline(

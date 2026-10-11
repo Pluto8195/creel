@@ -892,6 +892,16 @@ impl RegistryDoc {
         (item.space_id == space_id).then(|| item_id.to_owned())
     }
 
+    /// The effective (repaired) parent of `work_item_id` in `space_id`
+    /// (`None` for a root item or an unknown one).
+    pub fn effective_work_item_parent(&self, space_id: &str, work_item_id: &str) -> Option<String> {
+        self.outline_tree(space_id)
+            .parent
+            .get(work_item_id)
+            .cloned()
+            .flatten()
+    }
+
     /// The narrow agent policy: `Ok` when an agent acting for Chat
     /// `chat_id` may perform `mutation`, else `unauthorized` (with the
     /// reason). Allowed, all within the Chat's Space:

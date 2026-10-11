@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use zeron_doc::SessionCommandPayload;
+use zeron_engine::agent_tools::AgentToolsLaunch;
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{AgentToolsInjection, Harness, HarnessError, RunControls};
 use zeron_proto::{
@@ -45,6 +46,8 @@ enum Spawn {
 #[derive(Clone, Default)]
 struct GatedHarness {
     spawns: Arc<Mutex<Vec<Spawn>>>,
+    /// Every Run request as the harness received it.
+    requests: Arc<Mutex<Vec<RunRequest>>>,
     release: Arc<Notify>,
 }
 
@@ -104,6 +107,7 @@ impl Harness for GatedHarness {
         self.spawns.lock().unwrap().push(Spawn::Plain {
             prompt: request.prompt.clone(),
         });
+        self.requests.lock().unwrap().push(request.clone());
         Ok(self.stream(&request))
     }
     async fn run_with_agent_tools(
@@ -116,6 +120,7 @@ impl Harness for GatedHarness {
             prompt: request.prompt.clone(),
             tools,
         });
+        self.requests.lock().unwrap().push(request.clone());
         Ok(self.stream(&request))
     }
 }
@@ -143,6 +148,13 @@ async fn rig() -> Rig {
         None,
     )
     .expect("engine core assembles");
+    // No IPC port is served here: name one explicitly (the default dials the
+    // port the engine bound, and injects nothing without one).
+    core.sessions.set_agent_tools_launch(Some(AgentToolsLaunch {
+        command: "/opt/zeron/bin/zeron".into(),
+        args: vec!["mcp".into()],
+        ipc_port: Some(27999),
+    }));
     let client = zeron_rpc::memory_client(core.rpc_service());
     let space_path = space_path.to_string_lossy().into_owned();
     client
@@ -260,7 +272,7 @@ async fn space_chat_runs_get_a_run_scoped_token_and_projectless_runs_get_none() 
     assert_eq!(tools.server_name, "zeron-agent");
     assert_eq!(tools.args, vec!["mcp".to_owned()]);
     let token = tools.env["ZERON_AGENT_TOKEN"].clone();
-    assert!(tools.env.contains_key("ZERON_IPC_PORT"));
+    assert_eq!(tools.env["ZERON_IPC_PORT"], "27999");
     assert_eq!(tokens.live_count(), 1);
 
     let origin = rig
@@ -727,4 +739,81 @@ async fn retries_with_one_key_dedupe_across_runs_and_conflict_on_new_inputs() {
     .unwrap();
     assert_ne!(a["workItemId"], d["workItemId"]);
     assert_eq!(count(&rig), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_child_first_turn_runs_with_the_child_chat_config_not_the_callers() {
+    let rig = rig().await;
+    let lease = rig
+        .core
+        .sessions
+        .agent_tokens()
+        .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let key = "spawn-reviewer";
+    let child = derive_id(
+        &zeron_proto::agent_tools::operation_id(CHAT, key),
+        roles::CHAT,
+    );
+    rig.client
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": child, "spaceId": SPACE,
+                    "deviceId": rig.core.device_id, "parentChatId": CHAT,
+                    "config": { "harness": "mock", "model": null, "reasoning": null,
+                                "sandbox": "read-only", "autoApprove": false } }),
+        )
+        .await
+        .unwrap();
+    // A caller trying to smuggle a wider Run: only the prompt survives.
+    let queued = tool(
+        &rig,
+        lease.token(),
+        "chat_queue_child_turn",
+        json!({
+            "chatId": child,
+            "idempotencyKey": key,
+            "prompt": "review the diff",
+            "command": { "type": "run", "messageId": "",
+                "request": { "prompt": "x", "cwd": "/", "sandbox": "danger-full-access",
+                             "autoApprove": true } },
+            "sandbox": "danger-full-access",
+            "autoApprove": true,
+            "cwd": "/",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(queued["chatId"], child);
+    wait_for(
+        || !rig.harness.requests.lock().unwrap().is_empty(),
+        "child run",
+    )
+    .await;
+    let request = rig.harness.requests.lock().unwrap()[0].clone();
+    assert_eq!(request.prompt, "review the diff");
+    assert_eq!(request.sandbox, SandboxLevel::ReadOnly);
+    assert!(!request.auto_approve);
+    assert_eq!(request.cwd, rig.space_path);
+    assert!(request.worktree.is_none());
+
+    // Not a child of the caller, or the wrong key: refused.
+    let err = tool(
+        &rig,
+        lease.token(),
+        "chat_queue_child_turn",
+        json!({ "chatId": OTHER_CHAT, "idempotencyKey": key, "prompt": "hi" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent-tools/forbidden"), "{err}");
+    let err = tool(
+        &rig,
+        lease.token(),
+        "chat_queue_child_turn",
+        json!({ "chatId": child, "idempotencyKey": key, "prompt": "   " }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent-tools/invalid"), "{err}");
+    rig.harness.release.notify_one();
 }

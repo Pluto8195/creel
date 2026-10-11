@@ -273,7 +273,7 @@ impl SessionsEngine {
             .inner
             .agent_tokens
             .mint(chat_id, run_id, &space_id, &self.inner.device_id);
-        let injection = launch.injection(lease.token());
+        let injection = launch.injection(lease.token())?;
         Some((lease, injection))
     }
 
@@ -2194,7 +2194,7 @@ async fn drive_run(
 ) {
     // The token lives exactly as long as this Run's driver: dropping the
     // lease (any return path below) revokes it.
-    let (_agent_token, agent_tools) = match agent_tools {
+    let (agent_token, agent_tools) = match agent_tools {
         Some((lease, injection)) => (Some(lease), Some(injection)),
         None => (None, None),
     };
@@ -2410,6 +2410,10 @@ async fn drive_run(
                 },
                 _ = live_heartbeat.tick() => {
                     inner.touch_session(&chat_id);
+                    // A live driver keeps its agent token's absolute expiry ahead.
+                    if let Some(lease) = &agent_token {
+                        lease.renew();
+                    }
                     continue;
                 }
                 // Idle reaper (zeron SESSION_IDLE_MS): a parked persistent session
