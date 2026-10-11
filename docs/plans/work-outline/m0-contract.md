@@ -1059,3 +1059,49 @@ ambiguous rule or a gap later work must close.
     per-Run agent token and MCP tools (parallel agent-tools work), a query for resolved-request
     history beyond the snapshot window, local-to-synced import of the new kinds, and edge
     `validateOp` backstops.
+
+## Milestone 3 review fixes
+
+Fixes for eight verified review defects (branch `work-outline-execution-fixes`). Each amends the
+Milestone 3 discoveries above.
+
+1. **HOME is never an execution root.** The validator rejects the user's home directory (and
+   symlink aliases) with the new blocking `homeDirectoryRoot` ("Choose a project folder inside
+   your home directory."). Dispatch skips the HOME-to-projectless remap for bound Chats, so a
+   binding captured with HOME by an older build is rejected, never run in the per-Chat
+   projectless folder. The execution-root folder picker refuses to confirm the device's home
+   (the browsed home, else `/Users/<name>`, `/home/<name>`, `/root`, `~`).
+2. **Malformed bindings fail closed.** `RegistryDoc::chat_execution_binding_state` returns
+   `Absent | Bound | Malformed` (`zeron_proto::ChatExecutionBindingState`). A live row that does
+   not decode is bound-and-invalid at every gate (dispatch validation, resume, retarget,
+   `claim_chat`, `CreateChatWorktree`, launch/continue, validation by Chat, branch auto-rename):
+   `configInvalid` with reason prefix `MALFORMED_CHAT_BINDING_REASON` and its own remediation
+   (update Zeron, or start a new Chat). `chat_execution_binding` (decoded only) stays for display
+   and diff data.
+3. **Boot order.** Engine assembly wires repos before `set_sessions` / `recover_stale`, so a bound
+   Chat's auto-resume finds the execution gate and resumes in its root.
+4. **No write before the resume check.** `execute_run`, queue promotion, and the steer fallback
+   validate scope and run `SessionsEngine::preflight_resume` (bound plain Turns) before the user
+   message is written; promotion also before interrupting the live turn and then dispatches
+   unchecked. `dispatch_inner` decides a plain Turn's resume before its own write. A refused
+   queued row returns to the queue with no transcript entry.
+5. **createNew retries adopt only their own worktree.** After `git worktree add` the launch
+   records `work-outline:launch-wt-checkout:{derive_id(op, path + checkout id)}`; a retry that
+   finds the claimed path requires that exact checkout id, else fails with remediation.
+6. **Unconfirmed members show nothing.** `ExecutionMember.unconfirmed` carries the validation
+   message and remediation (or "not confirmed yet") when validation did not confirm a member; the
+   Changes pane then shows no diff, no watch, and no header actions and explains why. Confirmed
+   members resolve by checkout id only (no cwd fallback). Diff-sync creates a member entry only
+   when the checkout at the path matches the binding (pinned worktree id, else repository id from
+   the git dir's `commondir` plus top level); no `git` spawn.
+7. **Continue refuses an empty cwd.** An assigned, unbound Chat without a folder gets
+   `work-outline/invalid` ("no folder to run in") instead of a Run in the engine's directory.
+8. **Worktree choice needs the root to be the target checkout.** `apply_worktree_choice` refuses
+   (before creating anything) when the execution root is not the target repository's checkout, so
+   launch discoveries item 5's "root unchanged" fill no longer occurs. The Start Chat dialog shows
+   `WorktreeTarget::Unavailable` with the explanation instead of the choice (path strings compare
+   after trimming a trailing slash; the engine compares canonically).
+
+Pre-existing on the integration base, unrelated: `message_queue`
+`restart_restores_the_queue_frozen_until_an_explicit_send` fails (startup dispatches the
+gracefully interrupted turn).
