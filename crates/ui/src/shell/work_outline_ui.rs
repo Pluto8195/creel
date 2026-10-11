@@ -158,6 +158,10 @@ pub(crate) enum OutlineNavKey {
     RenameSelected,
     CreateSibling,
     CreateChild,
+    MoveItemUp,
+    MoveItemDown,
+    IndentItem,
+    OutdentItem,
 }
 
 /// Default outline keys (identical on every platform: no primary modifier is
@@ -169,7 +173,12 @@ pub(crate) enum OutlineNavKey {
 /// - Enter: open the selected item (Work Item Details)
 /// - F2: rename in place
 /// - N / Shift+N: create a sibling / child
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 10] = [
+/// - Alt+Shift+Up / Alt+Shift+Down: move the selected work item before its
+///   previous / after its next sibling (Option+Shift on macOS)
+/// - Tab / Shift+Tab: indent (last child of the previous sibling) / outdent
+///   (after its former parent). With no work item selected they propagate,
+///   so Tab still walks focus out of the Outline.
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 14] = [
     ("up", OutlineNavKey::SelectPreviousSibling),
     ("down", OutlineNavKey::SelectNextSibling),
     ("alt-up", OutlineNavKey::SelectParent),
@@ -180,6 +189,10 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 10] = [
     ("f2", OutlineNavKey::RenameSelected),
     ("n", OutlineNavKey::CreateSibling),
     ("shift-n", OutlineNavKey::CreateChild),
+    ("alt-shift-up", OutlineNavKey::MoveItemUp),
+    ("alt-shift-down", OutlineNavKey::MoveItemDown),
+    ("tab", OutlineNavKey::IndentItem),
+    ("shift-tab", OutlineNavKey::OutdentItem),
 ];
 
 /// Bindings for the configurable Work Outline commands. An empty combo is
@@ -218,8 +231,9 @@ pub(crate) fn work_outline_bindings(keymap: &KeymapConfig) -> Vec<KeyBinding> {
 /// the actions of `work_outline::outline_view`.
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
-        Collapse, CreateChild, CreateSibling, Expand, OpenSelected, RenameSelected, SelectChild,
-        SelectNextSibling, SelectParent, SelectPreviousSibling,
+        Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
+        OpenSelected, OutdentItem, RenameSelected, SelectChild, SelectNextSibling, SelectParent,
+        SelectPreviousSibling,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
     cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| match key {
@@ -235,6 +249,10 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
         OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
         OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),
         OutlineNavKey::CreateChild => KeyBinding::new(keys, CreateChild, context),
+        OutlineNavKey::MoveItemUp => KeyBinding::new(keys, MoveItemUp, context),
+        OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
+        OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
+        OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
     }));
 }
 

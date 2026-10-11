@@ -501,7 +501,11 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::OpenEffectiveInstructions
         | ShortcutId::CreateInstructionFromChat
         | ShortcutId::OpenRequiredActions
-        | ShortcutId::StartChatForWorkItem => "Work Outline",
+        | ShortcutId::StartChatForWorkItem
+        | ShortcutId::MoveWorkItemUp
+        | ShortcutId::MoveWorkItemDown
+        | ShortcutId::IndentWorkItem
+        | ShortcutId::OutdentWorkItem => "Work Outline",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -545,6 +549,18 @@ fn description(id: ShortcutId) -> &'static str {
         }
         ShortcutId::OpenRequiredActions => {
             "Show the actions waiting on you for the selected work item."
+        }
+        ShortcutId::MoveWorkItemUp => {
+            "Move the selected work item above its previous sibling (Outline: Option+Shift+Up)."
+        }
+        ShortcutId::MoveWorkItemDown => {
+            "Move the selected work item below its next sibling (Outline: Option+Shift+Down)."
+        }
+        ShortcutId::IndentWorkItem => {
+            "Make the selected work item the last child of its previous sibling (Outline: Tab)."
+        }
+        ShortcutId::OutdentWorkItem => {
+            "Move the selected work item out of its parent, right after it (Outline: Shift+Tab)."
         }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.

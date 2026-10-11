@@ -9433,6 +9433,13 @@ impl Overview {
                     None => Err("Select a work item first"),
                 }
             }
+            WorkOutlineCommand::MoveWorkItemUp
+            | WorkOutlineCommand::MoveWorkItemDown
+            | WorkOutlineCommand::IndentWorkItem
+            | WorkOutlineCommand::OutdentWorkItem => match command.restructure_op() {
+                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selected(op, cx)),
+                None => Ok(()),
+            },
         };
         if let Err(notice) = result {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
@@ -14209,5 +14216,11 @@ mod logic_tests {
     /// Work Outline modules and shares this module's fixtures.
     mod required_actions_tests {
         include!("work_outline/required_actions_tests.rs");
+    }
+
+    /// Direct restructuring (keyboard, palette, picker placement, drag and
+    /// drop); shares this module's fixtures.
+    mod restructure_tests {
+        include!("work_outline/restructure_tests.rs");
     }
 }

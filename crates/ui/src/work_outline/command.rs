@@ -1,4 +1,4 @@
-//! Seam 1: the ten Work Outline commands and the confirmation request type.
+//! Seam 1: the fourteen Work Outline commands and the confirmation request type.
 //!
 //! Every entry point (command palette, keymap actions, Outline toolbar) forwards
 //! to `Shell::run_work_outline_command`, which routes to
@@ -23,10 +23,18 @@ pub(crate) enum WorkOutlineCommand {
     OpenRequiredActions,
     /// Milestone 3: start a Chat in the selected work item.
     StartChatForWorkItem,
+    /// Restructuring: before the previous sibling.
+    MoveWorkItemUp,
+    /// Restructuring: after the next sibling.
+    MoveWorkItemDown,
+    /// Restructuring: last child of the previous sibling.
+    IndentWorkItem,
+    /// Restructuring: after the former parent, one level up.
+    OutdentWorkItem,
 }
 
 impl WorkOutlineCommand {
-    pub(crate) const ALL: [WorkOutlineCommand; 10] = [
+    pub(crate) const ALL: [WorkOutlineCommand; 14] = [
         Self::OpenOutline,
         Self::CreateWorkItem,
         Self::CreateChildWorkItem,
@@ -37,6 +45,10 @@ impl WorkOutlineCommand {
         Self::CreateInstructionFromChat,
         Self::OpenRequiredActions,
         Self::StartChatForWorkItem,
+        Self::MoveWorkItemUp,
+        Self::MoveWorkItemDown,
+        Self::IndentWorkItem,
+        Self::OutdentWorkItem,
     ];
 
     /// Palette / menu label (sentence-style, matches the existing palette).
@@ -52,6 +64,10 @@ impl WorkOutlineCommand {
             Self::CreateInstructionFromChat => "Create Instruction from Chat",
             Self::OpenRequiredActions => "Open Required Actions",
             Self::StartChatForWorkItem => "Start Chat in Work Item",
+            Self::MoveWorkItemUp => "Move Work Item Up",
+            Self::MoveWorkItemDown => "Move Work Item Down",
+            Self::IndentWorkItem => "Indent Work Item",
+            Self::OutdentWorkItem => "Outdent Work Item",
         }
     }
 
@@ -67,6 +83,10 @@ impl WorkOutlineCommand {
             Self::OpenEffectiveInstructions | Self::CreateInstructionFromChat => icons::DOCUMENT,
             Self::OpenRequiredActions => icons::BELL,
             Self::StartChatForWorkItem => icons::ACTION_PLAY,
+            Self::MoveWorkItemUp => icons::ARROW_UP,
+            Self::MoveWorkItemDown => icons::ARROW_DOWN,
+            Self::IndentWorkItem => icons::ARROW_RIGHT,
+            Self::OutdentWorkItem => icons::ARROW_LEFT,
         }
     }
 
@@ -85,6 +105,10 @@ impl WorkOutlineCommand {
             Self::CreateInstructionFromChat => "createInstructionFromChat",
             Self::OpenRequiredActions => "openRequiredActions",
             Self::StartChatForWorkItem => "startChatForWorkItem",
+            Self::MoveWorkItemUp => "moveWorkItemUp",
+            Self::MoveWorkItemDown => "moveWorkItemDown",
+            Self::IndentWorkItem => "indentWorkItem",
+            Self::OutdentWorkItem => "outdentWorkItem",
         }
     }
 
@@ -102,6 +126,10 @@ impl WorkOutlineCommand {
             Self::CreateInstructionFromChat => ShortcutId::CreateInstructionFromChat,
             Self::OpenRequiredActions => ShortcutId::OpenRequiredActions,
             Self::StartChatForWorkItem => ShortcutId::StartChatForWorkItem,
+            Self::MoveWorkItemUp => ShortcutId::MoveWorkItemUp,
+            Self::MoveWorkItemDown => ShortcutId::MoveWorkItemDown,
+            Self::IndentWorkItem => ShortcutId::IndentWorkItem,
+            Self::OutdentWorkItem => ShortcutId::OutdentWorkItem,
         }
     }
 
@@ -133,7 +161,23 @@ impl WorkOutlineCommand {
                 | Self::MoveWorkItem
                 | Self::OpenEffectiveInstructions
                 | Self::StartChatForWorkItem
+                | Self::MoveWorkItemUp
+                | Self::MoveWorkItemDown
+                | Self::IndentWorkItem
+                | Self::OutdentWorkItem
         )
+    }
+
+    /// The restructuring a command performs, if it is one.
+    pub(crate) fn restructure_op(self) -> Option<super::restructure::RestructureOp> {
+        use super::restructure::RestructureOp;
+        match self {
+            Self::MoveWorkItemUp => Some(RestructureOp::MoveUp),
+            Self::MoveWorkItemDown => Some(RestructureOp::MoveDown),
+            Self::IndentWorkItem => Some(RestructureOp::Indent),
+            Self::OutdentWorkItem => Some(RestructureOp::Outdent),
+            _ => None,
+        }
     }
 
     /// Commands that act on the active or selected Chat.
@@ -204,12 +248,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ten_commands_with_unique_labels_and_ids() {
-        assert_eq!(WorkOutlineCommand::ALL.len(), 10);
+    fn fourteen_commands_with_unique_labels_and_ids() {
+        assert_eq!(WorkOutlineCommand::ALL.len(), 14);
         let ids: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.id()).collect();
         let labels: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.label()).collect();
-        assert_eq!(ids.len(), 10);
-        assert_eq!(labels.len(), 10);
+        assert_eq!(ids.len(), 14);
+        assert_eq!(labels.len(), 14);
         assert!(
             WorkOutlineCommand::ALL
                 .iter()
@@ -237,6 +281,10 @@ mod tests {
                 "createInstructionFromChat",
                 "openRequiredActions",
                 "startChatForWorkItem",
+                "moveWorkItemUp",
+                "moveWorkItemDown",
+                "indentWorkItem",
+                "outdentWorkItem",
             ]
         );
     }
