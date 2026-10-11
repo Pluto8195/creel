@@ -276,6 +276,13 @@ impl EngineCore {
         )?;
         doc_host.set_workspace(workspace.clone());
         doc_host.set_instruction_registry(Arc::new(workspace.clone()));
+        // Everything the dispatch gate needs (workspace + repos, so
+        // `execution_scope()` exists) is wired BEFORE sessions: wiring
+        // sessions kicks queue drains, and `recover_stale` spawns auto-resume
+        // dispatches. Without repos, a bound Chat's auto-resume was rejected
+        // as configInvalid and its resume attempt consumed.
+        let repos = Repos::new(data_dir, &device_id);
+        doc_host.set_repos(repos.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
         match sessions.recover_stale() {
@@ -284,8 +291,6 @@ impl EngineCore {
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
-        let repos = Repos::new(data_dir, &device_id);
-        doc_host.set_repos(repos.clone());
         let change_requests = CheckoutChangeRequests::start(repos.clone(), &device_id);
         let workspace_files =
             WorkspaceFiles::new(repos.clone(), workspace.clone(), device_id.clone());

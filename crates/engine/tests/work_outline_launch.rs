@@ -1400,3 +1400,72 @@ async fn home_directory_root_is_rejected_not_remapped_to_the_projectless_folder(
     assert_eq!(user_messages(&rig, "home-chat"), 0);
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Review fix 3: a bound Chat mid-turn at restart auto-resumes
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bound_chat_mid_turn_at_restart_auto_resumes_in_its_root() {
+    let rig = rig().await;
+    let reply = launch(&rig, &params(&rig, "op-restart", "launch restart [hold]"))
+        .await
+        .expect("launch");
+    let chat = reply.chat_id.clone();
+    wait_for(
+        || turns_with(&rig, "launch restart").len() == 1,
+        "the held turn",
+    )
+    .await;
+    assert!(rig.core.sessions.turn_in_flight(&chat));
+    let Rig {
+        _tmp,
+        core,
+        client,
+        root,
+        repo,
+        ..
+    } = rig;
+    core.shutdown().await;
+    drop(client);
+    drop(core);
+
+    // Relaunch over the same data dir: the boot recovery's auto-resume runs
+    // through the execution gate, which must already be wired.
+    let mock = InstructionMockHarness::default();
+    let harnesses = HarnessRegistry::new();
+    harnesses.register(Arc::new(mock.clone()));
+    let core = EngineCore::assemble(
+        &root.join("data"),
+        Arc::new(harnesses),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core reassembles");
+    wait_for(
+        || {
+            mock.turns()
+                .iter()
+                .any(|t| t.prompt.starts_with("launch restart"))
+        },
+        "the bound turn to auto-resume",
+    )
+    .await;
+    let turn = mock
+        .turns()
+        .into_iter()
+        .find(|t| t.prompt.starts_with("launch restart"))
+        .unwrap();
+    assert_eq!(mock.runs()[turn.run_index].cwd, repo.to_string_lossy());
+    let rejected = core
+        .doc_host
+        .open(&chat)
+        .unwrap()
+        .doc()
+        .read_commands()
+        .unwrap()
+        .into_iter()
+        .any(|c| c.status == SessionCommandStatus::Rejected);
+    assert!(!rejected);
+    core.shutdown().await;
+}
