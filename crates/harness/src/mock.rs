@@ -88,17 +88,23 @@ impl Harness for MockHarness {
     }
     async fn run_title(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // Title runs never carry Work Outline instructions.
+        request.instructions = None;
         self.run(request, controls).await
     }
 
     async fn run(
         &self,
-        _request: RunRequest,
+        request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // Not instruction-aware: an instruction-bearing run is refused before
+        // anything streams (acceptance 12). `InstructionMockHarness` is the
+        // instruction-aware test double.
+        crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
         // Optional pacing knob for demos/manual testing: `ZERON_MOCK_DELAY_MS`
         // spaces the scripted events out so live-run UI states (working
         // indicator, streaming fade, trailing tool-group auto-open) are
@@ -583,5 +589,320 @@ impl Harness for MockHarness {
                 event
             })
             .boxed())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Instruction-aware mock
+// ---------------------------------------------------------------------------
+
+/// One `run()` call (one Execution Session) seen by [`InstructionMockHarness`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedInstructionRun {
+    pub prompt: String,
+    pub resume: Option<String>,
+    /// The native session id the run reported in `SessionStarted`.
+    pub session_id: String,
+    pub instructions: Option<zeron_proto::InstructionDelivery>,
+}
+
+/// One Turn (the run's first prompt or a later mailbox prompt) and the
+/// envelope of the Execution Session it reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedInstructionTurn {
+    /// Index into [`InstructionMockHarness::runs`].
+    pub run_index: usize,
+    pub prompt: String,
+    pub revision_id: Option<String>,
+    pub envelope_sha256: Option<String>,
+}
+
+#[derive(Default)]
+struct InstructionMockState {
+    runs: Vec<RecordedInstructionRun>,
+    turns: Vec<RecordedInstructionTurn>,
+    next_session: usize,
+}
+
+/// Instruction-aware test double: declares `Supported` (configurable),
+/// records every envelope it receives, keeps a persistent session that takes
+/// later Turns through the steering mailbox (like Claude's stream-json child),
+/// and reports a native session id (`resume` when given, else a fresh one).
+///
+/// Prompt directives, for tests: a prompt containing `[hold]` keeps its Turn
+/// running until [`Self::release`]; `[crash]` ends the stream without a
+/// `Done` (the child died mid-Turn).
+#[derive(Clone)]
+pub struct InstructionMockHarness {
+    support: crate::InstructionSupport,
+    state: std::sync::Arc<std::sync::Mutex<InstructionMockState>>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl Default for InstructionMockHarness {
+    fn default() -> Self {
+        Self::new(crate::InstructionSupport::Supported {
+            channel: crate::InstructionChannel::Test,
+            replace_strategy: crate::InstructionReplaceStrategy::RespawnResume,
+            max_bytes: 64 * 1024,
+        })
+    }
+}
+
+impl InstructionMockHarness {
+    pub fn new(support: crate::InstructionSupport) -> Self {
+        Self {
+            support,
+            state: Default::default(),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, InstructionMockState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every Execution Session started so far, in order.
+    pub fn runs(&self) -> Vec<RecordedInstructionRun> {
+        self.state().runs.clone()
+    }
+
+    /// Every Turn delivered so far, in order.
+    pub fn turns(&self) -> Vec<RecordedInstructionTurn> {
+        self.state().turns.clone()
+    }
+
+    /// Let one `[hold]` Turn finish.
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[async_trait]
+impl Harness for InstructionMockHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Mock"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[ReasoningLevel::Medium]
+    }
+    fn deterministic_turn_end(&self) -> bool {
+        true
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(Vec::new())
+    }
+    fn instruction_support(&self) -> crate::InstructionSupport {
+        self.support.clone()
+    }
+
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        crate::require_instruction_support(self.id(), &self.support, &request)?;
+        let (run_index, session_id) = {
+            let mut state = self.state();
+            let session_id = match &request.resume {
+                Some(resume) => resume.clone(),
+                None => {
+                    state.next_session += 1;
+                    format!("mock-session-{}", state.next_session)
+                }
+            };
+            state.runs.push(RecordedInstructionRun {
+                prompt: request.prompt.clone(),
+                resume: request.resume.clone(),
+                session_id: session_id.clone(),
+                instructions: request.instructions.clone(),
+            });
+            (state.runs.len() - 1, session_id)
+        };
+        let envelope = request.instructions.as_ref().map(|d| d.envelope.clone());
+        let state = self.state.clone();
+        let release = self.release.clone();
+        let cwd = request.cwd.clone();
+        let first_prompt = request.prompt.clone();
+        let RunControls {
+            mut steering,
+            interrupt,
+            ..
+        } = controls;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<AgentEvent, HarnessError>>();
+        tokio::spawn(async move {
+            let record = |prompt: &str| {
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .turns
+                    .push(RecordedInstructionTurn {
+                        run_index,
+                        prompt: prompt.to_string(),
+                        revision_id: envelope.as_ref().map(|e| e.revision_id.clone()),
+                        envelope_sha256: envelope.as_ref().map(|e| e.envelope_sha256.clone()),
+                    });
+            };
+            let done = |status: DoneStatus| AgentEvent::Done {
+                status,
+                result: None,
+                error: None,
+                session_id: Some(session_id.clone()),
+            };
+            let _ = tx.send(Ok(AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: Vec::new(),
+                cwd,
+                session_id: session_id.clone(),
+                assistant_message_id: format!("{session_id}-a0"),
+            }));
+            let mut prompt = first_prompt;
+            let mut turn = 0usize;
+            loop {
+                record(&prompt);
+                let _ = tx.send(Ok(AgentEvent::TextDelta {
+                    text: format!("ack {turn}"),
+                }));
+                if prompt.contains("[crash]") {
+                    return; // stream ends without Done: the child died
+                }
+                if prompt.contains("[hold]") {
+                    tokio::select! {
+                        _ = release.notified() => {}
+                        _ = interrupt.cancelled() => {
+                            let _ = tx.send(Ok(done(DoneStatus::Interrupted)));
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(Ok(done(DoneStatus::Completed)));
+                // Parked between Turns: the next prompt arrives through the
+                // mailbox, exactly like a warm stream-json child.
+                let next = tokio::select! {
+                    next = steering.recv() => next,
+                    _ = interrupt.cancelled() => None,
+                };
+                let Some(next) = next else {
+                    if interrupt.is_cancelled() {
+                        let _ = tx.send(Ok(done(DoneStatus::Interrupted)));
+                    }
+                    return;
+                };
+                turn += 1;
+                let _ = tx.send(Ok(AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: Some(format!("{session_id}-a{turn}")),
+                }));
+                prompt = next.prompt;
+            }
+        });
+        Ok(futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|event| (event, rx))
+        })
+        .boxed())
+    }
+}
+
+#[cfg(test)]
+mod instruction_mock_tests {
+    use super::*;
+    use zeron_proto::{InstructionDelivery, InstructionEnvelope, InstructionTransition};
+
+    fn request(instructions: bool) -> RunRequest {
+        let mut request: RunRequest = serde_json::from_value(serde_json::json!({
+            "prompt": "p", "model": null, "reasoning": null, "cwd": ".",
+            "sandbox": "workspace-write", "resume": null
+        }))
+        .unwrap();
+        request.instructions = instructions.then(|| InstructionDelivery {
+            envelope: InstructionEnvelope {
+                revision_id: "rev-a".into(),
+                revision_hash: "h".into(),
+                envelope_version: 1,
+                envelope_sha256: "sha-a".into(),
+                rendered: "x".into(),
+            },
+            transition: InstructionTransition::Fresh,
+        });
+        request
+    }
+
+    fn controls() -> (RunControls, tokio::sync::mpsc::Sender<crate::SteerMessage>) {
+        let (steer_tx, steering) = tokio::sync::mpsc::channel(4);
+        (
+            RunControls {
+                request_input: Box::new(|_| tokio::sync::oneshot::channel().1),
+                steering,
+                interrupt: crate::CancellationToken::new(),
+            },
+            steer_tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn the_plain_mock_rejects_instruction_bearing_runs() {
+        let mock = MockHarness { script: Vec::new() };
+        let (controls, _steer) = controls();
+        let error = mock.run(request(true), controls).await.err().unwrap();
+        assert!(
+            matches!(error, HarnessError::Capability { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_instruction_mock_records_envelopes_per_turn() {
+        let mock = InstructionMockHarness::default();
+        assert!(mock.instruction_support().is_supported());
+        let (controls, steer) = controls();
+        let mut stream = mock.run(request(true), controls).await.unwrap();
+        let mut dones = 0;
+        while let Some(Ok(event)) = stream.next().await {
+            if matches!(event, AgentEvent::Done { .. }) {
+                dones += 1;
+                if dones == 1 {
+                    steer
+                        .send(crate::SteerMessage {
+                            prompt: "second".into(),
+                            message_id: None,
+                        })
+                        .await
+                        .unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+        let turns = mock.turns();
+        assert_eq!(turns.len(), 2);
+        assert!(
+            turns
+                .iter()
+                .all(|t| t.revision_id.as_deref() == Some("rev-a"))
+        );
+        assert_eq!(mock.runs()[0].session_id, "mock-session-1");
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_instruction_mock_rejects_before_recording() {
+        let mock = InstructionMockHarness::new(crate::InstructionSupport::no_channel());
+        let (controls, _steer) = controls();
+        assert!(matches!(
+            mock.run(request(true), controls).await.err().unwrap(),
+            HarnessError::Capability { .. }
+        ));
+        assert!(mock.runs().is_empty());
     }
 }

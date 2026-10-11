@@ -1849,6 +1849,9 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // No instruction channel (m0-instruction-delivery.md section 2):
+        // refuse instruction-bearing runs before spawning (acceptance 12).
+        crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
         let (scratch, mut child, stderr_tail) =
             self.spawn_agent(Some(&request.cwd), true, &[]).await?;
         let stdin = child

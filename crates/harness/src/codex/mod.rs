@@ -68,6 +68,7 @@
 //!   always ends with `Done { status: Interrupted }`.
 
 pub(crate) mod catalog;
+pub mod instructions;
 mod normalize;
 mod subagents;
 
@@ -143,6 +144,8 @@ pub struct CodexHarness {
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
     kill_grace: Duration,
+    /// `codex --version` instruction probe, cached per executable identity.
+    instruction_probe: crate::instruction_support::ProbeCache,
 }
 
 impl Default for CodexHarness {
@@ -153,6 +156,7 @@ impl Default for CodexHarness {
             model_discovery_cwd: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
+            instruction_probe: Default::default(),
         }
     }
 }
@@ -659,11 +663,27 @@ impl Harness for CodexHarness {
         self.discover_commands().await
     }
 
+    /// `Supported` on verified CLI versions (`codex --version`, cached per
+    /// executable identity); revision changes need a fresh thread.
+    fn instruction_support(&self) -> crate::InstructionSupport {
+        match self.resolve_executable() {
+            Ok(exe) => self.instruction_probe.get(&exe, instructions::probe),
+            Err(err) => crate::InstructionSupport::Unsupported {
+                reason: err.to_string(),
+                upgrade_hint: Some("Install Codex".into()),
+            },
+        }
+    }
+
     async fn run(
         &self,
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        if request.instructions.is_some() {
+            crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
+            instructions::check_transition(&request)?;
+        }
         self.run_with_mode(request, controls, false).await
     }
 
@@ -672,6 +692,7 @@ impl Harness for CodexHarness {
         mut request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        request.instructions = None;
         request.resume = None;
         request.worktree = None;
         request.attachments.clear();
@@ -868,6 +889,84 @@ async fn start_turn(client: &RpcClient, params: Value) -> Result<String, Harness
     Ok(started["turn"]["id"].as_str().unwrap_or("").to_owned())
 }
 
+/// Service tier rides thread-start and every turn (mirrors the Codex IDE
+/// client). "default" means Standard — omit it entirely.
+fn service_tier(request: &RunRequest) -> Option<String> {
+    request
+        .model_options
+        .get("serviceTier")
+        .and_then(Value::as_str)
+        .filter(|t| *t != "default")
+        .map(str::to_owned)
+}
+
+/// `thread/start` params. `auto_approve` (and the title run, which is
+/// read-only with no tools to approve) is yolo: policy "never", so the wire
+/// never surfaces approvals ("on-request" on an unattended run turned every
+/// command into a yes/no question — user report: "asking me for approval at
+/// every step"). A run without `auto_approve` uses "on-request" + the
+/// request's sandbox: the model works inside the sandbox and only ESCALATIONS
+/// (writes outside the workspace, network, unsandboxed commands) reach
+/// `handle_server_request` → `request_input`.
+///
+/// Work Outline instructions ride `developerInstructions` here, so the
+/// resume params ([`thread_resume_params`]) re-supply the identical value.
+fn thread_start_params(request: &RunRequest, title_only: bool) -> serde_json::Map<String, Value> {
+    let mut p = serde_json::Map::new();
+    if title_only {
+        p.insert("baseInstructions".into(), crate::TITLE_INSTRUCTIONS.into());
+        p.insert(
+            "developerInstructions".into(),
+            crate::TITLE_INSTRUCTIONS.into(),
+        );
+        p.insert("ephemeral".into(), true.into());
+        p.insert(
+            "config".into(),
+            json!({
+                "project_doc_max_bytes": 0,
+                "web_search": "disabled",
+                "features.shell_tool": false,
+                "features.apply_patch_freeform": false,
+                "features.multi_agent": false,
+                "features.apps": false,
+                "features.multi_agent_v2": false,
+                "agents.enabled": false,
+                "features.browser_use": false,
+                "features.computer_use": false,
+                "features.js_repl": false,
+                "features.image_generation": false,
+                "features.memories": false
+            }),
+        );
+    } else if let Some(text) = instructions::developer_instructions(request) {
+        p.insert("developerInstructions".into(), text.into());
+    }
+    p.insert("cwd".into(), Value::String(request.cwd.clone()));
+    p.insert(
+        "approvalPolicy".into(),
+        approval_policy_for(request.auto_approve, title_only).into(),
+    );
+    p.insert("sandbox".into(), sandbox_mode(request.sandbox).into());
+    if let Some(model) = &request.model {
+        p.insert("model".into(), Value::String(model.clone()));
+    }
+    if let Some(tier) = service_tier(request) {
+        p.insert("serviceTier".into(), Value::String(tier));
+    }
+    p
+}
+
+/// `thread/resume` params: the start params (instructions included, so the
+/// session's exact applied revision is always re-supplied) plus the thread id.
+fn thread_resume_params(
+    start: &serde_json::Map<String, Value>,
+    thread_id: &str,
+) -> serde_json::Map<String, Value> {
+    let mut p = start.clone();
+    p.insert("threadId".into(), Value::String(thread_id.to_owned()));
+    p
+}
+
 /// The per-run event loop: one task multiplexing app-server messages, the
 /// steering mailbox, the interrupt token, and consumer liveness.
 async fn run_session(session: Session) {
@@ -901,54 +1000,8 @@ async fn run_session(session: Session) {
     // `handle_server_request` → `request_input`.
     let approval_policy = approval_policy_for(request.auto_approve, title_only);
     let effort = to_effort(request.reasoning);
-    // Service tier rides thread-start and every turn (mirrors the Codex IDE
-    // client). "default" means Standard — omit it entirely.
-    let service_tier = request
-        .model_options
-        .get("serviceTier")
-        .and_then(Value::as_str)
-        .filter(|t| *t != "default")
-        .map(str::to_owned);
-
-    let start_params = {
-        let mut p = serde_json::Map::new();
-        if title_only {
-            p.insert("baseInstructions".into(), crate::TITLE_INSTRUCTIONS.into());
-            p.insert(
-                "developerInstructions".into(),
-                crate::TITLE_INSTRUCTIONS.into(),
-            );
-            p.insert("ephemeral".into(), true.into());
-            p.insert(
-                "config".into(),
-                json!({
-                    "project_doc_max_bytes": 0,
-                    "web_search": "disabled",
-                    "features.shell_tool": false,
-                    "features.apply_patch_freeform": false,
-                    "features.multi_agent": false,
-                    "features.apps": false,
-                    "features.multi_agent_v2": false,
-                    "agents.enabled": false,
-                    "features.browser_use": false,
-                    "features.computer_use": false,
-                    "features.js_repl": false,
-                    "features.image_generation": false,
-                    "features.memories": false
-                }),
-            );
-        }
-        p.insert("cwd".into(), Value::String(request.cwd.clone()));
-        p.insert("approvalPolicy".into(), approval_policy.into());
-        p.insert("sandbox".into(), sandbox_mode(request.sandbox).into());
-        if let Some(model) = &request.model {
-            p.insert("model".into(), Value::String(model.clone()));
-        }
-        if let Some(tier) = &service_tier {
-            p.insert("serviceTier".into(), Value::String(tier.clone()));
-        }
-        p
-    };
+    let service_tier = service_tier(&request);
+    let start_params = thread_start_params(&request, title_only);
 
     // ---- handshake + thread + first turn (interruptible) ------------------
     let setup = async {
@@ -985,8 +1038,7 @@ async fn run_session(session: Session) {
             }
         }
         let thread = if let Some(resume) = &request.resume {
-            let mut p = start_params.clone();
-            p.insert("threadId".into(), Value::String(resume.clone()));
+            let p = thread_resume_params(&start_params, resume);
             match client.request("thread/resume", Value::Object(p)).await {
                 Ok(thread) => thread,
                 // A missing/foreign rollout falls back to a fresh thread.
@@ -1942,6 +1994,85 @@ use crate::{Signal, send_signal, shutdown_child};
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn instruction_request(
+        resume: Option<&str>,
+        transition: zeron_proto::InstructionTransition,
+    ) -> RunRequest {
+        let mut request: RunRequest = serde_json::from_value(json!({
+            "prompt": "p", "model": "gpt-5.6-luna", "reasoning": null, "cwd": "/w",
+            "sandbox": "workspace-write", "resume": resume
+        }))
+        .unwrap();
+        request.instructions = Some(zeron_proto::InstructionDelivery {
+            envelope: zeron_proto::InstructionEnvelope {
+                revision_id: "rev-1".into(),
+                revision_hash: "hash-1".into(),
+                envelope_version: 1,
+                envelope_sha256: zeron_proto::envelope_sha256("ENVELOPE-1\n"),
+                rendered: "ENVELOPE-1\n".into(),
+            },
+            transition,
+        });
+        request
+    }
+
+    #[test]
+    fn developer_instructions_ride_thread_start_and_every_resume() {
+        use zeron_proto::InstructionTransition::{Continue, Fresh};
+        let fresh = thread_start_params(&instruction_request(None, Fresh), false);
+        assert_eq!(fresh["developerInstructions"], json!("ENVELOPE-1\n"));
+        assert!(fresh.get("baseInstructions").is_none());
+        // Native resume / crash respawn: the identical applied revision is
+        // re-supplied on thread/resume (guards the latent swap at compaction).
+        let resumed = thread_resume_params(
+            &thread_start_params(&instruction_request(Some("th-1"), Continue), false),
+            "th-1",
+        );
+        assert_eq!(resumed["threadId"], json!("th-1"));
+        assert_eq!(resumed["developerInstructions"], json!("ENVELOPE-1\n"));
+    }
+
+    #[test]
+    fn runs_without_instructions_send_no_developer_instructions() {
+        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        request.instructions = None;
+        assert!(
+            thread_start_params(&request, false)
+                .get("developerInstructions")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn title_runs_keep_title_instructions_only() {
+        let request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let params = thread_start_params(&request, true);
+        assert_eq!(
+            params["developerInstructions"],
+            json!(crate::TITLE_INSTRUCTIONS)
+        );
+    }
+
+    #[test]
+    fn a_revision_change_in_an_existing_thread_is_refused() {
+        let replace = zeron_proto::InstructionTransition::Replace {
+            previous_revision_id: "rev-0".into(),
+        };
+        assert!(matches!(
+            instructions::check_transition(&instruction_request(Some("th-1"), replace.clone())),
+            Err(HarnessError::Capability { .. })
+        ));
+        // A fresh thread may carry any revision.
+        assert!(instructions::check_transition(&instruction_request(None, replace)).is_ok());
+        assert!(
+            instructions::check_transition(&instruction_request(
+                Some("th-1"),
+                zeron_proto::InstructionTransition::Continue
+            ))
+            .is_ok()
+        );
+    }
 
     #[test]
     fn current_schema_and_legacy_visibility_are_compatible() {

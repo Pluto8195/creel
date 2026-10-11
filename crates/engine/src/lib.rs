@@ -28,6 +28,7 @@ pub mod doc_host;
 pub mod external_import;
 mod http_error;
 pub mod instance_lock;
+pub mod instruction_delivery;
 pub mod instruction_registry;
 pub mod liveness;
 pub mod local_import;
@@ -266,6 +267,7 @@ impl EngineCore {
             },
         )?;
         doc_host.set_workspace(workspace.clone());
+        doc_host.set_instruction_registry(Arc::new(workspace.clone()));
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
         match sessions.recover_stale() {
@@ -1016,6 +1018,16 @@ impl Engine {
             )?,
         };
         core.set_auth(auth.clone());
+        // Stamp per-harness Work Outline instruction tokens once the CLI
+        // probes (`claude --help`, `codex --version`) have run — blocking, so
+        // off the runtime; boot stamped only the static capability list.
+        {
+            let workspace = core.workspace.clone();
+            let registry = core.registry.clone();
+            tokio::task::spawn_blocking(move || {
+                instruction_delivery::restamp_device_capabilities(&workspace, &registry);
+            });
+        }
         let preview_workspace = core.workspace.clone();
         let preview_device = core.device_id.clone();
         let projects = Arc::new(move || {

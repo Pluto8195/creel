@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{RunRequest, UserInputAnswer};
+use zeron_proto::{InstructionRevisionPin, RunRequest, UserInputAnswer};
 
 use crate::constants::COMMAND_DEFAULT_TTL_MS;
 
@@ -21,6 +21,7 @@ pub enum SessionCommandKind {
     Steer,
     Interrupt,
     RespondInput,
+    RunWithInstructions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +55,23 @@ pub enum SessionCommandPayload {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
+    /// A `Run` that must be delivered with an exact Work Outline instruction
+    /// revision (`m0-contract.md` 5.3). A distinct `kind` so a host that
+    /// predates instruction delivery skips the entry (fail closed) instead of
+    /// running it without the instructions. The entry carries only the pin,
+    /// never outline content; the host re-renders and verifies the revision.
+    #[serde(rename_all = "camelCase")]
+    RunWithInstructions {
+        /// `instructions` stays `None`: the host fills it at drain time.
+        request: RunRequest,
+        message_id: String,
+        instructions: InstructionRevisionPin,
+        /// The user confirmed starting a fresh native session when the
+        /// harness cannot carry the conversation into a new revision
+        /// (replace strategy `FreshSession`, `m0-contract.md` 5.7).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        context_reset_confirmed: bool,
+    },
 }
 
 impl SessionCommandPayload {
@@ -63,6 +81,9 @@ impl SessionCommandPayload {
             SessionCommandPayload::Steer { .. } => SessionCommandKind::Steer,
             SessionCommandPayload::Interrupt {} => SessionCommandKind::Interrupt,
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
+            SessionCommandPayload::RunWithInstructions { .. } => {
+                SessionCommandKind::RunWithInstructions
+            }
         }
     }
 }
@@ -175,6 +196,35 @@ pub fn evaluate_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_with_instructions_wire_shape_is_pinned() {
+        let payload = SessionCommandPayload::RunWithInstructions {
+            request: run_request(),
+            message_id: "m1".into(),
+            instructions: InstructionRevisionPin {
+                revision_id: "rev-1".into(),
+                revision_hash: "abc".into(),
+            },
+            context_reset_confirmed: false,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["kind"], "runWithInstructions");
+        assert_eq!(value["messageId"], "m1");
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!({"revisionId": "rev-1", "revisionHash": "abc"})
+        );
+        assert!(value.get("contextResetConfirmed").is_none());
+        assert!(value["request"].get("instructions").is_none());
+        assert_eq!(payload.kind(), SessionCommandKind::RunWithInstructions);
+        assert_eq!(
+            serde_json::to_value(SessionCommandKind::RunWithInstructions).unwrap(),
+            "runWithInstructions"
+        );
+        let back: SessionCommandPayload = serde_json::from_value(value).unwrap();
+        assert_eq!(back, payload);
+    }
 
     fn entry(id: &str, payload: SessionCommandPayload, issued_at: i64) -> SessionCommandEntry {
         SessionCommandEntry {

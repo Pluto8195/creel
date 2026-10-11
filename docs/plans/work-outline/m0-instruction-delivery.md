@@ -379,3 +379,35 @@ All of this must happen **before** `write_user_message` (`doc_host.rs:4371`, `se
 - **Prompt cache cost** of snapshot `off` (the prompt is re-rendered every request); unmeasured.
 - **Size**: Claude via file (no argv limit). Codex via JSON-RPC (no practical limit). The registry budget (9,000 characters of effective instruction text) bounds it in any case.
 - **Spike scope**: n=1 per cell for most cells, small models, manual compaction. Re-run the matrix (scripted from `/tmp/zeron-m0/*.py|sh`, to be ported into `crates/harness/tests/real_*` behind the existing real-harness test gating) on each harness version bump.
+
+---
+
+## Milestone 2 trials
+
+Run on 2026-10-10 against Codex CLI `0.154.0` (`codex app-server`), model `gpt-5.6-luna` at effort low, scratch cwd `/tmp/zeron-m2/work`, `approvalPolicy: never`, read-only sandbox, `-c features.computer_use=false` and the other M0 isolation overrides. Script: `/tmp/zeron-m2/codex_compact_trials.py` (ephemeral; same client as the M0 spike). Side effects: six new rollout files under `~/.codex/sessions/2026/10/10/`; no existing session or configuration was read or changed.
+
+**Question.** Is "resume with the new `developerInstructions`, then `thread/compact/start`, then the next turn" (X8, n=1 in M0) a reliable way to replace a revision inside an existing thread (strategy `CompactSwap`)?
+
+**Trial shape (each trial a new thread).**
+1. Process 1: `thread/start(developerInstructions=A)`; turn "Remember the number N. Reply with only OK."; turn "Reply with only OK."; kill.
+2. Process 2: `thread/resume(developerInstructions=B)`; `thread/compact/start`, wait for the compaction turn's `turn/completed`; ask the secret-word question (section 4 wording, which asks for every secret word present); then ask for the remembered number.
+3. Pass: the answer contains B and not A. The number recall checks that the conversation survived compaction.
+
+| # | Answer | Instructions | Number recalled |
+|---|---|---|---|
+| 1 | B | pass | yes |
+| 2 | B | pass | yes |
+| 3 | A, B | **fail** | yes |
+| 4 | A, B | **fail** | yes |
+| 5 | B | pass | yes |
+| 6 | B | pass | yes |
+
+**Result: 4 of 6.** In the failing trials the model still saw the old revision after compaction. The compacted rollout (`type: compacted`, `replacement_history`) keeps the user turns plus an encrypted server-side `compaction` item, and the old developer text evidently survives inside that summary in some runs. Compaction never emitted `thread/compacted` in these runs (only the compaction turn's `turn/started` / `item/*` / `turn/completed`), so completion must be detected from `turn/completed`.
+
+**Decision (implemented).** The bar was "all trials pass", so Codex's replace strategy is `FreshSession`, not `CompactSwap`:
+- `developerInstructions` rides `thread/start` and is re-supplied, identically, on every `thread/resume` (fresh run, warm turns in the same process, crash respawn, native resume).
+- A revision change at a Turn boundary starts a new Codex thread. The engine first rejects the Turn with a resolution starting `instructionContextResetRequired` (no user message written); the client confirms the context reset and resends with `contextResetConfirmed: true`, and the engine dispatches it fresh (`transition: fresh`, no resume).
+- The adapter refuses a `replace` transition aimed at an existing thread with `HarnessError::Capability`, so no code path can resume with a different value.
+- `thread/compact/start` is not used by Zeron.
+
+Claude Code needed no new trials: C4, C10, and C12 already show that `--resume` + `--append-system-prompt-file` + `--system-prompt-snapshot off` replaces cleanly and preserves the conversation (`RespawnResume`). Milestone 2 pins the argv on every spawn path in unit tests and probes `claude --help` at boot (2.1.285 lists `--system-prompt-snapshot` and the `--append-system-prompt[-file]` form; `--version` cannot be the probe because the CLI ignores unknown flags when printing its version).

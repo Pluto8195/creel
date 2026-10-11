@@ -544,6 +544,7 @@ pub(crate) mod fixture {
                 drift: true,
                 delivered_revision_id: Some(R_API_OLD.into()),
                 delivered_revision_hash: Some(old_body.hash.clone()),
+                selected_revision_integrity: None,
             },
             ChatInstructionState {
                 chat_id: CHAT_AUTH.into(),
@@ -553,6 +554,7 @@ pub(crate) mod fixture {
                 drift: false,
                 delivered_revision_id: None,
                 delivered_revision_hash: None,
+                selected_revision_integrity: None,
             },
         ];
         snapshot.revisions = vec![

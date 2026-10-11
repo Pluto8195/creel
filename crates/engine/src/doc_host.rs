@@ -34,10 +34,15 @@ use zeron_doc::{
     SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
     join_continuation_entries,
 };
-use zeron_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInputQuestion};
+use zeron_proto::{
+    ConversationSourceContext, HarnessId, InstructionDelivery, InstructionEnvelope,
+    InstructionRevisionPin, InstructionTransition, UserInputAnswer, UserInputQuestion,
+};
 use zeron_sync::DocsStore;
 
 use crate::http_error::describe_http_error;
+use crate::instruction_delivery::{self, PinResolution, RevisionWait};
+use crate::instruction_registry::InstructionRegistry;
 use crate::project_actions::{
     ProjectActionSetupHandoff, ProjectActionsStore, launch_project_setup_action,
 };
@@ -316,17 +321,42 @@ struct DocHostInner {
     /// Shared client for sidecar blob PUT/GET (30s timeout, uploads.rs
     /// discipline — diff_sync's untimed client hung on dead links).
     http: reqwest::Client,
+    /// Work Outline registry seam (engine assembly): resolves pinned
+    /// instruction revisions and records delivered Execution Sessions.
+    instruction_registry: Mutex<Option<Arc<dyn InstructionRegistry>>>,
+    /// Bounded wait for a pinned revision that has not synced yet.
+    revision_wait: Mutex<RevisionWait>,
+    /// When each deferred instruction-bearing command first waited on its
+    /// revision (the wait is bounded from here, not from `issued_at`, so a
+    /// command that sat offline is not rejected the moment its host returns).
+    revision_wait_started: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Put a taken queue row back after a failed send, with the instruction pin
+/// it captured at queue time.
+fn restore_queued(
+    handle: &ChatDocHandle,
+    index: usize,
+    item: &QueuedMessage,
+    pin: Option<&InstructionRevisionPin>,
+) {
+    let _ = handle.doc.insert_queued(index, item);
+    if let Some(pin) = pin {
+        let _ = handle.doc.set_queued_instructions(&item.id, pin);
+    }
+    handle.publish_queue();
+}
+
 /// The queued-attachment transfers a command's `pending://` refs imply —
 /// shared by the retry escort and the retry re-issue.
 fn command_transfers(entry: &SessionCommandEntry) -> Vec<crate::uploads::AttachmentTransfer> {
     let refs: Vec<String> = match &entry.payload {
-        SessionCommandPayload::Run { request, .. } => request
+        SessionCommandPayload::Run { request, .. }
+        | SessionCommandPayload::RunWithInstructions { request, .. } => request
             .attachments
             .iter()
             .filter(|p| crate::uploads::is_pending_ref(p))
@@ -820,6 +850,9 @@ impl DocHost {
                 connectivity_grace: Mutex::new(DegradeGrace::default()),
                 executing: Mutex::new(HashSet::new()),
                 links: OnceLock::new(),
+                instruction_registry: Mutex::new(None),
+                revision_wait: Mutex::new(RevisionWait::default()),
+                revision_wait_started: Mutex::new(HashMap::new()),
                 http: reqwest::Client::builder()
                     .connect_timeout(std::time::Duration::from_secs(15))
                     .read_timeout(std::time::Duration::from_secs(30))
@@ -1152,6 +1185,51 @@ impl DocHost {
     }
 
     /// The workspace host, once wired (tests may assemble a DocHost without one).
+    /// Wire the Work Outline registry seam (engine assembly; the
+    /// `WorkspaceHost` implementation). Instruction-bearing work waits (then
+    /// fails closed) until this is set.
+    pub fn set_instruction_registry(&self, registry: Arc<dyn InstructionRegistry>) {
+        *lock(&self.inner.instruction_registry) = Some(registry);
+        self.kick_drains();
+    }
+
+    pub fn instruction_registry(&self) -> Option<Arc<dyn InstructionRegistry>> {
+        lock(&self.inner.instruction_registry).clone()
+    }
+
+    /// Tune the bounded wait for not-yet-synced revisions (tests).
+    pub fn set_revision_wait(&self, wait: RevisionWait) {
+        *lock(&self.inner.revision_wait) = wait;
+    }
+
+    fn revision_wait(&self) -> RevisionWait {
+        *lock(&self.inner.revision_wait)
+    }
+
+    /// Resolve a pinned revision to its verified envelope, waiting (bounded)
+    /// while it syncs. Never substitutes another revision.
+    pub(crate) async fn resolve_instruction_pin(
+        &self,
+        pin: &InstructionRevisionPin,
+    ) -> Result<InstructionEnvelope, EngineError> {
+        let host = self.clone();
+        instruction_delivery::resolve_pin_waiting(
+            move || host.instruction_registry(),
+            pin,
+            self.revision_wait(),
+        )
+        .await
+    }
+
+    /// The Chat's selected revision (latest accepted application), if any.
+    pub(crate) fn selected_instruction_revision(
+        &self,
+        chat_id: &str,
+    ) -> Option<InstructionRevisionPin> {
+        self.instruction_registry()?
+            .selected_instruction_revision(chat_id)
+    }
+
     pub fn workspace(&self) -> Option<&WorkspaceHost> {
         self.inner.workspace.get()
     }
@@ -2530,8 +2608,11 @@ impl DocHost {
         });
         let is_message = matches!(
             payload,
-            SessionCommandPayload::Run { .. } | SessionCommandPayload::Steer { .. }
+            SessionCommandPayload::Run { .. }
+                | SessionCommandPayload::RunWithInstructions { .. }
+                | SessionCommandPayload::Steer { .. }
         );
+        self.preflight_instruction_command(chat_id, &payload)?;
         let entry = SessionCommandEntry {
             id: id.clone(),
             payload,
@@ -2556,6 +2637,51 @@ impl DocHost {
         self.nudge_remote_host(chat_id);
         self.spawn_command_delivery(chat_id, entry, transfers);
         Ok(id)
+    }
+
+    /// Sender preflight for instruction-bearing commands (contract 5.5): a
+    /// remote host must advertise instruction delivery for the harness, and a
+    /// local host must be able to deliver right now. Rejects with an upgrade
+    /// message instead of queueing work that would sit Pending forever.
+    fn preflight_instruction_command(
+        &self,
+        chat_id: &str,
+        payload: &SessionCommandPayload,
+    ) -> Result<(), EngineError> {
+        let SessionCommandPayload::RunWithInstructions { request, .. } = payload else {
+            return Ok(());
+        };
+        let harness = self.harness_for_request(chat_id, request);
+        match self.remote_host_for(chat_id) {
+            Some(host_id) => {
+                let devices = self
+                    .workspace()
+                    .map(|ws| ws.read_devices())
+                    .transpose()?
+                    .unwrap_or_default();
+                let host = devices.iter().find(|d| d.id == host_id);
+                instruction_delivery::remote_host_preflight(host, &host_id, harness)
+                    .map_err(EngineError::Other)
+            }
+            None => {
+                let Some(sessions) = self.sessions() else {
+                    return Ok(()); // the drain re-checks once wired
+                };
+                match sessions.instruction_support(harness)? {
+                    zeron_harness::InstructionSupport::Supported { .. } => Ok(()),
+                    zeron_harness::InstructionSupport::Unsupported {
+                        reason,
+                        upgrade_hint,
+                    } => Err(EngineError::Other(
+                        instruction_delivery::capability_message(
+                            harness,
+                            &reason,
+                            upgrade_hint.as_deref(),
+                        ),
+                    )),
+                }
+            }
+        }
     }
 
     /// A send revives an archived chat on every device (best-effort).
@@ -2598,16 +2724,23 @@ impl DocHost {
     ) -> Result<String, EngineError> {
         let handle = self.open(chat_id)?;
         let id = new_id();
-        handle.doc.push_queued(&QueuedMessage {
-            id: id.clone(),
-            text: text.to_string(),
-            attachments,
-            hold_for_turn_end,
-            issued_by: self.inner.config.device_id.clone(),
-            issued_at: now_ms(),
-            edited_at: None,
-            delivery_gate: None,
-        })?;
+        // Capture at queue time (acceptance 10): the row is delivered with the
+        // revision the Chat had selected when the user queued it, even if a
+        // newer one is applied before it drains.
+        let instructions = self.selected_instruction_revision(chat_id);
+        handle.doc.push_queued_with_instructions(
+            &QueuedMessage {
+                id: id.clone(),
+                text: text.to_string(),
+                attachments,
+                hold_for_turn_end,
+                issued_by: self.inner.config.device_id.clone(),
+                issued_at: now_ms(),
+                edited_at: None,
+                delivery_gate: None,
+            },
+            instructions.as_ref(),
+        )?;
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
         self.unarchive_on_send(chat_id);
@@ -3044,13 +3177,14 @@ impl DocHost {
                 "queued message is blocked for editing or review".into(),
             ));
         }
+        let pin = handle.doc.queued_instructions(id);
         let Some(item) = handle.doc.take_queued(id)? else {
             return Ok(false);
         };
         let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
         handle.publish_queue();
         if let Err(err) = self
-            .dispatch_queued(&handle, &item, QueueSend::Interrupt)
+            .dispatch_queued(&handle, &item, pin.clone(), QueueSend::Interrupt)
             .await
         {
             if was_paused {
@@ -3058,8 +3192,7 @@ impl DocHost {
             }
             // Put it back rather than swallowing what the user typed — at the
             // head, because the user just said this one was the urgent one.
-            let _ = handle.doc.insert_queued(0, &item);
-            handle.publish_queue();
+            restore_queued(&handle, 0, &item, pin.as_ref());
             return Err(err);
         }
         Ok(true)
@@ -3104,6 +3237,18 @@ impl DocHost {
                 "queued message is blocked for editing or review".into(),
             ));
         }
+        let pin = handle.doc.queued_instructions(id);
+        // A row captured under a different revision than the live Execution
+        // Session never steers into its Turn (acceptance 11).
+        if let Some(pin) = &pin
+            && sessions
+                .live_instruction_pin(chat_id)
+                .is_some_and(|live| live.as_ref() != Some(pin))
+        {
+            return Err(EngineError::Other(
+                crate::sessions::TURN_BOUNDARY_MESSAGE.into(),
+            ));
+        }
         let Some(item) = handle.doc.take_queued(id)? else {
             return Ok(false);
         };
@@ -3112,12 +3257,14 @@ impl DocHost {
         // Always attempt the non-interrupting path first. If no turn exists,
         // `dispatch_queued` falls through to NextTurn; if a new turn appeared
         // after our capability check, the prompt steers that turn instead.
-        if let Err(err) = self.dispatch_queued(&handle, &item, QueueSend::Steer).await {
+        if let Err(err) = self
+            .dispatch_queued(&handle, &item, pin.clone(), QueueSend::Steer)
+            .await
+        {
             if was_paused {
                 handle.queue_paused.store(true, Ordering::Release);
             }
-            let _ = handle.doc.insert_queued(0, &item);
-            handle.publish_queue();
+            restore_queued(&handle, 0, &item, pin.as_ref());
             return Err(err);
         }
         Ok(true)
@@ -3186,17 +3333,17 @@ impl DocHost {
                 return; // All queued messages wait, including rows from older clients.
             }
             let send = QueueSend::NextTurn;
+            let pin = handle.doc.queued_instructions(&head.id);
             // Take it only once we know it is going out — a row that stays in
             // the queue on a failed send is recoverable; a vanished one is not.
             let Ok(Some(item)) = handle.doc.take_queued(&head.id) else {
                 return;
             };
             handle.publish_queue();
-            if let Err(err) = self.dispatch_queued(handle, &item, send).await {
+            if let Err(err) = self.dispatch_queued(handle, &item, pin.clone(), send).await {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");
                 handle.queue_paused.store(true, Ordering::Release);
-                let _ = handle.doc.insert_queued(0, &item);
-                handle.publish_queue();
+                restore_queued(handle, 0, &item, pin.as_ref());
                 return;
             }
         }
@@ -3228,11 +3375,13 @@ impl DocHost {
         }
     }
 
-    /// Send one taken queue row.
+    /// Send one taken queue row. `pin` is the instruction revision the row
+    /// captured at queue time; it is delivered exactly (never a newer one).
     async fn dispatch_queued(
         &self,
         handle: &Arc<ChatDocHandle>,
         item: &QueuedMessage,
+        pin: Option<InstructionRevisionPin>,
         send: QueueSend,
     ) -> Result<(), EngineError> {
         let Some(sessions) = self.sessions() else {
@@ -3282,6 +3431,16 @@ impl DocHost {
         request.prompt = prompt;
         request.resume = None; // dispatch re-derives the harness session
         request.attachments = item.attachments.clone();
+        // The captured revision, resolved and verified now (bounded wait while
+        // it syncs). A row without one takes its Turn's revision from the
+        // Execution Session in dispatch — never dropped, never the newest.
+        request.instructions = match &pin {
+            Some(pin) => Some(InstructionDelivery {
+                envelope: self.resolve_instruction_pin(pin).await?,
+                transition: InstructionTransition::Fresh,
+            }),
+            None => None,
+        };
         self.apply_chat_approval(chat_id, &mut request);
         let harness = self.harness_for_request(chat_id, &request);
         self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
@@ -3589,7 +3748,10 @@ impl DocHost {
         let mut latest_dead: HashMap<String, &SessionCommandEntry> = HashMap::new();
         for c in &commands {
             let Some(mid) = (match &c.payload {
-                SessionCommandPayload::Run { message_id, .. } => Some(message_id.as_str()),
+                SessionCommandPayload::Run { message_id, .. }
+                | SessionCommandPayload::RunWithInstructions { message_id, .. } => {
+                    Some(message_id.as_str())
+                }
                 SessionCommandPayload::Steer { message_id, .. } => message_id.as_deref(),
                 _ => None,
             }) else {
@@ -3620,8 +3782,10 @@ impl DocHost {
                     && !self.inner.store.is_processed(&o.id).unwrap_or(false)
                     && match (&o.payload, &c.payload) {
                         (
-                            SessionCommandPayload::Run { message_id: a, .. },
-                            SessionCommandPayload::Run { message_id: b, .. },
+                            SessionCommandPayload::Run { message_id: a, .. }
+                            | SessionCommandPayload::RunWithInstructions { message_id: a, .. },
+                            SessionCommandPayload::Run { message_id: b, .. }
+                            | SessionCommandPayload::RunWithInstructions { message_id: b, .. },
                         ) => a == b,
                         (
                             SessionCommandPayload::Steer { message_id: a, .. },
@@ -3700,6 +3864,18 @@ impl DocHost {
         // (retryably) rather than run without the images.
         if !self.missing_attachments(&entry).is_empty() {
             return Err(EngineError::Other("attachments not landed yet".into()));
+        }
+        // Same for a pinned instruction revision still syncing: never run
+        // without it (the doc road's drain gate waits for it too).
+        if let SessionCommandPayload::RunWithInstructions { instructions, .. } = &entry.payload
+            && instruction_delivery::resolve_pin(
+                self.instruction_registry().as_deref(),
+                instructions,
+            ) == PinResolution::Missing
+        {
+            return Err(EngineError::Other(
+                "instruction revision not synced yet".into(),
+            ));
         }
         let sessions = self
             .sessions()
@@ -4129,6 +4305,49 @@ impl DocHost {
                     continue;
                 }
             }
+            // Pinned-revision gate (BEFORE the processed mark, like the
+            // attachment gate): an instruction-bearing Run whose exact
+            // revision has not synced to this device waits, bounded from the
+            // first deferral, then fails loudly. Never substituted.
+            if matches!(disposition, CommandDisposition::Execute)
+                && let SessionCommandPayload::RunWithInstructions { instructions, .. } =
+                    &entry.payload
+                && instruction_delivery::resolve_pin(
+                    self.instruction_registry().as_deref(),
+                    instructions,
+                ) == PinResolution::Missing
+            {
+                let waited = {
+                    let mut started = lock(&self.inner.revision_wait_started);
+                    started
+                        .entry(entry.id.clone())
+                        .or_insert_with(std::time::Instant::now)
+                        .elapsed()
+                };
+                if waited < self.revision_wait().max {
+                    tracing::info!(chat = %handle.chat_id, command = %entry.id,
+                        revision = %instructions.revision_id,
+                        "command deferred: instruction revision not synced yet");
+                    self.arm_revision_wait(handle);
+                    return; // preserve order; the wait timer re-kicks
+                }
+                lock(&self.inner.revision_wait_started).remove(&entry.id);
+                if let Err(err) = self.inner.store.mark_processed(&entry.id) {
+                    tracing::error!(chat = %handle.chat_id, error = %err,
+                        "processed-ledger write failed; halting drain");
+                    return;
+                }
+                tracing::warn!(chat = %handle.chat_id, command = %entry.id,
+                    "command rejected: instruction revision never synced");
+                self.resolve_command(
+                    handle,
+                    &entry.id,
+                    SessionCommandStatus::Rejected,
+                    Some(&instruction_delivery::missing_revision_error(instructions)),
+                );
+                continue;
+            }
+            lock(&self.inner.revision_wait_started).remove(&entry.id);
             // In-flight claim: guards the dead-command sweep (an id in
             // `executing` is alive, not crashed) and serializes racing
             // drains on the same entry.
@@ -4171,7 +4390,8 @@ impl DocHost {
     /// subsystem must never wedge a queue.
     fn missing_attachments(&self, entry: &SessionCommandEntry) -> Vec<String> {
         let refs: Vec<String> = match &entry.payload {
-            SessionCommandPayload::Run { request, .. } => request
+            SessionCommandPayload::Run { request, .. }
+            | SessionCommandPayload::RunWithInstructions { request, .. } => request
                 .attachments
                 .iter()
                 .filter(|p| crate::uploads::is_pending_ref(p))
@@ -4217,6 +4437,53 @@ impl DocHost {
             }
             lock(&host.inner.drain_waiting).remove(&chat);
         });
+    }
+
+    /// Arm (once per chat) the re-drain loop for commands deferred on a
+    /// pinned instruction revision that has not synced yet: backoff steps
+    /// until it lands or the bounded wait expires (the drain then rejects).
+    fn arm_revision_wait(&self, handle: &Arc<ChatDocHandle>) {
+        let key = format!("revision:{}", handle.chat_id);
+        if !lock(&self.inner.drain_waiting).insert(key.clone()) {
+            return;
+        }
+        let weak = Arc::downgrade(handle);
+        let host = self.clone();
+        self.spawn_worker(async move {
+            let mut attempt = 0u32;
+            loop {
+                tokio::time::sleep(host.revision_wait().step(attempt)).await;
+                attempt = attempt.saturating_add(1);
+                let Some(handle) = weak.upgrade() else { break };
+                // Drain first: a revision that just landed is the reason to
+                // stop waiting, and its command still has to run.
+                host.drain_commands(&handle).await;
+                if !host.awaiting_revisions(&handle) {
+                    break;
+                }
+            }
+            lock(&host.inner.drain_waiting).remove(&key);
+        });
+    }
+
+    /// True while some pending, unprocessed command waits on its revision.
+    fn awaiting_revisions(&self, handle: &Arc<ChatDocHandle>) -> bool {
+        let registry = self.instruction_registry();
+        handle
+            .doc
+            .read_commands()
+            .unwrap_or_default()
+            .iter()
+            .any(|c| {
+                c.status == SessionCommandStatus::Pending
+                    && !self.inner.store.is_processed(&c.id).unwrap_or(false)
+                    && matches!(
+                        &c.payload,
+                        SessionCommandPayload::RunWithInstructions { instructions, .. }
+                            if instruction_delivery::resolve_pin(registry.as_deref(), instructions)
+                                == PinResolution::Missing
+                    )
+            })
     }
 
     /// True while some pending, unprocessed command still waits on bytes.
@@ -4292,102 +4559,24 @@ impl DocHost {
                 request,
                 message_id,
             } => {
-                let mut request = request.clone();
-                // Queued-attachment refs (`pending://`) resolve to this
-                // host's absolute paths before anything persists or
-                // dispatches — the drain already gated on the bytes being
-                // present, so every ref resolves here.
-                self.resolve_request_attachments(&mut request);
-                // Worktree directive (WorktreeSpec): materialize on THIS host at
-                // drain time — the durable command plane replaces the sender's
-                // old blocking CreateWorktree relay RPC, whose lost reply wedged
-                // the composer on "Sending…" while the run proceeded anyway.
-                // `take()` resolves the request before dispatch, so the journal
-                // and steer→new-turn fallbacks reuse the created path instead of
-                // minting another checkout.
-                let worktree_spec = request.worktree.take();
-                let fresh_worktree = match &worktree_spec {
-                    Some(spec) => {
-                        let (cwd, fresh) = self.materialize_worktree(chat_id, &spec).await?;
-                        request.cwd = cwd;
-                        fresh
-                    }
-                    None => None,
-                };
-                // Claim-on-first-command: a run for a chat with no workspace row
-                // creates the row under our device id (we are about to host it).
-                if let Some(ws) = self.workspace() {
-                    ws.claim_chat(chat_id, Some(&request.cwd))?;
-                    // A pre-existing row (the client's createChat raced ahead)
-                    // still carries the repo folder — repoint it at the fresh
-                    // worktree, and stamp the actual `zeron/<name>` branch so
-                    // the footer and the title-rename flow see it.
-                    if let Some(wt) = &fresh_worktree {
-                        if let Err(err) = ws.set_chat_cwd(chat_id, &wt.path) {
-                            tracing::warn!(chat = %chat_id, error = %err, "worktree cwd stamp failed");
-                        }
-                        if let Err(err) = ws.set_chat_branch(chat_id, &wt.branch) {
-                            tracing::warn!(chat = %chat_id, error = %err, "worktree branch stamp failed");
-                        }
-                    }
-                }
-                if let Some(spec) = worktree_spec.as_ref()
-                    && spec.space_id.is_some()
-                {
-                    self.complete_worktree_setup_handoff(
-                        &entry.id,
-                        chat_id,
-                        spec,
-                        fresh_worktree.as_ref(),
-                    );
-                }
-                let harness = self.harness_for_request(chat_id, &request);
-                // A row with no config renders no harness glyph (and every
-                // later dispatch falls back to the engine default), so stamp
-                // what this run actually executes with. Claimed rows and
-                // catalog-not-loaded createChats both land here; the racing
-                // real createChat carries the same picked values.
-                if let Some(ws) = self.workspace()
-                    && ws.chat_config(chat_id).is_none()
-                {
-                    let config = zeron_proto::ChatConfig {
-                        harness,
-                        model: request.model.clone(),
-                        reasoning: request.reasoning,
-                        model_options: request.model_options.clone(),
-                        sandbox: request.sandbox,
-                        auto_approve: request.auto_approve,
-                    };
-                    if let Err(err) = ws.set_chat_config(chat_id, &config) {
-                        tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
-                    }
-                }
-                // Timestamp canonicalization: the user message lands in
-                // history at the moment the user SENT it (the entry's
-                // issued_at, clamped against clock skew) — not whenever this
-                // host got around to draining a queued command. Idempotent by
-                // id, so the dispatch path's own execution-time write dedupes
-                // to a no-op.
-                if let Err(err) = handle.write_user_message(
-                    message_id,
-                    &request.prompt,
-                    entry.issued_at.min(now_ms()),
-                ) {
-                    tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
-                }
-                self.dispatch_with_source_context(
+                self.execute_run(sessions, handle, entry, request.clone(), message_id, None)
+                    .await
+            }
+            SessionCommandPayload::RunWithInstructions {
+                request,
+                message_id,
+                instructions,
+                context_reset_confirmed,
+            } => {
+                self.execute_run(
                     sessions,
-                    chat_id,
-                    harness,
-                    request,
-                    Some(message_id.clone()),
+                    handle,
+                    entry,
+                    request.clone(),
+                    message_id,
+                    Some((instructions, *context_reset_confirmed)),
                 )
-                .await?;
-                // A fresh user-authored turn is the deliberate action that
-                // thaws a queue frozen by Cancel. Clear only after dispatch
-                // succeeds so a failed send cannot silently unfreeze it.
-                handle.queue_paused.store(false, Ordering::Release);
-                Ok((SessionCommandStatus::Applied, None))
+                .await
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
                 self.deliver_prompt(
@@ -4472,6 +4661,213 @@ impl DocHost {
                 ))
             }
         }
+    }
+
+    /// Execute a Run (plain or instruction-bearing): attachments, worktree,
+    /// claim, config backfill, canonical user message, dispatch. `pinned` is
+    /// the command's instruction pin plus the context-reset confirmation.
+    async fn execute_run(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+        entry: &SessionCommandEntry,
+        request: zeron_proto::RunRequest,
+        message_id: &String,
+        pinned: Option<(&InstructionRevisionPin, bool)>,
+    ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
+        let chat_id = &handle.chat_id;
+        let mut request = request;
+        // A sender never supplies the envelope; the host resolves it below.
+        request.instructions = None;
+        // Queued-attachment refs (`pending://`) resolve to this
+        // host's absolute paths before anything persists or
+        // dispatches — the drain already gated on the bytes being
+        // present, so every ref resolves here.
+        self.resolve_request_attachments(&mut request);
+        // Work Outline instructions (contract 5.3/5.5): resolve the pinned
+        // revision, verify it, and check the harness BEFORE anything is
+        // written. A plain Run for a chat with a selected revision but no
+        // Execution Session record gets the selection (host-resolved);
+        // otherwise dispatch keeps the session's revision.
+        let pinned = match pinned {
+            Some((pin, confirmed)) => {
+                match instruction_delivery::resolve_pin(self.instruction_registry().as_deref(), pin)
+                {
+                    PinResolution::Ready(envelope) => Some((envelope, confirmed)),
+                    PinResolution::Missing => {
+                        return Ok((
+                            SessionCommandStatus::Rejected,
+                            Some(instruction_delivery::missing_revision_error(pin)),
+                        ));
+                    }
+                    PinResolution::Failed(message) => {
+                        return Ok((SessionCommandStatus::Rejected, Some(message)));
+                    }
+                }
+            }
+            None => match self.selected_instruction_revision(chat_id) {
+                Some(selected)
+                    if sessions
+                        .followup_instruction_pin(chat_id, Some(message_id))
+                        .is_none() =>
+                {
+                    match self.resolve_instruction_pin(&selected).await {
+                        Ok(envelope) => Some((envelope, false)),
+                        Err(err) => {
+                            return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+                        }
+                    }
+                }
+                _ => None,
+            },
+        };
+        if let Some((envelope, confirmed)) = &pinned {
+            let harness = self.harness_for_request(chat_id, &request);
+            let support = sessions.instruction_support(harness)?;
+            if let Err(message) = instruction_delivery::check_support(harness, &support, envelope) {
+                return Ok((SessionCommandStatus::Rejected, Some(message)));
+            }
+            request.instructions = Some(InstructionDelivery {
+                envelope: envelope.clone(),
+                transition: InstructionTransition::Fresh,
+            });
+            // A working Execution Session on another revision keeps its Turn
+            // (acceptance 11): this prompt waits in the queue, pinned, and
+            // starts the next Turn in a new Execution Session.
+            if sessions.turn_in_flight(chat_id)
+                && sessions
+                    .live_instruction_pin(chat_id)
+                    .is_some_and(|live| live.as_ref() != Some(&envelope.pin()))
+            {
+                if request.worktree.is_some() {
+                    return Ok((
+                        SessionCommandStatus::Rejected,
+                        Some(crate::sessions::TURN_BOUNDARY_MESSAGE.into()),
+                    ));
+                }
+                handle.doc.push_queued_with_instructions(
+                    &QueuedMessage {
+                        id: message_id.clone(),
+                        text: request.prompt.clone(),
+                        attachments: request.attachments.clone(),
+                        hold_for_turn_end: false,
+                        issued_by: entry.issued_by.clone(),
+                        issued_at: entry.issued_at,
+                        edited_at: None,
+                        delivery_gate: None,
+                    },
+                    Some(&envelope.pin()),
+                )?;
+                handle.publish_queue();
+                return Ok((
+                    SessionCommandStatus::Applied,
+                    Some(
+                        "held until the turn ends: a different instruction revision applies \
+                         from the next Turn"
+                            .into(),
+                    ),
+                ));
+            }
+            if *confirmed {
+                sessions.confirm_context_reset(message_id);
+            }
+        }
+        // Worktree directive (WorktreeSpec): materialize on THIS host at
+        // drain time — the durable command plane replaces the sender's
+        // old blocking CreateWorktree relay RPC, whose lost reply wedged
+        // the composer on "Sending…" while the run proceeded anyway.
+        // `take()` resolves the request before dispatch, so the journal
+        // and steer→new-turn fallbacks reuse the created path instead of
+        // minting another checkout.
+        let worktree_spec = request.worktree.take();
+        let fresh_worktree = match &worktree_spec {
+            Some(spec) => {
+                let (cwd, fresh) = self.materialize_worktree(chat_id, &spec).await?;
+                request.cwd = cwd;
+                fresh
+            }
+            None => None,
+        };
+        // Claim-on-first-command: a run for a chat with no workspace row
+        // creates the row under our device id (we are about to host it).
+        if let Some(ws) = self.workspace() {
+            ws.claim_chat(chat_id, Some(&request.cwd))?;
+            // A pre-existing row (the client's createChat raced ahead)
+            // still carries the repo folder — repoint it at the fresh
+            // worktree, and stamp the actual `zeron/<name>` branch so
+            // the footer and the title-rename flow see it.
+            if let Some(wt) = &fresh_worktree {
+                if let Err(err) = ws.set_chat_cwd(chat_id, &wt.path) {
+                    tracing::warn!(chat = %chat_id, error = %err, "worktree cwd stamp failed");
+                }
+                if let Err(err) = ws.set_chat_branch(chat_id, &wt.branch) {
+                    tracing::warn!(chat = %chat_id, error = %err, "worktree branch stamp failed");
+                }
+            }
+        }
+        if let Some(spec) = worktree_spec.as_ref()
+            && spec.space_id.is_some()
+        {
+            self.complete_worktree_setup_handoff(&entry.id, chat_id, spec, fresh_worktree.as_ref());
+        }
+        let harness = self.harness_for_request(chat_id, &request);
+        // A row with no config renders no harness glyph (and every
+        // later dispatch falls back to the engine default), so stamp
+        // what this run actually executes with. Claimed rows and
+        // catalog-not-loaded createChats both land here; the racing
+        // real createChat carries the same picked values.
+        if let Some(ws) = self.workspace()
+            && ws.chat_config(chat_id).is_none()
+        {
+            let config = zeron_proto::ChatConfig {
+                harness,
+                model: request.model.clone(),
+                reasoning: request.reasoning,
+                model_options: request.model_options.clone(),
+                sandbox: request.sandbox,
+                auto_approve: request.auto_approve,
+            };
+            if let Err(err) = ws.set_chat_config(chat_id, &config) {
+                tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
+            }
+        }
+        // The transition decision (turn boundary, context reset) depends on
+        // the final cwd, so it runs after worktree materialization — still
+        // before the user message exists.
+        if request.instructions.is_some()
+            && let Err(err) = sessions.preflight_instructions(
+                chat_id,
+                harness,
+                &request,
+                pinned.as_ref().is_some_and(|(_, confirmed)| *confirmed),
+            )
+        {
+            return Ok((SessionCommandStatus::Rejected, Some(err.to_string())));
+        }
+        // Timestamp canonicalization: the user message lands in
+        // history at the moment the user SENT it (the entry's
+        // issued_at, clamped against clock skew) — not whenever this
+        // host got around to draining a queued command. Idempotent by
+        // id, so the dispatch path's own execution-time write dedupes
+        // to a no-op.
+        if let Err(err) =
+            handle.write_user_message(message_id, &request.prompt, entry.issued_at.min(now_ms()))
+        {
+            tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
+        }
+        self.dispatch_with_source_context(
+            sessions,
+            chat_id,
+            harness,
+            request,
+            Some(message_id.clone()),
+        )
+        .await?;
+        // A fresh user-authored turn is the deliberate action that
+        // thaws a queue frozen by Cancel. Clear only after dispatch
+        // succeeds so a failed send cannot silently unfreeze it.
+        handle.queue_paused.store(false, Ordering::Release);
+        Ok((SessionCommandStatus::Applied, None))
     }
 
     /// Put a typed prompt in front of a live agent: steer it in, or — with no
