@@ -1002,3 +1002,123 @@ async fn a_queued_row_needing_a_reset_is_gated_with_its_reason_until_confirmed()
     );
     rig.core.shutdown().await;
 }
+
+fn find_file(dir: &std::path::Path, suffix: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, suffix) {
+                return Some(found);
+            }
+        } else if path.to_string_lossy().ends_with(suffix) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn confirmed(
+    prompt: &str,
+    message_id: &str,
+    pin: &InstructionRevisionPin,
+) -> SessionCommandPayload {
+    SessionCommandPayload::RunWithInstructions {
+        request: run_request(prompt),
+        message_id: message_id.into(),
+        instructions: pin.clone(),
+        context_reset_confirmed: true,
+    }
+}
+
+#[tokio::test]
+async fn a_confirmed_send_held_mid_turn_keeps_its_confirmation_through_the_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("[hold] working", "m-1"));
+    wait_for(|| rig.mock.turns().len() == 1, "the held Turn").await;
+
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let held = queue(&rig.core, confirmed("next, confirmed", "m-2", &b));
+    let resolved = wait_resolved(&rig.core, &held).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Applied);
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    assert_eq!(handle.doc().queued_instructions("m-2"), Some(b.clone()));
+    assert!(
+        handle.doc().queued_context_reset_confirmed("m-2"),
+        "the confirmation is on the row"
+    );
+
+    rig.mock.release();
+    wait_turns(&rig, 2, "the confirmed Turn after the boundary").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].prompt, "next, confirmed");
+    assert!(runs[1].resume.is_none(), "a fresh native session");
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    rig.core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_restart_before_session_start_keeps_the_context_reset_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let registry = Arc::new(FakeRegistry::default());
+    let fresh = || {
+        InstructionMockHarness::new(InstructionSupport::Supported {
+            channel: InstructionChannel::Test,
+            replace_strategy: InstructionReplaceStrategy::FreshSession,
+            max_bytes: 64 * 1024,
+        })
+    };
+    let a = registry.add("rev-a", "Prefer small commits");
+    let b = registry.add("rev-b", "Write tests first");
+    registry.select(&a);
+    {
+        let rig = assemble(&dir, fresh(), registry.clone());
+        pre_title(&rig.core);
+        queue(&rig.core, plain("first", "m-1"));
+        wait_turns(&rig, 1, "the first Turn").await;
+        registry.select(&b);
+        // Confirmed, then the process dies before the new session starts.
+        queue(
+            &rig.core,
+            confirmed("[hang-before-start] after apply", "m-2", &b),
+        );
+        wait_for(|| rig.mock.runs().len() == 2, "the second spawn").await;
+        assert!(has_user_message(&rig.core, "m-2"));
+        rig.core.shutdown().await;
+    }
+
+    let rig = assemble(&dir, fresh(), registry.clone());
+    wait_for(
+        || !rig.mock.runs().is_empty(),
+        "boot recovery to re-dispatch",
+    )
+    .await;
+    let run = &rig.mock.runs()[0];
+    assert_eq!(run.prompt, "[hang-before-start] after apply");
+    assert!(
+        run.resume.is_none(),
+        "still a fresh native session, not a reset-required rejection"
+    );
+    let delivery = run.instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), b);
+    assert_eq!(delivery.transition, InstructionTransition::Fresh);
+    // Once the session starts, the confirmation is spent.
+    rig.mock.release();
+    wait_for(
+        || !rig.core.sessions.turn_in_flight(CHAT) && rig.mock.turns().len() == 1,
+        "the revived Turn",
+    )
+    .await;
+    let sidecar = find_file(&dir, ".instructions.json").expect("the chat's sidecar");
+    let sidecar = std::fs::read_to_string(sidecar).unwrap();
+    assert!(sidecar.contains("rev-b"), "{sidecar}");
+    assert!(!sidecar.contains("contextResetConfirmed"), "{sidecar}");
+    rig.core.shutdown().await;
+}

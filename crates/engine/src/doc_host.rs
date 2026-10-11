@@ -4978,6 +4978,13 @@ impl DocHost {
                     },
                     Some(&envelope.pin()),
                 )?;
+                // A confirmed context reset rides the row across the Turn
+                // boundary instead of an in-memory flag.
+                if *confirmed {
+                    handle
+                        .doc
+                        .set_queued_context_reset_confirmed(message_id, true)?;
+                }
                 handle.publish_queue();
                 return Ok((
                     SessionCommandStatus::Applied,

@@ -631,7 +631,9 @@ struct InstructionMockState {
 ///
 /// Prompt directives, for tests: a prompt containing `[hold]` keeps its Turn
 /// running until [`Self::release`]; `[crash]` ends the stream without a
-/// `Done` (the child died mid-Turn).
+/// `Done` (the child died mid-Turn); a first prompt containing
+/// `[hang-before-start]` emits nothing (no `SessionStarted`) until
+/// [`Self::release`], like a child still starting up.
 #[derive(Clone)]
 pub struct InstructionMockHarness {
     support: crate::InstructionSupport,
@@ -742,6 +744,12 @@ impl Harness for InstructionMockHarness {
         } = controls;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<AgentEvent, HarnessError>>();
         tokio::spawn(async move {
+            if first_prompt.contains("[hang-before-start]") {
+                tokio::select! {
+                    _ = release.notified() => {}
+                    _ = interrupt.cancelled() => return,
+                }
+            }
             let record = |prompt: &str| {
                 state
                     .lock()
