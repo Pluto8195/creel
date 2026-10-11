@@ -62,6 +62,33 @@ pub(crate) fn chat_instruction_context(
     })
 }
 
+/// Why the Chat's host cannot take Work Outline instructions (with an
+/// upgrade hint), or `None` when it advertises
+/// `work-outline-instruction-envelope-v1` on its device row. Apply is
+/// disabled while this is `Some`.
+pub(crate) fn instruction_host_blocker(state: &AppState, chat_id: &str) -> Option<String> {
+    if state.chat_host_delivers_instructions(chat_id) {
+        return None;
+    }
+    let device_id = &state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)?
+        .device_id;
+    let host = if state.is_local_device(device_id) {
+        "this device".to_owned()
+    } else {
+        state
+            .device_name(device_id)
+            .map(str::to_owned)
+            .unwrap_or_else(|| "its host".to_owned())
+    };
+    Some(format!(
+        "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
+         Update Zeron on {host} to apply them."
+    ))
+}
+
 fn chat_is_working(state: &AppState, chat_id: &str) -> bool {
     state
         .chats
@@ -211,6 +238,7 @@ impl Shell {
         if !chat_state.drift && delivery.is_none() {
             return None;
         }
+        let blocker = instruction_host_blocker(self.state.read(cx), chat_id);
         let apply = self.instruction_apply.get(chat_id);
         let in_flight = apply.is_some_and(|apply| apply.in_flight);
         let error = apply.and_then(|apply| apply.error.clone());
@@ -257,7 +285,16 @@ impl Shell {
                             move |this, _, _, cx| this.open_instruction_compare(&compare_chat, cx),
                         )),
                     )
-                    .child(
+                    .child(if blocker.is_some() {
+                        // The host can't deliver instructions: visibly inert.
+                        div()
+                            .id("chat-header-instructions-apply-disabled")
+                            .debug_selector(|| "chat-header-instructions-apply-disabled".into())
+                            .flex_none()
+                            .px(px(4.0))
+                            .text_color(theme.text_faint)
+                            .child("Apply")
+                    } else {
                         link(
                             "chat-header-instructions-apply",
                             if in_flight {
@@ -268,7 +305,15 @@ impl Shell {
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.apply_chat_instructions(&apply_chat, cx)
-                        })),
+                        }))
+                    })
+                })
+                .when_some(blocker, |el, blocker| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "chat-header-instruction-host-unsupported".into())
+                            .text_color(theme.warning)
+                            .child(SharedString::from(blocker)),
                     )
                 })
                 .when_some(delivery, |el, line| {
@@ -318,12 +363,18 @@ impl Shell {
             cx.notify();
             return;
         };
+        let blocker = instruction_host_blocker(self.state.read(cx), chat_id);
         let effective = instructions::effective_hash(&snapshot, Some(&item_id));
         let entry = self
             .instruction_apply
             .entry(chat_id.to_owned())
             .or_default();
         if entry.in_flight {
+            return;
+        }
+        if let Some(blocker) = blocker {
+            entry.error = Some(blocker);
+            cx.notify();
             return;
         }
         let revision_op = entry.revision_op.id_for(&format!("{item_id}\n{effective}"));
@@ -721,6 +772,11 @@ pub(super) fn compare_card(
 ) -> AnyElement {
     let apply = shell.instruction_apply.get(&dialog.chat_id);
     let in_flight = apply.is_some_and(|apply| apply.in_flight);
+    let blocker = instruction_host_blocker(shell.state.read(cx), &dialog.chat_id);
+    // The Apply-time error repeats the blocker; show it once.
+    let apply_error = apply
+        .and_then(|apply| apply.error.clone())
+        .filter(|error| blocker.as_ref() != Some(error));
     let body: AnyElement = match &dialog.phase {
         ComparePhase::Loading => small_note(
             "instruction-compare-loading",
@@ -766,7 +822,14 @@ pub(super) fn compare_card(
                 theme.text_muted,
             ))
         })
-        .when_some(apply.and_then(|apply| apply.error.clone()), |el, error| {
+        .when_some(blocker.clone(), |el, blocker| {
+            el.child(small_note(
+                "instruction-compare-host-unsupported",
+                blocker,
+                theme.warning,
+            ))
+        })
+        .when_some(apply_error, |el, error| {
             el.child(small_note(
                 "instruction-compare-apply-error",
                 error,
@@ -794,7 +857,14 @@ pub(super) fn compare_card(
                             this.resolve_work_outline_modal(false, window, cx);
                         })),
                 )
-                .child(
+                .child(if blocker.is_some() {
+                    // The host can't deliver instructions: visibly inert.
+                    popover::btn_primary(theme, "Apply")
+                        .id("instruction-compare-apply-disabled")
+                        .debug_selector(|| "instruction-compare-apply-disabled".into())
+                        .opacity(0.4)
+                        .cursor_default()
+                } else {
                     popover::btn_primary(
                         theme,
                         if in_flight {
@@ -807,8 +877,8 @@ pub(super) fn compare_card(
                     .debug_selector(|| "instruction-compare-apply".into())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.apply_chat_instructions(&apply_chat, cx)
-                    })),
-                ),
+                    }))
+                }),
         )
         .into_any_element()
 }
@@ -1028,6 +1098,17 @@ mod tests {
                         .unwrap()
                     })
                     .collect();
+                // The host advertises instruction delivery on its device row.
+                state.devices = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "d", "name": "Studio", "platform": "macos",
+                        "lastSeenAt": null,
+                        "capabilities": [
+                            zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
+                        ],
+                    }))
+                    .unwrap(),
+                ];
                 state.set_work_outline_visible(vec!["s1".into()]);
                 assert!(state.apply_work_outline_frame("s1", snapshot));
                 state.work_outline_actions_override = Some(actions);
@@ -1178,6 +1259,89 @@ mod tests {
                 Some("Instructions aren\u{2019}t available on this host yet")
             );
         });
+    }
+
+    /// A host whose device row lacks `work-outline-instruction-envelope-v1`
+    /// (an older engine, or a local engine before its restamp) explains why
+    /// with an upgrade hint, and Apply is inert.
+    #[gpui::test]
+    fn hosts_without_instruction_delivery_disable_apply(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.devices[0].capabilities =
+                    vec![zeron_proto::capabilities::WORK_OUTLINE_V1.into()];
+            });
+        });
+        let blocker = shell.read_with(cx, |shell, cx| {
+            instruction_host_blocker(shell.state.read(cx), CHAT_API)
+        });
+        assert_eq!(
+            blocker.as_deref(),
+            Some(
+                "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
+                 Update Zeron on Studio to apply them."
+            )
+        );
+        // The local engine's device row decides too (not its static
+        // EngineInfo), with a local hint.
+        shell.update(cx, |shell, cx| {
+            shell
+                .state
+                .update(cx, |state, _| state.local_device_id = Some("d".into()));
+        });
+        let local = shell.read_with(cx, |shell, cx| {
+            instruction_host_blocker(shell.state.read(cx), CHAT_API).unwrap()
+        });
+        assert!(local.ends_with("Update Zeron on this device to apply them."));
+
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("instruction-compare-host-unsupported")
+                .is_some()
+        );
+        assert!(cx.debug_bounds("instruction-compare-apply").is_none());
+        let disabled = cx
+            .debug_bounds("instruction-compare-apply-disabled")
+            .expect("Apply is shown inert")
+            .center();
+        cx.simulate_click(disabled, gpui::Modifiers::default());
+        draw(cx);
+        // Apply is refused before any write, even when called directly.
+        shell.update(cx, |shell, cx| shell.apply_chat_instructions(CHAT_API, cx));
+        cx.run_until_parked();
+        assert!(calls.lock().unwrap().is_empty(), "nothing was written");
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.instruction_apply[CHAT_API].error, Some(local.clone()));
+        });
+
+        // An unknown host is unsupported as well; a capable one is not.
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.devices.clear());
+        });
+        assert!(shell.read_with(cx, |shell, cx| {
+            instruction_host_blocker(shell.state.read(cx), CHAT_API).is_some()
+        }));
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.devices = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "d", "name": "Studio", "platform": "macos",
+                        "lastSeenAt": null,
+                        "capabilities": [
+                            zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
+                        ],
+                    }))
+                    .unwrap(),
+                ];
+            });
+        });
+        assert!(shell.read_with(cx, |shell, cx| {
+            instruction_host_blocker(shell.state.read(cx), CHAT_API).is_none()
+        }));
     }
 
     #[gpui::test]

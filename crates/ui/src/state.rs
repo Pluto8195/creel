@@ -1184,6 +1184,30 @@ impl AppState {
             .is_some_and(|device| device.supports(capability))
     }
 
+    /// Whether the Chat's host advertises Work Outline instruction delivery
+    /// (`work-outline-instruction-envelope-v1`). Read from the synced device
+    /// row for every host, the local engine included: `EngineInfo` is fixed at
+    /// boot, while the row is restamped once the harness delivery probes run.
+    /// An unknown device is unsupported.
+    pub(crate) fn chat_host_delivers_instructions(&self, chat_id: &str) -> bool {
+        self.chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .and_then(|chat| self.devices.iter().find(|d| d.id == chat.device_id))
+            .is_some_and(|device| {
+                device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1)
+            })
+    }
+
+    /// Whether `device_id` is the device this app's engine runs on.
+    pub(crate) fn is_local_device(&self, device_id: &str) -> bool {
+        self.local_device_id.as_deref() == Some(device_id)
+            || self
+                .engine
+                .as_ref()
+                .is_some_and(|engine| engine.engine_info().device_id == device_id)
+    }
+
     pub fn chat_host_supports(&self, chat_id: &str, capability: &str) -> bool {
         self.chats
             .iter()
