@@ -760,3 +760,63 @@ or a gap stage 2 (start workflow, dispatch hookups) must close.
     lib tests on this base (`ChatInstructionState` literals without `selected_revision_integrity`
     at `crates/ui/src/work_outline/instructions.rs:539,548`); unrelated to this work. Every other
     target checks.
+
+## Milestone 3 UI discoveries
+
+Recorded by the Milestone 3 user interface (`crates/ui/src/work_outline/{execution,
+details_execution}.rs`, edits to `details_panel.rs`, `actions.rs`, `model.rs`, `outline_view.rs`,
+`filter.rs`, `chips.rs`, `overview.rs`, `changes.rs`, `pickers.rs`, `state.rs`,
+`shell/spaces.rs`). Each item is a reading of an ambiguous rule or a gap later work must close.
+
+1. **Local resolution, remote facts.** The Execution section resolves from the snapshot
+   (`WorkOutlineSnapshot::resolve_execution`); the source label reads "This item", "Inherited from
+   <title>", "Space default", or "Implicit Space folder". `DescribeExecutionRepository` carries
+   `targetDeviceId` when the Space's device is not this app's engine; `ValidateExecutionConfiguration`
+   never does (the engine forwards to the owner itself). A dirty draft validates as `{resolved}` with
+   the Space's device and the scope as source; otherwise `{scope}`.
+2. **Edit form.** Opening Edit prefills the current resolution (an inherited configuration becomes
+   this scope's own row on Save) and describes every bound repository to offer its non-prunable,
+   resolvable checkouts as the worktree choice ("Repository path" = no pinned worktree; a pinned
+   worktree the description does not list stays shown as pinned). A repository added from a linked
+   worktree binds the main checkout as `repoPath` and pins the picked worktree. Primary is a radio
+   that can be cleared (a configuration may have no primary). Persistence follows the instruction
+   policy (Save only; Cancel discards; blur never saves; closing, switching, Escape with a dirty
+   draft asks "Keep Editing / Discard"); unchanged content writes nothing; the local
+   `check_execution_configuration` runs before any write. Edit is hidden on archived items; Reset
+   to inherited appears only when the scope has its own row.
+3. **Folder picker.** The Shell's New-project browser has a pick mode (`Shell::open_folder_pick`,
+   `ExecutionFolderPick`): fixed to the Space's device (the Devices step is unreachable), opened at
+   the current root, its submit hands the open folder to the caller instead of creating a Space.
+   The root may be any folder (the workspace use case); repositories must be Git: a folder whose
+   describe fails or returns no `repoId` is refused and nothing is added. Deviation: discovery 8
+   suggested not offering non-Git roots; the orchestrator scoped that rule to repositories.
+4. **Drift confirmation.** Uses the generic Shell confirm modal, not the instruction drift dialog
+   (its body is instruction-specific). It appears iff saving or resetting changes the resolution of
+   a live item that has an associated bound Chat that is not already an exception and whose captured
+   configuration would differ; the body states those Chats keep their captured configuration, are
+   never retargeted, and will show as exceptions. Unbound Chats never count.
+5. **Validation display.** Headline Ready / "<device> is offline — nothing was checked" /
+   "<device> runs a Zeron that can't validate execution" / "Blocked · N problems", then every
+   error's host-rendered `message` and `remediation` (local vocabulary only when a field is empty).
+   A failed call (transport, older host) reads "Execution configuration isn't available on this
+   host yet" for `unsupported`.
+6. **Exceptions.** Outline item rows, the Execution header, List rows, and Canvas cards carry a
+   compact folder mark (accent token; List/Canvas without label on the title line, so `tile_size`
+   is unchanged). Details list each exception Chat with "uses a different configuration" and its
+   captured root and repository names. `WorkItemIndex` indexes `binding.exception`; the work-item
+   filter needs no change for bound Chats (tested).
+7. **Per-member branch/diff.** `AppState` keeps one `ChatExecutionState` per bound Chat (the latest
+   `ValidateExecutionConfiguration {chatId}` reply, keyed by the binding's `operationId|capturedAt`,
+   plus the picked repository). Opening a Changes pane refetches; the composer footer and later
+   pane syncs fetch only when missing. Members are primary + `member` bindings, primary first; the
+   default is the primary, else the first. The Changes pane shows one pill per member
+   (`name · branch` or `HEAD (sha7)`) and retargets its owner to the member's `checkoutPath` /
+   `checkoutId` / `branch`, so the existing scoped watch and branch/turn scopes follow it. Before
+   a reply arrives (or when validation fails) members come from the captured binding (path only,
+   no checkout id) and the first validation error shows under the pills. The composer footer's
+   branch label for bound Chats names the same member and cycles on click (tooltip lists all,
+   following the worktree-chip click-to-cycle pattern rather than a new popover kind); the footer
+   also shows for bound Chats whose Space root is not Git. PR lookup is unchanged.
+8. **Not done.** No refresh button on the member pills (reopen the pane); the exception marker is
+   not in the sidebar; the root input accepts typed paths without a device-side existence check
+   until Validate.
