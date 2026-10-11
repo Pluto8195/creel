@@ -13,26 +13,33 @@ the stdio tool-server subset is tiny, so no SDK dependency was taken.
 
 ## Identity
 
-The engine can inject this server into a harness's MCP config with the
-originating chat in the environment:
+The engine injects this server into Claude Code and Codex Runs of Chats that
+belong to a project (Claude: `--mcp-config <owner-only file>`; Codex: per-thread
+`mcp_servers.zeron.*` config overrides), with:
 
-| Variable          | Meaning                                                       |
-| ----------------- | ------------------------------------------------------------- |
-| `ZERON_IPC_PORT`  | Engine to proxy (default 27654).                              |
-| `ZERON_CHAT_ID`   | The chat whose agent spawned this server.                     |
-| `ZERON_DEVICE_ID` | That chat's host device.                                      |
+| Variable            | Meaning                                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `ZERON_IPC_PORT`    | Engine to proxy (default 27654).                            |
+| `ZERON_AGENT_TOKEN` | Engine-minted per-Run capability token (revoked at Run end). |
 
-When `ZERON_CHAT_ID` is set, every `send_message` is prefixed with a
-`[Message from Zeron chat <title> (<id8>) …]` line so the receiving agent and the
-human reading that transcript can tell an agent-to-agent message from a typed
-one, and the server refuses to message its own chat.
+Every tool call re-authenticates the token (`AgentAuthenticate`); the engine
+answers with the Chat the token was minted for. `ZERON_CHAT_ID` is no longer
+read: no self-declared origin is trusted. With a token, every `send_message` is
+prefixed with a `[Message from Zeron chat <title> (<id8>) …]` line, the server
+refuses to message its own chat, `create_chat` needs an `idempotency_key` (the
+same key returns the same child chat and never queues a second first turn) and
+only records the caller as parent, `archive_chat` only touches chats the caller
+created, and the Work Outline agent tools (`work_outline_*`, forwarded to
+`AgentToolCall`) are listed. Without a token (a human running `zeron mcp` in a
+terminal) the original tools work unattributed. Contract:
+`docs/plans/work-outline/m0-contract.md`, "Milestone 4 agent tool discoveries".
 
 ### Parent links
 
 A chat created through `create_chat` records the creating chat as its parent:
 `Chat.parent_chat_id` (proto) ⇄ `parentChatId` on the registry/workspace chat
 row (`Mutate createChat { parentChatId? }` → `WorkspaceHost::create_chat_with_parent`).
-The default is the origin chat (`ZERON_CHAT_ID`); an explicit `parent` argument
+The default is the token's chat; for a human caller (no token) an explicit `parent` argument
 (id, prefix, or title) overrides it. `list_chats { parent }` returns a chat's
 children, and every chat summary carries `parentChatId`. The field is additive
 and serde-defaulted: rows written by older engines read as parentless, and a
@@ -44,10 +51,8 @@ require `parent_chat_id == None`. Children remain addressable by id, deep
 link, and every MCP tool; `list_chats { parent }` is how an orchestrator
 finds them.
 
-Nothing is injected yet: every harness still launches with an empty MCP config
-(`claude/mod.rs --strict-mcp-config`, ACP `session/new mcpServers: []`, codex
-`mcp_servers.*.enabled = false`). Wiring the injection per harness is the
-follow-up; the env contract above is what it will set.
+Only Claude Code and Codex Runs of project chats get the server; projectless
+chats, ACP agents, Cursor, opencode, and title runs launch exactly as before.
 
 ## Tools
 

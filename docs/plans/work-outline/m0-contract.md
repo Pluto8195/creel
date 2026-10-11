@@ -1056,6 +1056,85 @@ ambiguous rule or a gap later work must close.
     `repairWorkOutline`, is `unauthorized`. Authorization runs after the engine's replay check
     (a replay writes nothing). Descendant / parent checks use the repaired tree.
 11. **Not done.** The zero-to-one notification detector and Required Actions views (UI), the
-    per-Run agent token and MCP tools (parallel agent-tools work), a query for resolved-request
+    per-Run agent token and MCP tools (see Milestone 4 agent tool discoveries), a query for resolved-request
     history beyond the snapshot window, local-to-synced import of the new kinds, and edge
     `validateOp` backstops.
+
+## Milestone 4 agent tool discoveries
+
+Recorded by the Milestone 4 agent tools (`crates/engine/src/agent_tools.rs`, `crates/mcp`,
+`crates/harness/src/agent_tools.rs` and the Claude / Codex adapters, small hunks of
+`sessions.rs` and `rpc.rs`, `zeron_proto::agent_tools`). Each item is a reading of an ambiguous
+rule or a gap.
+
+1. **Token.** `AgentTokens::mint` creates `zat_` + 244 random bits (two v4 UUIDs) bound to
+   `(chatId, runId, spaceId, deviceId)`; only its SHA-256 is stored, in memory. The
+   `AgentTokenLease` is owned by the Run's driver task (`drive_run`) and revokes on drop, so
+   every exit path (done, error, interrupt, crash retry) ends it; an engine restart revokes
+   all tokens. "Expiry = run lifetime" is the lease; an optional absolute TTL exists
+   (`mint_with_ttl`) but is unused by the engine, because a warm Run can outlive any fixed TTL.
+   The token is never in argv, logs, or `Debug` output.
+2. **When a token is minted.** Only for a fresh Run (not a warm steer) of a Chat whose row has
+   a `spaceId`, on a harness whose `supports_agent_tools()` is true (Claude Code, Codex), while
+   `SessionsEngine` has an `AgentToolsLaunch` (default: `current_exe() mcp`, `ZERON_IPC_PORT`
+   default 27654; `set_agent_tools_launch(None)` turns injection off). Projectless Chats and
+   other harnesses call plain `run()` exactly as before. Title runs never get tools.
+3. **Injection, verified on the installed CLIs.** Claude Code 2.1.285: `--mcp-config
+   <configs...>` (variadic; Zeron passes one file, never `--strict-mcp-config`, so the user's
+   own servers keep loading). The file `{"mcpServers":{"zeron":{"type":"stdio","command",
+   "args":["mcp"],"env":{ZERON_AGENT_TOKEN,ZERON_IPC_PORT}}}}` is written owner-only (dir 0700,
+   file 0600, random name) under `<store_root>/agent-tools/` and removed when the Run's session
+   task ends. Live check (control requests only, `--no-session-persistence`): `mcp_status`
+   lists `zeron` with scope `dynamic` and the server is spawned with the token in env. Codex
+   0.154.0: `thread/start` `config` is an open map of dotted overrides (schema:
+   `ThreadStartParams.config additionalProperties: true`); Zeron adds
+   `mcp_servers.zeron.{command,args,env,enabled}`, and the resume params clone the start
+   params. Live check with an isolated `CODEX_HOME`, ephemeral thread: `mcpServerStatus/list`
+   reports `zeron` connected with its tools. `~/.codex/config.toml` and `~/.claude` are never
+   written. Claude 2.1.285 probes `server/discover` first and asks for protocol `2025-11-25`;
+   `zeron mcp` answers the probe "unknown method" and now accepts `2025-11-25`.
+4. **Agent RPC surface.** Two new local methods (not forwardable, `targetDeviceId` ignored):
+   `AgentAuthenticate {token}` → `{chatId, runId, spaceId, deviceId}` and `AgentToolCall
+   {token, tool, arguments}`. Gate failures are `agent-tools/<unauthenticated|forbidden|invalid|
+   unsupported>: …`; operation failures pass through as `work-outline/<code>: …`
+   (`unauthorized`, `openUserActionRequests`, `operationConflict`, …). A token whose Chat was
+   deleted or whose Chat row no longer carries the token's Space is `unauthenticated`.
+5. **Tools and policy.** `work_outline_read_current` (via `agent_context`; an unassociated Chat
+   reads `workItem: null` instead of an error), `work_outline_create_child` (parent defaults to
+   the Chat's item; `pending`/`active` only), `work_outline_associate_current_chat` (always the
+   token's Chat; no chat argument exists), `work_outline_set_status` (`active`/`completed`;
+   `resolveOpenRequests` is never sent), `work_outline_create_user_action_request` (on the
+   Chat's item, origin = the token's Chat; tool argument `request` → `text`, `detail` →
+   `info`), `work_outline_resolve_user_action_request` (`resolution` → `note`),
+   `work_outline_propose_instruction` (`target: item|parent|spaceRoot`). Every mutation runs
+   through `WorkOutlineService::mutate_as(&m, &agent_actor(chatId, None))`, so the shared
+   `authorize_agent` is the only policy (the interim local mirror was removed at the merge).
+6. **Idempotency.** Every mutating tool requires `idempotencyKey` (≤ 200 characters);
+   `operationId = derive_id("zeron-agent-tool\0{chatId}\0{key}", "agent-operation")`, so the
+   same key from any Run of the same Chat replays (same ids, no new rows), the same key with
+   other inputs is `operationConflict`, and two Chats never collide.
+7. **Existing 14 tools.** Kept. `zeron mcp` no longer reads `ZERON_CHAT_ID` /
+   `ZERON_DEVICE_ID`; with `ZERON_AGENT_TOKEN` it re-authenticates before EVERY tool call
+   (reads included), so a revoked token disables everything; without a token (a human in a
+   terminal) the tools work unattributed as before and the Work Outline tools are not listed.
+   Decision for `create_chat`: kept, with a mandatory `idempotency_key` in agent mode. The
+   child's Chat id derives from the key; a retry finds the existing child (`replayed: true`,
+   title left alone) and `createChat` never retargets an existing row; the first prompt is
+   queued by the engine (`AgentToolCall chat_queue_child_turn`, internal) with message and
+   command ids derived from the key through `queue_command_with_id`, so retries never queue a
+   second Turn. In agent mode `parent` may only be the caller (a child inherits the parent's
+   item and revision) and `archive_chat` only touches Chats the caller created. `send_message`
+   needed no change: a Run's cwd is overwritten at the bound-Chat chokepoint (M3 item 6).
+8. **Residual risk (unchanged).** The loopback IPC port still exposes the generic methods
+   without authentication, so an agent with a shell can bypass MCP entirely; only
+   agent-attributed Work Outline writes (actor `agent`) require a token. Tools run under each
+   harness's normal permission flow (Zeron does not pre-approve `mcp__zeron__*`). Config files
+   of a crashed engine stay on disk with dead tokens until the profile is cleaned.
+9. **Tests.** Token mint / revoke / expiry / forgery (unit); dispatch path mints for a Space
+   Chat only and revokes at Run end; per-tool allow / deny including open-request completion
+   and cross-Chat resolve; key replay across Runs and conflicts (`crates/engine/tests/
+   agent_tools.rs`); Claude argv and config file; Codex `thread/start` shape through the fake
+   app-server; MCP token gating and `create_chat` replay (unit); MCP against a real engine:
+   one child per key, one first Turn, inherited assignment (`crates/mcp/tests/
+   engine_agent_tools.rs`). The harness-native subagent test in `work_outline_launch` stays
+   green.
