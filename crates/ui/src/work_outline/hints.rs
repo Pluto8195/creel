@@ -17,6 +17,7 @@ use gpui::{
 };
 
 use super::command::WorkOutlineCommand;
+use super::outline_view::context_menu::OPEN_MENU_KEYS;
 use crate::settings::{KeymapConfig, platform_combo};
 use crate::shell::work_outline_ui::{OUTLINE_NAVIGATION_KEYS, OutlineKeyGroup, OutlineNavKey};
 use crate::theme::Theme;
@@ -273,6 +274,27 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
     ]
 }
 
+/// The shortcut reference's footer: where Outline keys work, how to reach a
+/// row's context menu (right-click, Control-click on macOS, or the
+/// keyboard), and where to rebind.
+pub(crate) fn shortcuts_footer() -> String {
+    shortcuts_footer_on(cfg!(target_os = "macos"))
+}
+
+/// [`shortcuts_footer`] for an explicit platform.
+pub(crate) fn shortcuts_footer_on(mac: bool) -> String {
+    let menu_key = key_label_on(mac, OPEN_MENU_KEYS[0]);
+    let click = if mac {
+        "Right-click or Control-click a row"
+    } else {
+        "Right-click a row"
+    };
+    format!(
+        "Outline keys work while the Outline has focus. {click} (or press {menu_key}) for its \
+         actions. Rebind commands in Settings \u{203a} Shortcuts."
+    )
+}
+
 /// Tooltip label (and binding) for a Work Item Details button, keyed by its
 /// visible label so every button built through the shared helpers gets one.
 pub(crate) fn details_button_hint(label: &str) -> Option<(&'static str, HintKey)> {
@@ -403,6 +425,18 @@ mod tests {
                 .map(|(combo, _)| *combo);
             assert_eq!(outline_key_combo(key), primary, "{combo}");
         }
+    }
+
+    #[test]
+    fn shortcuts_footer_mentions_right_click_and_the_menu_key() {
+        let mac = shortcuts_footer_on(true);
+        assert!(mac.contains("Right-click or Control-click a row"), "{mac}");
+        assert!(mac.contains("\u{21e7}F10"), "{mac}");
+        let other = shortcuts_footer_on(false);
+        assert!(other.contains("Right-click a row"), "{other}");
+        assert!(!other.contains("Control-click"), "{other}");
+        assert!(other.contains("Shift+F10"), "{other}");
+        assert!(other.contains("Settings \u{203a} Shortcuts"), "{other}");
     }
 
     #[test]

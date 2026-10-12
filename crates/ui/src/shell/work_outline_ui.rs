@@ -400,7 +400,7 @@ fn shortcuts_card(theme: &Theme, cx: &mut Context<Shell>) -> AnyElement {
                     div()
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_faint)
-                        .child("Outline keys work while the Outline has focus. Rebind commands in Settings \u{203a} Shortcuts."),
+                        .child(crate::work_outline::hints::shortcuts_footer()),
                 )
                 .child(
                     popover::btn_ghost(theme, "Close", "work-outline-shortcuts-close")
