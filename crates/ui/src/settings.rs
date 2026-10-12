@@ -1022,7 +1022,7 @@ impl ShortcutId {
             // until a user records a chord; `mod-shift-l` / `mod-shift-i` clash
             // with no default, fixed combo or editing binding. The four
             // restructuring commands already have Outline-scoped keys
-            // (Option+Shift+Up/Down, Tab, Shift+Tab in
+            // (Shift+Arrows, Tab, Shift+Tab in
             // `OUTLINE_NAVIGATION_KEYS`) that never fire in a text field, so
             // their global chords also ship unbound.
             ShortcutId::OpenOutline => "mod-shift-l",

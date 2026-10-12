@@ -77,20 +77,23 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     // without a Shell.
     let ctx = Some("WorkOutline && !Composer && !MessageComposer && !PaletteSearch");
     vec![
-        KeyBinding::new("up", SelectPreviousSibling, ctx),
-        KeyBinding::new("down", SelectNextSibling, ctx),
-        KeyBinding::new("alt-up", SelectParent, ctx),
-        KeyBinding::new("alt-down", SelectChild, ctx),
+        KeyBinding::new("up", SelectPrevious, ctx),
+        KeyBinding::new("down", SelectNext, ctx),
+        KeyBinding::new("alt-up", SelectPreviousSibling, ctx),
+        KeyBinding::new("alt-down", SelectNextSibling, ctx),
         KeyBinding::new("left", Collapse, ctx),
         KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
         KeyBinding::new("f2", RenameSelected, ctx),
+        KeyBinding::new("r", RenameSelected, ctx),
         KeyBinding::new("n", CreateSibling, ctx),
         KeyBinding::new("shift-n", CreateChild, ctx),
         KeyBinding::new("home", SelectFirst, ctx),
         KeyBinding::new("end", SelectLast, ctx),
-        KeyBinding::new("alt-shift-up", MoveItemUp, ctx),
-        KeyBinding::new("alt-shift-down", MoveItemDown, ctx),
+        KeyBinding::new("shift-up", MoveItemUp, ctx),
+        KeyBinding::new("shift-down", MoveItemDown, ctx),
+        KeyBinding::new("shift-right", IndentItem, ctx),
+        KeyBinding::new("shift-left", OutdentItem, ctx),
         KeyBinding::new("tab", IndentItem, ctx),
         KeyBinding::new("shift-tab", OutdentItem, ctx),
     ]
@@ -101,6 +104,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
 pub(crate) enum OutlineEvent {
     /// Open the Chat's transcript.
     OpenChat(String),
+    /// Rename the Chat (the Shell's Chat rename dialog).
+    RenameChat(String),
     /// Open Work Item Details.
     OpenDetails { space_id: String, item_id: String },
     /// Open the Space-root details (Space-root instructions).
@@ -2746,6 +2751,16 @@ impl Render for OutlineView {
             .on_action(cx.listener(|this, _: &RenameSelected, window, cx| {
                 if this.is_editing() {
                     cx.propagate();
+                    return;
+                }
+                // A Chat row renames through the Shell's Chat rename dialog,
+                // the same flow as the sidebar's Rename.
+                if let Some(chat_id) = this.selected_chat() {
+                    cx.emit(OutlineEvent::RenameChat(chat_id));
+                    return;
+                }
+                if this.selected_row().is_some_and(|row| row.chat().is_some()) {
+                    this.show_notice("This chat no longer exists on any device", cx);
                     return;
                 }
                 if let Err(notice) = this.begin_rename(window, cx) {
