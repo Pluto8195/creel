@@ -1274,3 +1274,45 @@ fn frames_reconcile_optimistic_moves_without_flicker(cx: &mut gpui::TestAppConte
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", LAUNCH)));
 }
+
+/// The move picker (the context menu's "Move To…") takes the optimistic
+/// path too: the item shows under its new parent and the picker closes
+/// before the engine replies; a failure moves it back with a notice.
+#[gpui::test]
+fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) = gated_restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        |_| Err(zeron_rpc::RpcError::Failed("work-outline/conflict: stale".into())),
+    );
+    select_item(&outline, vcx, HOUSEKEEPING);
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.open_move_picker(window, cx).unwrap()
+    });
+    draw(vcx);
+    // Entry 1 is Launch v2 (entry 0 is the top level).
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.choose_picker_entry(1, window, cx)
+    });
+    vcx.run_until_parked();
+    draw(vcx);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(gate.held(), 1, "still in flight");
+    let parent = |vcx: &mut gpui::VisualTestContext| {
+        outline.read_with(vcx, |o, _| {
+            let model = o.model();
+            let row = model.row(&row_key::item("s1", HOUSEKEEPING)).unwrap();
+            row.depth
+        })
+    };
+    assert_eq!(parent(vcx), 1, "under Launch v2 now");
+    assert!(!editing(&outline, vcx), "the picker closed");
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", HOUSEKEEPING)));
+
+    release_reply(&gate, vcx);
+    assert_eq!(parent(vcx), 0, "rolled back to the top level");
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
+}

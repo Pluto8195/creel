@@ -1278,8 +1278,10 @@ impl OutlineView {
         }
     }
 
+    /// Show the chosen move or association at once, close the picker, and
+    /// send it; a failure rolls the change back with a notice.
     fn send_picker_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(picker) = self.picker.as_mut() else {
+        let Some(picker) = self.picker.as_ref() else {
             return;
         };
         if picker.submitting {
@@ -1290,81 +1292,88 @@ impl OutlineView {
         };
         let actions = self.state.read(cx).work_outline_actions();
         let operation_id = picker.operation_id.clone();
-        let place_first = picker.place_first;
-        let purpose = picker.purpose.clone();
-        // A move: the moved row is followed (and its new parent expanded).
-        let moved = match &purpose {
-            PickerPurpose::Move { item_id } => self
-                .snapshot_with_item(item_id)
-                .map(|snapshot| snapshot.space_id.clone())
-                .map(|space| {
-                    (
-                        row_key::item(&space, item_id),
-                        entry
-                            .value
-                            .as_deref()
-                            .map(|parent| row_key::item(&space, parent)),
-                    )
-                }),
-            _ => None,
+        let placement = if picker.place_first {
+            WorkOutlinePlacement::First
+        } else {
+            WorkOutlinePlacement::Last
         };
-        let Some(picker) = self.picker.as_mut() else {
-            return;
-        };
-        let task = match purpose {
-            PickerPurpose::Move { item_id } => {
+        let (task, item_id, change) = match picker.purpose.clone() {
+            PickerPurpose::Move { item_id } => (
                 actions.move_work_item(zeron_proto::MoveWorkItemParams {
-                    work_item_id: item_id,
+                    work_item_id: item_id.clone(),
                     destination_parent_work_item_id: entry.value.clone(),
-                    placement: if place_first {
-                        WorkOutlinePlacement::First
-                    } else {
-                        WorkOutlinePlacement::Last
-                    },
-                    operation_id,
-                })
-            }
+                    placement: placement.clone(),
+                    operation_id: operation_id.clone(),
+                }),
+                item_id.clone(),
+                LocalChange::Move {
+                    work_item_id: item_id,
+                    destination_parent: entry.value.clone(),
+                    placement,
+                },
+            ),
             PickerPurpose::AssociateChat { chat_id } => {
                 let Some(item_id) = entry.value.clone() else {
                     return;
                 };
-                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
-                    chat_id,
-                    work_item_id: item_id,
-                    operation_id,
-                })
+                (
+                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                        chat_id: chat_id.clone(),
+                        work_item_id: item_id.clone(),
+                        operation_id: operation_id.clone(),
+                    }),
+                    item_id.clone(),
+                    LocalChange::AssignChat {
+                        chat_id,
+                        work_item_id: item_id,
+                    },
+                )
             }
             PickerPurpose::AssociateWithItem { item_id } => {
                 let Some(chat_id) = entry.value.clone() else {
                     return;
                 };
-                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
-                    chat_id,
-                    work_item_id: item_id,
-                    operation_id,
-                })
+                (
+                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                        chat_id: chat_id.clone(),
+                        work_item_id: item_id.clone(),
+                        operation_id: operation_id.clone(),
+                    }),
+                    item_id.clone(),
+                    LocalChange::AssignChat {
+                        chat_id,
+                        work_item_id: item_id,
+                    },
+                )
             }
         };
-        picker.submitting = true;
-        cx.notify();
-        let _ = window;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, window, cx| match result {
-                Ok(_) => {
-                    if let Some((key, parent)) = moved {
-                        if let Some(parent) = parent {
-                            this.set_collapsed(&parent, false, cx);
-                        }
-                        this.selected = Some(key.clone());
-                        this.follow = Some(key);
+        let space_id = self
+            .snapshot_with_item(&item_id)
+            .map(|snapshot| snapshot.space_id.clone());
+        self.close_picker(window, cx);
+        if let Some(space_id) = space_id {
+            // A move: the moved row is followed (and its new parent expanded).
+            let follow = match &change {
+                LocalChange::Move {
+                    work_item_id,
+                    destination_parent,
+                    ..
+                } => {
+                    if let Some(parent) = destination_parent {
+                        self.set_collapsed(&row_key::item(&space_id, parent), false, cx);
                     }
-                    this.close_picker(window, cx)
+                    Some(row_key::item(&space_id, work_item_id))
                 }
+                _ => None,
+            };
+            self.show_optimistic(&space_id, &operation_id, change, follow, cx);
+        }
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
                 Err(error) => {
-                    if let Some(picker) = this.picker.as_mut() {
-                        picker.submitting = false;
-                    }
+                    this.drop_optimistic(&operation_id, cx);
                     this.show_notice(error.message.clone(), cx);
                 }
             })

@@ -994,6 +994,14 @@ mod tests {
         );
         assert_eq!(selected(&outline, cx), Some(row_key::item("s1", UI)));
         assert!(outline_focused(&outline, cx));
+        // The same optimistic path as the key: UI shows above API before
+        // any engine frame does.
+        outline.read_with(cx, |outline, _| {
+            let model = outline.model();
+            let position = |id| model.position(&row_key::item("s1", id)).unwrap();
+            assert!(position(UI) < position(API), "shown at once");
+            assert_eq!(outline.optimistic_len(), 1);
+        });
         settle(&shell, cx);
 
         // Move To… runs the Move command: its picker opens.
