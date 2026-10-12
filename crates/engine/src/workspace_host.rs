@@ -375,10 +375,18 @@ impl WorkspaceHost {
     /// server through this. Production always goes through [`Self::join_room`].
     #[doc(hidden)]
     pub fn connect_registry_url(&self, url: &str) {
-        // From here on a server acks (and must receive) every write.
-        self.inner
-            .local_authority
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // From here on a server acks (and must receive) every write; writes
+        // that settled locally go out as re-seeds with their original clocks.
+        {
+            let mut doc = lock(&self.inner.reg);
+            if self
+                .inner
+                .local_authority
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                doc.queue_rows_for_server();
+            }
+        }
         self.spawn_join(Arc::new(zeron_sync::StaticUrl(url.to_string())), None, None);
     }
 
@@ -847,6 +855,12 @@ impl WorkspaceHost {
     /// Unacked registry batches (diagnostics and tests).
     pub fn registry_pending_len(&self) -> usize {
         self.read(|doc| doc.pending_len())
+    }
+
+    /// Registry batches written since this host opened, settled or queued
+    /// ("did that call write anything"; diagnostics and tests).
+    pub fn registry_batches_written(&self) -> u64 {
+        self.read(|doc| doc.batches_written())
     }
 
     /// The Space of a live work item (overlay view).
@@ -2414,11 +2428,11 @@ mod tests {
         .unwrap();
         let mut changes = host.watch_changes();
         changes.borrow_and_update();
-        let pending = host.registry_pending_len();
+        let pending = host.registry_batches_written();
 
         assert_eq!(host.sweep_work_outline_orphans(), 0);
         assert!(!changes.has_changed().unwrap(), "idle sweep must be quiet");
-        assert_eq!(host.registry_pending_len(), pending, "and write nothing");
+        assert_eq!(host.registry_batches_written(), pending, "and write nothing");
 
         // An orphan (its Space row never existed) is still swept and notifies.
         host.mutate(|doc| {

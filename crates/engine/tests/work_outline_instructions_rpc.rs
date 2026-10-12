@@ -361,7 +361,7 @@ async fn instruction_replays_after_restart_do_not_rewrite() {
     }
     let core = assemble(&data);
     let client = zeron_rpc::memory_client(core.rpc_service());
-    let pending = core.workspace.registry_pending_len();
+    let pending = core.workspace.registry_batches_written();
     assert_eq!(
         mutate(&client, create.clone()).await.unwrap(),
         json!({ "instructionId": derive_id("op-i", roles::INSTRUCTION) })
@@ -375,7 +375,7 @@ async fn instruction_replays_after_restart_do_not_rewrite() {
         json!({ "applicationId": derive_id("op-p", roles::APPLICATION) })
     );
     assert_eq!(
-        core.workspace.registry_pending_len(),
+        core.workspace.registry_batches_written(),
         pending,
         "no op enqueued"
     );
@@ -445,10 +445,10 @@ async fn workspace_host_implements_the_instruction_registry_seam() {
         revision_hash: Some(pin.revision_hash.clone()),
     };
     registry.report_execution_session("chat-1", report.clone());
-    let pending = core.workspace.registry_pending_len();
+    let pending = core.workspace.registry_batches_written();
     registry.report_execution_session("chat-1", report);
     assert_eq!(
-        core.workspace.registry_pending_len(),
+        core.workspace.registry_batches_written(),
         pending,
         "an equal report writes nothing"
     );

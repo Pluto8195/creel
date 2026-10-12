@@ -247,9 +247,9 @@ async fn configure_resolve_validate_capture_and_dispatch_over_rpc() {
     });
     assert_eq!(mutate(&client, configure.clone()).await.unwrap(), json!({}));
     // Replay: same id and inputs answer the same reply without writing.
-    let pending = core.workspace.registry_pending_len();
+    let pending = core.workspace.registry_batches_written();
     assert_eq!(mutate(&client, configure.clone()).await.unwrap(), json!({}));
-    assert_eq!(core.workspace.registry_pending_len(), pending);
+    assert_eq!(core.workspace.registry_batches_written(), pending);
     // Same id, other inputs: conflict.
     let mut other = configure.clone();
     other["configuration"]["executionRoot"] = json!("/elsewhere");

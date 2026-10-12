@@ -415,6 +415,10 @@ pub struct RegistryDoc {
     /// `generation` of the last change that may have touched every kind (a
     /// hello `state` frame).
     all_kinds_generation: u64,
+    /// Batches this replica wrote since it was loaded (settled or not):
+    /// "did that call write anything" for tests and diagnostics, which the
+    /// queue length cannot answer once writes settle locally.
+    batches_written: u64,
 }
 
 impl RegistryDoc {
@@ -429,6 +433,7 @@ impl RegistryDoc {
             generation: 0,
             kind_generations: HashMap::new(),
             all_kinds_generation: 0,
+            batches_written: 0,
         }
     }
 
@@ -473,6 +478,11 @@ impl RegistryDoc {
 
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// See the `batches_written` field.
+    pub fn batches_written(&self) -> u64 {
+        self.batches_written
     }
 
     // ── persistence ─────────────────────────────────────────────────────────
@@ -664,8 +674,16 @@ impl RegistryDoc {
     /// unchanged: each row is exactly what [`Self::overlay_row`] returned,
     /// clocks included, so a later full `state` frame still re-seeds these
     /// rows with their original clocks. Returns whether anything was folded.
+    ///
+    /// Memory only: the caller persists the result with [`Self::to_bytes`],
+    /// one snapshot holding rows and queue together, so a crash before that
+    /// save leaves the previous snapshot (queue included) intact.
+    ///
+    /// A replica that has applied server state (cursor > 0) keeps its queue:
+    /// its unacked writes still owe that server a push, and a later delta
+    /// from it would overwrite a settled row wholesale.
     pub fn settle_pending_locally(&mut self) -> bool {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() || self.server_seq > 0 {
             return false;
         }
         for batch in std::mem::take(&mut self.pending) {
@@ -677,6 +695,21 @@ impl RegistryDoc {
             }
         }
         true
+    }
+
+    /// A replica that settled locally is about to meet a server: queue every
+    /// row as a re-seed op with its ORIGINAL clocks, so writes that settled
+    /// instead of queueing still reach the server and merge by LWW there,
+    /// even for rows a full `state` frame would otherwise replace wholesale.
+    /// Re-sending a row the server already has is an idempotent no-op.
+    pub fn queue_rows_for_server(&mut self) {
+        let seed: Vec<RowOp> = self
+            .authoritative
+            .values()
+            .flat_map(|m| m.values())
+            .map(row_to_seed_op)
+            .collect();
+        self.enqueue_ops(seed);
     }
 
     /// Batches to push: everything not already in flight on this connection.
@@ -804,6 +837,7 @@ impl RegistryDoc {
         // Batch ids only need device-lifetime uniqueness; the HLC of a
         // fresh tick provides exactly that without a rng dependency.
         let batch = format!("b-{}", self.next_hlc());
+        self.batches_written += 1;
         self.pending.push(PendingBatch {
             batch,
             ops,

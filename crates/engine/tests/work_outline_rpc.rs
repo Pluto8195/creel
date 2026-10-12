@@ -318,7 +318,7 @@ async fn replay_after_restart_does_not_rewrite() {
         .workspace
         .registry_row(zeron_doc::KIND_WORK_ITEMS, &item("op-x"))
         .unwrap();
-    let pending_before = core.workspace.registry_pending_len();
+    let pending_before = core.workspace.registry_batches_written();
 
     // Replays of the pre-restart operations: acknowledged, nothing written.
     assert_eq!(
@@ -340,7 +340,7 @@ async fn replay_after_restart_does_not_rewrite() {
     assert_eq!(row_after.clocks, row_before.clocks, "no field re-written");
     assert_eq!(row_after.fields, row_before.fields);
     assert_eq!(
-        core.workspace.registry_pending_len(),
+        core.workspace.registry_batches_written(),
         pending_before,
         "no op enqueued"
     );

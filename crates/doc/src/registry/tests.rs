@@ -1671,3 +1671,62 @@ fn settling_pending_locally_keeps_the_overlay_view() {
     assert_eq!(reloaded.pending_len(), 0);
     assert_eq!(rows(&reloaded), before);
 }
+
+/// Settling is memory-only and persists as one snapshot: a crash after the
+/// settle but before the save reloads the previous snapshot with its queue
+/// intact (nothing lost), and the next save stores rows and empty queue
+/// together.
+#[test]
+fn a_crash_before_the_settled_save_loses_nothing() {
+    let mut doc = RegistryDoc::new("dev-a");
+    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo")).unwrap();
+    doc.upsert_chat(&chat("chat-0", "dev-a")).unwrap();
+    assert!(doc.rename_chat("chat-0", "Renamed").unwrap());
+    let on_disk = doc.to_bytes().unwrap();
+    let view = |doc: &RegistryDoc| {
+        (
+            format!("{:?}", doc.row(KIND_SPACES, "space-1")),
+            format!("{:?}", doc.row(KIND_CHATS, "chat-0")),
+        )
+    };
+    let before = view(&doc);
+
+    assert!(doc.settle_pending_locally());
+    // Crash here: the settled state never reached disk.
+    let recovered = RegistryDoc::from_bytes(&on_disk, "dev-a").unwrap();
+    assert!(recovered.pending_len() > 0, "the queue is still on disk");
+    assert_eq!(view(&recovered), before);
+
+    let saved = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "dev-a").unwrap();
+    assert_eq!(saved.pending_len(), 0);
+    assert_eq!(view(&saved), before);
+}
+
+/// A replica that has applied server state never settles (its writes still
+/// owe that server a push), and a settled replica that meets a server
+/// re-queues every row with its original clocks.
+#[test]
+fn settling_stops_at_a_server_and_rows_requeue_for_one() {
+    let mut synced = RegistryDoc::new("dev-a");
+    assert!(synced.apply_rows(1, Vec::new()));
+    synced.upsert_chat(&chat("chat-0", "dev-a")).unwrap();
+    assert!(!synced.settle_pending_locally());
+    assert_eq!(synced.pending_len(), 1);
+
+    let mut local = RegistryDoc::new("dev-a");
+    local.upsert_chat(&chat("chat-0", "dev-a")).unwrap();
+    assert!(local.rename_chat("chat-0", "Renamed").unwrap());
+    let row = local.row(KIND_CHATS, "chat-0").unwrap();
+    assert!(local.settle_pending_locally());
+    let written = local.batches_written();
+    local.queue_rows_for_server();
+    assert!(local.batches_written() > written);
+    let pushed = local.take_pushable();
+    let seed = pushed
+        .iter()
+        .flat_map(|batch| &batch.ops)
+        .find(|op| op.kind == KIND_CHATS && op.id == "chat-0")
+        .expect("the settled row goes out");
+    assert_eq!(seed.clocks.as_ref(), Some(&row.clocks), "original clocks");
+    assert_eq!(local.row(KIND_CHATS, "chat-0"), Some(row));
+}
