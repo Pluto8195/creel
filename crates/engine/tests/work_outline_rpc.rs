@@ -623,11 +623,21 @@ async fn mutations_stay_fast_on_a_large_local_registry() {
          (all {round_trips:?}); change visible in the watch median {frame:?} (all {frames:?})",
         core.workspace.registry_pending_len()
     );
+    // Medians of six against generous budgets: a debug build measured
+    // ~80 ms / ~210 ms with the queue settled and ~690 ms / ~1,030 ms
+    // without (release is several times faster), so these only trip on the
+    // regression, not on a loaded machine. The watch coalesces for 75 ms
+    // before it recomputes.
+    let (round_trip_budget, frame_budget) = if cfg!(debug_assertions) {
+        (Duration::from_millis(350), Duration::from_millis(650))
+    } else {
+        (Duration::from_millis(100), Duration::from_millis(250))
+    };
+    assert_eq!(core.workspace.registry_pending_len(), 0, "the queue settled");
     assert!(
-        round_trip < Duration::from_millis(100),
+        round_trip < round_trip_budget,
         "mutation round trip {round_trip:?}"
     );
-    // The watch coalesces for 75 ms before it recomputes.
-    assert!(frame < Duration::from_millis(250), "frame latency {frame:?}");
+    assert!(frame < frame_budget, "frame latency {frame:?}");
     core.shutdown().await;
 }
