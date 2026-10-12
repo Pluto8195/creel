@@ -450,7 +450,10 @@ fn seed_large_registry(data: &std::path::Path, spaces: &[String], chats: usize, 
             .store_root(),
     )
     .unwrap();
-    let bytes = store.load_snapshot(zeron_doc::REGISTRY_DOC_ID).unwrap().unwrap();
+    let bytes = store
+        .load_snapshot(zeron_doc::REGISTRY_DOC_ID)
+        .unwrap()
+        .unwrap();
     let mut doc = zeron_doc::RegistryDoc::from_bytes(&bytes, "dev-a").unwrap();
     let set = |value: Value| -> Option<std::collections::BTreeMap<String, Value>> {
         Some(serde_json::from_value(value).unwrap())
@@ -574,7 +577,10 @@ async fn mutations_stay_fast_on_a_large_local_registry() {
     }
     let stream = &mut stream;
     frame_within(stream, Duration::from_secs(600), |s| s.items.len() == 200).await;
-    eprintln!("setup (watches + 200 items + 180 assignments): {:?}", booted.elapsed());
+    eprintln!(
+        "setup (watches + 200 items + 180 assignments): {:?}",
+        booted.elapsed()
+    );
 
     let mut round_trips = Vec::new();
     let mut frames = Vec::new();
@@ -633,7 +639,11 @@ async fn mutations_stay_fast_on_a_large_local_registry() {
     } else {
         (Duration::from_millis(100), Duration::from_millis(250))
     };
-    assert_eq!(core.workspace.registry_pending_len(), 0, "the queue settled");
+    assert_eq!(
+        core.workspace.registry_pending_len(),
+        0,
+        "the queue settled"
+    );
     assert!(
         round_trip < round_trip_budget,
         "mutation round trip {round_trip:?}"

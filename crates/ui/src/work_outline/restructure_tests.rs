@@ -48,9 +48,23 @@ fn press(vcx: &mut gpui::VisualTestContext, keys: &str) {
     vcx.run_until_parked();
 }
 
-/// A fresh frame of `snapshot` (a new allocation, as every engine frame is):
-/// lets the next restructuring plan from it.
+/// A fresh frame of `snapshot` (a new allocation, as every engine frame is),
+/// with the wait for earlier optimistic changes over: the frame wins, so the
+/// next restructuring plans from exactly `snapshot`.
 fn refresh(
+    overview: &Entity<Overview>,
+    vcx: &mut gpui::VisualTestContext,
+    snapshot: WorkOutlineSnapshot,
+) {
+    deliver_frame(overview, vcx, snapshot);
+    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.run_until_parked();
+    draw(vcx);
+}
+
+/// Just a frame of `snapshot`: pending optimistic changes it does not show
+/// stay on top of it.
+fn deliver_frame(
     overview: &Entity<Overview>,
     vcx: &mut gpui::VisualTestContext,
     snapshot: WorkOutlineSnapshot,
@@ -105,8 +119,8 @@ fn keyboard_restructuring_sends_moves_and_noops_at_boundaries(cx: &mut gpui::Tes
         )
     );
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
-    // Until the frame showing it arrives, another press waits (it would
-    // plan from the stale order).
+    // The move already shows (before any frame), so another press plans
+    // from the new order: UI is first now, a boundary no-op.
     press(vcx, "shift-up");
     assert_eq!(calls.lock().unwrap().len(), 1);
     refresh(&overview, vcx, fixture("s1"));
@@ -1039,4 +1053,224 @@ fn shift_arrows_restructure_through_the_app_keymap(cx: &mut gpui::TestAppContext
     press(vcx, "up");
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", API)));
     assert_eq!(calls.lock().unwrap().len(), 4);
+}
+
+/// [`restructure_overview`] whose engine replies wait for the returned
+/// gate: a mutation stays in flight until the test releases it.
+fn gated_restructure_overview<'a>(
+    cx: &'a mut gpui::TestAppContext,
+    dir: &std::path::Path,
+    snapshot: WorkOutlineSnapshot,
+    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    + Send
+    + Sync
+    + 'static,
+) -> (
+    Entity<Overview>,
+    Entity<OutlineView>,
+    OutlineCalls,
+    crate::work_outline::actions::ReplyGate,
+    &'a mut gpui::VisualTestContext,
+) {
+    let (overview, state, vcx) = outline_overview(cx, dir);
+    let calls: OutlineCalls = Default::default();
+    let sink = calls.clone();
+    let gate = crate::work_outline::actions::ReplyGate::default();
+    let executor = vcx.update(|_, cx| cx.background_executor().clone());
+    state.update(vcx, |state, _| {
+        state.work_outline_actions_override =
+            Some(crate::work_outline::WorkOutlineActions::scripted_gated(
+                std::sync::Arc::new(move |_, params| {
+                    sink.lock().unwrap().push(params.clone());
+                    reply(&params)
+                }),
+                gate.clone(),
+                executor,
+            ));
+    });
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(snapshot)), cx);
+        o.set_mode(OverviewMode::Outline, cx);
+    });
+    draw(vcx);
+    vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
+    let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+    focus_outline(&outline, vcx);
+    (overview, outline, calls, gate, vcx)
+}
+
+fn release_reply(gate: &crate::work_outline::actions::ReplyGate, vcx: &mut gpui::VisualTestContext) {
+    assert!(gate.release_one(), "a reply is held");
+    vcx.run_until_parked();
+    draw(vcx);
+}
+
+/// The fixture with three more top-level items after Housekeeping:
+/// Launch v2, Housekeeping, Extra 1, Extra 2, Extra 3 (+ archived Retired).
+fn long_fixture() -> WorkOutlineSnapshot {
+    let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
+    let template = snapshot.item(HOUSEKEEPING).unwrap().clone();
+    let at = snapshot
+        .root_work_item_ids
+        .iter()
+        .position(|id| id == HOUSEKEEPING)
+        .unwrap();
+    for n in 1..=3 {
+        let mut item = template.clone();
+        item.id = format!("w-extra-{n}");
+        item.title = format!("Extra {n}");
+        snapshot.root_work_item_ids.insert(at + n, item.id.clone());
+        snapshot.items.push(item);
+    }
+    snapshot
+}
+
+/// The fixture's top level in `order` (ids of `long_fixture`).
+fn with_roots(mut snapshot: WorkOutlineSnapshot, order: &[&str]) -> WorkOutlineSnapshot {
+    let rest: Vec<String> = snapshot
+        .root_work_item_ids
+        .iter()
+        .filter(|id| !order.contains(&id.as_str()))
+        .cloned()
+        .collect();
+    snapshot.root_work_item_ids = order.iter().map(|id| (*id).to_owned()).collect();
+    snapshot.root_work_item_ids.extend(rest);
+    snapshot
+}
+
+/// Visible order of `ids` in the Outline (each must render exactly once).
+fn shown_order(
+    outline: &Entity<OutlineView>,
+    vcx: &mut gpui::VisualTestContext,
+    ids: &[&str],
+) -> Vec<String> {
+    outline.read_with(vcx, |outline, _| {
+        let model = outline.model();
+        let mut placed: Vec<(usize, String)> = ids
+            .iter()
+            .map(|id| {
+                let key = row_key::item("s1", id);
+                let count = model.rows.iter().filter(|row| row.key == key).count();
+                assert_eq!(count, 1, "{id} renders once");
+                (model.position(&key).unwrap(), (*id).to_owned())
+            })
+            .collect();
+        placed.sort();
+        placed.into_iter().map(|(_, id)| id).collect()
+    })
+}
+
+const ROOTS: [&str; 5] = [LAUNCH, HOUSEKEEPING, "w-extra-1", "w-extra-2", "w-extra-3"];
+
+/// A key press moves the row in the same frame (before the engine replies)
+/// and the selection stays on it; a failed mutation rolls it back with a
+/// notice.
+#[gpui::test]
+fn a_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) = gated_restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        |_| Err(zeron_rpc::RpcError::Failed("work-outline/conflict: stale".into())),
+    );
+    select_item(&outline, vcx, UI);
+    press(vcx, "shift-up");
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(gate.held(), 1, "still in flight");
+    assert_eq!(shown_order(&outline, vcx, &[API, UI]), [UI, API], "moved now");
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_none()));
+
+    release_reply(&gate, vcx);
+    assert_eq!(shown_order(&outline, vcx, &[API, UI]), [API, UI], "rolled back");
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
+    assert!(
+        !crate::overview_positions::path(dir.path()).exists(),
+        "canvas positions untouched"
+    );
+}
+
+/// Rapid Shift+Down presses while the first move is in flight all apply,
+/// in order: each queued press plans from the order the previous one
+/// already shows, and the selection rides along.
+#[gpui::test]
+fn rapid_shift_down_presses_all_apply_in_order(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) =
+        gated_restructure_overview(cx, dir.path(), long_fixture(), reply_ok);
+    select_item(&outline, vcx, LAUNCH);
+    press(vcx, "shift-down");
+    press(vcx, "shift-down");
+    press(vcx, "shift-down");
+    assert_eq!(calls.lock().unwrap().len(), 1, "one in flight, two queued");
+    assert_eq!(
+        shown_order(&outline, vcx, &ROOTS),
+        [HOUSEKEEPING, LAUNCH, "w-extra-1", "w-extra-2", "w-extra-3"]
+    );
+
+    release_reply(&gate, vcx);
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    release_reply(&gate, vcx);
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    release_reply(&gate, vcx);
+    assert_eq!(gate.held(), 0);
+    let null = serde_json::Value::Null;
+    for (ix, after) in [HOUSEKEEPING, "w-extra-1", "w-extra-2"].into_iter().enumerate() {
+        assert_eq!(
+            move_at(&calls, ix),
+            (null.clone(), placement("after", Some(after)), LAUNCH.to_owned())
+        );
+    }
+    assert_eq!(
+        shown_order(&outline, vcx, &ROOTS),
+        [HOUSEKEEPING, "w-extra-1", "w-extra-2", LAUNCH, "w-extra-3"]
+    );
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", LAUNCH)));
+    // Its subtree travelled with it.
+    let (launch, api) = outline.read_with(vcx, |o, _| {
+        let model = o.model();
+        (
+            model.position(&row_key::item("s1", LAUNCH)).unwrap(),
+            model.position(&row_key::item("s1", API)).unwrap(),
+        )
+    });
+    assert_eq!(api, launch + 1);
+}
+
+/// Engine frames reconcile the optimistic order: a stale frame (showing only
+/// the first of three moves) does not flicker the row back, an intermediate
+/// one neither, and the frame showing the last move retires every pending
+/// change without duplicating a row.
+#[gpui::test]
+fn frames_reconcile_optimistic_moves_without_flicker(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) =
+        restructure_overview(cx, dir.path(), long_fixture(), reply_ok);
+    select_item(&outline, vcx, LAUNCH);
+    for _ in 0..3 {
+        press(vcx, "shift-down");
+    }
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    let last = [HOUSEKEEPING, "w-extra-1", "w-extra-2", LAUNCH, "w-extra-3"];
+    assert_eq!(shown_order(&outline, vcx, &ROOTS), last);
+    assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 3);
+
+    // The engine's frames trail behind: after the first move, then the second.
+    deliver_frame(&overview, vcx, with_roots(long_fixture(), &[HOUSEKEEPING, LAUNCH]));
+    assert_eq!(shown_order(&outline, vcx, &ROOTS), last, "no flicker");
+    deliver_frame(
+        &overview,
+        vcx,
+        with_roots(long_fixture(), &[HOUSEKEEPING, "w-extra-1", LAUNCH]),
+    );
+    assert_eq!(shown_order(&outline, vcx, &ROOTS), last, "no flicker");
+    assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 1);
+
+    deliver_frame(&overview, vcx, with_roots(long_fixture(), &last));
+    assert_eq!(shown_order(&outline, vcx, &ROOTS), last);
+    assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", LAUNCH)));
 }

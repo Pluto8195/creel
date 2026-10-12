@@ -1636,12 +1636,15 @@ fn kind_generations_track_exactly_the_kinds_that_changed() {
 #[test]
 fn settling_pending_locally_keeps_the_overlay_view() {
     let mut doc = RegistryDoc::new("dev-a");
-    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo")).unwrap();
+    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo"))
+        .unwrap();
     for i in 0..3 {
-        doc.upsert_chat(&chat(&format!("chat-{i}"), "dev-a")).unwrap();
+        doc.upsert_chat(&chat(&format!("chat-{i}"), "dev-a"))
+            .unwrap();
     }
     for status in [SessionStatus::Working, SessionStatus::Idle] {
-        doc.upsert_session(&session("chat-0", "dev-a", status)).unwrap();
+        doc.upsert_session(&session("chat-0", "dev-a", status))
+            .unwrap();
     }
     assert!(doc.rename_chat("chat-1", "Renamed").unwrap());
     assert!(doc.delete_chat("chat-2").unwrap());
@@ -1679,7 +1682,8 @@ fn settling_pending_locally_keeps_the_overlay_view() {
 #[test]
 fn a_crash_before_the_settled_save_loses_nothing() {
     let mut doc = RegistryDoc::new("dev-a");
-    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo")).unwrap();
+    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo"))
+        .unwrap();
     doc.upsert_chat(&chat("chat-0", "dev-a")).unwrap();
     assert!(doc.rename_chat("chat-0", "Renamed").unwrap());
     let on_disk = doc.to_bytes().unwrap();

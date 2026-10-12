@@ -2432,7 +2432,11 @@ mod tests {
 
         assert_eq!(host.sweep_work_outline_orphans(), 0);
         assert!(!changes.has_changed().unwrap(), "idle sweep must be quiet");
-        assert_eq!(host.registry_batches_written(), pending, "and write nothing");
+        assert_eq!(
+            host.registry_batches_written(),
+            pending,
+            "and write nothing"
+        );
 
         // An orphan (its Space row never existed) is still swept and notifies.
         host.mutate(|doc| {

@@ -190,7 +190,11 @@ fn apply_move(
             continue;
         };
         view.depth = depth;
-        stack.extend(view.child_ids.iter().map(|child| (child.clone(), depth + 1)));
+        stack.extend(
+            view.child_ids
+                .iter()
+                .map(|child| (child.clone(), depth + 1)),
+        );
     }
     Some(out)
 }
@@ -247,7 +251,10 @@ fn apply_assign(
 ) -> Option<WorkOutlineSnapshot> {
     let target = snapshot.item(work_item_id)?;
     let shown = target.chat_ids.iter().any(|id| id == chat_id)
-        && !snapshot.unassociated_chat_ids.iter().any(|id| id == chat_id);
+        && !snapshot
+            .unassociated_chat_ids
+            .iter()
+            .any(|id| id == chat_id);
     if shown {
         return None;
     }
@@ -360,7 +367,12 @@ mod tests {
             work_item_id: HOUSEKEEPING.into(),
         };
         let out = apply(&base, &assign).unwrap();
-        assert!(out.item(HOUSEKEEPING).unwrap().chat_ids.contains(&CHAT_LOOSE_A.to_owned()));
+        assert!(
+            out.item(HOUSEKEEPING)
+                .unwrap()
+                .chat_ids
+                .contains(&CHAT_LOOSE_A.to_owned())
+        );
         assert!(!out.unassociated_chat_ids.contains(&CHAT_LOOSE_A.to_owned()));
         assert!(apply(&out, &assign).is_none());
         // Re-associating moves the Chat off its old item.

@@ -440,19 +440,46 @@ impl OutlineView {
         self.ensure_collapsed_loaded(cx);
         self.frames = inputs.spaces.clone();
         self.inputs = inputs;
-        // A frame that shows an acknowledged change replaces it (frame wins).
-        let frames = &self.frames;
-        self.optimistic.retain(|entry| {
-            !entry.acknowledged
-                || frames
-                    .iter()
-                    .find(|space| space.id == entry.space_id)
-                    .and_then(|space| space.load.snapshot())
-                    .is_some_and(|frame| optimistic::apply(frame, &entry.change).is_some())
-        });
+        self.retire_shown_optimistic();
         self.overlay_optimistic();
         self.reflatten();
         cx.notify();
+    }
+
+    /// A frame that shows an acknowledged change replaces it (frame wins).
+    /// The engine applies one Space's changes in the order they were sent,
+    /// so a frame showing a later acknowledged change also covers every
+    /// earlier one, even when that one no longer reads as "shown" (the same
+    /// item moved again): replaying it on the frame would flicker the item
+    /// back to an intermediate place.
+    fn retire_shown_optimistic(&mut self) {
+        let shown: Vec<bool> = self
+            .optimistic
+            .iter()
+            .map(|entry| {
+                entry.acknowledged
+                    && self
+                        .frames
+                        .iter()
+                        .find(|space| space.id == entry.space_id)
+                        .and_then(|space| space.load.snapshot())
+                        .is_some_and(|frame| optimistic::apply(frame, &entry.change).is_none())
+            })
+            .collect();
+        let retire: Vec<bool> = (0..self.optimistic.len())
+            .map(|ix| {
+                let entry = &self.optimistic[ix];
+                entry.acknowledged
+                    && (ix..self.optimistic.len()).any(|later| {
+                        shown[later] && self.optimistic[later].space_id == entry.space_id
+                    })
+            })
+            .collect();
+        let mut ix = 0;
+        self.optimistic.retain(|_| {
+            ix += 1;
+            !retire[ix - 1]
+        });
     }
 
     /// Rebuild `inputs.spaces` from the frames with the pending changes
@@ -491,7 +518,8 @@ impl OutlineView {
         follow: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.optimistic.retain(|entry| entry.operation_id != operation_id);
+        self.optimistic
+            .retain(|entry| entry.operation_id != operation_id);
         self.optimistic.push(OptimisticChange {
             space_id: space_id.to_owned(),
             operation_id: operation_id.to_owned(),
@@ -1532,7 +1560,6 @@ impl OutlineView {
         })
         .detach();
     }
-
 
     // ----------------------------------------------------------------------
     // Drag and drop
