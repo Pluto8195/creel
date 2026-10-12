@@ -155,6 +155,43 @@ pub(crate) fn plan(
     }
 }
 
+/// Why [`plan`] returned `None` for `item_id` (diagnostics only; no titles).
+pub(crate) fn noop_reason(
+    snapshot: &WorkOutlineSnapshot,
+    item_id: &str,
+    op: RestructureOp,
+    shown: impl Fn(&str) -> bool,
+) -> &'static str {
+    let Some(item) = snapshot.item(item_id) else {
+        return "item not in snapshot";
+    };
+    if !live(item) {
+        return "item archived";
+    }
+    let parent = item.parent_work_item_id.as_deref();
+    let all = live_children(snapshot, parent);
+    if !all.iter().any(|sibling| sibling.id == item_id) {
+        return "item missing from its parent's child list";
+    }
+    let siblings: Vec<&WorkItemView> = all
+        .into_iter()
+        .filter(|sibling| sibling.id == item_id || shown(&sibling.id))
+        .collect();
+    let ix = siblings
+        .iter()
+        .position(|sibling| sibling.id == item_id)
+        .unwrap_or_default();
+    match op {
+        RestructureOp::MoveUp | RestructureOp::Indent if ix == 0 => {
+            "first shown sibling (nothing above)"
+        }
+        RestructureOp::MoveDown if ix + 1 >= siblings.len() => "last shown sibling (nothing below)",
+        RestructureOp::Outdent if parent.is_none() => "already top level",
+        RestructureOp::Outdent => "parent not in snapshot",
+        _ => "unknown",
+    }
+}
+
 /// The move a drop of `moving` onto `target` in `zone` makes, or `None`
 /// when the drop is refused: onto itself or one of its descendants, an
 /// archived item on either side, an item of another Space, or a drop that
@@ -248,6 +285,43 @@ mod tests {
             destination_parent: parent.map(Into::into),
             placement,
         }
+    }
+
+    #[test]
+    fn noop_reasons_explain_each_boundary() {
+        let s = fixture_snapshot("s1");
+        assert_eq!(plan(&s, LAUNCH, RestructureOp::MoveUp, all), None);
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::MoveUp, all),
+            "first shown sibling (nothing above)"
+        );
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::Indent, all),
+            "first shown sibling (nothing above)"
+        );
+        assert_eq!(
+            noop_reason(&s, HOUSEKEEPING, RestructureOp::MoveDown, all),
+            "last shown sibling (nothing below)"
+        );
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::Outdent, all),
+            "already top level"
+        );
+        assert_eq!(
+            noop_reason(&s, RETIRED, RestructureOp::MoveUp, all),
+            "item archived"
+        );
+        assert_eq!(
+            noop_reason(&s, "w-missing", RestructureOp::MoveUp, all),
+            "item not in snapshot"
+        );
+        let mut orphan = s.clone();
+        orphan.root_work_item_ids.retain(|id| id != HOUSEKEEPING);
+        assert_eq!(plan(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all), None);
+        assert_eq!(
+            noop_reason(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all),
+            "item missing from its parent's child list"
+        );
     }
 
     #[test]

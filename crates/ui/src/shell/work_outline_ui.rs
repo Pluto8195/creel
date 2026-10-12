@@ -288,6 +288,50 @@ pub(crate) fn work_outline_bindings(keymap: &KeymapConfig) -> Vec<KeyBinding> {
         .collect()
 }
 
+/// Diagnostics (`work_outline_keys` target): a Shift+Arrow / Tab keystroke
+/// on the Overview with the focused element's key context stack and the
+/// bindings it matches, so a press that never reaches the Outline shows why.
+/// `phase` is `capture` (before bindings) or `unhandled` (no action took it).
+pub(crate) fn log_restructure_keystroke(
+    phase: &'static str,
+    event: &gpui::KeyDownEvent,
+    window: &gpui::Window,
+    cx: &App,
+) {
+    let keystroke = &event.keystroke;
+    let restructure_key = matches!(
+        keystroke.key.as_str(),
+        "up" | "down" | "left" | "right" | "tab"
+    ) && keystroke.modifiers.shift
+        || keystroke.key == "tab";
+    if !restructure_key {
+        return;
+    }
+    let context_stack = window.context_stack();
+    let (matched, _) = cx
+        .key_bindings()
+        .borrow()
+        .bindings_for_input(std::slice::from_ref(keystroke), &context_stack);
+    let bindings: Vec<String> = matched
+        .iter()
+        .map(|binding| {
+            format!(
+                "{} ctx={:?}",
+                binding.action().name(),
+                binding.predicate().map(|p| p.to_string())
+            )
+        })
+        .collect();
+    tracing::info!(
+        target: "work_outline_keys",
+        phase,
+        keystroke = %keystroke.unparse(),
+        ?context_stack,
+        ?bindings,
+        "outline keystroke"
+    );
+}
+
 /// Binds [`OUTLINE_NAVIGATION_KEYS`] under [`OUTLINE_NAVIGATION_CONTEXT`] to
 /// the actions of `work_outline::outline_view`.
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {

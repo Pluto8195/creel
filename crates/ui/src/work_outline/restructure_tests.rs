@@ -1240,6 +1240,79 @@ fn rapid_shift_down_presses_all_apply_in_order(cx: &mut gpui::TestAppContext) {
     assert_eq!(api, launch + 1);
 }
 
+/// A reply that never lands does not wedge restructuring: after
+/// `DIRECT_REPLY_TIMEOUT` the attempt counts as failed (rolled back, with a
+/// notice) and the next Shift+Arrow goes out, replaying the operation id
+/// when it is the same move. A late reply to the expired attempt does not
+/// drain presses queued behind the new one.
+#[gpui::test]
+fn a_reply_that_never_lands_does_not_wedge_restructuring(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) =
+        gated_restructure_overview(cx, dir.path(), long_fixture(), reply_ok);
+    select_item(&outline, vcx, HOUSEKEEPING);
+    press(vcx, "shift-up");
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        shown_order(&outline, vcx, &[LAUNCH, HOUSEKEEPING]),
+        [HOUSEKEEPING, LAUNCH],
+        "moved now"
+    );
+    // Presses while in flight queue.
+    press(vcx, "shift-down");
+    assert_eq!(calls.lock().unwrap().len(), 1, "queued behind the first");
+
+    // The engine never answers.
+    vcx.executor()
+        .advance_clock(crate::work_outline::outline_view::DIRECT_REPLY_TIMEOUT);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert!(!outline.read_with(vcx, |o, _| o.restructuring_busy()));
+    assert_eq!(
+        shown_order(&outline, vcx, &[LAUNCH, HOUSEKEEPING]),
+        [LAUNCH, HOUSEKEEPING],
+        "rolled back"
+    );
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert_eq!(calls.lock().unwrap().len(), 1, "the queued press was dropped");
+
+    // The next press goes out: the same move replays its operation id.
+    press(vcx, "shift-up");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    let op = |ix: usize| calls.lock().unwrap()[ix]["operationId"].clone();
+    assert_eq!(op(0), op(1), "a retry replays the operation id");
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::Value::Null,
+            placement("before", Some(LAUNCH)),
+            HOUSEKEEPING.to_owned()
+        )
+    );
+    release_reply(&gate, vcx);
+    release_reply(&gate, vcx);
+    assert!(!outline.read_with(vcx, |o, _| o.restructuring_busy()));
+
+    // A different move expires, then another goes out with a press queued
+    // behind it: the expired move's late reply leaves that press queued.
+    press(vcx, "shift-down");
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    vcx.executor()
+        .advance_clock(crate::work_outline::outline_view::DIRECT_REPLY_TIMEOUT);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert!(!outline.read_with(vcx, |o, _| o.restructuring_busy()));
+    press(vcx, "shift-down");
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    assert_ne!(op(2), op(3), "a different move mints a new id");
+    press(vcx, "shift-up");
+    release_reply(&gate, vcx);
+    assert!(outline.read_with(vcx, |o, _| o.restructuring_busy()));
+    assert_eq!(calls.lock().unwrap().len(), 4, "still queued");
+    release_reply(&gate, vcx);
+    assert_eq!(calls.lock().unwrap().len(), 5, "the queued press went out");
+}
+
 /// Engine frames reconcile the optimistic order: a stale frame (showing only
 /// the first of three moves) does not flicker the row back, an intermediate
 /// one neither, and the frame showing the last move retires every pending
