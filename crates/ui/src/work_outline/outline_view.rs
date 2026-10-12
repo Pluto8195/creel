@@ -275,6 +275,22 @@ struct OptimisticChange {
 /// show it yet; after that the engine's frame wins.
 const AWAIT_REFRESH: Duration = Duration::from_secs(2);
 
+/// How long a direct restructuring may stay in flight before it counts as
+/// failed and the next press goes out (RPC calls carry no timeout of their
+/// own).
+pub(crate) const DIRECT_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Row kind for diagnostics (no titles).
+fn row_kind_name(kind: &OutlineRowKind) -> &'static str {
+    match kind {
+        OutlineRowKind::Space { .. } => "space",
+        OutlineRowKind::Item(_) => "item",
+        OutlineRowKind::Chat(_) => "chat",
+        OutlineRowKind::Unassociated { .. } => "unassociated",
+        OutlineRowKind::Notice { .. } => "notice",
+    }
+}
+
 /// What an in-progress drag over the Outline would do (drawn as the drop
 /// indicator; absent for refused targets).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,6 +384,9 @@ pub(crate) struct OutlineView {
     /// The drop indicator of an in-progress drag.
     drop_hint: Option<DropHint>,
     _editor_events: Subscription,
+    /// Focus gained / lost diagnostics (registered on first render, which
+    /// has the window).
+    focus_logs: Option<[Subscription; 2]>,
     /// Tests run without a Shell: the drift confirmation lands here.
     #[cfg(test)]
     pub(crate) captured_drift: Option<WorkOutlineDriftRequest>,
@@ -424,6 +443,7 @@ impl OutlineView {
             follow: None,
             drop_hint: None,
             _editor_events: editor_events,
+            focus_logs: None,
             #[cfg(test)]
             captured_drift: None,
         }
@@ -1394,22 +1414,51 @@ impl OutlineView {
         op: RestructureOp,
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
-        let (space_id, item_id) = self.selected_item().ok_or("Select a work item first")?;
-        let snapshot = self
-            .snapshot(&space_id)
-            .ok_or("This project's outline is not loaded")?;
+        let Some((space_id, item_id)) = self.selected_item() else {
+            tracing::info!(target: "work_outline_keys", ?op, "restructure: no selected work item");
+            return Err("Select a work item first");
+        };
+        let Some(snapshot) = self.snapshot(&space_id) else {
+            tracing::info!(
+                target: "work_outline_keys",
+                ?op, %space_id, %item_id,
+                "restructure: outline not loaded"
+            );
+            return Err("This project's outline is not loaded");
+        };
         if snapshot
             .item(&item_id)
             .is_some_and(|item| item.archived_at.is_some())
         {
+            tracing::info!(
+                target: "work_outline_keys",
+                ?op, %space_id, %item_id,
+                "restructure: item archived"
+            );
             return Err("Restore this work item before moving it");
         }
         let model = &self.model;
-        let plan = restructure::plan(snapshot, &item_id, op, |id| {
-            model.position(&row_key::item(&space_id, id)).is_some()
-        });
-        if let Some(plan) = plan {
-            self.submit_direct(space_id, DirectMutation::Move(plan), cx);
+        let shown = |id: &str| model.position(&row_key::item(&space_id, id)).is_some();
+        let plan = restructure::plan(snapshot, &item_id, op, shown);
+        match plan {
+            Some(plan) => {
+                tracing::info!(
+                    target: "work_outline_keys",
+                    ?op, %space_id, %item_id,
+                    destination_parent = ?plan.destination_parent,
+                    placement = ?plan.placement,
+                    "restructure: planned"
+                );
+                self.submit_direct(space_id, DirectMutation::Move(plan), cx);
+            }
+            None => {
+                let reason = restructure::noop_reason(snapshot, &item_id, op, shown);
+                tracing::info!(
+                    target: "work_outline_keys",
+                    ?op, %space_id, %item_id, reason,
+                    "restructure: plan=None (no-op)"
+                );
+            }
         }
         Ok(())
     }
@@ -1419,12 +1468,43 @@ impl OutlineView {
     /// A press while the previous move is in flight queues behind it: the
     /// change already shows, so the next plan starts from the new order.
     fn restructure_key(&mut self, op: RestructureOp, cx: &mut Context<Self>) {
-        if self.is_editing() || self.selected_item().is_none() {
+        tracing::info!(
+            target: "work_outline_keys",
+            ?op,
+            selected = ?self.selected.as_deref(),
+            "restructure key action"
+        );
+        if self.is_editing() {
+            tracing::info!(
+                target: "work_outline_keys",
+                ?op,
+                inline_editor = self.editing.is_some(),
+                picker = self.picker.is_some(),
+                "restructure key: editing, propagating"
+            );
+            cx.propagate();
+            return;
+        }
+        if self.selected_item().is_none() {
+            tracing::info!(
+                target: "work_outline_keys",
+                ?op,
+                selected = ?self.selected.as_deref(),
+                row_kind = self.selected_row().map(|row| row_kind_name(&row.kind)),
+                "restructure key: no selected work item, propagating"
+            );
             cx.propagate();
             return;
         }
         if self.restructuring_busy() {
             self.queued_restructure.push_back(op);
+            tracing::info!(
+                target: "work_outline_keys",
+                ?op,
+                in_flight = ?self.attempt.as_ref().map(|attempt| attempt.operation_id.as_str()),
+                queued = self.queued_restructure.len(),
+                "restructure key: busy, queued"
+            );
             return;
         }
         if let Err(notice) = self.restructure_selected(op, cx) {
@@ -1449,6 +1529,11 @@ impl OutlineView {
         cx: &mut Context<Self>,
     ) {
         if self.restructuring_busy() {
+            tracing::info!(
+                target: "work_outline_keys",
+                %space_id,
+                "submit_direct: ignored, a restructuring is in flight"
+            );
             return;
         }
         let change = mutation.change();
@@ -1457,6 +1542,13 @@ impl OutlineView {
             .map(|snapshot| instructions::drift_impact(snapshot, &change))
             .unwrap_or_default();
         if impact.needs_confirmation() {
+            tracing::info!(
+                target: "work_outline_keys",
+                %space_id,
+                chats = impact.chat_ids.len(),
+                items = impact.item_ids.len(),
+                "submit_direct: needs drift confirmation"
+            );
             // Queued presses would plan from an order the user has not
             // confirmed yet.
             self.queued_restructure.clear();
@@ -1483,6 +1575,11 @@ impl OutlineView {
     /// key press goes out; on failure it rolls back with a notice.
     fn send_direct(&mut self, space_id: String, mutation: DirectMutation, cx: &mut Context<Self>) {
         if self.restructuring_busy() {
+            tracing::info!(
+                target: "work_outline_keys",
+                %space_id,
+                "send_direct: ignored, a restructuring is in flight"
+            );
             return;
         }
         // A retry of the failed mutation replays its operation id.
@@ -1530,6 +1627,20 @@ impl OutlineView {
             self.set_collapsed(key, false, cx);
         }
         self.show_optimistic(&space_id, &operation_id, change, Some(follow_key), cx);
+        tracing::info!(
+            target: "work_outline_keys",
+            %space_id, %operation_id,
+            "send_direct: sent"
+        );
+        // A reply that never lands must not wedge restructuring: every later
+        // press would queue forever and drops / picker moves would be ignored.
+        let timeout_id = operation_id.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DIRECT_REPLY_TIMEOUT).await;
+            this.update(cx, |this, cx| this.expire_direct_attempt(&timeout_id, cx))
+                .ok();
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
@@ -1539,30 +1650,47 @@ impl OutlineView {
                     .is_some_and(|attempt| attempt.operation_id == operation_id);
                 match result {
                     Ok(_) => {
+                        tracing::info!(
+                            target: "work_outline_keys",
+                            %operation_id, ours,
+                            queued = this.queued_restructure.len(),
+                            "send_direct: reply ok"
+                        );
                         if ours {
                             this.attempt = None;
                         }
                         this.acknowledge_optimistic(&operation_id, cx);
                         // Boundary no-ops send nothing: keep going until a
-                        // press goes out or the queue is empty.
-                        while let Some(op) = this.queued_restructure.pop_front() {
+                        // press goes out or the queue is empty. A late reply
+                        // to an expired attempt must not drain presses queued
+                        // behind the one now in flight.
+                        while !this.restructuring_busy() {
+                            let Some(op) = this.queued_restructure.pop_front() else {
+                                break;
+                            };
                             if let Err(notice) = this.restructure_selected(op, cx) {
                                 this.queued_restructure.clear();
                                 this.show_notice(notice, cx);
                             }
-                            if this.restructuring_busy() {
-                                break;
-                            }
                         }
                     }
                     Err(error) => {
+                        tracing::info!(
+                            target: "work_outline_keys",
+                            %operation_id, ours,
+                            code = ?error.code,
+                            error = %error.message,
+                            "send_direct: reply failed"
+                        );
                         if ours {
                             if let Some(attempt) = this.attempt.as_mut() {
                                 attempt.state = AttemptState::Failed;
                             }
                         }
-                        this.queued_restructure.clear();
-                        this.follow = None;
+                        if ours || !this.restructuring_busy() {
+                            this.queued_restructure.clear();
+                            this.follow = None;
+                        }
                         this.drop_optimistic(&operation_id, cx);
                         this.show_notice(error.message.clone(), cx);
                     }
@@ -1571,6 +1699,31 @@ impl OutlineView {
             .ok();
         })
         .detach();
+    }
+
+    /// The reply to `operation_id` did not land within
+    /// [`DIRECT_REPLY_TIMEOUT`]: release the restructuring lock as a failure
+    /// (a retry of the same move replays the operation id, so a late apply
+    /// stays idempotent), roll the change back, and say so. A frame showing
+    /// a late apply still wins.
+    fn expire_direct_attempt(&mut self, operation_id: &str, cx: &mut Context<Self>) {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return;
+        };
+        if attempt.operation_id != operation_id || attempt.state != AttemptState::InFlight {
+            return;
+        }
+        attempt.state = AttemptState::Failed;
+        tracing::warn!(
+            target: "work_outline_keys",
+            %operation_id,
+            dropped_queued = self.queued_restructure.len(),
+            "send_direct: no reply in time; released the restructuring lock"
+        );
+        self.queued_restructure.clear();
+        self.follow = None;
+        self.drop_optimistic(operation_id, cx);
+        self.show_notice("The engine did not answer in time. Try the move again", cx);
     }
 
     // ----------------------------------------------------------------------
@@ -2308,14 +2461,34 @@ impl OutlineView {
                     }
                 }),
             )
-            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                let kind = row_kind_name(&open_row.kind);
                 if this.is_editing() {
+                    tracing::info!(
+                        target: "work_outline_keys",
+                        row = %click_key, kind,
+                        inline_editor = this.editing.is_some(),
+                        picker = this.picker.is_some(),
+                        "row click ignored: editing"
+                    );
                     return;
                 }
                 this.select(&click_key, cx);
-                if event.click_count() >= 2 {
+                let opens_details = event.click_count() >= 2;
+                if opens_details {
                     this.open_row(&open_row, cx);
                 }
+                tracing::info!(
+                    target: "work_outline_keys",
+                    row = %click_key, kind,
+                    clicks = event.click_count(),
+                    opens_details = opens_details && kind == "item",
+                    selected = ?this.selected.as_deref(),
+                    outline_focused = this.focus.is_focused(window),
+                    outline_contains_focus = this.focus.contains_focused(window, cx),
+                    context_stack = ?window.context_stack(),
+                    "row click"
+                );
             }))
             .child(disclosure)
             .child(body)
@@ -2844,7 +3017,26 @@ impl Render for OutlineView {
             _ => None,
         };
         let notice = self.notice.clone();
-        let _ = window;
+        if self.focus_logs.is_none() {
+            self.focus_logs = Some([
+                cx.on_focus_in(&self.focus, window, |this, window, _| {
+                    tracing::info!(
+                        target: "work_outline_keys",
+                        outline_focused = this.focus.is_focused(window),
+                        editing = this.is_editing(),
+                        "outline gained focus"
+                    );
+                }),
+                cx.on_focus_out(&self.focus, window, |this, _, window, _| {
+                    tracing::info!(
+                        target: "work_outline_keys",
+                        editing = this.is_editing(),
+                        context_stack = ?window.context_stack(),
+                        "outline lost focus"
+                    );
+                }),
+            ]);
+        }
         let mut first_use = self
             .shows_first_use(cx)
             .then(|| self.render_first_use(&theme, cx));

@@ -8777,6 +8777,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(self.route, Route::Overview) {
+            work_outline_ui::log_restructure_keystroke("capture", event, window, cx);
+        }
         if event.keystroke.key == "escape" && self.sidebar_session_transfer.is_some() {
             cx.stop_active_drag(window);
             self.cancel_sidebar_session_transfer(cx);
@@ -8809,6 +8812,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Reaching this bubble listener means no bound action handled the key.
+        if matches!(self.route, Route::Overview) {
+            work_outline_ui::log_restructure_keystroke("unhandled", event, window, cx);
+        }
         // Inputs and completion menus consume Tab first. Unhandled Tab walks
         // accessible controls, including individual transcript link ranges.
         let modifiers = event.keystroke.modifiers;

@@ -155,6 +155,43 @@ pub(crate) fn plan(
     }
 }
 
+/// Why [`plan`] returned `None` for `item_id` (diagnostics only; no titles).
+pub(crate) fn noop_reason(
+    snapshot: &WorkOutlineSnapshot,
+    item_id: &str,
+    op: RestructureOp,
+    shown: impl Fn(&str) -> bool,
+) -> &'static str {
+    let Some(item) = snapshot.item(item_id) else {
+        return "item not in snapshot";
+    };
+    if !live(item) {
+        return "item archived";
+    }
+    let parent = item.parent_work_item_id.as_deref();
+    let all = live_children(snapshot, parent);
+    if !all.iter().any(|sibling| sibling.id == item_id) {
+        return "item missing from its parent's child list";
+    }
+    let siblings: Vec<&WorkItemView> = all
+        .into_iter()
+        .filter(|sibling| sibling.id == item_id || shown(&sibling.id))
+        .collect();
+    let ix = siblings
+        .iter()
+        .position(|sibling| sibling.id == item_id)
+        .unwrap_or_default();
+    match op {
+        RestructureOp::MoveUp | RestructureOp::Indent if ix == 0 => {
+            "first shown sibling (nothing above)"
+        }
+        RestructureOp::MoveDown if ix + 1 >= siblings.len() => "last shown sibling (nothing below)",
+        RestructureOp::Outdent if parent.is_none() => "already top level",
+        RestructureOp::Outdent => "parent not in snapshot",
+        _ => "unknown",
+    }
+}
+
 /// The move a drop of `moving` onto `target` in `zone` makes, or `None`
 /// when the drop is refused: onto itself or one of its descendants, an
 /// archived item on either side, an item of another Space, or a drop that
