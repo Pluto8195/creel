@@ -71,6 +71,7 @@ mod sidebar_sections;
 pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
+mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
 
@@ -474,6 +475,8 @@ pub fn apply_keymap(
     cx.bind_keys(work_outline_ui::work_outline_bindings(keymap));
     // Outline navigation keys, context `WorkOutline` minus text inputs.
     work_outline_ui::bind_work_outline_navigation(cx);
+    // Shift+F10 / Menu: the selected Outline row's context menu.
+    cx.bind_keys(crate::work_outline::outline_view::context_menu::key_bindings());
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
@@ -1646,6 +1649,8 @@ pub struct Shell {
     work_outline_modal_focus_pending: bool,
     /// What had focus before the modal opened; restored when it closes.
     work_outline_prior_focus: Option<FocusHandle>,
+    /// Outline row context menu (`work_outline_menu_ui`).
+    work_outline_menu: popover::Popup<work_outline_menu_ui::WorkOutlineMenu>,
     /// Per-Chat "Apply updated instructions" progress (`instructions_ui`).
     instruction_apply: std::collections::HashMap<String, instructions_ui::ApplyState>,
     /// The chat close-out dialog (`closeout_ui`), `Some` while open.
@@ -2084,6 +2089,7 @@ impl Shell {
             work_outline_modal_focus: cx.focus_handle(),
             work_outline_modal_focus_pending: false,
             work_outline_prior_focus: None,
+            work_outline_menu: popover::Popup::default(),
             instruction_apply: std::collections::HashMap::new(),
             closeout_dialog: None,
             closeout_seq: 0,
@@ -5277,6 +5283,7 @@ impl Shell {
             || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.work_outline_modal.is_some()
+            || self.work_outline_menu.is_open()
             || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
@@ -8726,6 +8733,7 @@ impl Shell {
             || self.chat_menu.get().is_some()
             || self.space_menu.get().is_some()
             || self.user_menu.get().is_some()
+            || self.work_outline_menu.get().is_some()
         {
             return true;
         }
@@ -8777,6 +8785,11 @@ impl Shell {
         }
         if event.keystroke.key == "escape" && self.work_outline_modal_open() {
             self.cancel_work_outline_modal(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.work_outline_menu.is_open() {
+            self.dismiss_work_outline_menu(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -9230,6 +9243,9 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
+        if let Some(overlay) = self.render_work_outline_menu(window, cx) {
+            overlays.push(overlay);
+        }
         if let Some(overlay) = self.render_command_palette(viewport, window, cx) {
             overlays.push(overlay);
         }
@@ -11947,6 +11963,12 @@ impl Render for Shell {
                         this.run_work_outline_command(action.0, window, cx);
                     }
                 },
+            ))
+            .on_action(cx.listener(
+                |this,
+                 _: &crate::work_outline::outline_view::context_menu::OpenContextMenu,
+                 window,
+                 cx| { this.open_work_outline_menu_from_keyboard(window, cx) },
             ))
             .on_action(cx.listener(|this, _: &OpenMyPrs, _, cx| {
                 if !this.overlay_owns_keyboard(cx) {
