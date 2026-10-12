@@ -31,7 +31,8 @@ never needs a work item.
 
 Press `?` while the Outline has focus, or click the keyboard button in the
 Outline toolbar, to open the shortcut reference. Hover over any Outline control
-to see what it does and its current key.
+to see what it does and its current key. Right-click any row for everything you
+can do with it.
 
 ## Keys
 
@@ -51,6 +52,7 @@ inline editor, a picker, the search field, or any other text input.
 | Indent (last child of the previous sibling) | `⇧→` or `⇥` | `Shift+→` or `Tab` |
 | Outdent (right after the former parent) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Shortcut reference | `?` | `?` |
+| Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
 
 Every Work Outline command is also in the command palette and can be rebound in
 **Settings → Shortcuts**. Only two commands ship with a global key, because
@@ -65,6 +67,30 @@ global keys also fire while a text field has focus:
 Commands that need a selected work item open the Outline and show a short notice
 when nothing is selected. Tooltips and the shortcut reference always show the
 current bindings, including keys you have rebound.
+
+## Context menus
+
+Right-click a row (or Control-click it on macOS) to select it and open its
+menu. With the Outline focused, `⇧F10` (`Shift+F10`, or the `Menu` key on
+Windows and Linux) opens the menu of the selected row. Each entry shows its
+current key, including keys you have rebound; an entry without a key shows
+none. Entries that cannot apply are greyed out, and hovering over one tells you
+why (for example, **Move Up** on an item that is already first, or **Outdent**
+at the top level).
+
+| Row | Entries |
+| --- | --- |
+| Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore |
+| Chat | Open Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
+| Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts |
+| Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
+
+In the menu, `↑` / `↓` move between entries, `↩` (`Enter`) runs one, `→` opens
+**Set Status** and `←` returns, and `Esc` or a click outside closes it. Every
+entry runs the same action as its key or command palette entry, so the same
+confirmations apply. Set Status, Add Instruction, Archive…, Restore, Remove from
+Work Item, Space Instructions, and Execution Setup open Work Item Details and
+act there.
 
 ## Restructuring
 

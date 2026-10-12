@@ -40,6 +40,9 @@ use crate::shell::work_outline_ui::OutlineNavKey;
 use crate::state::AppState;
 use crate::theme::Theme;
 
+#[path = "context_menu.rs"]
+pub(crate) mod context_menu;
+
 /// Key context of the Outline tree (bind outline keys under it).
 pub(crate) const KEY_CONTEXT: &str = "WorkOutline";
 /// Key context of the picker list.
@@ -2135,6 +2138,10 @@ impl OutlineView {
                 ))
             })
             .on_mouse_down(
+                gpui::MouseButton::Right,
+                context_menu::row_listener(key.clone(), cx),
+            )
+            .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     if !this.is_editing() {
@@ -2670,6 +2677,10 @@ impl Render for OutlineView {
                             });
                         }
                     }))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        context_menu::space_root_listener(space.id.clone(), cx),
+                    )
             }),
             _ => None,
         };

@@ -622,7 +622,7 @@ impl WorkItemDetails {
         );
     }
 
-    fn disassociate(&mut self, chat_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn disassociate(&mut self, chat_id: String, cx: &mut Context<Self>) {
         let task =
             self.state
                 .read(cx)
@@ -711,7 +711,7 @@ impl WorkItemDetails {
     /// "Archive…": the Shell's archive confirmation, which for an item with
     /// descendants makes the user choose between archiving the subtree and
     /// moving the descendants to another parent (never an implicit default).
-    fn request_archive(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn request_archive(&mut self, cx: &mut Context<Self>) {
         let (Some(item), Some(snapshot)) = (self.item().cloned(), self.snapshot.clone()) else {
             return;
         };
@@ -778,7 +778,7 @@ impl WorkItemDetails {
         }
     }
 
-    fn restore(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn restore(&mut self, cx: &mut Context<Self>) {
         let task = self
             .state
             .read(cx)
