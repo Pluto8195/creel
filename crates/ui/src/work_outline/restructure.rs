@@ -288,6 +288,43 @@ mod tests {
     }
 
     #[test]
+    fn noop_reasons_explain_each_boundary() {
+        let s = fixture_snapshot("s1");
+        assert_eq!(plan(&s, LAUNCH, RestructureOp::MoveUp, all), None);
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::MoveUp, all),
+            "first shown sibling (nothing above)"
+        );
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::Indent, all),
+            "first shown sibling (nothing above)"
+        );
+        assert_eq!(
+            noop_reason(&s, HOUSEKEEPING, RestructureOp::MoveDown, all),
+            "last shown sibling (nothing below)"
+        );
+        assert_eq!(
+            noop_reason(&s, LAUNCH, RestructureOp::Outdent, all),
+            "already top level"
+        );
+        assert_eq!(
+            noop_reason(&s, RETIRED, RestructureOp::MoveUp, all),
+            "item archived"
+        );
+        assert_eq!(
+            noop_reason(&s, "w-missing", RestructureOp::MoveUp, all),
+            "item not in snapshot"
+        );
+        let mut orphan = s.clone();
+        orphan.root_work_item_ids.retain(|id| id != HOUSEKEEPING);
+        assert_eq!(plan(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all), None);
+        assert_eq!(
+            noop_reason(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all),
+            "item missing from its parent's child list"
+        );
+    }
+
+    #[test]
     fn move_up_and_down_name_the_neighbor_and_stop_at_the_ends() {
         let s = fixture_snapshot("s1");
         // Launch v2 > [API, UI]; roots [Launch v2, Housekeeping] (+ archived).
