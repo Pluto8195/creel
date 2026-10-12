@@ -85,6 +85,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
         KeyBinding::new("f2", RenameSelected, ctx),
+        KeyBinding::new("r", RenameSelected, ctx),
         KeyBinding::new("n", CreateSibling, ctx),
         KeyBinding::new("shift-n", CreateChild, ctx),
         KeyBinding::new("home", SelectFirst, ctx),
@@ -103,6 +104,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
 pub(crate) enum OutlineEvent {
     /// Open the Chat's transcript.
     OpenChat(String),
+    /// Rename the Chat (the Shell's Chat rename dialog).
+    RenameChat(String),
     /// Open Work Item Details.
     OpenDetails { space_id: String, item_id: String },
     /// Open the Space-root details (Space-root instructions).
@@ -2748,6 +2751,16 @@ impl Render for OutlineView {
             .on_action(cx.listener(|this, _: &RenameSelected, window, cx| {
                 if this.is_editing() {
                     cx.propagate();
+                    return;
+                }
+                // A Chat row renames through the Shell's Chat rename dialog,
+                // the same flow as the sidebar's Rename.
+                if let Some(chat_id) = this.selected_chat() {
+                    cx.emit(OutlineEvent::RenameChat(chat_id));
+                    return;
+                }
+                if this.selected_row().is_some_and(|row| row.chat().is_some()) {
+                    this.show_notice("This chat no longer exists on any device", cx);
                     return;
                 }
                 if let Err(notice) = this.begin_rename(window, cx) {

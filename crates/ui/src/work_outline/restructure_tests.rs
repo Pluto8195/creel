@@ -841,3 +841,121 @@ fn navigation_arrows_are_inert_while_renaming(cx: &mut gpui::TestAppContext) {
     }
     assert!(calls.lock().unwrap().is_empty());
 }
+
+/// Click a row (after focus has left the Outline); Outline keys must work
+/// straight away.
+fn click_row(vcx: &mut gpui::VisualTestContext, key: &str) {
+    let at = row_bounds(vcx, format!("outline-row-{key}"))
+        .unwrap_or_else(|| panic!("{key} renders"))
+        .center();
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    draw(vcx);
+}
+
+fn editing(outline: &Entity<OutlineView>, vcx: &mut gpui::VisualTestContext) -> bool {
+    outline.read_with(vcx, |outline, _| outline.is_editing())
+}
+
+/// F2 and bare R rename a work item in place.
+#[gpui::test]
+fn f2_and_r_rename_a_work_item(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    for keys in ["f2", "r"] {
+        select_item(&outline, vcx, UI);
+        assert!(!editing(&outline, vcx));
+        press(vcx, keys);
+        assert!(editing(&outline, vcx), "{keys} starts an inline rename");
+        outline.update_in(vcx, |outline, _, cx| outline.cancel_edit(cx));
+        draw(vcx);
+        focus_outline(&outline, vcx);
+    }
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+/// F2 and R on a Chat row ask the Overview to open the Chat rename dialog.
+#[gpui::test]
+fn f2_and_r_rename_a_chat_row(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, _calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = vcx.update(|_, cx| {
+        cx.subscribe(&outline, move |_, event: &OutlineEvent, _| {
+            sink.lock().unwrap().push(event.clone());
+        })
+    });
+    for keys in ["f2", "r"] {
+        outline.update(vcx, |outline, cx| {
+            outline.select(&row_key::chat(CHAT_UI), cx)
+        });
+        draw(vcx);
+        press(vcx, keys);
+        assert!(!editing(&outline, vcx), "a Chat row has no inline editor");
+    }
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            OutlineEvent::RenameChat(CHAT_UI.to_owned()),
+            OutlineEvent::RenameChat(CHAT_UI.to_owned())
+        ]
+    );
+}
+
+/// Clicking a row gives the Outline keyboard focus, so F2 / R work right away.
+#[gpui::test]
+fn clicking_a_row_focuses_the_outline_for_f2_and_r(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, _calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    for keys in ["f2", "r"] {
+        vcx.update(|window, _| window.blur());
+        draw(vcx);
+        let focused = vcx.update(|window, cx| {
+            gpui::Focusable::focus_handle(outline.read(cx), cx).is_focused(window)
+        });
+        assert!(!focused, "focus left the Outline before the click");
+        click_row(vcx, &row_key::item("s1", UI));
+        assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
+        press(vcx, keys);
+        assert!(editing(&outline, vcx), "{keys} after a click");
+        outline.update_in(vcx, |outline, _, cx| outline.cancel_edit(cx));
+        draw(vcx);
+    }
+}
+
+/// F2 / R do not fire while the inline editor owns the keyboard.
+#[gpui::test]
+fn rename_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    select_item(&outline, vcx, UI);
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.begin_rename(window, cx).unwrap()
+    });
+    draw(vcx);
+    press(vcx, "r");
+    press(vcx, "f2");
+    assert!(editing(&outline, vcx));
+    assert!(calls.lock().unwrap().is_empty());
+}

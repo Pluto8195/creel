@@ -240,13 +240,14 @@ impl OutlineNavKey {
 ///   work item selected they propagate, so Tab still walks focus out of the
 ///   Outline.
 /// - Enter: open the selected item (Work Item Details)
-/// - F2: rename in place
+/// - F2 / R: rename in place (a Chat row opens the Chat rename dialog). R is
+///   the laptop-friendly alias: F2 needs Fn there.
 /// - N / Shift+N: create a sibling / child
 /// - ? (Shift+/ on US layouts): the shortcut reference. Bound to the typed
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 19] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 20] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -257,6 +258,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 19] = [
     ("alt-down", OutlineNavKey::SelectNextSibling),
     ("enter", OutlineNavKey::OpenSelected),
     ("f2", OutlineNavKey::RenameSelected),
+    ("r", OutlineNavKey::RenameSelected),
     ("n", OutlineNavKey::CreateSibling),
     ("shift-n", OutlineNavKey::CreateChild),
     ("shift-up", OutlineNavKey::MoveItemUp),

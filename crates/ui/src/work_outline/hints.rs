@@ -444,8 +444,8 @@ mod tests {
         let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
         assert_eq!(titles, ["Navigate", "Edit", "Restructure", "Commands"]);
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
-        // Tab / Shift+Tab share rows with Indent / Outdent.
-        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len() - 2);
+        // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename.
+        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len() - 3);
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
             groups
@@ -468,6 +468,7 @@ mod tests {
             row(&groups, "Next sibling").keys.as_deref(),
             Some("\u{2325}\u{2193}")
         );
+        assert_eq!(row(&groups, "Rename").keys.as_deref(), Some("F2 / R"));
         assert_eq!(row(&groups, "Next item").keys.as_deref(), Some("\u{2193}"));
         assert_eq!(
             row(&groups, "Create Work Item").keys.as_deref(),

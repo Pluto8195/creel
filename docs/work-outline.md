@@ -45,7 +45,7 @@ inline editor, a picker, the search field, or any other text input.
 | Collapse / expand | `←` / `→` | `←` / `→` |
 | Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
 | Open Work Item Details | `↩` | `Enter` |
-| Rename in place | `F2` | `F2` |
+| Rename (a work item in place; a Chat row opens the rename dialog) | `F2` or `R` | `F2` or `R` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |
 | Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Indent (last child of the previous sibling) | `⇧→` or `⇥` | `Shift+→` or `Tab` |

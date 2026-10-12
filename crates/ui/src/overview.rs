@@ -2766,6 +2766,12 @@ impl Overview {
             OutlineEvent::OpenChat(chat_id) => {
                 this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
             }
+            OutlineEvent::RenameChat(chat_id) => {
+                if let Some(shell) = this.shell.upgrade() {
+                    let chat_id = chat_id.clone();
+                    shell.update(cx, |shell, cx| shell.open_rename_chat(chat_id, cx));
+                }
+            }
             OutlineEvent::OpenDetails { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
             }
