@@ -9346,6 +9346,64 @@ impl Overview {
         self.leave_work_item_details(DetailsExit::OpenItem { space_id, item_id }, cx);
     }
 
+    /// Open Work Item Details for `item_id` (`""` = the Space root), then run
+    /// `then` on them. The Outline context menu reaches the details' own
+    /// actions (status, archive, restore, instructions, execution) this way,
+    /// so they keep their confirmations, in-flight guards, and error line.
+    /// With an unsaved draft in other details, `then` runs only after
+    /// Discard; Keep Editing drops it.
+    pub(crate) fn with_work_item_details(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut WorkItemDetails, &mut Window, &mut Context<WorkItemDetails>) + 'static,
+    ) {
+        let handle = window.window_handle();
+        // Deferred: callers are mid-update of the Shell and this Overview.
+        let run = move |this: &Self, cx: &mut Context<Self>| {
+            let Some(details) = this.work_item_details.clone() else {
+                return;
+            };
+            let space_id = details.read(cx).space_id.clone();
+            let snapshot = this.outline_snapshot(&space_id, cx);
+            let chats = this.outline_chats.clone();
+            details.update(cx, |details, _| details.set_data(snapshot, chats));
+            cx.defer(move |cx| {
+                handle
+                    .update(cx, |_, window, cx| {
+                        details.update(cx, |details, cx| then(details, window, cx))
+                    })
+                    .ok();
+            });
+        };
+        let current = self.work_item_details.clone();
+        if current.as_ref().is_some_and(|details| {
+            let details = details.read(cx);
+            details.space_id == space_id && details.item_id == item_id
+        }) {
+            run(self, cx);
+            return;
+        }
+        let Some(current) = current else {
+            self.replace_work_item_details(space_id, item_id, cx);
+            run(self, cx);
+            return;
+        };
+        let overview = cx.entity().downgrade();
+        current.update(cx, |current, cx| {
+            current.confirm_discard(cx, move |cx| {
+                overview
+                    .update(cx, |this, cx| {
+                        this.replace_work_item_details(space_id, item_id, cx);
+                        run(this, cx);
+                    })
+                    .ok();
+            })
+        });
+    }
+
     /// Leave the current Work Item Details (switch item, open a Chat, or
     /// close) without silently dropping a draft: with unsaved edits this asks
     /// "Keep Editing / Discard" and acts only after Discard.
