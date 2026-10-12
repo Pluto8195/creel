@@ -1094,4 +1094,86 @@ mod tests {
         press(cx, "escape");
         assert!(!menu_open(&shell, cx));
     }
+
+    /// The live flow, end to end in the real window composition: a Shell on
+    /// the Overview in Outline mode (keymap from `Shell::new`), one Space
+    /// whose top level holds several items, a real left click on the second
+    /// top-level row, then Shift+Up. The row moves at once (optimistic) and
+    /// one `moveWorkItem` goes out; Shift+Down / Shift+Right / Shift+Left
+    /// follow the same path.
+    #[gpui::test]
+    fn click_then_shift_arrows_restructure_top_level_items_in_the_shell(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
+        // Only top-level items (parent None), as in the reported case.
+        snapshot.root_work_item_ids.retain(|id| id != RETIRED);
+        let (_shell, outline, calls, cx) = menu_shell(cx, dir.path(), snapshot);
+        let launch = row_key::item("s1", LAUNCH);
+        let housekeeping = row_key::item("s1", HOUSEKEEPING);
+        let position = |outline: &Entity<OutlineView>, cx: &mut gpui::VisualTestContext, key| {
+            outline.read_with(cx, |outline, _| outline.model().position(key))
+        };
+        let row_click = |cx: &mut gpui::VisualTestContext, key: &str| {
+            let at = cx
+                .debug_bounds(selector(format!("outline-row-{key}")))
+                .unwrap_or_else(|| panic!("row {key} is shown"))
+                .center();
+            cx.simulate_click(at, gpui::Modifiers::default());
+            cx.run_until_parked();
+            redraw(cx);
+        };
+        assert!(
+            position(&outline, cx, &launch) < position(&outline, cx, &housekeeping),
+            "Launch starts above Housekeeping"
+        );
+
+        row_click(cx, &housekeeping);
+        assert_eq!(selected(&outline, cx), Some(housekeeping.clone()));
+        assert!(outline_focused(&outline, cx), "a click keeps focus in the tree");
+
+        press(cx, "shift-up");
+        assert!(
+            position(&outline, cx, &housekeeping) < position(&outline, cx, &launch),
+            "Shift+Up moves Housekeeping above Launch at once"
+        );
+        {
+            let calls = calls.lock().unwrap();
+            let moves: Vec<_> = calls
+                .iter()
+                .filter(|call| call["op"] == "moveWorkItem")
+                .collect();
+            assert_eq!(moves.len(), 1, "{calls:?}");
+            assert_eq!(moves[0]["workItemId"], HOUSEKEEPING);
+            assert_eq!(moves[0]["destinationParentWorkItemId"], serde_json::Value::Null);
+            assert_eq!(
+                moves[0]["placement"],
+                serde_json::json!({"type": "before", "siblingWorkItemId": LAUNCH})
+            );
+        }
+        assert_eq!(selected(&outline, cx), Some(housekeeping.clone()));
+
+        // Shift+Down moves it back below Launch.
+        press(cx, "shift-down");
+        assert!(
+            position(&outline, cx, &launch) < position(&outline, cx, &housekeeping),
+            "Shift+Down moves Housekeeping back below Launch"
+        );
+        let moves = |calls: &Calls| {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call["op"] == "moveWorkItem")
+                .count()
+        };
+        assert_eq!(moves(&calls), 2);
+
+        // Shift+Right indents under Launch; Shift+Left outdents again.
+        press(cx, "shift-right");
+        assert_eq!(moves(&calls), 3);
+        press(cx, "shift-left");
+        assert_eq!(moves(&calls), 4);
+    }
 }
