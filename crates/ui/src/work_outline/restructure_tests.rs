@@ -95,7 +95,7 @@ fn keyboard_restructuring_sends_moves_and_noops_at_boundaries(cx: &mut gpui::Tes
 
     // Move up: UI before API, same parent.
     select_item(&outline, vcx, UI);
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
     assert_eq!(
         move_at(&calls, 0),
         (
@@ -107,13 +107,13 @@ fn keyboard_restructuring_sends_moves_and_noops_at_boundaries(cx: &mut gpui::Tes
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
     // Until the frame showing it arrives, another press waits (it would
     // plan from the stale order).
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
     assert_eq!(calls.lock().unwrap().len(), 1);
     refresh(&overview, vcx, fixture("s1"));
 
     // Move down: API after UI.
     select_item(&outline, vcx, API);
-    press(vcx, "alt-shift-down");
+    press(vcx, "shift-down");
     assert_eq!(
         move_at(&calls, 1),
         (
@@ -126,21 +126,24 @@ fn keyboard_restructuring_sends_moves_and_noops_at_boundaries(cx: &mut gpui::Tes
 
     // Boundaries: first / last sibling, nothing to indent under, top level.
     for (item, keys) in [
-        (API, "alt-shift-up"),
-        (UI, "alt-shift-down"),
-        (HOUSEKEEPING, "alt-shift-down"),
+        (API, "shift-up"),
+        (UI, "shift-down"),
+        (HOUSEKEEPING, "shift-down"),
         (API, "tab"),
+        (API, "shift-right"),
         (LAUNCH, "tab"),
         (LAUNCH, "shift-tab"),
+        (LAUNCH, "shift-left"),
     ] {
         select_item(&outline, vcx, item);
         press(vcx, keys);
         assert_eq!(calls.lock().unwrap().len(), 2, "{item} {keys} is a no-op");
     }
 
-    // Indent: UI becomes the last child of API.
+    // Indent: UI becomes the last child of API (Shift+Right; Tab is an alias,
+    // covered below).
     select_item(&outline, vcx, UI);
-    press(vcx, "tab");
+    press(vcx, "shift-right");
     assert_eq!(
         move_at(&calls, 2),
         (
@@ -153,7 +156,7 @@ fn keyboard_restructuring_sends_moves_and_noops_at_boundaries(cx: &mut gpui::Tes
 
     // Outdent: Auth endpoints goes to Launch v2, right after API.
     select_item(&outline, vcx, API_AUTH);
-    press(vcx, "shift-tab");
+    press(vcx, "shift-left");
     assert_eq!(
         move_at(&calls, 3),
         (
@@ -183,7 +186,7 @@ fn descendants_move_with_the_item_and_selection_follows(cx: &mut gpui::TestAppCo
     let (overview, outline, calls, vcx) =
         restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
     select_item(&outline, vcx, API);
-    press(vcx, "alt-shift-down");
+    press(vcx, "shift-down");
     assert_eq!(ops(&calls), ["moveWorkItem"], "one request for the subtree");
 
     // The engine's frame: Launch v2 > [UI, API > Auth endpoints].
@@ -249,7 +252,7 @@ fn keyboard_moves_confirm_drift_only_when_instructions_change(cx: &mut gpui::Tes
 
     // Reordering siblings keeps every effective instruction: no question.
     select_item(&outline, vcx, UI);
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
     assert!(outline.read_with(vcx, |outline, _| outline.captured_drift.is_none()));
     assert_eq!(ops(&calls), ["moveWorkItem", "moveWorkItem"]);
 }
@@ -279,9 +282,9 @@ fn retrying_a_failed_move_reuses_its_operation_id(cx: &mut gpui::TestAppContext)
         },
     );
     select_item(&outline, vcx, UI);
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
     assert!(outline.read_with(vcx, |outline, _| outline.notice().is_some()));
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
     let ids: Vec<String> = calls
         .lock()
         .unwrap()
@@ -299,7 +302,7 @@ fn retrying_a_failed_move_reuses_its_operation_id(cx: &mut gpui::TestAppContext)
 
     // A different move is a new operation.
     select_item(&outline, vcx, API);
-    press(vcx, "alt-shift-down");
+    press(vcx, "shift-down");
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), sent + 1);
     assert_ne!(calls[sent]["operationId"].as_str().unwrap(), ids[0]);
@@ -321,7 +324,14 @@ fn restructuring_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
         outline.begin_rename(window, cx).unwrap()
     });
     draw(vcx);
-    for keys in ["alt-shift-up", "alt-shift-down", "tab", "shift-tab"] {
+    for keys in [
+        "shift-up",
+        "shift-down",
+        "shift-left",
+        "shift-right",
+        "tab",
+        "shift-tab",
+    ] {
         press(vcx, keys);
     }
     assert!(
@@ -335,7 +345,7 @@ fn restructuring_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
         outline.open_move_picker(window, cx).unwrap()
     });
     draw(vcx);
-    for keys in ["alt-shift-up", "tab", "shift-tab"] {
+    for keys in ["shift-up", "shift-left", "shift-right", "tab", "shift-tab"] {
         press(vcx, keys);
     }
     assert!(calls.lock().unwrap().is_empty(), "the picker owns the keys");
@@ -347,7 +357,8 @@ fn restructuring_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
         outline.select(&row_key::chat(CHAT_UI), cx)
     });
     press(vcx, "tab");
-    press(vcx, "alt-shift-up");
+    press(vcx, "shift-up");
+    press(vcx, "shift-right");
     assert!(calls.lock().unwrap().is_empty());
     assert!(outline.read_with(vcx, |outline, _| outline.notice().is_none()));
 }
@@ -715,4 +726,118 @@ fn drops_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
             UI.to_owned()
         )
     );
+}
+
+/// Tab / Shift+Tab stay aliases for indent / outdent.
+#[gpui::test]
+fn tab_and_shift_tab_alias_indent_and_outdent(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (overview, outline, calls, vcx) =
+        restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    select_item(&outline, vcx, UI);
+    press(vcx, "tab");
+    assert_eq!(
+        move_at(&calls, 0),
+        (
+            serde_json::json!(API),
+            placement("last", None),
+            UI.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+    select_item(&outline, vcx, API_AUTH);
+    press(vcx, "shift-tab");
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("after", Some(API)),
+            API_AUTH.to_owned()
+        )
+    );
+}
+
+/// Up / Down walk the rows as displayed; Alt+Up / Alt+Down jump over
+/// subtrees; Home / End go to the ends. Nothing here sends a request.
+#[gpui::test]
+fn arrows_follow_visual_order_and_alt_arrows_skip_subtrees(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let item = |id: &str| Some(row_key::item("s1", id));
+
+    // Down from an expanded parent enters its first child.
+    select_item(&outline, vcx, LAUNCH);
+    press(vcx, "down");
+    assert_eq!(selected(&outline, vcx), item(API));
+    // Up from a first child selects the parent.
+    press(vcx, "up");
+    assert_eq!(selected(&outline, vcx), item(LAUNCH));
+    // Down keeps descending: API's own subtree is walked row by row.
+    press(vcx, "down");
+    press(vcx, "down");
+    let below_api = selected(&outline, vcx);
+    assert_ne!(below_api, item(UI), "Down did not skip API's subtree");
+    assert!(below_api.is_some());
+    // Alt+Down from API jumps over its subtree to the next sibling.
+    select_item(&outline, vcx, API);
+    press(vcx, "alt-down");
+    assert_eq!(selected(&outline, vcx), item(UI));
+    press(vcx, "alt-up");
+    assert_eq!(selected(&outline, vcx), item(API));
+    // Alt+Down from the first top-level item skips the whole subtree.
+    select_item(&outline, vcx, LAUNCH);
+    press(vcx, "alt-down");
+    assert_eq!(selected(&outline, vcx), item(HOUSEKEEPING));
+    // Down from the last child of an expanded branch (past its own Chat
+    // row) reaches the parent's next sibling.
+    select_item(&outline, vcx, UI);
+    press(vcx, "down");
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+    press(vcx, "down");
+    assert_eq!(selected(&outline, vcx), item(HOUSEKEEPING));
+    // Up crosses back into the Chat row.
+    press(vcx, "up");
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+    // Home / End.
+    press(vcx, "home");
+    assert_eq!(selected(&outline, vcx), item(LAUNCH));
+    press(vcx, "end");
+    let last = outline.read_with(vcx, |outline, _| {
+        outline.model().rows.last().unwrap().key.clone()
+    });
+    assert_eq!(selected(&outline, vcx), Some(last));
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+/// Left / Right keep collapse / expand, and the plain arrows are inert in a
+/// text input (the inline rename editor).
+#[gpui::test]
+fn navigation_arrows_are_inert_while_renaming(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    select_item(&outline, vcx, UI);
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.begin_rename(window, cx).unwrap()
+    });
+    draw(vcx);
+    for keys in ["up", "down", "alt-up", "alt-down", "home", "end"] {
+        press(vcx, keys);
+        assert_eq!(
+            selected(&outline, vcx),
+            Some(row_key::item("s1", UI)),
+            "{keys}"
+        );
+    }
+    assert!(calls.lock().unwrap().is_empty());
 }

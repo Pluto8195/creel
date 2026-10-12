@@ -232,12 +232,27 @@ pub(crate) fn shortcut_reference(keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
 pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
     let outline_group = |title: &'static str, group: OutlineKeyGroup| ShortcutGroup {
         title,
+        // One row per action; an action with aliases (Tab for Indent) lists
+        // every key, primary first.
         rows: OUTLINE_NAVIGATION_KEYS
             .iter()
-            .filter(|(_, key)| key.group() == group)
-            .map(|(combo, key)| ShortcutRow {
+            .enumerate()
+            .filter(|(index, (_, key))| {
+                key.group() == group
+                    && OUTLINE_NAVIGATION_KEYS[..*index]
+                        .iter()
+                        .all(|(_, earlier)| earlier != key)
+            })
+            .map(|(_, (_, key))| ShortcutRow {
                 label: key.label(),
-                keys: Some(key_label_on(mac, combo)),
+                keys: Some(
+                    OUTLINE_NAVIGATION_KEYS
+                        .iter()
+                        .filter(|(_, other)| other == key)
+                        .map(|(combo, _)| key_label_on(mac, combo))
+                        .collect::<Vec<_>>()
+                        .join(" / "),
+                ),
             })
             .collect(),
     };
@@ -370,10 +385,23 @@ mod tests {
         );
         assert_eq!(
             hint_keys_on(false, &keymap, HintKey::Outline(OutlineNavKey::MoveItemUp)).as_deref(),
-            Some("Alt+Shift+\u{2191}")
+            Some("Shift+\u{2191}")
+        );
+        // Aliases: the tooltip shows the primary key.
+        assert_eq!(
+            hint_keys_on(true, &keymap, HintKey::Outline(OutlineNavKey::IndentItem)).as_deref(),
+            Some("\u{21e7}\u{2192}")
+        );
+        assert_eq!(
+            hint_keys_on(true, &keymap, HintKey::Outline(OutlineNavKey::SelectNext)).as_deref(),
+            Some("\u{2193}")
         );
         for (combo, key) in OUTLINE_NAVIGATION_KEYS {
-            assert_eq!(outline_key_combo(key), Some(combo));
+            let primary = OUTLINE_NAVIGATION_KEYS
+                .iter()
+                .find(|(_, other)| *other == key)
+                .map(|(combo, _)| *combo);
+            assert_eq!(outline_key_combo(key), primary, "{combo}");
         }
     }
 
@@ -416,7 +444,8 @@ mod tests {
         let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
         assert_eq!(titles, ["Navigate", "Edit", "Restructure", "Commands"]);
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
-        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len());
+        // Tab / Shift+Tab share rows with Indent / Outdent.
+        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len() - 2);
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
             groups
@@ -427,7 +456,19 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
-        assert_eq!(row(&groups, "Indent").keys.as_deref(), Some("\u{21e5}"));
+        assert_eq!(
+            row(&groups, "Indent").keys.as_deref(),
+            Some("\u{21e7}\u{2192} / \u{21e5}")
+        );
+        assert_eq!(
+            row(&groups, "Move up").keys.as_deref(),
+            Some("\u{21e7}\u{2191}")
+        );
+        assert_eq!(
+            row(&groups, "Next sibling").keys.as_deref(),
+            Some("\u{2325}\u{2193}")
+        );
+        assert_eq!(row(&groups, "Next item").keys.as_deref(), Some("\u{2193}"));
         assert_eq!(
             row(&groups, "Create Work Item").keys.as_deref(),
             Some("\u{21e7}\u{2318}I")

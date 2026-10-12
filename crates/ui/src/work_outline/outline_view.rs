@@ -77,10 +77,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     // without a Shell.
     let ctx = Some("WorkOutline && !Composer && !MessageComposer && !PaletteSearch");
     vec![
-        KeyBinding::new("up", SelectPreviousSibling, ctx),
-        KeyBinding::new("down", SelectNextSibling, ctx),
-        KeyBinding::new("alt-up", SelectParent, ctx),
-        KeyBinding::new("alt-down", SelectChild, ctx),
+        KeyBinding::new("up", SelectPrevious, ctx),
+        KeyBinding::new("down", SelectNext, ctx),
+        KeyBinding::new("alt-up", SelectPreviousSibling, ctx),
+        KeyBinding::new("alt-down", SelectNextSibling, ctx),
         KeyBinding::new("left", Collapse, ctx),
         KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
@@ -89,8 +89,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-n", CreateChild, ctx),
         KeyBinding::new("home", SelectFirst, ctx),
         KeyBinding::new("end", SelectLast, ctx),
-        KeyBinding::new("alt-shift-up", MoveItemUp, ctx),
-        KeyBinding::new("alt-shift-down", MoveItemDown, ctx),
+        KeyBinding::new("shift-up", MoveItemUp, ctx),
+        KeyBinding::new("shift-down", MoveItemDown, ctx),
+        KeyBinding::new("shift-right", IndentItem, ctx),
+        KeyBinding::new("shift-left", OutdentItem, ctx),
         KeyBinding::new("tab", IndentItem, ctx),
         KeyBinding::new("shift-tab", OutdentItem, ctx),
     ]

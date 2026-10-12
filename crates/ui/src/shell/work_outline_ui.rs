@@ -150,8 +150,10 @@ pub(crate) const OUTLINE_NAVIGATION_CONTEXT: &str =
 /// `work_outline::outline_view`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutlineNavKey {
-    SelectParent,
-    SelectChild,
+    SelectNext,
+    SelectPrevious,
+    SelectFirst,
+    SelectLast,
     SelectNextSibling,
     SelectPreviousSibling,
     Expand,
@@ -180,8 +182,10 @@ impl OutlineNavKey {
     /// Short label (shortcut reference, tooltips).
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::SelectParent => "Parent",
-            Self::SelectChild => "First child",
+            Self::SelectNext => "Next item",
+            Self::SelectPrevious => "Previous item",
+            Self::SelectFirst => "First item",
+            Self::SelectLast => "Last item",
             Self::SelectNextSibling => "Next sibling",
             Self::SelectPreviousSibling => "Previous sibling",
             Self::Expand => "Expand",
@@ -200,8 +204,10 @@ impl OutlineNavKey {
 
     pub(crate) fn group(self) -> OutlineKeyGroup {
         match self {
-            Self::SelectParent
-            | Self::SelectChild
+            Self::SelectNext
+            | Self::SelectPrevious
+            | Self::SelectFirst
+            | Self::SelectLast
             | Self::SelectNextSibling
             | Self::SelectPreviousSibling
             | Self::Expand
@@ -217,34 +223,46 @@ impl OutlineNavKey {
 }
 
 /// Default outline keys (identical on every platform: no primary modifier is
-/// involved, and Alt is Option on macOS).
+/// involved, and Alt is Option on macOS). Tod-style outliner conventions:
+/// plain arrows move through the rows as displayed, Alt jumps over subtrees,
+/// Shift moves the item.
 ///
-/// - Up / Down: previous / next sibling
-/// - Alt+Up / Alt+Down: parent / first child
-/// - Left / Right: collapse / expand
+/// - Up / Down: previous / next row in display order (Down from an expanded
+///   item enters its first child; Up from a first child selects the parent)
+/// - Home / End: first / last row
+/// - Left / Right: collapse / expand (on a collapsed item or a leaf, Left
+///   selects the parent; on an expanded item, Right selects the first child)
+/// - Alt+Up / Alt+Down: previous / next sibling, jumping over subtrees
+/// - Shift+Up / Shift+Down: move the selected work item before its previous /
+///   after its next sibling
+/// - Shift+Right / Shift+Left: indent (last child of the previous sibling) /
+///   outdent (after its former parent). Tab / Shift+Tab are aliases; with no
+///   work item selected they propagate, so Tab still walks focus out of the
+///   Outline.
 /// - Enter: open the selected item (Work Item Details)
 /// - F2: rename in place
 /// - N / Shift+N: create a sibling / child
-/// - Alt+Shift+Up / Alt+Shift+Down: move the selected work item before its
-///   previous / after its next sibling (Option+Shift on macOS)
-/// - Tab / Shift+Tab: indent (last child of the previous sibling) / outdent
-///   (after its former parent). With no work item selected they propagate,
-///   so Tab still walks focus out of the Outline.
 /// - ? (Shift+/ on US layouts): the shortcut reference. Bound to the typed
 ///   character, so it follows the keyboard layout.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 15] = [
-    ("up", OutlineNavKey::SelectPreviousSibling),
-    ("down", OutlineNavKey::SelectNextSibling),
-    ("alt-up", OutlineNavKey::SelectParent),
-    ("alt-down", OutlineNavKey::SelectChild),
+///
+/// When an action has several keys, the first is the one tooltips show.
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 19] = [
+    ("up", OutlineNavKey::SelectPrevious),
+    ("down", OutlineNavKey::SelectNext),
+    ("home", OutlineNavKey::SelectFirst),
+    ("end", OutlineNavKey::SelectLast),
     ("left", OutlineNavKey::Collapse),
     ("right", OutlineNavKey::Expand),
+    ("alt-up", OutlineNavKey::SelectPreviousSibling),
+    ("alt-down", OutlineNavKey::SelectNextSibling),
     ("enter", OutlineNavKey::OpenSelected),
     ("f2", OutlineNavKey::RenameSelected),
     ("n", OutlineNavKey::CreateSibling),
     ("shift-n", OutlineNavKey::CreateChild),
-    ("alt-shift-up", OutlineNavKey::MoveItemUp),
-    ("alt-shift-down", OutlineNavKey::MoveItemDown),
+    ("shift-up", OutlineNavKey::MoveItemUp),
+    ("shift-down", OutlineNavKey::MoveItemDown),
+    ("shift-right", OutlineNavKey::IndentItem),
+    ("shift-left", OutlineNavKey::OutdentItem),
     ("tab", OutlineNavKey::IndentItem),
     ("shift-tab", OutlineNavKey::OutdentItem),
     ("?", OutlineNavKey::ShowShortcuts),
@@ -273,13 +291,15 @@ pub(crate) fn work_outline_bindings(keymap: &KeymapConfig) -> Vec<KeyBinding> {
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
-        OpenSelected, OutdentItem, RenameSelected, SelectChild, SelectNextSibling, SelectParent,
-        SelectPreviousSibling,
+        OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
     cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| match key {
-        OutlineNavKey::SelectParent => KeyBinding::new(keys, SelectParent, context),
-        OutlineNavKey::SelectChild => KeyBinding::new(keys, SelectChild, context),
+        OutlineNavKey::SelectNext => KeyBinding::new(keys, SelectNext, context),
+        OutlineNavKey::SelectPrevious => KeyBinding::new(keys, SelectPrevious, context),
+        OutlineNavKey::SelectFirst => KeyBinding::new(keys, SelectFirst, context),
+        OutlineNavKey::SelectLast => KeyBinding::new(keys, SelectLast, context),
         OutlineNavKey::SelectNextSibling => KeyBinding::new(keys, SelectNextSibling, context),
         OutlineNavKey::SelectPreviousSibling => {
             KeyBinding::new(keys, SelectPreviousSibling, context)

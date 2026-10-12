@@ -12743,7 +12743,7 @@ mod logic_tests {
     }
 
     #[gpui::test]
-    fn outline_keyboard_navigation_moves_between_parent_child_and_siblings(
+    fn outline_keyboard_navigation_follows_visual_order_and_sibling_jumps(
         cx: &mut gpui::TestAppContext,
     ) {
         let dir = tempfile::tempdir().unwrap();
@@ -12762,10 +12762,17 @@ mod logic_tests {
         };
         vcx.simulate_keystrokes("down");
         assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
-        vcx.simulate_keystrokes("alt-down");
-        assert_eq!(selected(vcx), Some(row_key::item("s1", API)));
+        // Down enters the expanded parent; Up returns to it.
         vcx.simulate_keystrokes("down");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", API)));
+        vcx.simulate_keystrokes("up");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
+        vcx.simulate_keystrokes("down");
+        // Alt+Down jumps to the next sibling, Alt+Up back.
+        vcx.simulate_keystrokes("alt-down");
         assert_eq!(selected(vcx), Some(row_key::item("s1", UI)));
+        vcx.simulate_keystrokes("alt-up");
+        assert_eq!(selected(vcx), Some(row_key::item("s1", API)));
         vcx.simulate_keystrokes("alt-up");
         assert_eq!(selected(vcx), Some(row_key::item("s1", LAUNCH)));
         // Left collapses, a second Left on the root stays put.

@@ -40,15 +40,16 @@ inline editor, a picker, the search field, or any other text input.
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
-| Previous / next sibling | `↑` / `↓` | `↑` / `↓` |
-| Parent / first child | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
+| Previous / next row (display order) | `↑` / `↓` | `↑` / `↓` |
+| First / last row | `Home` / `End` | `Home` / `End` |
 | Collapse / expand | `←` / `→` | `←` / `→` |
+| Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
 | Open Work Item Details | `↩` | `Enter` |
 | Rename in place | `F2` | `F2` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |
-| Move before previous / after next sibling | `⌥⇧↑` / `⌥⇧↓` | `Alt+Shift+↑` / `Alt+Shift+↓` |
-| Indent (last child of the previous sibling) | `⇥` | `Tab` |
-| Outdent (right after the former parent) | `⇧⇥` | `Shift+Tab` |
+| Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
+| Indent (last child of the previous sibling) | `⇧→` or `⇥` | `Shift+→` or `Tab` |
+| Outdent (right after the former parent) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Shortcut reference | `?` | `?` |
 
 Every Work Outline command is also in the command palette and can be rebound in
