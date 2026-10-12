@@ -239,7 +239,7 @@ async fn request_and_approval_replays_after_restart_do_not_rewrite() {
     }
     let core = assemble(&data);
     let client = zeron_rpc::memory_client(core.rpc_service());
-    let pending = core.workspace.registry_pending_len();
+    let pending = core.workspace.registry_batches_written();
     assert_eq!(
         mutate(&client, request.clone()).await.unwrap(),
         json!({ "userActionRequestId": derive_id("op-r", roles::REQUEST) })
@@ -253,7 +253,7 @@ async fn request_and_approval_replays_after_restart_do_not_rewrite() {
         json!({ "instructionId": derive_id(&derive_id("op-p", roles::PROPOSAL), roles::INSTRUCTION) })
     );
     assert_eq!(
-        core.workspace.registry_pending_len(),
+        core.workspace.registry_batches_written(),
         pending,
         "no op enqueued"
     );

@@ -55,7 +55,10 @@ fn first_use_line_shows_only_without_work_items_and_creates_one(cx: &mut gpui::T
     draw(vcx);
     assert!(!first_use_shown(vcx), "never once work items exist");
 
-    // Back to zero items: it returns, but not while searching.
+    // Back to zero items: it returns, but not while searching. (The created
+    // item shows optimistically until a frame has it or the wait expires.)
+    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.run_until_parked();
     overview.update(vcx, |o, cx| {
         o.set_outline_loads(fixture_loads(Some(empty_snapshot())), cx)
     });

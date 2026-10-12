@@ -11,7 +11,7 @@
 //!
 //! The view never updates the `Overview` synchronously (the Overview calls
 //! into it); it reports opens through [`OutlineEvent`].
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::ops::Range;
 use std::time::Duration;
 
@@ -31,8 +31,9 @@ use super::model::{
     OutlineRowKind, OutlineSpace, row_key,
 };
 use super::nav::{self, NavCommand};
+use super::optimistic::{self, LocalChange};
 use super::restructure::{self, DropZone, MovePlan, RestructureOp};
-use super::store::{WorkOutlinePlacement, WorkOutlineSnapshot};
+use super::store::{WorkOutlineLoad, WorkOutlinePlacement, WorkOutlineSnapshot};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_positions;
 use crate::shell::Shell;
@@ -245,11 +246,9 @@ impl DirectMutation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptState {
-    /// Sent; no reply yet. Further restructuring waits.
+    /// Sent; no reply yet. Further restructuring waits (keyboard presses
+    /// queue) so the engine applies them in order.
     InFlight,
-    /// Acknowledged; waiting for the snapshot that shows it, so the next
-    /// press plans from the new order rather than a stale one.
-    AwaitingRefresh,
     /// Failed: retrying the same mutation reuses `operation_id`.
     Failed,
 }
@@ -257,15 +256,23 @@ enum AttemptState {
 #[derive(Debug, Clone)]
 struct MutationAttempt {
     mutation: DirectMutation,
-    space_id: String,
     operation_id: String,
     state: AttemptState,
-    /// Address of the Space's snapshot when sent (refresh detection).
-    sent_snapshot: usize,
 }
 
-/// How long an acknowledged restructuring blocks the next one when no new
-/// snapshot arrives (a host that coalesces the frame).
+/// One of the user's own changes, shown before the engine confirms it (see
+/// `work_outline::optimistic`).
+#[derive(Debug, Clone)]
+struct OptimisticChange {
+    space_id: String,
+    operation_id: String,
+    change: LocalChange,
+    /// The mutation succeeded; the change stays until a frame shows it.
+    acknowledged: bool,
+}
+
+/// How long an acknowledged change is kept on top of frames that do not
+/// show it yet; after that the engine's frame wins.
 const AWAIT_REFRESH: Duration = Duration::from_secs(2);
 
 /// What an in-progress drag over the Outline would do (drawn as the drop
@@ -348,6 +355,14 @@ pub(crate) struct OutlineView {
     shell: Option<WeakEntity<Shell>>,
     /// The latest direct restructuring (keyboard, palette, drop).
     attempt: Option<MutationAttempt>,
+    /// Keyboard restructuring pressed while the previous one was in flight,
+    /// sent in order as each reply lands.
+    queued_restructure: VecDeque<RestructureOp>,
+    /// The Spaces as the last frames delivered them; `inputs.spaces` is
+    /// these with `optimistic` applied.
+    frames: Vec<OutlineSpace>,
+    /// The user's own changes not yet shown by a frame, oldest first.
+    optimistic: Vec<OptimisticChange>,
     /// Reveal this row once a refresh moves it (selection follows a move).
     follow: Option<String>,
     /// The drop indicator of an in-progress drag.
@@ -403,6 +418,9 @@ impl OutlineView {
             panel_chat: None,
             shell: None,
             attempt: None,
+            queued_restructure: VecDeque::new(),
+            frames: Vec::new(),
+            optimistic: Vec::new(),
             follow: None,
             drop_hint: None,
             _editor_events: editor_events,
@@ -423,30 +441,144 @@ impl OutlineView {
 
     pub(crate) fn set_inputs(&mut self, inputs: OutlineInputs, cx: &mut Context<Self>) {
         self.ensure_collapsed_loaded(cx);
+        self.frames = inputs.spaces.clone();
         self.inputs = inputs;
-        let refreshed = self.attempt.as_ref().is_some_and(|attempt| {
-            attempt.state == AttemptState::AwaitingRefresh
-                && self.snapshot_address(&attempt.space_id) != attempt.sent_snapshot
+        self.retire_shown_optimistic();
+        self.overlay_optimistic();
+        self.reflatten();
+        cx.notify();
+    }
+
+    /// A frame that shows an acknowledged change replaces it (frame wins).
+    /// The engine applies one Space's changes in the order they were sent,
+    /// so a frame showing a later acknowledged change also covers every
+    /// earlier one, even when that one no longer reads as "shown" (the same
+    /// item moved again): replaying it on the frame would flicker the item
+    /// back to an intermediate place.
+    fn retire_shown_optimistic(&mut self) {
+        let shown: Vec<bool> = self
+            .optimistic
+            .iter()
+            .map(|entry| {
+                entry.acknowledged
+                    && self
+                        .frames
+                        .iter()
+                        .find(|space| space.id == entry.space_id)
+                        .and_then(|space| space.load.snapshot())
+                        .is_some_and(|frame| optimistic::apply(frame, &entry.change).is_none())
+            })
+            .collect();
+        let retire: Vec<bool> = (0..self.optimistic.len())
+            .map(|ix| {
+                let entry = &self.optimistic[ix];
+                entry.acknowledged
+                    && (ix..self.optimistic.len()).any(|later| {
+                        shown[later] && self.optimistic[later].space_id == entry.space_id
+                    })
+            })
+            .collect();
+        let mut ix = 0;
+        self.optimistic.retain(|_| {
+            ix += 1;
+            !retire[ix - 1]
         });
-        if refreshed {
-            self.attempt = None;
+    }
+
+    /// Rebuild `inputs.spaces` from the frames with the pending changes
+    /// applied in order.
+    fn overlay_optimistic(&mut self) {
+        let mut spaces = self.frames.clone();
+        for space in &mut spaces {
+            let patched = {
+                let Some(frame) = space.load.snapshot() else {
+                    continue;
+                };
+                let mut patched: Option<WorkOutlineSnapshot> = None;
+                for entry in self.optimistic.iter().filter(|e| e.space_id == space.id) {
+                    if let Some(next) =
+                        optimistic::apply(patched.as_ref().unwrap_or(frame), &entry.change)
+                    {
+                        patched = Some(next);
+                    }
+                }
+                patched
+            };
+            if let Some(patched) = patched {
+                space.load = WorkOutlineLoad::Ready(std::sync::Arc::new(patched));
+            }
+        }
+        self.inputs.spaces = spaces;
+    }
+
+    /// Show `change` now; `follow` is the row to select and reveal at its
+    /// new place.
+    fn show_optimistic(
+        &mut self,
+        space_id: &str,
+        operation_id: &str,
+        change: LocalChange,
+        follow: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.optimistic
+            .retain(|entry| entry.operation_id != operation_id);
+        self.optimistic.push(OptimisticChange {
+            space_id: space_id.to_owned(),
+            operation_id: operation_id.to_owned(),
+            change,
+            acknowledged: false,
+        });
+        self.overlay_optimistic();
+        if let Some(key) = follow.as_ref() {
+            self.follow = Some(key.clone());
         }
         self.reflatten();
-        if refreshed {
-            // The frame showing the move has been applied (and revealed).
-            self.follow = None;
+        if let Some(key) = follow {
+            if self.model.position(&key).is_some() {
+                self.follow = None;
+                self.select(&key, cx);
+            }
         }
         cx.notify();
     }
 
-    /// Identity of a Space's current snapshot (0 = none loaded).
-    fn snapshot_address(&self, space_id: &str) -> usize {
-        self.inputs
-            .spaces
-            .iter()
-            .find(|space| space.id == space_id)
-            .and_then(|space| space.load.snapshot())
-            .map_or(0, |snapshot| std::sync::Arc::as_ptr(snapshot) as usize)
+    /// The engine accepted `operation_id`: keep showing it until a frame does
+    /// (or [`AWAIT_REFRESH`] passes, then the frame wins).
+    fn acknowledge_optimistic(&mut self, operation_id: &str, cx: &mut Context<Self>) {
+        let Some(entry) = self
+            .optimistic
+            .iter_mut()
+            .find(|entry| entry.operation_id == operation_id)
+        else {
+            return;
+        };
+        entry.acknowledged = true;
+        let operation_id = operation_id.to_owned();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AWAIT_REFRESH).await;
+            this.update(cx, |this, cx| this.drop_optimistic(&operation_id, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Stop showing `operation_id` (a failed mutation rolls back this way).
+    fn drop_optimistic(&mut self, operation_id: &str, cx: &mut Context<Self>) {
+        let before = self.optimistic.len();
+        self.optimistic
+            .retain(|entry| entry.operation_id != operation_id);
+        if self.optimistic.len() != before {
+            self.overlay_optimistic();
+            self.reflatten();
+            cx.notify();
+        }
+    }
+
+    /// Changes shown but not yet in a frame (tests).
+    #[cfg(test)]
+    pub(crate) fn optimistic_len(&self) -> usize {
+        self.optimistic.len()
     }
 
     pub(crate) fn set_highlights(
@@ -826,59 +958,77 @@ impl OutlineView {
             .take(zeron_proto::limits::MAX_TITLE_CHARS)
             .collect();
         edit.submitting = true;
-        let actions = self.state.read(cx).work_outline_actions();
         let operation_id = edit.operation_id.clone();
-        let (task, created_space) = match &edit.kind {
+        let kind = edit.kind.clone();
+        let actions = self.state.read(cx).work_outline_actions();
+        let (task, space_id, change, created_key) = match kind {
             EditKind::Create {
                 space_id,
                 parent,
                 placement,
                 ..
-            } => (
-                actions.create_work_item(zeron_proto::CreateWorkItemParams {
+            } => {
+                let work_item_id = zeron_proto::derive_id(&operation_id, zeron_proto::roles::ITEM);
+                let task = actions.create_work_item(zeron_proto::CreateWorkItemParams {
                     space_id: space_id.clone(),
                     parent_work_item_id: parent.clone(),
                     placement: placement.clone(),
-                    title,
+                    title: title.clone(),
                     description: None,
                     status: None,
-                    operation_id,
-                }),
-                Some(space_id.clone()),
-            ),
-            EditKind::Rename { item_id, .. } => (
-                actions.update_work_item(zeron_proto::UpdateWorkItemParams {
+                    operation_id: operation_id.clone(),
+                });
+                let key = row_key::item(&space_id, &work_item_id);
+                let change = LocalChange::Create {
+                    work_item_id,
+                    parent,
+                    placement,
+                    title,
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                };
+                (task, Some(space_id), change, Some(key))
+            }
+            EditKind::Rename { item_id, .. } => {
+                let space_id = self
+                    .snapshot_with_item(&item_id)
+                    .map(|snapshot| snapshot.space_id.clone());
+                let task = actions.update_work_item(zeron_proto::UpdateWorkItemParams {
                     work_item_id: item_id.clone(),
                     changes: zeron_proto::WorkItemChanges {
-                        title: Some(title),
+                        title: Some(title.clone()),
                         ..Default::default()
                     },
-                    operation_id,
-                }),
-                None,
-            ),
+                    operation_id: operation_id.clone(),
+                });
+                let change = LocalChange::Rename {
+                    work_item_id: item_id,
+                    title,
+                };
+                (task, space_id, change, None)
+            }
         };
+        // Show the result now; the reply only confirms (or rolls back).
+        self.editing = None;
+        if let Some(space_id) = space_id.as_deref() {
+            self.show_optimistic(space_id, &operation_id, change, None, cx);
+        }
+        if let Some(key) = created_key.clone() {
+            if self.model.position(&key).is_some() {
+                self.select(&key, cx);
+            } else {
+                self.pending_select = Some(key);
+            }
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(reply) => {
-                    this.editing = None;
-                    if let (Some(space_id), Some(item_id)) = (created_space, reply.work_item_id) {
-                        let key = row_key::item(&space_id, &item_id);
-                        if this.model.position(&key).is_some() {
-                            this.select(&key, cx);
-                        } else {
-                            this.pending_select = Some(key);
-                        }
-                    }
-                    cx.notify();
-                }
+                Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
                 Err(error) => {
-                    // Keep the editor (and its operation id) for a retry.
-                    if let Some(edit) = this.editing.as_mut() {
-                        edit.submitting = false;
+                    if created_key.is_some() && this.pending_select == created_key {
+                        this.pending_select = None;
                     }
+                    this.drop_optimistic(&operation_id, cx);
                     this.show_notice(error.message.clone(), cx);
                 }
             })
@@ -1128,8 +1278,10 @@ impl OutlineView {
         }
     }
 
+    /// Show the chosen move or association at once, close the picker, and
+    /// send it; a failure rolls the change back with a notice.
     fn send_picker_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(picker) = self.picker.as_mut() else {
+        let Some(picker) = self.picker.as_ref() else {
             return;
         };
         if picker.submitting {
@@ -1140,81 +1292,88 @@ impl OutlineView {
         };
         let actions = self.state.read(cx).work_outline_actions();
         let operation_id = picker.operation_id.clone();
-        let place_first = picker.place_first;
-        let purpose = picker.purpose.clone();
-        // A move: the moved row is followed (and its new parent expanded).
-        let moved = match &purpose {
-            PickerPurpose::Move { item_id } => self
-                .snapshot_with_item(item_id)
-                .map(|snapshot| snapshot.space_id.clone())
-                .map(|space| {
-                    (
-                        row_key::item(&space, item_id),
-                        entry
-                            .value
-                            .as_deref()
-                            .map(|parent| row_key::item(&space, parent)),
-                    )
-                }),
-            _ => None,
+        let placement = if picker.place_first {
+            WorkOutlinePlacement::First
+        } else {
+            WorkOutlinePlacement::Last
         };
-        let Some(picker) = self.picker.as_mut() else {
-            return;
-        };
-        let task = match purpose {
-            PickerPurpose::Move { item_id } => {
+        let (task, item_id, change) = match picker.purpose.clone() {
+            PickerPurpose::Move { item_id } => (
                 actions.move_work_item(zeron_proto::MoveWorkItemParams {
-                    work_item_id: item_id,
+                    work_item_id: item_id.clone(),
                     destination_parent_work_item_id: entry.value.clone(),
-                    placement: if place_first {
-                        WorkOutlinePlacement::First
-                    } else {
-                        WorkOutlinePlacement::Last
-                    },
-                    operation_id,
-                })
-            }
+                    placement: placement.clone(),
+                    operation_id: operation_id.clone(),
+                }),
+                item_id.clone(),
+                LocalChange::Move {
+                    work_item_id: item_id,
+                    destination_parent: entry.value.clone(),
+                    placement,
+                },
+            ),
             PickerPurpose::AssociateChat { chat_id } => {
                 let Some(item_id) = entry.value.clone() else {
                     return;
                 };
-                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
-                    chat_id,
-                    work_item_id: item_id,
-                    operation_id,
-                })
+                (
+                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                        chat_id: chat_id.clone(),
+                        work_item_id: item_id.clone(),
+                        operation_id: operation_id.clone(),
+                    }),
+                    item_id.clone(),
+                    LocalChange::AssignChat {
+                        chat_id,
+                        work_item_id: item_id,
+                    },
+                )
             }
             PickerPurpose::AssociateWithItem { item_id } => {
                 let Some(chat_id) = entry.value.clone() else {
                     return;
                 };
-                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
-                    chat_id,
-                    work_item_id: item_id,
-                    operation_id,
-                })
+                (
+                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                        chat_id: chat_id.clone(),
+                        work_item_id: item_id.clone(),
+                        operation_id: operation_id.clone(),
+                    }),
+                    item_id.clone(),
+                    LocalChange::AssignChat {
+                        chat_id,
+                        work_item_id: item_id,
+                    },
+                )
             }
         };
-        picker.submitting = true;
-        cx.notify();
-        let _ = window;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, window, cx| match result {
-                Ok(_) => {
-                    if let Some((key, parent)) = moved {
-                        if let Some(parent) = parent {
-                            this.set_collapsed(&parent, false, cx);
-                        }
-                        this.selected = Some(key.clone());
-                        this.follow = Some(key);
+        let space_id = self
+            .snapshot_with_item(&item_id)
+            .map(|snapshot| snapshot.space_id.clone());
+        self.close_picker(window, cx);
+        if let Some(space_id) = space_id {
+            // A move: the moved row is followed (and its new parent expanded).
+            let follow = match &change {
+                LocalChange::Move {
+                    work_item_id,
+                    destination_parent,
+                    ..
+                } => {
+                    if let Some(parent) = destination_parent {
+                        self.set_collapsed(&row_key::item(&space_id, parent), false, cx);
                     }
-                    this.close_picker(window, cx)
+                    Some(row_key::item(&space_id, work_item_id))
                 }
+                _ => None,
+            };
+            self.show_optimistic(&space_id, &operation_id, change, follow, cx);
+        }
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
                 Err(error) => {
-                    if let Some(picker) = this.picker.as_mut() {
-                        picker.submitting = false;
-                    }
+                    this.drop_optimistic(&operation_id, cx);
                     this.show_notice(error.message.clone(), cx);
                 }
             })
@@ -1257,9 +1416,15 @@ impl OutlineView {
 
     /// Key handler for the restructuring actions. Without a selected work
     /// item the key propagates (Tab / Shift+Tab then walk focus as usual).
+    /// A press while the previous move is in flight queues behind it: the
+    /// change already shows, so the next plan starts from the new order.
     fn restructure_key(&mut self, op: RestructureOp, cx: &mut Context<Self>) {
         if self.is_editing() || self.selected_item().is_none() {
             cx.propagate();
+            return;
+        }
+        if self.restructuring_busy() {
+            self.queued_restructure.push_back(op);
             return;
         }
         if let Err(notice) = self.restructure_selected(op, cx) {
@@ -1267,16 +1432,16 @@ impl OutlineView {
         }
     }
 
-    /// Whether a direct restructuring is in flight or awaiting its refresh.
+    /// Whether a direct restructuring is in flight (its reply not back yet).
     pub(crate) fn restructuring_busy(&self) -> bool {
         self.attempt
             .as_ref()
-            .is_some_and(|attempt| attempt.state != AttemptState::Failed)
+            .is_some_and(|attempt| attempt.state == AttemptState::InFlight)
     }
 
     /// Send `mutation` after the drift confirmation when it changes an
     /// assigned Chat's effective instructions. Ignored while the previous
-    /// restructuring has not landed yet (it would plan from a stale order).
+    /// restructuring is in flight (the engine must apply them in order).
     pub(crate) fn submit_direct(
         &mut self,
         space_id: String,
@@ -1292,6 +1457,9 @@ impl OutlineView {
             .map(|snapshot| instructions::drift_impact(snapshot, &change))
             .unwrap_or_default();
         if impact.needs_confirmation() {
+            // Queued presses would plan from an order the user has not
+            // confirmed yet.
+            self.queued_restructure.clear();
             let weak = cx.entity().downgrade();
             let request = WorkOutlineDriftRequest {
                 title: change.title().into(),
@@ -1310,6 +1478,9 @@ impl OutlineView {
         self.send_direct(space_id, mutation, cx);
     }
 
+    /// Show `mutation` at once, send it, and reconcile with the reply: on
+    /// success the change stays until a frame shows it and the next queued
+    /// key press goes out; on failure it rolls back with a notice.
     fn send_direct(&mut self, space_id: String, mutation: DirectMutation, cx: &mut Context<Self>) {
         if self.restructuring_busy() {
             return;
@@ -1320,9 +1491,14 @@ impl OutlineView {
             _ => new_operation_id(),
         };
         let actions = self.state.read(cx).work_outline_actions();
-        let (task, follow_key, expand_key) = match &mutation {
+        let (task, change, follow_key, expand_key) = match &mutation {
             DirectMutation::Move(plan) => (
                 actions.move_work_item(plan.params(operation_id.clone())),
+                LocalChange::Move {
+                    work_item_id: plan.work_item_id.clone(),
+                    destination_parent: plan.destination_parent.clone(),
+                    placement: plan.placement.clone(),
+                },
                 row_key::item(&space_id, &plan.work_item_id),
                 plan.destination_parent
                     .as_deref()
@@ -1337,76 +1513,59 @@ impl OutlineView {
                     work_item_id: work_item_id.clone(),
                     operation_id: operation_id.clone(),
                 }),
+                LocalChange::AssignChat {
+                    chat_id: chat_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                },
                 row_key::chat(chat_id),
                 Some(row_key::item(&space_id, work_item_id)),
             ),
         };
-        let sent_snapshot = self.snapshot_address(&space_id);
         self.attempt = Some(MutationAttempt {
             mutation,
-            space_id: space_id.clone(),
             operation_id: operation_id.clone(),
             state: AttemptState::InFlight,
-            sent_snapshot,
         });
-        cx.notify();
+        if let Some(key) = expand_key.as_deref() {
+            self.set_collapsed(key, false, cx);
+        }
+        self.show_optimistic(&space_id, &operation_id, change, Some(follow_key), cx);
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let acknowledged = this
-                .update(cx, |this, cx| {
-                    let ours = this
-                        .attempt
-                        .as_ref()
-                        .is_some_and(|attempt| attempt.operation_id == operation_id);
-                    match result {
-                        Ok(_) => {
-                            if let Some(key) = expand_key.as_deref() {
-                                this.set_collapsed(key, false, cx);
-                            }
-                            if this.snapshot_address(&space_id) != sent_snapshot {
-                                // The frame already landed: reveal now.
-                                if ours {
-                                    this.attempt = None;
-                                }
-                                this.select(&follow_key, cx);
-                                false
-                            } else {
-                                if ours {
-                                    if let Some(attempt) = this.attempt.as_mut() {
-                                        attempt.state = AttemptState::AwaitingRefresh;
-                                    }
-                                }
-                                this.follow = Some(follow_key.clone());
-                                if this.model.position(&follow_key).is_some() {
-                                    this.selected = Some(follow_key.clone());
-                                }
-                                cx.notify();
-                                true
-                            }
+            this.update(cx, |this, cx| {
+                let ours = this
+                    .attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.operation_id == operation_id);
+                match result {
+                    Ok(_) => {
+                        if ours {
+                            this.attempt = None;
                         }
-                        Err(error) => {
-                            if ours {
-                                if let Some(attempt) = this.attempt.as_mut() {
-                                    attempt.state = AttemptState::Failed;
-                                }
+                        this.acknowledge_optimistic(&operation_id, cx);
+                        // Boundary no-ops send nothing: keep going until a
+                        // press goes out or the queue is empty.
+                        while let Some(op) = this.queued_restructure.pop_front() {
+                            if let Err(notice) = this.restructure_selected(op, cx) {
+                                this.queued_restructure.clear();
+                                this.show_notice(notice, cx);
                             }
-                            this.show_notice(error.message.clone(), cx);
-                            false
+                            if this.restructuring_busy() {
+                                break;
+                            }
                         }
                     }
-                })
-                .unwrap_or(false);
-            if !acknowledged {
-                return;
-            }
-            cx.background_executor().timer(AWAIT_REFRESH).await;
-            this.update(cx, |this, _| {
-                if this.attempt.as_ref().is_some_and(|attempt| {
-                    attempt.operation_id == operation_id
-                        && attempt.state == AttemptState::AwaitingRefresh
-                }) {
-                    this.attempt = None;
-                    this.follow = None;
+                    Err(error) => {
+                        if ours {
+                            if let Some(attempt) = this.attempt.as_mut() {
+                                attempt.state = AttemptState::Failed;
+                            }
+                        }
+                        this.queued_restructure.clear();
+                        this.follow = None;
+                        this.drop_optimistic(&operation_id, cx);
+                        this.show_notice(error.message.clone(), cx);
+                    }
                 }
             })
             .ok();

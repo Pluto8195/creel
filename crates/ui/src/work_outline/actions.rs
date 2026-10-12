@@ -235,6 +235,31 @@ pub(crate) type FakeCall = std::sync::Arc<
     dyn Fn(&str, serde_json::Value) -> Result<serde_json::Value, RpcError> + Send + Sync,
 >;
 
+/// Holds scripted replies back until the test releases them, oldest first
+/// (a mutation "in flight"). The scripted call itself still runs at send
+/// time, so recorded params show what was sent.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct ReplyGate(
+    std::sync::Arc<
+        std::sync::Mutex<std::collections::VecDeque<futures::channel::oneshot::Sender<()>>>,
+    >,
+);
+
+#[cfg(test)]
+impl ReplyGate {
+    /// Let the oldest held reply through; `false` when none is held.
+    pub(crate) fn release_one(&self) -> bool {
+        let next = self.0.lock().unwrap().pop_front();
+        next.is_some_and(|tx| tx.send(()).is_ok())
+    }
+
+    /// Replies sent but not yet released.
+    pub(crate) fn held(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
 /// Every query resolves to the typed reply or a coded [`WorkOutlineError`].
 pub(crate) type QueryTask = Task<Result<WorkOutlineQueryResponse, WorkOutlineError>>;
 
@@ -246,6 +271,8 @@ pub(crate) struct WorkOutlineActions {
     executor: Option<BackgroundExecutor>,
     #[cfg(test)]
     fake: Option<FakeCall>,
+    #[cfg(test)]
+    gate: Option<ReplyGate>,
 }
 
 impl WorkOutlineActions {
@@ -255,6 +282,8 @@ impl WorkOutlineActions {
             executor: None,
             #[cfg(test)]
             fake: None,
+            #[cfg(test)]
+            gate: None,
         }
     }
 
@@ -265,6 +294,23 @@ impl WorkOutlineActions {
             engine: None,
             executor: None,
             fake: Some(call),
+            gate: None,
+        }
+    }
+
+    /// [`Self::scripted`] whose replies wait for `gate` (spawned on
+    /// `executor`).
+    #[cfg(test)]
+    pub(crate) fn scripted_gated(
+        call: FakeCall,
+        gate: ReplyGate,
+        executor: BackgroundExecutor,
+    ) -> Self {
+        Self {
+            engine: None,
+            executor: Some(executor),
+            fake: Some(call),
+            gate: Some(gate),
         }
     }
 
@@ -286,17 +332,24 @@ impl WorkOutlineActions {
     ) -> Task<Result<T, WorkOutlineError>> {
         #[cfg(test)]
         if let Some(fake) = self.fake.clone() {
-            return Task::ready(
-                futures::executor::block_on(call_with_retry(
-                    params,
-                    move |params| {
-                        let reply = fake(method, params);
-                        async move { reply }
-                    },
-                    |_| async {},
-                ))
-                .and_then(decode),
-            );
+            let reply = futures::executor::block_on(call_with_retry(
+                params,
+                move |params| {
+                    let reply = fake(method, params);
+                    async move { reply }
+                },
+                |_| async {},
+            ))
+            .and_then(decode);
+            if let (Some(gate), Some(executor)) = (&self.gate, &self.executor) {
+                let (tx, rx) = futures::channel::oneshot::channel();
+                gate.0.lock().unwrap().push_back(tx);
+                return executor.spawn(async move {
+                    rx.await.ok();
+                    reply
+                });
+            }
+            return Task::ready(reply);
         }
         let (Some(engine), Some(executor)) = (self.engine.clone(), self.executor.clone()) else {
             return Task::ready(Err(WorkOutlineError::new(
