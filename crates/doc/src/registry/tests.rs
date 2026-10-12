@@ -1629,3 +1629,45 @@ fn kind_generations_track_exactly_the_kinds_that_changed() {
     let _ = b.apply_state(seq, true, 0, rows);
     assert!(outline(&b) > b_mark);
 }
+
+/// A local profile's queued writes settle into the table: every overlay
+/// read (live rows, tombstones, per-field clocks) is unchanged, the queue
+/// is empty, and the settled state survives a persist round trip.
+#[test]
+fn settling_pending_locally_keeps_the_overlay_view() {
+    let mut doc = RegistryDoc::new("dev-a");
+    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo")).unwrap();
+    for i in 0..3 {
+        doc.upsert_chat(&chat(&format!("chat-{i}"), "dev-a")).unwrap();
+    }
+    for status in [SessionStatus::Working, SessionStatus::Idle] {
+        doc.upsert_session(&session("chat-0", "dev-a", status)).unwrap();
+    }
+    assert!(doc.rename_chat("chat-1", "Renamed").unwrap());
+    assert!(doc.delete_chat("chat-2").unwrap());
+    let rows = |doc: &RegistryDoc| {
+        let mut rows: Vec<String> = [KIND_SPACES, KIND_CHATS, KIND_SESSIONS]
+            .iter()
+            .flat_map(|kind| {
+                ["space-1", "chat-0", "chat-1", "chat-2"]
+                    .map(|id| format!("{:?}", doc.row(kind, id)))
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    let before = rows(&doc);
+    let chats = doc.read_chats().unwrap();
+    assert!(doc.pending_len() > 0);
+
+    assert!(doc.settle_pending_locally());
+    assert_eq!(doc.pending_len(), 0);
+    assert_eq!(rows(&doc), before, "same rows, tombstones and clocks");
+    assert_eq!(doc.read_chats().unwrap(), chats);
+    assert_eq!(doc.row_state(KIND_CHATS, "chat-2"), RowState::Tombstoned);
+    assert!(!doc.settle_pending_locally(), "nothing left to settle");
+
+    let reloaded = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "dev-a").unwrap();
+    assert_eq!(reloaded.pending_len(), 0);
+    assert_eq!(rows(&reloaded), before);
+}

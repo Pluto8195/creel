@@ -34,9 +34,18 @@ async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, W
 /// content change).
 async fn frame_until(
     stream: &mut tokio::sync::mpsc::Receiver<Value>,
+    predicate: impl FnMut(&WorkOutlineSnapshot) -> bool,
+) -> WorkOutlineSnapshot {
+    frame_within(stream, Duration::from_secs(10), predicate).await
+}
+
+/// [`frame_until`] with an explicit timeout.
+async fn frame_within(
+    stream: &mut tokio::sync::mpsc::Receiver<Value>,
+    timeout: Duration,
     mut predicate: impl FnMut(&WorkOutlineSnapshot) -> bool,
 ) -> WorkOutlineSnapshot {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let value = tokio::time::timeout_at(deadline, stream.recv())
             .await
@@ -414,4 +423,211 @@ async fn unrelated_registry_changes_never_hide_an_outline_change() {
         s.items.iter().any(|item| item.title == "Late")
     })
     .await;
+}
+
+/// An engine over the LOCAL profile (no edge), like the installed app's.
+fn assemble_local(dir: &std::path::Path) -> EngineCore {
+    std::fs::create_dir_all(dir).expect("create data dir");
+    std::fs::write(dir.join("device-id"), "dev-a").expect("write device id");
+    EngineCore::assemble_with_profile(
+        zeron_engine::EngineProfile::local(dir).expect("local profile"),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core assembles")
+}
+
+/// Bulk rows straight into the persisted registry (no per-row reads):
+/// `chats` Chat rows spread over `spaces`, then `history` session-status
+/// writes cycling over them, the way months of agent turns pile up on a
+/// local profile.
+fn seed_large_registry(data: &std::path::Path, spaces: &[String], chats: usize, history: usize) {
+    use zeron_doc::{OpKind, RowOp};
+    let store = zeron_sync::DocsStore::open(
+        zeron_engine::EngineProfile::local(data)
+            .unwrap()
+            .store_root(),
+    )
+    .unwrap();
+    let bytes = store.load_snapshot(zeron_doc::REGISTRY_DOC_ID).unwrap().unwrap();
+    let mut doc = zeron_doc::RegistryDoc::from_bytes(&bytes, "dev-a").unwrap();
+    let set = |value: Value| -> Option<std::collections::BTreeMap<String, Value>> {
+        Some(serde_json::from_value(value).unwrap())
+    };
+    let mut ops = Vec::new();
+    for i in 0..chats {
+        ops.push(RowOp {
+            kind: zeron_doc::KIND_CHATS.into(),
+            id: format!("chat-{i}"),
+            op: OpKind::Upsert,
+            set: set(json!({
+                "id": format!("chat-{i}"), "deviceId": "dev-a", "title": format!("Chat {i}"),
+                "archived": false, "createdAt": 1_788_000_000_000i64,
+                "spaceId": spaces[i % spaces.len()],
+            })),
+            hlc: doc.mint_hlc(),
+            clocks: None,
+        });
+    }
+    for n in 0..history {
+        let chat = n % chats;
+        ops.push(RowOp {
+            kind: zeron_doc::KIND_SESSIONS.into(),
+            id: format!("chat-{chat}"),
+            op: OpKind::Upsert,
+            set: set(json!({
+                "chatId": format!("chat-{chat}"), "deviceId": "dev-a",
+                "status": if n % 2 == 0 { "working" } else { "idle" },
+                "updatedAt": 1_788_000_000_000i64 + n as i64,
+            })),
+            hlc: doc.mint_hlc(),
+            clocks: None,
+        });
+    }
+    doc.write_ops(ops).unwrap();
+    store
+        .save_snapshot(zeron_doc::REGISTRY_DOC_ID, &doc.to_bytes().unwrap())
+        .unwrap();
+}
+
+/// Drag and drop, keyboard moves and renames must show up promptly on a
+/// realistic local profile: 2,000 Chats with a long session-status history,
+/// 200 work items, ten watched Spaces. Measures the `WorkOutlineMutate`
+/// round trip and the time until the watch frame that shows the change.
+#[tokio::test(flavor = "multi_thread")]
+async fn mutations_stay_fast_on_a_large_local_registry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let spaces: Vec<String> = (0..10).map(|i| format!("space-{i}")).collect();
+    {
+        let core = assemble_local(&data);
+        let client = zeron_rpc::memory_client(core.rpc_service());
+        for space in &spaces {
+            client
+                .call(
+                    methods::MUTATE,
+                    json!({ "op": "createSpace", "spaceId": space, "deviceId": "dev-a",
+                            "path": format!("/tmp/{space}") }),
+                )
+                .await
+                .unwrap();
+        }
+        core.workspace.flush();
+        core.shutdown().await;
+    }
+    seed_large_registry(&data, &spaces, 2_000, 40_000);
+
+    let booted = std::time::Instant::now();
+    let core = assemble_local(&data);
+    eprintln!("boot over the seeded registry: {:?}", booted.elapsed());
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    let mut streams = Vec::new();
+    for space in &spaces {
+        let mut stream = client
+            .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": space }))
+            .await
+            .unwrap();
+        frame_within(&mut stream, Duration::from_secs(600), |s| s.available).await;
+        streams.push(stream);
+    }
+    // The UI drains every watch; an unread stream would back up the shared
+    // connection.
+    let mut stream = streams.remove(0);
+    for mut other in streams {
+        tokio::spawn(async move { while other.recv().await.is_some() {} });
+    }
+    // 20 roots with 9 children each in space-0, one Chat on every child.
+    let mut roots = Vec::new();
+    let mut children = Vec::new();
+    for r in 0..20 {
+        let op = format!("op-root-{r}");
+        mutate(
+            &client,
+            json!({ "op": "createWorkItem", "spaceId": "space-0", "title": format!("Root {r}"),
+                    "operationId": op }),
+        )
+        .await
+        .unwrap();
+        let root = derive_id(&op, roles::ITEM);
+        for c in 0..9 {
+            let op = format!("op-child-{r}-{c}");
+            mutate(
+                &client,
+                json!({ "op": "createWorkItem", "spaceId": "space-0", "parentWorkItemId": root,
+                        "title": format!("Child {r}.{c}"), "operationId": op }),
+            )
+            .await
+            .unwrap();
+            let child = derive_id(&op, roles::ITEM);
+            let chat = format!("chat-{}", (r * 9 + c) * spaces.len());
+            mutate(
+                &client,
+                json!({ "op": "assignChatToWorkItem", "chatId": chat, "workItemId": child,
+                        "operationId": format!("op-assign-{r}-{c}") }),
+            )
+            .await
+            .unwrap();
+            children.push(child);
+        }
+        roots.push(root);
+    }
+    let stream = &mut stream;
+    frame_within(stream, Duration::from_secs(600), |s| s.items.len() == 200).await;
+    eprintln!("setup (watches + 200 items + 180 assignments): {:?}", booted.elapsed());
+
+    let mut round_trips = Vec::new();
+    let mut frames = Vec::new();
+    for n in 0..6 {
+        let started = std::time::Instant::now();
+        let child = children[n].clone();
+        if n % 2 == 0 {
+            // A drop onto another root's first child.
+            mutate(
+                &client,
+                json!({ "op": "moveWorkItem", "workItemId": child,
+                        "destinationParentWorkItemId": roots[19],
+                        "placement": { "type": "before", "siblingWorkItemId": children[171] },
+                        "operationId": format!("op-move-{n}") }),
+            )
+            .await
+            .unwrap();
+            round_trips.push(started.elapsed());
+            frame_within(stream, Duration::from_secs(600), |s| {
+                s.item(&child)
+                    .is_some_and(|item| item.parent_work_item_id.as_deref() == Some(&roots[19]))
+            })
+            .await;
+        } else {
+            let title = format!("Renamed {n}");
+            mutate(
+                &client,
+                json!({ "op": "updateWorkItem", "workItemId": child, "changes": { "title": title },
+                        "operationId": format!("op-rename-{n}") }),
+            )
+            .await
+            .unwrap();
+            round_trips.push(started.elapsed());
+            frame_within(stream, Duration::from_secs(600), |s| {
+                s.item(&child).is_some_and(|item| item.title == title)
+            })
+            .await;
+        }
+        frames.push(started.elapsed());
+    }
+    round_trips.sort();
+    frames.sort();
+    let (round_trip, frame) = (round_trips[round_trips.len() / 2], frames[frames.len() / 2]);
+    eprintln!(
+        "pending after boot: {}; WorkOutlineMutate round trip median {round_trip:?} \
+         (all {round_trips:?}); change visible in the watch median {frame:?} (all {frames:?})",
+        core.workspace.registry_pending_len()
+    );
+    assert!(
+        round_trip < Duration::from_millis(100),
+        "mutation round trip {round_trip:?}"
+    );
+    // The watch coalesces for 75 ms before it recomputes.
+    assert!(frame < Duration::from_millis(250), "frame latency {frame:?}");
+    core.shutdown().await;
 }

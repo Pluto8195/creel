@@ -654,6 +654,31 @@ impl RegistryDoc {
         }
     }
 
+    /// Fold every pending batch into the authoritative rows and clear the
+    /// queue. Only for a replica with no server (a local profile): there the
+    /// local table IS the whole truth, nothing ever acks a batch, and an
+    /// unbounded queue makes every overlay read linear in the device's whole
+    /// write history (a two-month-old local profile held 68,000 queued ops for
+    /// 1,288 rows, so each Work Outline watch recompute and each list publish
+    /// took ~75 ms in release under the registry lock). The overlay view is
+    /// unchanged: each row is exactly what [`Self::overlay_row`] returned,
+    /// clocks included, so a later full `state` frame still re-seeds these
+    /// rows with their original clocks. Returns whether anything was folded.
+    pub fn settle_pending_locally(&mut self) -> bool {
+        if self.pending.is_empty() {
+            return false;
+        }
+        for batch in std::mem::take(&mut self.pending) {
+            for op in batch.ops {
+                let current = self.authoritative.get(&op.kind).and_then(|m| m.get(&op.id));
+                if let (Some(next), _) = apply_op(current, &op) {
+                    self.put_authoritative(next);
+                }
+            }
+        }
+        true
+    }
+
     /// Batches to push: everything not already in flight on this connection.
     pub fn take_pushable(&mut self) -> Vec<PendingBatch> {
         let mut out = Vec::new();

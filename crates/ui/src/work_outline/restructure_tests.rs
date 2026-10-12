@@ -959,3 +959,84 @@ fn rename_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
     assert!(editing(&outline, vcx));
     assert!(calls.lock().unwrap().is_empty());
 }
+
+/// Shift+Arrows through the app's REAL keymap: the bindings come from
+/// `shell::apply_keymap` (what the app installs at startup and on every
+/// settings change), not the Outline's own test table, and the row is
+/// focused and selected by a real click.
+#[gpui::test]
+fn shift_arrows_restructure_through_the_app_keymap(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (overview, calls, vcx) = instruction_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    vcx.update(|_, cx| {
+        crate::shell::apply_keymap(
+            cx,
+            &crate::settings::KeymapConfig::default(),
+            crate::settings::ComposerSendBehavior::default(),
+        )
+    });
+    let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+    draw(vcx);
+    let click = |vcx: &mut gpui::VisualTestContext, item: &str| {
+        let at = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", item)))
+            .expect("the row renders")
+            .center();
+        vcx.simulate_click(at, gpui::Modifiers::default());
+        draw(vcx);
+    };
+    let null = serde_json::Value::Null;
+
+    click(vcx, UI);
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
+    press(vcx, "shift-up");
+    assert_eq!(
+        move_at(&calls, 0),
+        (
+            serde_json::json!(LAUNCH),
+            placement("before", Some(API)),
+            UI.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    click(vcx, API);
+    press(vcx, "shift-down");
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("after", Some(UI)),
+            API.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    click(vcx, UI);
+    press(vcx, "shift-right");
+    assert_eq!(
+        move_at(&calls, 2),
+        (serde_json::json!(API), placement("last", None), UI.to_owned())
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    click(vcx, UI);
+    press(vcx, "shift-left");
+    assert_eq!(
+        move_at(&calls, 3),
+        (
+            null,
+            placement("after", Some(LAUNCH)),
+            UI.to_owned()
+        )
+    );
+    refresh(&overview, vcx, fixture("s1"));
+
+    // Plain arrows still navigate, F2 / R still rename.
+    click(vcx, API);
+    press(vcx, "down");
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", API_AUTH)));
+    press(vcx, "up");
+    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", API)));
+    assert_eq!(calls.lock().unwrap().len(), 4);
+}

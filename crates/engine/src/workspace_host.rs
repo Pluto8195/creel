@@ -196,6 +196,11 @@ struct WorkspaceHostInner {
     /// durable snapshot; claimed together with the next snapshot save.
     /// Lock order: `reg` before this.
     pending_ledger_marks: Mutex<Vec<String>>,
+    /// No registry server will ever ack this replica's writes (no edge is
+    /// configured and no test room is attached): the local table is the
+    /// whole truth, so local writes settle into it instead of queueing
+    /// forever (see `RegistryDoc::settle_pending_locally`).
+    local_authority: std::sync::atomic::AtomicBool,
 }
 
 /// "This peer is alive" callback (device id) — see `WorkspaceHost::set_peer_alive_hook`.
@@ -298,6 +303,10 @@ impl WorkspaceHost {
             capabilities,
         })?;
 
+        let local_authority = config.edge.is_none();
+        if local_authority && doc.settle_pending_locally() {
+            tracing::info!("settled the local registry's queued writes");
+        }
         let state = doc.read_all()?;
         let (chats_tx, _) = watch::channel(state.chats);
         let (devices_tx, _) = watch::channel(state.devices);
@@ -335,6 +344,7 @@ impl WorkspaceHost {
                 presence_watch: Mutex::new(PresenceWatch::default()),
                 room_joined_at: std::sync::atomic::AtomicI64::new(0),
                 pending_ledger_marks: Mutex::new(Vec::new()),
+                local_authority: std::sync::atomic::AtomicBool::new(local_authority),
             }),
         };
         // Persist immediately: after this boot the migration source is never
@@ -365,6 +375,10 @@ impl WorkspaceHost {
     /// server through this. Production always goes through [`Self::join_room`].
     #[doc(hidden)]
     pub fn connect_registry_url(&self, url: &str) {
+        // From here on a server acks (and must receive) every write.
+        self.inner
+            .local_authority
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.spawn_join(Arc::new(zeron_sync::StaticUrl(url.to_string())), None, None);
     }
 
@@ -650,7 +664,12 @@ impl WorkspaceHost {
     /// Run a mutation under the registry lock, then wake the publish/persist
     /// task and push the write to the room.
     fn mutate<R>(&self, f: impl FnOnce(&mut RegistryDoc) -> R) -> R {
-        let result = f(&mut lock(&self.inner.reg));
+        let result = {
+            let mut doc = lock(&self.inner.reg);
+            let result = f(&mut doc);
+            self.inner.settle_if_local(&mut doc);
+            result
+        };
         self.inner.bump_changed();
         if let Some(room) = lock(&self.inner.room).as_ref() {
             room.nudge();
@@ -1761,6 +1780,7 @@ impl WorkspaceHostInner {
             match doc.reconcile_sidebar_pins(registry_synced) {
                 Ok(true) => {
                     // Persist and transmit cleanup just like a user mutation.
+                    self.settle_if_local(&mut doc);
                     self.bump_changed();
                     if let Some(room) = lock(&self.room).as_ref() {
                         room.nudge();
@@ -1930,6 +1950,17 @@ impl WorkspaceHostInner {
         }
     }
 
+    /// Fold queued writes into the local table when no server will ever ack
+    /// them (call under the registry lock, right after a write).
+    fn settle_if_local(&self, doc: &mut RegistryDoc) {
+        if self
+            .local_authority
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            doc.settle_pending_locally();
+        }
+    }
+
     fn save_snapshot(&self) {
         if let Err(error) = self.persist_snapshot() {
             tracing::warn!(%error, "registry snapshot save failed");
@@ -1939,7 +1970,9 @@ impl WorkspaceHostInner {
     fn persist_snapshot(&self) -> Result<(), EngineError> {
         // Keep export and disk write serialized: an older background snapshot
         // must not overwrite an acknowledged migration's durable snapshot.
-        let doc = lock(&self.reg);
+        let mut doc = lock(&self.reg);
+        // Any write that bypassed `mutate` settles before it is persisted.
+        self.settle_if_local(&mut doc);
         let bytes = doc.to_bytes()?;
         // Taken under the registry lock: exactly the marks whose writes are
         // in `bytes` (see `WorkspaceHost::work_outline_mutate`).
