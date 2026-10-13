@@ -533,9 +533,17 @@ fn device_name(shell: &Shell, device_id: &str, cx: &App) -> String {
 }
 
 /// The Start Chat card.
+/// The Start Chat body's height budget in a `viewport_height` window: the
+/// window minus the card chrome (title, item path, buttons, scrim margin),
+/// never below the original 440px.
+fn start_chat_body_max_height(viewport_height: f32) -> f32 {
+    (viewport_height - 200.0).max(440.0)
+}
+
 pub(super) fn start_chat_card(
     dialog: &StartChatDialog,
     shell: &Shell,
+    viewport_height: f32,
     theme: &Theme,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
@@ -929,7 +937,9 @@ pub(super) fn start_chat_card(
         .child(
             div()
                 .id("start-chat-body")
-                .max_h(px(440.0))
+                // Room for the prompt at its auto-grow cap (40% of the
+                // window) plus the sections under it; the rest scrolls.
+                .max_h(px(start_chat_body_max_height(viewport_height)))
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
@@ -1086,6 +1096,10 @@ mod tests {
                     Ok(identity(params["path"].as_str().unwrap_or_default()))
                 }
                 zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM => (create.lock().unwrap())(&params),
+                zeron_rpc::methods::LIST_COMMANDS => Ok(serde_json::json!([
+                    {"name": "code-review", "description": "Review a diff"},
+                    {"name": "open-pr", "description": "Open a PR"},
+                ])),
                 _ => Ok(serde_json::json!({})),
             }
         }));
@@ -1477,5 +1491,175 @@ mod tests {
         // Archived items cannot start Chats.
         let error = shell.update(cx, |shell, cx| shell.open_start_chat("s1", RETIRED, cx));
         assert!(error.is_err());
+    }
+
+    fn prompt_skills(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Vec<String> {
+        shell.update(cx, |shell, cx| {
+            let skills = shell.start_chat_dialog().unwrap().skills.clone();
+            let names = skills.read(cx).visible_names();
+            if skills.read(cx).is_open() {
+                names
+            } else {
+                Vec::new()
+            }
+        })
+    }
+
+    fn prompt_text(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> String {
+        shell.update(cx, |shell, cx| {
+            let input = shell.start_chat_dialog().unwrap().input.clone();
+            input.read(cx).text().to_owned()
+        })
+    }
+
+    /// `/` in the prompt lists the picked agent's skills for the item's
+    /// resolved execution root (not the Space folder), on the owning device;
+    /// arrows move, Enter accepts the composer's own `/name` form without
+    /// starting, and Esc closes the list but not the dialog.
+    #[gpui::test]
+    fn prompt_offers_skills_for_the_resolved_execution_root(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        // Auth inherits API's configuration: root /work/alpha/flagship.
+        shell
+            .update(cx, |shell, cx| shell.open_start_chat("s1", API_AUTH, cx))
+            .unwrap();
+        draw(cx);
+        let focus = shell.read_with(cx, |shell, cx| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            dialog.input_focus(cx)
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        cx.simulate_input("Fix it with /");
+        draw(cx);
+        let lists = calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0]["cwd"], "/work/alpha/flagship");
+        assert_eq!(lists[0]["targetDeviceId"], "d");
+        assert!(lists[0]["harness"].is_string());
+        assert_eq!(prompt_skills(&shell, cx), vec!["code-review", "open-pr"]);
+        assert!(cx.debug_bounds("skill-completion").is_some());
+        assert!(cx.debug_bounds("skill-completion-row-1").is_some());
+
+        // Esc closes the list; the dialog stays.
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(prompt_skills(&shell, cx).is_empty());
+        assert!(cx.debug_bounds("skill-completion").is_none());
+        assert!(cx.debug_bounds("start-chat").is_some(), "dialog stays open");
+
+        // Typing reopens and filters from the cache; Down + Enter accepts.
+        cx.simulate_input("o");
+        draw(cx);
+        assert_eq!(calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS).len(), 1);
+        let names = prompt_skills(&shell, cx);
+        assert!(names.len() >= 1 && names.contains(&"open-pr".to_owned()));
+        let open_pr = names.iter().position(|name| name == "open-pr").unwrap();
+        for _ in 0..open_pr {
+            cx.simulate_keystrokes("down");
+        }
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(prompt_text(&shell, cx), "Fix it with /open-pr ");
+        assert!(prompt_skills(&shell, cx).is_empty());
+        assert!(
+            calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty(),
+            "Enter accepted the skill instead of starting"
+        );
+
+        // Tab accepts too.
+        cx.simulate_input("/cod");
+        draw(cx);
+        assert_eq!(prompt_skills(&shell, cx), vec!["code-review"]);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            prompt_text(&shell, cx),
+            "Fix it with /open-pr /code-review "
+        );
+    }
+
+    /// The prompt grows with its text from three rows up to 40% of the
+    /// window, then scrolls internally with the caret in view; the wheel
+    /// scrolls it; nothing caps (and clips) it from outside.
+    #[gpui::test]
+    fn prompt_grows_to_the_cap_then_scrolls(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        let height = |cx: &mut gpui::VisualTestContext| {
+            f32::from(cx.debug_bounds("start-chat-prompt").unwrap().size.height)
+        };
+        let window_height = cx.update(|window, _| f32::from(window.viewport_size().height));
+        let empty = height(cx);
+        set_prompt(&shell, cx, "one line");
+        draw(cx);
+        assert_eq!(height(cx), empty, "three rows minimum");
+        set_prompt(&shell, cx, &vec!["line"; 8].join("\n"));
+        draw(cx);
+        let grown = height(cx);
+        assert!(
+            grown > empty + 30.0,
+            "grows with content: {grown} vs {empty}"
+        );
+        let long = (0..200)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        set_prompt(&shell, cx, &long);
+        draw(cx);
+        let capped = height(cx);
+        assert!(capped > grown);
+        assert!(
+            capped <= window_height * crate::composer::AUTO_GROW_MAX_FRACTION + 16.0,
+            "capped at 40% of the window: {capped} of {window_height}"
+        );
+        let input = shell.update(cx, |shell, _| {
+            shell.start_chat_dialog().unwrap().input.clone()
+        });
+        input.read_with(cx, |input, _| {
+            assert!(input.scroll_top() > 0.0, "scrolled to the caret");
+            assert!(input.caret_in_view());
+        });
+        let before = input.read_with(cx, |input, _| input.scroll_top());
+        let center = cx.debug_bounds("start-chat-prompt").unwrap().center();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: center,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(120.0))),
+            ..Default::default()
+        });
+        draw(cx);
+        let after = input.read_with(cx, |input, _| input.scroll_top());
+        assert!(
+            after < before,
+            "the wheel scrolls inside: {after} vs {before}"
+        );
     }
 }

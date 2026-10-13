@@ -1578,6 +1578,127 @@ mod tests {
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
     }
 
+    /// `/` in Create Instruction from Chat lists skills for the chosen
+    /// target's resolved execution root (re-listed when the target changes)
+    /// and inserts plain "`name` skill" text; Esc closes only the list;
+    /// Enter accepts instead of saving. The text grows to the cap, then
+    /// scrolls with the caret in view.
+    #[gpui::test]
+    fn from_chat_text_offers_skills_as_plain_text_and_grows(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            crate::work_outline::execution::fixture::snapshot("s1"),
+            |params| {
+                if params.get("harness").is_some() {
+                    return Ok(serde_json::json!([
+                        {"name": "code-review", "description": "Review a diff"},
+                        {"name": "open-pr"},
+                    ]));
+                }
+                ok_ids(params)
+            },
+        );
+        let lists = |calls: &Calls| -> Vec<serde_json::Value> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|params| params.get("harness").is_some())
+                .cloned()
+                .collect()
+        };
+        shell.update_in(cx, |shell, window, cx| {
+            shell
+                .open_instruction_from_chat_with(
+                    CHAT_AUTH,
+                    None,
+                    "Never log tokens.".into(),
+                    window,
+                    cx,
+                )
+                .unwrap()
+        });
+        draw(cx);
+        let (input, skills) = shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::FromChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            (dialog.input.clone(), dialog.skills.clone())
+        });
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        let names = |cx: &mut gpui::VisualTestContext| {
+            skills.read_with(cx, |skills, _| {
+                if skills.is_open() {
+                    skills.visible_names()
+                } else {
+                    Vec::new()
+                }
+            })
+        };
+        // Chat Auth's item inherits API's root.
+        cx.simulate_input(" Use /");
+        draw(cx);
+        assert_eq!(lists(&calls)[0]["cwd"], "/work/alpha/flagship");
+        assert_eq!(names(cx), vec!["code-review", "open-pr"]);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(names(cx).is_empty());
+        assert!(
+            cx.debug_bounds("instruction-from-chat").is_some(),
+            "dialog stays"
+        );
+
+        // Space root target: its folder's list.
+        let root = cx
+            .debug_bounds("instruction-from-chat-target-root")
+            .unwrap()
+            .center();
+        cx.simulate_click(root, gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        cx.simulate_input("c");
+        draw(cx);
+        assert_eq!(lists(&calls).last().unwrap()["cwd"], "/work/alpha");
+        assert_eq!(names(cx), vec!["code-review"]);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            input.read_with(cx, |input, _| input.text().to_owned()),
+            "Never log tokens. Use `code-review` skill "
+        );
+        assert!(
+            calls.lock().unwrap().iter().all(|c| c.get("op").is_none()),
+            "Enter accepted the skill, nothing saved"
+        );
+
+        // Auto-grow up to the cap, then scroll.
+        let window_height = cx.update(|window, _| f32::from(window.viewport_size().height));
+        let long = (0..200)
+            .map(|n| format!("rule {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        input.update(cx, |input, cx| input.set_text(long, cx));
+        draw(cx);
+        let frame = cx.debug_bounds("instruction-from-chat-text").unwrap();
+        assert!(
+            f32::from(frame.size.height)
+                <= window_height * crate::composer::AUTO_GROW_MAX_FRACTION + 16.0
+        );
+        assert!(f32::from(frame.size.height) > 100.0);
+        input.read_with(cx, |input, _| {
+            assert!(input.scroll_top() > 0.0);
+            assert!(input.caret_in_view());
+        });
+    }
+
     #[test]
     fn excerpt_prefers_an_anchored_selection_then_the_last_assistant_message() {
         let rows = [

@@ -778,9 +778,13 @@ impl Shell {
             WorkOutlineModal::FromChat(dialog) => {
                 super::instructions_ui::from_chat_card(dialog, &theme, cx)
             }
-            WorkOutlineModal::StartChat(dialog) => {
-                super::start_chat_ui::start_chat_card(dialog, self, &theme, cx)
-            }
+            WorkOutlineModal::StartChat(dialog) => super::start_chat_ui::start_chat_card(
+                dialog,
+                self,
+                f32::from(viewport.height),
+                &theme,
+                cx,
+            ),
             WorkOutlineModal::Shortcuts => shortcuts_card(&theme, cx),
             WorkOutlineModal::Confirm(dialog) => {
                 let accept = if dialog.destructive {

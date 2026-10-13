@@ -14373,4 +14373,10 @@ mod logic_tests {
     mod guidance_tests {
         include!("work_outline/guidance_tests.rs");
     }
+
+    /// `/` skill autocomplete and auto-grow of the Work Item Details
+    /// editors; shares this module's fixtures.
+    mod editor_skills_tests {
+        include!("work_outline/editor_skills_tests.rs");
+    }
 }

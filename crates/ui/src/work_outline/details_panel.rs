@@ -493,6 +493,34 @@ impl WorkItemDetails {
             .update(cx, |input, cx| input.set_text(text, cx));
     }
 
+    /// Open the description editor (tests).
+    #[cfg(test)]
+    pub(crate) fn begin_description_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.description_open = true;
+        self.begin_description_edit(window, cx);
+    }
+
+    /// `(input, skill autocomplete)` of the multi-line editors (tests):
+    /// `"instruction"`, `"proposal"`, or `"description"` (no autocomplete).
+    #[cfg(test)]
+    pub(crate) fn editor(
+        &self,
+        which: &str,
+    ) -> (Entity<ComposerInput>, Option<Entity<SkillCompletion>>) {
+        match which {
+            "instruction" => (
+                self.instruction_input.clone(),
+                Some(self.instruction_skills.clone()),
+            ),
+            "proposal" => (
+                self.proposal_input.clone(),
+                Some(self.proposal_skills.clone()),
+            ),
+            "description" => (self.description_input.clone(), None),
+            other => panic!("no {other} editor"),
+        }
+    }
+
     fn discard_drafts(&mut self) {
         self.editing_title = false;
         self.editing_description = false;
