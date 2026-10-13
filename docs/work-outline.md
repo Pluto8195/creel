@@ -80,6 +80,23 @@ archives it and the selection moves to the next row, a work item opens its
 Archive dialog with the choice for its descendants, and project and group rows
 ignore it. The **Archive Chat** and **Archive…** menu entries show the key.
 
+### Search
+
+`⌘F` (`Ctrl+F`) focuses the Overview's search field and selects its text, in
+List, Canvas, and Outline. It is one shared field: in the Outline it filters the
+rows ("Nothing matches the search" when none do). The key is fixed (not in
+**Settings → Shortcuts**) and works with or without focus in the Overview; the
+file editor's own Find still wins inside a file, and in a full chat `⌘F` does
+nothing. In the search field:
+
+| Key | Action |
+| --- | --- |
+| `Esc` | Clear the query; when it is already empty, return focus to the List, Canvas, or Outline tree (with a side panel open, an empty-field `Esc` closes the panel first) |
+| `↩` / `↓` | Select the first matching row in List or Outline (Enter on Canvas moves focus to the canvas) and focus it, so the arrow keys work at once |
+
+In List, `↑` / `↓` then move the selected row (`↑` on the first row returns to the
+search) and `↩` opens the selected Chat beside the Overview.
+
 Every Work Outline command is also in the command palette and can be rebound in
 **Settings → Shortcuts**. Only four commands ship with a global key, because
 global keys also fire while a text field has focus:

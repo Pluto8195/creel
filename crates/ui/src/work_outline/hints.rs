@@ -38,6 +38,8 @@ pub(crate) enum HintKey {
     /// An app-wide rebindable shortcut that also acts on the selected
     /// Outline row ([`OUTLINE_APP_KEYS`]).
     App(ShortcutId),
+    /// Find: the fixed app-wide key that focuses the Overview's search.
+    Find,
 }
 
 /// App-wide shortcuts that, while the Outline tree has focus, act on the
@@ -87,6 +89,7 @@ pub(crate) fn hint_keys_on(mac: bool, keymap: &KeymapConfig, hint: HintKey) -> O
         }
         HintKey::Outline(key) => outline_key_combo(key).map(|combo| key_label_on(mac, combo)),
         HintKey::App(id) => shortcut_combo(keymap, id).map(|combo| key_label_on(mac, &combo)),
+        HintKey::Find => Some(key_label_on(mac, crate::shell::FOCUS_OVERVIEW_SEARCH_COMBO)),
     }
 }
 
@@ -309,8 +312,14 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
                     keys: Some(all_keys(key)),
                 }),
         );
+    let mut navigate = outline_group("Navigate", OutlineKeyGroup::Navigate);
+    // Find works from anywhere in the Overview; the Outline filters by it.
+    navigate.rows.push(ShortcutRow {
+        label: "Search",
+        keys: hint_keys_on(mac, keymap, HintKey::Find),
+    });
     vec![
-        outline_group("Navigate", OutlineKeyGroup::Navigate),
+        navigate,
         edit,
         restructure,
         ShortcutGroup {
@@ -537,6 +546,7 @@ mod tests {
                 + CHAT_MOVE_KEYS.len()
                 + SPACE_MOVE_KEYS.len()
                 + OUTLINE_APP_KEYS.len()
+                + 1
         );
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
@@ -548,6 +558,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
+        assert_eq!(row(&groups, "Search").keys.as_deref(), Some("\u{2318}F"));
         assert_eq!(
             row(&groups, "Project up (project row)").keys.as_deref(),
             Some("\u{21e7}\u{2191}")
