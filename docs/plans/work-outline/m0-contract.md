@@ -567,9 +567,10 @@ ambiguous rule or a gap later milestones must close.
     `instructionContextResetRequired` the composer shows "Start a fresh session with the new
     instructions? The agent loses this conversation's context." Start fresh session resends
     `runWithInstructions { request, messageId (same), instructions: {revisionId, revisionHash},
-    contextResetConfirmed: true }` via `QueueCommand`; Cancel restores the typed text (remembered
-    per message id for recent sends, else the request prompt) into the draft. Answered refusals
-    stay hidden locally until the host drops them.
+    contextResetConfirmed: true }` via `QueueCommand`; Keep this session (delivery discoveries
+    item 13) reverts the selection and resends the same message id as a plain `Run`; Cancel restores
+    the typed text (remembered per message id for recent sends, else the request prompt) into the
+    draft. Answered refusals stay hidden locally until the host drops them.
 16. **Queued reset gate (Part B).** A row gated with `InstructionContextResetRequired` reads "New
     instructions need a fresh session · <text>" and offers Start fresh session
     (`confirmInstructionContextReset { queuedMessageId, revisionId }` via `QueueCommand`) and Cancel
@@ -638,6 +639,37 @@ Recorded by Milestone 2 runtime instruction delivery (branch `work-outline-instr
 12. **Claude envelope files** are content-addressed (`<store_root>/instructions/<envelopeSha256>.md`,
     0600, atomic write, rewritten if not byte-identical) rather than one file per session: identical
     bytes, no unbounded growth. The digest is re-checked before writing.
+13. **Keep the session (`keepInstructionSession`).** Without it, a Chat on a `FreshSession` harness
+    whose selection differs from what its native session received rejects every send with
+    `instructionContextResetRequired` (the selection stays, so Cancel loops). `WorkOutlineMutate
+    {op: keepInstructionSession, chatId, operationId}` (reply `applicationId`, replay-safe like
+    Apply; agents are refused) writes an application with the additive reason `keepSession` (lenient
+    enum) whose target is never caller-supplied: for a Chat this device hosts,
+    `SessionsEngine::kept_instruction_session` (the live session's pin, else the sidecar `applied`);
+    otherwise, or with no local record, the host's reported `ExecutionSessionReport` in the registry.
+    A session without Work Outline instructions writes `revisionId: ""` (no `revisionHash`): the
+    newest application then means "no selected revision" (`select_application` returns none, the
+    auto-pin captures nothing, a plain `Run` dispatches without instructions and continues the
+    session, drift shows as for any unselected Chat). Older readers drop the empty-revision row and
+    keep the previous selection. A later Apply sorts after the keep and wins. The Chat need not be
+    assigned (keeping is a revert); a kept revision must exist in the Space and verify.
+14. **Queued rows (`keepQueuedInstructionSession {queuedMessageId}`).** A new command kind (older
+    hosts skip it; the row stays gated): the host drops the row's captured pin, clears its reset
+    gate and confirmation, and drains it. A row without a pin runs under its Execution Session's
+    revision (item 8), so nothing different is delivered. Rejected when the row is gone.
+15. **Remote race.** The composer's kept resend is a plain `Run`; the sending device captures the
+    kept selection at ingestion. A plain `Run` that reaches a remote host before the keep row syncs
+    there still takes the host's (stale) selection and is refused again; keeping again resolves it.
+16. **UI.** The composer reset card and gated queued rows offer Start fresh session / Keep this
+    session / Cancel. Keep calls `keepInstructionSession` (one operation id per refusal or row), then
+    resends the same message id as a plain `Run` (or sends `keepQueuedInstructionSession`); a failed
+    keep sends nothing and asks again. Apply on a Chat whose harness declares `FreshSession`
+    (`zeron_harness::declared_replace_strategy`; Codex) and has a `harnessSessionId` first shows
+    "Applying starts a fresh Codex session on your next message (this conversation's context won't
+    carry over). Apply anyway?" with Apply / Cancel, writing nothing until confirmed (the Outline
+    menu's Apply opens Compare to show it). The chat header and Compare show **Keep current
+    session** when such a Chat's selection differs from its delivered revision (or nothing was
+    delivered); the drift notice stays afterwards so Apply remains available.
 
 ## Milestone 3 execution discoveries
 
