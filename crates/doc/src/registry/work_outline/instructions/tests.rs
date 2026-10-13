@@ -1306,7 +1306,9 @@ fn keep_session_selects_the_reported_revision_and_a_later_apply_wins() {
     let new = revise(&mut doc, "rev-new", &c).unwrap();
     apply_revision(&mut doc, "app-new", "chat-1", &new).unwrap();
     assert_eq!(
-        doc.selected_instruction_revision("chat-1").unwrap().revision_id,
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
         new
     );
 
@@ -1316,7 +1318,9 @@ fn keep_session_selects_the_reported_revision_and_a_later_apply_wins() {
     let pin = doc.selected_instruction_revision("chat-1").unwrap();
     assert_eq!(pin.revision_id, old);
     assert_eq!(pin.revision_hash, old_hash);
-    let row = doc.row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id).unwrap();
+    let row = doc
+        .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+        .unwrap();
     assert_eq!(row.fields["reason"], json!("keepSession"));
     let s = snap(&doc);
     let chat = state(&s, "chat-1");
@@ -1330,14 +1334,18 @@ fn keep_session_selects_the_reported_revision_and_a_later_apply_wins() {
     assert_eq!(keep(&mut doc, "keep-1", "chat-1").unwrap(), id);
     assert_eq!(doc.pending_len(), pending);
     assert_eq!(
-        doc.selected_instruction_revision("chat-1").unwrap().revision_id,
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
         old
     );
 
     // A later Apply sorts after the keep and wins.
     apply_revision(&mut doc, "app-again", "chat-1", &new).unwrap();
     assert_eq!(
-        doc.selected_instruction_revision("chat-1").unwrap().revision_id,
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
         new
     );
 }
@@ -1351,7 +1359,9 @@ fn keep_session_without_instructions_selects_none() {
     // No Execution Session report (the session started before any selection).
     let id = keep(&mut doc, "keep-none", "chat-1").unwrap();
     assert!(doc.selected_instruction_revision("chat-1").is_none());
-    let row = doc.row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id).unwrap();
+    let row = doc
+        .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+        .unwrap();
     assert_eq!(row.fields["revisionId"], json!(""));
     assert!(!row.fields.contains_key("revisionHash"));
     let s = snap(&doc);
@@ -1376,7 +1386,9 @@ fn keep_session_without_instructions_selects_none() {
         .unwrap();
     assert_eq!(kept, derive_id("keep-host", roles::APPLICATION));
     assert_eq!(
-        doc.selected_instruction_revision("chat-1").unwrap().revision_id,
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
         revision
     );
     // An empty revision id is still dropped for any other reason.
@@ -1388,7 +1400,9 @@ fn keep_session_without_instructions_selects_none() {
     let row = RegistryRow {
         id: "x".into(),
         fields,
-        ..doc.row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id).unwrap()
+        ..doc
+            .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+            .unwrap()
     };
     assert!(super::super::materialize::decode_application(&row).is_none());
     // Projectless and unknown Chats are refused.

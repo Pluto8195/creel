@@ -30,14 +30,14 @@ use std::collections::HashMap;
 use zeron_proto::work_outline::{
     ApplyInstructionRevisionParams, ArchiveWorkItemInstructionParams,
     CreateInstructionRevisionParams, CreateWorkItemInstructionParams, InstructionPlacement,
-    KeepInstructionSessionParams, MoveWorkItemInstructionParams, UpdateWorkItemInstructionParams, WorkItemView,
+    KeepInstructionSessionParams, MoveWorkItemInstructionParams, UpdateWorkItemInstructionParams,
+    WorkItemView,
 };
 use zeron_proto::work_outline_instructions::{
     EffectiveInstructions, ExecutionSessionReport, InstructionApplicationReason,
-    InstructionRevisionIntegrity, InstructionTurnBoundary,
-    InstructionRevisionPin, InstructionRevisionView, InstructionScope, InstructionSource,
-    SPACE_ROOT_SCOPE_TITLE, WorkItemInstructionView, build_revision_body,
-    resolve_effective_instructions,
+    InstructionRevisionIntegrity, InstructionRevisionPin, InstructionRevisionView,
+    InstructionScope, InstructionSource, InstructionTurnBoundary, SPACE_ROOT_SCOPE_TITLE,
+    WorkItemInstructionView, build_revision_body, resolve_effective_instructions,
 };
 use zeron_proto::work_outline_order::valid_order_key;
 

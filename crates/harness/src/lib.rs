@@ -194,7 +194,8 @@ mod catalog_failure;
 pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
 mod instruction_support;
 pub use instruction_support::{
-    InstructionChannel, InstructionReplaceStrategy, InstructionSupport, require_instruction_support,
+    InstructionChannel, InstructionReplaceStrategy, InstructionSupport, declared_replace_strategy,
+    require_instruction_support,
 };
 pub mod claude;
 pub mod codex;

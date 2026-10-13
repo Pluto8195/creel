@@ -239,12 +239,14 @@ impl Composer {
         let Ok(command) = serde_json::to_value(keep_queued_session_command(&id)) else {
             return;
         };
-        let keep = self.state.read(cx).work_outline_actions().keep_instruction_session(
-            zeron_proto::KeepInstructionSessionParams {
+        let keep = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
                 chat_id: chat_id.clone(),
                 operation_id: self.instruction_reset.keep_operation_id(&id),
-            },
-        );
+            });
         cx.notify();
         let params = serde_json::json!({ "chatId": chat_id, "command": command });
         cx.spawn(async move |this, cx| {
@@ -538,12 +540,14 @@ impl Composer {
         {
             return;
         }
-        let keep = self.state.read(cx).work_outline_actions().keep_instruction_session(
-            zeron_proto::KeepInstructionSessionParams {
+        let keep = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
                 chat_id: chat_id.clone(),
                 operation_id: self.instruction_reset.keep_operation_id(command_id),
-            },
-        );
+            });
         let message_id = rejected.message_id.clone();
         self.state.update(cx, |state, cx| {
             state.push_echo(
@@ -587,7 +591,10 @@ impl Composer {
             this.update(cx, |composer, cx| {
                 match result {
                     Ok(()) => {
-                        composer.instruction_reset.keep_operations.remove(&command_id);
+                        composer
+                            .instruction_reset
+                            .keep_operations
+                            .remove(&command_id);
                     }
                     Err(text) => {
                         // Ask again: the refusal is still listed.
@@ -1038,7 +1045,11 @@ pub(crate) mod tests {
     fn context_reset_offers_three_choices_and_keep_resends_a_plain_run(cx: &mut TestAppContext) {
         let (mut h, vcx) = harness(cx);
         let _guard = h._runtime.enter();
-        let calls = script_keep(&h, vcx, Ok(serde_json::json!({ "applicationId": "a-keep" })));
+        let calls = script_keep(
+            &h,
+            vcx,
+            Ok(serde_json::json!({ "applicationId": "a-keep" })),
+        );
         h.state.update(vcx, |state, _| {
             state.apply_queue_frame("c", Vec::new(), vec![rejected("cmd-1", "m1")]);
         });
@@ -1058,7 +1069,11 @@ pub(crate) mod tests {
         assert_eq!(keeps.len(), 1);
         assert_eq!(keeps[0]["op"], "keepInstructionSession");
         assert_eq!(keeps[0]["chatId"], "c");
-        assert!(keeps[0]["operationId"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(
+            keeps[0]["operationId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
         let sent = h.sent(methods::QUEUE_COMMAND);
         assert_eq!(sent.len(), 1, "one resend after the keep");
         let command = &sent[0]["params"]["command"];
@@ -1109,7 +1124,11 @@ pub(crate) mod tests {
     fn gated_queued_rows_can_keep_the_session(cx: &mut TestAppContext) {
         let (mut h, vcx) = harness(cx);
         let _guard = h._runtime.enter();
-        let calls = script_keep(&h, vcx, Ok(serde_json::json!({ "applicationId": "a-keep" })));
+        let calls = script_keep(
+            &h,
+            vcx,
+            Ok(serde_json::json!({ "applicationId": "a-keep" })),
+        );
         let gate = zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
             harness: HarnessId::Codex,
             revision_id: "rev-b".into(),

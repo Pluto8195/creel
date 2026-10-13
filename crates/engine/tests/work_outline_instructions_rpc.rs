@@ -548,13 +548,17 @@ async fn keep_instruction_session_reverts_the_selection_to_the_session() {
     );
 
     // Keep: back to what the session received.
-    let keep = json!({ "op": "keepInstructionSession", "chatId": "chat-1", "operationId": "op-k1" });
+    let keep =
+        json!({ "op": "keepInstructionSession", "chatId": "chat-1", "operationId": "op-k1" });
     let reply = mutate(&client, keep.clone()).await.unwrap();
     assert_eq!(
         reply,
         json!({ "applicationId": derive_id("op-k1", roles::APPLICATION) })
     );
-    assert_eq!(registry.selected_instruction_revision("chat-1"), Some(old_pin));
+    assert_eq!(
+        registry.selected_instruction_revision("chat-1"),
+        Some(old_pin)
+    );
     let pending = core.workspace.registry_batches_written();
     assert_eq!(mutate(&client, keep).await.unwrap(), reply, "replay");
     assert_eq!(core.workspace.registry_batches_written(), pending);

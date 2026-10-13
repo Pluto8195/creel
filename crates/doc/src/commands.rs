@@ -92,7 +92,9 @@ pub enum SessionCommandPayload {
     /// reset confirmation, and drains the queue. Rejected when the row is
     /// gone. Hosts that predate it skip the entry (the row stays gated).
     #[serde(rename_all = "camelCase")]
-    KeepQueuedInstructionSession { queued_message_id: String },
+    KeepQueuedInstructionSession {
+        queued_message_id: String,
+    },
 }
 
 impl SessionCommandPayload {

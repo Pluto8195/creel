@@ -402,7 +402,19 @@ impl Shell {
                 }
             }
             MenuAction::CompareInstructions(chat_id) => self.open_instruction_compare(&chat_id, cx),
-            MenuAction::ApplyInstructions(chat_id) => self.apply_chat_instructions(&chat_id, cx),
+            MenuAction::ApplyInstructions(chat_id) => {
+                // A fresh-session warning needs a visible surface to confirm
+                // on: open Compare, where it shows with Apply / Cancel.
+                if super::instructions_ui::fresh_session_apply_warning(
+                    self.state.read(cx),
+                    &chat_id,
+                )
+                .is_some()
+                {
+                    self.open_instruction_compare(&chat_id, cx);
+                }
+                self.apply_chat_instructions(&chat_id, cx)
+            }
             MenuAction::PinChat { chat_id, pinned } => self.set_chat_pinned(chat_id, pinned, cx),
             MenuAction::CopyChatIdentity(chat_id) => self.copy_chat_identity(&chat_id, true, cx),
             MenuAction::CloseOutChat(chat_id) => self.open_chat_closeout(chat_id, cx),
