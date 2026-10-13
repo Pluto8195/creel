@@ -68,6 +68,7 @@ inline editor, a picker, the search field, or any other text input.
 | Outdent (right after the former parent) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
+| Project row (more than one project): move the project up / down | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Shortcut reference | `?` | `?` |
 | Archive the selected Chat, or open **Archive…** for the selected work item | `⇧⌘A` | `Ctrl+Shift+A` |
 | Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
@@ -153,7 +154,7 @@ at the top level).
 | --- | --- |
 | Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore |
 | Chat | Open Chat, Open Full Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
-| Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts |
+| Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts. A project row also has Move Up, Move Down, Hide from Outline (Unhide on a hidden project), Rename Project…, and Delete Project… |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
 
 In the menu, `↑` / `↓` move between entries, `↩` (`Enter`) runs one, `→` opens
@@ -193,6 +194,30 @@ project, and Chats that no longer exist, cannot move. A move never changes a
 Chat's Canvas position, folder, or execution setup. The palette's Move Up /
 Down and Indent / Outdent commands act on work items only. Archiving an item that has children asks
 whether to archive them as well or move them to another parent first.
+
+## Projects in the Outline
+
+With more than one project, the Outline shows one collapsible row per project.
+You can arrange and declutter these rows. Order and hidden projects are saved
+on this device only, apply right away, and never change the project itself.
+A single-project Outline has no project rows, so none of this applies there.
+
+- **Reorder.** Select a project row and press `⇧↑` / `⇧↓`, choose **Move Up** /
+  **Move Down** in its menu, or drag it onto another project row. Dropping on
+  the upper half of a row places the project before it, and the lower half
+  places it after. Projects you have never moved, including new ones, follow
+  the ones you arranged, in alphabetical order.
+- **Hide.** Choose **Hide from Outline** in a project row's menu. The project
+  and its Chats disappear from the Outline only. The sidebar, List, and Canvas
+  still show them. While any project is hidden, the Outline toolbar shows
+  **Hidden projects (N)**. Click it to list hidden projects as dimmed rows, and
+  click **Unhide** on a row (or choose **Unhide** in its menu) to bring it back.
+- **Rename Project…** opens the same rename dialog as the sidebar's project menu.
+- **Delete Project…** opens the sidebar's **Remove project?** confirmation.
+  Removing a project permanently deletes its sessions: its Chats leave Zeron's
+  index, and its whole Work Outline (work items, instructions, and requests) is
+  deleted. This can't be undone. To just declutter the Outline, use **Hide from
+  Outline** instead. Cancel deletes nothing.
 
 ## Work Item Details
 
