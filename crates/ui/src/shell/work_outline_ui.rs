@@ -249,6 +249,9 @@ impl OutlineNavKey {
 ///   Shift+Up / Shift+Down to the previous / next shown work item of its
 ///   Space in row order, Shift+Left (Shift+Tab) to its item's parent (out of
 ///   its item from the top level); Shift+Right (Tab) does nothing.
+/// - On a project (Space root) row of a multi-project Outline, Shift+Up /
+///   Shift+Down reorder the project roots (device-local view state);
+///   Shift+Right / Shift+Left (Tab / Shift+Tab) propagate.
 /// - Enter: open the selected item (Work Item Details)
 /// - Mod+Enter (Cmd on macOS, Ctrl elsewhere): Start Chat in the selected
 ///   work item, or in a Chat row's work item. Stored as `mod-enter` and bound

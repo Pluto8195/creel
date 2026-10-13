@@ -1006,6 +1006,51 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn hidden_spaces_render_nothing_unless_revealed_and_never_leak_chats() {
+        let mut chats = fixture_chats("s1");
+        let mut b_child = chat("b-child", Some("s2"));
+        b_child.parent_chat_id = Some(CHAT_API.into());
+        chats.push(chat("b-chat", Some("s2")));
+        chats.push(b_child);
+        chats.push(chat("loose", None));
+        let mut s1 = ready("s1", "Alpha", fixture_snapshot("s1"));
+        s1.hidden = true;
+        let spaces = [s1.clone(), ready("s2", "Beta", fixture_snapshot("s2"))];
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        assert!(model.multi_space, "a hidden Space still counts");
+        assert_eq!(model.hidden_spaces, 1);
+        assert!(model.row("space:s1").is_none());
+        assert!(model.row(&row_key::item("s1", LAUNCH)).is_none());
+        // s1's Chats are gone from the Outline, not moved to the projectless
+        // group; a child Chat of a hidden parent falls back to its own home.
+        assert!(model.row(&row_key::chat(CHAT_API)).is_none());
+        assert!(model.row(&row_key::chat(CHAT_LOOSE_A)).is_none());
+        let child = model.position(&row_key::chat("b-child")).unwrap();
+        assert_eq!(
+            model.rows[model.rows[child].parent.unwrap()].key,
+            row_key::unassociated(Some("s2"))
+        );
+        assert!(model.row(&row_key::chat("loose")).is_some());
+        assert!(model.row("space:s2").is_some());
+
+        // Revealed: a bare, childless, flagged root row.
+        let revealed = OutlineOptions {
+            show_hidden_spaces: true,
+            ..opts()
+        };
+        let model = flatten(&spaces, &chats, &HashSet::new(), &revealed);
+        let row = model.row("space:s1").unwrap();
+        assert!(!row.has_children);
+        assert!(matches!(row.kind, OutlineRowKind::Space { hidden: true, .. }));
+        assert!(model.row(&row_key::chat(CHAT_API)).is_none());
+
+        // One Space: hiding does not apply (there is no root row).
+        let model = flatten(&[s1], &fixture_chats("s1"), &HashSet::new(), &opts());
+        assert_eq!(model.hidden_spaces, 0);
+        assert!(model.row(&row_key::item("s1", LAUNCH)).is_some());
+    }
+
+    #[test]
     fn single_space_folds_projectless_chats_into_its_unassociated_group() {
         let mut chats = fixture_chats("s1");
         chats.push(chat("loose", None));
