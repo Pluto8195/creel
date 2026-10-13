@@ -11,6 +11,7 @@ pub mod preview;
 pub mod repository_topology;
 pub mod sidebar_pins;
 pub mod view;
+pub mod visualize;
 pub mod work_outline;
 pub mod work_outline_execution;
 pub mod work_outline_instructions;

@@ -132,6 +132,18 @@ case "$turnline" in
   emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-1"}}}'
   ;;
 
+*scenario:visualize*)
+  # Visualize content references arrive inside agentMessage text, framed by
+  # private-use tokens and split across deltas; a second message is
+  # completion-only.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","itemId":"v1","delta":"Chart:\n\nvisu"}}'
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","itemId":"v1","delta":"alize{\"path\":\"/repo/work/chart.fragment.html\",\"title\":\"Chart\"}"}}'
+  emit '{"method":"item/completed","params":{"threadId":"th-1","item":{"id":"v1","type":"agentMessage","text":"Chart:\n\nvisualize{\"path\":\"/repo/work/chart.fragment.html\",\"title\":\"Chart\"}"}}}'
+  emit '{"method":"item/completed","params":{"threadId":"th-1","item":{"id":"v2","type":"agentMessage","text":"visualize{\"path\":\"/repo/work/map.html\",\"mode\":\"wide\"}"}}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-1"}}}'
+  ;;
+
 *scenario:publication*)
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"publication-turn\"}}}"
   emit '{"method":"item/agentMessage/delta","params":{"itemId":"publication-answer","delta":"Publication turn completed"}}'
