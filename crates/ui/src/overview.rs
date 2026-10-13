@@ -2640,6 +2640,10 @@ pub struct Overview {
     /// from the Outline (Enter, Details, Required Actions) or the Chat the
     /// toggle left, with the layout it was shown in.
     outline_chat_return: Option<OutlineChatReturn>,
+    /// Focus the tree on the next render: arriving from another route, its
+    /// element is not mounted yet when the toggle asks for focus, and the
+    /// Shell's unmounted-focus recovery would take it back.
+    outline_focus_pending: bool,
     /// The Outline's inputs must be re-pushed (set whenever `rows()`
     /// rebuilds, or an Outline-only option changes).
     outline_dirty: bool,
@@ -2874,6 +2878,7 @@ impl Overview {
             search,
             chat_panel_open: false,
             outline_chat_return: None,
+            outline_focus_pending: false,
             copied_panel_identity: None,
             copied_panel_identity_seq: 0,
             transcript,
@@ -6259,6 +6264,12 @@ impl Render for Overview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         self.ensure_prefs_loaded(cx);
+        if std::mem::take(&mut self.outline_focus_pending)
+            && self.view_mode == OverviewMode::Outline
+        {
+            let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);
+            window.focus(&handle, cx);
+        }
         // The chat open in the side panel — or, in peek mode, the parent of
         // the subagent being peeked.
         self.panel_highlight = self
@@ -9742,6 +9753,7 @@ impl Overview {
         }
         let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);
         window.focus(&handle, cx);
+        self.outline_focus_pending = true;
         cx.notify();
     }
 

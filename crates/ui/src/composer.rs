@@ -4715,6 +4715,12 @@ impl Composer {
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
     }
 
+    /// The prompt input's current draft (tests).
+    #[cfg(test)]
+    pub(crate) fn draft_text(&self, cx: &App) -> String {
+        self.input.read(cx).text().to_owned()
+    }
+
     pub fn is_sending(&self) -> bool {
         self.sending
     }
