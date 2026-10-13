@@ -769,6 +769,16 @@ impl RegistryDoc {
                     ..Default::default()
                 })
             }
+            WorkOutlineMutation::KeepInstructionSession(p) => {
+                // The registry's view of the host's delivery record; the
+                // engine passes its own record for Chats it hosts
+                // (`keep_instruction_session` with `kept`).
+                let id = self.keep_instruction_session(p, None, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    application_id: Some(id),
+                    ..Default::default()
+                })
+            }
             WorkOutlineMutation::ConfigureExecution(p) => {
                 self.configure_execution(p, actor, now_ms).map(|_| empty)
             }

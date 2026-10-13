@@ -517,6 +517,26 @@ impl SessionsEngine {
         self.inner.journal.instruction_sidecar(chat_id)?.applied
     }
 
+    /// What `keepInstructionSession` keeps for a Chat this engine hosts: the
+    /// revision the chat's Execution Session received, as a plain `Run`
+    /// without a pin would deliver it (the live session's, else what the
+    /// last native session received per the journal sidecar). `Some(None)`:
+    /// the session has no Work Outline instructions. `None`: this engine has
+    /// no record (no live run, no sidecar), so the caller falls back to the
+    /// reported Execution Session in the registry.
+    pub fn kept_instruction_session(
+        &self,
+        chat_id: &str,
+    ) -> Option<Option<InstructionRevisionPin>> {
+        if let Some(live) = self.live_instruction_pin(chat_id) {
+            return Some(live);
+        }
+        self.inner
+            .journal
+            .instruction_sidecar(chat_id)
+            .map(|sidecar| sidecar.applied)
+    }
+
     /// Decide what an instruction-bearing dispatch does with the native
     /// session, failing BEFORE anything is written: capability, the
     /// turn-boundary rule, and the context-reset confirmation of

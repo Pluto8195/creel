@@ -469,3 +469,146 @@ async fn workspace_host_implements_the_instruction_registry_seam() {
     assert_eq!(chat.delivered_revision_hash, chat.selected_revision_hash);
     core.shutdown().await;
 }
+
+/// `keepInstructionSession` over RPC: the selection reverts to the revision
+/// the Chat's Execution Session reported, or to none when it reported none;
+/// replays are idempotent and a later Apply wins.
+#[tokio::test(flavor = "multi_thread")]
+async fn keep_instruction_session_reverts_the_selection_to_the_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let core = assemble(&tmp.path().join("data"));
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    let (_a, b) = seed(&client).await;
+    let registry: &dyn InstructionRegistry = &core.workspace;
+    mutate(
+        &client,
+        json!({
+            "op": "createWorkItemInstruction", "spaceId": "space-1",
+            "scope": { "type": "workItem", "workItemId": b }, "text": "Rule",
+            "operationId": "op-i",
+        }),
+    )
+    .await
+    .unwrap();
+    let old = derive_id("op-r1", roles::REVISION);
+    mutate(
+        &client,
+        json!({ "op": "createInstructionRevision", "workItemId": b, "operationId": "op-r1" }),
+    )
+    .await
+    .unwrap();
+    mutate(
+        &client,
+        json!({
+            "op": "applyInstructionRevision", "chatId": "chat-1", "revisionId": old,
+            "reason": "explicit", "operationId": "op-p1",
+        }),
+    )
+    .await
+    .unwrap();
+    let old_pin = registry.selected_instruction_revision("chat-1").unwrap();
+    registry.report_execution_session(
+        "chat-1",
+        ExecutionSessionReport {
+            id: "es-1".into(),
+            native_resume_id: Some("native".into()),
+            harness: HarnessId::Codex,
+            execution_root: "/tmp".into(),
+            revision_id: Some(old.clone()),
+            revision_hash: Some(old_pin.revision_hash.clone()),
+        },
+    );
+    mutate(
+        &client,
+        json!({
+            "op": "updateWorkItemInstruction", "instructionId": derive_id("op-i", roles::INSTRUCTION),
+            "text": "Rule 2", "operationId": "op-edit",
+        }),
+    )
+    .await
+    .unwrap();
+    let new = derive_id("op-r2", roles::REVISION);
+    mutate(
+        &client,
+        json!({ "op": "createInstructionRevision", "workItemId": b, "operationId": "op-r2" }),
+    )
+    .await
+    .unwrap();
+    let apply_new = json!({
+        "op": "applyInstructionRevision", "chatId": "chat-1", "revisionId": new,
+        "reason": "explicit", "operationId": "op-p2",
+    });
+    mutate(&client, apply_new).await.unwrap();
+    assert_eq!(
+        registry
+            .selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        new
+    );
+
+    // Keep: back to what the session received.
+    let keep =
+        json!({ "op": "keepInstructionSession", "chatId": "chat-1", "operationId": "op-k1" });
+    let reply = mutate(&client, keep.clone()).await.unwrap();
+    assert_eq!(
+        reply,
+        json!({ "applicationId": derive_id("op-k1", roles::APPLICATION) })
+    );
+    assert_eq!(
+        registry.selected_instruction_revision("chat-1"),
+        Some(old_pin)
+    );
+    let pending = core.workspace.registry_batches_written();
+    assert_eq!(mutate(&client, keep).await.unwrap(), reply, "replay");
+    assert_eq!(core.workspace.registry_batches_written(), pending);
+
+    // A later Apply wins over the keep.
+    mutate(
+        &client,
+        json!({
+            "op": "applyInstructionRevision", "chatId": "chat-1", "revisionId": new,
+            "reason": "explicit", "operationId": "op-p3",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        registry
+            .selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        new
+    );
+
+    // A session without instructions: keep selects none, drift stays visible.
+    registry.report_execution_session(
+        "chat-1",
+        ExecutionSessionReport {
+            id: "es-2".into(),
+            native_resume_id: Some("native-2".into()),
+            harness: HarnessId::Codex,
+            execution_root: "/tmp".into(),
+            revision_id: None,
+            revision_hash: None,
+        },
+    );
+    mutate(
+        &client,
+        json!({ "op": "keepInstructionSession", "chatId": "chat-1", "operationId": "op-k2" }),
+    )
+    .await
+    .unwrap();
+    assert!(registry.selected_instruction_revision("chat-1").is_none());
+    let mut stream = client
+        .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))
+        .await
+        .unwrap();
+    let snapshot = frame_until(&mut stream, |s| {
+        s.chat_instruction_state("chat-1")
+            .is_some_and(|c| c.selected_revision_id.is_none() && c.drift)
+    })
+    .await;
+    assert!(snapshot.chat_instruction_state("chat-1").unwrap().drift);
+    core.shutdown().await;
+}

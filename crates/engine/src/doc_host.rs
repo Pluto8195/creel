@@ -4999,6 +4999,10 @@ impl DocHost {
                 self.confirm_queued_context_reset(handle, queued_message_id, revision_id)
                     .await
             }
+            SessionCommandPayload::KeepQueuedInstructionSession { queued_message_id } => {
+                self.keep_queued_instruction_session(handle, queued_message_id)
+                    .await
+            }
             SessionCommandPayload::RespondInput {
                 request_id,
                 answers,
@@ -5354,6 +5358,51 @@ impl DocHost {
             handle
                 .doc
                 .set_queued_context_reset_confirmed(queued_message_id, true)?;
+            if matches!(
+                row.delivery_gate,
+                Some(QueueDeliveryGate::InstructionContextResetRequired { .. })
+            ) {
+                handle
+                    .doc
+                    .set_queued_delivery_gate(queued_message_id, None)?;
+            }
+            handle.publish_queue();
+        }
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let host = self.clone();
+            let handle = handle.clone();
+            self.spawn_worker(async move { host.drain_queue(&handle).await });
+        }
+        Ok((SessionCommandStatus::Applied, None))
+    }
+
+    /// `keepQueuedInstructionSession`: the user keeps the existing native
+    /// session for a queued row instead of a context reset. The row's
+    /// captured pin is dropped (a row without a pin runs under its Execution
+    /// Session's revision, so nothing different is ever delivered), its reset
+    /// gate and confirmation are cleared, and the queue drains.
+    async fn keep_queued_instruction_session(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        queued_message_id: &str,
+    ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
+        {
+            let _drain = handle.drain_lock.lock().await;
+            let Some(row) = handle
+                .doc
+                .read_queue()?
+                .into_iter()
+                .find(|row| row.id == queued_message_id)
+            else {
+                return Ok((
+                    SessionCommandStatus::Rejected,
+                    Some("the queued message is no longer in the queue".into()),
+                ));
+            };
+            handle.doc.clear_queued_instructions(queued_message_id)?;
+            handle
+                .doc
+                .set_queued_context_reset_confirmed(queued_message_id, false)?;
             if matches!(
                 row.delivery_gate,
                 Some(QueueDeliveryGate::InstructionContextResetRequired { .. })

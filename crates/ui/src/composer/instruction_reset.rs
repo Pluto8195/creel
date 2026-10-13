@@ -8,12 +8,18 @@
 //!   `AppState::rejected_sends`). The composer asks; Confirm resends the same
 //!   request as `runWithInstructions { …, contextResetConfirmed: true }` under
 //!   the SAME message id (the host then drops it from `rejectedSends`);
-//!   Cancel puts the text back in the draft.
+//!   Keep this session writes `keepInstructionSession` (the Chat's selection
+//!   reverts to what its Execution Session received, or to none) and resends
+//!   the same message id as a plain `Run`, which the host continues on the
+//!   existing session; Cancel puts the text back in the draft.
 //! - **Queued rows.** A queued row the host gated with
 //!   `QueueDeliveryGate::InstructionContextResetRequired` shows the reason with
-//!   Confirm (the `confirmInstructionContextReset` command: the host clears the
-//!   gate, marks the row confirmed, and drains it) and Cancel (the row leaves
-//!   the queue and its text returns to the draft).
+//!   Start fresh session (the `confirmInstructionContextReset` command: the
+//!   host clears the gate, marks the row confirmed, and drains it), Keep this
+//!   session (`keepInstructionSession`, then the
+//!   `keepQueuedInstructionSession` command: the host drops the row's pin and
+//!   drains it on the existing session), and Cancel (the row leaves the queue
+//!   and its text returns to the draft).
 //! - **Host unsupported.** An ingestion-time refusal
 //!   (`instruction-delivery/{…}` on the RPC failure,
 //!   `instructionHostUnsupported`) shows the host's own actionable message;
@@ -33,7 +39,12 @@ use crate::theme::Theme;
 
 /// The question the composer asks before a context reset.
 pub(crate) const CONTEXT_RESET_PROMPT: &str = "Start a fresh session with the new instructions? \
-     The agent loses this conversation\u{2019}s context.";
+     The agent loses this conversation\u{2019}s context. Or keep this session with the \
+     instructions it already has.";
+
+/// Tooltip of the Keep this session buttons.
+pub(crate) const KEEP_SESSION_HINT: &str = "Continue this conversation with the instructions the \
+     session already has. The new instructions stay available to Apply later.";
 
 /// The reason a gated queued row shows ahead of its text.
 pub(crate) const QUEUED_CONTEXT_RESET_REASON: &str = "New instructions need a fresh session";
@@ -53,9 +64,21 @@ pub(crate) struct InstructionResetState {
     answered: HashSet<String>,
     /// Queued rows whose context-reset confirmation is in flight.
     confirming_rows: HashSet<String>,
+    /// Queued rows whose Keep this session is in flight.
+    keeping_rows: HashSet<String>,
+    /// `keepInstructionSession` operation id per refused command / queued
+    /// row: a retry of the same choice replays idempotently.
+    keep_operations: HashMap<String, String>,
 }
 
 impl InstructionResetState {
+    fn keep_operation_id(&mut self, key: &str) -> String {
+        self.keep_operations
+            .entry(key.to_owned())
+            .or_insert_with(crate::work_outline::actions::new_operation_id)
+            .clone()
+    }
+
     pub(crate) fn remember_send(&mut self, message_id: &str, typed: &str) {
         if self
             .sent_drafts
@@ -104,6 +127,24 @@ pub(crate) fn confirmed_resend(
         },
         context_reset_confirmed: true,
     })
+}
+
+/// The plain `Run` resend after Keep this session: same request and message
+/// id, no pin (the host captures the kept selection, or none, at ingestion).
+pub(crate) fn kept_resend(rejected: &InstructionRejectedSend) -> SessionCommandPayload {
+    let mut request = rejected.request.clone();
+    request.instructions = None;
+    SessionCommandPayload::Run {
+        request,
+        message_id: rejected.message_id.clone(),
+    }
+}
+
+/// The command that keeps the existing session for a gated queued row.
+pub(crate) fn keep_queued_session_command(queued_message_id: &str) -> SessionCommandPayload {
+    SessionCommandPayload::KeepQueuedInstructionSession {
+        queued_message_id: queued_message_id.to_owned(),
+    }
 }
 
 /// The command that confirms a gated queued row's context reset.
@@ -179,6 +220,68 @@ impl Composer {
         .detach();
     }
 
+    /// Keep this session for a gated queued row: `keepInstructionSession`
+    /// (the selection reverts to what the session received), then
+    /// `keepQueuedInstructionSession` (the host drops the row's pin and
+    /// drains it on the existing session).
+    pub(crate) fn keep_queued_session(&mut self, id: String, cx: &mut Context<Self>) {
+        let (Some(engine), Some(chat_id)) = (
+            self.state.read(cx).engine().cloned(),
+            self.state.read(cx).selected_chat.clone(),
+        ) else {
+            return;
+        };
+        if self.instruction_reset.confirming_rows.contains(&id)
+            || !self.instruction_reset.keeping_rows.insert(id.clone())
+        {
+            return;
+        }
+        let Ok(command) = serde_json::to_value(keep_queued_session_command(&id)) else {
+            return;
+        };
+        let keep = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+                chat_id: chat_id.clone(),
+                operation_id: self.instruction_reset.keep_operation_id(&id),
+            });
+        cx.notify();
+        let params = serde_json::json!({ "chatId": chat_id, "command": command });
+        cx.spawn(async move |this, cx| {
+            let kept = keep.await;
+            let result = match kept {
+                Ok(_) => crate::attachments::call_with_timeout(
+                    &engine,
+                    cx.background_executor(),
+                    methods::QUEUE_COMMAND,
+                    params,
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+                .map(|_| ()),
+                Err(error) => Err(crate::work_outline::actions::instruction_error_text(&error)),
+            };
+            this.update(cx, |composer, cx| {
+                composer.instruction_reset.keeping_rows.remove(&id);
+                match result {
+                    Ok(()) => {
+                        composer.instruction_reset.keep_operations.remove(&id);
+                    }
+                    Err(raw) => {
+                        composer.failure =
+                            Some(format!("Couldn\u{2019}t keep this session: {raw}").into());
+                        composer.failure_key = Some(chat_id.clone());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Cancel a gated queued row: it leaves the queue and its text returns
     /// to the draft (attachments stay on the host).
     pub(crate) fn cancel_queued_context_reset(
@@ -212,8 +315,9 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let confirming = self.instruction_reset.confirming_rows.contains(id);
+        let keeping = self.instruction_reset.keeping_rows.contains(id);
         let removing = self.queue_removing.contains(id);
-        let busy = confirming || removing;
+        let busy = confirming || keeping || removing;
         let button = |selector: String, label: &'static str, primary: bool| {
             let debug = selector.clone();
             div()
@@ -239,6 +343,7 @@ impl Composer {
         let confirm_id = id.to_owned();
         let confirm_revision = revision_id.to_owned();
         let cancel_id = id.to_owned();
+        let keep_id = id.to_owned();
         div()
             .flex_none()
             .flex()
@@ -250,6 +355,27 @@ impl Composer {
                     el.on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.cancel_queued_context_reset(cancel_id.clone(), text.clone(), cx);
+                    }))
+                }),
+            )
+            .child(
+                button(
+                    format!("queue-reset-keep-{id}"),
+                    if keeping {
+                        "Keeping\u{2026}"
+                    } else {
+                        "Keep this session"
+                    },
+                    false,
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| crate::work_outline::chips::TextTooltip(KEEP_SESSION_HINT.into()))
+                        .into()
+                })
+                .when(!busy, |el| {
+                    el.on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.keep_queued_session(keep_id.clone(), cx);
                     }))
                 }),
             )
@@ -382,6 +508,113 @@ impl Composer {
         .detach();
     }
 
+    /// Keep this session: `keepInstructionSession` reverts the Chat's
+    /// selection to what its Execution Session received (or to none), then
+    /// the same message resends as a plain `Run` under the same message id,
+    /// which the host continues on the existing session. The drift notice
+    /// stays, so the new instructions can still be applied later.
+    pub(crate) fn keep_session_and_resend(&mut self, command_id: &str, cx: &mut Context<Self>) {
+        let Some(rejected) = self
+            .state
+            .read(cx)
+            .rejected_sends
+            .iter()
+            .find(|rejected| rejected.command_id == command_id)
+            .cloned()
+        else {
+            return;
+        };
+        let (Some(engine), Some(chat_id)) = (
+            self.state.read(cx).engine().cloned(),
+            self.state.read(cx).selected_chat.clone(),
+        ) else {
+            return;
+        };
+        let Ok(command) = serde_json::to_value(kept_resend(&rejected)) else {
+            return;
+        };
+        if !self
+            .instruction_reset
+            .answered
+            .insert(command_id.to_owned())
+        {
+            return;
+        }
+        let keep = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+                chat_id: chat_id.clone(),
+                operation_id: self.instruction_reset.keep_operation_id(command_id),
+            });
+        let message_id = rejected.message_id.clone();
+        self.state.update(cx, |state, cx| {
+            state.push_echo(
+                &chat_id,
+                SessionMessageEntry {
+                    id: message_id.clone(),
+                    role: zeron_doc::MessageRole::User,
+                    parts: vec![MessagePart::Text {
+                        id: "t0".into(),
+                        text: rejected.request.prompt.clone(),
+                    }],
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                    device_id: "local".into(),
+                    status: None,
+                    continuation_of: None,
+                },
+            );
+            state.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
+            cx.notify();
+        });
+        cx.notify();
+        let params = serde_json::json!({ "chatId": chat_id, "command": command });
+        let command_id = command_id.to_owned();
+        cx.spawn(async move |this, cx| {
+            let result = match keep.await {
+                Ok(_) => crate::attachments::call_with_timeout(
+                    &engine,
+                    cx.background_executor(),
+                    methods::QUEUE_COMMAND,
+                    params,
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|raw| send_failure_text(&raw)),
+                Err(error) => Err(format!(
+                    "Couldn\u{2019}t keep this session: {}",
+                    crate::work_outline::actions::instruction_error_text(&error)
+                )),
+            };
+            this.update(cx, |composer, cx| {
+                match result {
+                    Ok(()) => {
+                        composer
+                            .instruction_reset
+                            .keep_operations
+                            .remove(&command_id);
+                    }
+                    Err(text) => {
+                        // Ask again: the refusal is still listed.
+                        composer.instruction_reset.answered.remove(&command_id);
+                        composer.failure = Some(text.into());
+                        composer.failure_key = Some(chat_id.clone());
+                        composer.state.update(cx, |state, cx| {
+                            state.remove_echo(&chat_id, &message_id);
+                            state.end_pending_send(&chat_id, &message_id);
+                            cx.notify();
+                        });
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Cancel: nothing is sent; the message's text returns to the draft
     /// (appended when the user has typed something since).
     pub(crate) fn cancel_context_reset(&mut self, command_id: &str, cx: &mut Context<Self>) {
@@ -417,6 +650,7 @@ impl Composer {
         let rejected = self.pending_context_reset(cx)?;
         let confirm_id = rejected.command_id.clone();
         let cancel_id = rejected.command_id.clone();
+        let keep_id = rejected.command_id.clone();
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
@@ -467,6 +701,20 @@ impl Composer {
                                     this.cancel_context_reset(&cancel_id, cx)
                                 }),
                             ),
+                        )
+                        .child(
+                            button("composer-context-reset-keep", "Keep this session", false)
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        crate::work_outline::chips::TextTooltip(
+                                            KEEP_SESSION_HINT.into(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.keep_session_and_resend(&keep_id, cx)
+                                })),
                         )
                         .child(
                             button(
@@ -770,6 +1018,149 @@ pub(crate) mod tests {
         h.composer.read_with(vcx, |composer, cx| {
             assert_eq!(composer.input.read(cx).text(), "second message");
         });
+    }
+
+    /// Script `keepInstructionSession` (recording its params) on `state`.
+    fn script_keep(
+        h: &Harness,
+        vcx: &mut VisualTestContext,
+        reply: Result<serde_json::Value, String>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let actions = crate::work_outline::WorkOutlineActions::scripted(std::sync::Arc::new(
+            move |method, params| {
+                assert_eq!(method, methods::WORK_OUTLINE_MUTATE);
+                recorded.lock().unwrap().push(params);
+                reply.clone().map_err(zeron_rpc::RpcError::Failed)
+            },
+        ));
+        h.state.update(vcx, |state, _| {
+            state.work_outline_actions_override = Some(actions);
+        });
+        calls
+    }
+
+    #[gpui::test]
+    fn context_reset_offers_three_choices_and_keep_resends_a_plain_run(cx: &mut TestAppContext) {
+        let (mut h, vcx) = harness(cx);
+        let _guard = h._runtime.enter();
+        let calls = script_keep(
+            &h,
+            vcx,
+            Ok(serde_json::json!({ "applicationId": "a-keep" })),
+        );
+        h.state.update(vcx, |state, _| {
+            state.apply_queue_frame("c", Vec::new(), vec![rejected("cmd-1", "m1")]);
+        });
+        draw(vcx);
+        for selector in [
+            "composer-context-reset-confirm",
+            "composer-context-reset-keep",
+            "composer-context-reset-cancel",
+        ] {
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        h.sent(methods::QUEUE_COMMAND);
+
+        click(vcx, "composer-context-reset-keep");
+        assert!(vcx.debug_bounds("composer-context-reset").is_none());
+        let keeps = calls.lock().unwrap().clone();
+        assert_eq!(keeps.len(), 1);
+        assert_eq!(keeps[0]["op"], "keepInstructionSession");
+        assert_eq!(keeps[0]["chatId"], "c");
+        assert!(
+            keeps[0]["operationId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+        let sent = h.sent(methods::QUEUE_COMMAND);
+        assert_eq!(sent.len(), 1, "one resend after the keep");
+        let command = &sent[0]["params"]["command"];
+        assert_eq!(command["kind"], "run");
+        assert_eq!(command["messageId"], "m1", "the same message id");
+        assert_eq!(command["request"]["prompt"], "prompt m1");
+        assert!(command.get("instructions").is_none());
+        assert!(command.get("contextResetConfirmed").is_none());
+        h.state.read_with(vcx, |state, _| {
+            assert_eq!(state.pending_echoes().len(), 1, "the echo is back");
+        });
+    }
+
+    #[gpui::test]
+    fn a_failed_keep_sends_nothing_and_asks_again(cx: &mut TestAppContext) {
+        let (mut h, vcx) = harness(cx);
+        let _guard = h._runtime.enter();
+        script_keep(
+            &h,
+            vcx,
+            Err("work-outline/notFound: The session's instruction revision has not synced".into()),
+        );
+        h.state.update(vcx, |state, _| {
+            state.apply_queue_frame("c", Vec::new(), vec![rejected("cmd-1", "m1")]);
+        });
+        draw(vcx);
+        h.sent(methods::QUEUE_COMMAND);
+        click(vcx, "composer-context-reset-keep");
+        assert!(h.sent(methods::QUEUE_COMMAND).is_empty());
+        assert!(
+            vcx.debug_bounds("composer-context-reset").is_some(),
+            "the choice is offered again"
+        );
+        h.composer.read_with(vcx, |composer, _| {
+            assert!(
+                composer
+                    .failure
+                    .as_deref()
+                    .is_some_and(|f| f.starts_with("Couldn\u{2019}t keep this session"))
+            );
+        });
+        h.state.read_with(vcx, |state, _| {
+            assert!(state.pending_echoes().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn gated_queued_rows_can_keep_the_session(cx: &mut TestAppContext) {
+        let (mut h, vcx) = harness(cx);
+        let _guard = h._runtime.enter();
+        let calls = script_keep(
+            &h,
+            vcx,
+            Ok(serde_json::json!({ "applicationId": "a-keep" })),
+        );
+        let gate = zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+            harness: HarnessId::Codex,
+            revision_id: "rev-b".into(),
+            revision_hash: "hash-b".into(),
+            previous_revision_id: Some("rev-a".into()),
+            since_ms: 1,
+        };
+        h.state.update(vcx, |state, _| {
+            let mut row = zeron_doc::QueuedMessage::new("q1", "first message", "d");
+            row.delivery_gate = Some(gate);
+            state.queue = vec![row];
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("queue-reset-keep-q1").is_some());
+        assert!(vcx.debug_bounds("queue-reset-confirm-q1").is_some());
+        assert!(vcx.debug_bounds("queue-reset-cancel-q1").is_some());
+        h.sent(methods::QUEUE_COMMAND);
+
+        click(vcx, "queue-reset-keep-q1");
+        let keeps = calls.lock().unwrap().clone();
+        assert_eq!(keeps.len(), 1);
+        assert_eq!(keeps[0]["op"], "keepInstructionSession");
+        let sent = h.sent(methods::QUEUE_COMMAND);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0]["params"]["command"],
+            serde_json::json!({ "kind": "keepQueuedInstructionSession", "queuedMessageId": "q1" })
+        );
+        // In flight: another click sends nothing.
+        click(vcx, "queue-reset-keep-q1");
+        assert!(h.sent(methods::QUEUE_COMMAND).is_empty());
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     fn host_unsupported() -> InstructionDeliveryRejection {

@@ -8,7 +8,13 @@
 //!   line diff of `work_outline::revision_diff`) with Apply;
 //! - Apply: `createInstructionRevision` then `applyInstructionRevision`
 //!   (reason `explicit`), with operation ids that stay stable across retries
-//!   of the same inputs ([`ApplyState`]);
+//!   of the same inputs ([`ApplyState`]). On a harness whose replace
+//!   strategy is `FreshSession` (Codex) with an existing native session,
+//!   Apply first states that the next message starts a fresh session and
+//!   writes nothing until the user confirms;
+//! - Keep current session: when the selection differs from what a
+//!   `FreshSession` Chat's session received, `keepInstructionSession`
+//!   reverts the selection (the drift notice stays so Apply remains);
 //! - Create Instruction from Chat: excerpt from the transcript selection, or
 //!   the last assistant message when nothing is selected; target this item /
 //!   parent workstream / Space root; explicit Save.
@@ -39,6 +45,74 @@ use crate::work_outline::{model, revision_diff};
 /// Tooltip for both Apply buttons (chat header, Compare dialog).
 const APPLY_HINT: &str =
     "Use the current instructions from the next turn (Codex confirms a fresh session first)";
+
+/// The consequence of Apply on a Chat whose harness can only change
+/// instructions in a fresh native session (replace strategy `FreshSession`)
+/// and that already has one: shown, and confirmed, before anything is
+/// written. `None` when Apply keeps the conversation.
+pub(crate) fn fresh_session_apply_warning(state: &AppState, chat_id: &str) -> Option<String> {
+    let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
+    let harness = chat.config.as_ref()?.harness;
+    if !needs_fresh_session(harness) || !has_native_session(chat) {
+        return None;
+    }
+    let label = harness_display_name(harness)
+        .unwrap_or_else(|| crate::settings::harnesses::cli_name(harness));
+    Some(format!(
+        "Applying starts a fresh {label} session on your next message (this conversation\u{2019}s \
+         context won\u{2019}t carry over). Apply anyway?"
+    ))
+}
+
+fn harness_display_name(harness: zeron_proto::HarnessId) -> Option<&'static str> {
+    match harness {
+        zeron_proto::HarnessId::Codex => Some("Codex"),
+        zeron_proto::HarnessId::ClaudeCode => Some("Claude Code"),
+        _ => None,
+    }
+}
+
+fn needs_fresh_session(harness: zeron_proto::HarnessId) -> bool {
+    zeron_harness::declared_replace_strategy(harness)
+        == Some(zeron_harness::InstructionReplaceStrategy::FreshSession)
+}
+
+fn has_native_session(chat: &zeron_proto::Chat) -> bool {
+    chat.harness_session_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+}
+
+/// Whether "Keep current session" is offered: the Chat's selected revision
+/// differs from what its Execution Session received (or nothing was
+/// delivered), on a `FreshSession` harness with an existing native session,
+/// so the next send would need a context reset.
+pub(crate) fn can_keep_current_session(
+    state: &AppState,
+    chat_id: &str,
+    chat_state: &ChatInstructionState,
+) -> bool {
+    let Some(selected) = chat_state.selected_revision_id.as_deref() else {
+        return false;
+    };
+    if chat_state.delivered_revision_id.as_deref() == Some(selected) {
+        return false;
+    }
+    state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)
+        .is_some_and(|chat| {
+            chat.config
+                .as_ref()
+                .is_some_and(|config| needs_fresh_session(config.harness))
+                && has_native_session(chat)
+        })
+}
+
+/// Tooltip of Keep current session.
+const KEEP_SESSION_HINT: &str = "Continue this conversation with the instructions its session \
+     already has. The new instructions stay available to Apply later.";
 
 /// Where a Chat stands in its Space's outline.
 pub(crate) struct ChatInstructionContext {
@@ -141,6 +215,11 @@ pub(crate) struct ApplyState {
     pub(crate) in_flight: bool,
     pub(crate) error: Option<String>,
     pub(crate) done: Option<&'static str>,
+    /// The fresh-session consequence awaiting the user's Apply / Cancel
+    /// (nothing has been written yet).
+    pub(crate) confirm: Option<String>,
+    keep_op: OperationSlot,
+    pub(crate) keeping: bool,
 }
 
 pub(super) enum ComparePhase {
@@ -280,8 +359,11 @@ impl Shell {
             return None;
         }
         let blocker = instruction_host_blocker(self.state.read(cx), chat_id);
+        let keep = can_keep_current_session(self.state.read(cx), chat_id, &chat_state);
         let apply = self.instruction_apply.get(chat_id);
         let in_flight = apply.is_some_and(|apply| apply.in_flight);
+        let keeping = apply.is_some_and(|apply| apply.keeping);
+        let confirm = apply.and_then(|apply| apply.confirm.clone());
         let error = apply.and_then(|apply| apply.error.clone());
         let done = apply.and_then(|apply| apply.done);
         let link = |id: &'static str, label: &'static str| {
@@ -298,6 +380,9 @@ impl Shell {
         };
         let compare_chat = chat_id.to_owned();
         let apply_chat = chat_id.to_owned();
+        let keep_chat = chat_id.to_owned();
+        let confirm_chat = chat_id.to_owned();
+        let cancel_chat = chat_id.to_owned();
         Some(
             div()
                 .debug_selector(|| "chat-header-instruction-status".into())
@@ -371,6 +456,44 @@ impl Shell {
                             .child(SharedString::from(line)),
                     )
                 })
+                .when(keep, |el| {
+                    el.child(
+                        link(
+                            "chat-header-instructions-keep",
+                            if keeping {
+                                "Keeping\u{2026}"
+                            } else {
+                                "Keep current session"
+                            },
+                        )
+                        .hint(KEEP_SESSION_HINT, HintKey::None)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.keep_chat_instruction_session(&keep_chat, cx)
+                        })),
+                    )
+                })
+                .when_some(confirm, |el, warning| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "chat-header-instruction-apply-warning".into())
+                            .text_color(theme.warning)
+                            .child(SharedString::from(warning)),
+                    )
+                    .child(
+                        link("chat-header-instructions-apply-confirm", "Apply").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.confirm_apply_chat_instructions(&confirm_chat, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        link("chat-header-instructions-apply-cancel", "Cancel").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.cancel_apply_chat_instructions(&cancel_chat, cx)
+                            }),
+                        ),
+                    )
+                })
                 .when_some(error, |el, error| {
                     el.child(
                         div()
@@ -387,11 +510,98 @@ impl Shell {
     // Apply
     // ----------------------------------------------------------------------
 
+    /// Apply, unless the Chat's harness would need a fresh session for it:
+    /// then the consequence is shown first (Apply / Cancel) and nothing is
+    /// written until [`Self::confirm_apply_chat_instructions`].
+    pub(crate) fn apply_chat_instructions(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let warning = fresh_session_apply_warning(self.state.read(cx), chat_id);
+        if let Some(warning) = warning {
+            let entry = self
+                .instruction_apply
+                .entry(chat_id.to_owned())
+                .or_default();
+            if entry.in_flight {
+                return;
+            }
+            entry.confirm = Some(warning);
+            entry.error = None;
+            entry.done = None;
+            cx.notify();
+            return;
+        }
+        self.run_apply_chat_instructions(chat_id, cx);
+    }
+
+    /// Apply anyway, after the fresh-session warning.
+    pub(crate) fn confirm_apply_chat_instructions(
+        &mut self,
+        chat_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self.instruction_apply.get_mut(chat_id) {
+            entry.confirm = None;
+        }
+        self.run_apply_chat_instructions(chat_id, cx);
+    }
+
+    /// Cancel the fresh-session warning: nothing was written.
+    pub(crate) fn cancel_apply_chat_instructions(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        if let Some(entry) = self.instruction_apply.get_mut(chat_id) {
+            entry.confirm = None;
+        }
+        cx.notify();
+    }
+
+    /// Keep current session: `keepInstructionSession` reverts the Chat's
+    /// selection to what its Execution Session received (or to none), so
+    /// the next message continues the conversation. The drift notice stays.
+    pub(crate) fn keep_chat_instruction_session(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let selected = chat_instruction_context(self.state.read(cx), chat_id)
+            .and_then(|context| context.state?.selected_revision_id)
+            .unwrap_or_default();
+        let actions = self.state.read(cx).work_outline_actions();
+        let entry = self
+            .instruction_apply
+            .entry(chat_id.to_owned())
+            .or_default();
+        if entry.in_flight || entry.keeping {
+            return;
+        }
+        let operation_id = entry.keep_op.id_for(&format!("{chat_id}\n{selected}"));
+        entry.keeping = true;
+        entry.error = None;
+        entry.done = None;
+        entry.confirm = None;
+        let task = actions.keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+            chat_id: chat_id.to_owned(),
+            operation_id,
+        });
+        cx.notify();
+        let chat_id = chat_id.to_owned();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                let entry = this.instruction_apply.entry(chat_id.clone()).or_default();
+                entry.keeping = false;
+                match result {
+                    Ok(_) => {
+                        entry.keep_op = OperationSlot::default();
+                        entry.done = Some("Kept \u{b7} this session continues as it is");
+                    }
+                    Err(error) => entry.error = Some(instruction_error_text(&error)),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Apply the Chat's item's current effective instructions to the Chat:
     /// `createInstructionRevision`, then `applyInstructionRevision` with
     /// reason `explicit`. A running Turn is never touched; the revision takes
     /// effect at the next Turn (contract 5.7).
-    pub(crate) fn apply_chat_instructions(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+    fn run_apply_chat_instructions(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let (context, working) = {
             let state = self.state.read(cx);
             (
@@ -846,7 +1056,14 @@ pub(super) fn compare_card(
 ) -> AnyElement {
     let apply = shell.instruction_apply.get(&dialog.chat_id);
     let in_flight = apply.is_some_and(|apply| apply.in_flight);
+    let keeping = apply.is_some_and(|apply| apply.keeping);
+    let confirm = apply.and_then(|apply| apply.confirm.clone());
     let blocker = instruction_host_blocker(shell.state.read(cx), &dialog.chat_id);
+    let keep = chat_instruction_context(shell.state.read(cx), &dialog.chat_id)
+        .and_then(|context| context.state)
+        .is_some_and(|chat_state| {
+            can_keep_current_session(shell.state.read(cx), &dialog.chat_id, &chat_state)
+        });
     // The Apply-time error repeats the blocker; show it once.
     let apply_error = apply
         .and_then(|apply| apply.error.clone())
@@ -865,6 +1082,9 @@ pub(super) fn compare_card(
         ComparePhase::Ready(comparison) => revision_diff::render_comparison(comparison, theme),
     };
     let apply_chat = dialog.chat_id.clone();
+    let keep_chat = dialog.chat_id.clone();
+    let confirm_chat = dialog.chat_id.clone();
+    let cancel_chat = dialog.chat_id.clone();
     popover::dialog_card(theme)
         .w(px(560.0))
         .debug_selector(|| "instruction-compare".into())
@@ -917,6 +1137,13 @@ pub(super) fn compare_card(
                 theme.text_muted,
             ))
         })
+        .when_some(confirm.clone(), |el, warning| {
+            el.child(small_note(
+                "instruction-compare-apply-warning",
+                warning,
+                theme.warning,
+            ))
+        })
         .child(
             div()
                 .mt(px(16.0))
@@ -931,13 +1158,56 @@ pub(super) fn compare_card(
                             this.resolve_work_outline_modal(false, window, cx);
                         })),
                 )
-                .child(if blocker.is_some() {
+                .when(keep, |el| {
+                    el.child(
+                        popover::btn_ghost(
+                            theme,
+                            if keeping {
+                                "Keeping\u{2026}"
+                            } else {
+                                "Keep current session"
+                            },
+                            "instruction-compare-keep",
+                        )
+                        .id("instruction-compare-keep")
+                        .debug_selector(|| "instruction-compare-keep".into())
+                        .hint(KEEP_SESSION_HINT, HintKey::None)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.keep_chat_instruction_session(&keep_chat, cx)
+                        })),
+                    )
+                })
+                .child(if confirm.is_some() {
+                    // The fresh-session consequence is showing: confirm or
+                    // cancel it (nothing was written yet).
+                    div()
+                        .flex()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(theme, "Cancel", "instruction-compare-apply-cancel")
+                                .id("instruction-compare-apply-cancel")
+                                .debug_selector(|| "instruction-compare-apply-cancel".into())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_apply_chat_instructions(&cancel_chat, cx)
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(theme, "Apply")
+                                .id("instruction-compare-apply-confirm")
+                                .debug_selector(|| "instruction-compare-apply-confirm".into())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.confirm_apply_chat_instructions(&confirm_chat, cx)
+                                })),
+                        )
+                        .into_any_element()
+                } else if blocker.is_some() {
                     // The host can't deliver instructions: visibly inert.
                     popover::btn_primary(theme, "Apply")
                         .id("instruction-compare-apply-disabled")
                         .debug_selector(|| "instruction-compare-apply-disabled".into())
                         .opacity(0.4)
                         .cursor_default()
+                        .into_any_element()
                 } else {
                     popover::btn_primary(
                         theme,
@@ -953,6 +1223,7 @@ pub(super) fn compare_card(
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.apply_chat_instructions(&apply_chat, cx)
                     }))
+                    .into_any_element()
                 }),
         )
         .into_any_element()
@@ -1474,6 +1745,151 @@ mod tests {
         assert_eq!(blocker(&shell, cx), None);
         draw(cx);
         assert!(cx.debug_bounds("instruction-compare-apply").is_some());
+    }
+
+    /// Make `CHAT_API` a Codex Chat with an existing native session on a
+    /// host that delivers instructions to Codex.
+    fn codex_with_session(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, session: bool) {
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.chats[0].config = Some(zeron_proto::ChatConfig {
+                    harness: zeron_proto::HarnessId::Codex,
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    auto_approve: false,
+                });
+                state.chats[0].harness_session_id = session.then(|| "thread-1".into());
+                state.devices[0].capabilities.push(
+                    zeron_proto::capabilities::work_outline_instruction_envelope_for(
+                        zeron_proto::HarnessId::Codex,
+                    ),
+                );
+            });
+        });
+    }
+
+    fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+        let at = cx.debug_bounds(selector).expect(selector).center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+        draw(cx);
+    }
+
+    #[gpui::test]
+    fn apply_on_a_codex_chat_with_a_session_warns_before_writing(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(&shell, cx, fixture::snapshot("s1"), ok_ids);
+        codex_with_session(&shell, cx, true);
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        click(cx, "instruction-compare-apply");
+        assert!(calls.lock().unwrap().is_empty(), "nothing written yet");
+        let warning = shell.read_with(cx, |shell, _| {
+            shell.instruction_apply[CHAT_API].confirm.clone().unwrap()
+        });
+        assert_eq!(
+            warning,
+            "Applying starts a fresh Codex session on your next message (this conversation\u{2019}s \
+             context won\u{2019}t carry over). Apply anyway?"
+        );
+        assert!(
+            cx.debug_bounds("instruction-compare-apply-warning")
+                .is_some()
+        );
+        assert!(cx.debug_bounds("instruction-compare-apply").is_none());
+
+        // Cancel writes nothing.
+        click(cx, "instruction-compare-apply-cancel");
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(
+            cx.debug_bounds("instruction-compare-apply-warning")
+                .is_none()
+        );
+
+        // Apply anyway writes the revision and the application.
+        click(cx, "instruction-compare-apply");
+        click(cx, "instruction-compare-apply-confirm");
+        let ops: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c["op"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            ops,
+            ["createInstructionRevision", "applyInstructionRevision"]
+        );
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.instruction_apply[CHAT_API].done, Some("Applied"));
+        });
+
+        // Without a native session there is nothing to lose: no warning.
+        codex_with_session(&shell, cx, false);
+        shell.update(cx, |shell, cx| shell.apply_chat_instructions(CHAT_API, cx));
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 4);
+        // Claude keeps the conversation: no warning either.
+        assert!(!needs_fresh_session(zeron_proto::HarnessId::ClaudeCode));
+    }
+
+    #[gpui::test]
+    fn keep_current_session_recovers_a_stuck_codex_chat(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let mut snapshot = fixture::snapshot("s1");
+        // Selected r-api-old, but the session never received instructions.
+        snapshot.chat_instruction_states[0].delivered_revision_id = None;
+        snapshot.chat_instruction_states[0].delivered_revision_hash = None;
+        let calls = seed(&shell, cx, snapshot, ok_ids);
+        // Not on a Chat without a native session.
+        codex_with_session(&shell, cx, false);
+        shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("instruction-compare-keep").is_none());
+
+        codex_with_session(&shell, cx, true);
+        draw(cx);
+        click(cx, "instruction-compare-keep");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["op"], "keepInstructionSession");
+        assert_eq!(calls[0]["chatId"], CHAT_API);
+        assert!(
+            calls[0]["operationId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+        shell.read_with(cx, |shell, _| {
+            let apply = &shell.instruction_apply[CHAT_API];
+            assert!(!apply.keeping);
+            assert_eq!(
+                apply.done,
+                Some("Kept \u{b7} this session continues as it is")
+            );
+        });
+        // The header keeps the drift notice (Apply stays available) and
+        // offers Keep current session too.
+        shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            assert!(
+                shell
+                    .render_chat_instruction_status(CHAT_API, &theme, cx)
+                    .is_some()
+            );
+            let state = shell.state.read(cx);
+            let chat_state = chat_instruction_context(state, CHAT_API)
+                .unwrap()
+                .state
+                .unwrap();
+            assert!(chat_state.drift);
+            assert!(can_keep_current_session(state, CHAT_API, &chat_state));
+            // Delivered == selected: nothing to keep.
+            let mut delivered = chat_state.clone();
+            delivered.delivered_revision_id = delivered.selected_revision_id.clone();
+            assert!(!can_keep_current_session(state, CHAT_API, &delivered));
+        });
     }
 
     #[gpui::test]

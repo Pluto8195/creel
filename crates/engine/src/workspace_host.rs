@@ -812,6 +812,28 @@ impl WorkspaceHost {
         })
     }
 
+    /// `keepInstructionSession` with this device's own delivery record
+    /// (`kept`, see `SessionsEngine::kept_instruction_session`; `None` = use
+    /// the reported Execution Session in the registry). Ledger keys as
+    /// [`Self::work_outline_mutate`].
+    pub fn work_outline_keep_session(
+        &self,
+        params: &zeron_proto::KeepInstructionSessionParams,
+        kept: Option<Option<zeron_proto::InstructionRevisionPin>>,
+        actor: &zeron_proto::WorkOutlineActor,
+        ledger_keys: &[String],
+    ) -> Result<zeron_proto::WorkOutlineMutateReply, zeron_proto::WorkOutlineError> {
+        let now = Utc::now().timestamp_millis();
+        self.mutate(|doc| {
+            let id = doc.keep_instruction_session(params, kept, actor, now)?;
+            lock(&self.inner.pending_ledger_marks).extend(ledger_keys.iter().cloned());
+            Ok(zeron_proto::WorkOutlineMutateReply {
+                application_id: Some(id),
+                ..Default::default()
+            })
+        })
+    }
+
     /// The live work item `chat_id` is assigned to in `space_id` (the lookup
     /// the agent policy uses; one row read, no materialization).
     pub fn chat_assigned_work_item(&self, chat_id: &str, space_id: &str) -> Option<String> {

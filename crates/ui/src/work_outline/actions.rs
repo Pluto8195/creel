@@ -500,6 +500,16 @@ impl WorkOutlineActions {
         self.mutate(WorkOutlineMutation::ApplyInstructionRevision(params))
     }
 
+    /// Revert a Chat's selection to what its Execution Session received (or
+    /// to no instructions), so the next send continues that session; reply
+    /// carries `application_id`.
+    pub(crate) fn keep_instruction_session(
+        &self,
+        params: zeron_proto::KeepInstructionSessionParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::KeepInstructionSession(params))
+    }
+
     // ── Milestone 4: user action requests and instruction proposals ──
 
     /// Resolve one request (and its open duplicates); reply `{}`.

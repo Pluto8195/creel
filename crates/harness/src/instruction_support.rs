@@ -40,6 +40,17 @@ pub enum InstructionReplaceStrategy {
     FreshSession,
 }
 
+/// The replace strategy a harness declares when it supports instruction
+/// delivery, without probing its CLI (clients use it to warn before an
+/// Apply that will need a fresh session). `None`: no instruction delivery.
+pub fn declared_replace_strategy(harness: HarnessId) -> Option<InstructionReplaceStrategy> {
+    match harness {
+        HarnessId::ClaudeCode => Some(InstructionReplaceStrategy::RespawnResume),
+        HarnessId::Codex => Some(InstructionReplaceStrategy::FreshSession),
+        _ => None,
+    }
+}
+
 /// An adapter's declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstructionSupport {
@@ -338,5 +349,30 @@ mod adapter_matrix_tests {
                 harness.id()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod declared_strategy_tests {
+    use super::*;
+
+    #[test]
+    fn declared_strategies_match_the_adapters() {
+        assert_eq!(
+            declared_replace_strategy(HarnessId::Codex),
+            Some(InstructionReplaceStrategy::FreshSession)
+        );
+        assert!(matches!(
+            crate::codex::instructions::parse_version("codex-cli 9.0.0"),
+            InstructionSupport::Supported {
+                replace_strategy: InstructionReplaceStrategy::FreshSession,
+                ..
+            }
+        ));
+        assert_eq!(
+            declared_replace_strategy(HarnessId::ClaudeCode),
+            Some(InstructionReplaceStrategy::RespawnResume)
+        );
+        assert_eq!(declared_replace_strategy(HarnessId::Cursor), None);
     }
 }

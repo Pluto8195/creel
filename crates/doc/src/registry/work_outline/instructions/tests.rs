@@ -1279,3 +1279,135 @@ fn execution_session_reports_are_idempotent_and_surface_as_delivery() {
     );
     assert_eq!(doc.row_state(KIND_SESSIONS, "chat-1"), RowState::Tombstoned);
 }
+
+// ── keepInstructionSession ──────────────────────────────────────────────────
+
+fn keep(doc: &mut RegistryDoc, op: &str, chat_id: &str) -> Outcome<String> {
+    apply(
+        doc,
+        WorkOutlineMutation::KeepInstructionSession(KeepInstructionSessionParams {
+            chat_id: chat_id.into(),
+            operation_id: op.into(),
+        }),
+    )
+    .map(|reply| reply.application_id.unwrap())
+}
+
+#[test]
+fn keep_session_selects_the_reported_revision_and_a_later_apply_wins() {
+    let (mut doc, a, _b, c) = three_levels();
+    instruct(&mut doc, "i", Some(&a), "rule");
+    let old = revise(&mut doc, "rev-old", &c).unwrap();
+    let old_hash = doc.instruction_revision(&old).unwrap().body.hash;
+    apply_revision(&mut doc, "app-old", "chat-1", &old).unwrap();
+    doc.report_execution_session("chat-1", &report(Some(&old), &old_hash), NOW)
+        .unwrap();
+    instruct(&mut doc, "i2", Some(&a), "second rule");
+    let new = revise(&mut doc, "rev-new", &c).unwrap();
+    apply_revision(&mut doc, "app-new", "chat-1", &new).unwrap();
+    assert_eq!(
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        new
+    );
+
+    // Keep: the selection reverts to what the session received.
+    let id = keep(&mut doc, "keep-1", "chat-1").unwrap();
+    assert_eq!(id, derive_id("keep-1", roles::APPLICATION));
+    let pin = doc.selected_instruction_revision("chat-1").unwrap();
+    assert_eq!(pin.revision_id, old);
+    assert_eq!(pin.revision_hash, old_hash);
+    let row = doc
+        .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+        .unwrap();
+    assert_eq!(row.fields["reason"], json!("keepSession"));
+    let s = snap(&doc);
+    let chat = state(&s, "chat-1");
+    assert_eq!(chat.selected_revision_id.as_deref(), Some(old.as_str()));
+    assert!(chat.drift, "the newer instructions still show as drift");
+
+    // Idempotent replay: same id, nothing written, even after the report changed.
+    doc.report_execution_session("chat-1", &report(None, ""), NOW)
+        .unwrap();
+    let pending = doc.pending_len();
+    assert_eq!(keep(&mut doc, "keep-1", "chat-1").unwrap(), id);
+    assert_eq!(doc.pending_len(), pending);
+    assert_eq!(
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        old
+    );
+
+    // A later Apply sorts after the keep and wins.
+    apply_revision(&mut doc, "app-again", "chat-1", &new).unwrap();
+    assert_eq!(
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        new
+    );
+}
+
+#[test]
+fn keep_session_without_instructions_selects_none() {
+    let (mut doc, a, _b, c) = three_levels();
+    instruct(&mut doc, "i", Some(&a), "rule");
+    let revision = revise(&mut doc, "rev", &c).unwrap();
+    apply_revision(&mut doc, "app", "chat-1", &revision).unwrap();
+    // No Execution Session report (the session started before any selection).
+    let id = keep(&mut doc, "keep-none", "chat-1").unwrap();
+    assert!(doc.selected_instruction_revision("chat-1").is_none());
+    let row = doc
+        .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+        .unwrap();
+    assert_eq!(row.fields["revisionId"], json!(""));
+    assert!(!row.fields.contains_key("revisionHash"));
+    let s = snap(&doc);
+    let chat = state(&s, "chat-1");
+    assert!(chat.selected_revision_id.is_none());
+    assert!(chat.selected_revision_integrity.is_none());
+    assert!(chat.drift, "effective instructions with no selection drift");
+    // The engine's own delivery record wins over the registry report.
+    let kept = doc
+        .keep_instruction_session(
+            &KeepInstructionSessionParams {
+                chat_id: "chat-1".into(),
+                operation_id: "keep-host".into(),
+            },
+            Some(Some(InstructionRevisionPin {
+                revision_id: revision.clone(),
+                revision_hash: String::new(),
+            })),
+            &actor("dev-a"),
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(kept, derive_id("keep-host", roles::APPLICATION));
+    assert_eq!(
+        doc.selected_instruction_revision("chat-1")
+            .unwrap()
+            .revision_id,
+        revision
+    );
+    // An empty revision id is still dropped for any other reason.
+    let mut fields = doc
+        .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+        .unwrap()
+        .fields;
+    fields.insert("reason".into(), json!("explicit"));
+    let row = RegistryRow {
+        id: "x".into(),
+        fields,
+        ..doc
+            .row(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id)
+            .unwrap()
+    };
+    assert!(super::super::materialize::decode_application(&row).is_none());
+    // Projectless and unknown Chats are refused.
+    assert_eq!(
+        keep(&mut doc, "keep-ghost", "ghost").unwrap_err().code,
+        WorkOutlineErrorCode::NotFound
+    );
+}

@@ -523,14 +523,19 @@ pub struct InstructionRevisionView {
 }
 
 /// Why a revision was selected for a Chat. Wire: `launch`, `explicit`,
-/// `forkInherit` (the registry row spelling `fork-inherit` is accepted).
-/// Lenient: unknown reads as `explicit`.
+/// `forkInherit` (the registry row spelling `fork-inherit` is accepted),
+/// `keepSession`. Lenient: unknown reads as `explicit`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InstructionApplicationReason {
     Launch,
     #[serde(alias = "fork-inherit")]
     ForkInherit,
+    /// `keepInstructionSession`: the selection reverts to what the Chat's
+    /// Execution Session actually received, so the next Turn continues that
+    /// session. An application row with this reason and an empty
+    /// `revisionId` means "no Work Outline instructions selected".
+    KeepSession,
     /// Declared last because `#[serde(other)]` must sit on the last variant.
     #[default]
     #[serde(other)]

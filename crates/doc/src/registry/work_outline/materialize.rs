@@ -487,15 +487,19 @@ pub(crate) struct DecodedApplication {
     pub revision_hash: Option<String>,
 }
 
-/// `None` when the row cannot name a Chat and a revision.
+/// `None` when the row cannot name a Chat and a revision. A `keepSession`
+/// row may name no revision: it selects "no Work Outline instructions".
 pub(crate) fn decode_application(row: &RegistryRow) -> Option<DecodedApplication> {
     let chat_id = str_field(row, "chatId").filter(|c| !c.is_empty())?;
-    let revision_id = str_field(row, "revisionId").filter(|r| !r.is_empty())?;
     let reason = row
         .fields
         .get("reason")
         .and_then(|v| serde_json::from_value::<InstructionApplicationReason>(v.clone()).ok())
         .unwrap_or_default();
+    let revision_id = str_field(row, "revisionId").unwrap_or_default();
+    if revision_id.is_empty() && reason != InstructionApplicationReason::KeepSession {
+        return None;
+    }
     let turn_boundary = row
         .fields
         .get("turnBoundary")
@@ -550,11 +554,16 @@ pub(crate) fn newest_application<'a>(
 /// application recorded when it was written (falling back to the stored
 /// one), so delivery of a missing or corrupt revision fails closed on the
 /// integrity check. Returns the application, its integrity, and the hash.
+/// A newest `keepSession` application without a revision means the Chat has
+/// NO selected revision (`None`), whatever earlier applications selected.
 pub(crate) fn select_application<'a>(
     applications: impl IntoIterator<Item = &'a DecodedApplication>,
     check: impl FnOnce(&str) -> RevisionCheck,
 ) -> Option<(&'a DecodedApplication, SelectedRevisionIntegrity, String)> {
     let application = newest_application(applications)?;
+    if application.view.revision_id.is_empty() {
+        return None;
+    }
     let recorded = application.revision_hash.clone();
     let (integrity, hash) = match check(&application.view.revision_id) {
         RevisionCheck::Valid(hash) => (SelectedRevisionIntegrity::Ok, hash),
