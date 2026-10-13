@@ -1412,7 +1412,14 @@ impl EngineRpc {
                     .await;
                 return Ok(reply);
             }
-            Err(error) if error.code == PrReviewErrorCode::RepoNotFound && !routed => error,
+            // Only an unpinned start looks on other devices.
+            Err(error)
+                if error.code == PrReviewErrorCode::RepoNotFound
+                    && !routed
+                    && p.space_id.is_none() =>
+            {
+                error
+            }
             Err(error) => return Err(fail(error)),
         };
         // Not here: ask the other devices that own Spaces.
