@@ -199,6 +199,10 @@ impl OutlineView {
         hidden: bool,
         cx: &mut Context<Self>,
     ) {
+        if hidden && !self.model.multi_space {
+            // One Space has no root row to hide (or to unhide later).
+            return;
+        }
         let changed = if hidden {
             self.hidden_spaces.insert(space_id.to_string())
         } else {

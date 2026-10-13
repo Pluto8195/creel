@@ -6476,6 +6476,7 @@ impl Shell {
                         .child(
                             popover::btn_ghost(&theme, "Cancel", "delete-space-cancel")
                                 .id("delete-space-cancel")
+                                .debug_selector(|| "delete-space-cancel".into())
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.delete_space_confirm = None;
                                     cx.notify();
@@ -6484,6 +6485,7 @@ impl Shell {
                         .child(
                             popover::btn_danger(&theme, "Remove")
                                 .id("delete-space-confirm")
+                                .debug_selector(|| "delete-space-confirm".into())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_space(space_id.clone(), cx)
                                 })),

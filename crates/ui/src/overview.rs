@@ -14775,4 +14775,9 @@ mod logic_tests {
     mod editor_skills_tests {
         include!("work_outline/editor_skills_tests.rs");
     }
+
+    /// Space-root reorder and hide / unhide; shares this module's fixtures.
+    mod space_roots_tests {
+        include!("work_outline/space_roots_tests.rs");
+    }
 }

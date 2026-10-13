@@ -2341,6 +2341,10 @@ impl OutlineView {
             let collapsed = row.collapsed;
             div()
                 .id(SharedString::from(format!("outline-disclosure-{key}")))
+                .debug_selector({
+                    let selector = format!("outline-disclosure-{key}");
+                    move || selector.clone()
+                })
                 .flex_none()
                 .size(px(14.0))
                 .flex()
