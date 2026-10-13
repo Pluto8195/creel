@@ -242,6 +242,11 @@ impl RequiredActionsList {
         cx.notify();
     }
 
+    #[cfg(test)]
+    pub(crate) fn note_input(&self) -> Entity<ComposerInput> {
+        self.note_input.clone()
+    }
+
     /// Tests drive the note through this.
     #[cfg(test)]
     pub(crate) fn set_note(&mut self, text: &str, cx: &mut Context<Self>) {
