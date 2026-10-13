@@ -485,3 +485,331 @@ fn agent_created_items_show_their_chat(cx: &mut gpui::TestAppContext) {
         assert!(o.chat_panel_open);
     });
 }
+
+// --------------------------------------------------------------------------
+// Reply & resolve
+// --------------------------------------------------------------------------
+
+fn is_reply_send(params: &serde_json::Value) -> bool {
+    params.get("prompt").is_some() || params.get("holdForTurnEnd").is_some()
+}
+
+fn is_resolve(params: &serde_json::Value) -> bool {
+    params["op"] == "resolveUserActionRequest"
+}
+
+fn sends(calls: &OutlineCalls) -> Vec<serde_json::Value> {
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| is_reply_send(p))
+        .cloned()
+        .collect()
+}
+
+fn resolves(calls: &OutlineCalls) -> Vec<serde_json::Value> {
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| is_resolve(p))
+        .cloned()
+        .collect()
+}
+
+fn turn_reply(state: &str, detail: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "chatId": CHAT_UI,
+        "messageId": "m-reply",
+        "commandId": "c-reply",
+        "state": state,
+        "detail": detail,
+    })
+}
+
+/// The host accepts the reply Turn and the resolve.
+fn reply_started(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    if params.get("prompt").is_some() {
+        Ok(turn_reply("started", None))
+    } else if params.get("holdForTurnEnd").is_some() {
+        Ok(serde_json::json!({"id": "q-reply"}))
+    } else {
+        reply_ok(params)
+    }
+}
+
+const PALETTE_REPLY: &str = "Re: \"Approve the color palette\": Picked palette B";
+
+/// Reply & resolve: the row's primary action opens the note; Reply stays
+/// disabled until a note is typed; Enter sends exactly one message with the
+/// formatted text to the origin Chat, then resolves with the same note under
+/// its own derived operation id; the answered row offers Open chat.
+#[gpui::test]
+fn reply_and_resolve_sends_one_message_then_resolves(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), reply_started);
+    let list = open_global(&overview, vcx);
+    click(vcx, format!("required-actions-reply-{}", m4::R_UI));
+    assert!(vcx.debug_bounds("required-actions-note").is_some());
+
+    // Empty note: Reply & resolve is disabled (click and direct call alike).
+    click(vcx, "required-actions-reply-submit".into());
+    list.update(vcx, |list, cx| list.submit_reply(cx));
+    vcx.run_until_parked();
+    assert!(calls.lock().unwrap().is_empty());
+
+    // Type the note and press Enter.
+    let input = list.read_with(vcx, |list, _| list.note_input());
+    let focus = input.read_with(vcx, |input, cx| gpui::Focusable::focus_handle(input, cx));
+    vcx.update(|window, cx| {
+        crate::composer::init(cx, crate::settings::ComposerSendBehavior::default());
+        window.activate_window();
+        window.focus(&focus, cx);
+    });
+    draw(vcx);
+    vcx.simulate_input("Picked palette B");
+    draw(vcx);
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    draw(vcx);
+
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2, "one send, one resolve: {recorded:?}");
+    let send = &recorded[0];
+    assert_eq!(send["chatId"], CHAT_UI);
+    assert_eq!(send["prompt"]["text"], PALETTE_REPLY);
+    let reply_op = send["operationId"].as_str().unwrap().to_owned();
+    let resolve = &recorded[1];
+    assert!(is_resolve(resolve));
+    assert_eq!(resolve["userActionRequestId"], m4::R_UI);
+    assert_eq!(resolve["note"], "Picked palette B");
+    assert_eq!(
+        resolve["operationId"],
+        zeron_proto::work_outline::derive_id(
+            &reply_op,
+            crate::work_outline::required_actions::REPLY_RESOLVE_ROLE
+        )
+        .as_str()
+    );
+    list.read_with(vcx, |list, _| {
+        assert!(list.resolving.is_none());
+        assert!(list.replies.is_empty());
+        assert!(list.error.is_none());
+    });
+    assert!(
+        vcx.debug_bounds("required-actions-replied-open-chat")
+            .is_some()
+    );
+
+    // The host confirms the resolve: the history row links the Chat.
+    let mut resolved = m4::snapshot("s1");
+    for request in &mut resolved.user_action_requests {
+        if request.work_item_id == UI {
+            m4::resolve(request, m4::NOW + 20, Some("Picked palette B"));
+        }
+    }
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(resolved)), cx)
+    });
+    draw(vcx);
+    click(vcx, "required-actions-history-toggle".into());
+    assert!(
+        row_bounds(
+            vcx,
+            format!("required-actions-history-open-chat-{}", m4::R_UI)
+        )
+        .is_some()
+    );
+    select_chat(&overview, vcx, CHAT_UI);
+    click(
+        vcx,
+        format!("required-actions-history-open-chat-{}", m4::R_UI),
+    );
+    overview.read_with(vcx, |o, _| assert!(o.chat_panel_open));
+}
+
+/// A refused send never resolves: a capability error (the host can't
+/// deliver the Chat's instructions) and a rejected Turn (a context reset
+/// waiting on confirmation) show their message; a retry of the same note
+/// reuses the reply's operation id.
+#[gpui::test]
+fn reply_send_rejections_keep_the_request_open(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let attempt = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = attempt.clone();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), move |params| {
+        if params.get("prompt").is_none() {
+            return reply_ok(params);
+        }
+        match counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Err(zeron_rpc::RpcError::Failed(
+                zeron_proto::WorkOutlineError::new(
+                    zeron_proto::WorkOutlineErrorCode::Capability,
+                    "Update Zeron on the Chat's device to deliver Work Outline instructions",
+                )
+                .to_wire_message(),
+            )),
+            _ => Ok(turn_reply(
+                "rejected",
+                Some("Codex needs a fresh session for the new instructions"),
+            )),
+        }
+    });
+    let list = open_global(&overview, vcx);
+    let reply = |list: &Entity<crate::work_outline::required_actions_view::RequiredActionsList>,
+                 vcx: &mut gpui::VisualTestContext| {
+        list.update(vcx, |list, cx| {
+            list.reply_and_resolve(m4::R_UI.into(), "Yes".into(), cx)
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+    };
+
+    reply(&list, vcx);
+    let error = list.read_with(vcx, |list, _| list.error.clone()).unwrap();
+    assert!(
+        error.contains("deliver Work Outline instructions"),
+        "{error}"
+    );
+    assert!(vcx.debug_bounds("required-actions-error").is_some());
+    assert!(resolves(&calls).is_empty(), "capability error: no resolve");
+
+    reply(&list, vcx);
+    let error = list.read_with(vcx, |list, _| list.error.clone()).unwrap();
+    assert!(error.contains("fresh session"), "{error}");
+    assert!(
+        vcx.debug_bounds("required-actions-error-open-chat")
+            .is_some(),
+        "the Chat holds the reset confirmation"
+    );
+    assert!(resolves(&calls).is_empty(), "rejected Turn: no resolve");
+    let sent = sends(&calls);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0]["operationId"], sent[1]["operationId"]);
+    list.read_with(vcx, |list, _| {
+        assert!(
+            list.replies
+                .get(m4::R_UI)
+                .is_some_and(|intent| !intent.sent)
+        )
+    });
+}
+
+/// Sent but not resolved: the retry only resolves (no second message), with
+/// the same derived resolve operation id.
+#[gpui::test]
+fn reply_retry_after_a_failed_resolve_only_resolves(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = fail.clone();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), move |params| {
+        if is_resolve(params) && flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(zeron_rpc::RpcError::Failed(
+                "work-outline/invalid: try again".into(),
+            ));
+        }
+        reply_started(params)
+    });
+    let list = open_global(&overview, vcx);
+    for _ in 0..2 {
+        list.update(vcx, |list, cx| {
+            list.reply_and_resolve(m4::R_UI.into(), "Picked palette B".into(), cx)
+        });
+        vcx.run_until_parked();
+    }
+    let sent = sends(&calls);
+    assert_eq!(sent.len(), 1, "the retry never sends twice");
+    assert_eq!(sent[0]["prompt"]["text"], PALETTE_REPLY);
+    let resolved = resolves(&calls);
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0]["operationId"], resolved[1]["operationId"]);
+    assert_eq!(resolved[1]["note"], "Picked palette B");
+    list.read_with(vcx, |list, _| {
+        assert!(list.error.is_none());
+        assert!(list.replies.is_empty());
+    });
+}
+
+/// A busy origin Chat gets the reply as a queued row held for the turn end
+/// (the composer's queue send), then the request resolves.
+#[gpui::test]
+fn reply_to_a_busy_chat_queues_then_resolves(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), reply_started);
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.update(vcx, |state, _| {
+        state.begin_pending_send(CHAT_UI, "m-busy", chrono::Utc::now())
+    });
+    let list = open_global(&overview, vcx);
+    list.update(vcx, |list, cx| {
+        list.reply_and_resolve(m4::R_UI.into(), "Picked palette B".into(), cx)
+    });
+    vcx.run_until_parked();
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert_eq!(recorded[0]["chatId"], CHAT_UI);
+    assert_eq!(recorded[0]["text"], PALETTE_REPLY);
+    assert_eq!(recorded[0]["holdForTurnEnd"], true);
+    assert!(is_resolve(&recorded[1]));
+}
+
+/// An unavailable origin Chat offers only Resolve: Reply & resolve is
+/// disabled (its row button opens nothing) and Enter resolves with the note.
+#[gpui::test]
+fn unavailable_chat_disables_reply_and_resolve_still_works(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), reply_started);
+    let list = open_global(&overview, vcx);
+    click(vcx, format!("required-actions-reply-{}", m4::R_API));
+    list.read_with(vcx, |list, _| assert!(list.resolving.is_none()));
+
+    click(vcx, format!("required-actions-resolve-{}", m4::R_API));
+    list.update(vcx, |list, cx| list.set_note("Went with OAuth", cx));
+    draw(vcx);
+    click(vcx, "required-actions-reply-submit".into());
+    list.update(vcx, |list, cx| {
+        list.reply_and_resolve(m4::R_API.into(), "Went with OAuth".into(), cx)
+    });
+    vcx.run_until_parked();
+    assert!(calls.lock().unwrap().is_empty(), "no reply can be sent");
+
+    // Enter falls back to Resolve.
+    list.update(vcx, |list, cx| list.submit_note(cx));
+    vcx.run_until_parked();
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert!(is_resolve(&recorded[0]));
+    assert_eq!(recorded[0]["userActionRequestId"], m4::R_API);
+    assert_eq!(recorded[0]["note"], "Went with OAuth");
+}
+
+/// Work Item Details embeds the same list: Reply & resolve works there and
+/// the section stays open (with Open chat) after its last request resolved.
+#[gpui::test]
+fn details_required_actions_offer_reply_and_resolve(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), reply_started);
+    let details = open_details(&overview, vcx, UI);
+    click(vcx, format!("required-actions-reply-{}", m4::R_UI));
+    let list = details.read_with(vcx, |d, _| d.required_actions_list());
+    list.update(vcx, |list, cx| list.set_note("Picked palette B", cx));
+    draw(vcx);
+    click(vcx, "required-actions-reply-submit".into());
+    assert_eq!(sends(&calls).len(), 1);
+    assert_eq!(resolves(&calls).len(), 1);
+    let mut resolved = m4::snapshot("s1");
+    for request in &mut resolved.user_action_requests {
+        if request.work_item_id == UI {
+            m4::resolve(request, m4::NOW + 20, Some("Picked palette B"));
+        }
+    }
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(resolved)), cx)
+    });
+    draw(vcx);
+    assert!(
+        vcx.debug_bounds("required-actions-replied-open-chat")
+            .is_some()
+    );
+}

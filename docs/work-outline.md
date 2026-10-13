@@ -321,8 +321,32 @@ instructions.
   its ancestors.
 - **Required actions** in the Outline toolbar lists every open request, oldest
   first, with its item, its originating Chat, and its age. Click **Open** to go to
-  the Chat, or **Resolve** (optionally with a note) to close the request.
-  Resolved requests are kept under **Resolved**.
+  the Chat. The same list appears in Work Item Details (the item and its
+  descendants) and in the Space root's details (the whole Space).
+- **Reply & resolve** answers the agent. Type your answer in the note box and
+  press Enter (or Cmd+Enter). Zeron sends it to the Chat that asked, as your
+  own message: `Re: "<request>": <your note>`, with the request cut to about
+  120 characters. Zeron resolves the request with the same note only after the
+  Chat accepts the message:
+  - If the agent is idle, the message starts its next turn.
+  - If the agent is busy, the message is queued until the turn ends, like a
+    message you queue from the composer.
+  - The message uses the Chat's selected instruction revision.
+  - If the Chat refuses the message, the request stays open and the error
+    shows. Reasons include a host that can't deliver the instructions, a
+    context reset waiting for your confirmation in the Chat, or an execution
+    setup that no longer validates. **Open chat** next to the error takes you
+    there.
+
+  Reply & resolve stays disabled until you type a note. Retrying never sends
+  a second message. If the message went out but the resolve failed, the retry
+  only resolves. After a reply, **Open chat** appears on the resolved
+  request.
+- **Resolve** closes a request without messaging the Chat. The note is
+  optional and is only recorded on the request. If the Chat that asked was
+  archived or deleted, Resolve is the only choice: Reply & resolve is
+  disabled, and its tooltip says why. Escape or **Cancel** closes the note
+  box. Resolved requests are kept under **Resolved**.
 - Zeron notifies you when an item goes from zero to one or more open requests:
   one notification per item, with retries deduplicated. Notifications follow your
   notification, background-only, and input-sound settings. Requests always
