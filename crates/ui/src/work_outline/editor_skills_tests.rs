@@ -9,12 +9,15 @@ use crate::work_outline::execution::fixture as execution_fixture;
 use crate::work_outline::required_actions::fixture as m4;
 
 /// Skill discovery (`ListCommands` params carry `harness`) answers two
-/// skills; every Work Outline call answers like [`reply_ok`].
+/// skills and three built-in commands; every Work Outline call answers like [`reply_ok`].
 fn reply_with_skills(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
     if params.get("harness").is_some() {
         return Ok(serde_json::json!([
             {"name": "code-review", "description": "Review a diff"},
             {"name": "open-pr", "description": "Open a PR"},
+            {"name": "compact", "description": "Compact the conversation"},
+            {"name": "clear", "description": "Clear the conversation"},
+            {"name": "model", "description": "Switch the model"},
         ]));
     }
     reply_ok(params)
@@ -102,8 +105,10 @@ fn instruction_editors_insert_skills_as_plain_text(cx: &mut gpui::TestAppContext
     assert_eq!(lists.len(), 1);
     assert_eq!(lists[0]["cwd"], "/work/alpha/flagship");
     assert_eq!(lists[0]["targetDeviceId"], "d");
+    // Only real skills: the built-in /compact, /clear, /model are dropped.
     assert_eq!(open_names(vcx, &skills), vec!["code-review", "open-pr"]);
     assert!(vcx.debug_bounds("skill-completion-row-0").is_some());
+    assert!(vcx.debug_bounds("skill-completion-row-2").is_none());
 
     // Esc closes the list, not the draft.
     vcx.simulate_keystrokes("escape");

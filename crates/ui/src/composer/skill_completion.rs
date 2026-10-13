@@ -51,6 +51,87 @@ impl SkillInsertion {
             Self::InstructionText => format!("`{name}` skill"),
         }
     }
+
+    /// Whether the list drops the harness's built-in commands: instructions
+    /// can only name real skills (an agent cannot run `/compact` from text),
+    /// while Start Chat's first message is a chat message and keeps them.
+    fn skills_only(self) -> bool {
+        matches!(self, Self::InstructionText)
+    }
+}
+
+/// Built-in harness commands (session controls, not skills). Discovery
+/// entries carry no kind field — `SlashCommand` is name / description /
+/// argument hint for every harness — so instruction editors filter by this
+/// list. Claude Code advertises its built-ins alongside user and project
+/// skills; ACP agents and opencode share the common session verbs; Codex
+/// discovery lists skills only.
+const BUILT_IN_COMMANDS: &[&str] = &[
+    "add-dir",
+    "agents",
+    "bashes",
+    "bug",
+    "clear",
+    "compact",
+    "config",
+    "context",
+    "copy",
+    "cost",
+    "doctor",
+    "effort",
+    "exit",
+    "export",
+    "extra-usage",
+    "fast",
+    "feedback",
+    "heapdump",
+    "help",
+    "hooks",
+    "ide",
+    "init",
+    "insights",
+    "install-github-app",
+    "keybindings",
+    "login",
+    "logout",
+    "mcp",
+    "memory",
+    "migrate-installer",
+    "model",
+    "new",
+    "output-style",
+    "permissions",
+    "plan",
+    "plugin",
+    "pr-comments",
+    "privacy-settings",
+    "quit",
+    "release-notes",
+    "rename",
+    "resume",
+    "review",
+    "rewind",
+    "sandbox",
+    "security-review",
+    "settings",
+    "share",
+    "skills",
+    "stats",
+    "status",
+    "statusline",
+    "tasks",
+    "terminal-setup",
+    "theme",
+    "todos",
+    "undo",
+    "upgrade",
+    "usage",
+    "vim",
+];
+
+/// Whether `name` is a built-in harness command rather than a skill.
+fn is_built_in_command(name: &str) -> bool {
+    BUILT_IN_COMMANDS.contains(&name)
 }
 
 /// Where the skill list comes from: the harness that would run the work and
@@ -314,13 +395,21 @@ impl SkillCompletion {
             .as_ref()
             .map(|token| token.query.clone())
             .unwrap_or_default();
+        let skills_only = self.insertion.skills_only();
         let filtered = {
-            let names: Vec<&str> = self
+            // Indices into the cached list of the entries this surface offers.
+            let offered: Vec<(usize, &str)> = self
                 .commands()
                 .iter()
-                .map(|command| command.name.as_str())
+                .enumerate()
+                .filter(|(_, command)| !(skills_only && is_built_in_command(&command.name)))
+                .map(|(ix, command)| (ix, command.name.as_str()))
                 .collect();
+            let names: Vec<&str> = offered.iter().map(|(_, name)| *name).collect();
             crate::popover::filter_indices(&query, &names)
+                .into_iter()
+                .map(|ix| offered[ix].0)
+                .collect::<Vec<_>>()
         };
         self.filtered = filtered;
         self.active = (!self.filtered.is_empty()).then_some(0);
@@ -449,7 +538,12 @@ impl Render for SkillCompletion {
             card = card.child(note(error, theme.danger_muted));
         } else if self.filtered.is_empty() {
             card = card.child(note(
-                if commands.is_empty() {
+                if commands.is_empty()
+                    || self
+                        .token
+                        .as_ref()
+                        .is_some_and(|token| token.query.is_empty())
+                {
                     "No skills found for this folder".into()
                 } else {
                     "No matching skills".into()
@@ -504,6 +598,23 @@ impl Render for SkillCompletion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_instruction_editors_drop_built_in_commands() {
+        assert!(SkillInsertion::InstructionText.skills_only());
+        assert!(!SkillInsertion::SlashCommand.skills_only());
+        for name in ["compact", "clear", "model", "init", "review"] {
+            assert!(is_built_in_command(name), "{name}");
+        }
+        for name in [
+            "code-review",
+            "open-pr",
+            "simplify",
+            "anthropic-skills:docx",
+        ] {
+            assert!(!is_built_in_command(name), "{name}");
+        }
+    }
 
     #[test]
     fn insertion_forms_match_their_surfaces() {

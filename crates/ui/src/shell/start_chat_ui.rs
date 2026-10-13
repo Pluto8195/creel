@@ -1099,6 +1099,7 @@ mod tests {
                 zeron_rpc::methods::LIST_COMMANDS => Ok(serde_json::json!([
                     {"name": "code-review", "description": "Review a diff"},
                     {"name": "open-pr", "description": "Open a PR"},
+                    {"name": "compact", "description": "Compact the conversation"},
                 ])),
                 _ => Ok(serde_json::json!({})),
             }
@@ -1551,7 +1552,11 @@ mod tests {
         assert_eq!(lists[0]["cwd"], "/work/alpha/flagship");
         assert_eq!(lists[0]["targetDeviceId"], "d");
         assert!(lists[0]["harness"].is_string());
-        assert_eq!(prompt_skills(&shell, cx), vec!["code-review", "open-pr"]);
+        // Start Chat keeps the harness's built-in commands.
+        assert_eq!(
+            prompt_skills(&shell, cx),
+            vec!["code-review", "open-pr", "compact"]
+        );
         assert!(cx.debug_bounds("skill-completion").is_some());
         assert!(cx.debug_bounds("skill-completion-row-1").is_some());
 

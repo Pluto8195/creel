@@ -1596,6 +1596,7 @@ mod tests {
                     return Ok(serde_json::json!([
                         {"name": "code-review", "description": "Review a diff"},
                         {"name": "open-pr"},
+                        {"name": "compact", "description": "Compact the conversation"},
                     ]));
                 }
                 ok_ids(params)
