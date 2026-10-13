@@ -116,6 +116,28 @@ async fn reasoning_preserves_summary_parts_and_item_boundaries_per_thread() {
 }
 
 #[tokio::test]
+async fn codex_visualize_references_reach_the_transcript_text_intact() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:visualize"), controls).await;
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let refs = zeron_proto::visualize::references(&text);
+    assert_eq!(refs.len(), 2, "{text:?}");
+    assert_eq!(refs[0].path, "/repo/work/chart.fragment.html");
+    assert_eq!(refs[0].title, "Chart");
+    assert!(!refs[0].wide);
+    assert_eq!(refs[1].path, "/repo/work/map.html");
+    assert!(refs[1].wide);
+    // The streamed message is not re-emitted from its completed item.
+    assert_eq!(text.matches("chart.fragment.html").count(), 1);
+}
+
+#[tokio::test]
 async fn happy_path_maps_deltas_items_usage_and_done() {
     let (controls, _steer, _token) = controls("Yes");
     let mut req = request("scenario:happy");

@@ -852,6 +852,43 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Recorded shape of a Codex visualize answer: the content reference is
+    /// private-use framed and token-chunked across deltas (no thread item of
+    /// its own). The driver must deliver its bytes unchanged so the shared
+    /// parser can surface it as a visualization row.
+    #[test]
+    fn visualize_reference_survives_streamed_and_completed_agent_messages() {
+        let payload = r#"{"path":"/repo/work/kit.fragment.html","mode":"wide","title":"Kit"}"#;
+        let full = format!("Here it is.\n\n\u{e200}visualize\u{e202}{payload}\u{e201}\n");
+        let (a, b) = full.split_at(full.find("visualize").unwrap() + 4);
+        let mut stream = ChildStream::default();
+        let mut streamed = String::new();
+        for (method, params) in [
+            ("item/agentMessage/delta", json!({"itemId":"m1","delta":a})),
+            ("item/agentMessage/delta", json!({"itemId":"m1","delta":b})),
+            (
+                "item/completed",
+                json!({"item":{"id":"m1","type":"agentMessage","text":full}}),
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"m2","type":"agentMessage","text":full}}),
+            ),
+        ] {
+            for event in stream.map("child", method, &params) {
+                if let AgentEvent::TextDelta { text } = event {
+                    streamed.push_str(&text);
+                }
+            }
+        }
+        assert_eq!(streamed, format!("{full}\n\n{full}\n\n"));
+        let refs = zeron_proto::visualize::references(&streamed);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].path, "/repo/work/kit.fragment.html");
+        assert_eq!(refs[0].title, "Kit");
+        assert!(refs[0].wide);
+    }
+
     #[test]
     fn reasoning_parts_preserve_chunking_and_existing_paragraph_breaks() {
         let mut stream = ReasoningStream::default();

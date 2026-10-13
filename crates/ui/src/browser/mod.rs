@@ -7,8 +7,11 @@ mod macos;
 use linux as native;
 #[cfg(target_os = "macos")]
 use macos as native;
+pub mod fragment;
+mod fragment_view;
 pub mod model;
 mod view;
+pub use fragment_view::{FragmentSource, FragmentView, file_url};
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use gpui::{
@@ -65,6 +68,8 @@ pub enum BrowserEvent {
     Changed,
     NewTab(Option<String>),
     Close,
+    /// Open this checkout-relative file's source in an editor tab.
+    ViewSource(String),
 }
 
 /// A window/profile's ephemeral website data, allocated on first navigation.
@@ -90,6 +95,8 @@ pub struct BrowserSurface {
     #[cfg(feature = "browser-fixture")]
     fixture_preview_open: std::rc::Rc<std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>>,
     presentation: Presentation,
+    /// Set when this tab shows a Codex visualization instead of a website.
+    fragment: Option<FragmentView>,
     #[cfg(target_os = "macos")]
     resize_inset: gpui::Pixels,
     #[cfg(target_os = "macos")]
@@ -168,6 +175,7 @@ impl BrowserSurface {
             #[cfg(feature = "browser-fixture")]
             fixture_preview_open: Default::default(),
             presentation: Presentation::Hidden,
+            fragment: None,
             #[cfg(target_os = "macos")]
             resize_inset: gpui::px(0.0),
             #[cfg(target_os = "macos")]
@@ -187,7 +195,10 @@ impl BrowserSurface {
     }
 
     pub fn title(&self) -> gpui::SharedString {
-        self.page.label().into()
+        match &self.fragment {
+            Some(view) => view.source.title.clone().into(),
+            None => self.page.label().into(),
+        }
     }
     pub fn set_remote(&mut self, remote: bool) {
         self.remote = remote;
@@ -445,6 +456,38 @@ impl BrowserSurface {
         let Some(native) = &mut self.native else {
             return;
         };
+        if self.fragment.is_some() {
+            // A visualization has no address, history or favicon; only its
+            // load state and failures matter. Link activations still open
+            // ordinary Browser tabs.
+            match event {
+                native::NativeEvent::Changed | native::NativeEvent::Finished => {
+                    let page = native.state();
+                    native.present(self.presentation);
+                    self.page.loading = page.loading && page.error.is_none();
+                    if page.error != self.page.error {
+                        self.page.error = page.error;
+                        cx.emit(BrowserEvent::Changed);
+                    }
+                    cx.notify();
+                }
+                native::NativeEvent::NewTab(url) => {
+                    if self.presentation == Presentation::Live {
+                        cx.emit(BrowserEvent::NewTab(Some(url)));
+                    }
+                }
+                native::NativeEvent::Key(key) => {
+                    if self.presentation == Presentation::Live {
+                        window.focus(&self.focus, cx);
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_keystroke(key, cx);
+                        });
+                    }
+                }
+                native::NativeEvent::Favicon { .. } => {}
+            }
+            return;
+        }
         match event {
             native::NativeEvent::Changed | native::NativeEvent::Finished => {
                 let finished = matches!(event, native::NativeEvent::Finished);
