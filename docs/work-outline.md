@@ -149,6 +149,18 @@ instructions.
 - **Create Instruction from Chat** turns the selected transcript text (or the
   last assistant message) into an instruction for this item, its parent, or the
   Space root. The dialog shows how many descendants it reaches.
+- Type `/` in an instruction editor (item or Space root instructions, Create
+  Instruction from Chat, or a proposal review) or in the Start Chat prompt to
+  pick a skill, as in the chat composer. The list shows your user skills plus
+  the project skills of the folder the item runs in (its resolved execution
+  root, or the Space folder for Space-root instructions). Use the arrow keys to
+  move, Enter or Tab to insert, and Escape to close the list. Instructions
+  receive plain text such as `` `code-review` skill ``. Start Chat inserts
+  `/code-review`, the same form the composer uses.
+- Multi-line editors (instructions, description, proposal review, Create
+  Instruction from Chat, and the Start Chat prompt) grow with their text from
+  three lines up to 40% of the window height, then scroll inside the editor
+  and keep the caret in view.
 
 ## Execution setup and validation
 
