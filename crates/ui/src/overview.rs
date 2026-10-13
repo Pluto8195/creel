@@ -14171,6 +14171,7 @@ mod logic_tests {
             draw(vcx);
             let outline = overview.read_with(vcx, |o, _| o.outline.clone());
             outline.update(vcx, |outline, cx| {
+                outline.dismiss_move_toast(cx);
                 outline.select(&row_key::item("s1", HOUSEKEEPING), cx)
             });
             vcx.update(|window, cx| {
@@ -14190,9 +14191,7 @@ mod logic_tests {
     }
 
     #[gpui::test]
-    fn moving_an_item_toasts_drift_only_when_assigned_chats_change(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn moving_an_item_toasts_drift_only_when_assigned_chats_change(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (overview, calls, vcx) = instruction_overview(
             cx,
@@ -14219,7 +14218,10 @@ mod logic_tests {
         // API (chat-api, and chat-auth below) loses Launch's instruction:
         // the move is sent at once, with a toast and no confirmation.
         let toast = move_to_top(API, vcx).expect("toasts");
-        assert!(toast.contains("instructions changed for 2 chats"), "{toast}");
+        assert!(
+            toast.contains("instructions changed for 2 chats"),
+            "{toast}"
+        );
         assert_eq!(ops(&calls), ["moveWorkItem"]);
         // Housekeeping is already top level with no Chats: no toast.
         outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));

@@ -257,8 +257,9 @@ pub(crate) struct WorkOutlineConfirmRequest {
 
 /// The drift confirmation (Milestone 2): shown before a change that alters
 /// the current effective instructions of at least one assigned Chat
-/// (associate/move a Chat, toggle inheritance, edit or archive an inherited
-/// instruction, move an item). `impact` is computed client-side
+/// (toggle inheritance, edit or archive an inherited instruction, associate
+/// a Chat from Work Item Details). Outline moves and associations apply at
+/// once with an Undo toast instead (`outline_view::move_toast`). `impact` is computed client-side
 /// (`instructions::drift_impact`). `on_decision` gets `true` = confirmed.
 pub(crate) struct WorkOutlineDriftRequest {
     pub title: SharedString,
