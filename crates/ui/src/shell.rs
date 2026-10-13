@@ -64,6 +64,7 @@ mod closeout_ui;
 mod command_palette;
 mod files_panel;
 mod instructions_ui;
+mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
 mod sidebar_pins;
@@ -1621,6 +1622,11 @@ pub struct Shell {
     overview_page: Option<Entity<crate::overview::Overview>>,
     repository_topology_page: Option<Entity<crate::repository_topology::RepositoryTopology>>,
     pr_review_chats_page: Option<Entity<crate::chat_type_view::ChatTypeView>>,
+    /// `StartPrReview` operation ids (one per PR + action + agent).
+    pr_review_ops: crate::pr_review_launch::PrReviewOperations,
+    /// Tests: answer `StartPrReview` here instead of the engine.
+    #[cfg(test)]
+    pr_review_script: Option<pr_review_ui::PrReviewScript>,
     archived_page: Option<Entity<ArchivedPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
@@ -2070,6 +2076,9 @@ impl Shell {
             overview_page: None,
             repository_topology_page: None,
             pr_review_chats_page: None,
+            pr_review_ops: Default::default(),
+            #[cfg(test)]
+            pr_review_script: None,
             archived_page: None,
             appearance_page: None,
             files_settings_page: None,

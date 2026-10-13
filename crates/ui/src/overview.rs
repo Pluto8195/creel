@@ -2513,6 +2513,8 @@ pub struct Overview {
     /// pending/fetched gate so a slow/failed call can't stall `my_prs`.
     review_prs: Vec<MyPrItem>,
     review_prs_pending: bool,
+    /// "Needs my review" → Review: inline start state per PR URL.
+    pr_review_status: HashMap<String, crate::chat_type_view::ReviewStatus>,
     review_prs_fetched_at: Option<Instant>,
     /// Left "My PRs" sidebar (toolbar toggle). Rendered as the overview's
     /// leftmost fixed-width column — `[sidebar | list/canvas | chat panel]`
@@ -2852,6 +2854,7 @@ impl Overview {
             my_prs_fetched_at: None,
             review_prs: Vec::new(),
             review_prs_pending: false,
+            pr_review_status: HashMap::new(),
             review_prs_fetched_at: None,
             pr_sidebar_open: false,
             pr_sidebar_scroll: ScrollHandle::new(),
@@ -3101,6 +3104,59 @@ impl Overview {
     /// outlines its tile/row via `panel_highlight`) and bring it into view
     /// in whichever body mode is showing — see [`PendingFocus`] for why the
     /// framing waits a painted frame.
+    #[cfg(test)]
+    pub(crate) fn set_review_prs_for_test(&mut self, items: Vec<MyPrItem>, cx: &mut Context<Self>) {
+        self.review_prs = items;
+        self.review_prs_fetched_at = Some(Instant::now());
+        cx.notify();
+    }
+
+    /// "Needs my review" → Review: start a `/code-review` Chat through the
+    /// shell (which opens it); a refusal stays inline under the row.
+    fn start_pr_review_from_sidebar(
+        &mut self,
+        reference: zeron_proto::PrReference,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::chat_type_view::ReviewStatus;
+        let url = reference.url();
+        if matches!(
+            self.pr_review_status.get(&url),
+            Some(ReviewStatus::Starting(_))
+        ) {
+            return;
+        }
+        let action = zeron_proto::PrReviewAction::CodeReview;
+        let Ok(task) = self
+            .shell
+            .update(cx, |shell, cx| shell.start_pr_review(reference, action, cx))
+        else {
+            return;
+        };
+        self.pr_review_status
+            .insert(url.clone(), ReviewStatus::Starting(action));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(_) => {
+                        this.pr_review_status.remove(&url);
+                    }
+                    Err(error) => {
+                        this.pr_review_status.insert(
+                            url,
+                            ReviewStatus::Failed(crate::pr_review_launch::failure_text(&error)),
+                        );
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn jump_to_chat_from_pr(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.open_chat_panel(chat_id.clone(), cx);
         self.pending_focus = Some(PendingFocus {
@@ -8903,6 +8959,43 @@ impl Overview {
             row = row.on_click(move |_, _, cx| {
                 cx.open_url(&url);
             });
+            // Review rows without a chat: start one (Cofactr launcher flow).
+            if review && let Some(reference) = crate::pr_review_launch::reference_for_item(item) {
+                use crate::chat_type_view::ReviewStatus;
+                let status = self.pr_review_status.get(&reference.url()).cloned();
+                let busy = matches!(status, Some(ReviewStatus::Starting(_)));
+                let button = div()
+                    .id(("overview-pr-item-review", ix))
+                    .debug_selector(move || format!("overview-pr-item-review-{ix}"))
+                    .flex_none()
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(theme.accent.opacity(0.5))
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.accent)
+                    .when(busy, |el| el.opacity(0.5))
+                    .when(!busy, |el| {
+                        el.cursor_pointer().hover(|el| el.bg(theme.element_hover))
+                    })
+                    .child(if busy { "Starting…" } else { "Review" })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.start_pr_review_from_sidebar(reference.clone(), cx);
+                    }));
+                row = row.child(div().flex().child(button));
+                if let Some(ReviewStatus::Failed(text)) = status {
+                    row = row.child(
+                        div()
+                            .debug_selector(move || format!("overview-pr-item-review-status-{ix}"))
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.danger)
+                            .child(SharedString::from(text)),
+                    );
+                }
+            }
         }
 
         row.into_any_element()

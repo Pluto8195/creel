@@ -615,6 +615,12 @@ impl WorkspaceHost {
         &self.inner.config.device_id
     }
 
+    /// This engine's device-local store directory (sidecar files that never
+    /// sync, e.g. `StartPrReview` replies).
+    pub(crate) fn store_root(&self) -> std::path::PathBuf {
+        self.inner.store.root().to_path_buf()
+    }
+
     pub fn connected(&self) -> bool {
         lock(&self.inner.room)
             .as_ref()

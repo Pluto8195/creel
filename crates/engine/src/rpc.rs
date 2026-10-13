@@ -748,6 +748,8 @@ pub struct EngineRpc {
     /// `AgentAuthenticate` / `AgentToolCall` (Work Outline Milestone 4):
     /// token-authenticated agent tools, local to this engine.
     agent_tools: std::sync::Arc<crate::agent_tools::AgentToolsService>,
+    /// `StartPrReview` (docs/pr-review.md): runs on the Space's owner.
+    pr_review: crate::pr_review_launch::PrReviewLauncher,
     engine_info: EngineInfo,
 }
 
@@ -794,6 +796,11 @@ impl EngineRpc {
             work_outline.clone(),
             Some(doc_host.clone()),
         ));
+        let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
+            workspace.clone(),
+            doc_host.clone(),
+            crate::pr_review_launch::PrReviewTools::default(),
+        );
         Self {
             sessions,
             doc_host,
@@ -820,8 +827,16 @@ impl EngineRpc {
             execution_scope,
             launch,
             agent_tools,
+            pr_review,
             engine_info,
         }
+    }
+
+    /// Replace the external tools `StartPrReview` shells out to (tests point
+    /// `gh` at a fake and pin `WORKSPACE_WORKTREES_DIR`).
+    pub fn with_pr_review_tools(mut self, tools: crate::pr_review_launch::PrReviewTools) -> Self {
+        self.pr_review = self.pr_review.clone().with_tools(tools);
+        self
     }
 
     /// The token-authenticated agent tool surface.
@@ -1363,6 +1378,184 @@ impl EngineRpc {
             .map_err(fail)
     }
 
+    /// `StartPrReview`: run on this device when it owns the Space (pinned or
+    /// found by remote URL among this device's Spaces); otherwise forward to
+    /// the pinned Space's owner, or try every other device that owns Spaces
+    /// and advertises `pr-review-launch-v1`. A forwarded call (it carries
+    /// `targetDeviceId`) never fans out again.
+    async fn start_pr_review(
+        &self,
+        p: zeron_proto::StartPrReviewParams,
+    ) -> Result<zeron_proto::StartPrReviewReply, RpcError> {
+        use zeron_proto::{PrReviewError, PrReviewErrorCode};
+        let fail = |error: PrReviewError| RpcError::Failed(error.to_wire_message());
+        let local = self.doc_host.device_id().to_owned();
+        let routed = p.target_device_id.is_some();
+        if let Some(space_id) = &p.space_id
+            && let Some(space) = self.workspace.space(space_id).ok().flatten()
+            && space.device_id != local
+        {
+            if routed {
+                return Err(fail(PrReviewError::new(
+                    PrReviewErrorCode::DeviceOffline,
+                    "The Space lives on another device",
+                )));
+            }
+            let reply = self.forward_pr_review(&space.device_id, &p).await?;
+            self.classify_pr_review_chat(reply.chat_id.clone(), false)
+                .await;
+            return Ok(reply);
+        }
+        let local_error = match self.pr_review.start(&p).await {
+            Ok(reply) => {
+                self.classify_pr_review_chat(reply.chat_id.clone(), true)
+                    .await;
+                return Ok(reply);
+            }
+            // Only an unpinned start looks on other devices.
+            Err(error)
+                if error.code == PrReviewErrorCode::RepoNotFound
+                    && !routed
+                    && p.space_id.is_none() =>
+            {
+                error
+            }
+            Err(error) => return Err(fail(error)),
+        };
+        // Not here: ask the other devices that own Spaces.
+        let mut devices: Vec<String> = self
+            .workspace
+            .read_spaces()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|space| space.device_id != local)
+            .map(|space| space.device_id)
+            .collect();
+        devices.sort();
+        devices.dedup();
+        let mut unreachable = Vec::new();
+        for device in devices {
+            match self.forward_pr_review(&device, &p).await {
+                Ok(reply) => {
+                    self.classify_pr_review_chat(reply.chat_id.clone(), false)
+                        .await;
+                    return Ok(reply);
+                }
+                Err(RpcError::Failed(message)) => {
+                    match PrReviewError::from_wire_message(&message) {
+                        Some(error) if error.code == PrReviewErrorCode::RepoNotFound => {}
+                        Some(error) if error.code == PrReviewErrorCode::DeviceOffline => {
+                            unreachable.push(self.device_label(&device));
+                        }
+                        _ => return Err(RpcError::Failed(message)),
+                    }
+                }
+                Err(_) => unreachable.push(self.device_label(&device)),
+            }
+        }
+        let mut message = local_error.message.clone();
+        if !unreachable.is_empty() {
+            message.push_str(&format!(
+                ". Could not ask {} (offline or too old to start PR reviews)",
+                unreachable.join(", ")
+            ));
+        }
+        Err(fail(PrReviewError::new(
+            PrReviewErrorCode::RepoNotFound,
+            message,
+        )))
+    }
+
+    fn device_label(&self, device_id: &str) -> String {
+        self.workspace
+            .read_devices()
+            .ok()
+            .and_then(|devices| devices.into_iter().find(|d| d.id == device_id))
+            .map(|d| d.name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| device_id.to_owned())
+    }
+
+    /// Forward `StartPrReview` to `device` (which must advertise
+    /// `pr-review-launch-v1`). Typed `pr-review/…` failures pass through;
+    /// anything else is `deviceOffline`.
+    async fn forward_pr_review(
+        &self,
+        device: &str,
+        p: &zeron_proto::StartPrReviewParams,
+    ) -> Result<zeron_proto::StartPrReviewReply, RpcError> {
+        use zeron_proto::{PrReviewError, PrReviewErrorCode};
+        let offline = |detail: String| {
+            RpcError::Failed(
+                PrReviewError::new(
+                    PrReviewErrorCode::DeviceOffline,
+                    format!(
+                        "{} can't start the review: {detail}",
+                        self.device_label(device)
+                    ),
+                )
+                .to_wire_message(),
+            )
+        };
+        let known = self
+            .workspace
+            .read_devices()
+            .ok()
+            .and_then(|devices| devices.into_iter().find(|d| d.id == device));
+        match known {
+            None => return Err(offline("the device is not known to this engine".into())),
+            Some(known) if !known.supports(zeron_proto::capabilities::PR_REVIEW_LAUNCH_V1) => {
+                return Err(offline("update Zeron on that device".into()));
+            }
+            Some(_) => {}
+        }
+        let mut forwarded = p.clone();
+        forwarded.target_device_id = Some(device.to_owned());
+        let params = serde_json::to_value(&forwarded)
+            .map_err(|e| RpcError::Failed(format!("serialize params: {e}")))?;
+        match self.forward(device, methods::START_PR_REVIEW, params).await {
+            Ok(RpcReply::Value(value)) => serde_json::from_value(value)
+                .map_err(|e| RpcError::Failed(format!("bad StartPrReview reply: {e}"))),
+            Ok(RpcReply::Stream(_)) => Err(RpcError::Failed("unexpected stream reply".into())),
+            Err(RpcError::Failed(message)) if message.contains(PrReviewError::WIRE_PREFIX) => {
+                Err(RpcError::Failed(message))
+            }
+            Err(error) => Err(offline(error.to_string())),
+        }
+    }
+
+    /// Pre-classify a review Chat `pr_review` in this device's classification
+    /// sidecar (what ⇧⌘P reads). `hosted_here`: the Chat row exists now;
+    /// otherwise (forwarded) retry in the background until it replicates.
+    async fn classify_pr_review_chat(&self, chat_id: String, hosted_here: bool) {
+        let (Some(importer), Some(context_usage)) =
+            (self.external_import.clone(), self.context_usage.clone())
+        else {
+            return;
+        };
+        let attempt =
+            move || importer.set_manual_classification(&context_usage, &chat_id, Some("pr_review"));
+        if hosted_here {
+            match tokio::task::spawn_blocking(attempt).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "pr review chat classification failed");
+                }
+                Err(error) => tracing::warn!(%error, "pr review classification task failed"),
+            }
+            return;
+        }
+        tokio::spawn(async move {
+            for _ in 0..20 {
+                let attempt = attempt.clone();
+                if let Ok(Ok(())) = tokio::task::spawn_blocking(attempt).await {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+    }
+
     async fn forward(
         &self,
         target: &str,
@@ -1668,6 +1861,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         // Validation plus an optional `git worktree add` on the owner.
         methods::CREATE_CHAT_FOR_WORK_ITEM => Duration::from_secs(120),
+        // `gh pr view`, a fetch, and `gh pr checkout` / `git worktree add`.
+        methods::START_PR_REVIEW => Duration::from_secs(180),
         _ => Duration::from_secs(30),
     }
 }
@@ -1763,6 +1958,8 @@ fn forwardable(method: &str) -> bool {
             | methods::DESCRIBE_EXECUTION_REPOSITORY
             // A work-item launch validates and creates on the owner's disk.
             | methods::CREATE_CHAT_FOR_WORK_ITEM
+            // A PR review start checks out and creates on the Space's owner.
+            | methods::START_PR_REVIEW
     )
 }
 
@@ -2990,6 +3187,10 @@ impl RpcService for EngineRpc {
                     .await;
                 let items = cache.my_open_prs();
                 RpcReply::value(&items)
+            }
+            methods::START_PR_REVIEW => {
+                let p: zeron_proto::StartPrReviewParams = parse_params(params)?;
+                RpcReply::value(&self.start_pr_review(p).await?)
             }
             methods::REVIEW_REQUESTED_PRS => {
                 let items = self.pr_ticket_cache()?.review_requested_prs();

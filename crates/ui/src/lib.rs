@@ -51,6 +51,7 @@ pub mod overview_layout;
 pub mod overview_positions;
 pub mod pickers;
 pub mod popover;
+pub(crate) mod pr_review_launch;
 pub mod project_actions;
 pub mod queue;
 pub mod rail;

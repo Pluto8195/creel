@@ -35,6 +35,7 @@ pub mod instruction_registry;
 pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
+pub mod pr_review_launch;
 pub mod pr_ticket_cache;
 pub mod profile;
 pub mod project_actions;

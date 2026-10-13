@@ -3,14 +3,15 @@
 //! a [`ChatViewKind`] specification instead of another one-off page.
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use gpui::{
     Context, Entity, FocusHandle, MouseButton, Render, ScrollHandle, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrStatus};
-use zeron_proto::{Chat, ChatIndicator};
+use zeron_engine::pr_ticket_cache::{ChatLinkStatus, MyPrItem, PrStatus};
+use zeron_proto::{Chat, ChatIndicator, PrReference, PrReviewAction};
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -190,8 +191,42 @@ pub(crate) struct ChatTypeView {
     classification_pending: HashSet<String>,
     links: HashMap<String, ChatLinkStatus>,
     links_pending: HashSet<String>,
+    /// "Review requested" (`REVIEW_REQUESTED_PRS`, same 30s refresh as the
+    /// overview's "Needs my review").
+    review_prs: Vec<MyPrItem>,
+    review_prs_pending: bool,
+    review_prs_fetched_at: Option<Instant>,
+    /// "PR URL or owner/repo#number" box.
+    review_input: Entity<ComposerInput>,
+    /// Inline start state per PR URL, and for the URL box.
+    review_status: HashMap<String, ReviewStatus>,
+    input_status: Option<ReviewStatus>,
     _state_observation: Subscription,
     _search_events: Subscription,
+    _review_input_events: Subscription,
+}
+
+/// How often the "Review requested" list refetches while the page renders.
+const REVIEW_PRS_REFRESH: Duration = Duration::from_secs(30);
+
+/// A PR review start's inline state on this page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReviewStatus {
+    Starting(PrReviewAction),
+    Failed(String),
+}
+
+/// The chat already reviewing `url` (its durable PR link), newest first.
+fn existing_review_chat<'a>(chats: &'a [Chat], url: &str) -> Option<&'a Chat> {
+    chats
+        .iter()
+        .filter(|chat| !chat.archived && chat.parent_chat_id.is_none())
+        .filter(|chat| {
+            chat.linked_pr_url
+                .as_deref()
+                .is_some_and(|linked| linked.trim_end_matches('/') == url.trim_end_matches('/'))
+        })
+        .max_by_key(|chat| chat.last_message_at.unwrap_or(chat.created_at))
 }
 
 impl ChatTypeView {
@@ -224,6 +259,25 @@ impl ChatTypeView {
             }
             _ => {}
         });
+        let review_input = cx.new(|cx| {
+            ComposerInput::with_context(
+                "PR URL or owner/repo#number",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+        });
+        let review_input_events =
+            cx.subscribe(&review_input, |this: &mut Self, _, event, cx| match event {
+                ComposerInputEvent::Submitted => this.submit_review_input(cx),
+                ComposerInputEvent::Edited => {
+                    if matches!(this.input_status, Some(ReviewStatus::Failed(_))) {
+                        this.input_status = None;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            });
         let state_observation = cx.observe(&state, |_, _, cx| cx.notify());
         Self {
             state,
@@ -238,8 +292,154 @@ impl ChatTypeView {
             classification_pending: HashSet::new(),
             links: HashMap::new(),
             links_pending: HashSet::new(),
+            review_prs: Vec::new(),
+            review_prs_pending: false,
+            review_prs_fetched_at: None,
+            review_input,
+            review_status: HashMap::new(),
+            input_status: None,
             _state_observation: state_observation,
             _search_events: search_events,
+            _review_input_events: review_input_events,
+        }
+    }
+
+    /// Palette "Review PR…": focus the URL box.
+    pub(crate) fn focus_review_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(
+            &gpui::Focusable::focus_handle(self.review_input.read(cx), cx),
+            cx,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_review_prs(&mut self, items: Vec<MyPrItem>, cx: &mut Context<Self>) {
+        self.review_prs = items;
+        self.review_prs_fetched_at = Some(Instant::now());
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_input(&self) -> Entity<ComposerInput> {
+        self.review_input.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn input_status(&self) -> Option<ReviewStatus> {
+        self.input_status.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_status(&self, url: &str) -> Option<ReviewStatus> {
+        self.review_status.get(url).cloned()
+    }
+
+    fn ensure_review_prs(&mut self, cx: &mut Context<Self>) {
+        let fresh = self
+            .review_prs_fetched_at
+            .is_some_and(|at| at.elapsed() < REVIEW_PRS_REFRESH);
+        if fresh || self.review_prs_pending {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.review_prs_pending = true;
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::REVIEW_REQUESTED_PRS, serde_json::json!({}))
+                .await;
+            this.update(cx, |this, cx| {
+                this.review_prs_pending = false;
+                this.review_prs_fetched_at = Some(Instant::now());
+                if let Ok(value) = result
+                    && let Ok(items) = serde_json::from_value::<Vec<MyPrItem>>(value)
+                {
+                    this.review_prs = items;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Start a review of `reference` through the shell (which opens the new
+    /// Chat); refusals stay inline here. `from_input`: the status belongs to
+    /// the URL box rather than a row.
+    pub(crate) fn start_review(
+        &mut self,
+        reference: PrReference,
+        action: PrReviewAction,
+        from_input: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let url = reference.url();
+        let busy = if from_input {
+            matches!(self.input_status, Some(ReviewStatus::Starting(_)))
+        } else {
+            matches!(
+                self.review_status.get(&url),
+                Some(ReviewStatus::Starting(_))
+            )
+        };
+        if busy {
+            return;
+        }
+        let Ok(task) = self
+            .shell
+            .update(cx, |shell, cx| shell.start_pr_review(reference, action, cx))
+        else {
+            return;
+        };
+        let starting = ReviewStatus::Starting(action);
+        if from_input {
+            self.input_status = Some(starting);
+        } else {
+            self.review_status.insert(url.clone(), starting);
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                let status = result.err().map(|error| {
+                    ReviewStatus::Failed(crate::pr_review_launch::failure_text(&error))
+                });
+                if from_input {
+                    if status.is_none() {
+                        this.review_input
+                            .update(cx, |input, cx| input.set_text("", cx));
+                    }
+                    this.input_status = status;
+                } else {
+                    match status {
+                        Some(status) => {
+                            this.review_status.insert(url, status);
+                        }
+                        None => {
+                            this.review_status.remove(&url);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The URL box's Enter / Review button.
+    pub(crate) fn submit_review_input(&mut self, cx: &mut Context<Self>) {
+        let text = self.review_input.read(cx).text().trim().to_owned();
+        match PrReference::parse(&text) {
+            Some(reference) => self.start_review(reference, PrReviewAction::CodeReview, true, cx),
+            None => {
+                self.input_status = Some(ReviewStatus::Failed(
+                    crate::pr_review_launch::REFERENCE_HINT.to_owned(),
+                ));
+                cx.notify();
+            }
         }
     }
 
@@ -370,7 +570,16 @@ impl ChatTypeView {
             .update(cx, |shell, cx| shell.open_chat(chat_id, cx));
     }
 
-    fn on_key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The URL box owns its keys (Enter starts a review, not a chat).
+        if gpui::Focusable::focus_handle(self.review_input.read(cx), cx).is_focused(window) {
+            return;
+        }
         let count = self.rows(cx).len();
         match event.keystroke.key.as_str() {
             "down" if count > 0 => {
@@ -520,6 +729,255 @@ impl ChatTypeView {
     }
 }
 
+fn review_button(
+    id: SharedString,
+    label: &'static str,
+    primary: bool,
+    disabled: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let selector = id.clone();
+    div()
+        .id(gpui::ElementId::Name(id))
+        .debug_selector(move || selector.to_string())
+        .flex_none()
+        .px(px(9.0))
+        .py(px(3.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(if primary {
+            theme.accent.opacity(0.5)
+        } else {
+            theme.border
+        })
+        .text_size(crate::typography::ui_rems(11.0))
+        .text_color(if primary {
+            theme.accent
+        } else {
+            theme.text_muted
+        })
+        .when(disabled, |el| el.opacity(0.5))
+        .when(!disabled, |el| {
+            el.cursor_pointer().hover(|el| el.bg(theme.element_hover))
+        })
+        .child(label)
+}
+
+fn status_line(selector: String, status: &ReviewStatus, theme: &Theme) -> gpui::Div {
+    let (text, color) = match status {
+        ReviewStatus::Starting(PrReviewAction::CodeReview) => (
+            "Checking out the PR and starting the review…".to_owned(),
+            theme.text_muted,
+        ),
+        ReviewStatus::Starting(PrReviewAction::FixCi) => (
+            "Checking out the PR and starting /fix-ci…".to_owned(),
+            theme.text_muted,
+        ),
+        ReviewStatus::Failed(text) => (text.clone(), theme.danger),
+    };
+    div()
+        .debug_selector(move || selector.clone())
+        .text_size(crate::typography::ui_rems(11.0))
+        .text_color(color)
+        .child(SharedString::from(text))
+}
+
+impl ChatTypeView {
+    /// "Review requested": PRs waiting on my review with Review / Fix CI,
+    /// plus the URL box for any other PR.
+    fn render_review_requested(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.ensure_review_prs(cx);
+        let input_busy = matches!(self.input_status, Some(ReviewStatus::Starting(_)));
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!(
+                        "REVIEW REQUESTED ({})",
+                        self.review_prs.len()
+                    ))),
+            )
+            .child(
+                div()
+                    .id("pr-review-url-input")
+                    .debug_selector(|| "pr-review-url-input".into())
+                    .w(px(280.0))
+                    .child(popover::search_input_frame(
+                        theme,
+                        self.review_input.clone().into_any_element(),
+                    )),
+            )
+            .child(
+                review_button(
+                    "pr-review-url-submit".into(),
+                    "Review",
+                    true,
+                    input_busy,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.submit_review_input(cx))),
+            );
+        let chats = self.state.read(cx).chats.clone();
+        let rows: Vec<gpui::AnyElement> = self
+            .review_prs
+            .clone()
+            .into_iter()
+            .enumerate()
+            .map(|(ix, item)| self.render_review_row(ix, &item, &chats, theme, cx))
+            .collect();
+        div()
+            .id("pr-review-requested")
+            .flex_none()
+            .max_h(px(280.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(header)
+            .when_some(self.input_status.as_ref(), |el, status| {
+                el.child(status_line("pr-review-url-status".into(), status, theme))
+            })
+            .when(rows.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_faint)
+                        .child("No PRs are waiting on your review"),
+                )
+            })
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn render_review_row(
+        &mut self,
+        ix: usize,
+        item: &MyPrItem,
+        chats: &[Chat],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let reference = crate::pr_review_launch::reference_for_item(item);
+        let url = reference.as_ref().map(PrReference::url);
+        let status = url
+            .as_ref()
+            .and_then(|url| self.review_status.get(url))
+            .cloned();
+        let busy = matches!(status, Some(ReviewStatus::Starting(_)));
+        let existing = url
+            .as_deref()
+            .and_then(|url| existing_review_chat(chats, url))
+            .map(|chat| chat.id.clone());
+        let repo_name = item
+            .summary
+            .repo
+            .as_deref()
+            .map(|repo| repo.rsplit('/').next().unwrap_or(repo).to_owned())
+            .unwrap_or_default();
+        let subtitle = [
+            Some(format!("{repo_name}#{}", item.summary.number)),
+            item.summary.author.as_ref().map(|a| format!("by {a}")),
+            item.summary.is_draft.then(|| "draft".to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let title = item
+            .summary
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("#{}", item.summary.number));
+        let action = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
+            let reference = reference.clone();
+            review_button(
+                format!("pr-review-requested-{kind}-{ix}").into(),
+                label,
+                primary,
+                busy || reference.is_none(),
+                theme,
+            )
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                if let Some(reference) = reference.clone() {
+                    this.start_review(reference, action, false, cx);
+                }
+            }))
+        };
+        let review = action("Review", "review", PrReviewAction::CodeReview, true);
+        let fix_ci = action("Fix CI", "fix-ci", PrReviewAction::FixCi, false);
+        let open = existing.map(|chat_id| {
+            review_button(
+                format!("pr-review-requested-open-{ix}").into(),
+                "Open chat",
+                false,
+                false,
+                theme,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.open_chat(chat_id.clone(), cx)))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .id(("pr-review-requested-row", ix))
+                    .debug_selector(move || format!("pr-review-requested-row-{ix}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .py(px(4.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(title)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(10.5))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(subtitle)),
+                            ),
+                    )
+                    .children(open)
+                    .child(review)
+                    .child(fix_ci),
+            )
+            .when_some(status, |el, status| {
+                el.child(status_line(
+                    format!("pr-review-requested-status-{ix}"),
+                    &status,
+                    theme,
+                ))
+            })
+            .into_any_element()
+    }
+}
+
 impl Render for ChatTypeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
@@ -603,6 +1061,7 @@ impl Render for ChatTypeView {
                             ),
                     ),
             )
+            .child(self.render_review_requested(&theme, cx))
             .child(
                 div()
                     .h(px(34.0))

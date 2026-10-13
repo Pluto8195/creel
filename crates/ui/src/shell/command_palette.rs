@@ -44,6 +44,7 @@ enum Entry {
     Settings,
     Overview,
     PrReviewChats,
+    ReviewPr,
     MyPrs,
     ImportSessionCanvasSessions,
     Theme(AppearanceMode),
@@ -60,6 +61,7 @@ impl Entry {
             Self::Settings => Some(("Open settings", icons::SETTINGS_MINIMALISTIC)),
             Self::Overview => Some(("Open overview", icons::WIDGET)),
             Self::PrReviewChats => Some(("Open PR review chats", icons::PULL_REQUEST)),
+            Self::ReviewPr => Some(("Review PR…", icons::PULL_REQUEST)),
             Self::MyPrs => Some(("Toggle My PRs", icons::PULL_REQUEST)),
             Self::ImportSessionCanvasSessions => Some((
                 "Import all sessions from session_canvas",
@@ -91,6 +93,7 @@ fn actions_for(query: &str, is_dark: bool) -> Vec<Entry> {
         Entry::Settings,
         Entry::Overview,
         Entry::PrReviewChats,
+        Entry::ReviewPr,
         Entry::MyPrs,
     ]
     .into_iter()
@@ -223,6 +226,7 @@ impl Shell {
             Entry::Settings => self.open_settings(SettingsSection::Devices, cx),
             Entry::Overview => self.open_overview(cx),
             Entry::PrReviewChats => self.open_pr_review_chats_focused(window, cx),
+            Entry::ReviewPr => self.open_review_pr_input(window, cx),
             Entry::MyPrs => self.toggle_my_prs(cx),
             Entry::ImportSessionCanvasSessions => self.bulk_import_session_canvas_sessions(cx),
             Entry::WorkOutline(command) => self.run_work_outline_command(command, window, cx),
@@ -592,6 +596,7 @@ mod tests {
                 Entry::Settings,
                 Entry::Overview,
                 Entry::PrReviewChats,
+                Entry::ReviewPr,
                 Entry::MyPrs,
                 Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
                 Entry::WorkOutline(WorkOutlineCommand::CreateWorkItem),
@@ -622,6 +627,11 @@ mod tests {
             actions_for("review chats", true),
             vec![Entry::PrReviewChats]
         );
+        assert_eq!(
+            actions_for("review pr", true),
+            vec![Entry::PrReviewChats, Entry::ReviewPr]
+        );
+        assert_eq!(actions_for("review pr…", true), vec![Entry::ReviewPr]);
         assert_eq!(
             actions_for("theme", true),
             vec![Entry::Theme(AppearanceMode::Light)]

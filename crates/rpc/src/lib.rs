@@ -170,6 +170,17 @@ pub mod methods {
     /// Chat; otherwise the Turn queues durably and the host revalidates at
     /// drain. Local (not forwardable).
     pub const CONTINUE_CHAT_FOR_WORK_ITEM: &str = "ContinueChatForWorkItem";
+    /// "Review PR" launcher (`zeron_proto::StartPrReviewParams` →
+    /// `zeron_proto::StartPrReviewReply`; docs/pr-review.md): resolve the
+    /// Space holding a checkout of `github.com/<repoOwner>/<repoName>`,
+    /// refuse forks, fetch, put the PR's branch in a checkout exactly like
+    /// the Cofactr `launch.sh` (reuse → clean `main` + `gh pr checkout` → new
+    /// `<root>/<repo>-pr-<n>` worktree), then create a `pr_review` Chat at
+    /// the Space root seeded with `/code-review` or `/fix-ci`, linked to the
+    /// PR. Idempotent by `operationId`. Forwardable: an engine forwards it
+    /// to the Space's owning device (`pr-review-launch-v1`). Errors are
+    /// `pr-review/<code>: <message>`.
+    pub const START_PR_REVIEW: &str = "StartPrReview";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -557,6 +568,11 @@ mod tests {
             methods::CONTINUE_CHAT_FOR_WORK_ITEM,
             "ContinueChatForWorkItem"
         );
+    }
+
+    #[test]
+    fn pr_review_wire_name_is_pinned() {
+        assert_eq!(methods::START_PR_REVIEW, "StartPrReview");
     }
 
     struct TestService;
