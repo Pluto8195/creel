@@ -23,6 +23,7 @@ pub enum SessionCommandKind {
     RespondInput,
     RunWithInstructions,
     ConfirmInstructionContextReset,
+    KeepQueuedInstructionSession,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +85,14 @@ pub enum SessionCommandPayload {
         queued_message_id: String,
         revision_id: String,
     },
+    /// The user chose to keep the existing native session for a queued row
+    /// the host gated with `instructionContextResetRequired`: the host drops
+    /// the row's captured pin (the row then runs under its Execution
+    /// Session's revision, never a different one), clears the gate and any
+    /// reset confirmation, and drains the queue. Rejected when the row is
+    /// gone. Hosts that predate it skip the entry (the row stays gated).
+    #[serde(rename_all = "camelCase")]
+    KeepQueuedInstructionSession { queued_message_id: String },
 }
 
 impl SessionCommandPayload {
@@ -98,6 +107,9 @@ impl SessionCommandPayload {
             }
             SessionCommandPayload::ConfirmInstructionContextReset { .. } => {
                 SessionCommandKind::ConfirmInstructionContextReset
+            }
+            SessionCommandPayload::KeepQueuedInstructionSession { .. } => {
+                SessionCommandKind::KeepQueuedInstructionSession
             }
         }
     }
@@ -230,6 +242,26 @@ mod tests {
         assert_eq!(
             payload.kind(),
             SessionCommandKind::ConfirmInstructionContextReset
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionCommandPayload>(value).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn keep_queued_instruction_session_wire_shape_is_pinned() {
+        let payload = SessionCommandPayload::KeepQueuedInstructionSession {
+            queued_message_id: "q1".into(),
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "kind": "keepQueuedInstructionSession", "queuedMessageId": "q1" })
+        );
+        assert_eq!(
+            payload.kind(),
+            SessionCommandKind::KeepQueuedInstructionSession
         );
         assert_eq!(
             serde_json::from_value::<SessionCommandPayload>(value).unwrap(),

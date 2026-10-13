@@ -1504,3 +1504,66 @@ async fn keeping_a_session_that_never_had_instructions_selects_none() {
     assert!(has_user_message(&rig.core, "m-2"));
     rig.core.shutdown().await;
 }
+
+#[tokio::test]
+async fn keeping_the_session_for_a_gated_queued_row_runs_it_on_the_old_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("[hold] working", "m-1"));
+    wait_for(|| rig.mock.turns().len() == 1, "the held Turn").await;
+
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let queued = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "queued after apply", Vec::new())
+        .unwrap();
+    rig.mock.release();
+    wait_for(
+        || {
+            queue_row(&rig.core, &queued).is_some_and(|row| {
+                matches!(
+                    row.delivery_gate,
+                    Some(zeron_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
+                )
+            })
+        },
+        "the reset gate on the row",
+    )
+    .await;
+
+    // Keep this session: selection reverts and the row loses its pin.
+    assert_eq!(keep_session(&rig), Some(a.clone()));
+    let keep = queue(
+        &rig.core,
+        SessionCommandPayload::KeepQueuedInstructionSession {
+            queued_message_id: queued.clone(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &keep).await.status,
+        SessionCommandStatus::Applied
+    );
+    wait_turns(&rig, 2, "the kept queued Turn").await;
+    assert_eq!(rig.mock.runs().len(), 1, "the same Execution Session");
+    let turns = rig.mock.turns();
+    assert_eq!(turns[1].prompt, "queued after apply");
+    assert_eq!(revision_of(&turns[1]), Some("rev-a"));
+    assert!(queue_row(&rig.core, &queued).is_none());
+
+    // Keeping for a row that is gone rejects.
+    let stale = queue(
+        &rig.core,
+        SessionCommandPayload::KeepQueuedInstructionSession {
+            queued_message_id: queued.clone(),
+        },
+    );
+    assert_eq!(
+        wait_resolved(&rig.core, &stale).await.status,
+        SessionCommandStatus::Rejected
+    );
+    rig.core.shutdown().await;
+}

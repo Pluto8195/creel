@@ -399,6 +399,23 @@ impl SessionDoc {
         Ok(true)
     }
 
+    /// Drop a row's captured pin (`keepQueuedInstructionSession`): the row
+    /// then runs under its Execution Session's revision. `false` when there
+    /// is no such row.
+    pub fn clear_queued_instructions(&self, id: &str) -> Result<bool, DocError> {
+        let queue = self.doc().get_movable_list("queue");
+        let Some(index) = index_of(&queue, id) else {
+            return Ok(false);
+        };
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
+        else {
+            return Ok(false);
+        };
+        map.delete(QUEUED_INSTRUCTIONS_KEY)?;
+        self.doc().commit();
+        Ok(true)
+    }
+
     /// Whether the user confirmed a context reset for this row.
     pub fn queued_context_reset_confirmed(&self, id: &str) -> bool {
         let queue = self.doc().get_movable_list("queue");
