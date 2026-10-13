@@ -188,15 +188,12 @@ impl Shell {
                 MenuAction::CloseOutChat(chat_id.clone()),
             ));
         }
-        menu.entries.push(
-            MenuEntry::new(
-                "archive-chat",
-                "Archive Chat",
-                icons::ARCHIVE_MINIMALISTIC,
-                MenuAction::ArchiveChat(chat_id),
-            )
-            .with_hint(HintKey::App(ShortcutId::ArchiveSession)),
-        );
+        menu.entries.push(MenuEntry::new(
+            "archive-chat",
+            "Archive Chat",
+            icons::ARCHIVE_MINIMALISTIC,
+            MenuAction::ArchiveChat(chat_id),
+        ));
     }
 
     /// The open menu's rows with their live bindings (keys are read from
@@ -1495,5 +1492,91 @@ mod tests {
         redraw(cx);
         press(cx, &start);
         assert_eq!(start_chat_item(&shell, cx), None);
+    }
+
+    /// Every entry of every row kind's menu (both pages) shows the live key
+    /// of its action whenever one is bound: with every Work Outline command
+    /// bound, no keyed entry may come up blank, and every shown key is the
+    /// one its action's binding resolves to.
+    #[gpui::test]
+    fn every_menu_entry_with_a_bound_action_shows_its_key(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::work_outline::instructions::fixture::snapshot("s1");
+        let (shell, _outline, _calls, cx) = menu_shell(cx, dir.path(), fixture);
+        cx.update(|_, cx| {
+            settings::update(SavePolicy::Debounced, cx, |s| {
+                for (ix, command) in WorkOutlineCommand::ALL.into_iter().enumerate() {
+                    let key = (b'a' + ix as u8) as char;
+                    s.keymap
+                        .set(command.shortcut_id(), format!("mod-alt-shift-{key}"));
+                }
+            });
+        });
+        let audit = |shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, what: &str| {
+            let mut seen = 0;
+            for page in [MenuPage::Root, MenuPage::Status] {
+                shell.update(cx, |shell, _| {
+                    if let Some(state) = shell.work_outline_menu.open_mut() {
+                        state.page = page;
+                    }
+                });
+                shell.read_with(cx, |shell, cx| {
+                    let keymap = settings::current(cx).keymap;
+                    let state = shell.work_outline_menu.get().expect("menu open");
+                    let rows = shell.work_outline_menu_rows(cx);
+                    for (entry, row) in state.entries().iter().zip(rows) {
+                        let hint = entry.action.hint();
+                        assert_eq!(entry.hint, hint, "{what}: {}", entry.id);
+                        let bound = hints::hint_keys(&keymap, hint);
+                        assert_eq!(row.keys, bound, "{what}: {}", entry.id);
+                        if hint != HintKey::None {
+                            assert!(row.keys.is_some(), "{what}: {} shows no key", entry.id);
+                            seen += 1;
+                        }
+                    }
+                });
+            }
+            assert!(seen > 0, "{what}");
+        };
+        let menus = [
+            ("work item", row_key::item("s1", API)),
+            ("chat", row_key::chat(CHAT_API)),
+            ("unassociated chat", row_key::chat(CHAT_LOOSE_A)),
+        ];
+        for (what, key) in menus {
+            right_click(cx, &key);
+            audit(&shell, cx, what);
+            press(cx, "escape");
+            settle(&shell, cx);
+        }
+        let archive = key_label(ShortcutId::ArchiveSession.default_combo());
+        right_click(cx, &row_key::chat(CHAT_API));
+        assert_eq!(row(&shell, cx, "archive-chat").keys, Some(archive.clone()));
+        press(cx, "escape");
+        settle(&shell, cx);
+        right_click(cx, &row_key::item("s1", API));
+        assert_eq!(row(&shell, cx, "archive").keys, Some(archive));
+        press(cx, "escape");
+        settle(&shell, cx);
+
+        // The Space root entry and the Unassociated group.
+        let entry = cx.debug_bounds("outline-space-root-entry").unwrap();
+        cx.simulate_mouse_down(
+            entry.center(),
+            MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        redraw(cx);
+        audit(&shell, cx, "space root");
+        press(cx, "escape");
+        settle(&shell, cx);
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.selected_chat = Some(CHAT_LOOSE_A.into())
+            })
+        });
+        right_click(cx, &row_key::unassociated(Some("s1")));
+        audit(&shell, cx, "unassociated group");
     }
 }

@@ -99,6 +99,33 @@ impl MenuAction {
             _ => None,
         }
     }
+
+    /// The binding that runs this action outside the menu, which the entry
+    /// shows. Exhaustive on purpose: a new action must say whether some key
+    /// (an Outline key, a Work Outline command, or an app shortcut that acts
+    /// on the selected row) already runs it.
+    pub(crate) fn hint(&self) -> HintKey {
+        match self {
+            Self::Outline(key) => HintKey::Outline(*key),
+            Self::Command(command) => HintKey::Command(*command),
+            // Archive session acts on the selected row in the tree.
+            Self::Archive | Self::ArchiveChat(_) => HintKey::App(ShortcutId::ArchiveSession),
+            Self::StatusPage
+            | Self::Back
+            | Self::SetStatus(_)
+            | Self::AddInstruction
+            | Self::CopyPath(_)
+            | Self::Restore
+            | Self::SpaceInstructions
+            | Self::ExecutionSetup
+            | Self::RemoveFromWorkItem(_)
+            | Self::CompareInstructions(_)
+            | Self::ApplyInstructions(_)
+            | Self::PinChat { .. }
+            | Self::CopyChatIdentity(_)
+            | Self::CloseOutChat(_) => HintKey::None,
+        }
+    }
 }
 
 /// The action an Outline key fires (mirrors
@@ -159,11 +186,7 @@ impl MenuEntry {
         icon: &'static str,
         action: MenuAction,
     ) -> Self {
-        let hint = match &action {
-            MenuAction::Outline(key) => HintKey::Outline(*key),
-            MenuAction::Command(command) => HintKey::Command(*command),
-            _ => HintKey::None,
-        };
+        let hint = action.hint();
         Self {
             id,
             label: label.into(),
@@ -178,13 +201,6 @@ impl MenuEntry {
 
     pub(crate) fn disabled(mut self, reason: Option<impl Into<String>>) -> Self {
         self.disabled = reason.map(Into::into);
-        self
-    }
-
-    /// Show (and tooltip) `hint`'s live key: for helper entries whose action
-    /// an app-wide shortcut also runs on the selected row.
-    pub(crate) fn with_hint(mut self, hint: HintKey) -> Self {
-        self.hint = hint;
         self
     }
 
@@ -460,7 +476,6 @@ impl OutlineView {
                 icons::ARCHIVE_MINIMALISTIC,
                 MenuAction::Archive,
             )
-            .with_hint(HintKey::App(ShortcutId::ArchiveSession))
             .disabled(archived.then_some("Already archived")),
             MenuEntry::new(
                 "restore",
@@ -809,8 +824,17 @@ mod tests {
                 WorkOutlineCommand::ShowOutlineShortcuts
             ))
         );
-        let entry = MenuEntry::new("copy-path", "Copy Path", icons::COPY, MenuAction::Archive);
+        let entry = MenuEntry::new(
+            "copy-path",
+            "Copy Path",
+            icons::COPY,
+            MenuAction::CopyPath("a / b".into()),
+        );
         assert_eq!(entry.hint, HintKey::None);
+        assert!(entry.action.dispatch().is_none());
+        // Helper entries an app shortcut also runs show that shortcut.
+        let entry = MenuEntry::new("archive", "Archive", icons::COPY, MenuAction::Archive);
+        assert_eq!(entry.hint, HintKey::App(ShortcutId::ArchiveSession));
         assert!(entry.action.dispatch().is_none());
     }
 
