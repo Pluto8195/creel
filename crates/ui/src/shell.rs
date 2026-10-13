@@ -8787,7 +8787,9 @@ impl Shell {
             return;
         }
         if event.keystroke.key == "escape" && self.work_outline_modal_open() {
-            self.cancel_work_outline_modal(window, cx);
+            if !self.dismiss_work_outline_modal_skills(cx) {
+                self.cancel_work_outline_modal(window, cx);
+            }
             cx.stop_propagation();
             return;
         }

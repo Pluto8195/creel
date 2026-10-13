@@ -34,6 +34,7 @@ use zeron_rpc::{RpcError, methods};
 use crate::appshots::{self, CapturedAppshot};
 
 pub(crate) mod instruction_reset;
+pub(crate) mod skill_completion;
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::notice::{NoticeChipIcon, notice_chip};
@@ -163,6 +164,21 @@ pub fn caret_visible(ms_since_activity: u64) -> bool {
 /// Auto-grow: content height for a wrapped-line count.
 pub fn input_content_height(wrapped_lines: usize) -> f32 {
     wrapped_lines.max(1) as f32 * INPUT_LINE_HEIGHT
+}
+
+/// [`ComposerInput::with_auto_grow`]: the editor never shows fewer rows.
+pub const AUTO_GROW_MIN_LINES: usize = 3;
+/// [`ComposerInput::with_auto_grow`]: the share of the window height the
+/// editor may grow to before it scrolls internally.
+pub const AUTO_GROW_MAX_FRACTION: f32 = 0.4;
+
+/// The content cap of an auto-growing editor in a `window_height` window:
+/// [`AUTO_GROW_MAX_FRACTION`] of it, rounded down to whole rows so the last
+/// visible row is never sliced, and never below [`AUTO_GROW_MIN_LINES`].
+pub fn auto_grow_cap(window_height: f32, line_height: f32) -> f32 {
+    let line_height = line_height.max(1.0);
+    let rows = ((window_height * AUTO_GROW_MAX_FRACTION) / line_height).floor();
+    rows.max(AUTO_GROW_MIN_LINES as f32) * line_height
 }
 
 /// Total expanded composer height (border-box) for a content height: the
@@ -1689,6 +1705,13 @@ pub struct ComposerInput {
     last_width: f32,
     /// Raw Markdown → chip display projection from the last layout pass.
     projection: TextProjection,
+    /// Standalone multi-line editors (Work Outline instructions, Start
+    /// Chat): grow from [`AUTO_GROW_MIN_LINES`] rows up to
+    /// [`AUTO_GROW_MAX_FRACTION`] of the window height, then scroll
+    /// internally. See [`Self::with_auto_grow`].
+    auto_grow: bool,
+    /// The cap [`Self::auto_grow`] resolved on the last render.
+    auto_grow_cap: Option<f32>,
     /// Inline completion preview: painted in faint ink after the text while
     /// the caret sits at the end (palette tab-completion). Owned by the
     /// wrapper — it recomputes and re-sets this on every render pass, so the
@@ -1780,6 +1803,8 @@ impl ComposerInput {
             max_line_width: 0.0,
             last_width: 0.0,
             projection: TextProjection::default(),
+            auto_grow: false,
+            auto_grow_cap: None,
             ghost: None,
             mentions_enabled: false,
             layout_epoch: 0,
@@ -1814,6 +1839,48 @@ impl ComposerInput {
     pub fn with_single_line(mut self) -> Self {
         self.single_line = true;
         self
+    }
+
+    /// Auto-grow like the chat composer, sized for a dialog or side panel:
+    /// at least [`AUTO_GROW_MIN_LINES`] rows tall (the whole box takes
+    /// clicks), growing with content up to [`AUTO_GROW_MAX_FRACTION`] of the
+    /// window height, then scrolling internally (wheel, caret kept in view).
+    /// Containers must not cap the height themselves — a shorter container
+    /// clips the last rows the input believes are visible.
+    pub fn with_auto_grow(mut self) -> Self {
+        self.auto_grow = true;
+        self
+    }
+
+    /// The content height past which the input scrolls instead of growing.
+    fn max_content_height(&self) -> f32 {
+        self.viewport_height
+            .or(self.auto_grow_cap)
+            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V)
+    }
+
+    /// Laid-out width of the text box (popups anchored to it match it).
+    pub(crate) fn measured_width(&self) -> Option<f32> {
+        self.last_bounds.map(|bounds| f32::from(bounds.size.width))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_top(&self) -> f32 {
+        self.scroll_top
+    }
+
+    /// Whether the caret row lies fully inside the visible viewport.
+    #[cfg(test)]
+    pub(crate) fn caret_in_view(&self) -> bool {
+        let Some(bounds) = self.last_bounds else {
+            return false;
+        };
+        let Some(caret) = self.point_for_index(self.cursor_offset()) else {
+            return false;
+        };
+        let top = f32::from(caret.y) - self.scroll_top;
+        let bottom = top + f32::from(self.line_height);
+        top >= -0.5 && bottom <= f32::from(bounds.size.height) + 0.5
     }
 
     fn set_key_context(&mut self, key_context: &'static str, cx: &mut Context<Self>) {
@@ -3767,7 +3834,18 @@ impl gpui::Element for ComposerTextElement {
 }
 
 impl Render for ComposerInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let row_height = f32::from(self.line_height);
+        if self.auto_grow {
+            self.auto_grow_cap = Some(auto_grow_cap(
+                f32::from(window.viewport_size().height),
+                row_height,
+            ));
+        }
+        let min_height = self
+            .auto_grow
+            .then(|| AUTO_GROW_MIN_LINES as f32 * row_height);
+        let max_content_height = self.max_content_height();
         let theme = Theme::of(cx);
         let popup_theme = theme.for_popup();
         let theme = if self.key_context == "PaletteSearch"
@@ -3840,6 +3918,7 @@ impl Render for ComposerInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .w_full()
+            .when_some(min_height, |el, min_height| el.min_h(px(min_height)))
             .text_size(crate::typography::ui_rems(self.text_size))
             .line_height(crate::typography::ui_rems(self.configured_line_height))
             .text_color(text_color)
@@ -3853,9 +3932,7 @@ impl Render for ComposerInput {
                     true,
                     ComposerTextElement {
                         input: input.clone(),
-                        max_content_height: self
-                            .viewport_height
-                            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
+                        max_content_height,
                     },
                 )
                 // Fade through the existing top padding, like the transcript
@@ -3871,7 +3948,7 @@ impl Render for ComposerInput {
                         input.content_height,
                         input
                             .settled_viewport_height
-                            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
+                            .unwrap_or_else(|| input.max_content_height()),
                         visible_height,
                         input.scroll_top,
                     )
@@ -4143,6 +4220,73 @@ fn mention_error_message(err: &RpcError) -> SharedString {
         RpcError::Transport(_) | RpcError::Closed => "The session's device is unreachable".into(),
         RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
     }
+}
+
+/// `ListCommands` params for `(harness, cwd)`, targeted like file search:
+/// the chat/space host device owns the agent binary, and a chat id lets the
+/// engine resolve the chat's own folder safely. Shared by the chat composer
+/// and [`skill_completion::SkillCompletion`].
+fn list_commands_params(
+    harness: HarnessId,
+    cwd: &str,
+    target_device_id: Option<&str>,
+    chat_id: Option<&str>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({ "harness": harness, "cwd": cwd });
+    if let Some(object) = params.as_object_mut() {
+        if let Some(target) = target_device_id {
+            object.insert("targetDeviceId".into(), target.into());
+        }
+        if let Some(chat_id) = chat_id {
+            object.insert("chatId".into(), chat_id.into());
+        }
+    }
+    params
+}
+
+/// One slash-popup row's body: the command icon, `/name`, and the muted
+/// description (with its argument hint). Shared by the chat composer's
+/// popup and [`skill_completion::SkillCompletion`].
+fn slash_row_body(theme: &Theme, command: &SlashCommand) -> gpui::Div {
+    let name: SharedString = format!("/{}", command.name).into();
+    let mut description = command.description.clone();
+    if let Some(hint) = &command.input_hint {
+        if description.is_empty() {
+            description = format!("<{hint}>");
+        } else {
+            description = format!("{description} · <{hint}>");
+        }
+    }
+    let description: SharedString = description.into();
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            crate::icons::icon(crate::icons::COMMAND)
+                .size(px(14.0))
+                .text_color(theme.text_muted),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(12.5))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(name),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .truncate()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child(description),
+        )
 }
 
 /// A failed command discovery, translated for the popup.
@@ -5725,14 +5869,8 @@ impl Composer {
             }
         };
         let request = self.slash.request;
+        let params = list_commands_params(harness, &key.1, target.as_deref(), chat_id.as_deref());
         self.slash_task = Some(cx.spawn(async move |this, cx| {
-            let mut params = serde_json::json!({ "harness": harness, "cwd": key.1 });
-            if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
-                object.insert("targetDeviceId".into(), target.clone().into());
-            }
-            if let (Some(chat_id), Some(object)) = (&chat_id, params.as_object_mut()) {
-                object.insert("chatId".into(), chat_id.clone().into());
-            }
             let result = engine.client().call(methods::LIST_COMMANDS, params).await;
             this.update(cx, |composer, cx| {
                 if composer.slash.request != request {
@@ -5956,16 +6094,6 @@ impl Composer {
                     continue;
                 };
                 let selected = self.slash.active == Some(row_ix);
-                let name: SharedString = format!("/{}", command.name).into();
-                let mut description = command.description.clone();
-                if let Some(hint) = &command.input_hint {
-                    if description.is_empty() {
-                        description = format!("<{hint}>");
-                    } else {
-                        description = format!("{description} · <{hint}>");
-                    }
-                }
-                let description: SharedString = description.into();
                 let row_group: SharedString = format!("slash-row-{row_ix}").into();
                 rows.push(
                     crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
@@ -5975,42 +6103,11 @@ impl Composer {
                             this.slash.active = Some(row_ix);
                             this.accept_slash(cx);
                         }))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    crate::icons::icon(crate::icons::COMMAND)
-                                        .size(px(14.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(crate::typography::ui_rems(12.5))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(theme.text)
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .truncate()
-                                        .text_size(crate::typography::ui_rems(12.0))
-                                        .text_color(theme.text_muted)
-                                        .child(description),
-                                )
-                                .when(can_attach, |row| {
-                                    row.child(Self::render_slash_attach_button(
-                                        theme, row_ix, selected, row_group, cx,
-                                    ))
-                                }),
-                        )
+                        .child(slash_row_body(theme, command).when(can_attach, |row| {
+                            row.child(Self::render_slash_attach_button(
+                                theme, row_ix, selected, row_group, cx,
+                            ))
+                        }))
                         .into_any_element(),
                 );
             }

@@ -30,6 +30,7 @@ use zeron_proto::{
     WorkOutlineSnapshot,
 };
 
+use crate::composer::skill_completion::{SkillCompletion, SkillInsertion, SkillSource};
 use crate::work_outline::actions::{OperationSlot, expect_revision, instruction_error_text};
 use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::instructions::{self, CompareUnavailable};
@@ -187,6 +188,13 @@ pub(super) struct FromChatDialog {
     pub(super) target: FromChatTarget,
     snapshot: Arc<WorkOutlineSnapshot>,
     pub(super) input: Entity<ComposerInput>,
+    /// `/` skill autocomplete inserting plain "`name` skill" text, listed
+    /// for the chosen target's resolved execution root.
+    pub(super) skills: Entity<SkillCompletion>,
+    skill_harness: zeron_proto::HarnessId,
+    /// The Space's folder and owning device (the root's fallback).
+    space_path: String,
+    space_device: String,
     op: OperationSlot,
     saving: bool,
     error: Option<String>,
@@ -196,6 +204,17 @@ pub(super) struct FromChatDialog {
 impl FromChatDialog {
     pub(super) fn input_focus(&self, cx: &App) -> FocusHandle {
         self.input.read(cx).focus_handle(cx)
+    }
+
+    fn skill_source(&self) -> SkillSource {
+        SkillSource::for_outline_scope(
+            &self.snapshot,
+            &self.space_id,
+            self.target_item().map(|(id, _)| id.as_str()),
+            self.skill_harness,
+            &self.space_path,
+            &self.space_device,
+        )
     }
 
     fn target_item(&self) -> Option<&(String, String)> {
@@ -665,37 +684,61 @@ impl Shell {
             .take(zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS)
             .collect();
         let input = cx.new(|cx| {
-            let mut input = ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0);
+            let mut input = ComposerInput::new("Instruction", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow();
             input.set_text(draft, cx);
             input
         });
+        let skills = cx.new(|cx| {
+            SkillCompletion::new(
+                self.state.clone(),
+                input.clone(),
+                SkillInsertion::InstructionText,
+                cx,
+            )
+            .over_modal()
+        });
+        let (space_path, space_device) = self
+            .state
+            .read(cx)
+            .space_row(&space_id)
+            .map(|space| (space.path.clone(), space.device_id.clone()))
+            .unwrap_or_default();
+        let skill_harness = self.skill_harness(cx);
         let input_events = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.save_instruction_from_chat(window, cx);
             }
         });
-        self.begin_work_outline_modal(
-            WorkOutlineModal::FromChat(FromChatDialog {
-                chat_id: chat_id.to_owned(),
-                message_id,
-                excerpt,
-                space_id,
-                target: if item.is_some() {
-                    FromChatTarget::Item
-                } else {
-                    FromChatTarget::SpaceRoot
-                },
-                item,
-                parent,
-                snapshot,
-                input,
-                op: OperationSlot::default(),
-                saving: false,
-                error: None,
-                _input_events: input_events,
-            }),
-            cx,
-        );
+        let dialog = FromChatDialog {
+            chat_id: chat_id.to_owned(),
+            message_id,
+            excerpt,
+            space_id,
+            target: if item.is_some() {
+                FromChatTarget::Item
+            } else {
+                FromChatTarget::SpaceRoot
+            },
+            item,
+            parent,
+            snapshot,
+            input,
+            skills,
+            skill_harness,
+            space_path,
+            space_device,
+            op: OperationSlot::default(),
+            saving: false,
+            error: None,
+            _input_events: input_events,
+        };
+        let source = dialog.skill_source();
+        dialog
+            .skills
+            .update(cx, |skills, cx| skills.set_source(source, cx));
+        self.begin_work_outline_modal(WorkOutlineModal::FromChat(dialog), cx);
         Ok(())
     }
 
@@ -706,6 +749,9 @@ impl Shell {
     ) {
         if let Some(WorkOutlineModal::FromChat(dialog)) = self.work_outline_modal.as_mut() {
             dialog.target = target;
+            let source = dialog.skill_source();
+            let skills = dialog.skills.clone();
+            skills.update(cx, |skills, cx| skills.set_source(source, cx));
             cx.notify();
         }
     }
@@ -998,18 +1044,21 @@ pub(super) fn from_chat_card(
         .child(targets)
         .child(small_note("instruction-from-chat-reach", reach, theme.text_muted).mt(px(8.0)))
         .child(
+            // Auto-grows with the text (the input owns the cap and scrolls
+            // past it); no height cap here, which would clip.
             div()
+                .relative()
+                .debug_selector(|| "instruction-from-chat-text".into())
                 .mt(px(8.0))
                 .w_full()
-                .min_h(px(64.0))
-                .max_h(px(220.0))
                 .px(px(8.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
                 .border_1()
                 .border_color(theme.border_strong)
                 .bg(theme.input_bg)
-                .child(dialog.input.clone()),
+                .child(dialog.input.clone())
+                .child(dialog.skills.clone()),
         )
         .when_some(dialog.error.clone(), |el, error| {
             el.child(small_note("instruction-from-chat-error", error, theme.warning).mt(px(6.0)))

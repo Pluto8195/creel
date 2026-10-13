@@ -580,6 +580,20 @@ impl WorkOutlineActions {
         }
     }
 
+    /// `ListCommands` (the chat composer's slash-command/skill discovery) for
+    /// the editors' `/` skill autocomplete; `params` come from the composer's
+    /// own builder, so the folder and device targeting match a chat's.
+    pub(crate) fn list_commands(
+        &self,
+        params: serde_json::Value,
+    ) -> Task<Result<Vec<zeron_proto::SlashCommand>, WorkOutlineError>> {
+        self.call(
+            methods::LIST_COMMANDS,
+            params,
+            decode_json::<Vec<zeron_proto::SlashCommand>>,
+        )
+    }
+
     /// `DescribeExecutionRepository`: the identity a binding records for the
     /// checkout at `path`. The caller sets `targetDeviceId` when the Space
     /// lives on another device (only the owner can fingerprint it).

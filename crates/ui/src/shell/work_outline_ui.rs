@@ -490,6 +490,34 @@ impl Shell {
         self.work_outline_modal.is_some()
     }
 
+    /// Escape inside a modal closes its open `/` skill popup first (the
+    /// shell's capture-phase Escape would otherwise cancel the whole modal
+    /// before the input sees the key). `true` when a popup was closed.
+    pub(super) fn dismiss_work_outline_modal_skills(&mut self, cx: &mut Context<Self>) -> bool {
+        let skills = match self.work_outline_modal.as_ref() {
+            Some(WorkOutlineModal::StartChat(dialog)) => dialog.skills.clone(),
+            Some(WorkOutlineModal::FromChat(dialog)) => dialog.skills.clone(),
+            _ => return false,
+        };
+        if !skills.read(cx).is_open() {
+            return false;
+        }
+        skills.update(cx, |skills, cx| skills.dismiss(cx));
+        true
+    }
+
+    /// The harness whose skills the Work Outline editors offer: the one a
+    /// new Chat would use (the composer's resolved harness), else Claude Code.
+    pub(crate) fn skill_harness(&self, cx: &App) -> zeron_proto::HarnessId {
+        self.composer
+            .read(cx)
+            .pickers()
+            .read(cx)
+            .resolved(cx)
+            .harness
+            .unwrap_or(zeron_proto::HarnessId::ClaudeCode)
+    }
+
     /// Open the external reference of a work item per the web-link
     /// preference. See [`reference_open`]. Never touches manual PR/ticket
     /// links: it only opens a URL.

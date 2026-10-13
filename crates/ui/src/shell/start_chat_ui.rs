@@ -24,6 +24,7 @@ use zeron_proto::{
     WorkItemPrompt, WorkOutlineSnapshot,
 };
 
+use crate::composer::skill_completion::{SkillCompletion, SkillInsertion, SkillSource};
 use crate::work_outline::actions::OperationSlot;
 use crate::work_outline::execution::{self as exec, ValidationHeadline, ValidationState};
 use crate::work_outline::launch::{self, LaunchAgent, LaunchFailure, WorktreePick, WorktreeTarget};
@@ -36,6 +37,14 @@ pub(super) struct StartChatDialog {
     /// The Space's owning device.
     device_id: String,
     pub(super) input: Entity<ComposerInput>,
+    /// `/` skill autocomplete on the prompt: the picked agent's skills for
+    /// the item's resolved execution root, inserted as the composer does.
+    pub(super) skills: Entity<SkillCompletion>,
+    /// Folder the skill list comes from (resolved execution root, else the
+    /// Space path).
+    skill_root: String,
+    /// Harness when no launch agent is offered.
+    fallback_harness: zeron_proto::HarnessId,
     pub(super) worktree_name: Entity<ComposerInput>,
     pub(super) agents: Vec<LaunchAgent>,
     pub(super) agent_ix: usize,
@@ -67,6 +76,17 @@ impl StartChatDialog {
     /// Whether validation lets the launch proceed.
     pub(super) fn validated(&self) -> bool {
         matches!(&self.validation, ValidationState::Done(reply) if reply.ok)
+    }
+
+    fn skill_source(&self) -> SkillSource {
+        SkillSource {
+            harness: self
+                .agents
+                .get(self.agent_ix)
+                .map_or(self.fallback_harness, |agent| agent.harness),
+            cwd: self.skill_root.clone(),
+            device_id: (!self.device_id.is_empty()).then(|| self.device_id.clone()),
+        }
     }
 
     pub(super) fn can_start(&self, cx: &App) -> bool {
@@ -149,8 +169,31 @@ impl Shell {
             launch::instructions_changed_since_last_launch(&snapshot, item_id);
         let agents = self.composer.read(cx).pickers().read(cx).launch_agents(cx);
         let input = cx.new(|cx| {
-            ComposerInput::new("What should the agent do?", cx).with_text_metrics(12.5, 18.0)
+            ComposerInput::new("What should the agent do?", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow()
         });
+        let skills = cx.new(|cx| {
+            SkillCompletion::new(
+                self.state.clone(),
+                input.clone(),
+                SkillInsertion::SlashCommand,
+                cx,
+            )
+            .over_modal()
+        });
+        let skill_root = resolved
+            .as_ref()
+            .map(|resolved| resolved.configuration.execution_root.clone())
+            .filter(|root| !root.is_empty())
+            .or_else(|| {
+                self.state
+                    .read(cx)
+                    .space_row(space_id)
+                    .map(|space| space.path.clone())
+            })
+            .unwrap_or_default();
+        let fallback_harness = self.skill_harness(cx);
         let worktree_name = cx.new(|cx| {
             ComposerInput::with_context(
                 "Worktree name",
@@ -166,33 +209,38 @@ impl Shell {
             }
         });
         let describe = target.describe_path().map(str::to_owned);
-        self.begin_work_outline_modal(
-            WorkOutlineModal::StartChat(StartChatDialog {
-                space_id: space_id.to_owned(),
-                item_id: item_id.to_owned(),
-                item_path,
-                device_id,
-                input,
-                worktree_name,
-                agents,
-                agent_ix: 0,
-                resolved,
-                target,
-                worktrees: None,
-                pick: WorktreePick::SpaceWorkspace,
-                validation: ValidationState::Idle,
-                effective,
-                instructions_changed,
-                instructions_open: instructions_changed,
-                launch_blocker,
-                op: OperationSlot::default(),
-                starting: false,
-                failure: None,
-                rejected: None,
-                _input_events: input_events,
-            }),
-            cx,
-        );
+        let dialog = StartChatDialog {
+            space_id: space_id.to_owned(),
+            item_id: item_id.to_owned(),
+            item_path,
+            device_id,
+            input,
+            skills,
+            skill_root,
+            fallback_harness,
+            worktree_name,
+            agents,
+            agent_ix: 0,
+            resolved,
+            target,
+            worktrees: None,
+            pick: WorktreePick::SpaceWorkspace,
+            validation: ValidationState::Idle,
+            effective,
+            instructions_changed,
+            instructions_open: instructions_changed,
+            launch_blocker,
+            op: OperationSlot::default(),
+            starting: false,
+            failure: None,
+            rejected: None,
+            _input_events: input_events,
+        };
+        let source = dialog.skill_source();
+        dialog
+            .skills
+            .update(cx, |skills, cx| skills.set_source(source, cx));
+        self.begin_work_outline_modal(WorkOutlineModal::StartChat(dialog), cx);
         self.validate_start_chat(cx);
         if let Some(path) = describe {
             self.describe_start_chat_target(path, cx);
@@ -320,6 +368,9 @@ impl Shell {
             && ix < dialog.agents.len()
         {
             dialog.agent_ix = ix;
+            let source = dialog.skill_source();
+            let skills = dialog.skills.clone();
+            skills.update(cx, |skills, cx| skills.set_source(source, cx));
             cx.notify();
         }
     }
@@ -883,18 +934,22 @@ pub(super) fn start_chat_card(
                 .flex()
                 .flex_col()
                 .child(
+                    // Auto-grows with the prompt (the input owns the cap and
+                    // scrolls past it); no height cap here, which would clip.
                     div()
+                        .relative()
+                        .debug_selector(|| "start-chat-prompt".into())
+                        .flex_none()
                         .mt(px(8.0))
                         .w_full()
-                        .min_h(px(64.0))
-                        .max_h(px(200.0))
                         .px(px(8.0))
                         .py(px(6.0))
                         .rounded(px(6.0))
                         .border_1()
                         .border_color(theme.border_strong)
                         .bg(theme.input_bg)
-                        .child(dialog.input.clone()),
+                        .child(dialog.input.clone())
+                        .child(dialog.skills.clone()),
                 )
                 .child(section_label("Agent", theme))
                 .child(agents)

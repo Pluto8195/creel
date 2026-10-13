@@ -672,7 +672,12 @@ impl WorkItemDetails {
         };
         let rejecting = review.rejecting;
         row = row
-            .child(Self::input_frame(&self.proposal_input, theme).min_h(px(48.0)))
+            .child(Self::editor_frame(
+                &self.proposal_input,
+                &self.proposal_skills,
+                "work-item-proposal-editor",
+                theme,
+            ))
             .child(
                 div()
                     .debug_selector(|| "work-item-proposal-target".into())
