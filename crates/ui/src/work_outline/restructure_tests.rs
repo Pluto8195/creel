@@ -366,12 +366,12 @@ fn restructuring_keys_are_inert_in_text_inputs(cx: &mut gpui::TestAppContext) {
     outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
     draw(vcx);
 
-    // A Chat row selected: nothing to move, no notice.
+    // A Chat row selected: Indent and its Tab alias are no-ops, no notice
+    // (the Chat moves are covered in `chat_rows_move_between_items_*`).
     outline.update(vcx, |outline, cx| {
         outline.select(&row_key::chat(CHAT_UI), cx)
     });
     press(vcx, "tab");
-    press(vcx, "shift-up");
     press(vcx, "shift-right");
     assert!(calls.lock().unwrap().is_empty());
     assert!(outline.read_with(vcx, |outline, _| outline.notice().is_none()));
@@ -1388,4 +1388,379 @@ fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestA
     assert_eq!(parent(vcx), 0, "rolled back to the top level");
     assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
+}
+
+// --------------------------------------------------------------------------
+// Chat rows: Shift+Arrows re-associate the selected Chat
+// --------------------------------------------------------------------------
+
+/// `(op, chatId, workItemId)` of the recorded call `ix`.
+fn chat_call_at(calls: &OutlineCalls, ix: usize) -> (String, String, serde_json::Value) {
+    let call = calls.lock().unwrap()[ix].clone();
+    (
+        call["op"].as_str().unwrap_or_default().to_owned(),
+        call["chatId"].as_str().unwrap_or_default().to_owned(),
+        call["workItemId"].clone(),
+    )
+}
+
+fn assigned(chat: &str, item: &str) -> (String, String, serde_json::Value) {
+    (
+        "assignChatToWorkItem".into(),
+        chat.into(),
+        serde_json::json!(item),
+    )
+}
+
+/// The row key the Chat's row sits under.
+fn chat_parent(
+    outline: &Entity<OutlineView>,
+    vcx: &mut gpui::VisualTestContext,
+    chat: &str,
+) -> Option<String> {
+    outline.read_with(vcx, |outline, _| {
+        let model = outline.model();
+        let ix = model.position(&row_key::chat(chat))?;
+        model.rows[ix]
+            .parent
+            .map(|parent| model.rows[parent].key.clone())
+    })
+}
+
+fn select_chat(outline: &Entity<OutlineView>, vcx: &mut gpui::VisualTestContext, chat: &str) {
+    outline.update(vcx, |outline, cx| outline.select(&row_key::chat(chat), cx));
+    draw(vcx);
+}
+
+/// Shift+Up / Shift+Down move a Chat to the previous / next work item in
+/// visual row order (any depth, stepping over Chat rows and its own item),
+/// Shift+Left to its item's parent and, from a top-level item, out to
+/// Unassociated Chats; the ends, Shift+Right and Tab are no-ops. The
+/// selection rides along with the Chat.
+#[gpui::test]
+fn chat_rows_move_between_items_in_visual_order(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let item = |id: &str| Some(row_key::item("s1", id));
+    let count = |calls: &OutlineCalls| calls.lock().unwrap().len();
+
+    // UI's Chat: up to Auth endpoints (deeper, above UI, past chat rows).
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        item(API_AUTH),
+        "shown at once"
+    );
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+    assert!(outline.read_with(vcx, |o, _| o.captured_drift.is_none()));
+    // Then API, then Launch v2; nothing above the first item.
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_UI, API));
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 2), assigned(CHAT_UI, LAUNCH));
+    press(vcx, "shift-up");
+    assert_eq!(count(&calls), 3, "the first item is the top end");
+
+    // Down to its child API, then Shift+Left back to the parent.
+    press(vcx, "shift-down");
+    assert_eq!(chat_call_at(&calls, 3), assigned(CHAT_UI, API));
+    press(vcx, "shift-left");
+    assert_eq!(chat_call_at(&calls, 4), assigned(CHAT_UI, LAUNCH));
+    // From a top-level item: out of its item.
+    press(vcx, "shift-left");
+    let (op, chat, _) = chat_call_at(&calls, 5);
+    assert_eq!(
+        (op.as_str(), chat.as_str()),
+        ("removeChatFromWorkItem", CHAT_UI)
+    );
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::unassociated(Some("s1")))
+    );
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+    // Unassociated: Shift+Left / Shift+Tab / Shift+Down do nothing.
+    for keys in [
+        "shift-left",
+        "shift-tab",
+        "shift-down",
+        "shift-right",
+        "tab",
+    ] {
+        press(vcx, keys);
+        assert_eq!(count(&calls), 6, "{keys} is a no-op");
+    }
+    // Shift+Up: the Space's last shown work item.
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 6), assigned(CHAT_UI, HOUSEKEEPING));
+    // The last item is the bottom end (archived Retired is never a target).
+    press(vcx, "shift-down");
+    press(vcx, "shift-right");
+    press(vcx, "tab");
+    assert_eq!(count(&calls), 7);
+    // Shift+Tab is the Shift+Left alias.
+    press(vcx, "shift-tab");
+    let (op, _, _) = chat_call_at(&calls, 7);
+    assert_eq!(op, "removeChatFromWorkItem");
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_none()));
+    assert!(
+        !crate::overview_positions::path(dir.path()).exists(),
+        "canvas positions untouched"
+    );
+}
+
+/// A Chat move that changes its effective instructions asks first, through
+/// the same drift confirmation as a drop or the picker.
+#[gpui::test]
+fn chat_moves_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    // UI (root + Launch) to Auth endpoints (+ API + Auth).
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-up");
+    let request = outline
+        .update(vcx, |outline, _| outline.captured_drift.take())
+        .expect("asks");
+    assert_eq!(request.impact.chat_ids, [CHAT_UI]);
+    assert!(calls.lock().unwrap().is_empty());
+    vcx.update(|window, cx| (request.on_decision)(false, window, cx));
+    vcx.run_until_parked();
+    assert!(calls.lock().unwrap().is_empty(), "cancel sends nothing");
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::item("s1", UI))
+    );
+
+    press(vcx, "shift-up");
+    let request = outline
+        .update(vcx, |outline, _| outline.captured_drift.take())
+        .expect("asks again");
+    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+    vcx.run_until_parked();
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
+
+    // Up to the parent drops Auth endpoints' own instruction.
+    select_chat(&outline, vcx, CHAT_AUTH);
+    press(vcx, "shift-left");
+    let request = outline
+        .update(vcx, |outline, _| outline.captured_drift.take())
+        .expect("asks for the parent too");
+    assert_eq!(request.confirm_label, "Associate");
+    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+    vcx.run_until_parked();
+    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_AUTH, API));
+}
+
+/// Rapid presses while the first re-association is in flight all apply, in
+/// order, each planned from where the previous one already shows the Chat.
+#[gpui::test]
+fn rapid_chat_moves_apply_in_order(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) = gated_restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-up");
+    press(vcx, "shift-up");
+    press(vcx, "shift-left");
+    assert_eq!(calls.lock().unwrap().len(), 1, "one in flight, two queued");
+    release_reply(&gate, vcx);
+    release_reply(&gate, vcx);
+    release_reply(&gate, vcx);
+    assert_eq!(gate.held(), 0);
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
+    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_UI, API));
+    assert_eq!(chat_call_at(&calls, 2), assigned(CHAT_UI, LAUNCH));
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::item("s1", LAUNCH))
+    );
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+}
+
+/// A failed re-association rolls the Chat back with a notice; pressing the
+/// same key again replays its operation id.
+#[gpui::test]
+fn a_failed_chat_move_rolls_back_and_retries_with_its_operation_id(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, gate, vcx) = gated_restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        |_| {
+            Err(zeron_rpc::RpcError::Failed(
+                "work-outline/conflict: stale".into(),
+            ))
+        },
+    );
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-down");
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::item("s1", HOUSEKEEPING))
+    );
+    release_reply(&gate, vcx);
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::item("s1", UI)),
+        "rolled back"
+    );
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    press(vcx, "shift-down");
+    release_reply(&gate, vcx);
+    let ids: Vec<String> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call["operationId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], ids[1], "the retry replays the operation id");
+}
+
+/// The Chat moves are inert while a text field or the picker owns focus, and
+/// a dangling Chat row leaves a notice instead of moving.
+#[gpui::test]
+fn chat_moves_are_inert_in_text_inputs_and_refused_for_dangling_chats(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    select_chat(&outline, vcx, CHAT_UI);
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.open_associate_picker(None, window, cx).unwrap()
+    });
+    draw(vcx);
+    for keys in ["shift-up", "shift-down", "shift-left", "shift-tab"] {
+        press(vcx, keys);
+    }
+    assert!(calls.lock().unwrap().is_empty(), "the picker owns the keys");
+    outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
+    draw(vcx);
+
+    // Inline rename of a work item: its editor owns the keys.
+    select_item(&outline, vcx, UI);
+    outline.update_in(vcx, |outline, window, cx| {
+        outline.begin_rename(window, cx).unwrap()
+    });
+    draw(vcx);
+    for keys in ["shift-up", "shift-down", "shift-left", "shift-tab"] {
+        press(vcx, keys);
+    }
+    assert!(calls.lock().unwrap().is_empty(), "the editor owns the keys");
+    outline.update(vcx, |outline, cx| outline.cancel_edit(cx));
+    focus_outline(&outline, vcx);
+
+    // chat-ghost: its assignment survives but the Chat is gone.
+    select_chat(&outline, vcx, CHAT_GHOST);
+    press(vcx, "shift-down");
+    assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(
+        outline.read_with(vcx, |o, _| o.notice().map(str::to_owned)),
+        Some("This chat no longer exists on any device".to_owned())
+    );
+}
+
+/// Chat moves stay inside the Chat's Space: the next Space's items are
+/// never targets, and a projectless Chat leaves a notice.
+#[gpui::test]
+fn chat_moves_never_cross_spaces(cx: &mut gpui::TestAppContext) {
+    use crate::work_outline::model::tests::{chat, fixture_chats, ready};
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        cx.set_global(Theme::default());
+    });
+    let calls: OutlineCalls = Default::default();
+    let sink = calls.clone();
+    let state = cx.new(|_| AppState::new());
+    state.update(cx, |state, _| {
+        state.work_outline_actions_override =
+            Some(crate::work_outline::WorkOutlineActions::scripted(
+                std::sync::Arc::new(move |_, params| {
+                    sink.lock().unwrap().push(params.clone());
+                    reply_ok(&params)
+                }),
+            ));
+    });
+    let (outline, vcx) = cx.add_window_view(|_, cx| OutlineView::new(state.clone(), cx));
+    vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
+    // Space s2: the same tree, no Chats of its own but one unassociated.
+    let mut s2 = crate::work_outline::store::fixture_snapshot("s2");
+    for item in &mut s2.items {
+        item.chat_ids.clear();
+    }
+    s2.assignments.clear();
+    s2.unassociated_chat_ids = vec!["chat-b".into()];
+    let mut chats = fixture_chats("s1");
+    chats.push(chat("chat-b", Some("s2")));
+    chats.push(chat("chat-nowhere", None));
+    outline.update(vcx, |outline, cx| {
+        outline.set_inputs(
+            crate::work_outline::outline_view::OutlineInputs {
+                spaces: vec![
+                    ready(
+                        "s1",
+                        "Alpha",
+                        crate::work_outline::store::fixture_snapshot("s1"),
+                    ),
+                    ready("s2", "Beta", s2),
+                ],
+                chats,
+                options: crate::work_outline::model::OutlineOptions {
+                    all_spaces: true,
+                    ..Default::default()
+                },
+            },
+            cx,
+        )
+    });
+    focus_outline(&outline, vcx);
+
+    // s1's last item is followed by s2's rows: still the bottom end.
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-down");
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, HOUSEKEEPING));
+    assert_eq!(
+        chat_parent(&outline, vcx, CHAT_UI),
+        Some(row_key::item("s1", HOUSEKEEPING))
+    );
+    press(vcx, "shift-down");
+    assert_eq!(calls.lock().unwrap().len(), 1, "never into s2");
+
+    // s2's unassociated Chat goes up to s2's own last item.
+    select_chat(&outline, vcx, "chat-b");
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 1), assigned("chat-b", HOUSEKEEPING));
+    assert_eq!(
+        chat_parent(&outline, vcx, "chat-b"),
+        Some(row_key::item("s2", HOUSEKEEPING))
+    );
+
+    // Projectless: nothing to move into.
+    select_chat(&outline, vcx, "chat-nowhere");
+    press(vcx, "shift-up");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        outline.read_with(vcx, |o, _| o.notice().map(str::to_owned)),
+        Some("Chats without a project cannot be associated".to_owned())
+    );
 }

@@ -858,6 +858,9 @@ mod tests {
                 "open-chat",
                 "rename",
                 "associate",
+                "move-to-previous-item",
+                "move-to-next-item",
+                "move-to-parent-item",
                 "remove-from-item",
                 "compare-instructions",
                 "apply-instructions",
@@ -871,10 +874,33 @@ mod tests {
             "Move to Work Item\u{2026}"
         );
         assert_eq!(row(&shell, cx, "pin").label, "Pin");
+        // The Chat moves show the restructuring keys that run them.
+        let keys = |id: &str, cx: &mut gpui::VisualTestContext| row(&shell, cx, id).keys;
+        assert_eq!(
+            keys("move-to-previous-item", cx),
+            Some(key_label("shift-up"))
+        );
+        assert_eq!(keys("move-to-next-item", cx), Some(key_label("shift-down")));
+        assert_eq!(
+            keys("move-to-parent-item", cx),
+            Some(key_label("shift-left"))
+        );
+        assert_eq!(
+            row(&shell, cx, "move-to-parent-item").label,
+            "Move to Parent Item"
+        );
+        for id in [
+            "move-to-previous-item",
+            "move-to-next-item",
+            "move-to-parent-item",
+        ] {
+            assert_eq!(row(&shell, cx, id).disabled, None, "{id}");
+        }
         press(cx, "escape");
         settle(&shell, cx);
 
-        // An unassociated Chat: Associate, nothing to remove or compare.
+        // An unassociated Chat: Associate, nothing to remove or compare;
+        // it can only move up into the last work item.
         right_click(cx, &row_key::chat(CHAT_LOOSE_A));
         let chat_ids = ids(&shell, cx);
         assert_eq!(
@@ -883,6 +909,15 @@ mod tests {
         );
         assert!(!chat_ids.contains(&"remove-from-item"));
         assert!(!chat_ids.contains(&"compare-instructions"));
+        assert_eq!(row(&shell, cx, "move-to-previous-item").disabled, None);
+        assert_eq!(
+            row(&shell, cx, "move-to-next-item").disabled.as_deref(),
+            Some("No work item below")
+        );
+        assert_eq!(
+            row(&shell, cx, "move-to-parent-item").disabled.as_deref(),
+            Some("Not in a work item")
+        );
         press(cx, "escape");
         settle(&shell, cx);
 
@@ -1175,5 +1210,64 @@ mod tests {
         assert_eq!(moves(&calls), 3);
         press(cx, "shift-left");
         assert_eq!(moves(&calls), 4);
+    }
+
+    /// The Chat-row moves through the real keymap: a left click on a Chat
+    /// row, then Shift+Down / Shift+Left / Shift+Up re-associate it (one
+    /// `assignChatToWorkItem` / `removeChatFromWorkItem` each, shown at once,
+    /// the selection riding along); Shift+Right does nothing; the menu's
+    /// Move to Next Item sends the same request as Shift+Down.
+    #[gpui::test]
+    fn click_then_shift_arrows_move_a_chat_row_in_the_shell(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, outline, calls, cx) = menu_shell(cx, dir.path(), snapshot);
+        let chat = row_key::chat(CHAT_UI);
+        let at = cx
+            .debug_bounds(selector(format!("outline-row-{chat}")))
+            .expect("the Chat row is shown")
+            .center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+        cx.run_until_parked();
+        redraw(cx);
+        assert_eq!(selected(&outline, cx), Some(chat.clone()));
+        assert!(outline_focused(&outline, cx));
+        let parent = |cx: &mut gpui::VisualTestContext| {
+            outline.read_with(cx, |outline, _| {
+                let model = outline.model();
+                let ix = model.position(&row_key::chat(CHAT_UI)).unwrap();
+                model.rows[ix].parent.map(|p| model.rows[p].key.clone())
+            })
+        };
+        let call = |ix: usize| calls.lock().unwrap()[ix].clone();
+
+        press(cx, "shift-down");
+        assert_eq!(call(0)["op"], "assignChatToWorkItem");
+        assert_eq!(call(0)["chatId"], CHAT_UI);
+        assert_eq!(call(0)["workItemId"], HOUSEKEEPING);
+        assert_eq!(parent(cx), Some(row_key::item("s1", HOUSEKEEPING)));
+        assert_eq!(selected(&outline, cx), Some(chat.clone()));
+
+        press(cx, "shift-left");
+        assert_eq!(call(1)["op"], "removeChatFromWorkItem");
+        assert_eq!(call(1)["chatId"], CHAT_UI);
+        assert_eq!(parent(cx), Some(row_key::unassociated(Some("s1"))));
+
+        press(cx, "shift-right");
+        assert_eq!(calls.lock().unwrap().len(), 2, "Shift+Right does nothing");
+
+        press(cx, "shift-up");
+        assert_eq!(call(2)["workItemId"], HOUSEKEEPING);
+        assert_eq!(selected(&outline, cx), Some(chat.clone()));
+
+        // The menu entry runs the same move as its key.
+        right_click(cx, &row_key::chat(CHAT_API));
+        assert!(menu_open(&shell, cx));
+        click(cx, "move-to-next-item");
+        assert!(!menu_open(&shell, cx));
+        assert_eq!(call(3)["op"], "assignChatToWorkItem");
+        assert_eq!(call(3)["chatId"], CHAT_API);
+        assert_eq!(call(3)["workItemId"], API_AUTH);
+        assert_eq!(selected(&outline, cx), Some(row_key::chat(CHAT_API)));
     }
 }

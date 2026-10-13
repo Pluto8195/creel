@@ -155,6 +155,10 @@ pub(crate) enum OutlineChange {
         chat_id: String,
         work_item_id: String,
     },
+    /// Remove a Chat from its work item (to Unassociated Chats).
+    RemoveChat {
+        chat_id: String,
+    },
     /// Move an item under `new_parent` (`None` = top level).
     MoveItem {
         work_item_id: String,
@@ -184,7 +188,7 @@ impl OutlineChange {
     /// Verb phrase for the confirmation title.
     pub(crate) fn title(&self) -> &'static str {
         match self {
-            Self::AssignChat { .. } => "Change this Chat's instructions?",
+            Self::AssignChat { .. } | Self::RemoveChat { .. } => "Change this Chat's instructions?",
             Self::MoveItem { .. } => "Move and change instructions?",
             Self::SetInheritance { .. } => "Change inherited instructions?",
             Self::EditInstruction { .. } => "Save instruction change?",
@@ -196,6 +200,7 @@ impl OutlineChange {
     pub(crate) fn confirm_label(&self) -> &'static str {
         match self {
             Self::AssignChat { .. } => "Associate",
+            Self::RemoveChat { .. } => "Remove",
             Self::MoveItem { .. } => "Move",
             Self::SetInheritance { .. } => "Change",
             Self::EditInstruction { .. } => "Save",
@@ -253,13 +258,18 @@ pub(crate) fn plural(count: usize, one: &str, many: &str) -> String {
 /// yield an empty impact.
 pub(crate) fn drift_impact(snapshot: &WorkOutlineSnapshot, change: &OutlineChange) -> DriftImpact {
     let assigned = assigned_chats(snapshot);
-    if let OutlineChange::AssignChat {
-        chat_id,
-        work_item_id,
-    } = change
-    {
+    let chat_target = match change {
+        OutlineChange::AssignChat {
+            chat_id,
+            work_item_id,
+        } => Some((chat_id, Some(work_item_id.as_str()))),
+        // An unassociated Chat resolves like any Chat without an item.
+        OutlineChange::RemoveChat { chat_id } => Some((chat_id, None)),
+        _ => None,
+    };
+    if let Some((chat_id, target)) = chat_target {
         let before = effective_hash(snapshot, assigned.get(chat_id).map(String::as_str));
-        let after = effective_hash(snapshot, Some(work_item_id));
+        let after = effective_hash(snapshot, target);
         return DriftImpact {
             chat_ids: if before == after {
                 Vec::new()
@@ -272,7 +282,9 @@ pub(crate) fn drift_impact(snapshot: &WorkOutlineSnapshot, change: &OutlineChang
 
     let mut after = snapshot.clone();
     let candidates: Vec<String> = match change {
-        OutlineChange::AssignChat { .. } => unreachable!("handled above"),
+        OutlineChange::AssignChat { .. } | OutlineChange::RemoveChat { .. } => {
+            unreachable!("handled above")
+        }
         OutlineChange::MoveItem {
             work_item_id,
             new_parent,
@@ -690,6 +702,18 @@ mod tests {
             },
         );
         assert!(!impact.needs_confirmation());
+    }
+
+    #[test]
+    fn removing_a_chat_drifts_only_when_it_had_instructions() {
+        let snapshot = snapshot("s1");
+        let remove = OutlineChange::RemoveChat {
+            chat_id: CHAT_UI.into(),
+        };
+        assert_eq!(drift_impact(&snapshot, &remove).chat_ids, [CHAT_UI]);
+        let mut bare = snapshot.clone();
+        bare.instructions.clear();
+        assert!(!drift_impact(&bare, &remove).needs_confirmation());
     }
 
     #[test]

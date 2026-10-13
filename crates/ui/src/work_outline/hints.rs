@@ -222,15 +222,34 @@ pub(crate) struct ShortcutGroup {
     pub rows: Vec<ShortcutRow>,
 }
 
+/// The restructuring keys' Chat-row meaning (shortcut reference rows):
+/// Shift+Up / Down / Left (and Shift+Tab) re-associate the selected Chat;
+/// Shift+Right / Tab do nothing on a Chat row.
+pub(crate) const CHAT_MOVE_KEYS: [(&str, OutlineNavKey); 3] = [
+    ("Chat to previous item", OutlineNavKey::MoveItemUp),
+    ("Chat to next item", OutlineNavKey::MoveItemDown),
+    ("Chat to parent item", OutlineNavKey::OutdentItem),
+];
+
 /// The shortcut reference against the live keymap: the Outline keys grouped
-/// as Navigate / Edit / Restructure (table order), then every Work Outline
-/// command with its current binding.
+/// as Navigate / Edit / Restructure (table order; Restructure ends with the
+/// keys' Chat-row moves), then every Work Outline command with its current
+/// binding.
 pub(crate) fn shortcut_reference(keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
     shortcut_reference_on(cfg!(target_os = "macos"), keymap)
 }
 
 /// [`shortcut_reference`] for an explicit platform.
 pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
+    // Every key of `key`, primary first.
+    let all_keys = |key: OutlineNavKey| {
+        OUTLINE_NAVIGATION_KEYS
+            .iter()
+            .filter(|(_, other)| *other == key)
+            .map(|(combo, _)| key_label_on(mac, combo))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
     let outline_group = |title: &'static str, group: OutlineKeyGroup| ShortcutGroup {
         title,
         // One row per action; an action with aliases (Tab for Indent) lists
@@ -246,21 +265,22 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
             })
             .map(|(_, (_, key))| ShortcutRow {
                 label: key.label(),
-                keys: Some(
-                    OUTLINE_NAVIGATION_KEYS
-                        .iter()
-                        .filter(|(_, other)| other == key)
-                        .map(|(combo, _)| key_label_on(mac, combo))
-                        .collect::<Vec<_>>()
-                        .join(" / "),
-                ),
+                keys: Some(all_keys(*key)),
             })
             .collect(),
     };
+    let mut restructure = outline_group("Restructure", OutlineKeyGroup::Restructure);
+    // On a Chat row the same keys move the Chat between work items.
+    restructure
+        .rows
+        .extend(CHAT_MOVE_KEYS.into_iter().map(|(label, key)| ShortcutRow {
+            label,
+            keys: Some(all_keys(key)),
+        }));
     vec![
         outline_group("Navigate", OutlineKeyGroup::Navigate),
         outline_group("Edit", OutlineKeyGroup::Edit),
-        outline_group("Restructure", OutlineKeyGroup::Restructure),
+        restructure,
         ShortcutGroup {
             title: "Commands",
             rows: WorkOutlineCommand::ALL
@@ -478,8 +498,12 @@ mod tests {
         let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
         assert_eq!(titles, ["Navigate", "Edit", "Restructure", "Commands"]);
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
-        // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename.
-        assert_eq!(outline_rows, OUTLINE_NAVIGATION_KEYS.len() - 3);
+        // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename;
+        // the Chat-row moves add their own rows.
+        assert_eq!(
+            outline_rows,
+            OUTLINE_NAVIGATION_KEYS.len() - 3 + CHAT_MOVE_KEYS.len()
+        );
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
             groups
@@ -503,6 +527,14 @@ mod tests {
             Some("\u{2325}\u{2193}")
         );
         assert_eq!(row(&groups, "Rename").keys.as_deref(), Some("F2 / R"));
+        assert_eq!(
+            row(&groups, "Chat to next item").keys.as_deref(),
+            Some("\u{21e7}\u{2193}")
+        );
+        assert_eq!(
+            row(&groups, "Chat to parent item").keys.as_deref(),
+            Some("\u{21e7}\u{2190} / \u{21e7}\u{21e5}")
+        );
         assert_eq!(row(&groups, "Next item").keys.as_deref(), Some("\u{2193}"));
         assert_eq!(
             row(&groups, "Create Work Item").keys.as_deref(),
