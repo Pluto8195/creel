@@ -107,7 +107,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
     use super::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -119,6 +119,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::Expand => Box::new(Expand),
         OutlineNavKey::Collapse => Box::new(Collapse),
         OutlineNavKey::OpenSelected => Box::new(OpenSelected),
+        OutlineNavKey::StartChat => Box::new(StartChatSelected),
         OutlineNavKey::RenameSelected => Box::new(RenameSelected),
         OutlineNavKey::CreateSibling => Box::new(CreateSibling),
         OutlineNavKey::CreateChild => Box::new(CreateChild),
@@ -358,7 +359,7 @@ impl OutlineView {
                 "start-chat",
                 "Start Chat",
                 icons::ACTION_PLAY,
-                MenuAction::Command(WorkOutlineCommand::StartChatForWorkItem),
+                MenuAction::Outline(OutlineNavKey::StartChat),
             )
             .disabled(restore_first("Restore the work item to start a Chat in it")),
             MenuEntry::new(

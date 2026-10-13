@@ -23,7 +23,7 @@ never needs a work item.
    **Create work item** in place of the empty tree.
 3. Select the item and press Enter to open **Work Item Details**. Under
    **Instructions**, add an instruction and click **Save**.
-4. Click **Start Chat** on the selected row or in Details. The Chat launches with
+4. Click **Start Chat** on the selected row or in Details, or press `⌘↩`. The Chat launches with
    the item's effective instructions and execution setup, and it is associated
    automatically.
 5. To bring existing Chats under the item, drag their rows onto it or run
@@ -51,6 +51,7 @@ inline editor, a picker, the search field, or any other text input.
 | Collapse / expand | `←` / `→` | `←` / `→` |
 | Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
 | Open Work Item Details | `↩` | `Enter` |
+| Start a Chat in the selected work item (on a Chat row: in the Chat's work item) | `⌘↩` | `Ctrl+Enter` |
 | Rename (a work item in place; a Chat row opens the rename dialog) | `F2` or `R` | `F2` or `R` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |
 | Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
@@ -79,6 +80,11 @@ global keys also fire while a text field has focus:
 | Toggle Outline Focus | `⌘\` / `Ctrl+\` |
 | Create Work Item | `⇧⌘I` / `Ctrl+Shift+I` |
 | Create Child Work Item, Rename, Move, Associate Chat with Work Item, Open Effective Instructions, Create Instruction from Chat, Open Required Actions, Start Chat in Work Item, Move Up / Down, Indent / Outdent, Show Outline Shortcuts | Unbound |
+
+**Start Chat in Work Item** has no global key because `⌘↩` (`Ctrl+Enter`) sends
+from the composer, but in the Outline tree `⌘↩` starts a Chat in the selected
+work item. On a Chat row it starts one in that Chat's work item, and shows a
+notice when the Chat is not in one.
 
 Commands that need a selected work item open the Outline and show a short notice
 when nothing is selected. Tooltips and the shortcut reference always show the

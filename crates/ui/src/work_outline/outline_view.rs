@@ -63,6 +63,7 @@ actions!(
         Expand,
         Collapse,
         OpenSelected,
+        StartChatSelected,
         RenameSelected,
         CreateSibling,
         CreateChild,
@@ -88,6 +89,11 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("left", Collapse, ctx),
         KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
+        KeyBinding::new(
+            &crate::settings::platform_combo("mod-enter"),
+            StartChatSelected,
+            ctx,
+        ),
         KeyBinding::new("f2", RenameSelected, ctx),
         KeyBinding::new("r", RenameSelected, ctx),
         KeyBinding::new("n", CreateSibling, ctx),
@@ -833,6 +839,33 @@ impl OutlineView {
         }
         if let Some(key) = result.select {
             self.select(&key, cx);
+        }
+    }
+
+    /// Mod+Enter: Start Chat in the selected work item, or in a Chat row's
+    /// work item (a notice for a Chat outside any work item). Other rows do
+    /// nothing.
+    fn start_chat_selected(&mut self, cx: &mut Context<Self>) {
+        if self.is_editing() {
+            cx.propagate();
+            return;
+        }
+        let Some(row) = self.selected_row().cloned() else {
+            return;
+        };
+        let target = match &row.kind {
+            OutlineRowKind::Item(item) => Some((item.space_id.clone(), item.item_id.clone())),
+            OutlineRowKind::Chat(chat) => match chat.work_item.clone() {
+                Some(target) => Some(target),
+                None => {
+                    self.show_notice("This Chat is not in a work item", cx);
+                    return;
+                }
+            },
+            _ => None,
+        };
+        if let Some((space_id, item_id)) = target {
+            cx.emit(OutlineEvent::StartChat { space_id, item_id });
         }
     }
 
@@ -2483,7 +2516,7 @@ impl OutlineView {
                     .child("Start Chat")
                     .hint(
                         "Start a Chat in this work item",
-                        HintKey::Command(super::command::WorkOutlineCommand::StartChatForWorkItem),
+                        HintKey::Outline(OutlineNavKey::StartChat),
                     )
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -3255,6 +3288,9 @@ impl Render for OutlineView {
                 cx.listener(|this, _: &Collapse, _, cx| this.navigate(NavCommand::Collapse, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenSelected, _, cx| this.open_selected(cx)))
+            .on_action(
+                cx.listener(|this, _: &StartChatSelected, _, cx| this.start_chat_selected(cx)),
+            )
             .on_action(cx.listener(|this, _: &RenameSelected, window, cx| {
                 if this.is_editing() {
                     cx.propagate();

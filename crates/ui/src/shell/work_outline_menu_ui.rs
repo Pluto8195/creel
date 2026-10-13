@@ -1035,30 +1035,30 @@ mod tests {
         assert_eq!(keys("new-child", cx), Some(key_label("shift-n")));
         assert_eq!(keys("move-down", cx), Some(key_label("shift-down")));
         assert_eq!(keys("outdent", cx), Some(key_label("shift-left")));
+        // Start Chat is the Outline's Mod+Enter.
+        assert_eq!(keys("start-chat", cx), Some(key_label("mod-enter")));
         // Unbound commands and helper entries show no key.
-        assert_eq!(keys("start-chat", cx), None);
+        assert_eq!(keys("move-to", cx), None);
         assert_eq!(keys("copy-path", cx), None);
-        assert!(cx.debug_bounds("outline-menu-key-start-chat").is_none());
+        assert!(cx.debug_bounds("outline-menu-key-move-to").is_none());
         assert!(cx.debug_bounds("outline-menu-key-rename").is_some());
 
         cx.update(|_, cx| {
             settings::update(SavePolicy::Debounced, cx, |s| {
-                s.keymap
-                    .set(ShortcutId::StartChatForWorkItem, "mod-alt-k".into())
+                s.keymap.set(ShortcutId::MoveWorkItem, "mod-alt-k".into())
             });
         });
         redraw(cx);
-        assert_eq!(keys("start-chat", cx), Some(key_label("mod-alt-k")));
-        assert!(cx.debug_bounds("outline-menu-key-start-chat").is_some());
+        assert_eq!(keys("move-to", cx), Some(key_label("mod-alt-k")));
+        assert!(cx.debug_bounds("outline-menu-key-move-to").is_some());
 
         cx.update(|_, cx| {
             settings::update(SavePolicy::Debounced, cx, |s| {
-                s.keymap
-                    .set(ShortcutId::StartChatForWorkItem, String::new())
+                s.keymap.set(ShortcutId::MoveWorkItem, String::new())
             });
         });
         redraw(cx);
-        assert_eq!(keys("start-chat", cx), None);
+        assert_eq!(keys("move-to", cx), None);
     }
 
     /// An entry runs the very action its key runs: Move Up from the menu
@@ -1441,5 +1441,59 @@ mod tests {
             row(&shell, cx, "archive").keys,
             Some(key_label("mod-alt-x"))
         );
+    }
+
+    fn start_chat_item(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Option<String> {
+        shell.read_with(cx, |shell, _| match &shell.work_outline_modal {
+            Some(crate::shell::work_outline_ui::WorkOutlineModal::StartChat(dialog)) => {
+                Some(dialog.item_id.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Mod+Enter in the Outline tree, through the app keymap: Start Chat in
+    /// the selected work item, or in a Chat row's work item; a notice for an
+    /// unassociated Chat. Enter still opens. In the composer Mod+Enter is
+    /// never Start Chat.
+    #[gpui::test]
+    fn mod_enter_starts_a_chat_in_the_selected_rows_work_item(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, outline, _calls, cx) = menu_shell(cx, dir.path(), fixture);
+        let start = platform_combo("mod-enter");
+
+        click_row(cx, &row_key::item("s1", HOUSEKEEPING));
+        press(cx, &start);
+        assert_eq!(
+            start_chat_item(&shell, cx).as_deref(),
+            Some(HOUSEKEEPING),
+            "a work item row"
+        );
+        press(cx, "escape");
+        assert_eq!(start_chat_item(&shell, cx), None);
+
+        click_row(cx, &row_key::chat(CHAT_UI));
+        press(cx, &start);
+        assert_eq!(
+            start_chat_item(&shell, cx).as_deref(),
+            Some(UI),
+            "a Chat row starts in its work item"
+        );
+        press(cx, "escape");
+
+        click_row(cx, &row_key::chat(CHAT_LOOSE_A));
+        press(cx, &start);
+        assert_eq!(start_chat_item(&shell, cx), None);
+        assert_eq!(
+            outline.read_with(cx, |outline, _| outline.notice().map(str::to_owned)),
+            Some("This Chat is not in a work item".to_owned())
+        );
+
+        // The composer keeps Mod+Enter for itself.
+        shell.update(cx, |shell, cx| shell.open_chat(CHAT_UI.into(), cx));
+        redraw(cx);
+        press(cx, &start);
+        assert_eq!(start_chat_item(&shell, cx), None);
     }
 }

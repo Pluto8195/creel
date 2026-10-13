@@ -160,6 +160,8 @@ pub(crate) enum OutlineNavKey {
     Expand,
     Collapse,
     OpenSelected,
+    /// Start a Chat in the selected work item (or a Chat row's work item).
+    StartChat,
     RenameSelected,
     CreateSibling,
     CreateChild,
@@ -192,6 +194,7 @@ impl OutlineNavKey {
             Self::Expand => "Expand",
             Self::Collapse => "Collapse",
             Self::OpenSelected => "Open details",
+            Self::StartChat => "Start Chat",
             Self::RenameSelected => "Rename",
             Self::CreateSibling => "New sibling",
             Self::CreateChild => "New child",
@@ -215,7 +218,9 @@ impl OutlineNavKey {
             | Self::Collapse
             | Self::OpenSelected
             | Self::ShowShortcuts => OutlineKeyGroup::Navigate,
-            Self::RenameSelected | Self::CreateSibling | Self::CreateChild => OutlineKeyGroup::Edit,
+            Self::StartChat | Self::RenameSelected | Self::CreateSibling | Self::CreateChild => {
+                OutlineKeyGroup::Edit
+            }
             Self::MoveItemUp | Self::MoveItemDown | Self::IndentItem | Self::OutdentItem => {
                 OutlineKeyGroup::Restructure
             }
@@ -245,6 +250,12 @@ impl OutlineNavKey {
 ///   Space in row order, Shift+Left (Shift+Tab) to its item's parent (out of
 ///   its item from the top level); Shift+Right (Tab) does nothing.
 /// - Enter: open the selected item (Work Item Details)
+/// - Mod+Enter (Cmd on macOS, Ctrl elsewhere): Start Chat in the selected
+///   work item, or in a Chat row's work item. Stored as `mod-enter` and bound
+///   through `platform_combo`; scoped like every key here, so it can never
+///   reach the composer's own Mod+Enter send. The rebindable Start Chat
+///   command stays unbound globally: `mod-enter` is reserved for the
+///   composer (`send_combo_is_reserved`).
 /// - F2 / R: rename in place (a Chat row opens the Chat rename dialog). R is
 ///   the laptop-friendly alias: F2 needs Fn there.
 /// - N / Shift+N: create a sibling / child
@@ -252,7 +263,7 @@ impl OutlineNavKey {
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 20] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 21] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -262,6 +273,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 20] = [
     ("alt-up", OutlineNavKey::SelectPreviousSibling),
     ("alt-down", OutlineNavKey::SelectNextSibling),
     ("enter", OutlineNavKey::OpenSelected),
+    ("mod-enter", OutlineNavKey::StartChat),
     ("f2", OutlineNavKey::RenameSelected),
     ("r", OutlineNavKey::RenameSelected),
     ("n", OutlineNavKey::CreateSibling),
@@ -343,33 +355,38 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
-    cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| match key {
-        OutlineNavKey::SelectNext => KeyBinding::new(keys, SelectNext, context),
-        OutlineNavKey::SelectPrevious => KeyBinding::new(keys, SelectPrevious, context),
-        OutlineNavKey::SelectFirst => KeyBinding::new(keys, SelectFirst, context),
-        OutlineNavKey::SelectLast => KeyBinding::new(keys, SelectLast, context),
-        OutlineNavKey::SelectNextSibling => KeyBinding::new(keys, SelectNextSibling, context),
-        OutlineNavKey::SelectPreviousSibling => {
-            KeyBinding::new(keys, SelectPreviousSibling, context)
+    cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| {
+        let keys = platform_combo(keys);
+        let keys = keys.as_str();
+        match key {
+            OutlineNavKey::SelectNext => KeyBinding::new(keys, SelectNext, context),
+            OutlineNavKey::SelectPrevious => KeyBinding::new(keys, SelectPrevious, context),
+            OutlineNavKey::SelectFirst => KeyBinding::new(keys, SelectFirst, context),
+            OutlineNavKey::SelectLast => KeyBinding::new(keys, SelectLast, context),
+            OutlineNavKey::SelectNextSibling => KeyBinding::new(keys, SelectNextSibling, context),
+            OutlineNavKey::SelectPreviousSibling => {
+                KeyBinding::new(keys, SelectPreviousSibling, context)
+            }
+            OutlineNavKey::Expand => KeyBinding::new(keys, Expand, context),
+            OutlineNavKey::Collapse => KeyBinding::new(keys, Collapse, context),
+            OutlineNavKey::OpenSelected => KeyBinding::new(keys, OpenSelected, context),
+            OutlineNavKey::StartChat => KeyBinding::new(keys, StartChatSelected, context),
+            OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
+            OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),
+            OutlineNavKey::CreateChild => KeyBinding::new(keys, CreateChild, context),
+            OutlineNavKey::MoveItemUp => KeyBinding::new(keys, MoveItemUp, context),
+            OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
+            OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
+            OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
+            OutlineNavKey::ShowShortcuts => KeyBinding::new(
+                keys,
+                RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),
+                context,
+            ),
         }
-        OutlineNavKey::Expand => KeyBinding::new(keys, Expand, context),
-        OutlineNavKey::Collapse => KeyBinding::new(keys, Collapse, context),
-        OutlineNavKey::OpenSelected => KeyBinding::new(keys, OpenSelected, context),
-        OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
-        OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),
-        OutlineNavKey::CreateChild => KeyBinding::new(keys, CreateChild, context),
-        OutlineNavKey::MoveItemUp => KeyBinding::new(keys, MoveItemUp, context),
-        OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
-        OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
-        OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
-        OutlineNavKey::ShowShortcuts => KeyBinding::new(
-            keys,
-            RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),
-            context,
-        ),
     }));
 }
 
@@ -1198,7 +1215,7 @@ mod tests {
     #[test]
     fn navigation_keys_parse_are_unique_and_exclude_text_inputs() {
         for (index, (keys, _)) in OUTLINE_NAVIGATION_KEYS.iter().enumerate() {
-            assert!(Keystroke::parse(keys).is_ok(), "{keys}");
+            assert!(Keystroke::parse(&platform_combo(keys)).is_ok(), "{keys}");
             assert!(
                 OUTLINE_NAVIGATION_KEYS[index + 1..]
                     .iter()
