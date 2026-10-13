@@ -114,6 +114,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
 pub(crate) enum OutlineEvent {
     /// Open the Chat's transcript.
     OpenChat(String),
+    /// The user moved the selection to another row (arrow keys, Home / End,
+    /// sibling jumps, a click). The Overview previews a Chat row in its chat
+    /// panel without taking focus. Programmatic selection never sends it.
+    SelectionMoved,
     /// Rename the Chat (the Shell's Chat rename dialog).
     RenameChat(String),
     /// Open Work Item Details.
@@ -838,7 +842,11 @@ impl OutlineView {
             self.set_collapsed(&key, collapsed, cx);
         }
         if let Some(key) = result.select {
+            let moved = self.selected.as_deref() != Some(key.as_str());
             self.select(&key, cx);
+            if moved {
+                cx.emit(OutlineEvent::SelectionMoved);
+            }
         }
     }
 
@@ -2639,35 +2647,40 @@ impl OutlineView {
                     }
                 }),
             )
-            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                let kind = row_kind_name(&open_row.kind);
-                if this.is_editing() {
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    let kind = row_kind_name(&open_row.kind);
+                    if this.is_editing() {
+                        tracing::info!(
+                            target: "work_outline_keys",
+                            row = %click_key, kind,
+                            inline_editor = this.editing.is_some(),
+                            picker = this.picker.is_some(),
+                            "row click ignored: editing"
+                        );
+                        return;
+                    }
+                    let moved = this.selected.as_deref() != Some(click_key.as_str());
+                    this.select(&click_key, cx);
+                    let opens_details = event.click_count() >= 2;
+                    if opens_details {
+                        this.open_row(&open_row, cx);
+                    } else if moved {
+                        cx.emit(OutlineEvent::SelectionMoved);
+                    }
                     tracing::info!(
                         target: "work_outline_keys",
                         row = %click_key, kind,
-                        inline_editor = this.editing.is_some(),
-                        picker = this.picker.is_some(),
-                        "row click ignored: editing"
+                        clicks = event.click_count(),
+                        opens_details = opens_details && kind == "item",
+                        selected = ?this.selected.as_deref(),
+                        outline_focused = this.focus.is_focused(window),
+                        outline_contains_focus = this.focus.contains_focused(window, cx),
+                        context_stack = ?window.context_stack(),
+                        "row click"
                     );
-                    return;
-                }
-                this.select(&click_key, cx);
-                let opens_details = event.click_count() >= 2;
-                if opens_details {
-                    this.open_row(&open_row, cx);
-                }
-                tracing::info!(
-                    target: "work_outline_keys",
-                    row = %click_key, kind,
-                    clicks = event.click_count(),
-                    opens_details = opens_details && kind == "item",
-                    selected = ?this.selected.as_deref(),
-                    outline_focused = this.focus.is_focused(window),
-                    outline_contains_focus = this.focus.contains_focused(window, cx),
-                    context_stack = ?window.context_stack(),
-                    "row click"
-                );
-            }))
+                }),
+            )
             .child(disclosure)
             .child(body)
             .children(start_chat)

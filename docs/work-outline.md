@@ -29,6 +29,14 @@ never needs a work item.
 5. To bring existing Chats under the item, drag their rows onto it or run
    **Associate Chat with Work Item**.
 
+Moving the selection onto a Chat row, with the arrow keys or a click, shows
+that Chat beside the Outline after a brief pause while the tree keeps focus, so
+you can keep browsing with `↑` / `↓`. Moving onto a work item row leaves the
+last Chat showing. While Work Item Details or Required Actions is open beside
+the Outline, browsing leaves it open and shows no Chat. Showing a Chat this way
+marks it seen the same way opening it beside the Outline does, and it never
+opens the full chat.
+
 Press Enter on a Chat row to open the Chat beside the Outline with its composer
 focused. Press `⌘;` (`Ctrl+;`) to jump back to the Outline tree with that Chat's
 row selected, and press it again to return to the Chat. Press `⇧⌘↩`

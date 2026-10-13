@@ -310,6 +310,11 @@ const CONTEXT_USAGE_REFRESH: Duration = Duration::from_secs(12);
 /// TTL) and repaints; it never forces a relayout by itself.
 const IDLE_REFRESH: Duration = Duration::from_secs(15);
 
+/// How long the Outline selection must rest on a Chat row before the chat
+/// panel switches to it, so holding an arrow key does not reload a
+/// transcript per row.
+pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100);
+
 /// Every Nth idle tick also re-derives rows (staleness is time-based, so a
 /// chat can cross `STALE_AFTER` while nothing else changes). ~60s — cheap
 /// relative to the per-frame rebuild `rows_dirty` exists to avoid, and the
@@ -2644,6 +2649,9 @@ pub struct Overview {
     /// element is not mounted yet when the toggle asks for focus, and the
     /// Shell's unmounted-focus recovery would take it back.
     outline_focus_pending: bool,
+    /// The pending preview-on-select (see `schedule_outline_preview`);
+    /// replacing or dropping it cancels the switch.
+    outline_preview: Option<gpui::Task<()>>,
     /// The Outline's inputs must be re-pushed (set whenever `rows()`
     /// rebuilds, or an Outline-only option changes).
     outline_dirty: bool,
@@ -2774,8 +2782,10 @@ impl Overview {
         let outline = cx.new(|cx| OutlineView::new(state.clone(), cx).with_shell(shell.clone()));
         let outline_events = cx.subscribe(&outline, |this: &mut Self, _, event, cx| match event {
             OutlineEvent::OpenChat(chat_id) => {
+                this.outline_preview = None;
                 this.leave_work_item_details(DetailsExit::OpenChat(chat_id.clone()), cx);
             }
+            OutlineEvent::SelectionMoved => this.schedule_outline_preview(cx),
             OutlineEvent::RenameChat(chat_id) => {
                 if let Some(shell) = this.shell.upgrade() {
                     let chat_id = chat_id.clone();
@@ -2879,6 +2889,7 @@ impl Overview {
             chat_panel_open: false,
             outline_chat_return: None,
             outline_focus_pending: false,
+            outline_preview: None,
             copied_panel_identity: None,
             copied_panel_identity_seq: 0,
             transcript,
@@ -9819,6 +9830,72 @@ impl Overview {
             .then(|| self.shown_panel_chat(cx))
             .flatten()
             .or_else(selected_row)
+    }
+
+    /// Preview-on-select: the user moved the Outline selection. On a Chat
+    /// row, show that Chat in the chat panel once the selection has rested
+    /// for [`OUTLINE_PREVIEW_DEBOUNCE`] (a newer move restarts the wait). On
+    /// any other row, cancel a pending switch: the panel keeps the last
+    /// previewed Chat.
+    fn schedule_outline_preview(&mut self, cx: &mut Context<Self>) {
+        if self.outline.read(cx).selected_chat().is_none() {
+            self.outline_preview = None;
+            return;
+        }
+        self.outline_preview = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(OUTLINE_PREVIEW_DEBOUNCE)
+                .await;
+            this.update(cx, |this, cx| this.preview_outline_selection(cx))
+                .ok();
+        }));
+    }
+
+    /// Show the selected Outline Chat row in the chat panel WITHOUT moving
+    /// focus (the tree keeps it, so arrows keep browsing). Viewing it the
+    /// way the panel does: its unread done is acknowledged and it becomes
+    /// the selected Chat, which is what the panel shows; it also becomes
+    /// Toggle Outline Focus's return target. Never the full chat route. A
+    /// slot held by Work Item Details, Required Actions or a subagent peek
+    /// is left alone (they are never closed by browsing). The switch itself
+    /// has no animation, so reduced motion needs nothing more here.
+    fn preview_outline_selection(&mut self, cx: &mut Context<Self>) {
+        self.outline_preview = None;
+        if self.view_mode != OverviewMode::Outline
+            || self.work_item_details.is_some()
+            || self.required_actions_panel.is_some()
+            || self.subagent_peek.is_some()
+        {
+            return;
+        }
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        if !shell.read(cx).is_overview_route() {
+            return;
+        }
+        let Some(chat_id) = self.outline.read(cx).selected_chat() else {
+            return;
+        };
+        if self.shown_panel_chat(cx).as_deref() == Some(chat_id.as_str()) {
+            return;
+        }
+        self.acknowledge_done(&chat_id, cx);
+        self.outline_chat_return = Some(OutlineChatReturn {
+            chat_id: chat_id.clone(),
+            full_route: false,
+        });
+        shell.update(cx, |shell, cx| {
+            shell.show_chat_in_overview_panel(chat_id, cx)
+        });
+        self.chat_panel_open = true;
+        cx.notify();
+    }
+
+    /// Tests: whether a preview-on-select is waiting out its debounce.
+    #[cfg(test)]
+    pub(crate) fn outline_preview_pending(&self) -> bool {
+        self.outline_preview.is_some()
     }
 
     /// Tests: switch to List mode and open the chat panel on `chat_id` (the

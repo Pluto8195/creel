@@ -4367,7 +4367,20 @@ impl Shell {
     /// off the selection, not the route. No history entry: the nav push in
     /// `on_state_changed` is gated on `Route::Chat`.
     pub(crate) fn preview_chat_in_overview(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.show_chat_in_overview_panel(chat_id, cx);
         self.focus_composer(cx);
+    }
+
+    /// [`Self::preview_chat_in_overview`] without focusing the composer: the
+    /// Outline's preview-on-select, which keeps the keyboard in the tree.
+    /// The selection change is the same one the panel makes, so the Chat is
+    /// marked seen exactly as viewing it there marks it.
+    pub(crate) fn show_chat_in_overview_panel(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        // A focus request still pending from before the panel mounted the
+        // composer (its first render, a picker closing) would land on that
+        // render and take the keyboard from the tree.
+        self.composer
+            .update(cx, |composer, _| composer.focus_pending = false);
         if self.state.read(cx).selected_chat.as_deref() != Some(chat_id.as_str()) {
             self.state
                 .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));

@@ -2172,4 +2172,195 @@ mod tests {
                 .is_empty()
         );
     }
+
+    /// Let `ms` of debounce time pass and settle.
+    fn wait_ms(cx: &mut gpui::VisualTestContext, ms: u64) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(ms));
+        redraw(cx);
+    }
+
+    fn panel_chat(
+        overview: &Entity<crate::overview::Overview>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<String> {
+        overview.read_with(cx, |o, cx| o.shown_panel_chat(cx))
+    }
+
+    /// The selected row's Chat, if it is a live Chat row.
+    fn selected_row_chat(
+        outline: &Entity<crate::work_outline::outline_view::OutlineView>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<String> {
+        outline.read_with(cx, |outline, _| outline.selected_chat())
+    }
+
+    /// Select the row just above `key` and focus the tree, so one Down
+    /// arrow lands on `key` through the real keymap.
+    fn park_above(
+        outline: &Entity<crate::work_outline::outline_view::OutlineView>,
+        key: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let above = outline.read_with(cx, |outline, _| {
+            let ix = outline.model().position(key).expect("row shown");
+            outline.model().rows[ix - 1].key.clone()
+        });
+        outline.update(cx, |outline, cx| outline.select(&above, cx));
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        redraw(cx);
+    }
+
+    /// Press `key` until the selection is a live Chat row other than
+    /// `from`; every step waits `step_ms`. Returns that Chat.
+    fn arrow_to_next_chat(
+        outline: &Entity<crate::work_outline::outline_view::OutlineView>,
+        key: &str,
+        from: Option<&str>,
+        step_ms: u64,
+        cx: &mut gpui::VisualTestContext,
+    ) -> String {
+        for _ in 0..20 {
+            cx.simulate_keystrokes(key);
+            wait_ms(cx, step_ms);
+            if let Some(chat) = selected_row_chat(outline, cx)
+                && Some(chat.as_str()) != from
+            {
+                return chat;
+            }
+        }
+        panic!("no further Chat row with {key}");
+    }
+
+    /// Arrowing onto Chat rows previews each one in the chat panel after the
+    /// debounce while the tree keeps focus (the composer never takes it and
+    /// the route never changes); arrowing onto a work item row leaves the
+    /// last preview; keys keep working; Enter then focuses the composer.
+    #[gpui::test]
+    fn arrowing_onto_chat_rows_previews_them_while_the_tree_keeps_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        park_above(&outline, &row_key::chat(CHAT_API), cx);
+        assert_eq!(panel_chat(&overview, cx), None);
+
+        cx.simulate_keystrokes("down");
+        redraw(cx);
+        assert_eq!(selected_row_chat(&outline, cx), Some(CHAT_API.to_owned()));
+        assert_eq!(panel_chat(&overview, cx), None, "not before the debounce");
+        assert!(overview.read_with(cx, |o, _| o.outline_preview_pending()));
+        wait_ms(cx, 120);
+        assert_eq!(panel_chat(&overview, cx), Some(CHAT_API.to_owned()));
+        assert!(tree_focused(&outline, cx), "the tree keeps focus");
+        assert!(!composer_focused(&shell, cx));
+        assert!(!route_is_chat(&shell, cx), "never the full chat route");
+        assert_eq!(selected_chat(&shell, cx), Some(CHAT_API.to_owned()));
+
+        // The next Chat row: the panel follows, focus stays.
+        let next = arrow_to_next_chat(&outline, "down", Some(CHAT_API), 120, cx);
+        assert_eq!(panel_chat(&overview, cx), Some(next.clone()));
+        assert!(tree_focused(&outline, cx));
+        assert!(!composer_focused(&shell, cx));
+
+        // Up onto a work item row: the panel keeps the last preview.
+        for _ in 0..20 {
+            cx.simulate_keystrokes("up");
+            wait_ms(cx, 120);
+            if outline.read_with(cx, |o, _| o.selected_item().is_some()) {
+                break;
+            }
+        }
+        assert!(outline.read_with(cx, |o, _| o.selected_item().is_some()));
+        assert_eq!(panel_chat(&overview, cx), Some(next.clone()));
+        assert!(tree_focused(&outline, cx));
+
+        // Keys still work after previews: back down to a Chat row, Enter
+        // opens it beside the Outline with the composer focused.
+        let chat = arrow_to_next_chat(&outline, "down", None, 120, cx);
+        assert_eq!(panel_chat(&overview, cx), Some(chat.clone()));
+        cx.simulate_keystrokes("enter");
+        redraw(cx);
+        assert!(composer_focused(&shell, cx), "Enter focuses the composer");
+        assert_eq!(panel_chat(&overview, cx), Some(chat.clone()));
+        assert!(!route_is_chat(&shell, cx));
+        // And the toggle from the composer lands back on that row.
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(tree_focused(&outline, cx));
+        assert_eq!(selected_row_chat(&outline, cx), Some(chat));
+    }
+
+    /// Moves faster than the debounce coalesce: crossing several Chat rows
+    /// never shows an intermediate one, and only the resting row is shown.
+    #[gpui::test]
+    fn outline_preview_debounce_coalesces_rapid_moves(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        park_above(&outline, &row_key::chat(CHAT_API), cx);
+        cx.simulate_keystrokes("down");
+        wait_ms(cx, 40);
+        assert_eq!(selected_row_chat(&outline, cx), Some(CHAT_API.to_owned()));
+        // Keep moving every 40 ms, across at least one more Chat row.
+        let last = arrow_to_next_chat(&outline, "down", Some(CHAT_API), 40, cx);
+        assert_ne!(last, CHAT_API);
+        assert_eq!(panel_chat(&overview, cx), None, "nothing shown mid-burst");
+        wait_ms(cx, 120);
+        assert_eq!(panel_chat(&overview, cx), Some(last));
+    }
+
+    /// A click on a Chat row previews it too (focus in the tree); with Work
+    /// Item Details in the panel slot, browsing Chat rows leaves Details
+    /// open and does not switch the selected Chat.
+    #[gpui::test]
+    fn clicks_preview_and_work_item_details_keep_the_slot(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        let row = cx
+            .debug_bounds("outline-row-chat:chat-ui")
+            .unwrap()
+            .center();
+        cx.simulate_click(row, gpui::Modifiers::default());
+        redraw(cx);
+        assert_eq!(selected_row_chat(&outline, cx), Some(CHAT_UI.to_owned()));
+        wait_ms(cx, 120);
+        assert_eq!(panel_chat(&overview, cx), Some(CHAT_UI.to_owned()));
+        assert!(tree_focused(&outline, cx));
+        assert!(!composer_focused(&shell, cx));
+
+        // Details for a work item: Enter on its row.
+        outline.update(cx, |outline, cx| {
+            outline.select(&row_key::item("s1", LAUNCH), cx)
+        });
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        redraw(cx);
+        cx.simulate_keystrokes("enter");
+        redraw(cx);
+        assert!(overview.read_with(cx, |o, _| o.has_work_item_details()));
+        park_above(&outline, &row_key::chat(CHAT_API), cx);
+        cx.simulate_keystrokes("down");
+        wait_ms(cx, 120);
+        assert_eq!(selected_row_chat(&outline, cx), Some(CHAT_API.to_owned()));
+        assert!(
+            overview.read_with(cx, |o, _| o.has_work_item_details()),
+            "Details stay open"
+        );
+        assert_eq!(selected_chat(&shell, cx), Some(CHAT_UI.to_owned()));
+        assert!(tree_focused(&outline, cx));
+    }
 }
