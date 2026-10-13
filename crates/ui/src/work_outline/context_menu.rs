@@ -30,6 +30,7 @@ use super::super::model::{self, ChatRow, ItemRow, OutlineRowKind, row_key};
 use super::super::restructure::{self, RestructureOp};
 use super::OutlineView;
 use crate::icons;
+use crate::settings::ShortcutId;
 use crate::shell::work_outline_ui::{
     OUTLINE_NAVIGATION_CONTEXT, OutlineNavKey, RunWorkOutlineCommand,
 };
@@ -98,6 +99,33 @@ impl MenuAction {
             _ => None,
         }
     }
+
+    /// The binding that runs this action outside the menu, which the entry
+    /// shows. Exhaustive on purpose: a new action must say whether some key
+    /// (an Outline key, a Work Outline command, or an app shortcut that acts
+    /// on the selected row) already runs it.
+    pub(crate) fn hint(&self) -> HintKey {
+        match self {
+            Self::Outline(key) => HintKey::Outline(*key),
+            Self::Command(command) => HintKey::Command(*command),
+            // Archive session acts on the selected row in the tree.
+            Self::Archive | Self::ArchiveChat(_) => HintKey::App(ShortcutId::ArchiveSession),
+            Self::StatusPage
+            | Self::Back
+            | Self::SetStatus(_)
+            | Self::AddInstruction
+            | Self::CopyPath(_)
+            | Self::Restore
+            | Self::SpaceInstructions
+            | Self::ExecutionSetup
+            | Self::RemoveFromWorkItem(_)
+            | Self::CompareInstructions(_)
+            | Self::ApplyInstructions(_)
+            | Self::PinChat { .. }
+            | Self::CopyChatIdentity(_)
+            | Self::CloseOutChat(_) => HintKey::None,
+        }
+    }
 }
 
 /// The action an Outline key fires (mirrors
@@ -106,7 +134,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
     use super::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -118,6 +146,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::Expand => Box::new(Expand),
         OutlineNavKey::Collapse => Box::new(Collapse),
         OutlineNavKey::OpenSelected => Box::new(OpenSelected),
+        OutlineNavKey::StartChat => Box::new(StartChatSelected),
         OutlineNavKey::RenameSelected => Box::new(RenameSelected),
         OutlineNavKey::CreateSibling => Box::new(CreateSibling),
         OutlineNavKey::CreateChild => Box::new(CreateChild),
@@ -157,11 +186,7 @@ impl MenuEntry {
         icon: &'static str,
         action: MenuAction,
     ) -> Self {
-        let hint = match &action {
-            MenuAction::Outline(key) => HintKey::Outline(*key),
-            MenuAction::Command(command) => HintKey::Command(*command),
-            _ => HintKey::None,
-        };
+        let hint = action.hint();
         Self {
             id,
             label: label.into(),
@@ -350,7 +375,7 @@ impl OutlineView {
                 "start-chat",
                 "Start Chat",
                 icons::ACTION_PLAY,
-                MenuAction::Command(WorkOutlineCommand::StartChatForWorkItem),
+                MenuAction::Outline(OutlineNavKey::StartChat),
             )
             .disabled(restore_first("Restore the work item to start a Chat in it")),
             MenuEntry::new(
@@ -799,8 +824,17 @@ mod tests {
                 WorkOutlineCommand::ShowOutlineShortcuts
             ))
         );
-        let entry = MenuEntry::new("copy-path", "Copy Path", icons::COPY, MenuAction::Archive);
+        let entry = MenuEntry::new(
+            "copy-path",
+            "Copy Path",
+            icons::COPY,
+            MenuAction::CopyPath("a / b".into()),
+        );
         assert_eq!(entry.hint, HintKey::None);
+        assert!(entry.action.dispatch().is_none());
+        // Helper entries an app shortcut also runs show that shortcut.
+        let entry = MenuEntry::new("archive", "Archive", icons::COPY, MenuAction::Archive);
+        assert_eq!(entry.hint, HintKey::App(ShortcutId::ArchiveSession));
         assert!(entry.action.dispatch().is_none());
     }
 

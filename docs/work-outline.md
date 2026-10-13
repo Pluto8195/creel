@@ -23,11 +23,16 @@ never needs a work item.
    **Create work item** in place of the empty tree.
 3. Select the item and press Enter to open **Work Item Details**. Under
    **Instructions**, add an instruction and click **Save**.
-4. Click **Start Chat** on the selected row or in Details. The Chat launches with
+4. Click **Start Chat** on the selected row or in Details, or press `⌘↩`. The Chat launches with
    the item's effective instructions and execution setup, and it is associated
    automatically.
 5. To bring existing Chats under the item, drag their rows onto it or run
    **Associate Chat with Work Item**.
+
+Press Enter on a Chat row to open the Chat beside the Outline with its composer
+focused. Press `⌘\` (`Ctrl+\`) to jump back to the Outline tree with that Chat's
+row selected, and press it again to return to the Chat. See
+[Jumping between a Chat and the Outline](#jumping-between-a-chat-and-the-outline).
 
 Press `?` while the Outline has focus, or click the keyboard button in the
 Outline toolbar, to open the shortcut reference. Hover over any Outline control
@@ -46,6 +51,7 @@ inline editor, a picker, the search field, or any other text input.
 | Collapse / expand | `←` / `→` | `←` / `→` |
 | Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
 | Open Work Item Details | `↩` | `Enter` |
+| Start a Chat in the selected work item (on a Chat row: in the Chat's work item) | `⌘↩` | `Ctrl+Enter` |
 | Rename (a work item in place; a Chat row opens the rename dialog) | `F2` or `R` | `F2` or `R` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |
 | Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
@@ -54,21 +60,55 @@ inline editor, a picker, the search field, or any other text input.
 | Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Shortcut reference | `?` | `?` |
+| Archive the selected Chat, or open **Archive…** for the selected work item | `⇧⌘A` | `Ctrl+Shift+A` |
 | Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
 
+`⇧⌘A` is the app's **Archive session** shortcut (rebindable in **Settings →
+Shortcuts**). Outside the Outline tree it archives the open Chat as before. In the
+tree it acts on the selected row: a Chat row is archived the way the sidebar
+archives it and the selection moves to the next row, a work item opens its
+Archive dialog with the choice for its descendants, and project and group rows
+ignore it. The **Archive Chat** and **Archive…** menu entries show the key.
+
 Every Work Outline command is also in the command palette and can be rebound in
-**Settings → Shortcuts**. Only two commands ship with a global key, because
+**Settings → Shortcuts**. Only three commands ship with a global key, because
 global keys also fire while a text field has focus:
 
 | Command | Default |
 | --- | --- |
 | Open Outline | `⇧⌘L` / `Ctrl+Shift+L` |
+| Toggle Outline Focus | `⌘\` / `Ctrl+\` |
 | Create Work Item | `⇧⌘I` / `Ctrl+Shift+I` |
 | Create Child Work Item, Rename, Move, Associate Chat with Work Item, Open Effective Instructions, Create Instruction from Chat, Open Required Actions, Start Chat in Work Item, Move Up / Down, Indent / Outdent, Show Outline Shortcuts | Unbound |
+
+**Start Chat in Work Item** has no global key because `⌘↩` (`Ctrl+Enter`) sends
+from the composer, but in the Outline tree `⌘↩` starts a Chat in the selected
+work item. On a Chat row it starts one in that Chat's work item, and shows a
+notice when the Chat is not in one.
 
 Commands that need a selected work item open the Outline and show a short notice
 when nothing is selected. Tooltips and the shortcut reference always show the
 current bindings, including keys you have rebound.
+
+### Jumping between a Chat and the Outline
+
+**Toggle Outline Focus** (`⌘\`, `Ctrl+\` on Windows and Linux) moves the
+keyboard between a Chat and the Outline tree. It works while you type in the
+composer.
+
+- From a Chat (the full chat or the Chat beside the Outline), it switches to the
+  Outline, selects that Chat's row, expands any collapsed parent items, scrolls
+  the row into view, and focuses the tree. If the Outline does not show the
+  Chat (a Chat without a project, or one hidden by a filter), the selection
+  stays where it was and the tree is focused.
+- From the Outline tree, it returns to the last Chat you opened from the Outline
+  (or the Chat you jumped from), in the same layout, with its composer focused.
+  If there is no such Chat, the Outline shows a short notice.
+
+The jump never changes which Chat is selected and never clears a composer
+draft. `⇧⌘L` (`Ctrl+Shift+L`) does the same Chat-to-row jump when you press it
+in the composer of a Chat you opened from the Outline. `Esc` in the Outline is
+not part of this: it still closes Details and menus.
 
 ## Context menus
 

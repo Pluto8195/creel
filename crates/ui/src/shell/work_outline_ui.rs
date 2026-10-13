@@ -13,6 +13,7 @@
 use super::*;
 
 use crate::markdown::links::LinkTarget;
+use crate::overview::OutlineChatReturn;
 use crate::work_outline::instructions::DriftImpact;
 use crate::work_outline::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
@@ -159,6 +160,8 @@ pub(crate) enum OutlineNavKey {
     Expand,
     Collapse,
     OpenSelected,
+    /// Start a Chat in the selected work item (or a Chat row's work item).
+    StartChat,
     RenameSelected,
     CreateSibling,
     CreateChild,
@@ -191,6 +194,7 @@ impl OutlineNavKey {
             Self::Expand => "Expand",
             Self::Collapse => "Collapse",
             Self::OpenSelected => "Open details",
+            Self::StartChat => "Start Chat",
             Self::RenameSelected => "Rename",
             Self::CreateSibling => "New sibling",
             Self::CreateChild => "New child",
@@ -214,7 +218,9 @@ impl OutlineNavKey {
             | Self::Collapse
             | Self::OpenSelected
             | Self::ShowShortcuts => OutlineKeyGroup::Navigate,
-            Self::RenameSelected | Self::CreateSibling | Self::CreateChild => OutlineKeyGroup::Edit,
+            Self::StartChat | Self::RenameSelected | Self::CreateSibling | Self::CreateChild => {
+                OutlineKeyGroup::Edit
+            }
             Self::MoveItemUp | Self::MoveItemDown | Self::IndentItem | Self::OutdentItem => {
                 OutlineKeyGroup::Restructure
             }
@@ -244,6 +250,12 @@ impl OutlineNavKey {
 ///   Space in row order, Shift+Left (Shift+Tab) to its item's parent (out of
 ///   its item from the top level); Shift+Right (Tab) does nothing.
 /// - Enter: open the selected item (Work Item Details)
+/// - Mod+Enter (Cmd on macOS, Ctrl elsewhere): Start Chat in the selected
+///   work item, or in a Chat row's work item. Stored as `mod-enter` and bound
+///   through `platform_combo`; scoped like every key here, so it can never
+///   reach the composer's own Mod+Enter send. The rebindable Start Chat
+///   command stays unbound globally: `mod-enter` is reserved for the
+///   composer (`send_combo_is_reserved`).
 /// - F2 / R: rename in place (a Chat row opens the Chat rename dialog). R is
 ///   the laptop-friendly alias: F2 needs Fn there.
 /// - N / Shift+N: create a sibling / child
@@ -251,7 +263,7 @@ impl OutlineNavKey {
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 20] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 21] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -261,6 +273,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 20] = [
     ("alt-up", OutlineNavKey::SelectPreviousSibling),
     ("alt-down", OutlineNavKey::SelectNextSibling),
     ("enter", OutlineNavKey::OpenSelected),
+    ("mod-enter", OutlineNavKey::StartChat),
     ("f2", OutlineNavKey::RenameSelected),
     ("r", OutlineNavKey::RenameSelected),
     ("n", OutlineNavKey::CreateSibling),
@@ -342,33 +355,38 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
-    cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| match key {
-        OutlineNavKey::SelectNext => KeyBinding::new(keys, SelectNext, context),
-        OutlineNavKey::SelectPrevious => KeyBinding::new(keys, SelectPrevious, context),
-        OutlineNavKey::SelectFirst => KeyBinding::new(keys, SelectFirst, context),
-        OutlineNavKey::SelectLast => KeyBinding::new(keys, SelectLast, context),
-        OutlineNavKey::SelectNextSibling => KeyBinding::new(keys, SelectNextSibling, context),
-        OutlineNavKey::SelectPreviousSibling => {
-            KeyBinding::new(keys, SelectPreviousSibling, context)
+    cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| {
+        let keys = platform_combo(keys);
+        let keys = keys.as_str();
+        match key {
+            OutlineNavKey::SelectNext => KeyBinding::new(keys, SelectNext, context),
+            OutlineNavKey::SelectPrevious => KeyBinding::new(keys, SelectPrevious, context),
+            OutlineNavKey::SelectFirst => KeyBinding::new(keys, SelectFirst, context),
+            OutlineNavKey::SelectLast => KeyBinding::new(keys, SelectLast, context),
+            OutlineNavKey::SelectNextSibling => KeyBinding::new(keys, SelectNextSibling, context),
+            OutlineNavKey::SelectPreviousSibling => {
+                KeyBinding::new(keys, SelectPreviousSibling, context)
+            }
+            OutlineNavKey::Expand => KeyBinding::new(keys, Expand, context),
+            OutlineNavKey::Collapse => KeyBinding::new(keys, Collapse, context),
+            OutlineNavKey::OpenSelected => KeyBinding::new(keys, OpenSelected, context),
+            OutlineNavKey::StartChat => KeyBinding::new(keys, StartChatSelected, context),
+            OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
+            OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),
+            OutlineNavKey::CreateChild => KeyBinding::new(keys, CreateChild, context),
+            OutlineNavKey::MoveItemUp => KeyBinding::new(keys, MoveItemUp, context),
+            OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
+            OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
+            OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
+            OutlineNavKey::ShowShortcuts => KeyBinding::new(
+                keys,
+                RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),
+                context,
+            ),
         }
-        OutlineNavKey::Expand => KeyBinding::new(keys, Expand, context),
-        OutlineNavKey::Collapse => KeyBinding::new(keys, Collapse, context),
-        OutlineNavKey::OpenSelected => KeyBinding::new(keys, OpenSelected, context),
-        OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
-        OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),
-        OutlineNavKey::CreateChild => KeyBinding::new(keys, CreateChild, context),
-        OutlineNavKey::MoveItemUp => KeyBinding::new(keys, MoveItemUp, context),
-        OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
-        OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
-        OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
-        OutlineNavKey::ShowShortcuts => KeyBinding::new(
-            keys,
-            RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),
-            context,
-        ),
     }));
 }
 
@@ -670,6 +688,16 @@ impl Shell {
             self.open_outline_shortcuts(cx);
             return;
         }
+        // Open Outline from a Chat the Outline opened is the toggle's
+        // Chat → tree half: it lands on that Chat's row, not wherever the
+        // selection was.
+        if command == WorkOutlineCommand::ToggleOutlineFocus
+            || (command == WorkOutlineCommand::OpenOutline
+                && self.focused_outline_opened_chat(window, cx))
+        {
+            self.toggle_outline_focus(window, cx);
+            return;
+        }
         // Create Instruction from Chat acts where the Chat is; only when that
         // is impossible does it fall through to the Outline (with a notice).
         if command == WorkOutlineCommand::CreateInstructionFromChat
@@ -684,6 +712,103 @@ impl Shell {
         page.update(cx, |overview, cx| {
             overview.run_work_outline_command(command, window, cx)
         });
+    }
+
+    /// The Chat on screen and how: the full chat route's selected Chat, or
+    /// the Overview chat panel's.
+    fn shown_chat(&self, cx: &App) -> Option<OutlineChatReturn> {
+        match self.route {
+            Route::Chat => {
+                self.state
+                    .read(cx)
+                    .selected_chat
+                    .clone()
+                    .map(|chat_id| OutlineChatReturn {
+                        chat_id,
+                        full_route: true,
+                    })
+            }
+            Route::Overview => self
+                .overview_page
+                .as_ref()
+                .and_then(|page| page.read(cx).shown_panel_chat(cx))
+                .map(|chat_id| OutlineChatReturn {
+                    chat_id,
+                    full_route: false,
+                }),
+            _ => None,
+        }
+    }
+
+    /// The composer of the Chat the Outline last opened has focus (where
+    /// Enter on a Chat row lands it).
+    fn focused_outline_opened_chat(&self, window: &Window, cx: &App) -> bool {
+        if !self.composer.focus_handle(cx).contains_focused(window, cx) {
+            return false;
+        }
+        let opened = self
+            .overview_page
+            .as_ref()
+            .and_then(|page| page.read(cx).outline_chat_return().cloned());
+        match (opened, self.shown_chat(cx)) {
+            (Some(opened), Some(shown)) => opened.chat_id == shown.chat_id,
+            _ => false,
+        }
+    }
+
+    /// Toggle Outline Focus. From the Outline tree: back to the last Chat
+    /// opened from the Outline, in the layout it was shown in, composer
+    /// focused (a short notice when there is none). From anywhere else: the
+    /// Outline with the shown Chat's row selected (ancestors expanded,
+    /// scrolled into view) and the tree focused. The Chat's selection and
+    /// composer draft are never touched on the way out.
+    pub(crate) fn toggle_outline_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette = None;
+        let tree_focused = matches!(self.route, Route::Overview)
+            && self
+                .overview_page
+                .as_ref()
+                .is_some_and(|page| page.read(cx).outline_tree_focused(window, cx));
+        if tree_focused {
+            self.return_to_outline_chat(cx);
+            return;
+        }
+        let chat = self.shown_chat(cx);
+        if !matches!(self.route, Route::Overview) {
+            self.open_overview(cx);
+        }
+        let page = self.ensure_overview_page(cx);
+        page.update(cx, |overview, cx| {
+            overview.focus_outline_on_chat(chat, window, cx)
+        });
+    }
+
+    fn return_to_outline_chat(&mut self, cx: &mut Context<Self>) {
+        let page = self.ensure_overview_page(cx);
+        let target = page.read(cx).outline_chat_return().cloned();
+        let target = target.filter(|target| {
+            self.state
+                .read(cx)
+                .chats
+                .iter()
+                .any(|chat| chat.id == target.chat_id)
+        });
+        let Some(target) = target else {
+            page.update(cx, |overview, cx| {
+                overview.show_outline_notice("Open a Chat from the Outline first", cx)
+            });
+            return;
+        };
+        if target.full_route {
+            self.open_chat(target.chat_id, cx);
+        } else {
+            // Deferred: reopening the panel calls back into this Shell.
+            cx.defer(move |cx| {
+                page.update(cx, |overview, cx| {
+                    overview.return_to_outline_chat_panel(target.chat_id, cx)
+                });
+            });
+        }
     }
 
     pub(super) fn render_work_outline_modal(
@@ -1090,7 +1215,7 @@ mod tests {
     #[test]
     fn navigation_keys_parse_are_unique_and_exclude_text_inputs() {
         for (index, (keys, _)) in OUTLINE_NAVIGATION_KEYS.iter().enumerate() {
-            assert!(Keystroke::parse(keys).is_ok(), "{keys}");
+            assert!(Keystroke::parse(&platform_combo(keys)).is_ok(), "{keys}");
             assert!(
                 OUTLINE_NAVIGATION_KEYS[index + 1..]
                     .iter()
@@ -1118,18 +1243,19 @@ mod tests {
     #[test]
     fn command_bindings_skip_unbound_and_fall_back_for_unparseable() {
         let mut keymap = KeymapConfig::default();
-        // Defaults: only Open Outline and Create Work Item ship bound.
-        assert_eq!(work_outline_bindings(&keymap).len(), 2);
-        keymap.set(ShortcutId::RenameWorkItem, "mod-shift-m".into());
+        // Defaults: only Open Outline, Toggle Outline Focus and Create Work
+        // Item ship bound.
         assert_eq!(work_outline_bindings(&keymap).len(), 3);
+        keymap.set(ShortcutId::RenameWorkItem, "mod-shift-m".into());
+        assert_eq!(work_outline_bindings(&keymap).len(), 4);
         // Unparseable with a default: falls back to it.
         keymap.set(ShortcutId::OpenOutline, "mod-bogus-???".into());
-        assert_eq!(work_outline_bindings(&keymap).len(), 3);
+        assert_eq!(work_outline_bindings(&keymap).len(), 4);
         // Unparseable without a default: unbound, never a panic.
         keymap.set(ShortcutId::MoveWorkItem, "mod-bogus-???".into());
-        assert_eq!(work_outline_bindings(&keymap).len(), 3);
+        assert_eq!(work_outline_bindings(&keymap).len(), 4);
         keymap.set(ShortcutId::OpenOutline, String::new());
-        assert_eq!(work_outline_bindings(&keymap).len(), 2);
+        assert_eq!(work_outline_bindings(&keymap).len(), 3);
     }
 
     fn test_shell<'a>(
@@ -1577,5 +1703,247 @@ mod tests {
         cx.simulate_click(button, gpui::Modifiers::default());
         cx.run_until_parked();
         assert!(shortcuts_open(&shell, cx), "toolbar button opens it");
+    }
+
+    /// A Shell on the Outline fixture (one Space, its Chats live), with the
+    /// app's real keymap installed. Returns the Overview and its Outline.
+    fn toggle_shell<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+    ) -> (
+        Entity<Shell>,
+        Entity<crate::overview::Overview>,
+        Entity<crate::work_outline::outline_view::OutlineView>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        use crate::work_outline::store::fixture_ids::*;
+        // The transcript and composer render here (the chat panel and the
+        // chat route), so their globals must exist.
+        cx.update(|cx| {
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            crate::settings::init(crate::settings::UiSettings::default(), dir, cx);
+        });
+        let (shell, cx) = test_shell(cx, dir);
+        cx.update(|_, cx| {
+            crate::shell::apply_keymap(
+                cx,
+                &KeymapConfig::default(),
+                crate::settings::ComposerSendBehavior::default(),
+            )
+        });
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.spaces = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                ];
+                state.chats = [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
+                    .iter()
+                    .map(|id| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": id, "deviceId": "d", "archived": false,
+                            "title": format!("Chat {id}"), "spaceId": "s1",
+                            "cwd": "/work/alpha",
+                            "createdAt": chrono::Utc::now(),
+                            "lastMessageAt": chrono::Utc::now(),
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+            })
+        });
+        shell.update_in(cx, |shell, window, cx| {
+            shell.run_work_outline_command(WorkOutlineCommand::OpenOutline, window, cx);
+            let overview = shell.overview_page.clone().unwrap();
+            overview.update(cx, |overview, cx| {
+                overview.show_work_outline_fixture(window, cx)
+            });
+        });
+        let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
+        let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        redraw(cx);
+        (shell, overview, outline, cx)
+    }
+
+    /// The toggle's key as the app binds it on this platform.
+    fn toggle_key() -> String {
+        platform_combo(ShortcutId::ToggleOutlineFocus.default_combo())
+    }
+
+    fn tree_focused(
+        outline: &Entity<crate::work_outline::outline_view::OutlineView>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        cx.update(|window, cx| {
+            gpui::Focusable::focus_handle(outline.read(cx), cx).is_focused(window)
+        })
+    }
+
+    fn composer_focused(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|window, cx| shell.read(cx).composer.focus_handle(cx).is_focused(window))
+    }
+
+    fn outline_selection(
+        outline: &Entity<crate::work_outline::outline_view::OutlineView>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<String> {
+        outline.read_with(cx, |outline, _| outline.selected_key().map(str::to_owned))
+    }
+
+    /// Enter on a Chat row opens it beside the Outline with the composer
+    /// focused; the toggle key (through `apply_keymap`, from the focused
+    /// composer) jumps to that Chat's row, expanding its collapsed ancestor,
+    /// and focuses the tree; pressing it again returns to the Chat with the
+    /// composer focused and the draft intact. Selection never changes.
+    #[gpui::test]
+    fn toggle_outline_focus_round_trips_between_the_chat_panel_and_its_row(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        let chat_key = row_key::chat(CHAT_AUTH);
+        let launch = row_key::item("s1", LAUNCH);
+
+        // Enter on the Chat row: the panel opens on it, composer focused.
+        outline.update(cx, |outline, cx| outline.select(&chat_key, cx));
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        redraw(cx);
+        cx.simulate_keystrokes("enter");
+        redraw(cx);
+        assert_eq!(
+            shell.read_with(cx, |shell, cx| shell.state.read(cx).selected_chat.clone()),
+            Some(CHAT_AUTH.to_owned())
+        );
+        assert_eq!(
+            overview.read_with(cx, |o, cx| o.shown_panel_chat(cx)),
+            Some(CHAT_AUTH.to_owned())
+        );
+        assert!(composer_focused(&shell, cx), "Enter focuses the composer");
+        cx.simulate_input("half-written prompt");
+        redraw(cx);
+
+        // Collapse the Chat's top-level ancestor so the jump must expand it.
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        outline.update(cx, |outline, cx| outline.select(&launch, cx));
+        redraw(cx);
+        cx.simulate_keystrokes("left");
+        redraw(cx);
+        outline.read_with(cx, |outline, _| {
+            assert!(outline.model().position(&chat_key).is_none(), "collapsed")
+        });
+        let composer = shell.read_with(cx, |shell, _| shell.composer.clone());
+        cx.update(|window, cx| window.focus(&composer.focus_handle(cx), cx));
+        redraw(cx);
+        assert!(composer_focused(&shell, cx));
+
+        // Chat -> tree.
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(tree_focused(&outline, cx), "the tree has focus");
+        assert_eq!(outline_selection(&outline, cx), Some(chat_key.clone()));
+        outline.read_with(cx, |outline, _| {
+            assert!(outline.model().position(&chat_key).is_some(), "expanded")
+        });
+        assert!(
+            cx.debug_bounds("outline-row-chat:chat-auth").is_some(),
+            "the row is rendered (scrolled into view)"
+        );
+        assert_eq!(
+            shell.read_with(cx, |shell, cx| shell.state.read(cx).selected_chat.clone()),
+            Some(CHAT_AUTH.to_owned()),
+            "the Chat stays selected"
+        );
+
+        // Tree -> Chat.
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(composer_focused(&shell, cx), "back in the composer");
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.route, Route::Overview)));
+        assert_eq!(
+            overview.read_with(cx, |o, cx| o.shown_panel_chat(cx)),
+            Some(CHAT_AUTH.to_owned())
+        );
+        assert_eq!(
+            composer.read_with(cx, |composer, cx| composer.draft_text(cx)),
+            "half-written prompt",
+            "the draft survives the round trip"
+        );
+        assert_eq!(outline_selection(&outline, cx), Some(chat_key.clone()));
+
+        // Open Outline (Shift+Cmd+L) from that Chat's composer is the same
+        // Chat -> row jump, even after the selection moved elsewhere.
+        outline.update(cx, |outline, cx| outline.select(&launch, cx));
+        cx.simulate_keystrokes(&platform_combo(ShortcutId::OpenOutline.default_combo()));
+        redraw(cx);
+        assert!(tree_focused(&outline, cx));
+        assert_eq!(outline_selection(&outline, cx), Some(chat_key));
+    }
+
+    /// From the full chat route the toggle lands on the Outline row and
+    /// returns to the full chat route.
+    #[gpui::test]
+    fn toggle_outline_focus_returns_to_the_full_chat_route(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _overview, outline, cx) = toggle_shell(cx, dir.path());
+        shell.update(cx, |shell, cx| shell.open_chat(CHAT_UI.into(), cx));
+        redraw(cx);
+        assert!(composer_focused(&shell, cx));
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.route, Route::Overview)));
+        assert!(tree_focused(&outline, cx));
+        assert_eq!(
+            outline_selection(&outline, cx),
+            Some(row_key::chat(CHAT_UI))
+        );
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.route, Route::Chat)));
+        assert!(composer_focused(&shell, cx));
+        assert_eq!(
+            shell.read_with(cx, |shell, cx| shell.state.read(cx).selected_chat.clone()),
+            Some(CHAT_UI.to_owned())
+        );
+    }
+
+    /// From the tree with no Chat to return to: a notice, nothing else.
+    #[gpui::test]
+    fn toggle_outline_focus_without_a_chat_shows_a_notice(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _overview, outline, cx) = toggle_shell(cx, dir.path());
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        redraw(cx);
+        cx.simulate_keystrokes(&toggle_key());
+        redraw(cx);
+        assert!(tree_focused(&outline, cx));
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.route, Route::Overview)));
+        assert_eq!(
+            outline.read_with(cx, |outline, _| outline.notice().map(str::to_owned)),
+            Some("Open a Chat from the Outline first".to_owned())
+        );
     }
 }

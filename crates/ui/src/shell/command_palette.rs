@@ -599,6 +599,7 @@ mod tests {
                 Entry::ReviewPr,
                 Entry::MyPrs,
                 Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
+                Entry::WorkOutline(WorkOutlineCommand::ToggleOutlineFocus),
                 Entry::WorkOutline(WorkOutlineCommand::CreateWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::CreateChildWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem),
@@ -680,8 +681,13 @@ mod tests {
             actions_for("outline", true),
             vec![
                 Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
+                Entry::WorkOutline(WorkOutlineCommand::ToggleOutlineFocus),
                 Entry::WorkOutline(WorkOutlineCommand::ShowOutlineShortcuts),
             ]
+        );
+        assert_eq!(
+            actions_for("toggle outline", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::ToggleOutlineFocus)]
         );
         assert_eq!(
             actions_for("shortcuts", true),

@@ -2636,6 +2636,14 @@ pub struct Overview {
     peek_focus: gpui::FocusHandle,
     /// The Outline presentation (`OverviewMode::Outline`).
     outline: Entity<OutlineView>,
+    /// Where Toggle Outline Focus returns from the tree: the last Chat opened
+    /// from the Outline (Enter, Details, Required Actions) or the Chat the
+    /// toggle left, with the layout it was shown in.
+    outline_chat_return: Option<OutlineChatReturn>,
+    /// Focus the tree on the next render: arriving from another route, its
+    /// element is not mounted yet when the toggle asks for focus, and the
+    /// Shell's unmounted-focus recovery would take it back.
+    outline_focus_pending: bool,
     /// The Outline's inputs must be re-pushed (set whenever `rows()`
     /// rebuilds, or an Outline-only option changes).
     outline_dirty: bool,
@@ -2869,6 +2877,8 @@ impl Overview {
             grouped_layout_cache: None,
             search,
             chat_panel_open: false,
+            outline_chat_return: None,
+            outline_focus_pending: false,
             copied_panel_identity: None,
             copied_panel_identity_seq: 0,
             transcript,
@@ -4945,6 +4955,35 @@ impl Overview {
                                         )
                                         .child(
                                             div()
+                                                .id("overview-chat-panel-outline")
+                                                .debug_selector(|| {
+                                                    "overview-chat-panel-outline".into()
+                                                })
+                                                .cursor_pointer()
+                                                .text_size(crate::typography::ui_rems(10.5))
+                                                .text_color(theme.text_muted)
+                                                .hover(|el| el.text_color(theme.text))
+                                                .child(SharedString::from("Outline"))
+                                                .hint(
+                                                    "Show this Chat in the Outline",
+                                                    HintKey::Command(
+                                                        WorkOutlineCommand::ToggleOutlineFocus,
+                                                    ),
+                                                )
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    let Some(shell) = this.shell.upgrade() else {
+                                                        return;
+                                                    };
+                                                    // The Shell updates this Overview.
+                                                    window.defer(cx, move |window, cx| {
+                                                        shell.update(cx, |shell, cx| {
+                                                            shell.toggle_outline_focus(window, cx)
+                                                        });
+                                                    });
+                                                })),
+                                        )
+                                        .child(
+                                            div()
                                                 .id("overview-chat-panel-open-full")
                                                 .cursor_pointer()
                                                 .text_size(crate::typography::ui_rems(10.5))
@@ -6225,6 +6264,12 @@ impl Render for Overview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         self.ensure_prefs_loaded(cx);
+        if std::mem::take(&mut self.outline_focus_pending)
+            && self.view_mode == OverviewMode::Outline
+        {
+            let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);
+            window.focus(&handle, cx);
+        }
         // The chat open in the side panel — or, in peek mode, the parent of
         // the subagent being peeked.
         self.panel_highlight = self
@@ -9521,6 +9566,10 @@ impl Overview {
             DetailsExit::OpenChat(chat_id) => {
                 self.close_work_item_details(cx);
                 self.close_required_actions(cx);
+                self.outline_chat_return = Some(OutlineChatReturn {
+                    chat_id: chat_id.clone(),
+                    full_route: false,
+                });
                 self.open_chat_panel(chat_id, cx);
             }
             DetailsExit::OpenItem { space_id, item_id } => {
@@ -9615,6 +9664,9 @@ impl Overview {
         let chat_hint = self.state.read(cx).selected_chat.clone();
         let result: Result<(), &'static str> = match command {
             WorkOutlineCommand::OpenOutline => Ok(()),
+            // Handled by the Shell (`toggle_outline_focus`), which needs the
+            // route; reaching here just opens and focuses the Outline.
+            WorkOutlineCommand::ToggleOutlineFocus => Ok(()),
             // Normally handled by the Shell before routing here; the
             // reference is a Shell overlay, so ask for it after this update.
             WorkOutlineCommand::ShowOutlineShortcuts => {
@@ -9676,6 +9728,65 @@ impl Overview {
             outline.update(cx, |outline, cx| outline.show_notice(notice, cx));
         }
         cx.notify();
+    }
+
+    /// Toggle Outline Focus, Chat → tree: switch to Outline mode, reveal and
+    /// select `chat`'s row (expanding collapsed ancestors, scrolled into
+    /// view) and focus the tree. `chat` also becomes the return target. A
+    /// Chat the Outline does not show (projectless, another Space, filtered
+    /// out) leaves the selection alone; the tree is focused either way.
+    pub(crate) fn focus_outline_on_chat(
+        &mut self,
+        chat: Option<OutlineChatReturn>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_prefs_loaded(cx);
+        self.set_mode(OverviewMode::Outline, cx);
+        let _ = self.rows(cx);
+        self.sync_outline(cx);
+        if let Some(chat) = chat {
+            let key = row_key::chat(&chat.chat_id);
+            self.outline
+                .update(cx, |outline, cx| outline.reveal(&key, cx));
+            self.outline_chat_return = Some(chat);
+        }
+        let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);
+        window.focus(&handle, cx);
+        self.outline_focus_pending = true;
+        cx.notify();
+    }
+
+    /// Toggle Outline Focus's return target (see `outline_chat_return`).
+    pub(crate) fn outline_chat_return(&self) -> Option<&OutlineChatReturn> {
+        self.outline_chat_return.as_ref()
+    }
+
+    /// Whether the Outline tree (or its inline editor) holds focus on screen.
+    pub(crate) fn outline_tree_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.view_mode == OverviewMode::Outline
+            && gpui::Focusable::focus_handle(self.outline.read(cx), cx).contains_focused(window, cx)
+    }
+
+    /// The Chat the panel shows right now, if it is open.
+    pub(crate) fn shown_panel_chat(&self, cx: &gpui::App) -> Option<String> {
+        panel_chat_id(
+            self.chat_panel_open,
+            self.state.read(cx).selected_chat.as_deref(),
+        )
+    }
+
+    /// Toggle Outline Focus, tree → Chat panel: reopen the panel on
+    /// `chat_id` the way Enter on its row does (Work Item Details close
+    /// through the discard prompt first), which focuses the composer.
+    pub(crate) fn return_to_outline_chat_panel(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.leave_work_item_details(DetailsExit::OpenChat(chat_id), cx);
+    }
+
+    /// Show a short notice in the Outline.
+    pub(crate) fn show_outline_notice(&mut self, text: &'static str, cx: &mut Context<Self>) {
+        self.outline
+            .update(cx, |outline, cx| outline.show_notice(text, cx));
     }
 
     /// The item Open Effective Instructions targets: the selected work item,
@@ -9896,6 +10007,14 @@ impl Overview {
     pub fn work_outline_key_bindings() -> Vec<gpui::KeyBinding> {
         crate::work_outline::outline_view::key_bindings()
     }
+}
+
+/// The Chat Toggle Outline Focus returns to, and how it was shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutlineChatReturn {
+    pub chat_id: String,
+    /// `true`: the full chat route; `false`: the Overview's chat panel.
+    pub full_route: bool,
 }
 
 /// Where the Overview goes when it leaves Work Item Details.

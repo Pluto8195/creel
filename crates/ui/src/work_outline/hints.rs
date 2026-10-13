@@ -18,7 +18,7 @@ use gpui::{
 
 use super::command::WorkOutlineCommand;
 use super::outline_view::context_menu::OPEN_MENU_KEYS;
-use crate::settings::{KeymapConfig, platform_combo};
+use crate::settings::{KeymapConfig, ShortcutId, platform_combo};
 use crate::shell::work_outline_ui::{OUTLINE_NAVIGATION_KEYS, OutlineKeyGroup, OutlineNavKey};
 use crate::theme::Theme;
 
@@ -35,13 +35,25 @@ pub(crate) enum HintKey {
     Command(WorkOutlineCommand),
     /// A fixed Outline-context key.
     Outline(OutlineNavKey),
+    /// An app-wide rebindable shortcut that also acts on the selected
+    /// Outline row ([`OUTLINE_APP_KEYS`]).
+    App(ShortcutId),
 }
+
+/// App-wide shortcuts that, while the Outline tree has focus, act on the
+/// selected row instead of the open Chat (shortcut reference rows).
+pub(crate) const OUTLINE_APP_KEYS: [(&str, ShortcutId); 1] =
+    [("Archive Chat / work item", ShortcutId::ArchiveSession)];
 
 /// The stored (platform-neutral, `mod-…`) combo a command is bound to, with
 /// the same resolution `work_outline_bindings` binds: empty = unbound, an
 /// unparseable combo falls back to the default (or to unbound without one).
 pub(crate) fn command_combo(keymap: &KeymapConfig, command: WorkOutlineCommand) -> Option<String> {
-    let id = command.shortcut_id();
+    shortcut_combo(keymap, command.shortcut_id())
+}
+
+/// [`command_combo`] for any rebindable shortcut.
+pub(crate) fn shortcut_combo(keymap: &KeymapConfig, id: ShortcutId) -> Option<String> {
     let combo = keymap.get(id);
     if combo.is_empty() {
         return None;
@@ -74,6 +86,7 @@ pub(crate) fn hint_keys_on(mac: bool, keymap: &KeymapConfig, hint: HintKey) -> O
             command_combo(keymap, command).map(|combo| key_label_on(mac, &combo))
         }
         HintKey::Outline(key) => outline_key_combo(key).map(|combo| key_label_on(mac, combo)),
+        HintKey::App(id) => shortcut_combo(keymap, id).map(|combo| key_label_on(mac, &combo)),
     }
 }
 
@@ -269,6 +282,13 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
             })
             .collect(),
     };
+    let mut edit = outline_group("Edit", OutlineKeyGroup::Edit);
+    // App shortcuts that act on the selected row in the Outline.
+    edit.rows
+        .extend(OUTLINE_APP_KEYS.into_iter().map(|(label, id)| ShortcutRow {
+            label,
+            keys: hint_keys_on(mac, keymap, HintKey::App(id)),
+        }));
     let mut restructure = outline_group("Restructure", OutlineKeyGroup::Restructure);
     // On a Chat row the same keys move the Chat between work items.
     restructure
@@ -279,7 +299,7 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
         }));
     vec![
         outline_group("Navigate", OutlineKeyGroup::Navigate),
-        outline_group("Edit", OutlineKeyGroup::Edit),
+        edit,
         restructure,
         ShortcutGroup {
             title: "Commands",
@@ -360,7 +380,6 @@ pub(crate) fn details_button_hint(label: &str) -> Option<(&'static str, HintKey)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::ShortcutId;
 
     #[test]
     fn keys_are_spelled_per_platform() {
@@ -502,7 +521,7 @@ mod tests {
         // the Chat-row moves add their own rows.
         assert_eq!(
             outline_rows,
-            OUTLINE_NAVIGATION_KEYS.len() - 3 + CHAT_MOVE_KEYS.len()
+            OUTLINE_NAVIGATION_KEYS.len() - 3 + CHAT_MOVE_KEYS.len() + OUTLINE_APP_KEYS.len()
         );
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
@@ -514,6 +533,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
+        assert_eq!(
+            row(&groups, "Archive Chat / work item").keys.as_deref(),
+            Some("\u{21e7}\u{2318}A")
+        );
         assert_eq!(
             row(&groups, "Indent").keys.as_deref(),
             Some("\u{21e7}\u{2192} / \u{21e5}")
@@ -558,6 +581,10 @@ mod tests {
             for (combo, key) in OUTLINE_NAVIGATION_KEYS {
                 let label = key_label_on(mac, combo);
                 assert!(doc.contains(&format!("`{label}`")), "{key:?}: `{label}`");
+            }
+            for (label, id) in OUTLINE_APP_KEYS {
+                let key = key_label_on(mac, id.default_combo_on(mac));
+                assert!(doc.contains(&format!("`{key}`")), "{label}: `{key}`");
             }
             for command in WorkOutlineCommand::ALL {
                 let combo = command.shortcut_id().default_combo_on(mac);
