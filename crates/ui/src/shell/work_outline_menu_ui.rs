@@ -1616,4 +1616,172 @@ mod tests {
         right_click(cx, &row_key::unassociated(Some("s1")));
         audit(&shell, cx, "unassociated group");
     }
+
+    /// [`menu_shell`] plus a second Space `s2` ("beta") with one
+    /// unassociated Chat, so the Outline shows Space root rows.
+    fn two_space_shell<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+    ) -> (
+        Entity<Shell>,
+        Entity<OutlineView>,
+        Calls,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let fixture = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, outline, calls, cx) = menu_shell(cx, dir, fixture);
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, cx| {
+                state.spaces.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": "s2", "deviceId": "d", "path": "/work/beta",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                );
+                state.chats.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": "chat-beta", "deviceId": "d", "archived": false,
+                        "createdAt": "2026-01-01T00:00:00Z", "spaceId": "s2",
+                        "title": "Chat beta",
+                    }))
+                    .unwrap(),
+                );
+                let mut s2 = crate::work_outline::store::fixture_snapshot("s2");
+                for item in &mut s2.items {
+                    item.chat_ids.clear();
+                }
+                s2.assignments.clear();
+                s2.unassociated_chat_ids = vec!["chat-beta".into()];
+                state.set_work_outline_visible(vec!["s1".into(), "s2".into()]);
+                assert!(state.apply_work_outline_frame("s2", s2));
+                cx.notify();
+            })
+        });
+        redraw(cx);
+        (shell, outline, calls, cx)
+    }
+
+    fn space_roots(outline: &Entity<OutlineView>, cx: &mut gpui::VisualTestContext) -> Vec<String> {
+        outline.read_with(cx, |outline, _| {
+            outline
+                .model()
+                .rows
+                .iter()
+                .filter_map(|row| match &row.kind {
+                    crate::work_outline::model::OutlineRowKind::Space { space_id, .. } => {
+                        Some(space_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// A Space row's menu: Move Up / Down (with their keys, greyed at the
+    /// ends), Hide from Outline, and the sidebar's Rename and Remove flows.
+    /// Delete opens the existing confirmation; Cancel deletes nothing.
+    #[gpui::test]
+    fn space_row_menu_reorders_hides_renames_and_confirms_delete(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, outline, calls, cx) = two_space_shell(cx, dir.path());
+        assert_eq!(space_roots(&outline, cx), ["s1", "s2"]);
+        let beta = row_key::space("s2");
+
+        right_click(cx, &beta);
+        assert_eq!(selected(&outline, cx), Some(beta.clone()));
+        assert_eq!(
+            ids(&shell, cx),
+            [
+                "new-item",
+                "space-instructions",
+                "execution",
+                "move-up",
+                "move-down",
+                "hide-space",
+                "rename-space",
+                "required-actions",
+                "shortcuts",
+                "delete-space",
+            ]
+        );
+        assert_eq!(row(&shell, cx, "move-up").keys, Some(key_label("shift-up")));
+        assert_eq!(row(&shell, cx, "move-up").disabled, None);
+        assert_eq!(
+            row(&shell, cx, "move-down").disabled.as_deref(),
+            Some("Already the last project")
+        );
+        // Move Up dispatches the ⇧↑ action on the selected Space row.
+        click(cx, "move-up");
+        assert_eq!(space_roots(&outline, cx), ["s2", "s1"]);
+        settle(&shell, cx);
+
+        // Rename: the sidebar's dialog for this Space.
+        right_click(cx, &beta);
+        click(cx, "rename-space");
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell
+                .rename_space_dialog
+                .as_ref()
+                .map(|d| d.space_id.clone())),
+            Some("s2".to_string())
+        );
+        shell.update(cx, |shell, cx| {
+            shell.rename_space_dialog = None;
+            cx.notify();
+        });
+        settle(&shell, cx);
+
+        // Delete: the existing destructive confirmation, with the copy that
+        // names the index and the Work Outline and recommends Hide.
+        right_click(cx, &beta);
+        click(cx, "delete-space");
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.delete_space_confirm.clone()),
+            Some("s2".to_string())
+        );
+        assert!(cx.debug_bounds("delete-space-confirm").is_some());
+        let cancel = cx
+            .debug_bounds("delete-space-cancel")
+            .expect("Cancel renders");
+        cx.simulate_click(cancel.center(), gpui::Modifiers::default());
+        redraw(cx);
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.delete_space_confirm.clone()),
+            None
+        );
+        shell.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            assert!(state.spaces.iter().any(|space| space.id == "s2"));
+            assert!(state.chats.iter().any(|chat| chat.id == "chat-beta"));
+        });
+        assert!(calls.lock().unwrap().is_empty(), "nothing sent");
+        settle(&shell, cx);
+
+        // Hide from Outline: gone from the Outline, still in the app.
+        let sidebar = shell.update(cx, |shell, cx| shell.sidebar_visible_order(cx));
+        assert!(sidebar.iter().any(|id| id == "chat-beta"), "{sidebar:?}");
+        right_click(cx, &beta);
+        click(cx, "hide-space");
+        assert_eq!(space_roots(&outline, cx), ["s1"]);
+        assert!(outline.read_with(cx, |o, _| {
+            o.model().row(&row_key::chat("chat-beta")).is_none()
+        }));
+        assert!(cx.debug_bounds("outline-hidden-spaces").is_some());
+        assert_eq!(
+            shell.update(cx, |shell, cx| shell.sidebar_visible_order(cx)),
+            sidebar,
+            "the sidebar is unaffected"
+        );
+        shell.read_with(cx, |shell, cx| {
+            assert!(
+                shell
+                    .state
+                    .read(cx)
+                    .chats
+                    .iter()
+                    .any(|chat| chat.id == "chat-beta")
+            );
+        });
+    }
 }
