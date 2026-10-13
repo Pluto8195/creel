@@ -1857,6 +1857,9 @@ pub struct Shell {
     /// settle, preserving focus on mounted controls.
     focus_sub: Option<Subscription>,
     shortcut_focus: FocusHandle,
+    /// Every `MUTATE` request, in order (tests read what was asked for).
+    #[cfg(test)]
+    pub(crate) mutations: Vec<serde_json::Value>,
     /// Neutral shortcut target after clicking away from an input.
     unfocused: FocusHandle,
     /// Clears the jump hints when the window deactivates: a Cmd+Tab away
@@ -2199,6 +2202,8 @@ impl Shell {
             splash_task: None,
             focus_sub: None,
             shortcut_focus: cx.focus_handle(),
+            #[cfg(test)]
+            mutations: Vec::new(),
             unfocused: cx.focus_handle(),
             activation_sub: None,
             _ticker: ticker,
@@ -4813,6 +4818,8 @@ impl Shell {
 
     /// Fire a Mutate op; failures surface in the sidebar notice strip.
     fn mutate(&mut self, params: serde_json::Value, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        self.mutations.push(params.clone());
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.sidebar_notice = Some("Engine not connected".into());
             cx.notify();
@@ -11916,8 +11923,15 @@ impl Render for Shell {
             // Chat-scoped like the panel toggles: Settings has no current
             // session to archive. Quiet under an open popover, like the other
             // session-nav shortcuts.
-            .on_action(cx.listener(|this, _: &ArchiveSession, _, cx| {
-                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+            .on_action(cx.listener(|this, _: &ArchiveSession, window, cx| {
+                if this.overlay_owns_keyboard(cx) {
+                    return;
+                }
+                // In the Outline tree it archives the selected row instead.
+                if this.archive_selected_outline_row(window, cx) {
+                    return;
+                }
+                if matches!(this.route, Route::Chat) {
                     this.archive_selected_chat(cx)
                 }
             }))

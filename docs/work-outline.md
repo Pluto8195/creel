@@ -59,7 +59,15 @@ inline editor, a picker, the search field, or any other text input.
 | Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Shortcut reference | `?` | `?` |
+| Archive the selected Chat, or open **Archive…** for the selected work item | `⇧⌘A` | `Ctrl+Shift+A` |
 | Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
+
+`⇧⌘A` is the app's **Archive session** shortcut (rebindable in **Settings →
+Shortcuts**). Outside the Outline tree it archives the open Chat as before. In the
+tree it acts on the selected row: a Chat row is archived the way the sidebar
+archives it and the selection moves to the next row, a work item opens its
+Archive dialog with the choice for its descendants, and project and group rows
+ignore it. The **Archive Chat** and **Archive…** menu entries show the key.
 
 Every Work Outline command is also in the command palette and can be rebound in
 **Settings → Shortcuts**. Only three commands ship with a global key, because

@@ -188,12 +188,15 @@ impl Shell {
                 MenuAction::CloseOutChat(chat_id.clone()),
             ));
         }
-        menu.entries.push(MenuEntry::new(
-            "archive-chat",
-            "Archive Chat",
-            icons::ARCHIVE_MINIMALISTIC,
-            MenuAction::ArchiveChat(chat_id),
-        ));
+        menu.entries.push(
+            MenuEntry::new(
+                "archive-chat",
+                "Archive Chat",
+                icons::ARCHIVE_MINIMALISTIC,
+                MenuAction::ArchiveChat(chat_id),
+            )
+            .with_hint(HintKey::App(ShortcutId::ArchiveSession)),
+        );
     }
 
     /// The open menu's rows with their live bindings (keys are read from
@@ -414,6 +417,49 @@ impl Shell {
         }
     }
 
+    /// Archive session (Shift+Cmd+A) with the Outline tree focused: acts on
+    /// the selected row instead of the open Chat. A Chat row is archived the
+    /// way the sidebar does it (the selection moves on to the next row); a
+    /// work item opens its Archive dialog (the descendant choice); other
+    /// rows do nothing. `false` when the tree is not focused, so the
+    /// shortcut keeps its Chat behavior everywhere else.
+    pub(super) fn archive_selected_outline_row(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(overview) = self.overview_page.clone() else {
+            return false;
+        };
+        if !matches!(self.route, Route::Overview)
+            || !overview.read(cx).outline_tree_focused(window, cx)
+        {
+            return false;
+        }
+        let outline = overview.read(cx).outline_entity();
+        let Some(row) = outline.read(cx).selected_row().cloned() else {
+            return true;
+        };
+        match row.kind {
+            crate::work_outline::model::OutlineRowKind::Chat(chat)
+                if !chat.dangling && !chat.chat.archived =>
+            {
+                outline.update(cx, |outline, cx| outline.select_past(&row.key, cx));
+                self.archive_chat(chat.chat.id, cx);
+            }
+            crate::work_outline::model::OutlineRowKind::Item(item) if !item.archived => {
+                self.with_menu_details(
+                    Some((item.space_id, item.item_id)),
+                    window,
+                    cx,
+                    |details, _, cx| details.request_archive(cx),
+                );
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn with_menu_details(
         &mut self,
         target: Option<(String, String)>,
@@ -579,6 +625,14 @@ mod tests {
             cx.set_global(Theme::default());
             crate::app_menus::init(cx);
             settings::init(settings::UiSettings::default(), &settings_dir, cx);
+            // The chat route renders the transcript too.
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
         });
         let data_dir = dir.to_path_buf();
         let (shell, cx) = cx.add_window_view(move |_, cx| {
@@ -1269,5 +1323,123 @@ mod tests {
         assert_eq!(call(3)["chatId"], CHAT_API);
         assert_eq!(call(3)["workItemId"], API_AUTH);
         assert_eq!(selected(&outline, cx), Some(row_key::chat(CHAT_API)));
+    }
+
+    fn click_row(cx: &mut gpui::VisualTestContext, key: &str) {
+        let row = cx
+            .debug_bounds(selector(format!("outline-row-{key}")))
+            .unwrap_or_else(|| panic!("row {key} is shown"));
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        redraw(cx);
+    }
+
+    /// Archive session as the app binds it on this platform.
+    fn archive_key() -> String {
+        platform_combo(ShortcutId::ArchiveSession.default_combo())
+    }
+
+    fn archived_chats(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Vec<String> {
+        shell.read_with(cx, |shell, _| {
+            shell
+                .mutations
+                .iter()
+                .filter(|m| m["op"] == "setChatArchived" && m["archived"] == true)
+                .filter_map(|m| m["chatId"].as_str().map(str::to_owned))
+                .collect()
+        })
+    }
+
+    /// Shift+Cmd+A in the Outline tree, through the app keymap: a Chat row
+    /// is archived (the sidebar's path) without opening it and the
+    /// selection moves on; a work item opens its Archive dialog with the
+    /// descendant choice; the group row ignores it.
+    #[gpui::test]
+    fn archive_key_acts_on_the_selected_outline_row(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, outline, _calls, cx) = menu_shell(cx, dir.path(), fixture);
+
+        let chat = row_key::chat(CHAT_UI);
+        click_row(cx, &chat);
+        assert!(outline_focused(&outline, cx));
+        press(cx, &archive_key());
+        assert_eq!(archived_chats(&shell, cx), [CHAT_UI]);
+        let after = selected(&outline, cx);
+        assert!(
+            after.is_some() && after.as_deref() != Some(chat.as_str()),
+            "{after:?}"
+        );
+        shell.read_with(cx, |shell, cx| {
+            assert!(
+                matches!(shell.route, Route::Overview),
+                "the Chat never opens"
+            );
+            assert_eq!(shell.state.read(cx).selected_chat, None);
+            assert!(shell.work_outline_modal.is_none());
+        });
+
+        // A work item: its Archive dialog, nothing archived yet.
+        click_row(cx, &row_key::item("s1", API));
+        press(cx, &archive_key());
+        shell.read_with(cx, |shell, _| {
+            assert!(
+                matches!(
+                    shell.work_outline_modal,
+                    Some(crate::shell::work_outline_ui::WorkOutlineModal::Archive(_))
+                ),
+                "the Archive dialog opens"
+            );
+        });
+        assert_eq!(archived_chats(&shell, cx), [CHAT_UI]);
+        press(cx, "escape");
+
+        // The Unassociated group: nothing.
+        let mutations = shell.read_with(cx, |shell, _| shell.mutations.len());
+        click_row(cx, &row_key::unassociated(Some("s1")));
+        press(cx, &archive_key());
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.mutations.len(), mutations);
+            assert!(shell.work_outline_modal.is_none());
+        });
+    }
+
+    /// Outside the Outline the shortcut still archives the open Chat.
+    #[gpui::test]
+    fn archive_key_keeps_archiving_the_open_chat_outside_the_outline(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, _outline, _calls, cx) = menu_shell(cx, dir.path(), fixture);
+        shell.update(cx, |shell, cx| shell.open_chat(CHAT_API.into(), cx));
+        redraw(cx);
+        press(cx, &archive_key());
+        assert_eq!(archived_chats(&shell, cx), [CHAT_API]);
+    }
+
+    /// The Archive Chat and Archive… entries show the shortcut's live key.
+    #[gpui::test]
+    fn archive_entries_show_the_archive_shortcut(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::work_outline::store::fixture_snapshot("s1");
+        let (shell, _outline, _calls, cx) = menu_shell(cx, dir.path(), fixture);
+        let archive = Some(key_label(ShortcutId::ArchiveSession.default_combo()));
+        right_click(cx, &row_key::chat(CHAT_UI));
+        assert_eq!(row(&shell, cx, "archive-chat").keys, archive);
+        press(cx, "escape");
+        settle(&shell, cx);
+        right_click(cx, &row_key::item("s1", API));
+        assert_eq!(row(&shell, cx, "archive").keys, archive);
+        cx.update(|_, cx| {
+            settings::update(SavePolicy::Debounced, cx, |s| {
+                s.keymap.set(ShortcutId::ArchiveSession, "mod-alt-x".into())
+            });
+        });
+        redraw(cx);
+        assert_eq!(
+            row(&shell, cx, "archive").keys,
+            Some(key_label("mod-alt-x"))
+        );
     }
 }

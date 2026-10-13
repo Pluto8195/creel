@@ -797,6 +797,23 @@ impl OutlineView {
         true
     }
 
+    /// Move the selection off `key` before its row goes away: the next row
+    /// past its subtree, else the row above. Nothing when `key` is not shown.
+    pub(crate) fn select_past(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(ix) = self.model.position(key) else {
+            return;
+        };
+        let depth = self.model.rows[ix].depth;
+        let next = self.model.rows[ix + 1..]
+            .iter()
+            .find(|row| row.depth <= depth)
+            .or_else(|| ix.checked_sub(1).map(|above| &self.model.rows[above]))
+            .map(|row| row.key.clone());
+        if let Some(next) = next {
+            self.select(&next, cx);
+        }
+    }
+
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus, cx);
     }

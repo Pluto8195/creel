@@ -30,6 +30,7 @@ use super::super::model::{self, ChatRow, ItemRow, OutlineRowKind, row_key};
 use super::super::restructure::{self, RestructureOp};
 use super::OutlineView;
 use crate::icons;
+use crate::settings::ShortcutId;
 use crate::shell::work_outline_ui::{
     OUTLINE_NAVIGATION_CONTEXT, OutlineNavKey, RunWorkOutlineCommand,
 };
@@ -176,6 +177,13 @@ impl MenuEntry {
 
     pub(crate) fn disabled(mut self, reason: Option<impl Into<String>>) -> Self {
         self.disabled = reason.map(Into::into);
+        self
+    }
+
+    /// Show (and tooltip) `hint`'s live key: for helper entries whose action
+    /// an app-wide shortcut also runs on the selected row.
+    pub(crate) fn with_hint(mut self, hint: HintKey) -> Self {
+        self.hint = hint;
         self
     }
 
@@ -451,6 +459,7 @@ impl OutlineView {
                 icons::ARCHIVE_MINIMALISTIC,
                 MenuAction::Archive,
             )
+            .with_hint(HintKey::App(ShortcutId::ArchiveSession))
             .disabled(archived.then_some("Already archived")),
             MenuEntry::new(
                 "restore",
