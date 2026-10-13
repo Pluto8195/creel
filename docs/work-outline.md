@@ -30,7 +30,7 @@ never needs a work item.
    **Associate Chat with Work Item**.
 
 Press Enter on a Chat row to open the Chat beside the Outline with its composer
-focused. Press `⌘\` (`Ctrl+\`) to jump back to the Outline tree with that Chat's
+focused. Press `⌘;` (`Ctrl+;`) to jump back to the Outline tree with that Chat's
 row selected, and press it again to return to the Chat. See
 [Jumping between a Chat and the Outline](#jumping-between-a-chat-and-the-outline).
 
@@ -77,7 +77,7 @@ global keys also fire while a text field has focus:
 | Command | Default |
 | --- | --- |
 | Open Outline | `⇧⌘L` / `Ctrl+Shift+L` |
-| Toggle Outline Focus | `⌘\` / `Ctrl+\` |
+| Toggle Outline Focus | `⌘;` / `Ctrl+;` |
 | Create Work Item | `⇧⌘I` / `Ctrl+Shift+I` |
 | Create Child Work Item, Rename, Move, Associate Chat with Work Item, Open Effective Instructions, Create Instruction from Chat, Open Required Actions, Start Chat in Work Item, Move Up / Down, Indent / Outdent, Show Outline Shortcuts | Unbound |
 
@@ -92,9 +92,11 @@ current bindings, including keys you have rebound.
 
 ### Jumping between a Chat and the Outline
 
-**Toggle Outline Focus** (`⌘\`, `Ctrl+\` on Windows and Linux) moves the
+**Toggle Outline Focus** (`⌘;`, `Ctrl+;` on Windows and Linux) moves the
 keyboard between a Chat and the Outline tree. It works while you type in the
-composer.
+composer. Earlier builds used `⌘\`, which 1Password takes system-wide for
+autofill. If you never changed that key, it moves to `⌘;` automatically; a key
+you chose yourself is kept.
 
 - From a Chat (the full chat or the Chat beside the Outline), it switches to the
   Outline, selects that Chat's row, expands any collapsed parent items, scrolls

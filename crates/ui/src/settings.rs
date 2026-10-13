@@ -831,6 +831,10 @@ impl Default for UiSettings {
 // Keymap (customizable shortcuts, §1.4)
 // ---------------------------------------------------------------------------
 
+/// Toggle Outline Focus's first default. A stored binding still equal to it
+/// was never customized, so loading moves it to the current default.
+const TOGGLE_OUTLINE_FOCUS_LEGACY_DEFAULT: &str = "mod-\\";
+
 /// How many sidebar rows the jump shortcuts reach (t3code's
 /// `THREAD_JUMP_KEYBINDING_COMMANDS`, nine slots).
 pub const JUMP_SLOTS: usize = 9;
@@ -1030,10 +1034,14 @@ impl ShortcutId {
             // their global chords also ship unbound.
             ShortcutId::OpenOutline => "mod-shift-l",
             // Chat <-> Outline tree. Must fire from the composer (where Enter
-            // on a Chat row lands focus), so it is a primary chord; `mod-\`
-            // clashes with no default, fixed (`app_menus`, palette, overview),
-            // composer, browser or gpui-base editing binding.
-            ShortcutId::ToggleOutlineFocus => "mod-\\",
+            // on a Chat row lands focus), so it is a primary chord. Not
+            // `mod-\`: 1Password claims Cmd+\ system-wide for autofill and
+            // macOS delivers it there first (see
+            // `TOGGLE_OUTLINE_FOCUS_LEGACY_DEFAULT`). `mod-;` clashes with no
+            // default, fixed (`app_menus`, palette, overview), composer,
+            // browser or gpui-base editing binding, and no common macOS
+            // utility registers it globally.
+            ShortcutId::ToggleOutlineFocus => "mod-;",
             ShortcutId::CreateWorkItem => "mod-shift-i",
             ShortcutId::CreateChildWorkItem
             | ShortcutId::RenameWorkItem
@@ -1632,6 +1640,17 @@ impl UiSettings {
                         .get_mut("keymap")
                         .and_then(serde_json::Value::as_object_mut)
                     {
+                        // A toggle still on its first default (Cmd+\, which
+                        // 1Password takes system-wide) was never customized:
+                        // treat it as missing so it takes the current default
+                        // under the same free-combo rule. A rebind survives.
+                        if keymap
+                            .get("toggleOutlineFocus")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(TOGGLE_OUTLINE_FOCUS_LEGACY_DEFAULT)
+                        {
+                            keymap.remove("toggleOutlineFocus");
+                        }
                         for (id, field) in [
                             (ShortcutId::ToggleFiles, "toggleFiles"),
                             (ShortcutId::OpenMyPrs, "openMyPrs"),
@@ -3347,8 +3366,47 @@ mod tests {
             );
         }
         assert_eq!(ShortcutId::OpenOutline.default_combo(), "mod-shift-l");
-        assert_eq!(ShortcutId::ToggleOutlineFocus.default_combo(), "mod-\\");
+        assert_eq!(ShortcutId::ToggleOutlineFocus.default_combo(), "mod-;");
         assert_eq!(ShortcutId::CreateWorkItem.default_combo(), "mod-shift-i");
+    }
+
+    #[test]
+    fn toggle_outline_focus_moves_off_the_old_default_and_keeps_a_rebind() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |json: &str| {
+            std::fs::write(UiSettings::path(dir.path()), json).unwrap();
+            UiSettings::load(dir.path()).keymap
+        };
+        // Stored on the old Cmd+\ default: migrates to the new default.
+        let keymap = load(r#"{"keymap": {"saveFile": "mod-s", "toggleOutlineFocus": "mod-\\"}}"#);
+        assert_eq!(keymap.get(ShortcutId::ToggleOutlineFocus), "mod-;");
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        // A customized binding is preserved, and so is a deliberate clear.
+        let keymap =
+            load(r#"{"keymap": {"saveFile": "mod-s", "toggleOutlineFocus": "mod-alt-o"}}"#);
+        assert_eq!(keymap.get(ShortcutId::ToggleOutlineFocus), "mod-alt-o");
+        let keymap = load(r#"{"keymap": {"saveFile": "mod-s", "toggleOutlineFocus": ""}}"#);
+        assert_eq!(keymap.get(ShortcutId::ToggleOutlineFocus), "");
+        // The old default migrates to unbound when another action already
+        // holds the new chord, rather than double-binding it.
+        let keymap = load(
+            r#"{"keymap": {"saveFile": "mod-s", "toggleOutlineFocus": "mod-\\", "toggleTerminal": "mod-;"}}"#,
+        );
+        assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-;");
+        assert_eq!(keymap.get(ShortcutId::ToggleOutlineFocus), "");
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        // The migrated value persists: a save and reload keeps it.
+        let mut settings = {
+            std::fs::write(
+                UiSettings::path(dir.path()),
+                r#"{"keymap": {"saveFile": "mod-s", "toggleOutlineFocus": "mod-\\"}}"#,
+            )
+            .unwrap();
+            UiSettings::load(dir.path())
+        };
+        settings.save(dir.path()).unwrap();
+        settings = UiSettings::load(dir.path());
+        assert_eq!(settings.keymap.get(ShortcutId::ToggleOutlineFocus), "mod-;");
     }
 
     #[test]
@@ -3458,9 +3516,9 @@ mod tests {
             combo_from_keystroke_on(false, true, false, true, false, "l").as_deref(),
             Some("mod-shift-l")
         );
-        // The toggle's backslash records back to its default and binds.
+        // The toggle's semicolon records back to its default and binds.
         assert_eq!(
-            combo_from_keystroke_on(true, false, false, false, true, "\\").as_deref(),
+            combo_from_keystroke_on(true, false, false, false, true, ";").as_deref(),
             Some(ShortcutId::ToggleOutlineFocus.default_combo_on(true))
         );
         for mac in [true, false] {
