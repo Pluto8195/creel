@@ -563,6 +563,14 @@ mod tests {
             row(&groups, "Create Work Item").keys.as_deref(),
             Some("\u{21e7}\u{2318}I")
         );
+        assert_eq!(
+            row(&groups, "Open Full Chat").keys.as_deref(),
+            Some("\u{21e7}\u{2318}\u{21a9}")
+        );
+        assert_eq!(
+            row(&groups, "Toggle Outline Focus").keys.as_deref(),
+            Some("\u{2318};")
+        );
         assert_eq!(row(&groups, "Show Outline Shortcuts").keys, None);
         keymap.set(ShortcutId::ShowOutlineShortcuts, "mod-alt-/".into());
         let groups = shortcut_reference_on(false, &keymap);

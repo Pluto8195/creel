@@ -31,7 +31,8 @@ never needs a work item.
 
 Press Enter on a Chat row to open the Chat beside the Outline with its composer
 focused. Press `⌘;` (`Ctrl+;`) to jump back to the Outline tree with that Chat's
-row selected, and press it again to return to the Chat. See
+row selected, and press it again to return to the Chat. Press `⇧⌘↩`
+(`Ctrl+Shift+Enter`) to open that Chat as the full chat. See
 [Jumping between a Chat and the Outline](#jumping-between-a-chat-and-the-outline).
 
 Press `?` while the Outline has focus, or click the keyboard button in the
@@ -71,13 +72,14 @@ Archive dialog with the choice for its descendants, and project and group rows
 ignore it. The **Archive Chat** and **Archive…** menu entries show the key.
 
 Every Work Outline command is also in the command palette and can be rebound in
-**Settings → Shortcuts**. Only three commands ship with a global key, because
+**Settings → Shortcuts**. Only four commands ship with a global key, because
 global keys also fire while a text field has focus:
 
 | Command | Default |
 | --- | --- |
 | Open Outline | `⇧⌘L` / `Ctrl+Shift+L` |
 | Toggle Outline Focus | `⌘;` / `Ctrl+;` |
+| Open Full Chat | `⇧⌘↩` / `Ctrl+Shift+Enter` |
 | Create Work Item | `⇧⌘I` / `Ctrl+Shift+I` |
 | Create Child Work Item, Rename, Move, Associate Chat with Work Item, Open Effective Instructions, Create Instruction from Chat, Open Required Actions, Start Chat in Work Item, Move Up / Down, Indent / Outdent, Show Outline Shortcuts | Unbound |
 
@@ -112,6 +114,23 @@ draft. `⇧⌘L` (`Ctrl+Shift+L`) does the same Chat-to-row jump when you press 
 in the composer of a Chat you opened from the Outline. `Esc` in the Outline is
 not part of this: it still closes Details and menus.
 
+### Opening the full chat
+
+**Open Full Chat** (`⇧⌘↩`, `Ctrl+Shift+Enter` on Windows and Linux) does what
+the chat panel's **Open full chat →** button does: it closes the panel and
+switches to the full chat with its composer focused. It works while you type in
+the panel's composer, and a draft you started there is still there. It opens:
+
+- the Chat on the selected Outline row, while the Outline tree has focus;
+- otherwise the Chat beside the Overview (the highlighted row in List or
+  Canvas);
+- otherwise the Chat on the selected Outline row.
+
+With none of these, the Outline shows a short notice. In the full chat, Toggle
+Outline Focus takes you back to that Chat's Outline row. The command is also in
+the command palette and on every Chat row's menu, and **Open full chat →** shows
+its key when you hover over it.
+
 ## Context menus
 
 Right-click a row (or Control-click it on macOS) to select it and open its
@@ -125,7 +144,7 @@ at the top level).
 | Row | Entries |
 | --- | --- |
 | Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore |
-| Chat | Open Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
+| Chat | Open Chat, Open Full Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
 | Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
 

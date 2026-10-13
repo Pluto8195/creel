@@ -600,6 +600,7 @@ mod tests {
                 Entry::MyPrs,
                 Entry::WorkOutline(WorkOutlineCommand::OpenOutline),
                 Entry::WorkOutline(WorkOutlineCommand::ToggleOutlineFocus),
+                Entry::WorkOutline(WorkOutlineCommand::OpenFullChat),
                 Entry::WorkOutline(WorkOutlineCommand::CreateWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::CreateChildWorkItem),
                 Entry::WorkOutline(WorkOutlineCommand::RenameWorkItem),
@@ -684,6 +685,10 @@ mod tests {
                 Entry::WorkOutline(WorkOutlineCommand::ToggleOutlineFocus),
                 Entry::WorkOutline(WorkOutlineCommand::ShowOutlineShortcuts),
             ]
+        );
+        assert_eq!(
+            actions_for("full chat", true),
+            vec![Entry::WorkOutline(WorkOutlineCommand::OpenFullChat)]
         );
         assert_eq!(
             actions_for("toggle outline", true),

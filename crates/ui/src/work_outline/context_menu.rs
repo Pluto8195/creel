@@ -539,6 +539,13 @@ impl OutlineView {
             )
             .disabled(gone),
             MenuEntry::new(
+                "open-full-chat",
+                "Open Full Chat",
+                icons::WINDOW_MAXIMIZE,
+                MenuAction::Command(WorkOutlineCommand::OpenFullChat),
+            )
+            .disabled(gone),
+            MenuEntry::new(
                 "rename",
                 "Rename\u{2026}",
                 icons::PEN,

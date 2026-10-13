@@ -1,4 +1,4 @@
-//! Seam 1: the sixteen Work Outline commands and the confirmation request type.
+//! Seam 1: the seventeen Work Outline commands and the confirmation request type.
 //!
 //! Every entry point (command palette, keymap actions, Outline toolbar) forwards
 //! to `Shell::run_work_outline_command`, which routes to
@@ -17,6 +17,10 @@ pub(crate) enum WorkOutlineCommand {
     /// row and focus the tree; from the tree, back to the last Chat opened
     /// from the Outline with its composer focused.
     ToggleOutlineFocus,
+    /// Leave the Overview for the full chat route of the Chat in play: the
+    /// chat panel's Chat, or the selected Chat row (the panel's "Open full
+    /// chat →").
+    OpenFullChat,
     CreateWorkItem,
     CreateChildWorkItem,
     RenameWorkItem,
@@ -40,9 +44,10 @@ pub(crate) enum WorkOutlineCommand {
 }
 
 impl WorkOutlineCommand {
-    pub(crate) const ALL: [WorkOutlineCommand; 16] = [
+    pub(crate) const ALL: [WorkOutlineCommand; 17] = [
         Self::OpenOutline,
         Self::ToggleOutlineFocus,
+        Self::OpenFullChat,
         Self::CreateWorkItem,
         Self::CreateChildWorkItem,
         Self::RenameWorkItem,
@@ -64,6 +69,7 @@ impl WorkOutlineCommand {
         match self {
             Self::OpenOutline => "Open Outline",
             Self::ToggleOutlineFocus => "Toggle Outline Focus",
+            Self::OpenFullChat => "Open Full Chat",
             Self::CreateWorkItem => "Create Work Item",
             Self::CreateChildWorkItem => "Create Child Work Item",
             Self::RenameWorkItem => "Rename Work Item",
@@ -87,6 +93,7 @@ impl WorkOutlineCommand {
         match self {
             Self::OpenOutline => icons::LIST,
             Self::ToggleOutlineFocus => icons::SPLIT_COLUMNS,
+            Self::OpenFullChat => icons::WINDOW_MAXIMIZE,
             Self::CreateWorkItem | Self::CreateChildWorkItem => icons::ADD_CIRCLE,
             Self::RenameWorkItem => icons::PEN,
             Self::MoveWorkItem => icons::SORT_VERTICAL,
@@ -109,6 +116,7 @@ impl WorkOutlineCommand {
         match self {
             Self::OpenOutline => "openOutline",
             Self::ToggleOutlineFocus => "toggleOutlineFocus",
+            Self::OpenFullChat => "openFullChat",
             Self::CreateWorkItem => "createWorkItem",
             Self::CreateChildWorkItem => "createChildWorkItem",
             Self::RenameWorkItem => "renameWorkItem",
@@ -132,6 +140,7 @@ impl WorkOutlineCommand {
         match self {
             Self::OpenOutline => ShortcutId::OpenOutline,
             Self::ToggleOutlineFocus => ShortcutId::ToggleOutlineFocus,
+            Self::OpenFullChat => ShortcutId::OpenFullChat,
             Self::CreateWorkItem => ShortcutId::CreateWorkItem,
             Self::CreateChildWorkItem => ShortcutId::CreateChildWorkItem,
             Self::RenameWorkItem => ShortcutId::RenameWorkItem,
@@ -264,12 +273,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn sixteen_commands_with_unique_labels_and_ids() {
-        assert_eq!(WorkOutlineCommand::ALL.len(), 16);
+    fn seventeen_commands_with_unique_labels_and_ids() {
+        assert_eq!(WorkOutlineCommand::ALL.len(), 17);
         let ids: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.id()).collect();
         let labels: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.label()).collect();
-        assert_eq!(ids.len(), 16);
-        assert_eq!(labels.len(), 16);
+        assert_eq!(ids.len(), 17);
+        assert_eq!(labels.len(), 17);
         assert!(
             WorkOutlineCommand::ALL
                 .iter()
@@ -289,6 +298,7 @@ mod tests {
             [
                 "openOutline",
                 "toggleOutlineFocus",
+                "openFullChat",
                 "createWorkItem",
                 "createChildWorkItem",
                 "renameWorkItem",
@@ -341,6 +351,9 @@ mod tests {
         assert!(!WorkOutlineCommand::OpenOutline.needs_selected_work_item());
         assert!(!WorkOutlineCommand::ToggleOutlineFocus.needs_selected_work_item());
         assert!(!WorkOutlineCommand::ToggleOutlineFocus.needs_chat());
+        // Open Full Chat resolves its own Chat (panel or selected row).
+        assert!(!WorkOutlineCommand::OpenFullChat.needs_selected_work_item());
+        assert!(!WorkOutlineCommand::OpenFullChat.needs_chat());
         assert!(!WorkOutlineCommand::CreateWorkItem.needs_selected_work_item());
         assert!(WorkOutlineCommand::CreateChildWorkItem.needs_selected_work_item());
         assert!(WorkOutlineCommand::AssociateChatWithWorkItem.needs_chat());

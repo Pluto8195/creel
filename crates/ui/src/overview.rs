@@ -4989,7 +4989,16 @@ impl Overview {
                                                 .text_size(crate::typography::ui_rems(10.5))
                                                 .text_color(theme.accent)
                                                 .child(SharedString::from("Open full chat →"))
+                                                .hint(
+                                                    "Open this Chat as the full chat",
+                                                    HintKey::Command(
+                                                        WorkOutlineCommand::OpenFullChat,
+                                                    ),
+                                                )
                                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                                    // `open` acknowledges the
+                                                    // unread done; the key path
+                                                    // is `prepare_full_chat`.
                                                     this.close_chat_panel(cx);
                                                     this.open(full_chat_id.clone(), cx);
                                                 })),
@@ -9667,6 +9676,8 @@ impl Overview {
             // Handled by the Shell (`toggle_outline_focus`), which needs the
             // route; reaching here just opens and focuses the Outline.
             WorkOutlineCommand::ToggleOutlineFocus => Ok(()),
+            // Handled by the Shell (`open_full_chat`) before routing here.
+            WorkOutlineCommand::OpenFullChat => Ok(()),
             // Normally handled by the Shell before routing here; the
             // reference is a Shell overlay, so ask for it after this update.
             WorkOutlineCommand::ShowOutlineShortcuts => {
@@ -9781,6 +9792,62 @@ impl Overview {
     /// through the discard prompt first), which focuses the composer.
     pub(crate) fn return_to_outline_chat_panel(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.leave_work_item_details(DetailsExit::OpenChat(chat_id), cx);
+    }
+
+    /// The Chat Open Full Chat opens: the Outline's selected Chat row while
+    /// the tree has focus, else the Chat the panel shows (the highlighted
+    /// List / Canvas row; its composer may have focus), else the Outline's
+    /// selected Chat row. A panel hidden under Work Item Details or Required
+    /// Actions does not count; neither does a Chat row whose Chat is gone.
+    pub(crate) fn full_chat_target(&self, window: &Window, cx: &gpui::App) -> Option<String> {
+        let selected_row = || {
+            (self.view_mode == OverviewMode::Outline)
+                .then(|| self.outline.read(cx).selected_row())
+                .flatten()
+                .and_then(|row| row.chat())
+                .filter(|row| !row.dangling)
+                .map(|row| row.chat.id.clone())
+        };
+        if self.outline_tree_focused(window, cx)
+            && let Some(chat_id) = selected_row()
+        {
+            return Some(chat_id);
+        }
+        let panel_visible =
+            self.work_item_details.is_none() && self.required_actions_panel.is_none();
+        panel_visible
+            .then(|| self.shown_panel_chat(cx))
+            .flatten()
+            .or_else(selected_row)
+    }
+
+    /// Tests: switch to List mode and open the chat panel on `chat_id` (the
+    /// row's "View full chat →"), which highlights that row.
+    #[cfg(test)]
+    pub(crate) fn show_list_with_panel_for_test(
+        &mut self,
+        chat_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_prefs_loaded(cx);
+        self.set_mode(OverviewMode::List, cx);
+        self.open_chat_panel(chat_id, cx);
+    }
+
+    /// Open Full Chat with nothing to open: a notice in the Outline (List
+    /// and Canvas have no notice line; there the command does nothing).
+    pub(crate) fn show_full_chat_notice(&mut self, cx: &mut Context<Self>) {
+        if self.view_mode == OverviewMode::Outline {
+            self.show_outline_notice("Select a Chat or open one beside the Outline first", cx);
+        }
+    }
+
+    /// The Overview half of leaving for the full chat route (the panel's
+    /// "Open full chat →"): close the panel and acknowledge the Chat's unread
+    /// done, as opening it from a row does. The Shell then opens the route.
+    pub(crate) fn prepare_full_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        self.close_chat_panel(cx);
+        self.acknowledge_done(chat_id, cx);
     }
 
     /// Show a short notice in the Outline.

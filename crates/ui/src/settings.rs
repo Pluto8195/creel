@@ -858,7 +858,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// Work Outline commands registered as rebindable shortcuts (every
 /// `WorkOutlineCommand`, including the ones whose palette entry waits for a
 /// later milestone).
-pub const WORK_OUTLINE_SHORTCUTS: usize = 16;
+pub const WORK_OUTLINE_SHORTCUTS: usize = 17;
 
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
 /// or past [`JUMP_SLOTS`] has no combo and no label, so it reads as unbound
@@ -881,6 +881,7 @@ pub enum ShortcutId {
     ArchiveSession,
     OpenOutline,
     ToggleOutlineFocus,
+    OpenFullChat,
     CreateWorkItem,
     CreateChildWorkItem,
     RenameWorkItem,
@@ -916,6 +917,7 @@ impl ShortcutId {
         ShortcutId::ArchiveSession,
         ShortcutId::OpenOutline,
         ShortcutId::ToggleOutlineFocus,
+        ShortcutId::OpenFullChat,
         ShortcutId::CreateWorkItem,
         ShortcutId::CreateChildWorkItem,
         ShortcutId::RenameWorkItem,
@@ -964,6 +966,7 @@ impl ShortcutId {
             ShortcutId::ArchiveSession => "Archive session",
             ShortcutId::OpenOutline => "Open Outline",
             ShortcutId::ToggleOutlineFocus => "Toggle Outline focus",
+            ShortcutId::OpenFullChat => "Open full chat",
             ShortcutId::CreateWorkItem => "Create work item",
             ShortcutId::CreateChildWorkItem => "Create child work item",
             ShortcutId::RenameWorkItem => "Rename work item",
@@ -1042,6 +1045,12 @@ impl ShortcutId {
             // browser or gpui-base editing binding, and no common macOS
             // utility registers it globally.
             ShortcutId::ToggleOutlineFocus => "mod-;",
+            // Overview chat panel / selected Chat row -> the full chat route.
+            // Must fire from the panel's composer, so it is a primary chord;
+            // `mod-shift-enter` clashes with no default or fixed binding and
+            // is not the composer's send (`mod-enter`, reserved) or newline
+            // (`shift-enter`). Off the Overview it does nothing.
+            ShortcutId::OpenFullChat => "mod-shift-enter",
             ShortcutId::CreateWorkItem => "mod-shift-i",
             ShortcutId::CreateChildWorkItem
             | ShortcutId::RenameWorkItem
@@ -1093,6 +1102,7 @@ pub struct KeymapConfig {
     pub archive_session: String,
     pub open_outline: String,
     pub toggle_outline_focus: String,
+    pub open_full_chat: String,
     pub create_work_item: String,
     pub create_child_work_item: String,
     pub rename_work_item: String,
@@ -1174,6 +1184,7 @@ impl Default for KeymapConfig {
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
             open_outline: ShortcutId::OpenOutline.default_combo().into(),
             toggle_outline_focus: ShortcutId::ToggleOutlineFocus.default_combo().into(),
+            open_full_chat: ShortcutId::OpenFullChat.default_combo().into(),
             create_work_item: ShortcutId::CreateWorkItem.default_combo().into(),
             create_child_work_item: ShortcutId::CreateChildWorkItem.default_combo().into(),
             rename_work_item: ShortcutId::RenameWorkItem.default_combo().into(),
@@ -1218,6 +1229,7 @@ impl KeymapConfig {
             ShortcutId::ArchiveSession => &self.archive_session,
             ShortcutId::OpenOutline => &self.open_outline,
             ShortcutId::ToggleOutlineFocus => &self.toggle_outline_focus,
+            ShortcutId::OpenFullChat => &self.open_full_chat,
             ShortcutId::CreateWorkItem => &self.create_work_item,
             ShortcutId::CreateChildWorkItem => &self.create_child_work_item,
             ShortcutId::RenameWorkItem => &self.rename_work_item,
@@ -1258,6 +1270,7 @@ impl KeymapConfig {
             ShortcutId::ArchiveSession => self.archive_session = combo,
             ShortcutId::OpenOutline => self.open_outline = combo,
             ShortcutId::ToggleOutlineFocus => self.toggle_outline_focus = combo,
+            ShortcutId::OpenFullChat => self.open_full_chat = combo,
             ShortcutId::CreateWorkItem => self.create_work_item = combo,
             ShortcutId::CreateChildWorkItem => self.create_child_work_item = combo,
             ShortcutId::RenameWorkItem => self.rename_work_item = combo,
@@ -1656,6 +1669,7 @@ impl UiSettings {
                             (ShortcutId::OpenMyPrs, "openMyPrs"),
                             (ShortcutId::OpenOutline, "openOutline"),
                             (ShortcutId::ToggleOutlineFocus, "toggleOutlineFocus"),
+                            (ShortcutId::OpenFullChat, "openFullChat"),
                             (ShortcutId::CreateWorkItem, "createWorkItem"),
                         ] {
                             let default = platform_combo(id.default_combo());
@@ -3324,9 +3338,10 @@ mod tests {
         assert!(conflicted_shortcuts(&keymap).is_empty());
     }
 
-    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 16] = [
+    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 17] = [
         (ShortcutId::OpenOutline, "openOutline"),
         (ShortcutId::ToggleOutlineFocus, "toggleOutlineFocus"),
+        (ShortcutId::OpenFullChat, "openFullChat"),
         (ShortcutId::CreateWorkItem, "createWorkItem"),
         (ShortcutId::CreateChildWorkItem, "createChildWorkItem"),
         (ShortcutId::RenameWorkItem, "renameWorkItem"),
@@ -3367,6 +3382,7 @@ mod tests {
         }
         assert_eq!(ShortcutId::OpenOutline.default_combo(), "mod-shift-l");
         assert_eq!(ShortcutId::ToggleOutlineFocus.default_combo(), "mod-;");
+        assert_eq!(ShortcutId::OpenFullChat.default_combo(), "mod-shift-enter");
         assert_eq!(ShortcutId::CreateWorkItem.default_combo(), "mod-shift-i");
     }
 
@@ -3481,7 +3497,7 @@ mod tests {
             .map(|(id, _)| keymap.get(*id))
             .filter(|combo| !combo.is_empty())
             .collect();
-        assert_eq!(bound.len(), 3);
+        assert_eq!(bound.len(), 4);
         // Binding one to another command's combo is a detected conflict.
         let mut clash = keymap.clone();
         clash.set(ShortcutId::MoveWorkItem, "mod-shift-l".into());
@@ -3496,6 +3512,7 @@ mod tests {
             for id in [
                 ShortcutId::OpenOutline,
                 ShortcutId::ToggleOutlineFocus,
+                ShortcutId::OpenFullChat,
                 ShortcutId::CreateWorkItem,
             ] {
                 let combo = id.default_combo_on(mac);
@@ -3521,10 +3538,16 @@ mod tests {
             combo_from_keystroke_on(true, false, false, false, true, ";").as_deref(),
             Some(ShortcutId::ToggleOutlineFocus.default_combo_on(true))
         );
+        // Open Full Chat's Shift+Enter chord records back the same way.
+        assert_eq!(
+            combo_from_keystroke_on(true, false, false, true, true, "enter").as_deref(),
+            Some(ShortcutId::OpenFullChat.default_combo_on(true))
+        );
         for mac in [true, false] {
-            let bound =
-                platform_combo_on(mac, ShortcutId::ToggleOutlineFocus.default_combo_on(mac));
-            assert!(gpui::Keystroke::parse(&bound).is_ok(), "{bound}");
+            for id in [ShortcutId::ToggleOutlineFocus, ShortcutId::OpenFullChat] {
+                let bound = platform_combo_on(mac, id.default_combo_on(mac));
+                assert!(gpui::Keystroke::parse(&bound).is_ok(), "{bound}");
+            }
         }
     }
 
