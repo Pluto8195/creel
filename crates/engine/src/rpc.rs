@@ -779,6 +779,26 @@ impl EngineRpc {
         let work_outline = std::sync::Arc::new(crate::work_outline::WorkOutlineService::new(
             workspace.clone(),
         ));
+        {
+            // `keepInstructionSession` keeps what this device's Execution
+            // Session received for Chats it hosts; other Chats fall back to
+            // their host's reported Execution Session in the registry.
+            let sessions = sessions.clone();
+            let workspace = workspace.clone();
+            let device_id = doc_host.device_id().to_string();
+            work_outline.set_kept_session_resolver(std::sync::Arc::new(move |chat_id: &str| {
+                let hosted_here = workspace
+                    .chat(chat_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|chat| chat.device_id == device_id);
+                if hosted_here {
+                    sessions.kept_instruction_session(chat_id)
+                } else {
+                    None
+                }
+            }));
+        }
         let execution_scope =
             crate::execution_scope::ExecutionScopeService::new(workspace.clone(), repos.clone());
         let launch = crate::work_outline_launch::WorkItemLaunchService::new(

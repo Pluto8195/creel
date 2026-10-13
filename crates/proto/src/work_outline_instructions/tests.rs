@@ -884,6 +884,7 @@ fn revision_wire_names_are_pinned() {
         ("explicit", InstructionApplicationReason::Explicit),
         ("forkInherit", InstructionApplicationReason::ForkInherit),
         ("fork-inherit", InstructionApplicationReason::ForkInherit),
+        ("keepSession", InstructionApplicationReason::KeepSession),
         ("future", InstructionApplicationReason::Explicit),
     ] {
         assert_eq!(

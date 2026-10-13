@@ -77,6 +77,11 @@ impl FakeRegistry {
         *self.selected.lock().unwrap() = Some(pin.clone());
     }
 
+    /// What a `keepSession` application without a revision selects.
+    fn clear_selection(&self) {
+        *self.selected.lock().unwrap() = None;
+    }
+
     fn reports(&self) -> Vec<ExecutionSessionReport> {
         self.reports.lock().unwrap().clone()
     }
@@ -1372,5 +1377,130 @@ async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes(
         zeron_engine::instruction_delivery::last_advertised_capabilities(),
         Some(zeron_proto::capabilities::current())
     );
+    rig.core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// keepInstructionSession: keep the existing conversation instead of a reset
+// ---------------------------------------------------------------------------
+
+/// Apply the keep the way the registry would: select exactly what the
+/// engine reports the session received (`None` = no instructions).
+fn keep_session(rig: &Rig) -> Option<InstructionRevisionPin> {
+    let kept = rig
+        .core
+        .sessions
+        .kept_instruction_session(CHAT)
+        .expect("the hosting engine has a delivery record");
+    match &kept {
+        Some(pin) => rig.registry.select(pin),
+        None => rig.registry.clear_selection(),
+    }
+    kept
+}
+
+#[tokio::test]
+async fn keeping_the_session_after_a_refused_apply_continues_the_old_conversation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    let a = rig.registry.add("rev-a", "Prefer small commits");
+    rig.registry.select(&a);
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+
+    // Apply rev-b, send: the FreshSession harness needs a reset.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let refused = queue(&rig.core, plain("second", "m-2"));
+    let resolved = wait_resolved(&rig.core, &refused).await;
+    assert!(
+        resolved
+            .resolution
+            .as_deref()
+            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+        "{resolved:?}"
+    );
+    wait_for(
+        || rejected_sends(&rig.core).len() == 1,
+        "the refused send on the feed",
+    )
+    .await;
+
+    // Keep this session: the selection reverts to rev-a, and the same
+    // message resends as a plain Run.
+    assert_eq!(keep_session(&rig), Some(a.clone()));
+    let resent = queue(&rig.core, plain("second", "m-2"));
+    assert!(matches!(
+        command(&rig.core, &resent).unwrap().payload,
+        SessionCommandPayload::RunWithInstructions { ref instructions, .. } if *instructions == a
+    ));
+    assert_eq!(
+        wait_resolved(&rig.core, &resent).await.status,
+        SessionCommandStatus::Applied
+    );
+    wait_turns(&rig, 2, "the kept Turn").await;
+    assert_eq!(rig.mock.runs().len(), 1, "the same Execution Session");
+    let turns = rig.mock.turns();
+    assert_eq!(turns[1].prompt, "second");
+    assert_eq!(turns[1].run_index, 0);
+    assert_eq!(revision_of(&turns[1]), Some("rev-a"));
+    assert!(has_user_message(&rig.core, "m-2"));
+    wait_for(
+        || rejected_sends(&rig.core).is_empty(),
+        "the feed to drop the resent message",
+    )
+    .await;
+
+    // After a restart the sidecar still names what the native session got,
+    // and a kept send resumes it instead of starting fresh.
+    let (mock, registry) = (rig.mock.clone(), rig.registry.clone());
+    rig.core.shutdown().await;
+    drop(rig);
+    let rig = assemble(tmp.path(), mock, registry);
+    assert_eq!(keep_session(&rig), Some(a.clone()));
+    queue(&rig.core, plain("third", "m-3"));
+    wait_turns(&rig, 3, "the Turn after restart").await;
+    let runs = rig.mock.runs();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].resume.as_deref(), Some("mock-session-1"));
+    let delivery = runs[1].instructions.as_ref().unwrap();
+    assert_eq!(delivery.envelope.pin(), a);
+    assert_eq!(delivery.transition, InstructionTransition::Continue);
+    rig.core.shutdown().await;
+}
+
+#[tokio::test]
+async fn keeping_a_session_that_never_had_instructions_selects_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = fresh_session_rig(tmp.path());
+    // The Chat ran before it was associated: its session has no instructions.
+    queue(&rig.core, plain("first", "m-1"));
+    wait_turns(&rig, 1, "the first Turn").await;
+    assert!(rig.mock.runs()[0].instructions.is_none());
+
+    // The first selection forces a reset on the FreshSession harness.
+    let b = rig.registry.add("rev-b", "Write tests first");
+    rig.registry.select(&b);
+    let refused = queue(&rig.core, plain("second", "m-2"));
+    let resolved = wait_resolved(&rig.core, &refused).await;
+    assert_eq!(resolved.status, SessionCommandStatus::Rejected);
+
+    // Keep: nothing selected, so the resend carries no pin and continues.
+    assert_eq!(keep_session(&rig), None);
+    let resent = queue(&rig.core, plain("second", "m-2"));
+    assert!(matches!(
+        command(&rig.core, &resent).unwrap().payload,
+        SessionCommandPayload::Run { .. }
+    ));
+    assert_eq!(
+        wait_resolved(&rig.core, &resent).await.status,
+        SessionCommandStatus::Applied
+    );
+    wait_turns(&rig, 2, "the kept Turn").await;
+    assert_eq!(rig.mock.runs().len(), 1, "the same Execution Session");
+    let turns = rig.mock.turns();
+    assert_eq!(turns[1].prompt, "second");
+    assert_eq!(revision_of(&turns[1]), None);
+    assert!(has_user_message(&rig.core, "m-2"));
     rig.core.shutdown().await;
 }

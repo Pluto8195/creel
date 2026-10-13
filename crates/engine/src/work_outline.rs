@@ -151,6 +151,10 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
             application_id: Some(derive_id(&p.operation_id, roles::APPLICATION)),
             ..Default::default()
         },
+        WorkOutlineMutation::KeepInstructionSession(p) => WorkOutlineMutateReply {
+            application_id: Some(derive_id(&p.operation_id, roles::APPLICATION)),
+            ..Default::default()
+        },
         WorkOutlineMutation::CreateUserActionRequest(p) => WorkOutlineMutateReply {
             user_action_request_id: Some(derive_id(&p.operation_id, roles::REQUEST)),
             ..Default::default()
@@ -167,12 +171,19 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
     }
 }
 
+/// This device's delivery record for a Chat it hosts (what
+/// `keepInstructionSession` keeps): `None` = not hosted here or no record.
+pub type KeptSessionResolver = std::sync::Arc<
+    dyn Fn(&str) -> Option<Option<zeron_proto::InstructionRevisionPin>> + Send + Sync,
+>;
+
 /// The engine's Work Outline surface (one per `EngineRpc`).
 pub struct WorkOutlineService {
     workspace: WorkspaceHost,
     /// Serializes check-then-apply so two concurrent calls with one
     /// operation id cannot both pass the replay check.
     gate: Mutex<RecentOperations>,
+    kept_session: Mutex<Option<KeptSessionResolver>>,
 }
 
 impl WorkOutlineService {
@@ -180,7 +191,14 @@ impl WorkOutlineService {
         Self {
             workspace,
             gate: Mutex::new(RecentOperations::default()),
+            kept_session: Mutex::new(None),
         }
+    }
+
+    /// Wire the host's delivery record (engine assembly). Without it,
+    /// `keepInstructionSession` keeps the reported Execution Session.
+    pub fn set_kept_session_resolver(&self, resolver: KeptSessionResolver) {
+        *self.kept_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(resolver);
     }
 
     /// The local user on this device (every RPC `WorkOutlineMutate` call).
@@ -331,9 +349,22 @@ impl WorkOutlineService {
             recent.insert(operation_id, hash, reply.clone());
             return Ok(reply);
         }
-        let reply =
-            self.workspace
-                .work_outline_mutate(mutation, actor, &[operation_key, inputs_key])?;
+        let keys = [operation_key, inputs_key];
+        let reply = match mutation {
+            // The target is the host's delivery record, read before the
+            // registry lock (it may touch the journal sidecar on disk).
+            WorkOutlineMutation::KeepInstructionSession(p) => {
+                let resolver = self
+                    .kept_session
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let kept = resolver.and_then(|resolve| resolve(&p.chat_id));
+                self.workspace
+                    .work_outline_keep_session(p, kept, actor, &keys)?
+            }
+            _ => self.workspace.work_outline_mutate(mutation, actor, &keys)?,
+        };
         recent.insert(operation_id, hash, reply.clone());
         Ok(reply)
     }

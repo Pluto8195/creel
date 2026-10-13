@@ -1034,6 +1034,19 @@ pub struct ApplyInstructionRevisionParams {
     pub operation_id: String,
 }
 
+/// `keepInstructionSession`: revert the Chat's selection to the revision its
+/// Execution Session last received (or to "no Work Outline instructions" when
+/// it received none), so the next Turn continues that session instead of
+/// needing a context reset. The target is derived by the engine from the
+/// host's delivery record, never supplied by the caller. Reply:
+/// `applicationId` = `derive_id(operationId, "application")`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepInstructionSessionParams {
+    pub chat_id: String,
+    pub operation_id: String,
+}
+
 /// The params of `WorkOutlineMutate`: one tagged enum (`op`, camelCase) so a
 /// peer that predates an operation answers a single, recognizable error.
 /// Each variant's fields sit beside `op`, e.g.
@@ -1058,6 +1071,7 @@ pub enum WorkOutlineMutation {
     ArchiveWorkItemInstruction(ArchiveWorkItemInstructionParams),
     CreateInstructionRevision(CreateInstructionRevisionParams),
     ApplyInstructionRevision(ApplyInstructionRevisionParams),
+    KeepInstructionSession(KeepInstructionSessionParams),
     // ── Milestone 3 ──
     ConfigureExecution(ConfigureExecutionParams),
     // ── Milestone 4 ──
@@ -1088,6 +1102,7 @@ impl WorkOutlineMutation {
             Self::ArchiveWorkItemInstruction(p) => &p.operation_id,
             Self::CreateInstructionRevision(p) => &p.operation_id,
             Self::ApplyInstructionRevision(p) => &p.operation_id,
+            Self::KeepInstructionSession(p) => &p.operation_id,
             Self::ConfigureExecution(p) => &p.operation_id,
             Self::CreateUserActionRequest(p) => &p.operation_id,
             Self::ResolveUserActionRequest(p) => &p.operation_id,
@@ -1116,6 +1131,7 @@ impl WorkOutlineMutation {
             Self::ArchiveWorkItemInstruction(_) => "archiveWorkItemInstruction",
             Self::CreateInstructionRevision(_) => "createInstructionRevision",
             Self::ApplyInstructionRevision(_) => "applyInstructionRevision",
+            Self::KeepInstructionSession(_) => "keepInstructionSession",
             Self::ConfigureExecution(_) => "configureExecution",
             Self::CreateUserActionRequest(_) => "createUserActionRequest",
             Self::ResolveUserActionRequest(_) => "resolveUserActionRequest",
@@ -1136,6 +1152,7 @@ impl WorkOutlineMutation {
                 | Self::ArchiveWorkItemInstruction(_)
                 | Self::CreateInstructionRevision(_)
                 | Self::ApplyInstructionRevision(_)
+                | Self::KeepInstructionSession(_)
         )
     }
 }
@@ -1145,7 +1162,7 @@ impl WorkOutlineMutation {
 /// `createWorkItemExternalReference` -> `referenceId`,
 /// `createWorkItemInstruction` -> `instructionId`,
 /// `createInstructionRevision` -> `revisionId`,
-/// `applyInstructionRevision` -> `applicationId`,
+/// `applyInstructionRevision` / `keepInstructionSession` -> `applicationId`,
 /// `createUserActionRequest` -> `userActionRequestId`,
 /// `proposeWorkItemInstruction` -> `proposalId`,
 /// `approveWorkItemInstructionProposal` -> `instructionId`); every other

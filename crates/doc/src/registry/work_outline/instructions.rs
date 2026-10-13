@@ -21,17 +21,20 @@
 //! - applications: id `derive_id(operationId, "application")`, written once;
 //!   `appliedHlc` is the writing op's own HLC; `revisionHash` (additive)
 //!   records the verified hash so a selection can be pinned before the
-//!   revision row syncs.
+//!   revision row syncs. A `keepSession` application (`keepInstructionSession`)
+//!   targets what the Chat's Execution Session received; with an empty
+//!   `revisionId` it selects "no Work Outline instructions".
 
 use std::collections::HashMap;
 
 use zeron_proto::work_outline::{
     ApplyInstructionRevisionParams, ArchiveWorkItemInstructionParams,
     CreateInstructionRevisionParams, CreateWorkItemInstructionParams, InstructionPlacement,
-    MoveWorkItemInstructionParams, UpdateWorkItemInstructionParams, WorkItemView,
+    KeepInstructionSessionParams, MoveWorkItemInstructionParams, UpdateWorkItemInstructionParams, WorkItemView,
 };
 use zeron_proto::work_outline_instructions::{
-    EffectiveInstructions, ExecutionSessionReport, InstructionRevisionIntegrity,
+    EffectiveInstructions, ExecutionSessionReport, InstructionApplicationReason,
+    InstructionRevisionIntegrity, InstructionTurnBoundary,
     InstructionRevisionPin, InstructionRevisionView, InstructionScope, InstructionSource,
     SPACE_ROOT_SCOPE_TITLE, WorkItemInstructionView, build_revision_body,
     resolve_effective_instructions,
@@ -238,6 +241,7 @@ impl RegistryDoc {
         let wanted: BTreeSet<&str> = applications
             .iter()
             .filter_map(|row| row.fields.get("revisionId").and_then(Value::as_str))
+            .filter(|id| !id.is_empty())
             .chain(sessions.iter().filter_map(|row| {
                 row.fields
                     .get("executionSession")
@@ -893,6 +897,158 @@ impl RegistryDoc {
             (KIND_INSTRUCTION_REVISIONS, p.revision_id.as_str()),
             (KIND_WORK_ITEM_CHAT_ASSIGNMENTS, p.chat_id.as_str()),
         ];
+        extra.extend(
+            earlier
+                .iter()
+                .map(|id| (KIND_INSTRUCTION_REVISION_APPLICATIONS, id.as_str())),
+        );
+        self.commit(vec![planned], &extra)?;
+        Ok(id)
+    }
+
+    /// The revision the Chat's host last reported its Execution Session
+    /// received (`executionSession` on the session-status row): `Some(pin)`,
+    /// or `None` when the report names no revision or there is no report (a
+    /// session started before any selection reports nothing).
+    pub fn reported_session_revision(&self, chat_id: &str) -> Option<InstructionRevisionPin> {
+        let report: ExecutionSessionReport = self
+            .overlay_row(KIND_SESSIONS, chat_id)?
+            .fields
+            .get("executionSession")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())?;
+        let revision_id = report.revision_id.filter(|id| !id.is_empty())?;
+        let revision_hash = report
+            .revision_hash
+            .filter(|h| !h.is_empty())
+            .or_else(|| {
+                self.instruction_revision(&revision_id)
+                    .map(|view| view.body.hash)
+            })
+            .unwrap_or_default();
+        Some(InstructionRevisionPin {
+            revision_id,
+            revision_hash,
+        })
+    }
+
+    /// `keepInstructionSession`: an immutable `keepSession` application that
+    /// selects exactly what the Chat's Execution Session received, so the
+    /// next Turn continues that session. `kept` is the host's own delivery
+    /// record when this device hosts the Chat (`Some(None)` = the session has
+    /// no Work Outline instructions); `None` falls back to the host's
+    /// reported Execution Session in the registry. A session without
+    /// instructions writes an application with an empty `revisionId`: the
+    /// Chat then has no selected revision. The Chat need not be assigned
+    /// (keeping is a revert, never a new selection). Replays return the same
+    /// id whatever the session received since.
+    pub fn keep_instruction_session(
+        &mut self,
+        p: &KeepInstructionSessionParams,
+        kept: Option<Option<InstructionRevisionPin>>,
+        actor: &WorkOutlineActor,
+        now_ms: i64,
+    ) -> Outcome<String> {
+        check_operation_id(&p.operation_id)?;
+        let id = derive_id(&p.operation_id, roles::APPLICATION);
+        let hash = inputs_hash(p);
+        if let Some(id) = self.existing_write_once(
+            KIND_INSTRUCTION_REVISION_APPLICATIONS,
+            &id,
+            &hash,
+            "application",
+        )? {
+            return Ok(id);
+        }
+        check_id("Chat", &p.chat_id)?;
+        let chat = self
+            .chat(&p.chat_id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| not_found("Chat not found"))?;
+        let Some(space_id) = chat.space_id.filter(|s| !s.is_empty()) else {
+            return Err(err(
+                WorkOutlineErrorCode::Projectless,
+                "Chats outside a project have no Work Outline instructions",
+            ));
+        };
+        self.require_space(&space_id)?;
+        let target = kept.unwrap_or_else(|| self.reported_session_revision(&p.chat_id));
+        let work_item_id = self
+            .overlay_row(KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &p.chat_id)
+            .filter(|row| row.fields.get("spaceId").and_then(Value::as_str) == Some(&space_id))
+            .and_then(|row| {
+                row.fields
+                    .get("workItemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        let (revision_id, revision_hash) = match &target {
+            None => (String::new(), String::new()),
+            Some(pin) => {
+                check_id("revision", &pin.revision_id)?;
+                let revision = self.instruction_revision(&pin.revision_id).ok_or_else(|| {
+                    not_found("The session's instruction revision has not synced to this device")
+                })?;
+                if revision.space_id != space_id {
+                    return Err(err(
+                        WorkOutlineErrorCode::CrossSpace,
+                        "The session's instruction revision belongs to another Space",
+                    ));
+                }
+                if revision.integrity != InstructionRevisionIntegrity::Ok
+                    || (!pin.revision_hash.is_empty() && pin.revision_hash != revision.body.hash)
+                {
+                    return Err(err(
+                        WorkOutlineErrorCode::RevisionIntegrity,
+                        "The session's instruction revision failed its integrity check",
+                    ));
+                }
+                (pin.revision_id.clone(), revision.body.hash)
+            }
+        };
+        let mut set = BTreeMap::from([
+            ("spaceId".to_owned(), json!(space_id)),
+            ("chatId".to_owned(), json!(p.chat_id)),
+            ("workItemId".to_owned(), json!(work_item_id)),
+            ("revisionId".to_owned(), json!(revision_id)),
+            (
+                "turnBoundary".to_owned(),
+                serde_json::to_value(InstructionTurnBoundary::default()).unwrap_or(Value::Null),
+            ),
+            (
+                "reason".to_owned(),
+                serde_json::to_value(InstructionApplicationReason::KeepSession)
+                    .unwrap_or(Value::Null),
+            ),
+            ("idempotencyKey".to_owned(), json!(p.operation_id)),
+            ("result".to_owned(), json!("accepted")),
+            ("createdBy".to_owned(), actor_row_value(actor)),
+            ("createdAt".to_owned(), json!(now_ms)),
+            ("inputsHash".to_owned(), json!(hash)),
+            ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
+        ]);
+        if !revision_hash.is_empty() {
+            set.insert("revisionHash".to_owned(), json!(revision_hash));
+        }
+        let mut planned = Planned::upsert(KIND_INSTRUCTION_REVISION_APPLICATIONS, &id, set);
+        planned.stamp_hlc = Some("appliedHlc");
+        let earlier: Vec<String> = self
+            .overlay_rows(KIND_INSTRUCTION_REVISION_APPLICATIONS)
+            .into_iter()
+            .filter(|row| {
+                row.fields.get("chatId").and_then(Value::as_str) == Some(p.chat_id.as_str())
+            })
+            .map(|row| row.id)
+            .collect();
+        let mut extra: Vec<(&str, &str)> = Vec::new();
+        if !revision_id.is_empty() {
+            extra.push((KIND_INSTRUCTION_REVISIONS, revision_id.as_str()));
+        }
+        if !work_item_id.is_empty() {
+            extra.push((KIND_WORK_ITEM_CHAT_ASSIGNMENTS, p.chat_id.as_str()));
+        }
+        extra.push((KIND_SESSIONS, p.chat_id.as_str()));
         extra.extend(
             earlier
                 .iter()
