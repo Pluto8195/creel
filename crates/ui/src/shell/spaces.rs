@@ -6462,15 +6462,7 @@ impl Shell {
                     state.chats_in_space(&space_id).len(),
                 )
             };
-            let copy = if count == 1 {
-                format!(
-                    "Removing “{name}” permanently deletes its 1 session on {device}. This can’t be undone."
-                )
-            } else {
-                format!(
-                    "Removing “{name}” permanently deletes its {count} sessions on {device}. This can’t be undone."
-                )
-            };
+            let copy = delete_space_copy(&name, &device, count);
             let card = popover::dialog_card(&theme)
                 .child(popover::dialog_title(&theme, "Remove project?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, copy)))
@@ -6505,11 +6497,42 @@ impl Shell {
     }
 }
 
+/// The Remove project confirmation's body (the sidebar's and the Outline's
+/// Space-row menu share it): what goes, that it is permanent, and the
+/// non-destructive alternative.
+pub(crate) fn delete_space_copy(name: &str, device: &str, sessions: usize) -> String {
+    let sessions = if sessions == 1 {
+        "its 1 session".to_string()
+    } else {
+        format!("its {sessions} sessions")
+    };
+    format!(
+        "Removing “{name}” permanently deletes {sessions} on {device}: its chats leave Zeron’s \
+         index, and its whole Work Outline (work items, instructions, and requests) is deleted. \
+         This can’t be undone. To just declutter the Outline, use Hide from Outline."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::{compare_sidebar_chats, promote_local_device_group};
+    use super::{compare_sidebar_chats, delete_space_copy, promote_local_device_group};
+
+    #[test]
+    fn delete_space_copy_names_the_index_the_outline_and_hide() {
+        let one = delete_space_copy("Alpha", "Laptop", 1);
+        assert!(one.contains("its 1 session on Laptop"), "{one}");
+        let many = delete_space_copy("Alpha", "Laptop", 3);
+        assert!(many.contains("its 3 sessions on Laptop"), "{many}");
+        assert!(many.contains("leave Zeron’s index"), "{many}");
+        assert!(many.contains("whole Work Outline"), "{many}");
+        assert!(many.contains("can’t be undone"), "{many}");
+        assert!(
+            many.contains("To just declutter the Outline, use Hide from Outline"),
+            "{many}"
+        );
+    }
     use crate::settings::SidebarSort;
 
     fn group(device: &str, value: u8) -> (Option<(String, String)>, Vec<u8>) {

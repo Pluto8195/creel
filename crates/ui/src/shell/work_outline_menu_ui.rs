@@ -407,10 +407,35 @@ impl Shell {
             MenuAction::CopyChatIdentity(chat_id) => self.copy_chat_identity(&chat_id, true, cx),
             MenuAction::CloseOutChat(chat_id) => self.open_chat_closeout(chat_id, cx),
             MenuAction::ArchiveChat(chat_id) => self.archive_chat(chat_id, cx),
+            MenuAction::HideSpace(space_id) => {
+                Self::set_outline_space_hidden(outline, &space_id, true, cx)
+            }
+            MenuAction::UnhideSpace(space_id) => {
+                Self::set_outline_space_hidden(outline, &space_id, false, cx)
+            }
+            // The sidebar's own flows: the same dialog and confirmation.
+            MenuAction::RenameSpace(space_id) => self.open_rename_space(space_id, cx),
+            MenuAction::DeleteSpace(space_id) => {
+                self.delete_space_confirm = Some(space_id);
+                cx.notify();
+            }
             MenuAction::Outline(_)
             | MenuAction::Command(_)
             | MenuAction::StatusPage
             | MenuAction::Back => {}
+        }
+    }
+
+    fn set_outline_space_hidden(
+        outline: &WeakEntity<OutlineView>,
+        space_id: &str,
+        hidden: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(outline) = outline.upgrade() {
+            outline.update(cx, |outline, cx| {
+                outline.set_space_hidden(space_id, hidden, cx)
+            });
         }
     }
 

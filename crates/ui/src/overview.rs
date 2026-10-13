@@ -2813,6 +2813,8 @@ impl Overview {
                 this.open_proposals(space_id.clone(), item_id.clone(), cx);
             }
             OutlineEvent::OpenRequiredActions => this.open_required_actions(cx),
+            // The toolbar's Hidden projects count.
+            OutlineEvent::SpacesArranged => cx.notify(),
         });
         // Idle refresh — same `cx.spawn` + `background_executor().timer`
         // loop idiom as the composer's queue-lease renewal. Ends on its own
@@ -3560,6 +3562,8 @@ impl Overview {
                         .unwrap_or(WorkOutlineLoad::Loading),
                     None => state.work_outline(&space.id),
                 },
+                // The Outline applies its own hidden set (`OutlineView`).
+                hidden: false,
             })
             .collect()
     }
@@ -9137,6 +9141,8 @@ impl Overview {
                 show_archived: self.show_archived,
                 query: self.search.read(cx).text().trim().to_lowercase(),
                 all_spaces: true,
+                // The Outline owns the reveal (`OutlineView`).
+                show_hidden_spaces: false,
             },
         };
         self.outline
@@ -9161,8 +9167,9 @@ impl Overview {
             .into_any_element()
     }
 
-    /// Outline-only toolbar controls: the inline "New item" entry point and
-    /// the explicit reveal for completed items hidden by "Hide stale".
+    /// Outline-only toolbar controls: the inline "New item" entry point, the
+    /// reveal for projects hidden from the Outline, and the explicit reveal
+    /// for completed items hidden by "Hide stale".
     fn render_outline_toolbar(
         &self,
         theme: &Theme,
@@ -9255,6 +9262,39 @@ impl Overview {
                 }))
                 .into_any_element(),
         );
+        // Projects hidden from the Outline (multi-Space only): reveal them as
+        // dimmed rows with Unhide.
+        let (hidden_spaces, showing_hidden) = {
+            let outline = self.outline.read(cx);
+            (
+                outline.hidden_space_count(),
+                outline.showing_hidden_spaces(),
+            )
+        };
+        if hidden_spaces > 0 {
+            out.push(
+                pill(
+                    "outline-hidden-spaces",
+                    format!("Hidden projects ({hidden_spaces})"),
+                    showing_hidden,
+                )
+                .debug_selector(|| "outline-hidden-spaces".into())
+                .hint(
+                    if showing_hidden {
+                        "Stop showing the projects hidden from the Outline"
+                    } else {
+                        "Show the projects hidden from the Outline, to unhide them"
+                    },
+                    HintKey::None,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.outline.update(cx, |outline, cx| {
+                        outline.set_show_hidden_spaces(!showing_hidden, cx)
+                    });
+                }))
+                .into_any_element(),
+            );
+        }
         if self.hide_stale {
             let hidden = self.outline.read(cx).hidden_completed();
             let label = if self.outline_show_completed {
