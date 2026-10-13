@@ -3038,6 +3038,12 @@ impl Shell {
             return LinkOutcome::Rejected;
         }
         if activation.target.navigation.is_err() {
+            if let Some(outcome) = self.activate_workspace_artifact(activation, window, cx) {
+                if outcome != LinkOutcome::Rejected {
+                    self.leave_overview_for_chat(cx);
+                }
+                return outcome;
+            }
             return if matches!(
                 activation.action,
                 LinkAction::Primary | LinkAction::Internal
@@ -3073,8 +3079,32 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_chat.is_empty() {
+        let Some(browser) = self.create_browser_surface(window, cx) else {
             return;
+        };
+        if let Some(handle) = self.state.read(cx).engine().cloned() {
+            let chat_id = self.active_chat.clone();
+            browser.update(cx, |browser, cx| {
+                browser.watch_previews(handle, chat_id, cx)
+            });
+        }
+        browser.update(cx, |browser, cx| {
+            if let Some(url) = url {
+                browser.navigate(&url, window, cx);
+            } else {
+                browser.focus_address(window, cx);
+            }
+        });
+    }
+
+    /// A new, selected Browser tab in the current session's right pane.
+    fn create_browser_surface(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<crate::browser::BrowserSurface>> {
+        if self.active_chat.is_empty() {
+            return None;
         }
         let key = self.panel_key(cx);
         let remote = {
@@ -3088,12 +3118,6 @@ impl Shell {
         let browser = cx.new(|cx| {
             crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
         });
-        if let Some(handle) = self.state.read(cx).engine().cloned() {
-            let chat_id = self.active_chat.clone();
-            browser.update(cx, |browser, cx| {
-                browser.watch_previews(handle, chat_id, cx)
-            });
-        }
         let owner = key.clone();
         let sub = cx.subscribe_in(&browser, window, move |this, _, event, window, cx| {
             match event {
@@ -3104,6 +3128,11 @@ impl Shell {
                         && this.resolved_right_active(cx) == RightSurface::Browser(id)
                     {
                         this.add_browser_surface(url.clone(), window, cx);
+                    }
+                }
+                crate::browser::BrowserEvent::ViewSource(path) => {
+                    if this.panel_key(cx) == owner {
+                        this.add_file_surface(path.clone(), window, cx);
                     }
                 }
                 crate::browser::BrowserEvent::Close => {
@@ -3118,12 +3147,187 @@ impl Shell {
             .or_default()
             .push(RightSurface::Browser(id));
         self.set_right_active(RightSurface::Browser(id), cx);
-        browser.update(cx, |browser, cx| {
-            if let Some(url) = url {
-                browser.navigate(&url, window, cx);
+        Some(browser)
+    }
+
+    /// The active chat's checkout root and whether it lives on this device.
+    fn active_checkout(&self, cx: &App) -> Option<(String, bool)> {
+        let state = self.state.read(cx);
+        let chat = state
+            .chats
+            .iter()
+            .find(|chat| chat.id == self.active_chat)?;
+        let root = chat.cwd.clone()?;
+        let local = state.local_device_id.as_deref() == Some(chat.device_id.as_str());
+        Some((root, local))
+    }
+
+    /// Route Codex visualization files and the explicit file actions. `None`
+    /// leaves the link to ordinary workspace-file handling.
+    fn activate_workspace_artifact(
+        &mut self,
+        activation: &crate::markdown::render::LinkActivation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::markdown::render::LinkOutcome> {
+        use crate::markdown::render::{LinkAction, LinkOutcome};
+        use zeron_proto::visualize::{
+            HtmlArtifactKind, default_title, fragment_sibling, html_artifact_kind, preview_sibling,
+        };
+        let (root, local) = self.active_checkout(cx)?;
+        let link = resolve_workspace_file_link(&activation.target.original, &root)?;
+        let local_root = local.then(|| std::path::PathBuf::from(&root));
+        let label = activation.target.label.trim();
+        let title_for = |path: &str| {
+            if !label.is_empty() && label != activation.target.original && !label.ends_with(".html")
+            {
+                label.to_owned()
             } else {
-                browser.focus_address(window, cx);
+                default_title(path).unwrap_or_else(|| "Visualization".into())
             }
+        };
+        let source = |path: String, wide: bool| crate::browser::FragmentSource {
+            title: title_for(&path),
+            path,
+            wide,
+            local_root: local_root.clone(),
+        };
+        let local_file = |path: &str| {
+            local_root
+                .as_ref()
+                .map(|root| root.join(path))
+                .filter(|path| path.is_file())
+        };
+        let kind = html_artifact_kind(&link.path);
+        match (activation.action, kind) {
+            (LinkAction::Source, _) => {
+                self.set_surfaces_open(true, cx);
+                self.add_file_surface_at(link.path, link.line, link.column, window, cx);
+                Some(LinkOutcome::Internal)
+            }
+            (LinkAction::Reveal, _) => Some(match local_file(&link.path) {
+                Some(path) => {
+                    cx.reveal_path(&path);
+                    LinkOutcome::Internal
+                }
+                None => LinkOutcome::Rejected,
+            }),
+            (LinkAction::Visualize { wide }, _) => {
+                let source = source(link.path, wide);
+                self.open_fragment_surface(source, None, window, cx);
+                Some(LinkOutcome::Internal)
+            }
+            (LinkAction::Primary | LinkAction::Internal, Some(HtmlArtifactKind::Fragment)) => {
+                let source = source(link.path, false);
+                self.open_fragment_surface(source, None, window, cx);
+                Some(LinkOutcome::Internal)
+            }
+            (LinkAction::External, Some(HtmlArtifactKind::Fragment)) => {
+                let preview = preview_sibling(&link.path);
+                if let Some(url) = preview
+                    .as_deref()
+                    .and_then(local_file)
+                    .and_then(|path| crate::browser::file_url(&path))
+                {
+                    return Some(LinkOutcome::External(url));
+                }
+                let notice = match (preview, local) {
+                    (Some(preview), true) => format!(
+                        "No standalone export at {preview}. Ask the agent to export one with the visualize skill’s render.py."
+                    ),
+                    _ => "Previews open in a browser on the device that has the file.".into(),
+                };
+                let source = source(link.path, false);
+                self.open_fragment_surface(source, Some(notice), window, cx);
+                Some(LinkOutcome::Internal)
+            }
+            (
+                LinkAction::Primary | LinkAction::External | LinkAction::Internal,
+                Some(HtmlArtifactKind::Preview),
+            ) => {
+                if activation.action != LinkAction::Internal
+                    && let Some(url) =
+                        local_file(&link.path).and_then(|path| crate::browser::file_url(&path))
+                {
+                    return Some(LinkOutcome::External(url));
+                }
+                let fragment = fragment_sibling(&link.path)?;
+                let notice = if activation.action == LinkAction::Internal {
+                    None
+                } else if local {
+                    Some(format!(
+                        "{} wasn’t found, so its fragment is shown instead.",
+                        link.path
+                    ))
+                } else {
+                    Some(
+                        "The preview is on another device, so its fragment is shown instead."
+                            .into(),
+                    )
+                };
+                let source = source(fragment, false);
+                self.open_fragment_surface(source, notice, window, cx);
+                Some(LinkOutcome::Internal)
+            }
+            _ => None,
+        }
+    }
+
+    /// Show a visualization in the right pane, reusing an open tab for the
+    /// same file (which reloads it).
+    pub(crate) fn open_fragment_surface(
+        &mut self,
+        source: crate::browser::FragmentSource,
+        notice: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_chat.is_empty() {
+            return;
+        }
+        self.set_surfaces_open(true, cx);
+        let key = self.panel_key(cx);
+        let existing = self.right_tabs.get(&key).and_then(|tabs| {
+            tabs.iter().find_map(|tab| match tab {
+                RightSurface::Browser(id) => self
+                    .browsers
+                    .get(id)
+                    .filter(|browser| {
+                        browser
+                            .read(cx)
+                            .fragment()
+                            .is_some_and(|view| view.source.path == source.path)
+                    })
+                    .map(|browser| (*id, browser.clone())),
+                _ => None,
+            })
+        });
+        if let Some((id, browser)) = existing {
+            self.set_right_active(RightSurface::Browser(id), cx);
+            browser.update(cx, |browser, cx| {
+                browser.set_fragment_notice(notice, cx);
+                browser.reload_fragment(window, cx);
+            });
+            return;
+        }
+        let reader = {
+            let state = self.state.read(cx);
+            crate::files::client::FilesRequestContext::for_chat(state, &self.active_chat).and_then(
+                |context| {
+                    let engine = state.engine()?.clone();
+                    let target = context.target.clone();
+                    Some((
+                        crate::files::client::WorkspaceFilesClient::new(engine, context),
+                        target,
+                    ))
+                },
+            )
+        };
+        let Some(browser) = self.create_browser_surface(window, cx) else {
+            return;
+        };
+        browser.update(cx, |browser, cx| {
+            browser.open_fragment(source, reader, notice, window, cx)
         });
     }
 
@@ -14403,6 +14607,280 @@ mod exit_regressions {
             .unwrap();
         cx.run_until_parked();
         assert!(weak.upgrade().is_none());
+    }
+
+    #[gpui::test]
+    fn visualization_links_render_fragments_and_open_previews_externally(cx: &mut TestAppContext) {
+        use crate::markdown::render::{LinkAction, LinkActivation, LinkOutcome, LinkTarget};
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::write(root.join("work/mock.fragment.html"), "<div id=m>x</div>").unwrap();
+        std::fs::write(root.join("work/mock.preview.html"), "<!doctype html>").unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            settings::init(settings::UiSettings::default(), dir.path(), cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        let root_text = root.to_string_lossy().into_owned();
+        let preview_url = crate::browser::file_url(&root.join("work/mock.preview.html")).unwrap();
+        let link_ui = window
+            .update(cx, |shell, window, cx| {
+                shell.active_chat = "viz".into();
+                shell.state.update(cx, |state, _| {
+                    state.local_device_id = Some("here".into());
+                    state.selected_chat = Some("viz".into());
+                    state.chats.push(zeron_proto::Chat {
+                        id: "viz".into(),
+                        device_id: "here".into(),
+                        title: None,
+                        archived: false,
+                        cwd: Some(root_text.clone()),
+                        branch: None,
+                        checkout_id: None,
+                        source_context: None,
+                        config: None,
+                        last_message_preview: None,
+                        last_message_at: None,
+                        created_at: Utc::now(),
+                        harness_session_id: None,
+                        harness_session_cwd: None,
+                        parent_chat_id: None,
+                        space_id: None,
+                        last_seen_at: None,
+                        room_gen: None,
+                        linked_pr_url: None,
+                        linked_pr_source: None,
+                        linked_ticket_id: None,
+                        linked_ticket_source: None,
+                    });
+                });
+                let activate = |shell: &mut Shell,
+                                original: &str,
+                                action: LinkAction,
+                                window: &mut Window,
+                                cx: &mut Context<Shell>| {
+                    shell.activate_session_link(
+                        &LinkActivation {
+                            target: LinkTarget::new("Mockup", original),
+                            action,
+                            source_session: Some("viz".into()),
+                        },
+                        window,
+                        cx,
+                    )
+                };
+                let fragments = |shell: &Shell, cx: &App| {
+                    shell
+                        .browsers
+                        .values()
+                        .filter_map(|browser| {
+                            let view = browser.read(cx).fragment()?;
+                            Some((view.source.clone(), view.notice.clone()))
+                        })
+                        .collect::<Vec<_>>()
+                };
+
+                // A fragment link renders instead of opening its source.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.fragment.html",
+                        LinkAction::Primary,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                let shown = fragments(shell, cx);
+                assert_eq!(shown.len(), 1);
+                assert_eq!(shown[0].0.path, "work/mock.fragment.html");
+                assert_eq!(shown[0].0.title, "Mockup");
+                assert_eq!(shown[0].0.local_root.as_deref(), Some(root.as_path()));
+                assert!(shell.file_surface_keys.is_empty());
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(shell.browser_seq)
+                );
+                let tab = shell.browsers[&shell.browser_seq].clone();
+                assert_eq!(tab.read(cx).title().as_ref(), "Mockup");
+                // No engine in this test: the read fails with an actionable error.
+                let error = tab.read(cx).fragment().unwrap().error.clone().unwrap();
+                assert!(error.message().contains("try again"), "{}", error.message());
+
+                // The absolute form reuses (and reloads) the same tab.
+                let absolute = format!("{root_text}/work/mock.fragment.html");
+                activate(shell, &absolute, LinkAction::Primary, window, cx);
+                assert_eq!(fragments(shell, cx).len(), 1);
+
+                // The export opens in the system browser from either file.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.preview.html",
+                        LinkAction::Primary,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::External(preview_url.clone())
+                );
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.fragment.html",
+                        LinkAction::External,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::External(preview_url.clone())
+                );
+                // "Open in Zeron" on the export shows its fragment.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.preview.html",
+                        LinkAction::Internal,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                assert_eq!(fragments(shell, cx).len(), 1);
+
+                // View source opens the editor, not a rendered view.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.fragment.html",
+                        LinkAction::Source,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                assert!(
+                    shell
+                        .file_surface_keys
+                        .keys()
+                        .any(|(_, path)| path == "work/mock.fragment.html")
+                );
+
+                // A plain `.html` visualize reference renders wide on request.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/chart.html",
+                        LinkAction::Visualize { wide: true },
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                assert!(
+                    fragments(shell, cx)
+                        .iter()
+                        .any(|(source, _)| source.path == "work/chart.html" && source.wide)
+                );
+                // An ordinary `.html` link still opens as a file.
+                let tabs = fragments(shell, cx).len();
+                activate(shell, "work/page.html", LinkAction::Primary, window, cx);
+                assert_eq!(fragments(shell, cx).len(), tabs);
+
+                // Outside the checkout nothing opens.
+                assert_eq!(
+                    activate(
+                        shell,
+                        "/etc/x.fragment.html",
+                        LinkAction::Primary,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Rejected
+                );
+
+                // Without an export, the preview action explains what to do.
+                std::fs::remove_file(root.join("work/mock.preview.html")).unwrap();
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.fragment.html",
+                        LinkAction::External,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                let notice = fragments(shell, cx)
+                    .into_iter()
+                    .find(|(source, _)| source.path == "work/mock.fragment.html")
+                    .and_then(|(_, notice)| notice)
+                    .unwrap();
+                assert!(notice.contains("No standalone export"), "{notice}");
+
+                // A chat on another device can't open local files externally.
+                shell.state.update(cx, |state, _| {
+                    state.local_device_id = Some("elsewhere".into())
+                });
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.preview.html",
+                        LinkAction::Primary,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Internal
+                );
+                assert_eq!(
+                    activate(
+                        shell,
+                        "work/mock.fragment.html",
+                        LinkAction::Reveal,
+                        window,
+                        cx
+                    ),
+                    LinkOutcome::Rejected
+                );
+                shell
+                    .state
+                    .update(cx, |state, _| state.local_device_id = Some("here".into()));
+                std::fs::write(root.join("work/mock.preview.html"), "<!doctype html>").unwrap();
+                Shell::session_links(Some("viz".into()), cx)
+            })
+            .unwrap();
+
+        // Transcript cards route through the same handler: their preview
+        // action reaches the system opener with the export's file URL.
+        cx.update_window(window.into(), |_, window, cx| {
+            crate::markdown::render::activate_link(
+                LinkTarget::new("Mockup", "work/mock.fragment.html"),
+                LinkAction::External,
+                Some(&link_ui),
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.opened_url(), Some(preview_url));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

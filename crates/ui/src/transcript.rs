@@ -1116,124 +1116,71 @@ pub enum RowKind {
     },
 }
 
-const VISUALIZE_PREFIX: &str = "\u{e200}visualize\u{e202}";
-const VISUALIZE_SUFFIX: &str = "\u{e201}";
-const MAX_VISUALIZE_PAYLOAD_BYTES: usize = 8 * 1024;
-const MAX_VISUALIZE_PATH_BYTES: usize = 4 * 1024;
-const MAX_VISUALIZE_TITLE_CHARS: usize = 200;
+#[cfg(test)]
+use zeron_proto::visualize::{
+    ENVELOPE_PREFIX as VISUALIZE_PREFIX, ENVELOPE_SUFFIX as VISUALIZE_SUFFIX,
+    MAX_PATH_BYTES as MAX_VISUALIZE_PATH_BYTES,
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VisualizationArtifact {
-    path: String,
-    title: String,
-    wide: bool,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VisualizationPayload {
-    path: String,
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-}
+/// A validated Codex content reference (`zeron_proto::visualize`).
+pub type VisualizationArtifact = zeron_proto::visualize::VisualizationRef;
 
 enum AssistantTextFragment<'a> {
     Markdown(&'a str),
     Visualization(Option<VisualizationArtifact>),
 }
 
+#[cfg(test)]
 fn visualization_artifact(payload: &str) -> Option<VisualizationArtifact> {
-    if payload.len() > MAX_VISUALIZE_PAYLOAD_BYTES {
-        return None;
-    }
-    let payload: VisualizationPayload = serde_json::from_str(payload).ok()?;
-    if payload.path.is_empty()
-        || payload.path.len() > MAX_VISUALIZE_PATH_BYTES
-        || !std::path::Path::new(&payload.path).has_root()
-        || payload.path.chars().any(char::is_control)
-        || !payload.path.to_ascii_lowercase().ends_with(".html")
-        || payload.mode.as_deref().is_some_and(|mode| mode != "wide")
-    {
-        return None;
-    }
-    let title = payload
-        .title
-        .or_else(|| {
-            std::path::Path::new(&payload.path)
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "Visualization".to_owned());
-    let title = title.trim();
-    if title.is_empty()
-        || title.chars().count() > MAX_VISUALIZE_TITLE_CHARS
-        || title.chars().any(char::is_control)
-    {
-        return None;
-    }
-    Some(VisualizationArtifact {
-        path: payload.path,
-        title: title.to_owned(),
-        wide: payload.mode.as_deref() == Some("wide"),
-    })
+    zeron_proto::visualize::parse_payload(payload)
 }
 
-/// Split only the exact Codex visualization envelope. Invalid framed payloads
+/// Split Codex visualization references (private-use envelopes and whole
+/// `visualize{…}` lines) out of assistant prose. Invalid framed payloads
 /// still become an unavailable artifact row: rendering their raw private-use
 /// delimiters would be both noisy and an accidental parser escape hatch.
-fn trailing_visualize_prefix_len(text: &str) -> usize {
-    VISUALIZE_PREFIX
-        .char_indices()
-        .skip(1)
-        .map(|(boundary, _)| boundary)
-        .filter(|&boundary| text.ends_with(&VISUALIZE_PREFIX[..boundary]))
-        .max()
-        .unwrap_or(0)
-}
-
 fn assistant_text_fragments(
     text: &str,
     suppress_streaming_prefix: bool,
 ) -> Vec<AssistantTextFragment<'_>> {
-    let mut fragments = Vec::new();
-    let mut plain_start = 0;
-    let mut search_start = 0;
-    while let Some(relative) = text[search_start..].find(VISUALIZE_PREFIX) {
-        let start = search_start + relative;
-        if start > plain_start {
-            fragments.push(AssistantTextFragment::Markdown(&text[plain_start..start]));
+    use zeron_proto::visualize::Segment;
+    zeron_proto::visualize::split_references(text, suppress_streaming_prefix)
+        .into_iter()
+        .map(|segment| match segment {
+            Segment::Text(text) => AssistantTextFragment::Markdown(text),
+            Segment::Reference(reference) => AssistantTextFragment::Visualization(reference),
+        })
+        .collect()
+}
+
+/// Relative `*.fragment.html` paths a settled message mentions without a
+/// content reference (links, inline code, bare paths), so each still gets a
+/// rendered-visualization card. Paths are resolved later, at render time,
+/// against the chat's checkout.
+fn mentioned_fragments(entry_text: &[&str], referenced: &[String]) -> Vec<VisualizationArtifact> {
+    let mut out: Vec<VisualizationArtifact> = Vec::new();
+    for text in entry_text {
+        for path in zeron_proto::visualize::fragment_mentions(text) {
+            let duplicate = |candidate: &str| {
+                candidate == path
+                    || candidate.ends_with(&format!("/{path}"))
+                    || path.ends_with(&format!("/{candidate}"))
+            };
+            if referenced.iter().any(|seen| duplicate(seen))
+                || out.iter().any(|seen| duplicate(&seen.path))
+            {
+                continue;
+            }
+            let title = zeron_proto::visualize::default_title(&path)
+                .unwrap_or_else(|| "Visualization".to_owned());
+            out.push(VisualizationArtifact {
+                path,
+                title,
+                wide: false,
+            });
         }
-        let payload_start = start + VISUALIZE_PREFIX.len();
-        let Some(relative_end) = text[payload_start..].find(VISUALIZE_SUFFIX) else {
-            // Streaming may stop between the envelope and its terminator.
-            // Suppress that control tail until the next transcript update.
-            fragments.push(AssistantTextFragment::Visualization(None));
-            plain_start = text.len();
-            break;
-        };
-        let end = payload_start + relative_end;
-        fragments.push(AssistantTextFragment::Visualization(
-            visualization_artifact(&text[payload_start..end]),
-        ));
-        plain_start = end + VISUALIZE_SUFFIX.len();
-        search_start = plain_start;
     }
-    let partial_prefix_len = suppress_streaming_prefix
-        .then(|| trailing_visualize_prefix_len(&text[plain_start..]))
-        .unwrap_or(0);
-    let plain_end = text.len() - partial_prefix_len;
-    if plain_start < plain_end {
-        fragments.push(AssistantTextFragment::Markdown(
-            &text[plain_start..plain_end],
-        ));
-    }
-    if fragments.is_empty() && partial_prefix_len == 0 {
-        fragments.push(AssistantTextFragment::Markdown(text));
-    }
-    fragments
+    out
 }
 
 fn generated_image_devices(owner: &str, fallback: &[String]) -> Vec<String> {
@@ -1794,6 +1741,59 @@ pub fn rows_for_entry(
         &mut group_ix,
         group_last_part_ix,
     );
+
+    // Fragment files the reply only mentions (a link, inline code or a bare
+    // path) or that its tools wrote still get a rendered-visualization card
+    // once the reply settles.
+    if !streaming {
+        let mut texts = Vec::new();
+        let mut referenced = Vec::new();
+        for part in &entry.parts {
+            match part {
+                MessagePart::Text { text, .. } => {
+                    referenced.extend(
+                        zeron_proto::visualize::references(text)
+                            .into_iter()
+                            .map(|reference| reference.path),
+                    );
+                    texts.push(text.as_str());
+                }
+                MessagePart::Tool {
+                    call,
+                    output,
+                    diff_stats,
+                    ..
+                } => {
+                    match call {
+                        ToolCall::WriteFile { path, .. } | ToolCall::EditFile { path, .. } => {
+                            texts.push(path.as_str())
+                        }
+                        ToolCall::ApplyPatch { path: Some(path) } => texts.push(path.as_str()),
+                        _ => {}
+                    }
+                    texts.extend(diff_stats.iter().flatten().map(|stat| stat.path.as_str()));
+                    texts.extend(output.as_deref());
+                }
+                _ => {}
+            }
+        }
+        for (ix, artifact) in mentioned_fragments(&texts, &referenced)
+            .into_iter()
+            .enumerate()
+        {
+            rows.push(Row {
+                id: format!("{}#m{ix}", entry.id).into(),
+                version: fnv1a(artifact.path.as_bytes()) << 1,
+                turn_start: false,
+                entry_id: entry_id.clone(),
+                timestamp: None,
+                copy_text: None,
+                kind: RowKind::Visualization {
+                    artifact: Some(artifact),
+                },
+            });
+        }
+    }
 
     if let Some(first) = rows.first_mut() {
         first.turn_start = true;
@@ -7419,21 +7419,88 @@ fn visualization_card(
     });
     let title: SharedString = available
         .as_ref()
-        .map_or("Visualization", |(artifact, _)| artifact.title.as_str())
+        .map(|(artifact, _)| artifact.title.as_str())
+        .or(artifact.map(|artifact| artifact.title.as_str()))
+        .unwrap_or("Visualization")
+        .to_owned()
         .into();
-    let detail: SharedString = available
-        .as_ref()
-        .map(|(artifact, path)| {
-            if artifact.wide {
-                format!("Wide artifact · {path}")
-            } else {
-                path.clone()
-            }
-        })
-        .unwrap_or_else(|| "Artifact unavailable in this workspace".to_owned())
-        .into();
-    let activation =
-        available.map(|(artifact, _)| (artifact.title.clone(), artifact.path.clone(), link_ui));
+    let detail: SharedString = match (&available, artifact) {
+        (Some((artifact, path)), _) if artifact.wide => format!("Wide · {path}"),
+        (Some((_, path)), _) => path.clone(),
+        (None, Some(_)) => {
+            "Saved outside this chat’s workspace. Ask the agent to save it inside the project."
+                .to_owned()
+        }
+        (None, None) => "This visualization reference couldn’t be read.".to_owned(),
+    }
+    .into();
+    let activation = available.map(|(artifact, _)| (artifact.clone(), link_ui));
+    let action_button =
+        |id: &str,
+         label: &'static str,
+         glyph: &'static str,
+         action: render::LinkAction,
+         activation: &(VisualizationArtifact, Option<render::LinkUi>)| {
+            let (artifact, ui) = activation.clone();
+            div()
+                .id(SharedString::from(format!("{row_id}#visualization-{id}")))
+                .flex_none()
+                .size(px(24.0))
+                .rounded(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .hover(|el| el.bg(theme.element_hover))
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    render::activate_link(
+                        render::LinkTarget::new(&artifact.title, &artifact.path),
+                        action,
+                        ui.as_ref(),
+                        window,
+                        cx,
+                    )
+                })
+                .child(
+                    crate::icons::icon(glyph)
+                        .size(px(13.0))
+                        .text_color(theme.text_muted),
+                )
+        };
+    let actions = activation.as_ref().map(|activation| {
+        let has_preview = zeron_proto::visualize::preview_sibling(&activation.0.path).is_some();
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .when(has_preview, |el| {
+                el.child(action_button(
+                    "preview",
+                    "Open preview in browser",
+                    crate::icons::ARROW_UP_RIGHT,
+                    render::LinkAction::External,
+                    activation,
+                ))
+            })
+            .child(action_button(
+                "reveal",
+                "Reveal in Finder",
+                crate::icons::FOLDER,
+                render::LinkAction::Reveal,
+                activation,
+            ))
+            .child(action_button(
+                "source",
+                "View source",
+                crate::icons::FILE_CODE,
+                render::LinkAction::Source,
+                activation,
+            ))
+    });
     div()
         .py(px(4.0))
         .w_full()
@@ -7453,6 +7520,8 @@ fn visualization_card(
                 .py(px(9.0))
                 .when(activation.is_some(), |card| {
                     card.cursor_pointer()
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Open visualization {title}"))
                         .hover(|card| card.bg(theme.element_hover))
                 })
                 .child(
@@ -7482,7 +7551,7 @@ fn visualization_card(
                                 .truncate()
                                 .text_size(crate::typography::ui_rems(13.0))
                                 .text_color(theme.text)
-                                .child(title),
+                                .child(title.clone()),
                         )
                         .child(
                             div()
@@ -7492,18 +7561,14 @@ fn visualization_card(
                                 .child(detail),
                         ),
                 )
-                .when(activation.is_some(), |card| {
-                    card.child(
-                        crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
-                            .size(px(14.0))
-                            .text_color(theme.text_muted),
-                    )
-                })
-                .when_some(activation, |card, (title, path, ui)| {
+                .when_some(actions, |card, actions| card.child(actions))
+                .when_some(activation, |card, (artifact, ui)| {
                     card.on_click(move |_, window, cx| {
                         render::activate_link(
-                            render::LinkTarget::new(&title, &path),
-                            render::LinkAction::Primary,
+                            render::LinkTarget::new(&artifact.title, &artifact.path),
+                            render::LinkAction::Visualize {
+                                wide: artifact.wide,
+                            },
                             ui.as_ref(),
                             window,
                             cx,
@@ -10536,6 +10601,109 @@ mod tests {
                 "raw prefix affected row content at boundary {boundary}"
             );
         }
+    }
+
+    #[test]
+    fn mentioned_fragment_files_get_visualization_cards_once_settled() {
+        let raw = "Created [the mockup](work/mockup.fragment.html), exported \
+                   `work/mockup.preview.html`, and also `work/other.fragment.html`.\n\n\
+                   Again: work/mockup.fragment.html";
+        let entry = assistant("a", MessageStatus::Complete, vec![text_part("t", raw)]);
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let cards = rows
+            .iter()
+            .filter_map(|row| match &row.kind {
+                RowKind::Visualization {
+                    artifact: Some(artifact),
+                } => Some((
+                    row.id.to_string(),
+                    artifact.path.clone(),
+                    artifact.title.clone(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cards,
+            vec![
+                (
+                    "a#m0".to_owned(),
+                    "work/mockup.fragment.html".to_owned(),
+                    "mockup".to_owned()
+                ),
+                (
+                    "a#m1".to_owned(),
+                    "work/other.fragment.html".to_owned(),
+                    "other".to_owned()
+                ),
+            ]
+        );
+        // The prose still renders, and the strip lands on the last row.
+        assert!(matches!(rows[0].kind, RowKind::Markdown { .. }));
+        assert_eq!(rows.last().unwrap().copy_text.as_deref(), Some(raw));
+
+        // Mid-stream nothing is appended; a referenced path is not repeated.
+        let streaming = assistant("a", MessageStatus::Streaming, vec![text_part("t", raw)]);
+        assert!(
+            !rows_for_entry(&streaming, false, &mut parse)
+                .iter()
+                .any(|row| matches!(row.kind, RowKind::Visualization { .. }))
+        );
+        let referenced = format!(
+            "{}{}{}\nSaved as /repo/work/kit.fragment.html",
+            "\u{e200}visualize\u{e202}", r#"{"path":"/repo/work/kit.fragment.html"}"#, "\u{e201}"
+        );
+        let entry = assistant(
+            "a",
+            MessageStatus::Complete,
+            vec![text_part("t", &referenced)],
+        );
+        let visualizations = rows_for_entry(&entry, false, &mut parse)
+            .into_iter()
+            .filter(|row| matches!(row.kind, RowKind::Visualization { .. }))
+            .count();
+        assert_eq!(visualizations, 1);
+    }
+
+    #[test]
+    fn fragments_written_by_tools_get_cards_after_the_reply() {
+        let mut patch = tool_part("p", "");
+        if let MessagePart::Tool { call, .. } = &mut patch {
+            *call = ToolCall::ApplyPatch {
+                path: Some("/repo/work/flow.fragment.html".into()),
+            };
+        }
+        let entry = assistant(
+            "a",
+            MessageStatus::Complete,
+            vec![patch, text_part("t", "Done.")],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let Some(RowKind::Visualization {
+            artifact: Some(artifact),
+        }) = rows.last().map(|row| &row.kind)
+        else {
+            panic!("expected a trailing visualization card");
+        };
+        assert_eq!(artifact.path, "/repo/work/flow.fragment.html");
+        assert_eq!(artifact.title, "flow");
+    }
+
+    #[test]
+    fn plain_visualize_lines_become_cards_outside_code() {
+        let raw = "Here:\n\nvisualize{\"path\":\"/repo/work/flow.html\",\"mode\":\"wide\"}\n\n\
+                   ```\nvisualize{\"path\":\"/repo/work/quoted.html\"}\n```\n";
+        let entry = assistant("a", MessageStatus::Complete, vec![text_part("t", raw)]);
+        let artifacts = rows_for_entry(&entry, false, &mut parse)
+            .into_iter()
+            .filter_map(|row| match row.kind {
+                RowKind::Visualization { artifact } => artifact,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].path, "/repo/work/flow.html");
+        assert!(artifacts[0].wide);
     }
 
     #[test]

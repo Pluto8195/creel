@@ -139,9 +139,18 @@ messages travel over a `MessageChannel` handed to the frame with a
   client and existing history, a second part would duplicate it, and a new
   kind would need edge/iOS schema work. Shared parsing lives in
   `zeron_proto::visualize`.
-- **Detection.** Envelopes, whole-line ASCII references, and `*.fragment.html`
-  paths mentioned in assistant text (links, inline code, bare paths) become
-  visualization cards when the path resolves inside the chat's checkout.
+- **Detection.** Envelopes and whole-line ASCII references become
+  visualization cards where they appear. Once a reply settles, any other
+  `*.fragment.html` path it mentions (links, inline code, bare paths) or that
+  its tools wrote (write/edit/apply-patch paths, diff stats, output summaries)
+  gets a card after the reply. Cards resolve only inside the chat's checkout;
+  otherwise they say so and ask for the file to be saved in the project.
+- **Activation.** Clicking a card, or any `.fragment.html` link, opens the
+  rendered view (`LinkAction::Visualize`). Card actions: open the
+  `.preview.html` export in the system browser, Reveal in Finder (local
+  chats), View source (editor tab). A `.preview.html` link opens in the system
+  browser; its "Open in Zeron" action shows the sibling fragment. A missing
+  export, or a chat on another device, opens the fragment with a notice.
 - **Rendering.** A fragment opens in a right-pane tab backed by the existing
   embedded browser (`crates/ui/src/browser`, WKWebView via wry, nonpersistent
   data store, no IPC handler). Zeron reads the file through the workspace RPC
@@ -163,8 +172,14 @@ messages travel over a `MessageChannel` handed to the frame with a
   736px or 1,024px for `wide`. Inline auto-height rendering inside the
   transcript is not implemented.
 - **Previews.** `*.preview.html` links open in the system browser through a
-  `file://` URL on local chats. They are not loaded in the embedded browser,
-  which permits only http(s).
+  `file://` URL on local chats, regardless of the "Open links in Zeron"
+  preference: they are local files meant for browser verification, and the
+  embedded browser permits only http(s).
+- **Platforms.** Rendering uses the macOS WKWebView host. Other platforms
+  show an actionable "no embedded renderer" message with View source.
+- **Not implemented.** The Codex `<viz-calendar>` component (bundled,
+  proprietary), persisted widget state, follow-up messages from a
+  visualization, and inline auto-height rendering in the transcript.
 
 ## Sharing outside Zeron (Linear)
 

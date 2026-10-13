@@ -442,7 +442,9 @@ mod tests {
         assert!(is_complete_document("<!DOCTYPE html><p>x</p>"));
         assert!(is_complete_document("<p>x</p><BODY class=a>"));
         assert!(is_complete_document("< html>"));
-        assert!(!is_complete_document("<div id=\"hd\"><header>x</header></div>"));
+        assert!(!is_complete_document(
+            "<div id=\"hd\"><header>x</header></div>"
+        ));
         assert!(!is_complete_document("<p>body text</p><htmlish>"));
     }
 }

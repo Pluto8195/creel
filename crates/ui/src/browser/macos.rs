@@ -154,6 +154,17 @@ struct ObserverState {
     pending: Cell<bool>,
     error: RefCell<Option<String>>,
     requested_url: RefCell<Option<String>>,
+    /// A host document (visualization) is loaded from a string: only its own
+    /// `about:` frames may load; link activations become new Browser tabs.
+    document: Cell<bool>,
+}
+
+/// URLs a string-loaded host document and its srcdoc frame commit under.
+pub(super) fn document_navigation(url: &str) -> bool {
+    url == "about:blank"
+        || url
+            .strip_prefix("about:srcdoc")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('#'))
 }
 
 define_class!(
@@ -173,6 +184,14 @@ define_class!(
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn policy(&self, _view: &WKWebView, action: &WKNavigationAction, decision: &block2::Block<dyn Fn(WKNavigationActionPolicy)>) {
             let url = unsafe { action.request().URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
+            if self.ivars().document.get() {
+                let allow = document_navigation(&url);
+                if !allow && allowed_navigation(&url) && unsafe { action.navigationType() } == objc2_web_kit::WKNavigationType::LinkActivated {
+                    let _ = self.ivars().tx.try_send(NativeEvent::NewTab(url));
+                }
+                decision.call((if allow { WKNavigationActionPolicy::Allow } else { WKNavigationActionPolicy::Cancel },));
+                return;
+            }
             if allowed_navigation(&url) && unsafe { action.targetFrame() }.is_some_and(|frame| unsafe { frame.isMainFrame() }) {
                 *self.ivars().requested_url.borrow_mut() = Some(url.clone());
             }
@@ -224,6 +243,7 @@ impl Observer {
             pending: Cell::new(false),
             error: RefCell::new(None),
             requested_url: RefCell::new(None),
+            document: Cell::new(false),
         });
         unsafe { msg_send![super(object), init] }
     }
@@ -444,10 +464,20 @@ impl NativePage {
     }
     pub fn load(&self, url: &str) -> Result<(), String> {
         let host = self.0.borrow();
+        host.observer.ivars().document.set(false);
         host.data.register_preview(url);
         host.observer.ivars().error.borrow_mut().take();
         *host.observer.ivars().requested_url.borrow_mut() = Some(url.into());
         host.web.load_url(url).map_err(|e| e.to_string())
+    }
+    /// Load a self-contained host document with no base URL, so the page has
+    /// an opaque origin and no `file://` reach.
+    pub fn load_document(&self, html: &str) -> Result<(), String> {
+        let host = self.0.borrow();
+        host.observer.ivars().document.set(true);
+        host.observer.ivars().error.borrow_mut().take();
+        host.observer.ivars().requested_url.borrow_mut().take();
+        host.web.load_html(html).map_err(|e| e.to_string())
     }
     pub fn reload(&self) {
         let host = self.0.borrow();

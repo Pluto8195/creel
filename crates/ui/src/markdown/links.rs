@@ -23,6 +23,21 @@ pub enum LinkAction {
     Internal,
     External,
     Copy,
+    /// Render a workspace HTML visualization fragment in a pane; `wide` is
+    /// the reference's 1,024px design width.
+    Visualize {
+        wide: bool,
+    },
+    /// Reveal a local workspace file in the system file manager.
+    Reveal,
+    /// Open a workspace file's source in an editor tab.
+    Source,
+}
+impl LinkAction {
+    /// Actions that only apply to workspace files, never to web addresses.
+    pub fn file_only(self) -> bool {
+        matches!(self, Self::Visualize { .. } | Self::Reveal | Self::Source)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkOutcome {
@@ -39,6 +54,7 @@ pub struct LinkActivation {
 impl LinkActivation {
     pub fn web_outcome(&self, embedded: bool) -> LinkOutcome {
         match &self.target.navigation {
+            Ok(_) if self.action.file_only() => LinkOutcome::Rejected,
             Ok(_) if embedded && self.action == LinkAction::Internal => LinkOutcome::Internal,
             Ok(url) => LinkOutcome::External(url.clone()),
             Err(_) => LinkOutcome::Rejected,

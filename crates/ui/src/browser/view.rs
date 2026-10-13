@@ -502,10 +502,17 @@ impl Render for BrowserSurface {
         .when(has_page, |el| {
             el.on_click(cx.listener(|this, _, _, cx| this.open_external(cx)))
         });
-        let toolbar = surface_chrome::toolbar(&theme)
-            .when(!external, |el| el.child(back).child(forward).child(reload))
-            .child(address)
-            .child(open);
+        let toolbar = if self.fragment.is_some() {
+            self.fragment_toolbar(&theme, cx)
+        } else {
+            surface_chrome::toolbar(&theme)
+                .when(!external, |el| el.child(back).child(forward).child(reload))
+                .child(address)
+                .child(open)
+                .into_any_element()
+        };
+        let has_page = has_page || self.fragment.is_some();
+        let fragment_status = self.fragment_status(&theme, cx);
 
         let body = div()
             .id("browser-page")
@@ -517,7 +524,9 @@ impl Render for BrowserSurface {
             // Keep an opaque backing while native web content is loading.
             .when(has_page, |body| body.bg(theme.bg));
         #[cfg(target_os = "macos")]
-        let body = if let Some(native) = &self.native {
+        let body = if let Some(status) = fragment_status {
+            body.child(status)
+        } else if let Some(native) = &self.native {
             if self.page.error.is_some() {
                 body.child(self.empty_body(&theme, cx))
             } else {
@@ -551,7 +560,9 @@ impl Render for BrowserSurface {
             body.child(self.empty_body(&theme, cx))
         };
         #[cfg(target_os = "linux")]
-        let body = if let Some(native) = &self.native {
+        let body = if let Some(status) = fragment_status {
+            body.child(status)
+        } else if let Some(native) = &self.native {
             if self.page.error.is_some() {
                 body.child(self.empty_body(&theme, cx))
             } else {
@@ -613,7 +624,10 @@ impl Render for BrowserSurface {
             body.child(self.empty_body(&theme, cx))
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let body = body.child(self.empty_body(&theme, cx));
+        let body = body.child(match fragment_status {
+            Some(status) => status,
+            None => self.empty_body(&theme, cx),
+        });
 
         #[cfg(target_os = "linux")]
         let body = body.when_some(self.linux_menu(&theme, cx), |el, menu| el.child(menu));
@@ -638,13 +652,20 @@ impl Render for BrowserSurface {
                 #[cfg(not(target_os = "linux"))]
                 let _=(this,event,w,cx);
             }))
-            .on_action(cx.listener(|this, _: &super::Reload, _, cx| this.reload(cx)))
+            .on_action(cx.listener(|this, _: &super::Reload, window, cx| {
+                if this.fragment.is_some() {
+                    this.reload_fragment(window, cx)
+                } else {
+                    this.reload(cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &super::FocusAddress, w, cx| this.focus_address(w, cx)))
             .on_action(cx.listener(|_, _: &super::NewTab, _, cx| cx.emit(BrowserEvent::NewTab(None))))
             .on_action(cx.listener(|_, _: &super::CloseTab, _, cx| cx.emit(BrowserEvent::Close)))
             .on_action(cx.listener(|this, _: &super::Back, _, _| this.history(false)))
             .on_action(cx.listener(|this, _: &super::Forward, _, _| this.history(true)))
             .child(toolbar)
+            .when_some(self.fragment_notice(&theme), |el, notice| el.child(notice))
             .when_some(self.validation.clone(), |el, message| el.child(div().px(px(12.0)).py(px(8.0)).text_size(crate::typography::ui_rems(11.0)).text_color(theme.danger).child(message)))
             .when(remote_loopback, |el| el.child(div().px(px(12.0)).py(px(8.0)).border_b_1().border_color(theme.border)
                 .text_size(crate::typography::ui_rems(11.0)).text_color(theme.text_muted)
