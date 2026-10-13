@@ -359,7 +359,12 @@ impl WorkItemDetails {
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .child(Self::input_frame(&self.instruction_input, theme).min_h(px(48.0)))
+            .child(Self::editor_frame(
+                &self.instruction_input,
+                &self.instruction_skills,
+                "work-item-instruction-editor",
+                theme,
+            ))
             .child(
                 div()
                     .flex()

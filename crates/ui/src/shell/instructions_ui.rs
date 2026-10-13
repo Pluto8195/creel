@@ -30,6 +30,7 @@ use zeron_proto::{
     WorkOutlineSnapshot,
 };
 
+use crate::composer::skill_completion::{SkillCompletion, SkillInsertion, SkillSource};
 use crate::work_outline::actions::{OperationSlot, expect_revision, instruction_error_text};
 use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::instructions::{self, CompareUnavailable};
@@ -187,6 +188,13 @@ pub(super) struct FromChatDialog {
     pub(super) target: FromChatTarget,
     snapshot: Arc<WorkOutlineSnapshot>,
     pub(super) input: Entity<ComposerInput>,
+    /// `/` skill autocomplete inserting plain "`name` skill" text, listed
+    /// for the chosen target's resolved execution root.
+    pub(super) skills: Entity<SkillCompletion>,
+    skill_harness: zeron_proto::HarnessId,
+    /// The Space's folder and owning device (the root's fallback).
+    space_path: String,
+    space_device: String,
     op: OperationSlot,
     saving: bool,
     error: Option<String>,
@@ -196,6 +204,17 @@ pub(super) struct FromChatDialog {
 impl FromChatDialog {
     pub(super) fn input_focus(&self, cx: &App) -> FocusHandle {
         self.input.read(cx).focus_handle(cx)
+    }
+
+    fn skill_source(&self) -> SkillSource {
+        SkillSource::for_outline_scope(
+            &self.snapshot,
+            &self.space_id,
+            self.target_item().map(|(id, _)| id.as_str()),
+            self.skill_harness,
+            &self.space_path,
+            &self.space_device,
+        )
     }
 
     fn target_item(&self) -> Option<&(String, String)> {
@@ -665,37 +684,61 @@ impl Shell {
             .take(zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS)
             .collect();
         let input = cx.new(|cx| {
-            let mut input = ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0);
+            let mut input = ComposerInput::new("Instruction", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow();
             input.set_text(draft, cx);
             input
         });
+        let skills = cx.new(|cx| {
+            SkillCompletion::new(
+                self.state.clone(),
+                input.clone(),
+                SkillInsertion::InstructionText,
+                cx,
+            )
+            .over_modal()
+        });
+        let (space_path, space_device) = self
+            .state
+            .read(cx)
+            .space_row(&space_id)
+            .map(|space| (space.path.clone(), space.device_id.clone()))
+            .unwrap_or_default();
+        let skill_harness = self.skill_harness(cx);
         let input_events = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.save_instruction_from_chat(window, cx);
             }
         });
-        self.begin_work_outline_modal(
-            WorkOutlineModal::FromChat(FromChatDialog {
-                chat_id: chat_id.to_owned(),
-                message_id,
-                excerpt,
-                space_id,
-                target: if item.is_some() {
-                    FromChatTarget::Item
-                } else {
-                    FromChatTarget::SpaceRoot
-                },
-                item,
-                parent,
-                snapshot,
-                input,
-                op: OperationSlot::default(),
-                saving: false,
-                error: None,
-                _input_events: input_events,
-            }),
-            cx,
-        );
+        let dialog = FromChatDialog {
+            chat_id: chat_id.to_owned(),
+            message_id,
+            excerpt,
+            space_id,
+            target: if item.is_some() {
+                FromChatTarget::Item
+            } else {
+                FromChatTarget::SpaceRoot
+            },
+            item,
+            parent,
+            snapshot,
+            input,
+            skills,
+            skill_harness,
+            space_path,
+            space_device,
+            op: OperationSlot::default(),
+            saving: false,
+            error: None,
+            _input_events: input_events,
+        };
+        let source = dialog.skill_source();
+        dialog
+            .skills
+            .update(cx, |skills, cx| skills.set_source(source, cx));
+        self.begin_work_outline_modal(WorkOutlineModal::FromChat(dialog), cx);
         Ok(())
     }
 
@@ -706,6 +749,9 @@ impl Shell {
     ) {
         if let Some(WorkOutlineModal::FromChat(dialog)) = self.work_outline_modal.as_mut() {
             dialog.target = target;
+            let source = dialog.skill_source();
+            let skills = dialog.skills.clone();
+            skills.update(cx, |skills, cx| skills.set_source(source, cx));
             cx.notify();
         }
     }
@@ -998,18 +1044,21 @@ pub(super) fn from_chat_card(
         .child(targets)
         .child(small_note("instruction-from-chat-reach", reach, theme.text_muted).mt(px(8.0)))
         .child(
+            // Auto-grows with the text (the input owns the cap and scrolls
+            // past it); no height cap here, which would clip.
             div()
+                .relative()
+                .debug_selector(|| "instruction-from-chat-text".into())
                 .mt(px(8.0))
                 .w_full()
-                .min_h(px(64.0))
-                .max_h(px(220.0))
                 .px(px(8.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
                 .border_1()
                 .border_color(theme.border_strong)
                 .bg(theme.input_bg)
-                .child(dialog.input.clone()),
+                .child(dialog.input.clone())
+                .child(dialog.skills.clone()),
         )
         .when_some(dialog.error.clone(), |el, error| {
             el.child(small_note("instruction-from-chat-error", error, theme.warning).mt(px(6.0)))
@@ -1527,6 +1576,128 @@ mod tests {
             instructions::excerpt_content_hash(excerpt)
         );
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    /// `/` in Create Instruction from Chat lists skills for the chosen
+    /// target's resolved execution root (re-listed when the target changes)
+    /// and inserts plain "`name` skill" text; Esc closes only the list;
+    /// Enter accepts instead of saving. The text grows to the cap, then
+    /// scrolls with the caret in view.
+    #[gpui::test]
+    fn from_chat_text_offers_skills_as_plain_text_and_grows(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            crate::work_outline::execution::fixture::snapshot("s1"),
+            |params| {
+                if params.get("harness").is_some() {
+                    return Ok(serde_json::json!([
+                        {"name": "code-review", "description": "Review a diff"},
+                        {"name": "open-pr"},
+                        {"name": "compact", "description": "Compact the conversation"},
+                    ]));
+                }
+                ok_ids(params)
+            },
+        );
+        let lists = |calls: &Calls| -> Vec<serde_json::Value> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|params| params.get("harness").is_some())
+                .cloned()
+                .collect()
+        };
+        shell.update_in(cx, |shell, window, cx| {
+            shell
+                .open_instruction_from_chat_with(
+                    CHAT_AUTH,
+                    None,
+                    "Never log tokens.".into(),
+                    window,
+                    cx,
+                )
+                .unwrap()
+        });
+        draw(cx);
+        let (input, skills) = shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::FromChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            (dialog.input.clone(), dialog.skills.clone())
+        });
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        let names = |cx: &mut gpui::VisualTestContext| {
+            skills.read_with(cx, |skills, _| {
+                if skills.is_open() {
+                    skills.visible_names()
+                } else {
+                    Vec::new()
+                }
+            })
+        };
+        // Chat Auth's item inherits API's root.
+        cx.simulate_input(" Use /");
+        draw(cx);
+        assert_eq!(lists(&calls)[0]["cwd"], "/work/alpha/flagship");
+        assert_eq!(names(cx), vec!["code-review", "open-pr"]);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(names(cx).is_empty());
+        assert!(
+            cx.debug_bounds("instruction-from-chat").is_some(),
+            "dialog stays"
+        );
+
+        // Space root target: its folder's list.
+        let root = cx
+            .debug_bounds("instruction-from-chat-target-root")
+            .unwrap()
+            .center();
+        cx.simulate_click(root, gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        cx.simulate_input("c");
+        draw(cx);
+        assert_eq!(lists(&calls).last().unwrap()["cwd"], "/work/alpha");
+        assert_eq!(names(cx), vec!["code-review"]);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            input.read_with(cx, |input, _| input.text().to_owned()),
+            "Never log tokens. Use `code-review` skill "
+        );
+        assert!(
+            calls.lock().unwrap().iter().all(|c| c.get("op").is_none()),
+            "Enter accepted the skill, nothing saved"
+        );
+
+        // Auto-grow up to the cap, then scroll.
+        let window_height = cx.update(|window, _| f32::from(window.viewport_size().height));
+        let long = (0..200)
+            .map(|n| format!("rule {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        input.update(cx, |input, cx| input.set_text(long, cx));
+        draw(cx);
+        let frame = cx.debug_bounds("instruction-from-chat-text").unwrap();
+        assert!(
+            f32::from(frame.size.height)
+                <= window_height * crate::composer::AUTO_GROW_MAX_FRACTION + 16.0
+        );
+        assert!(f32::from(frame.size.height) > 100.0);
+        input.read_with(cx, |input, _| {
+            assert!(input.scroll_top() > 0.0);
+            assert!(input.caret_in_view());
+        });
     }
 
     #[test]

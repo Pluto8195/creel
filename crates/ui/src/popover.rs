@@ -581,6 +581,25 @@ pub fn anchored_menu_below_gap(
     closing: Option<std::time::Instant>,
     gap: f32,
 ) -> AnyElement {
+    anchored_menu_below_layer(id, content, closing, gap, 1)
+}
+
+/// [`anchored_menu_below_gap`] painted above modal dialogs (which paint at
+/// priority 2): completion popups of inputs that live inside a dialog.
+pub fn anchored_menu_below_over_modal(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+) -> AnyElement {
+    anchored_menu_below_layer(id, content, None, 4.0, 3)
+}
+
+fn anchored_menu_below_layer(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+    gap: f32,
+    priority: usize,
+) -> AnyElement {
     let exit = closing.map(exit_progress);
     let content = frosted_menu(exit, content);
     div()
@@ -599,7 +618,7 @@ pub fn anchored_menu_below_gap(
                         div().occlude().pt(px(gap)).child(content),
                     )),
             )
-            .priority(1)
+            .priority(priority)
             .into_any_element(),
         )
         .into_any_element()

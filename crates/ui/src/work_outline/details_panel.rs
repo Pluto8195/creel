@@ -36,6 +36,7 @@ use super::command::{
 };
 use super::model::{self, OutlineChat};
 use super::store::{WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineSnapshot};
+use crate::composer::skill_completion::{SkillCompletion, SkillInsertion, SkillSource};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::shell::Shell;
 use crate::state::AppState;
@@ -157,6 +158,9 @@ pub(crate) struct WorkItemDetails {
     /// The one instruction being written or edited (explicit Save/Cancel).
     pub(crate) instruction_draft: Option<InstructionDraft>,
     instruction_input: Entity<ComposerInput>,
+    /// `/` skill autocomplete on the instruction editor (plain
+    /// "`name` skill" text, listed for this item's execution root).
+    instruction_skills: Entity<SkillCompletion>,
     /// Instructions whose Chat excerpt is expanded.
     excerpts_open: HashSet<String>,
     instructions_error: Option<String>,
@@ -182,6 +186,8 @@ pub(crate) struct WorkItemDetails {
     pub(crate) proposals_open: bool,
     pub(crate) proposal_review: Option<ProposalReview>,
     proposal_input: Entity<ComposerInput>,
+    /// `/` skill autocomplete on the proposal review text.
+    proposal_skills: Entity<SkillCompletion>,
     reason_input: Entity<ComposerInput>,
     pub(crate) proposal_history_open: bool,
     pub(crate) proposals_error: Option<String>,
@@ -213,8 +219,11 @@ impl WorkItemDetails {
                 .with_text_metrics(13.0, 19.0)
         });
         // The generic composer context: Enter submits, Shift+Enter breaks a line.
-        let description_input =
-            cx.new(|cx| ComposerInput::new("Description", cx).with_text_metrics(12.5, 18.0));
+        let description_input = cx.new(|cx| {
+            ComposerInput::new("Description", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow()
+        });
         let reference_input = cx.new(|cx| {
             ComposerInput::with_context(
                 "https://github.com/… or https://linear.app/…",
@@ -226,8 +235,19 @@ impl WorkItemDetails {
         });
         // Generic composer context: Enter saves (an explicit keystroke, like
         // the description editor), Shift+Enter breaks a line. Blur never saves.
-        let instruction_input =
-            cx.new(|cx| ComposerInput::new("Instruction", cx).with_text_metrics(12.5, 18.0));
+        let instruction_input = cx.new(|cx| {
+            ComposerInput::new("Instruction", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow()
+        });
+        let instruction_skills = cx.new(|cx| {
+            SkillCompletion::new(
+                state.clone(),
+                instruction_input.clone(),
+                SkillInsertion::InstructionText,
+                cx,
+            )
+        });
         let execution_root_input = cx.new(|cx| {
             ComposerInput::with_context(
                 "/absolute/path/to/folder",
@@ -240,8 +260,19 @@ impl WorkItemDetails {
         let is_space_root = item_id == SPACE_ROOT_ITEM_ID;
         // Generic composer context (Shift+Enter breaks a line); Approve is
         // explicit (button only), blur never approves.
-        let proposal_input = cx
-            .new(|cx| ComposerInput::new("Proposed instruction", cx).with_text_metrics(12.5, 18.0));
+        let proposal_input = cx.new(|cx| {
+            ComposerInput::new("Proposed instruction", cx)
+                .with_text_metrics(12.5, 18.0)
+                .with_auto_grow()
+        });
+        let proposal_skills = cx.new(|cx| {
+            SkillCompletion::new(
+                state.clone(),
+                proposal_input.clone(),
+                SkillInsertion::InstructionText,
+                cx,
+            )
+        });
         let reason_input = cx.new(|cx| {
             ComposerInput::with_context(
                 "Optional reason",
@@ -308,6 +339,7 @@ impl WorkItemDetails {
             instructions_open: is_space_root,
             instruction_draft: None,
             instruction_input,
+            instruction_skills,
             excerpts_open: HashSet::new(),
             instructions_error: None,
             effective_open: false,
@@ -323,6 +355,7 @@ impl WorkItemDetails {
             proposals_open: false,
             proposal_review: None,
             proposal_input,
+            proposal_skills,
             reason_input,
             proposal_history_open: false,
             proposals_error: None,
@@ -458,6 +491,34 @@ impl WorkItemDetails {
         self.begin_title_edit(window, cx);
         self.title_input
             .update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    /// Open the description editor (tests).
+    #[cfg(test)]
+    pub(crate) fn begin_description_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.description_open = true;
+        self.begin_description_edit(window, cx);
+    }
+
+    /// `(input, skill autocomplete)` of the multi-line editors (tests):
+    /// `"instruction"`, `"proposal"`, or `"description"` (no autocomplete).
+    #[cfg(test)]
+    pub(crate) fn editor(
+        &self,
+        which: &str,
+    ) -> (Entity<ComposerInput>, Option<Entity<SkillCompletion>>) {
+        match which {
+            "instruction" => (
+                self.instruction_input.clone(),
+                Some(self.instruction_skills.clone()),
+            ),
+            "proposal" => (
+                self.proposal_input.clone(),
+                Some(self.proposal_skills.clone()),
+            ),
+            "description" => (self.description_input.clone(), None),
+            other => panic!("no {other} editor"),
+        }
     }
 
     fn discard_drafts(&mut self) {
@@ -848,6 +909,57 @@ impl WorkItemDetails {
         }
     }
 
+    /// Point the editors' skill lists at this item's resolved execution root
+    /// (the Space root's on the Space-root variant) for the harness a new
+    /// Chat would use. Cheap when nothing changed; runs every render so a
+    /// snapshot or configuration change re-targets an open list.
+    fn sync_skill_sources(&self, cx: &mut Context<Self>) {
+        if self.instruction_draft.is_none() && self.proposal_review.is_none() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let harness = self
+            .shell
+            .upgrade()
+            .map(|shell| shell.read(cx).skill_harness(cx))
+            .unwrap_or(zeron_proto::HarnessId::ClaudeCode);
+        let (space_path, space_device) = self
+            .state
+            .read(cx)
+            .space_row(&self.space_id)
+            .map(|space| (space.path.clone(), space.device_id.clone()))
+            .unwrap_or_default();
+        let source = SkillSource::for_outline_scope(
+            &snapshot,
+            &self.space_id,
+            Some(self.item_id.as_str()),
+            harness,
+            &space_path,
+            &space_device,
+        );
+        for skills in [&self.instruction_skills, &self.proposal_skills] {
+            let source = source.clone();
+            skills.update(cx, |skills, cx| skills.set_source(source, cx));
+        }
+    }
+
+    /// [`Self::input_frame`] for a multi-line editor with `/` skill
+    /// autocomplete: the frame anchors the popup and grows with the input
+    /// (no height cap of its own, which would clip the input's last rows).
+    fn editor_frame(
+        input: &Entity<ComposerInput>,
+        skills: &Entity<SkillCompletion>,
+        selector: &'static str,
+        theme: &Theme,
+    ) -> gpui::Div {
+        Self::input_frame(input, theme)
+            .relative()
+            .debug_selector(move || selector.into())
+            .child(skills.clone())
+    }
+
     fn input_frame(input: &Entity<ComposerInput>, theme: &Theme) -> gpui::Div {
         div()
             .w_full()
@@ -865,6 +977,7 @@ impl WorkItemDetails {
 impl Render for WorkItemDetails {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        self.sync_skill_sources(cx);
         let shell_frame = div()
             .id("work-item-details")
             .debug_selector(|| "work-item-details".into())
@@ -1133,7 +1246,10 @@ impl Render for WorkItemDetails {
         if description_open {
             if self.editing_description {
                 description = description
-                    .child(Self::input_frame(&self.description_input, &theme))
+                    .child(
+                        Self::input_frame(&self.description_input, &theme)
+                            .debug_selector(|| "work-item-description-editor".into()),
+                    )
                     .child(
                         div()
                             .flex()
