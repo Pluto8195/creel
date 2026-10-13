@@ -493,6 +493,7 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::PrevSession
         | ShortcutId::ArchiveSession => "Sessions",
         ShortcutId::OpenOutline
+        | ShortcutId::ToggleOutlineFocus
         | ShortcutId::CreateWorkItem
         | ShortcutId::CreateChildWorkItem
         | ShortcutId::RenameWorkItem
@@ -534,6 +535,9 @@ fn description(id: ShortcutId) -> &'static str {
         }
         ShortcutId::ArchiveSession => "Move the current session to the archived shelf.",
         ShortcutId::OpenOutline => "Open the overview in Outline mode.",
+        ShortcutId::ToggleOutlineFocus => {
+            "Jump from a chat to its Outline row, and back to the chat."
+        }
         ShortcutId::CreateWorkItem => "Create a work item at the top level of the Outline.",
         ShortcutId::CreateChildWorkItem => "Create a work item inside the selected work item.",
         ShortcutId::RenameWorkItem => "Rename the selected work item in place.",

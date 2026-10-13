@@ -13,6 +13,7 @@
 use super::*;
 
 use crate::markdown::links::LinkTarget;
+use crate::overview::OutlineChatReturn;
 use crate::work_outline::instructions::DriftImpact;
 use crate::work_outline::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
@@ -670,6 +671,16 @@ impl Shell {
             self.open_outline_shortcuts(cx);
             return;
         }
+        // Open Outline from a Chat the Outline opened is the toggle's
+        // Chat → tree half: it lands on that Chat's row, not wherever the
+        // selection was.
+        if command == WorkOutlineCommand::ToggleOutlineFocus
+            || (command == WorkOutlineCommand::OpenOutline
+                && self.focused_outline_opened_chat(window, cx))
+        {
+            self.toggle_outline_focus(window, cx);
+            return;
+        }
         // Create Instruction from Chat acts where the Chat is; only when that
         // is impossible does it fall through to the Outline (with a notice).
         if command == WorkOutlineCommand::CreateInstructionFromChat
@@ -684,6 +695,100 @@ impl Shell {
         page.update(cx, |overview, cx| {
             overview.run_work_outline_command(command, window, cx)
         });
+    }
+
+    /// The Chat on screen and how: the full chat route's selected Chat, or
+    /// the Overview chat panel's.
+    fn shown_chat(&self, cx: &App) -> Option<OutlineChatReturn> {
+        match self.route {
+            Route::Chat => {
+                self.state
+                    .read(cx)
+                    .selected_chat
+                    .clone()
+                    .map(|chat_id| OutlineChatReturn {
+                        chat_id,
+                        full_route: true,
+                    })
+            }
+            Route::Overview => self
+                .overview_page
+                .as_ref()
+                .and_then(|page| page.read(cx).shown_panel_chat(cx))
+                .map(|chat_id| OutlineChatReturn {
+                    chat_id,
+                    full_route: false,
+                }),
+            _ => None,
+        }
+    }
+
+    /// The composer of the Chat the Outline last opened has focus (where
+    /// Enter on a Chat row lands it).
+    fn focused_outline_opened_chat(&self, window: &Window, cx: &App) -> bool {
+        if !self.composer.focus_handle(cx).contains_focused(window, cx) {
+            return false;
+        }
+        let opened = self
+            .overview_page
+            .as_ref()
+            .and_then(|page| page.read(cx).outline_chat_return().cloned());
+        match (opened, self.shown_chat(cx)) {
+            (Some(opened), Some(shown)) => opened.chat_id == shown.chat_id,
+            _ => false,
+        }
+    }
+
+    /// Toggle Outline Focus. From the Outline tree: back to the last Chat
+    /// opened from the Outline, in the layout it was shown in, composer
+    /// focused (a short notice when there is none). From anywhere else: the
+    /// Outline with the shown Chat's row selected (ancestors expanded,
+    /// scrolled into view) and the tree focused. The Chat's selection and
+    /// composer draft are never touched on the way out.
+    pub(crate) fn toggle_outline_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette = None;
+        let tree_focused = matches!(self.route, Route::Overview)
+            && self
+                .overview_page
+                .as_ref()
+                .is_some_and(|page| page.read(cx).outline_tree_focused(window, cx));
+        if tree_focused {
+            self.return_to_outline_chat(cx);
+            return;
+        }
+        let chat = self.shown_chat(cx);
+        if !matches!(self.route, Route::Overview) {
+            self.open_overview(cx);
+        }
+        let page = self.ensure_overview_page(cx);
+        page.update(cx, |overview, cx| {
+            overview.focus_outline_on_chat(chat, window, cx)
+        });
+    }
+
+    fn return_to_outline_chat(&mut self, cx: &mut Context<Self>) {
+        let page = self.ensure_overview_page(cx);
+        let target = page.read(cx).outline_chat_return().cloned();
+        let target = target.filter(|target| {
+            self.state
+                .read(cx)
+                .chats
+                .iter()
+                .any(|chat| chat.id == target.chat_id)
+        });
+        let Some(target) = target else {
+            page.update(cx, |overview, cx| {
+                overview.show_outline_notice("Open a Chat from the Outline first", cx)
+            });
+            return;
+        };
+        if target.full_route {
+            self.open_chat(target.chat_id, cx);
+        } else {
+            page.update(cx, |overview, cx| {
+                overview.return_to_outline_chat_panel(target.chat_id, cx)
+            });
+        }
     }
 
     pub(super) fn render_work_outline_modal(

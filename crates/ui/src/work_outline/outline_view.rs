@@ -765,6 +765,38 @@ impl OutlineView {
         }
     }
 
+    /// Select `key` even when a collapsed ancestor hides it: expand every
+    /// collapsed ancestor first (persisted like a manual expand), then select
+    /// and scroll it into view. `false` (selection untouched) when the row is
+    /// not in the Outline at all, e.g. filtered out or in no shown Space.
+    pub(crate) fn reveal(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.model.position(key).is_none() {
+            let expanded = model::flatten(
+                &self.inputs.spaces,
+                &self.inputs.chats,
+                &HashSet::new(),
+                &self.inputs.options,
+            );
+            let Some(ix) = expanded.position(key) else {
+                return false;
+            };
+            let hidden_by: Vec<String> = expanded
+                .ancestor_keys(ix)
+                .into_iter()
+                .filter(|ancestor| self.collapsed.contains(*ancestor))
+                .map(str::to_owned)
+                .collect();
+            for ancestor in hidden_by {
+                self.set_collapsed(&ancestor, false, cx);
+            }
+        }
+        if self.model.position(key).is_none() {
+            return false;
+        }
+        self.select(key, cx);
+        true
+    }
+
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus, cx);
     }

@@ -854,7 +854,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// Work Outline commands registered as rebindable shortcuts (every
 /// `WorkOutlineCommand`, including the ones whose palette entry waits for a
 /// later milestone).
-pub const WORK_OUTLINE_SHORTCUTS: usize = 15;
+pub const WORK_OUTLINE_SHORTCUTS: usize = 16;
 
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
 /// or past [`JUMP_SLOTS`] has no combo and no label, so it reads as unbound
@@ -876,6 +876,7 @@ pub enum ShortcutId {
     PrevSession,
     ArchiveSession,
     OpenOutline,
+    ToggleOutlineFocus,
     CreateWorkItem,
     CreateChildWorkItem,
     RenameWorkItem,
@@ -910,6 +911,7 @@ impl ShortcutId {
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
         ShortcutId::OpenOutline,
+        ShortcutId::ToggleOutlineFocus,
         ShortcutId::CreateWorkItem,
         ShortcutId::CreateChildWorkItem,
         ShortcutId::RenameWorkItem,
@@ -957,6 +959,7 @@ impl ShortcutId {
             ShortcutId::PrevSession => "Previous session",
             ShortcutId::ArchiveSession => "Archive session",
             ShortcutId::OpenOutline => "Open Outline",
+            ShortcutId::ToggleOutlineFocus => "Toggle Outline focus",
             ShortcutId::CreateWorkItem => "Create work item",
             ShortcutId::CreateChildWorkItem => "Create child work item",
             ShortcutId::RenameWorkItem => "Rename work item",
@@ -1014,7 +1017,7 @@ impl ShortcutId {
             // Mod+A is the composer's Select all, so archiving takes the
             // shifted combo.
             ShortcutId::ArchiveSession => "mod-shift-a",
-            // Work Outline. Only the two global entry points ship bound: a
+            // Work Outline. Only the three global entry points ship bound: a
             // chord here fires even while a text field has focus, and `mod-l`,
             // `mod-i` and the other free letters are one step from composer or
             // browser chords. Everything else stays reachable from the command
@@ -1026,6 +1029,11 @@ impl ShortcutId {
             // `OUTLINE_NAVIGATION_KEYS`) that never fire in a text field, so
             // their global chords also ship unbound.
             ShortcutId::OpenOutline => "mod-shift-l",
+            // Chat <-> Outline tree. Must fire from the composer (where Enter
+            // on a Chat row lands focus), so it is a primary chord; `mod-\`
+            // clashes with no default, fixed (`app_menus`, palette, overview),
+            // composer, browser or gpui-base editing binding.
+            ShortcutId::ToggleOutlineFocus => "mod-\\",
             ShortcutId::CreateWorkItem => "mod-shift-i",
             ShortcutId::CreateChildWorkItem
             | ShortcutId::RenameWorkItem
@@ -1076,6 +1084,7 @@ pub struct KeymapConfig {
     pub prev_session: String,
     pub archive_session: String,
     pub open_outline: String,
+    pub toggle_outline_focus: String,
     pub create_work_item: String,
     pub create_child_work_item: String,
     pub rename_work_item: String,
@@ -1156,6 +1165,7 @@ impl Default for KeymapConfig {
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
             open_outline: ShortcutId::OpenOutline.default_combo().into(),
+            toggle_outline_focus: ShortcutId::ToggleOutlineFocus.default_combo().into(),
             create_work_item: ShortcutId::CreateWorkItem.default_combo().into(),
             create_child_work_item: ShortcutId::CreateChildWorkItem.default_combo().into(),
             rename_work_item: ShortcutId::RenameWorkItem.default_combo().into(),
@@ -1199,6 +1209,7 @@ impl KeymapConfig {
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
             ShortcutId::OpenOutline => &self.open_outline,
+            ShortcutId::ToggleOutlineFocus => &self.toggle_outline_focus,
             ShortcutId::CreateWorkItem => &self.create_work_item,
             ShortcutId::CreateChildWorkItem => &self.create_child_work_item,
             ShortcutId::RenameWorkItem => &self.rename_work_item,
@@ -1238,6 +1249,7 @@ impl KeymapConfig {
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,
             ShortcutId::OpenOutline => self.open_outline = combo,
+            ShortcutId::ToggleOutlineFocus => self.toggle_outline_focus = combo,
             ShortcutId::CreateWorkItem => self.create_work_item = combo,
             ShortcutId::CreateChildWorkItem => self.create_child_work_item = combo,
             ShortcutId::RenameWorkItem => self.rename_work_item = combo,
@@ -1624,6 +1636,7 @@ impl UiSettings {
                             (ShortcutId::ToggleFiles, "toggleFiles"),
                             (ShortcutId::OpenMyPrs, "openMyPrs"),
                             (ShortcutId::OpenOutline, "openOutline"),
+                            (ShortcutId::ToggleOutlineFocus, "toggleOutlineFocus"),
                             (ShortcutId::CreateWorkItem, "createWorkItem"),
                         ] {
                             let default = platform_combo(id.default_combo());
@@ -3292,8 +3305,9 @@ mod tests {
         assert!(conflicted_shortcuts(&keymap).is_empty());
     }
 
-    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 15] = [
+    const WORK_OUTLINE_FIELDS: [(ShortcutId, &str); 16] = [
         (ShortcutId::OpenOutline, "openOutline"),
+        (ShortcutId::ToggleOutlineFocus, "toggleOutlineFocus"),
         (ShortcutId::CreateWorkItem, "createWorkItem"),
         (ShortcutId::CreateChildWorkItem, "createChildWorkItem"),
         (ShortcutId::RenameWorkItem, "renameWorkItem"),
@@ -3333,6 +3347,7 @@ mod tests {
             );
         }
         assert_eq!(ShortcutId::OpenOutline.default_combo(), "mod-shift-l");
+        assert_eq!(ShortcutId::ToggleOutlineFocus.default_combo(), "mod-\\");
         assert_eq!(ShortcutId::CreateWorkItem.default_combo(), "mod-shift-i");
     }
 
@@ -3408,7 +3423,7 @@ mod tests {
             .map(|(id, _)| keymap.get(*id))
             .filter(|combo| !combo.is_empty())
             .collect();
-        assert_eq!(bound.len(), 2);
+        assert_eq!(bound.len(), 3);
         // Binding one to another command's combo is a detected conflict.
         let mut clash = keymap.clone();
         clash.set(ShortcutId::MoveWorkItem, "mod-shift-l".into());
@@ -3420,7 +3435,11 @@ mod tests {
     #[test]
     fn work_outline_defaults_use_the_platform_primary_modifier() {
         for mac in [true, false] {
-            for id in [ShortcutId::OpenOutline, ShortcutId::CreateWorkItem] {
+            for id in [
+                ShortcutId::OpenOutline,
+                ShortcutId::ToggleOutlineFocus,
+                ShortcutId::CreateWorkItem,
+            ] {
                 let combo = id.default_combo_on(mac);
                 assert!(combo.starts_with("mod-"), "{combo}");
                 let bound = platform_combo_on(mac, combo);
@@ -3439,6 +3458,16 @@ mod tests {
             combo_from_keystroke_on(false, true, false, true, false, "l").as_deref(),
             Some("mod-shift-l")
         );
+        // The toggle's backslash records back to its default and binds.
+        assert_eq!(
+            combo_from_keystroke_on(true, false, false, false, true, "\\").as_deref(),
+            Some(ShortcutId::ToggleOutlineFocus.default_combo_on(true))
+        );
+        for mac in [true, false] {
+            let bound =
+                platform_combo_on(mac, ShortcutId::ToggleOutlineFocus.default_combo_on(mac));
+            assert!(gpui::Keystroke::parse(&bound).is_ok(), "{bound}");
+        }
     }
 
     #[test]
