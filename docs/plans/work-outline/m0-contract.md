@@ -1411,3 +1411,30 @@ UI-only; every change is one existing `moveWorkItem` (or `assignChatToWorkItem`)
    the next waits for the acknowledging snapshot (2 s fallback). The selection follows the
    moved item and its new parent expands. Nothing animates (reduced motion has nothing to
    suppress); Canvas positions are never written.
+
+## Amendment: Drift confirmation for moves
+
+The specification requires a focused drift confirmation when associating or moving a Chat
+or moving an item would alter current effective instructions. Amended at the owner's
+request: **moves use an Undo toast instead of a blocking modal.**
+
+- Applies to work-item move / reorder / indent / outdent (keyboard, palette, drag and drop,
+  context menu, **Move To…** picker) and Chat moves and association changes (keyboard,
+  drag and drop, **Move to Work Item…**, **Associate…**) in the Outline.
+- The move applies at once through the existing optimistic path. When it changes at least
+  one assigned Chat's effective instructions, the Outline shows a non-blocking toast:
+  "Moved <title> · instructions changed for N chats (they keep their current
+  instructions)" with **Undo**. A move that changes no assigned Chat's instructions shows
+  no toast.
+- The toast never takes focus. It dismisses after about 6 s, on Esc, on its close button,
+  and when its move fails. Rapid moves coalesce into one toast: N counts distinct Chats
+  across them.
+- **Undo** reverts the most recent move only, by sending the inverse `moveWorkItem` /
+  `assignChatToWorkItem` / `removeChatFromWorkItem` with the parent and placement (or the
+  assignment) captured before the move, under a new operation id. Undo itself raises no
+  toast or confirmation.
+- Existing Chats still keep their applied revision until explicitly updated; the toast only
+  informs.
+- Unchanged: the focused confirmation still gates toggling inheritance, editing or
+  archiving an ancestor or Space instruction, changing execution configuration, approving a
+  proposed instruction, Apply on Codex, and associating a Chat from Work Item Details.

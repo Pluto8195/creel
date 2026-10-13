@@ -23,7 +23,8 @@ use gpui::{
 
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
-use super::command::WorkOutlineDriftRequest;
+mod move_toast;
+
 use super::hints::{HintKey, WithHint};
 use super::instructions::{self, OutlineChange};
 use super::model::{
@@ -405,6 +406,9 @@ pub(crate) struct OutlineView {
     picker: Option<OutlinePicker>,
     notice: Option<String>,
     notice_seq: u64,
+    /// The non-blocking "Moved X · instructions changed" toast with Undo.
+    move_toast: Option<move_toast::MoveToast>,
+    move_toast_seq: u64,
     /// Item whose Work Item Details are open (row highlight).
     details_key: Option<String>,
     /// Chat shown in the Overview's chat panel (row highlight).
@@ -435,9 +439,6 @@ pub(crate) struct OutlineView {
     /// Focus gained / lost diagnostics (registered on first render, which
     /// has the window).
     focus_logs: Option<[Subscription; 2]>,
-    /// Tests run without a Shell: the drift confirmation lands here.
-    #[cfg(test)]
-    pub(crate) captured_drift: Option<WorkOutlineDriftRequest>,
 }
 
 impl EventEmitter<OutlineEvent> for OutlineView {}
@@ -481,6 +482,8 @@ impl OutlineView {
             picker: None,
             notice: None,
             notice_seq: 0,
+            move_toast: None,
+            move_toast_seq: 0,
             details_key: None,
             panel_chat: None,
             shell: None,
@@ -495,8 +498,6 @@ impl OutlineView {
             show_hidden_spaces: false,
             _editor_events: editor_events,
             focus_logs: None,
-            #[cfg(test)]
-            captured_drift: None,
         }
     }
 
@@ -1369,6 +1370,8 @@ impl OutlineView {
             return;
         };
         let purpose = picker.purpose.clone();
+        let operation_id = picker.operation_id.clone();
+        let place_first = picker.place_first;
         let change = match &purpose {
             PickerPurpose::Move { item_id } => Some(OutlineChange::MoveItem {
                 work_item_id: item_id.clone(),
@@ -1404,41 +1407,48 @@ impl OutlineView {
             .zip(snapshot)
             .map(|(change, snapshot)| instructions::drift_impact(snapshot, change))
             .unwrap_or_default();
-        if let (true, Some(change)) = (impact.needs_confirmation(), change) {
-            let weak = cx.entity().downgrade();
-            let request = WorkOutlineDriftRequest {
-                title: change.title().into(),
-                confirm_label: change.confirm_label().into(),
-                impact,
-                on_decision: Box::new(move |confirmed, window, cx| {
-                    if confirmed {
-                        weak.update(cx, |this, cx| this.send_picker_entry(ix, window, cx))
-                            .ok();
-                    }
-                }),
+        // A move or association applies at once; one that changes assigned
+        // Chats' instructions raises an Undo toast instead of a modal.
+        let toast = if impact.needs_confirmation() {
+            let mutation = match &purpose {
+                PickerPurpose::Move { item_id } => Some(DirectMutation::Move(MovePlan {
+                    work_item_id: item_id.clone(),
+                    destination_parent: entry.value.clone(),
+                    placement: if place_first {
+                        WorkOutlinePlacement::First
+                    } else {
+                        WorkOutlinePlacement::Last
+                    },
+                })),
+                PickerPurpose::AssociateChat { chat_id } => {
+                    entry
+                        .value
+                        .clone()
+                        .map(|work_item_id| DirectMutation::AssignChat {
+                            chat_id: chat_id.clone(),
+                            work_item_id,
+                        })
+                }
+                PickerPurpose::AssociateWithItem { item_id } => {
+                    entry
+                        .value
+                        .clone()
+                        .map(|chat_id| DirectMutation::AssignChat {
+                            chat_id,
+                            work_item_id: item_id.clone(),
+                        })
+                }
             };
-            self.request_drift_confirm(request, cx);
-            return;
-        }
+            snapshot
+                .map(|snapshot| snapshot.space_id.clone())
+                .zip(mutation)
+                .map(|(space_id, mutation)| self.draft_move_toast(&space_id, &mutation, &impact))
+        } else {
+            None
+        };
         self.send_picker_entry(ix, window, cx);
-    }
-
-    /// Hand a drift confirmation to the Shell (tests: capture it).
-    fn request_drift_confirm(&mut self, request: WorkOutlineDriftRequest, cx: &mut Context<Self>) {
-        if let Some(shell) = self.shell.as_ref().and_then(WeakEntity::upgrade) {
-            shell.update(cx, |shell, cx| {
-                shell.open_work_outline_drift_confirm(request, cx)
-            });
-            return;
-        }
-        #[cfg(test)]
-        {
-            self.captured_drift = Some(request);
-        }
-        #[cfg(not(test))]
-        {
-            drop(request);
-            self.show_notice("This change needs the app window to confirm", cx);
+        if let Some(draft) = toast {
+            self.show_move_toast(draft, Some(operation_id), cx);
         }
     }
 
@@ -1538,6 +1548,7 @@ impl OutlineView {
                 Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
                 Err(error) => {
                     this.drop_optimistic(&operation_id, cx);
+                    this.dismiss_move_toast_for(&operation_id, cx);
                     this.show_notice(error.message.clone(), cx);
                 }
             })
@@ -1736,8 +1747,8 @@ impl OutlineView {
             .is_some_and(|attempt| attempt.state == AttemptState::InFlight)
     }
 
-    /// Send `mutation` after the drift confirmation when it changes an
-    /// assigned Chat's effective instructions. Ignored while the previous
+    /// Send `mutation` at once (see the Undo toast when it changes an
+    /// assigned Chat's effective instructions). Ignored while the previous
     /// restructuring is in flight (the engine must apply them in order).
     pub(crate) fn submit_direct(
         &mut self,
@@ -1758,33 +1769,28 @@ impl OutlineView {
             .snapshot(&space_id)
             .map(|snapshot| instructions::drift_impact(snapshot, &change))
             .unwrap_or_default();
-        if impact.needs_confirmation() {
+        // Applies at once. A move that changes assigned Chats' instructions
+        // raises an Undo toast instead of a blocking confirmation.
+        let toast = impact
+            .needs_confirmation()
+            .then(|| self.draft_move_toast(&space_id, &mutation, &impact));
+        if toast.is_some() {
             tracing::info!(
                 target: "work_outline_keys",
                 %space_id,
                 chats = impact.chat_ids.len(),
                 items = impact.item_ids.len(),
-                "submit_direct: needs drift confirmation"
+                "submit_direct: instructions change, applying with an Undo toast"
             );
-            // Queued presses would plan from an order the user has not
-            // confirmed yet.
-            self.queued_restructure.clear();
-            let weak = cx.entity().downgrade();
-            let request = WorkOutlineDriftRequest {
-                title: change.title().into(),
-                confirm_label: change.confirm_label().into(),
-                impact,
-                on_decision: Box::new(move |confirmed, _, cx| {
-                    if confirmed {
-                        weak.update(cx, |this, cx| this.send_direct(space_id, mutation, cx))
-                            .ok();
-                    }
-                }),
-            };
-            self.request_drift_confirm(request, cx);
-            return;
         }
         self.send_direct(space_id, mutation, cx);
+        if let Some(draft) = toast {
+            let operation_id = self
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.operation_id.clone());
+            self.show_move_toast(draft, operation_id, cx);
+        }
     }
 
     /// Show `mutation` at once, send it, and reconcile with the reply: on
@@ -1920,6 +1926,7 @@ impl OutlineView {
                             this.follow = None;
                         }
                         this.drop_optimistic(&operation_id, cx);
+                        this.dismiss_move_toast_for(&operation_id, cx);
                         this.show_notice(error.message.clone(), cx);
                     }
                 }
@@ -1951,6 +1958,7 @@ impl OutlineView {
         self.queued_restructure.clear();
         self.follow = None;
         self.drop_optimistic(operation_id, cx);
+        self.dismiss_move_toast_for(operation_id, cx);
         self.show_notice("The engine did not answer in time. Try the move again", cx);
     }
 
@@ -3355,6 +3363,7 @@ impl Render for OutlineView {
             _ => None,
         };
         let notice = self.notice.clone();
+        let move_toast = self.render_move_toast(&theme, cx);
         if self.focus_logs.is_none() {
             self.focus_logs = Some([
                 cx.on_focus_in(&self.focus, window, |this, window, _| {
@@ -3415,6 +3424,17 @@ impl Render for OutlineView {
             .debug_selector(|| "work-outline".into())
             .track_focus(&self.focus)
             .when(!editing, |el| el.key_context(KEY_CONTEXT))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                // Esc closes the move toast; every other key goes on to the
+                // tree's bindings (focus never leaves it).
+                if event.keystroke.key == "escape"
+                    && this.move_toast_text().is_some()
+                    && !this.is_editing()
+                {
+                    this.dismiss_move_toast(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .min_h_0()
             .flex()
@@ -3500,6 +3520,7 @@ impl Render for OutlineView {
                     this.show_notice(notice, cx);
                 }
             }))
+            .when_some(move_toast, |el, toast| el.child(toast))
             .when_some(notice, |el, notice| {
                 el.child(
                     div()

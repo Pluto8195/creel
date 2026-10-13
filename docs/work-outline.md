@@ -188,7 +188,9 @@ Use the keys above, the matching palette commands, the **Move** picker (choose
 middle of a row makes the item the last child of that row. Dropping on the top
 or bottom quarter places it before or after that row. Dropping a Chat row on a
 work item associates the Chat with it. Descendants move with their item.
-Restructuring never deletes anything.
+Restructuring never deletes anything. A move that changes assigned Chats'
+instructions shows an **Undo** toast instead of asking first (see Instructions,
+revisions, and drift).
 
 Chats have no order inside an item, so with a Chat row selected the same keys
 move the Chat between work items instead:
@@ -205,8 +207,8 @@ move the Chat between work items instead:
 Moves stay inside the Chat's project. Only the selected Chat moves: Chats
 started from it keep their own work items, and a Chat shown under the Chat
 that started it stays there while its work item changes. The selection follows the Chat,
-and the same confirmation as **Move to Work Item…** appears when the Chat's
-instructions would change. Rapid presses apply in order. Chats without a
+and the move applies at once, with the same **Undo** toast as **Move to Work
+Item…** when the Chat's instructions change. Rapid presses apply in order. Chats without a
 project, and Chats that no longer exist, cannot move. A move never changes a
 Chat's Canvas position, folder, or execution setup. The palette's Move Up /
 Down and Indent / Outdent commands act on work items only. Archiving an item that has children asks
@@ -277,9 +279,17 @@ instructions.
     conversation's context if you confirm.
   - Cursor and ACP harnesses do not support Work Outline instructions. Sends
     that require instructions are rejected with an explanation.
-- Before you associate or move a Chat, move an item, toggle inheritance, or edit
-  or archive an instruction, a confirmation counts the affected Chats and items
-  if the change would alter any associated Chat's instructions.
+- Moving a work item (keys, drag and drop, menu, **Move To…**) or moving or
+  associating a Chat applies at once. If it changes an associated Chat's
+  instructions, a toast says "Moved <title> · instructions changed for N chats
+  (they keep their current instructions)" with **Undo**. The toast does not take
+  focus, so keys keep working in the tree. It closes itself after about six
+  seconds, or on Esc or ✕. Rapid moves share one toast whose count grows, and
+  **Undo** reverts only the most recent move.
+- Before you toggle inheritance, edit or archive an instruction, change
+  execution configuration, or associate a Chat from Work Item Details, a
+  confirmation counts the affected Chats and items if the change would alter
+  any associated Chat's instructions.
 - **Create Instruction from Chat** turns the selected transcript text (or the
   last assistant message) into an instruction for this item, its parent, or the
   Space root. The dialog shows how many descendants it reaches.
