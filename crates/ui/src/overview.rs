@@ -14158,7 +14158,8 @@ mod logic_tests {
         assert_eq!(recorded[0]["changes"]["inheritParentInstructions"], false);
 
         // Associating a loose chat with Housekeeping gains the Space-root
-        // instruction: asks. Without instructions: sends directly.
+        // instruction: applies at once with an Undo toast. Without
+        // instructions: applies with no toast.
         let mut outline_calls = 1;
         for (snapshot, asks) in [
             (instruction_fixture::snapshot("s1"), true),
@@ -14180,18 +14181,16 @@ mod logic_tests {
                 })
             });
             vcx.run_until_parked();
-            let captured = outline.update(vcx, |outline, _| outline.captured_drift.take());
-            assert_eq!(captured.is_some(), asks);
-            if !asks {
-                outline_calls += 1;
-            }
+            let toast = outline.read_with(vcx, |outline, _| outline.move_toast_text());
+            assert_eq!(toast.is_some(), asks);
+            outline_calls += 1;
             assert_eq!(calls.lock().unwrap().len(), outline_calls);
             outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
         }
     }
 
     #[gpui::test]
-    fn moving_an_item_confirms_drift_only_when_assigned_chats_change(
+    fn moving_an_item_toasts_drift_only_when_assigned_chats_change(
         cx: &mut gpui::TestAppContext,
     ) {
         let dir = tempfile::tempdir().unwrap();
@@ -14204,6 +14203,7 @@ mod logic_tests {
         let outline = overview.read_with(vcx, |o, _| o.outline.clone());
         let move_to_top = |item: &str, vcx: &mut gpui::VisualTestContext| {
             outline.update(vcx, |outline, cx| {
+                outline.dismiss_move_toast(cx);
                 outline.select(&row_key::item("s1", item), cx)
             });
             vcx.update(|window, cx| {
@@ -14214,16 +14214,14 @@ mod logic_tests {
                 })
             });
             vcx.run_until_parked();
-            outline.update(vcx, |outline, _| outline.captured_drift.take())
+            outline.read_with(vcx, |outline, _| outline.move_toast_text())
         };
-        // API (chat-api, and chat-auth below) loses Launch's instruction.
-        let request = move_to_top(API, vcx).expect("asks");
-        assert_eq!(request.impact.summary(), "2 Chats and 2 work items");
-        assert!(calls.lock().unwrap().is_empty());
-        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
-        vcx.run_until_parked();
+        // API (chat-api, and chat-auth below) loses Launch's instruction:
+        // the move is sent at once, with a toast and no confirmation.
+        let toast = move_to_top(API, vcx).expect("toasts");
+        assert!(toast.contains("instructions changed for 2 chats"), "{toast}");
         assert_eq!(ops(&calls), ["moveWorkItem"]);
-        // Housekeeping is already top level with no Chats: no confirmation.
+        // Housekeeping is already top level with no Chats: no toast.
         outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
         assert!(move_to_top(HOUSEKEEPING, vcx).is_none());
         assert_eq!(ops(&calls), ["moveWorkItem", "moveWorkItem"]);

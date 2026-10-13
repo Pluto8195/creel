@@ -87,7 +87,7 @@ fn live(item: &WorkItemView) -> bool {
 
 /// Live items under `parent`, in outline order (the order the Outline
 /// renders: `root_work_item_ids` / `child_ids`).
-fn live_children<'a>(
+pub(crate) fn live_children<'a>(
     snapshot: &'a WorkOutlineSnapshot,
     parent: Option<&str>,
 ) -> Vec<&'a WorkItemView> {
@@ -423,7 +423,10 @@ mod tests {
         );
         let mut orphan = s.clone();
         orphan.root_work_item_ids.retain(|id| id != HOUSEKEEPING);
-        assert_eq!(plan(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all), None);
+        assert_eq!(
+            plan(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all),
+            None
+        );
         assert_eq!(
             noop_reason(&orphan, HOUSEKEEPING, RestructureOp::MoveUp, all),
             "item missing from its parent's child list"

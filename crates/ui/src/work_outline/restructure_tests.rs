@@ -57,7 +57,8 @@ fn refresh(
     snapshot: WorkOutlineSnapshot,
 ) {
     deliver_frame(overview, vcx, snapshot);
-    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     vcx.run_until_parked();
     draw(vcx);
 }
@@ -225,10 +226,11 @@ fn descendants_move_with_the_item_and_selection_follows(cx: &mut gpui::TestAppCo
     outline.read_with(vcx, |outline, _| assert!(!outline.restructuring_busy()));
 }
 
-/// A move that changes an assigned Chat's effective instructions asks
-/// first; a reorder under the same parent never does.
+/// A move that changes an assigned Chat's effective instructions applies at
+/// once (no confirmation) and raises an Undo toast; a reorder under the same
+/// parent raises none.
 #[gpui::test]
-fn keyboard_moves_confirm_drift_only_when_instructions_change(cx: &mut gpui::TestAppContext) {
+fn keyboard_moves_toast_drift_only_when_instructions_change(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (overview, outline, calls, vcx) = restructure_overview(
         cx,
@@ -239,36 +241,42 @@ fn keyboard_moves_confirm_drift_only_when_instructions_change(cx: &mut gpui::Tes
     // Outdenting API to the top level loses Launch's instruction.
     select_item(&outline, vcx, API);
     press(vcx, "shift-tab");
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks");
-    assert_eq!(request.impact.summary(), "2 Chats and 2 work items");
-    assert!(calls.lock().unwrap().is_empty());
-    vcx.update(|window, cx| (request.on_decision)(false, window, cx));
-    vcx.run_until_parked();
-    assert!(calls.lock().unwrap().is_empty(), "cancel sends nothing");
-
-    press(vcx, "shift-tab");
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks again");
-    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
-    vcx.run_until_parked();
     assert_eq!(
         move_at(&calls, 0),
         (
             serde_json::Value::Null,
             placement("after", Some(LAUNCH)),
             API.to_owned()
-        )
+        ),
+        "sent without a confirmation"
+    );
+    let title = api_title();
+    assert_eq!(
+        toast(&outline, vcx),
+        Some(format!(
+            "Moved {title} \u{b7} instructions changed for 2 chats (they keep their current instructions)"
+        ))
     );
     refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
 
-    // Reordering siblings keeps every effective instruction: no question.
+    // Reordering siblings keeps every effective instruction: no toast.
+    outline.update(vcx, |outline, cx| outline.dismiss_move_toast(cx));
     select_item(&outline, vcx, UI);
     press(vcx, "shift-up");
-    assert!(outline.read_with(vcx, |outline, _| outline.captured_drift.is_none()));
+    assert_eq!(toast(&outline, vcx), None);
     assert_eq!(ops(&calls), ["moveWorkItem", "moveWorkItem"]);
+}
+
+fn toast(outline: &Entity<OutlineView>, vcx: &mut gpui::VisualTestContext) -> Option<String> {
+    outline.read_with(vcx, |outline, _| outline.move_toast_text())
+}
+
+fn api_title() -> String {
+    instruction_fixture::snapshot("s1")
+        .item(API)
+        .unwrap()
+        .title
+        .clone()
 }
 
 /// A failed move keeps its operation id: pressing again replays it.
@@ -699,7 +707,7 @@ fn dragging_a_chat_onto_an_item_associates_it(cx: &mut gpui::TestAppContext) {
 /// A drop that changes an assigned Chat's effective instructions goes
 /// through the drift confirmation; a same-parent reorder does not.
 #[gpui::test]
-fn drops_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
+fn drops_toast_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (overview, outline, calls, vcx) = restructure_overview(
         cx,
@@ -712,12 +720,7 @@ fn drops_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
     // API before Launch v2 (top level) loses Launch's instruction.
     let at = drag_over(vcx, &item(API), &item(LAUNCH), Spot::Upper);
     release(vcx, at);
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks");
-    assert!(calls.lock().unwrap().is_empty());
-    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
-    vcx.run_until_parked();
+    assert!(toast(&outline, vcx).is_some(), "toast, not a confirmation");
     assert_eq!(
         move_at(&calls, 0),
         (
@@ -728,10 +731,11 @@ fn drops_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
     );
     refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
 
-    // UI before API: same parent, no question.
+    // UI before API: same parent, no toast.
+    outline.update(vcx, |outline, cx| outline.dismiss_move_toast(cx));
     let at = drag_over(vcx, &item(UI), &item(API), Spot::Upper);
     release(vcx, at);
-    assert!(outline.read_with(vcx, |outline, _| outline.captured_drift.is_none()));
+    assert_eq!(toast(&outline, vcx), None);
     assert_eq!(
         move_at(&calls, 1),
         (
@@ -1030,7 +1034,11 @@ fn shift_arrows_restructure_through_the_app_keymap(cx: &mut gpui::TestAppContext
     press(vcx, "shift-right");
     assert_eq!(
         move_at(&calls, 2),
-        (serde_json::json!(API), placement("last", None), UI.to_owned())
+        (
+            serde_json::json!(API),
+            placement("last", None),
+            UI.to_owned()
+        )
     );
     refresh(&overview, vcx, fixture("s1"));
 
@@ -1038,11 +1046,7 @@ fn shift_arrows_restructure_through_the_app_keymap(cx: &mut gpui::TestAppContext
     press(vcx, "shift-left");
     assert_eq!(
         move_at(&calls, 3),
-        (
-            null,
-            placement("after", Some(LAUNCH)),
-            UI.to_owned()
-        )
+        (null, placement("after", Some(LAUNCH)), UI.to_owned())
     );
     refresh(&overview, vcx, fixture("s1"));
 
@@ -1099,7 +1103,10 @@ fn gated_restructure_overview<'a>(
     (overview, outline, calls, gate, vcx)
 }
 
-fn release_reply(gate: &crate::work_outline::actions::ReplyGate, vcx: &mut gpui::VisualTestContext) {
+fn release_reply(
+    gate: &crate::work_outline::actions::ReplyGate,
+    vcx: &mut gpui::VisualTestContext,
+) {
     assert!(gate.release_one(), "a reply is held");
     vcx.run_until_parked();
     draw(vcx);
@@ -1172,18 +1179,30 @@ fn a_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppConte
         cx,
         dir.path(),
         crate::work_outline::store::fixture_snapshot("s1"),
-        |_| Err(zeron_rpc::RpcError::Failed("work-outline/conflict: stale".into())),
+        |_| {
+            Err(zeron_rpc::RpcError::Failed(
+                "work-outline/conflict: stale".into(),
+            ))
+        },
     );
     select_item(&outline, vcx, UI);
     press(vcx, "shift-up");
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert_eq!(gate.held(), 1, "still in flight");
-    assert_eq!(shown_order(&outline, vcx, &[API, UI]), [UI, API], "moved now");
+    assert_eq!(
+        shown_order(&outline, vcx, &[API, UI]),
+        [UI, API],
+        "moved now"
+    );
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
     assert!(outline.read_with(vcx, |o, _| o.notice().is_none()));
 
     release_reply(&gate, vcx);
-    assert_eq!(shown_order(&outline, vcx, &[API, UI]), [API, UI], "rolled back");
+    assert_eq!(
+        shown_order(&outline, vcx, &[API, UI]),
+        [API, UI],
+        "rolled back"
+    );
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
     assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
@@ -1218,10 +1237,17 @@ fn rapid_shift_down_presses_all_apply_in_order(cx: &mut gpui::TestAppContext) {
     release_reply(&gate, vcx);
     assert_eq!(gate.held(), 0);
     let null = serde_json::Value::Null;
-    for (ix, after) in [HOUSEKEEPING, "w-extra-1", "w-extra-2"].into_iter().enumerate() {
+    for (ix, after) in [HOUSEKEEPING, "w-extra-1", "w-extra-2"]
+        .into_iter()
+        .enumerate()
+    {
         assert_eq!(
             move_at(&calls, ix),
-            (null.clone(), placement("after", Some(after)), LAUNCH.to_owned())
+            (
+                null.clone(),
+                placement("after", Some(after)),
+                LAUNCH.to_owned()
+            )
         );
     }
     assert_eq!(
@@ -1274,7 +1300,11 @@ fn a_reply_that_never_lands_does_not_wedge_restructuring(cx: &mut gpui::TestAppC
         "rolled back"
     );
     assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
-    assert_eq!(calls.lock().unwrap().len(), 1, "the queued press was dropped");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "the queued press was dropped"
+    );
 
     // The next press goes out: the same move replays its operation id.
     press(vcx, "shift-up");
@@ -1332,7 +1362,11 @@ fn frames_reconcile_optimistic_moves_without_flicker(cx: &mut gpui::TestAppConte
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 3);
 
     // The engine's frames trail behind: after the first move, then the second.
-    deliver_frame(&overview, vcx, with_roots(long_fixture(), &[HOUSEKEEPING, LAUNCH]));
+    deliver_frame(
+        &overview,
+        vcx,
+        with_roots(long_fixture(), &[HOUSEKEEPING, LAUNCH]),
+    );
     assert_eq!(shown_order(&outline, vcx, &ROOTS), last, "no flicker");
     deliver_frame(
         &overview,
@@ -1358,7 +1392,11 @@ fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestA
         cx,
         dir.path(),
         crate::work_outline::store::fixture_snapshot("s1"),
-        |_| Err(zeron_rpc::RpcError::Failed("work-outline/conflict: stale".into())),
+        |_| {
+            Err(zeron_rpc::RpcError::Failed(
+                "work-outline/conflict: stale".into(),
+            ))
+        },
     );
     select_item(&outline, vcx, HOUSEKEEPING);
     outline.update_in(vcx, |outline, window, cx| {
@@ -1382,7 +1420,10 @@ fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestA
     };
     assert_eq!(parent(vcx), 1, "under Launch v2 now");
     assert!(!editing(&outline, vcx), "the picker closed");
-    assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", HOUSEKEEPING)));
+    assert_eq!(
+        selected(&outline, vcx),
+        Some(row_key::item("s1", HOUSEKEEPING))
+    );
 
     release_reply(&gate, vcx);
     assert_eq!(parent(vcx), 0, "rolled back to the top level");
@@ -1459,7 +1500,7 @@ fn chat_rows_move_between_items_in_visual_order(cx: &mut gpui::TestAppContext) {
         "shown at once"
     );
     assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
-    assert!(outline.read_with(vcx, |o, _| o.captured_drift.is_none()));
+    assert_eq!(toast(&outline, vcx), None);
     // Then API, then Launch v2; nothing above the first item.
     press(vcx, "shift-up");
     assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_UI, API));
@@ -1515,10 +1556,10 @@ fn chat_rows_move_between_items_in_visual_order(cx: &mut gpui::TestAppContext) {
     );
 }
 
-/// A Chat move that changes its effective instructions asks first, through
-/// the same drift confirmation as a drop or the picker.
+/// A Chat move that changes its effective instructions applies at once with
+/// an Undo toast, like a drop or the picker.
 #[gpui::test]
-fn chat_moves_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
+fn chat_moves_toast_drift_when_instructions_change(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (_overview, outline, calls, vcx) = restructure_overview(
         cx,
@@ -1529,37 +1570,12 @@ fn chat_moves_confirm_drift_when_instructions_change(cx: &mut gpui::TestAppConte
     // UI (root + Launch) to Auth endpoints (+ API + Auth).
     select_chat(&outline, vcx, CHAT_UI);
     press(vcx, "shift-up");
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks");
-    assert_eq!(request.impact.chat_ids, [CHAT_UI]);
-    assert!(calls.lock().unwrap().is_empty());
-    vcx.update(|window, cx| (request.on_decision)(false, window, cx));
-    vcx.run_until_parked();
-    assert!(calls.lock().unwrap().is_empty(), "cancel sends nothing");
-    assert_eq!(
-        chat_parent(&outline, vcx, CHAT_UI),
-        Some(row_key::item("s1", UI))
-    );
-
-    press(vcx, "shift-up");
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks again");
-    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
-    vcx.run_until_parked();
     assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
-
-    // Up to the parent drops Auth endpoints' own instruction.
-    select_chat(&outline, vcx, CHAT_AUTH);
-    press(vcx, "shift-left");
-    let request = outline
-        .update(vcx, |outline, _| outline.captured_drift.take())
-        .expect("asks for the parent too");
-    assert_eq!(request.confirm_label, "Associate");
-    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
-    vcx.run_until_parked();
-    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_AUTH, API));
+    let text = toast(&outline, vcx).expect("toast");
+    assert!(
+        text.ends_with("instructions changed for 1 chat (it keeps its current instructions)"),
+        "{text}"
+    );
 }
 
 /// Rapid presses while the first re-association is in flight all apply, in
@@ -1763,4 +1779,244 @@ fn chat_moves_never_cross_spaces(cx: &mut gpui::TestAppContext) {
         outline.read_with(vcx, |o, _| o.notice().map(str::to_owned)),
         Some("Chats without a project cannot be associated".to_owned())
     );
+}
+
+// --------------------------------------------------------------------------
+// The Undo toast for moves that change instructions
+// --------------------------------------------------------------------------
+
+fn ui_title() -> String {
+    instruction_fixture::snapshot("s1")
+        .item(UI)
+        .unwrap()
+        .title
+        .clone()
+}
+
+/// Undo (the toast's button) sends the inverse move with the previous parent
+/// and placement under a new operation id, and raises no toast of its own.
+#[gpui::test]
+fn undo_restores_a_work_items_parent_and_placement(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    // API is Launch v2's first child: undo puts it back First.
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).is_some());
+    draw(vcx);
+    let undo = vcx
+        .debug_bounds("outline-move-toast-undo")
+        .expect("Undo shown");
+    vcx.simulate_click(undo.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        move_at(&calls, 1),
+        (
+            serde_json::json!(LAUNCH),
+            placement("first", None),
+            API.to_owned()
+        )
+    );
+    let ids: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call["operationId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_ne!(ids[0], ids[1], "Undo is a new operation");
+    assert_eq!(toast(&outline, vcx), None);
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+
+    // UI follows API: undo puts it back after API.
+    select_item(&outline, vcx, UI);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).is_some());
+    outline.update(vcx, |outline, cx| outline.undo_move(cx));
+    vcx.run_until_parked();
+    assert_eq!(
+        move_at(&calls, 3),
+        (
+            serde_json::json!(LAUNCH),
+            placement("after", Some(API)),
+            UI.to_owned()
+        )
+    );
+    assert_eq!(ops(&calls).len(), 4);
+}
+
+/// Undo of a Chat move restores its previous assignment, or removes the
+/// association when it had none.
+#[gpui::test]
+fn undo_restores_a_chats_assignment(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    select_chat(&outline, vcx, CHAT_UI);
+    press(vcx, "shift-up");
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
+    assert!(toast(&outline, vcx).is_some());
+    outline.update(vcx, |outline, cx| outline.undo_move(cx));
+    vcx.run_until_parked();
+    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_UI, UI));
+    assert_eq!(toast(&outline, vcx), None);
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+
+    // A loose Chat gains instructions from an item; undo unassociates it.
+    select_chat(&outline, vcx, CHAT_LOOSE_A);
+    press(vcx, "shift-up");
+    let (op, chat, _) = chat_call_at(&calls, 2);
+    assert_eq!(
+        (op.as_str(), chat.as_str()),
+        ("assignChatToWorkItem", CHAT_LOOSE_A)
+    );
+    assert!(toast(&outline, vcx).is_some());
+    outline.update(vcx, |outline, cx| outline.undo_move(cx));
+    vcx.run_until_parked();
+    let (op, chat, _) = chat_call_at(&calls, 3);
+    assert_eq!(
+        (op.as_str(), chat.as_str()),
+        ("removeChatFromWorkItem", CHAT_LOOSE_A)
+    );
+}
+
+/// Rapid moves share one toast whose counts grow; Undo reverts the most
+/// recent move only.
+#[gpui::test]
+fn rapid_moves_coalesce_into_one_toast_and_undo_reverts_the_last(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).unwrap().contains("for 2 chats"));
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+    select_item(&outline, vcx, UI);
+    press(vcx, "shift-tab");
+    assert_eq!(
+        toast(&outline, vcx),
+        Some(format!(
+            "Moved {} and 1 more \u{b7} instructions changed for 3 chats (they keep their current instructions)",
+            ui_title()
+        ))
+    );
+    outline.update(vcx, |outline, cx| outline.undo_move(cx));
+    vcx.run_until_parked();
+    assert_eq!(ops(&calls).len(), 3);
+    assert_eq!(
+        move_at(&calls, 2),
+        (
+            serde_json::json!(LAUNCH),
+            placement("after", Some(API)),
+            UI.to_owned()
+        ),
+        "only the latest move is undone"
+    );
+    assert_eq!(toast(&outline, vcx), None);
+}
+
+/// A move that changes no assigned Chat's instructions shows no toast.
+#[gpui::test]
+fn a_move_without_drift_shows_no_toast(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert_eq!(ops(&calls), ["moveWorkItem"]);
+    assert_eq!(toast(&outline, vcx), None);
+    draw(vcx);
+    assert!(vcx.debug_bounds("outline-move-toast").is_none());
+}
+
+/// The toast never takes focus: keys keep working in the tree while it is
+/// shown. Esc and the close button dismiss it, and it dismisses itself.
+#[gpui::test]
+fn the_toast_keeps_focus_in_the_tree_and_dismisses(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        instruction_fixture::snapshot("s1"),
+        reply_ok,
+    );
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).is_some());
+    draw(vcx);
+    assert!(vcx.debug_bounds("outline-move-toast").is_some());
+    let focused = |vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|window, cx| {
+            gpui::Focusable::focus_handle(outline.read(cx), cx).is_focused(window)
+        })
+    };
+    assert!(focused(vcx));
+    let before = selected(&outline, vcx);
+    press(vcx, "down");
+    assert_ne!(selected(&outline, vcx), before, "arrow keys still navigate");
+    assert!(toast(&outline, vcx).is_some(), "navigation keeps the toast");
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+    assert!(toast(&outline, vcx).is_some(), "a frame keeps the toast");
+    select_item(&outline, vcx, UI);
+    press(vcx, "shift-up");
+    assert_eq!(ops(&calls).len(), 2, "restructuring keys still work");
+    assert!(focused(vcx));
+
+    press(vcx, "escape");
+    assert_eq!(toast(&outline, vcx), None, "Esc dismisses");
+    assert!(focused(vcx));
+
+    // The close button.
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+    select_item(&outline, vcx, UI);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).is_some());
+    draw(vcx);
+    let close = vcx.debug_bounds("outline-move-toast-close").unwrap();
+    vcx.simulate_click(close.center(), gpui::Modifiers::default());
+    assert_eq!(toast(&outline, vcx), None);
+
+    // Auto-dismiss after about six seconds.
+    refresh(&overview, vcx, instruction_fixture::snapshot("s1"));
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert!(toast(&outline, vcx).is_some());
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(5));
+    vcx.run_until_parked();
+    assert!(toast(&outline, vcx).is_some(), "still shown at 5 s");
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    vcx.run_until_parked();
+    assert_eq!(toast(&outline, vcx), None);
+}
+
+/// A move the engine rejects rolls back and takes its toast down.
+#[gpui::test]
+fn a_failed_move_dismisses_its_toast(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, _calls, vcx) =
+        restructure_overview(cx, dir.path(), instruction_fixture::snapshot("s1"), |_| {
+            Err(zeron_rpc::RpcError::Failed("host unreachable".into()))
+        });
+    select_item(&outline, vcx, API);
+    press(vcx, "shift-tab");
+    assert_eq!(toast(&outline, vcx), None);
+    assert!(outline.read_with(vcx, |outline, _| outline.notice().is_some()));
 }
