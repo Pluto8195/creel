@@ -494,6 +494,7 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::ArchiveSession => "Sessions",
         ShortcutId::OpenOutline
         | ShortcutId::ToggleOutlineFocus
+        | ShortcutId::OpenFullChat
         | ShortcutId::CreateWorkItem
         | ShortcutId::CreateChildWorkItem
         | ShortcutId::RenameWorkItem
@@ -537,6 +538,9 @@ fn description(id: ShortcutId) -> &'static str {
         ShortcutId::OpenOutline => "Open the overview in Outline mode.",
         ShortcutId::ToggleOutlineFocus => {
             "Jump from a chat to its Outline row, and back to the chat."
+        }
+        ShortcutId::OpenFullChat => {
+            "Open the Overview's chat panel, or the selected chat row, as the full chat."
         }
         ShortcutId::CreateWorkItem => "Create a work item at the top level of the Outline.",
         ShortcutId::CreateChildWorkItem => "Create a work item inside the selected work item.",
@@ -1179,5 +1183,12 @@ mod tests {
             ComposerSendBehavior::ModEnter,
             "mod-shift-enter"
         ));
+        // Open Full Chat ships on that free chord, under both send modes.
+        for behavior in [ComposerSendBehavior::Enter, ComposerSendBehavior::ModEnter] {
+            assert!(!send_combo_is_reserved(
+                behavior,
+                ShortcutId::OpenFullChat.default_combo()
+            ));
+        }
     }
 }

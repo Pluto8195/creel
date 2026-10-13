@@ -907,6 +907,7 @@ mod tests {
             ids(&shell, cx),
             [
                 "open-chat",
+                "open-full-chat",
                 "rename",
                 "associate",
                 "move-to-previous-item",
@@ -925,6 +926,11 @@ mod tests {
             "Move to Work Item\u{2026}"
         );
         assert_eq!(row(&shell, cx, "pin").label, "Pin");
+        // Open Full Chat shows its default key.
+        assert_eq!(
+            row(&shell, cx, "open-full-chat").keys,
+            Some(key_label(ShortcutId::OpenFullChat.default_combo()))
+        );
         // The Chat moves show the restructuring keys that run them.
         let keys = |id: &str, cx: &mut gpui::VisualTestContext| row(&shell, cx, id).keys;
         assert_eq!(
@@ -1217,7 +1223,10 @@ mod tests {
 
         row_click(cx, &housekeeping);
         assert_eq!(selected(&outline, cx), Some(housekeeping.clone()));
-        assert!(outline_focused(&outline, cx), "a click keeps focus in the tree");
+        assert!(
+            outline_focused(&outline, cx),
+            "a click keeps focus in the tree"
+        );
 
         press(cx, "shift-up");
         assert!(
@@ -1232,7 +1241,10 @@ mod tests {
                 .collect();
             assert_eq!(moves.len(), 1, "{calls:?}");
             assert_eq!(moves[0]["workItemId"], HOUSEKEEPING);
-            assert_eq!(moves[0]["destinationParentWorkItemId"], serde_json::Value::Null);
+            assert_eq!(
+                moves[0]["destinationParentWorkItemId"],
+                serde_json::Value::Null
+            );
             assert_eq!(
                 moves[0]["placement"],
                 serde_json::json!({"type": "before", "siblingWorkItemId": LAUNCH})
