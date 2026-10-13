@@ -1,6 +1,6 @@
 //! Optimistic local application of the user's own Work Outline changes.
 //!
-//! A move, rename, create or Chat association is applied to a copy of the
+//! A move, rename, create, Chat association or Chat removal is applied to a copy of the
 //! Space's last snapshot the moment the user makes it, so the row moves (and
 //! the selection follows) in the same frame instead of after the
 //! `WorkOutlineMutate` reply and the next `WatchWorkOutline` frame. The
@@ -43,6 +43,8 @@ pub(crate) enum LocalChange {
         chat_id: String,
         work_item_id: String,
     },
+    /// `removeChatFromWorkItem`: the Chat goes to Unassociated Chats.
+    RemoveChat { chat_id: String },
 }
 
 /// `snapshot` with `change` applied, or `None` when the snapshot already
@@ -92,6 +94,7 @@ pub(crate) fn apply(
             chat_id,
             work_item_id,
         } => apply_assign(snapshot, chat_id, work_item_id),
+        LocalChange::RemoveChat { chat_id } => apply_remove(snapshot, chat_id),
     }
 }
 
@@ -283,6 +286,28 @@ fn apply_assign(
     Some(out)
 }
 
+fn apply_remove(snapshot: &WorkOutlineSnapshot, chat_id: &str) -> Option<WorkOutlineSnapshot> {
+    let on_item = snapshot
+        .items
+        .iter()
+        .any(|item| item.chat_ids.iter().any(|id| id == chat_id));
+    if !on_item {
+        return None;
+    }
+    let mut out = snapshot.clone();
+    for item in &mut out.items {
+        item.chat_ids.retain(|id| id != chat_id);
+    }
+    if !out.unassociated_chat_ids.iter().any(|id| id == chat_id) {
+        out.unassociated_chat_ids.push(chat_id.to_owned());
+    }
+    if let Some(assignment) = out.assignments.iter_mut().find(|a| a.chat_id == chat_id) {
+        assignment.work_item_id = None;
+        assignment.state = WorkItemChatAssignmentState::Unassociated;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +410,34 @@ mod tests {
         )
         .unwrap();
         assert!(!out.item(UI).unwrap().chat_ids.contains(&CHAT_UI.to_owned()));
+    }
+
+    #[test]
+    fn removing_a_chat_moves_it_to_unassociated_once() {
+        let base = fixture_snapshot("s1");
+        let remove = LocalChange::RemoveChat {
+            chat_id: CHAT_UI.into(),
+        };
+        let out = apply(&base, &remove).unwrap();
+        assert!(!out.item(UI).unwrap().chat_ids.contains(&CHAT_UI.to_owned()));
+        assert!(out.unassociated_chat_ids.contains(&CHAT_UI.to_owned()));
+        let assignment = out
+            .assignments
+            .iter()
+            .find(|a| a.chat_id == CHAT_UI)
+            .unwrap();
+        assert_eq!(assignment.work_item_id, None);
+        assert_eq!(assignment.state, WorkItemChatAssignmentState::Unassociated);
+        // Already unassociated: the frame shows it.
+        assert!(apply(&out, &remove).is_none());
+        assert!(
+            apply(
+                &base,
+                &LocalChange::RemoveChat {
+                    chat_id: CHAT_LOOSE_A.into()
+                }
+            )
+            .is_none()
+        );
     }
 }

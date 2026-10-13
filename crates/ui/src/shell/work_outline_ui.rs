@@ -237,8 +237,12 @@ impl OutlineNavKey {
 ///   after its next sibling
 /// - Shift+Right / Shift+Left: indent (last child of the previous sibling) /
 ///   outdent (after its former parent). Tab / Shift+Tab are aliases; with no
-///   work item selected they propagate, so Tab still walks focus out of the
-///   Outline.
+///   work item or Chat selected they propagate, so Tab still walks focus out
+///   of the Outline.
+/// - On a Chat row the same keys move the Chat between work items:
+///   Shift+Up / Shift+Down to the previous / next shown work item of its
+///   Space in row order, Shift+Left (Shift+Tab) to its item's parent (out of
+///   its item from the top level); Shift+Right (Tab) does nothing.
 /// - Enter: open the selected item (Work Item Details)
 /// - F2 / R: rename in place (a Chat row opens the Chat rename dialog). R is
 ///   the laptop-friendly alias: F2 needs Fn there.

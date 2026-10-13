@@ -8,6 +8,11 @@
 //! siblings the Outline currently shows (`shown`), so a press always moves
 //! the item past a row the user can see; the request names that neighbor, so
 //! hidden rows keep their place deterministically.
+//!
+//! With a Chat row selected the same keys re-associate the Chat instead
+//! ([`chat_plan`]): Up / Down to the previous / next shown work item in
+//! visual row order, Outdent to the current item's parent (or out of its
+//! item from the top level), Indent does nothing.
 use std::collections::HashSet;
 
 use super::model;
@@ -235,6 +240,107 @@ pub(crate) fn drop_plan(
     (!is_noop(snapshot, item, &plan)).then_some(plan)
 }
 
+/// A keyboard / palette re-association of a Chat row. Chats are not ordered
+/// within an item (an assignment is just Chat -> work item), so the same keys
+/// that restructure work items move a Chat between items instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatMove {
+    /// `assignChatToWorkItem` to `work_item_id`.
+    Assign {
+        chat_id: String,
+        work_item_id: String,
+    },
+    /// `removeChatFromWorkItem`: the Chat goes to Unassociated Chats.
+    Remove { chat_id: String },
+}
+
+/// The item `chat_id` is assigned to in `snapshot`, if any.
+pub(crate) fn chat_item<'a>(snapshot: &'a WorkOutlineSnapshot, chat_id: &str) -> Option<&'a str> {
+    snapshot
+        .items
+        .iter()
+        .find(|item| item.chat_ids.iter().any(|id| id == chat_id))
+        .map(|item| item.id.as_str())
+}
+
+/// Every item of `snapshot` in visual (pre-order) row order: the order the
+/// Outline renders item rows, at any depth.
+fn visual_order(snapshot: &WorkOutlineSnapshot) -> Vec<&WorkItemView> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = snapshot
+        .root_work_item_ids
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .collect();
+    while let Some(id) = stack.pop() {
+        let Some(item) = snapshot.item(id) else {
+            continue;
+        };
+        if !seen.insert(item.id.as_str()) {
+            continue;
+        }
+        out.push(item);
+        stack.extend(item.child_ids.iter().rev().map(String::as_str));
+    }
+    out
+}
+
+/// The keyboard move of Chat `chat_id` (Space-scoped: only `snapshot`'s
+/// items are candidates), or `None` for a no-op:
+///
+/// - `MoveUp` / `MoveDown`: the previous / next live work item the Outline
+///   shows (`shown`), in visual row order relative to the Chat's current
+///   item, at any depth. An unassociated Chat's `MoveUp` goes to the last
+///   one; its `MoveDown` is a no-op. No-op at the ends.
+/// - `Outdent`: the current item's parent; from a top-level item, remove the
+///   Chat from its item. No-op for an unassociated Chat.
+/// - `Indent`: always a no-op.
+pub(crate) fn chat_plan(
+    snapshot: &WorkOutlineSnapshot,
+    chat_id: &str,
+    op: RestructureOp,
+    shown: impl Fn(&str) -> bool,
+) -> Option<ChatMove> {
+    let current = chat_item(snapshot, chat_id);
+    let assign = |item: &WorkItemView| ChatMove::Assign {
+        chat_id: chat_id.to_string(),
+        work_item_id: item.id.clone(),
+    };
+    match op {
+        RestructureOp::Indent => None,
+        RestructureOp::Outdent => {
+            let item = snapshot.item(current?)?;
+            match item.parent_work_item_id.as_deref() {
+                None => Some(ChatMove::Remove {
+                    chat_id: chat_id.to_string(),
+                }),
+                Some(parent) => snapshot.item(parent).filter(|p| live(p)).map(assign),
+            }
+        }
+        RestructureOp::MoveUp | RestructureOp::MoveDown => {
+            let candidates: Vec<&WorkItemView> = visual_order(snapshot)
+                .into_iter()
+                .filter(|item| Some(item.id.as_str()) == current || (live(item) && shown(&item.id)))
+                .collect();
+            let target = match (current, op) {
+                (None, RestructureOp::MoveUp) => candidates.last().copied(),
+                (None, _) => None,
+                (Some(current), _) => {
+                    let ix = candidates.iter().position(|item| item.id == current)?;
+                    if op == RestructureOp::MoveUp {
+                        ix.checked_sub(1).map(|i| candidates[i])
+                    } else {
+                        candidates.get(ix + 1).copied()
+                    }
+                }
+            };
+            target.map(assign)
+        }
+    }
+}
+
 /// Whether `plan` would leave `item` exactly where it is.
 fn is_noop(snapshot: &WorkOutlineSnapshot, item: &WorkItemView, plan: &MovePlan) -> bool {
     if plan.destination_parent != item.parent_work_item_id {
@@ -387,6 +493,111 @@ mod tests {
             Some(moved(API, None, after(LAUNCH)))
         );
         assert_eq!(plan(&s, LAUNCH, RestructureOp::Outdent, all), None);
+    }
+
+    fn to(chat: &str, item: &str) -> Option<ChatMove> {
+        Some(ChatMove::Assign {
+            chat_id: chat.into(),
+            work_item_id: item.into(),
+        })
+    }
+
+    #[test]
+    fn chat_moves_follow_visual_row_order_across_depth() {
+        let s = fixture_snapshot("s1");
+        // Rows: Launch v2, API (chat-api), Auth endpoints (chat-auth),
+        // UI (chat-ui), Housekeeping, (archived Retired).
+        assert_eq!(
+            chat_plan(&s, CHAT_UI, RestructureOp::MoveUp, all),
+            to(CHAT_UI, API_AUTH),
+            "deeper item above"
+        );
+        assert_eq!(
+            chat_plan(&s, CHAT_UI, RestructureOp::MoveDown, all),
+            to(CHAT_UI, HOUSEKEEPING),
+            "shallower item below"
+        );
+        assert_eq!(
+            chat_plan(&s, CHAT_API, RestructureOp::MoveUp, all),
+            to(CHAT_API, LAUNCH)
+        );
+        assert_eq!(
+            chat_plan(&s, CHAT_API, RestructureOp::MoveDown, all),
+            to(CHAT_API, API_AUTH),
+            "its own child"
+        );
+        // Hidden rows are stepped over.
+        let shown = |id: &str| id != API_AUTH;
+        assert_eq!(
+            chat_plan(&s, CHAT_UI, RestructureOp::MoveUp, shown),
+            to(CHAT_UI, API)
+        );
+        // Indent never applies to a Chat.
+        assert_eq!(chat_plan(&s, CHAT_UI, RestructureOp::Indent, all), None);
+    }
+
+    #[test]
+    fn chat_moves_stop_at_the_ends_and_skip_archived_items() {
+        let mut s = fixture_snapshot("s1");
+        s.items
+            .iter_mut()
+            .find(|item| item.id == LAUNCH)
+            .unwrap()
+            .chat_ids
+            .push("chat-top".into());
+        s.items
+            .iter_mut()
+            .find(|item| item.id == HOUSEKEEPING)
+            .unwrap()
+            .chat_ids
+            .push("chat-last".into());
+        assert_eq!(chat_plan(&s, "chat-top", RestructureOp::MoveUp, all), None);
+        // Retired (archived) is after Housekeeping but never a target.
+        assert_eq!(
+            chat_plan(&s, "chat-last", RestructureOp::MoveDown, all),
+            None
+        );
+    }
+
+    #[test]
+    fn unassociated_chats_go_up_to_the_last_item_only() {
+        let s = fixture_snapshot("s1");
+        assert_eq!(
+            chat_plan(&s, CHAT_LOOSE_A, RestructureOp::MoveUp, all),
+            to(CHAT_LOOSE_A, HOUSEKEEPING)
+        );
+        for op in [
+            RestructureOp::MoveDown,
+            RestructureOp::Outdent,
+            RestructureOp::Indent,
+        ] {
+            assert_eq!(chat_plan(&s, CHAT_LOOSE_A, op, all), None, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn chat_outdent_goes_to_the_parent_or_out_of_the_item() {
+        let mut s = fixture_snapshot("s1");
+        assert_eq!(
+            chat_plan(&s, CHAT_AUTH, RestructureOp::Outdent, all),
+            to(CHAT_AUTH, API)
+        );
+        assert_eq!(
+            chat_plan(&s, CHAT_UI, RestructureOp::Outdent, all),
+            to(CHAT_UI, LAUNCH)
+        );
+        s.items
+            .iter_mut()
+            .find(|item| item.id == LAUNCH)
+            .unwrap()
+            .chat_ids
+            .push("chat-top".into());
+        assert_eq!(
+            chat_plan(&s, "chat-top", RestructureOp::Outdent, all),
+            Some(ChatMove::Remove {
+                chat_id: "chat-top".into()
+            })
+        );
     }
 
     #[test]

@@ -224,6 +224,11 @@ pub(crate) enum DirectMutation {
         chat_id: String,
         work_item_id: String,
     },
+    /// Remove the Chat from its work item (keyboard Outdent from a
+    /// top-level item).
+    RemoveChat {
+        chat_id: String,
+    },
 }
 
 impl DirectMutation {
@@ -240,6 +245,24 @@ impl DirectMutation {
                 chat_id: chat_id.clone(),
                 work_item_id: work_item_id.clone(),
             },
+            Self::RemoveChat { chat_id } => OutlineChange::RemoveChat {
+                chat_id: chat_id.clone(),
+            },
+        }
+    }
+}
+
+impl From<restructure::ChatMove> for DirectMutation {
+    fn from(plan: restructure::ChatMove) -> Self {
+        match plan {
+            restructure::ChatMove::Assign {
+                chat_id,
+                work_item_id,
+            } => Self::AssignChat {
+                chat_id,
+                work_item_id,
+            },
+            restructure::ChatMove::Remove { chat_id } => Self::RemoveChat { chat_id },
         }
     }
 }
@@ -1406,9 +1429,24 @@ impl OutlineView {
     // Direct restructuring (keyboard, palette, drag and drop)
     // ----------------------------------------------------------------------
 
+    /// The restructuring keys: re-associate the selected Chat
+    /// ([`Self::move_selected_chat`]) or restructure the selected work item
+    /// ([`Self::restructure_selected`]).
+    fn restructure_selection(
+        &mut self,
+        op: RestructureOp,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        match self.selected_row().and_then(OutlineRow::chat).cloned() {
+            Some(chat) => self.move_selected_chat(&chat, op, cx),
+            None => self.restructure_selected(op, cx),
+        }
+    }
+
     /// Move up / down, indent or outdent the selected work item (with its
     /// descendants). A boundary no-op is `Ok` and sends nothing; `Err`
-    /// carries the notice to show.
+    /// carries the notice to show. The palette commands call this directly:
+    /// they act on work items only.
     pub(crate) fn restructure_selected(
         &mut self,
         op: RestructureOp,
@@ -1463,8 +1501,52 @@ impl OutlineView {
         Ok(())
     }
 
+    /// The Chat-row form of the restructuring keys: Up / Down re-associate
+    /// the Chat with the previous / next shown work item of its Space in
+    /// visual row order, Outdent with its item's parent (out of its item
+    /// from the top level), Indent does nothing (see
+    /// [`restructure::chat_plan`]). Only this Chat moves; Chats nested under
+    /// it keep their own items. Sent through [`Self::submit_direct`], like a
+    /// Chat drop: drift confirmation, optimistic display, rollback, queueing.
+    fn move_selected_chat(
+        &mut self,
+        row: &ChatRow,
+        op: RestructureOp,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let chat_id = row.chat.id.clone();
+        if row.dangling {
+            return Err("This chat no longer exists on any device");
+        }
+        let Some(space_id) = row.chat.space_id.clone() else {
+            return Err("Chats without a project cannot be associated");
+        };
+        let Some(snapshot) = self.snapshot(&space_id) else {
+            return Err("This project's outline is not loaded");
+        };
+        let model = &self.model;
+        let shown = |id: &str| model.position(&row_key::item(&space_id, id)).is_some();
+        match restructure::chat_plan(snapshot, &chat_id, op, shown) {
+            Some(plan) => {
+                tracing::info!(
+                    target: "work_outline_keys",
+                    ?op, %space_id, %chat_id, ?plan,
+                    "restructure chat: planned"
+                );
+                self.submit_direct(space_id, plan.into(), cx);
+            }
+            None => tracing::info!(
+                target: "work_outline_keys",
+                ?op, %space_id, %chat_id,
+                "restructure chat: plan=None (no-op)"
+            ),
+        }
+        Ok(())
+    }
+
     /// Key handler for the restructuring actions. Without a selected work
-    /// item the key propagates (Tab / Shift+Tab then walk focus as usual).
+    /// item or Chat the key propagates (Tab / Shift+Tab then walk focus as
+    /// usual).
     /// A press while the previous move is in flight queues behind it: the
     /// change already shows, so the next plan starts from the new order.
     fn restructure_key(&mut self, op: RestructureOp, cx: &mut Context<Self>) {
@@ -1485,13 +1567,16 @@ impl OutlineView {
             cx.propagate();
             return;
         }
-        if self.selected_item().is_none() {
+        let movable = self.selected_row().is_some_and(|row| {
+            matches!(row.kind, OutlineRowKind::Item(_) | OutlineRowKind::Chat(_))
+        });
+        if !movable {
             tracing::info!(
                 target: "work_outline_keys",
                 ?op,
                 selected = ?self.selected.as_deref(),
                 row_kind = self.selected_row().map(|row| row_kind_name(&row.kind)),
-                "restructure key: no selected work item, propagating"
+                "restructure key: no selected work item or Chat, propagating"
             );
             cx.propagate();
             return;
@@ -1507,7 +1592,7 @@ impl OutlineView {
             );
             return;
         }
-        if let Err(notice) = self.restructure_selected(op, cx) {
+        if let Err(notice) = self.restructure_selection(op, cx) {
             self.show_notice(notice, cx);
         }
     }
@@ -1617,6 +1702,17 @@ impl OutlineView {
                 row_key::chat(chat_id),
                 Some(row_key::item(&space_id, work_item_id)),
             ),
+            DirectMutation::RemoveChat { chat_id } => (
+                actions.remove_chat(zeron_proto::RemoveChatFromWorkItemParams {
+                    chat_id: chat_id.clone(),
+                    operation_id: operation_id.clone(),
+                }),
+                LocalChange::RemoveChat {
+                    chat_id: chat_id.clone(),
+                },
+                row_key::chat(chat_id),
+                Some(row_key::unassociated(Some(&space_id))),
+            ),
         };
         self.attempt = Some(MutationAttempt {
             mutation,
@@ -1668,7 +1764,7 @@ impl OutlineView {
                             let Some(op) = this.queued_restructure.pop_front() else {
                                 break;
                             };
-                            if let Err(notice) = this.restructure_selected(op, cx) {
+                            if let Err(notice) = this.restructure_selection(op, cx) {
                                 this.queued_restructure.clear();
                                 this.show_notice(notice, cx);
                             }

@@ -538,6 +538,7 @@ impl OutlineView {
             }))
             .separated(),
         ];
+        entries.extend(self.chat_move_entries(row, gone));
         if associated {
             entries.push(MenuEntry::new(
                 "remove-from-item",
@@ -573,6 +574,73 @@ impl OutlineView {
             entries,
             status_entries: Vec::new(),
         }
+    }
+
+    /// Move to Previous / Next / Parent Item: the Chat-row form of the
+    /// restructuring keys (`restructure::chat_plan`), greyed out with the
+    /// reason when the key would do nothing.
+    fn chat_move_entries(&self, row: &ChatRow, gone: Option<&'static str>) -> [MenuEntry; 3] {
+        let chat_id = row.chat.id.as_str();
+        let space_id = row.chat.space_id.as_deref();
+        let snapshot = space_id.and_then(|space| self.snapshot(space));
+        let blocked_by = gone.or_else(|| {
+            space_id
+                .is_none()
+                .then_some("Chats without a project cannot be associated")
+                .or_else(|| {
+                    snapshot
+                        .is_none()
+                        .then_some("This project's outline is not loaded")
+                })
+        });
+        let blocked = |op: RestructureOp| -> Option<&'static str> {
+            if blocked_by.is_some() {
+                return blocked_by;
+            }
+            let (Some(space_id), Some(snapshot)) = (space_id, snapshot) else {
+                return blocked_by;
+            };
+            let shown = |id: &str| self.model.position(&row_key::item(space_id, id)).is_some();
+            restructure::chat_plan(snapshot, chat_id, op, shown)
+                .is_none()
+                .then_some(match op {
+                    RestructureOp::MoveUp => "No work item above",
+                    RestructureOp::MoveDown => "No work item below",
+                    RestructureOp::Outdent | RestructureOp::Indent => "Not in a work item",
+                })
+        };
+        let top_level = snapshot.is_some_and(|snapshot| {
+            restructure::chat_item(snapshot, chat_id)
+                .and_then(|item| snapshot.item(item))
+                .is_some_and(|item| item.parent_work_item_id.is_none())
+        });
+        [
+            MenuEntry::new(
+                "move-to-previous-item",
+                "Move to Previous Item",
+                icons::ARROW_UP,
+                MenuAction::Outline(OutlineNavKey::MoveItemUp),
+            )
+            .disabled(blocked(RestructureOp::MoveUp)),
+            MenuEntry::new(
+                "move-to-next-item",
+                "Move to Next Item",
+                icons::ARROW_DOWN,
+                MenuAction::Outline(OutlineNavKey::MoveItemDown),
+            )
+            .disabled(blocked(RestructureOp::MoveDown)),
+            MenuEntry::new(
+                "move-to-parent-item",
+                if top_level {
+                    "Move to Unassociated Chats"
+                } else {
+                    "Move to Parent Item"
+                },
+                icons::ARROW_LEFT,
+                MenuAction::Outline(OutlineNavKey::OutdentItem),
+            )
+            .disabled(blocked(RestructureOp::Outdent)),
+        ]
     }
 
     /// "Associate Chat…" for the app's selected Chat, the target the
