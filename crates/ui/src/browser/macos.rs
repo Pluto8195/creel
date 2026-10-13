@@ -854,3 +854,28 @@ impl NativePage {
         }
     }
 }
+
+#[cfg(test)]
+mod document_policy_tests {
+    use super::document_navigation;
+
+    #[test]
+    fn visualization_pages_only_commit_their_own_about_frames() {
+        for allowed in ["about:blank", "about:srcdoc", "about:srcdoc#totals"] {
+            assert!(document_navigation(allowed), "{allowed}");
+        }
+        for denied in [
+            "",
+            "about:srcdocx",
+            "about:config",
+            "file:///etc/passwd",
+            "data:text/html,<p>x</p>",
+            "blob:null/123",
+            "javascript:alert(1)",
+            "https://example.com/",
+            "zeron://open/chat/a",
+        ] {
+            assert!(!document_navigation(denied), "{denied}");
+        }
+    }
+}

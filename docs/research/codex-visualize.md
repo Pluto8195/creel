@@ -161,6 +161,16 @@ messages travel over a `MessageChannel` handed to the frame with a
   navigation delegate allows only `about:blank`/`about:srcdoc`; a clicked
   http(s) link opens a regular Browser tab instead of replacing the
   visualization.
+- **Security.** Fragment content is untrusted. Compared with the existing
+  previews (Markdown preview renders natively and runs no HTML; Browser tabs
+  load only http(s) into a nonpersistent store with no IPC handler), a
+  visualization tab additionally: gets its own ephemeral website data store,
+  so it shares no cookies or storage with Browser tabs; runs the fragment in
+  an opaque-origin `sandbox="allow-scripts"` frame (no same-origin, popups,
+  forms, downloads or top navigation); blocks fetch/XHR/WebSocket through
+  `connect-src blob: data:`; limits subresources to the skill's CDN list; and
+  sends no referrer. wry's `window.ipc` shim is main-frame only and has no
+  handler registered, so the frame has no route to Zeron.
 - **Theme and motion.** The base stylesheet is generated from the active
   Zeron theme (`--background` = panel, `--primary` = accent, …) and
   re-rendered when the theme changes. Zeron's reduced-motion setting forces

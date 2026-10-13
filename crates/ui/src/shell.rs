@@ -3079,7 +3079,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(browser) = self.create_browser_surface(window, cx) else {
+        let context = self.browser_context.clone();
+        let Some(browser) = self.create_browser_surface(context, window, cx) else {
             return;
         };
         if let Some(handle) = self.state.read(cx).engine().cloned() {
@@ -3100,6 +3101,7 @@ impl Shell {
     /// A new, selected Browser tab in the current session's right pane.
     fn create_browser_surface(
         &mut self,
+        context: crate::browser::BrowserContext,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<crate::browser::BrowserSurface>> {
@@ -3115,9 +3117,7 @@ impl Shell {
         };
         self.browser_seq += 1;
         let id = self.browser_seq;
-        let browser = cx.new(|cx| {
-            crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
-        });
+        let browser = cx.new(|cx| crate::browser::BrowserSurface::new(context, remote, window, cx));
         let owner = key.clone();
         let sub = cx.subscribe_in(&browser, window, move |this, _, event, window, cx| {
             match event {
@@ -3323,7 +3323,11 @@ impl Shell {
                 },
             )
         };
-        let Some(browser) = self.create_browser_surface(window, cx) else {
+        // Untrusted fragments get their own ephemeral website data store:
+        // nothing they load shares cookies or storage with Browser tabs.
+        let Some(browser) =
+            self.create_browser_surface(crate::browser::BrowserContext::default(), window, cx)
+        else {
             return;
         };
         browser.update(cx, |browser, cx| {
