@@ -444,7 +444,11 @@ impl WorkItemDetails {
             .update(cx, |list, _| list.set_data(spaces, chats));
         let rows = self.required_actions.read(cx).rows();
         let open_count = rows.open.len();
-        let open = self.required_actions_open.unwrap_or(open_count > 0);
+        // A Reply & resolve keeps the section open so its Open chat link
+        // stays in reach after the last open request resolved.
+        let open = self
+            .required_actions_open
+            .unwrap_or(open_count > 0 || self.required_actions.read(cx).has_replied());
         let header_color = if open_count > 0 {
             chips::attention_color(theme)
         } else {

@@ -580,6 +580,64 @@ impl WorkOutlineActions {
         }
     }
 
+    /// `ContinueChatForWorkItem`: queue the next Turn of an existing Chat
+    /// with ids derived from `operationId` (message `derive_id(op,
+    /// "message")`, command `derive_id(op, "command")`). The host pins the
+    /// Chat's selected instruction revision at ingestion and refuses a host
+    /// that can't deliver it (`capability`). Idempotent: a replay with the
+    /// same id writes nothing and reports the Turn's current state.
+    pub(crate) fn continue_chat_for_work_item(
+        &self,
+        params: zeron_proto::ContinueChatForWorkItemParams,
+    ) -> Task<Result<zeron_proto::ContinueChatForWorkItemReply, WorkOutlineError>> {
+        match serde_json::to_value(&params) {
+            Ok(value) => self.call(
+                methods::CONTINUE_CHAT_FOR_WORK_ITEM,
+                value,
+                decode_json::<zeron_proto::ContinueChatForWorkItemReply>,
+            ),
+            Err(error) => Task::ready(Err(WorkOutlineError::new(
+                WorkOutlineErrorCode::Invalid,
+                error.to_string(),
+            ))),
+        }
+    }
+
+    /// `QueueMessage` with `holdForTurnEnd` (the composer's busy-Chat send):
+    /// the row waits for the current Turn and captures the Chat's selected
+    /// instruction revision. Replies with the host-minted row id. A refusal
+    /// keeps the host's text in `message` (an `instruction-delivery/…` wire
+    /// message for a pinned row the host can't deliver).
+    pub(crate) fn queue_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Task<Result<String, WorkOutlineError>> {
+        fn decode_id(value: serde_json::Value) -> Result<String, WorkOutlineError> {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    WorkOutlineError::new(
+                        WorkOutlineErrorCode::Invalid,
+                        "Send failed: queue did not return an id",
+                    )
+                })
+        }
+        self.call(
+            methods::QUEUE_MESSAGE,
+            serde_json::json!({
+                "chatId": chat_id,
+                "text": text,
+                "attachments": [],
+                "holdForTurnEnd": true,
+            }),
+            decode_id,
+        )
+    }
+
     /// `ListCommands` (the chat composer's slash-command/skill discovery) for
     /// the editors' `/` skill autocomplete; `params` come from the composer's
     /// own builder, so the folder and device targeting match a chat's.

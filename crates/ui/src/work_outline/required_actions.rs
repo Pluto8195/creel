@@ -236,6 +236,49 @@ pub(crate) fn age_label(at_millis: i64, now: chrono::DateTime<chrono::Utc>) -> S
     zeron_proto::view::format_time_ago(then, now)
 }
 
+/// How much of the request text a reply quotes.
+pub(crate) const REPLY_QUOTE_MAX_CHARS: usize = 120;
+
+/// Reply & resolve's role for the resolve operation id, derived from the
+/// reply intent's operation id (the reply's message id derives from the same
+/// id under `roles::MESSAGE`, host-side).
+pub(crate) const REPLY_RESOLVE_ROLE: &str = "reply-resolve";
+
+/// The user message Reply & resolve sends to the origin Chat:
+/// `Re: "<request text>": <note>`. The quote is whitespace-collapsed and cut
+/// to [`REPLY_QUOTE_MAX_CHARS`] (with an ellipsis); the note is sent as typed.
+pub(crate) fn reply_message(request_text: &str, note: &str) -> String {
+    let collapsed = request_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let quote = if collapsed.chars().count() > REPLY_QUOTE_MAX_CHARS {
+        let cut: String = collapsed.chars().take(REPLY_QUOTE_MAX_CHARS - 1).collect();
+        format!("{}\u{2026}", cut.trim_end())
+    } else {
+        collapsed
+    };
+    format!("Re: \"{quote}\": {}", note.trim())
+}
+
+/// Why Reply & resolve is unavailable for `row` (`None` when it can send).
+/// A missing Chat wins over an empty note.
+pub(crate) fn reply_unavailable_reason(
+    row: &RequiredActionRow,
+    note: &str,
+) -> Option<&'static str> {
+    if !row.chat_available {
+        Some(
+            "The Chat that asked was archived or deleted, so a reply can\u{2019}t reach it. \
+             Resolve still records your note.",
+        )
+    } else if note.trim().is_empty() {
+        Some("Type a reply first")
+    } else {
+        None
+    }
+}
+
 /// Descendant status totals for a work item row: "3 active · 1 user action
 /// required". Status counts are stored-status subtree counts (the item
 /// included), so the blocked item counts in both. Shown only when the
@@ -759,6 +802,38 @@ mod tests {
             label: "alpha".into(),
             snapshot: Arc::new(snapshot),
         }]
+    }
+
+    #[test]
+    fn reply_message_quotes_a_short_request() {
+        assert_eq!(
+            reply_message("Approve the\n  color palette", "  Palette B  "),
+            "Re: \"Approve the color palette\": Palette B"
+        );
+        let long = "word ".repeat(60);
+        let message = reply_message(&long, "ok");
+        let quote = message
+            .strip_prefix("Re: \"")
+            .and_then(|rest| rest.strip_suffix("\": ok"))
+            .unwrap();
+        assert!(quote.chars().count() <= REPLY_QUOTE_MAX_CHARS);
+        assert!(quote.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn reply_is_unavailable_without_a_chat_or_a_note() {
+        let chats = vec![chat(CHAT_UI, false)];
+        let rows = collect_rows(&spaces(snapshot("s1")), &chats, &RequestScope::Global);
+        let ui = rows.open.iter().find(|r| r.request_id == R_UI).unwrap();
+        let api = rows.open.iter().find(|r| r.request_id == R_API).unwrap();
+        assert_eq!(reply_unavailable_reason(ui, "yes"), None);
+        assert_eq!(
+            reply_unavailable_reason(ui, "  "),
+            Some("Type a reply first")
+        );
+        assert!(
+            reply_unavailable_reason(api, "yes").is_some_and(|reason| reason.contains("archived"))
+        );
     }
 
     #[test]
