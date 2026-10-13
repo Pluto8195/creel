@@ -87,6 +87,13 @@ pub(crate) enum MenuAction {
     CopyChatIdentity(String),
     CloseOutChat(String),
     ArchiveChat(String),
+    /// Hide the Space from the Outline (device-local).
+    HideSpace(String),
+    UnhideSpace(String),
+    /// The sidebar's Rename project dialog.
+    RenameSpace(String),
+    /// The sidebar's Remove project confirmation.
+    DeleteSpace(String),
 }
 
 impl MenuAction {
@@ -123,7 +130,11 @@ impl MenuAction {
             | Self::ApplyInstructions(_)
             | Self::PinChat { .. }
             | Self::CopyChatIdentity(_)
-            | Self::CloseOutChat(_) => HintKey::None,
+            | Self::CloseOutChat(_)
+            | Self::HideSpace(_)
+            | Self::UnhideSpace(_)
+            | Self::RenameSpace(_)
+            | Self::DeleteSpace(_) => HintKey::None,
         }
     }
 }
@@ -238,55 +249,120 @@ pub(crate) struct OutlineContextMenu {
     pub status_entries: Vec<MenuEntry>,
 }
 
+/// What a multi-Space Space row's menu adds: reorder, hide, rename, delete.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpaceRowMenu {
+    pub hidden: bool,
+    /// Why Move Up / Move Down would do nothing.
+    pub up_blocked: Option<&'static str>,
+    pub down_blocked: Option<&'static str>,
+}
+
 /// The Space root's menu (a multi-Space Space row, or the single-Space
-/// "Space root instructions" entry).
+/// "Space root instructions" entry). `row`: the Space row's own entries
+/// (`None` for the single-Space entry, which has no row to manage).
 fn space_root_menu(
     row_key: Option<String>,
     space_id: &str,
     unavailable: Option<&'static str>,
+    row: Option<SpaceRowMenu>,
 ) -> OutlineContextMenu {
+    let mut entries = vec![
+        MenuEntry::new(
+            "new-item",
+            "New Work Item",
+            icons::ADD_CIRCLE,
+            MenuAction::Command(WorkOutlineCommand::CreateWorkItem),
+        )
+        .disabled(unavailable),
+        MenuEntry::new(
+            "space-instructions",
+            "Space Instructions",
+            icons::DOCUMENT,
+            MenuAction::SpaceInstructions,
+        )
+        .disabled(unavailable),
+        MenuEntry::new(
+            "execution",
+            "Execution Setup",
+            icons::FOLDER,
+            MenuAction::ExecutionSetup,
+        )
+        .disabled(unavailable),
+        MenuEntry::new(
+            "required-actions",
+            "Required Actions",
+            icons::BELL,
+            MenuAction::Command(WorkOutlineCommand::OpenRequiredActions),
+        )
+        .separated(),
+        MenuEntry::new(
+            "shortcuts",
+            "Show Outline Shortcuts",
+            icons::KEYBOARD,
+            MenuAction::Outline(OutlineNavKey::ShowShortcuts),
+        ),
+    ];
+    if let Some(row) = row {
+        let id = space_id.to_string();
+        let manage = [
+            MenuEntry::new(
+                "move-up",
+                "Move Up",
+                icons::ARROW_UP,
+                MenuAction::Outline(OutlineNavKey::MoveItemUp),
+            )
+            .disabled(row.up_blocked)
+            .separated(),
+            MenuEntry::new(
+                "move-down",
+                "Move Down",
+                icons::ARROW_DOWN,
+                MenuAction::Outline(OutlineNavKey::MoveItemDown),
+            )
+            .disabled(row.down_blocked),
+            if row.hidden {
+                MenuEntry::new(
+                    "unhide-space",
+                    "Unhide",
+                    icons::EYE,
+                    MenuAction::UnhideSpace(id.clone()),
+                )
+            } else {
+                MenuEntry::new(
+                    "hide-space",
+                    "Hide from Outline",
+                    icons::EYE_CLOSED,
+                    MenuAction::HideSpace(id.clone()),
+                )
+            }
+            .separated(),
+            MenuEntry::new(
+                "rename-space",
+                "Rename Project\u{2026}",
+                icons::PEN,
+                MenuAction::RenameSpace(id.clone()),
+            ),
+        ];
+        // After Execution Setup, before the global entries.
+        entries.splice(3..3, manage);
+        entries.push(
+            MenuEntry::new(
+                "delete-space",
+                "Delete Project\u{2026}",
+                icons::TRASH_BIN_MINIMALISTIC,
+                MenuAction::DeleteSpace(id),
+            )
+            .separated(),
+        );
+    }
     OutlineContextMenu {
         kind: MenuKind::SpaceRoot,
         row_key,
         space_id: Some(space_id.to_string()),
         item_id: Some(SPACE_ROOT_ITEM_ID.to_string()),
         chat_id: None,
-        entries: vec![
-            MenuEntry::new(
-                "new-item",
-                "New Work Item",
-                icons::ADD_CIRCLE,
-                MenuAction::Command(WorkOutlineCommand::CreateWorkItem),
-            )
-            .disabled(unavailable),
-            MenuEntry::new(
-                "space-instructions",
-                "Space Instructions",
-                icons::DOCUMENT,
-                MenuAction::SpaceInstructions,
-            )
-            .disabled(unavailable),
-            MenuEntry::new(
-                "execution",
-                "Execution Setup",
-                icons::FOLDER,
-                MenuAction::ExecutionSetup,
-            )
-            .disabled(unavailable),
-            MenuEntry::new(
-                "required-actions",
-                "Required Actions",
-                icons::BELL,
-                MenuAction::Command(WorkOutlineCommand::OpenRequiredActions),
-            )
-            .separated(),
-            MenuEntry::new(
-                "shortcuts",
-                "Show Outline Shortcuts",
-                icons::KEYBOARD,
-                MenuAction::Outline(OutlineNavKey::ShowShortcuts),
-            ),
-        ],
+        entries,
         status_entries: Vec::new(),
     }
 }
@@ -309,10 +385,17 @@ impl OutlineView {
         match &row.kind {
             OutlineRowKind::Item(item) => Some(self.item_context_menu(key, item)),
             OutlineRowKind::Chat(chat) => Some(self.chat_context_menu(key, chat)),
-            OutlineRowKind::Space { space_id, .. } => Some(space_root_menu(
+            OutlineRowKind::Space {
+                space_id, hidden, ..
+            } => Some(space_root_menu(
                 Some(key.to_string()),
                 space_id,
                 self.space_unavailable(space_id),
+                Some(SpaceRowMenu {
+                    hidden: *hidden,
+                    up_blocked: self.space_move_blocked(space_id, true),
+                    down_blocked: self.space_move_blocked(space_id, false),
+                }),
             )),
             OutlineRowKind::Unassociated { .. } => self.unassociated_context_menu(key, cx),
             OutlineRowKind::Notice { .. } => None,
@@ -785,7 +868,7 @@ pub(crate) fn space_root_listener(
         }
         cx.stop_propagation();
         window.focus(&this.focus, cx);
-        let menu = space_root_menu(None, &space_id, this.space_unavailable(&space_id));
+        let menu = space_root_menu(None, &space_id, this.space_unavailable(&space_id), None);
         this.show_context_menu(menu, event.position, cx);
     })
 }
@@ -858,7 +941,7 @@ mod tests {
 
     #[test]
     fn space_root_menu_lists_its_entries_and_greys_out_when_unavailable() {
-        let menu = space_root_menu(None, "s1", None);
+        let menu = space_root_menu(None, "s1", None, None);
         let ids: Vec<_> = menu.entries.iter().map(|entry| entry.id).collect();
         assert_eq!(
             ids,
@@ -872,9 +955,63 @@ mod tests {
         );
         assert_eq!(menu.item_id.as_deref(), Some(SPACE_ROOT_ITEM_ID));
         assert!(menu.entries.iter().all(|entry| entry.disabled.is_none()));
-        let menu = space_root_menu(None, "s1", Some("not yet"));
+        let menu = space_root_menu(None, "s1", Some("not yet"), None);
         assert_eq!(menu.entries[0].disabled.as_deref(), Some("not yet"));
         // Global commands stay available.
         assert!(menu.entries[3].disabled.is_none());
+    }
+
+    #[test]
+    fn space_row_menu_adds_reorder_hide_rename_and_delete() {
+        let row = SpaceRowMenu {
+            hidden: false,
+            up_blocked: Some("Already the first project"),
+            down_blocked: None,
+        };
+        let menu = space_root_menu(Some("space:s1".into()), "s1", None, Some(row));
+        let ids: Vec<_> = menu.entries.iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "new-item",
+                "space-instructions",
+                "execution",
+                "move-up",
+                "move-down",
+                "hide-space",
+                "rename-space",
+                "required-actions",
+                "shortcuts",
+                "delete-space",
+            ]
+        );
+        let entry = |id: &str| menu.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(
+            entry("move-up").disabled.as_deref(),
+            Some("Already the first project")
+        );
+        assert_eq!(
+            entry("move-up").hint,
+            HintKey::Outline(OutlineNavKey::MoveItemUp)
+        );
+        assert_eq!(
+            entry("hide-space").action,
+            MenuAction::HideSpace("s1".into())
+        );
+        assert_eq!(
+            entry("delete-space").action,
+            MenuAction::DeleteSpace("s1".into())
+        );
+        let hidden = space_root_menu(
+            Some("space:s1".into()),
+            "s1",
+            None,
+            Some(SpaceRowMenu {
+                hidden: true,
+                ..Default::default()
+            }),
+        );
+        assert!(hidden.entries.iter().any(|e| e.id == "unhide-space"));
+        assert!(!hidden.entries.iter().any(|e| e.id == "hide-space"));
     }
 }

@@ -43,6 +43,8 @@ use crate::theme::Theme;
 
 #[path = "context_menu.rs"]
 pub(crate) mod context_menu;
+#[path = "space_roots.rs"]
+pub(crate) mod space_roots;
 
 /// Key context of the Outline tree (bind outline keys under it).
 pub(crate) const KEY_CONTEXT: &str = "WorkOutline";
@@ -131,6 +133,9 @@ pub(crate) enum OutlineEvent {
     OpenProposals { space_id: String, item_id: String },
     /// Open the Required Actions surface (Milestone 4).
     OpenRequiredActions,
+    /// The Space roots' order, hidden set, or reveal changed (the Overview
+    /// redraws its toolbar count).
+    SpacesArranged,
 }
 
 /// What the Overview feeds the Outline each time its inputs change.
@@ -346,12 +351,16 @@ pub(crate) enum OutlineDrag {
         space_id: String,
         title: String,
     },
+    /// A Space root (multi-Space Outline): reorders the roots.
+    Space { space_id: String, title: String },
 }
 
 impl OutlineDrag {
     fn title(&self) -> &str {
         match self {
-            Self::Item { title, .. } | Self::Chat { title, .. } => title,
+            Self::Item { title, .. } | Self::Chat { title, .. } | Self::Space { title, .. } => {
+                title
+            }
         }
     }
 }
@@ -416,6 +425,12 @@ pub(crate) struct OutlineView {
     follow: Option<String>,
     /// The drop indicator of an in-progress drag.
     drop_hint: Option<DropHint>,
+    /// The user's Space-root order (device-local; see `space_roots`).
+    space_order: Vec<String>,
+    /// Spaces hidden from the Outline (device-local; see `space_roots`).
+    hidden_spaces: std::collections::BTreeSet<String>,
+    /// "Hidden projects (N)" is on: hidden Spaces show as dimmed roots.
+    show_hidden_spaces: bool,
     _editor_events: Subscription,
     /// Focus gained / lost diagnostics (registered on first render, which
     /// has the window).
@@ -475,6 +490,9 @@ impl OutlineView {
             optimistic: Vec::new(),
             follow: None,
             drop_hint: None,
+            space_order: Vec::new(),
+            hidden_spaces: std::collections::BTreeSet::new(),
+            show_hidden_spaces: false,
             _editor_events: editor_events,
             focus_logs: None,
             #[cfg(test)]
@@ -663,16 +681,27 @@ impl OutlineView {
             &data_dir,
             overview_positions::OUTLINE_COLLAPSED_FILE,
         ));
+        self.load_space_prefs(&data_dir);
+    }
+
+    /// Flatten the inputs in the user's Space order, without hidden Spaces
+    /// (unless revealed).
+    fn flatten_inputs(&self, collapsed: &HashSet<String>) -> OutlineModel {
+        let options = OutlineOptions {
+            show_hidden_spaces: self.show_hidden_spaces,
+            ..self.inputs.options.clone()
+        };
+        model::flatten(
+            &self.arranged_spaces(),
+            &self.inputs.chats,
+            collapsed,
+            &options,
+        )
     }
 
     fn reflatten(&mut self) {
         let previous = std::mem::take(&mut self.model);
-        self.model = model::flatten(
-            &self.inputs.spaces,
-            &self.inputs.chats,
-            &self.collapsed,
-            &self.inputs.options,
-        );
+        self.model = self.flatten_inputs(&self.collapsed);
         if let Some(follow) = self.follow.clone() {
             let place =
                 |model: &OutlineModel| model.position(&follow).map(|ix| (ix, model.rows[ix].depth));
@@ -781,12 +810,7 @@ impl OutlineView {
     /// not in the Outline at all, e.g. filtered out or in no shown Space.
     pub(crate) fn reveal(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         if self.model.position(key).is_none() {
-            let expanded = model::flatten(
-                &self.inputs.spaces,
-                &self.inputs.chats,
-                &HashSet::new(),
-                &self.inputs.options,
-            );
+            let expanded = self.flatten_inputs(&HashSet::new());
             let Some(ix) = expanded.position(key) else {
                 return false;
             };
@@ -1657,6 +1681,17 @@ impl OutlineView {
             cx.propagate();
             return;
         }
+        // A Space root: ⇧↑ / ⇧↓ reorder the roots (device-local, instant);
+        // Indent / Outdent mean nothing there and propagate.
+        if let Some(space_id) = self.selected_space_root() {
+            match op {
+                RestructureOp::MoveUp | RestructureOp::MoveDown => {
+                    self.move_space(&space_id, op == RestructureOp::MoveUp, cx);
+                }
+                RestructureOp::Indent | RestructureOp::Outdent => cx.propagate(),
+            }
+            return;
+        }
         let movable = self.selected_row().is_some_and(|row| {
             matches!(row.kind, OutlineRowKind::Item(_) | OutlineRowKind::Chat(_))
         });
@@ -1935,6 +1970,14 @@ impl OutlineView {
                         title: chat.chat.title.clone(),
                     })
             }
+            OutlineRowKind::Space {
+                space_id,
+                label,
+                hidden: false,
+            } => Some(OutlineDrag::Space {
+                space_id: space_id.clone(),
+                title: label.clone(),
+            }),
             _ => None,
         }
     }
@@ -1981,6 +2024,8 @@ impl OutlineView {
                     work_item_id: target_id.to_string(),
                 })
             }
+            // Space roots only drop among Space roots.
+            OutlineDrag::Space { .. } => None,
         }
     }
 
@@ -2005,7 +2050,7 @@ impl OutlineView {
             let zone = match drag {
                 // A Chat goes into the item wherever it lands on the row.
                 OutlineDrag::Chat { .. } => DropZone::Into,
-                OutlineDrag::Item { .. } => restructure::drop_zone(
+                OutlineDrag::Item { .. } | OutlineDrag::Space { .. } => restructure::drop_zone(
                     f32::from(position.y - bounds.top()),
                     f32::from(bounds.size.height),
                 ),
@@ -2296,6 +2341,10 @@ impl OutlineView {
             let collapsed = row.collapsed;
             div()
                 .id(SharedString::from(format!("outline-disclosure-{key}")))
+                .debug_selector({
+                    let selector = format!("outline-disclosure-{key}");
+                    move || selector.clone()
+                })
                 .flex_none()
                 .size(px(14.0))
                 .flex()
@@ -2330,7 +2379,65 @@ impl OutlineView {
             div().flex_none().size(px(14.0)).into_any_element()
         };
         let body: AnyElement = match &row.kind {
-            OutlineRowKind::Space { label, space_id } => {
+            OutlineRowKind::Space {
+                label,
+                space_id,
+                hidden: true,
+            } => {
+                let unhide = space_id.clone();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(label.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.text_faint)
+                            .child("Hidden"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("outline-space-unhide-{key}")))
+                            .debug_selector({
+                                let selector = format!("outline-space-unhide-{space_id}");
+                                move || selector.clone()
+                            })
+                            .flex_none()
+                            .px(px(4.0))
+                            .rounded(px(3.0))
+                            .cursor_pointer()
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.text_muted)
+                            .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
+                            .child("Unhide")
+                            .hint("Show this project in the Outline again", HintKey::None)
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if !this.is_editing() {
+                                    this.set_space_hidden(&unhide, false, cx);
+                                }
+                            })),
+                    )
+                    .into_any_element()
+            }
+            OutlineRowKind::Space {
+                label, space_id, ..
+            } => {
                 let open_space = space_id.clone();
                 let (totals, proposals) = self
                     .snapshot(space_id)
@@ -2544,7 +2651,8 @@ impl OutlineView {
             .is_some_and(|item| item.archived || item.kept_for_descendants)
             || row
                 .chat()
-                .is_some_and(|chat| chat.chat.archived || chat.dangling);
+                .is_some_and(|chat| chat.chat.archived || chat.dangling)
+            || matches!(row.kind, OutlineRowKind::Space { hidden: true, .. });
         // Drag and drop: rows drag while nothing is being edited; live work
         // items are the drop targets. The indicator is static (no motion).
         let drag = (!renaming && self.editing.is_none())
@@ -2554,6 +2662,15 @@ impl OutlineView {
             .item()
             .filter(|item| !item.archived)
             .map(|item| (item.space_id.clone(), item.item_id.clone()));
+        // Space roots take Space-root drags (reordering).
+        let space_drop_target = match &row.kind {
+            OutlineRowKind::Space {
+                space_id,
+                hidden: false,
+                ..
+            } => Some(space_id.clone()),
+            _ => None,
+        };
         let drop_zone = self
             .drop_hint
             .as_ref()
@@ -2632,6 +2749,29 @@ impl OutlineView {
                 .on_drop::<OutlineDrag>(cx.listener(
                     move |this, drag: &OutlineDrag, _, cx| {
                         this.drop_on_item(&drop_key, (&space_id, &item_id), drag, cx);
+                    },
+                ))
+            })
+            .when_some(space_drop_target, |el, space_id| {
+                let move_key = key.clone();
+                let move_target = space_id.clone();
+                let drop_key = key.clone();
+                el.on_drag_move::<OutlineDrag>(cx.listener(
+                    move |this, event: &gpui::DragMoveEvent<OutlineDrag>, _, cx| {
+                        let drag = event.drag(cx).clone();
+                        this.drag_over_space(
+                            &move_key,
+                            &move_target,
+                            &drag,
+                            event.event.position,
+                            event.bounds,
+                            cx,
+                        );
+                    },
+                ))
+                .on_drop::<OutlineDrag>(cx.listener(
+                    move |this, drag: &OutlineDrag, _, cx| {
+                        this.drop_on_space(&drop_key, &space_id, drag, cx);
                     },
                 ))
             })

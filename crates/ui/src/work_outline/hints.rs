@@ -244,9 +244,16 @@ pub(crate) const CHAT_MOVE_KEYS: [(&str, OutlineNavKey); 3] = [
     ("Chat to parent item", OutlineNavKey::OutdentItem),
 ];
 
+/// The restructuring keys on a project (Space root) row of a multi-project
+/// Outline: Shift+Up / Down reorder the project roots (this device only).
+pub(crate) const SPACE_MOVE_KEYS: [(&str, OutlineNavKey); 2] = [
+    ("Project up (project row)", OutlineNavKey::MoveItemUp),
+    ("Project down (project row)", OutlineNavKey::MoveItemDown),
+];
+
 /// The shortcut reference against the live keymap: the Outline keys grouped
 /// as Navigate / Edit / Restructure (table order; Restructure ends with the
-/// keys' Chat-row moves), then every Work Outline command with its current
+/// keys' Chat-row and project-row moves), then every Work Outline command with its current
 /// binding.
 pub(crate) fn shortcut_reference(keymap: &KeymapConfig) -> Vec<ShortcutGroup> {
     shortcut_reference_on(cfg!(target_os = "macos"), keymap)
@@ -293,10 +300,15 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
     // On a Chat row the same keys move the Chat between work items.
     restructure
         .rows
-        .extend(CHAT_MOVE_KEYS.into_iter().map(|(label, key)| ShortcutRow {
-            label,
-            keys: Some(all_keys(key)),
-        }));
+        .extend(
+            CHAT_MOVE_KEYS
+                .into_iter()
+                .chain(SPACE_MOVE_KEYS)
+                .map(|(label, key)| ShortcutRow {
+                    label,
+                    keys: Some(all_keys(key)),
+                }),
+        );
     vec![
         outline_group("Navigate", OutlineKeyGroup::Navigate),
         edit,
@@ -521,7 +533,10 @@ mod tests {
         // the Chat-row moves add their own rows.
         assert_eq!(
             outline_rows,
-            OUTLINE_NAVIGATION_KEYS.len() - 3 + CHAT_MOVE_KEYS.len() + OUTLINE_APP_KEYS.len()
+            OUTLINE_NAVIGATION_KEYS.len() - 3
+                + CHAT_MOVE_KEYS.len()
+                + SPACE_MOVE_KEYS.len()
+                + OUTLINE_APP_KEYS.len()
         );
         assert_eq!(groups[3].rows.len(), WorkOutlineCommand::ALL.len());
         let row = |groups: &[ShortcutGroup], label: &str| {
@@ -533,6 +548,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
+        assert_eq!(
+            row(&groups, "Project up (project row)").keys.as_deref(),
+            Some("\u{21e7}\u{2191}")
+        );
         assert_eq!(
             row(&groups, "Archive Chat / work item").keys.as_deref(),
             Some("\u{21e7}\u{2318}A")

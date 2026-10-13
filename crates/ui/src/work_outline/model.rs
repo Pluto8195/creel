@@ -17,6 +17,10 @@
 //! - Archived items are excluded unless `show_archived`; completed items are
 //!   excluded while `hide_completed`. An excluded item still shows when its
 //!   subtree has something visible, so nothing below it vanishes.
+//! - A Space the user hid from the Outline (`OutlineSpace::hidden`, multi-
+//!   Space only) renders nothing, and its Chats are skipped rather than
+//!   moved to the projectless group. With `show_hidden_spaces` it shows as a
+//!   bare (childless) root row so it can be unhidden.
 //! - A non-empty query keeps matches, their ancestors, and everything under a
 //!   matching item; collapse state is ignored while searching.
 //!
@@ -61,6 +65,9 @@ pub(crate) struct OutlineSpace {
     pub id: String,
     pub label: String,
     pub load: WorkOutlineLoad,
+    /// Hidden from the Outline by the user (device-local view state). Only
+    /// meaningful with more than one Space.
+    pub hidden: bool,
 }
 
 /// The Chat facts a row needs, copied in by the Overview (which owns link
@@ -94,6 +101,8 @@ pub(crate) struct OutlineOptions {
     pub query: String,
     /// The All-spaces view: projectless Chats are listed.
     pub all_spaces: bool,
+    /// Show hidden Spaces as bare, dimmed root rows (to unhide them).
+    pub show_hidden_spaces: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +154,9 @@ pub(crate) enum OutlineRowKind {
     Space {
         space_id: String,
         label: String,
+        /// Hidden from the Outline, shown only while hidden projects are
+        /// revealed (dimmed, no children).
+        hidden: bool,
     },
     Item(ItemRow),
     Chat(ChatRow),
@@ -209,6 +221,8 @@ pub(crate) struct OutlineModel {
     /// Completed items hidden by `hide_completed` (the reveal control's count).
     pub hidden_completed: usize,
     pub multi_space: bool,
+    /// Spaces hidden from the Outline (multi-Space only; the toolbar count).
+    pub hidden_spaces: usize,
 }
 
 impl OutlineModel {
@@ -278,7 +292,19 @@ pub(crate) fn flatten(
 ) -> OutlineModel {
     let chat_by_id: HashMap<&str, &OutlineChat> =
         chats.iter().map(|chat| (chat.id.as_str(), chat)).collect();
-    let space_ids: HashSet<&str> = spaces.iter().map(|space| space.id.as_str()).collect();
+    let multi_space = spaces.len() > 1;
+    // Hiding only applies to Space roots, which exist with several Spaces.
+    let is_hidden = |space: &OutlineSpace| multi_space && space.hidden;
+    let hidden_ids: HashSet<&str> = spaces
+        .iter()
+        .filter(|space| is_hidden(space))
+        .map(|space| space.id.as_str())
+        .collect();
+    let space_ids: HashSet<&str> = spaces
+        .iter()
+        .filter(|space| !is_hidden(space))
+        .map(|space| space.id.as_str())
+        .collect();
 
     // chat id -> item id, per Space, from each ready snapshot.
     let mut associated: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
@@ -295,7 +321,14 @@ pub(crate) fn flatten(
 
     let mut by_home: HashMap<String, Vec<&OutlineChat>> = HashMap::new();
     for chat in chats.iter().filter(|chat| chat.visible) {
-        if let Some(home) = chat_home(chat, &chat_by_id, &associated, &space_ids, options) {
+        if let Some(home) = chat_home(
+            chat,
+            &chat_by_id,
+            &associated,
+            &space_ids,
+            &hidden_ids,
+            options,
+        ) {
             by_home.entry(home).or_default().push(chat);
         }
     }
@@ -309,10 +342,23 @@ pub(crate) fn flatten(
         by_home,
         hidden_completed: 0,
     };
-    let multi_space = spaces.len() > 1;
     let root_matched = options.query.is_empty();
     let mut roots: Vec<Node> = Vec::new();
     for space in spaces {
+        if is_hidden(space) {
+            if options.show_hidden_spaces && options.query.is_empty() {
+                roots.push(Node {
+                    key: row_key::space(&space.id),
+                    kind: OutlineRowKind::Space {
+                        space_id: space.id.clone(),
+                        label: space.label.clone(),
+                        hidden: true,
+                    },
+                    children: Vec::new(),
+                });
+            }
+            continue;
+        }
         let mut children = space_children(space, &mut ctx, root_matched);
         if !multi_space {
             // Single Space: projectless Chats share its Unassociated group.
@@ -334,6 +380,7 @@ pub(crate) fn flatten(
                 kind: OutlineRowKind::Space {
                     space_id: space.id.clone(),
                     label: space.label.clone(),
+                    hidden: false,
                 },
                 children,
             });
@@ -352,6 +399,7 @@ pub(crate) fn flatten(
         index: HashMap::new(),
         hidden_completed: ctx.hidden_completed,
         multi_space,
+        hidden_spaces: hidden_ids.len(),
     };
     for node in roots {
         emit(node, 0, None, collapsed, searching, &mut model);
@@ -372,14 +420,25 @@ fn chat_home(
     chats: &HashMap<&str, &OutlineChat>,
     associated: &HashMap<&str, HashMap<&str, &str>>,
     space_ids: &HashSet<&str>,
+    hidden_ids: &HashSet<&str>,
     options: &OutlineOptions,
 ) -> Option<String> {
+    // A hidden Space's Chats are not in the Outline at all (List, Canvas and
+    // the sidebar still show them).
+    if chat
+        .space_id
+        .as_deref()
+        .is_some_and(|space_id| hidden_ids.contains(space_id))
+    {
+        return None;
+    }
     if let Some(parent) = chat.parent_chat_id.as_deref() {
         // Nest under the parent only when the parent itself is shown; a
         // parent cycle (bad data) falls back to the Chat's own home.
         let parent_shown = chats.get(parent).is_some_and(|p| {
             p.visible
                 && match p.space_id.as_deref() {
+                    Some(space_id) if hidden_ids.contains(space_id) => false,
                     Some(space_id) => space_ids.contains(space_id) || options.all_spaces,
                     None => options.all_spaces,
                 }
@@ -823,6 +882,7 @@ pub(crate) mod tests {
             id: space.into(),
             label: label.into(),
             load: WorkOutlineLoad::Ready(Arc::new(snapshot)),
+            hidden: false,
         }
     }
 
@@ -912,6 +972,7 @@ pub(crate) mod tests {
                 id: "s2".into(),
                 label: "Beta".into(),
                 load: WorkOutlineLoad::Loading,
+                hidden: false,
             },
         ];
         let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
@@ -942,6 +1003,51 @@ pub(crate) mod tests {
         assert!(root.collapsed && root.has_children);
         assert!(folded.row(&row_key::item("s1", LAUNCH)).is_none());
         assert!(folded.row("space:s2").is_some());
+    }
+
+    #[test]
+    fn hidden_spaces_render_nothing_unless_revealed_and_never_leak_chats() {
+        let mut chats = fixture_chats("s1");
+        let mut b_child = chat("b-child", Some("s2"));
+        b_child.parent_chat_id = Some(CHAT_API.into());
+        chats.push(chat("b-chat", Some("s2")));
+        chats.push(b_child);
+        chats.push(chat("loose", None));
+        let mut s1 = ready("s1", "Alpha", fixture_snapshot("s1"));
+        s1.hidden = true;
+        let spaces = [s1.clone(), ready("s2", "Beta", fixture_snapshot("s2"))];
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        assert!(model.multi_space, "a hidden Space still counts");
+        assert_eq!(model.hidden_spaces, 1);
+        assert!(model.row("space:s1").is_none());
+        assert!(model.row(&row_key::item("s1", LAUNCH)).is_none());
+        // s1's Chats are gone from the Outline, not moved to the projectless
+        // group; a child Chat of a hidden parent falls back to its own home.
+        assert!(model.row(&row_key::chat(CHAT_API)).is_none());
+        assert!(model.row(&row_key::chat(CHAT_LOOSE_A)).is_none());
+        let child = model.position(&row_key::chat("b-child")).unwrap();
+        assert_eq!(
+            model.rows[model.rows[child].parent.unwrap()].key,
+            row_key::unassociated(Some("s2"))
+        );
+        assert!(model.row(&row_key::chat("loose")).is_some());
+        assert!(model.row("space:s2").is_some());
+
+        // Revealed: a bare, childless, flagged root row.
+        let revealed = OutlineOptions {
+            show_hidden_spaces: true,
+            ..opts()
+        };
+        let model = flatten(&spaces, &chats, &HashSet::new(), &revealed);
+        let row = model.row("space:s1").unwrap();
+        assert!(!row.has_children);
+        assert!(matches!(row.kind, OutlineRowKind::Space { hidden: true, .. }));
+        assert!(model.row(&row_key::chat(CHAT_API)).is_none());
+
+        // One Space: hiding does not apply (there is no root row).
+        let model = flatten(&[s1], &fixture_chats("s1"), &HashSet::new(), &opts());
+        assert_eq!(model.hidden_spaces, 0);
+        assert!(model.row(&row_key::item("s1", LAUNCH)).is_some());
     }
 
     #[test]
