@@ -51,6 +51,8 @@ inline editor, a picker, the search field, or any other text input.
 | Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Indent (last child of the previous sibling) | `⇧→` or `⇥` | `Shift+→` or `Tab` |
 | Outdent (right after the former parent) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
+| Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
+| Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Shortcut reference | `?` | `?` |
 | Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
 
@@ -81,7 +83,7 @@ at the top level).
 | Row | Entries |
 | --- | --- |
 | Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore |
-| Chat | Open Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
+| Chat | Open Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
 | Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
 
@@ -99,7 +101,28 @@ Use the keys above, the matching palette commands, the **Move** picker (choose
 middle of a row makes the item the last child of that row. Dropping on the top
 or bottom quarter places it before or after that row. Dropping a Chat row on a
 work item associates the Chat with it. Descendants move with their item.
-Restructuring never deletes anything. Archiving an item that has children asks
+Restructuring never deletes anything.
+
+Chats have no order inside an item, so with a Chat row selected the same keys
+move the Chat between work items instead:
+
+- `⇧↑` / `⇧↓` move it to the previous / next work item in row order, counted
+  from the Chat's current item. Items at any depth count if the Outline shows
+  them; Chat rows and archived items are skipped. From **Unassociated Chats**,
+  `⇧↑` moves it to the last work item. Nothing happens at either end.
+- `⇧←` (or `⇧⇥`) moves it to its item's parent. From a top-level item, it
+  moves the Chat out of its work item to **Unassociated Chats**. Nothing
+  happens for an unassociated Chat.
+- `⇧→` and `⇥` do nothing on a Chat row.
+
+Moves stay inside the Chat's project. Only the selected Chat moves: Chats
+started from it keep their own work items, and a Chat shown under the Chat
+that started it stays there while its work item changes. The selection follows the Chat,
+and the same confirmation as **Move to Work Item…** appears when the Chat's
+instructions would change. Rapid presses apply in order. Chats without a
+project, and Chats that no longer exist, cannot move. A move never changes a
+Chat's Canvas position, folder, or execution setup. The palette's Move Up /
+Down and Indent / Outdent commands act on work items only. Archiving an item that has children asks
 whether to archive them as well or move them to another parent first.
 
 ## Work Item Details
