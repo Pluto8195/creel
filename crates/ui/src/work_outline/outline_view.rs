@@ -852,6 +852,13 @@ impl OutlineView {
         window.focus(&self.focus, cx);
     }
 
+    /// Focus the tree and select its first row (Enter / Down from the
+    /// Overview search), previewing it like any keyboard selection move.
+    pub(crate) fn focus_first_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        self.navigate(NavCommand::First, cx);
+    }
+
     pub(crate) fn is_editing(&self) -> bool {
         self.editing.is_some() || self.picker.is_some()
     }

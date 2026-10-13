@@ -2366,4 +2366,224 @@ mod tests {
         assert_eq!(selected_chat(&shell, cx), Some(CHAT_UI.to_owned()));
         assert!(tree_focused(&outline, cx));
     }
+
+    // ----- Find (⌘F) in the Overview ------------------------------------
+
+    fn find_key() -> String {
+        platform_combo(super::super::FOCUS_OVERVIEW_SEARCH_COMBO)
+    }
+
+    fn search_focused(
+        overview: &Entity<crate::overview::Overview>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        cx.update(|window, cx| overview.read(cx).search_focused(window, cx))
+    }
+
+    fn body_focused(
+        overview: &Entity<crate::overview::Overview>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        cx.update(|window, cx| overview.read(cx).body_focused(window))
+    }
+
+    fn search_text(
+        overview: &Entity<crate::overview::Overview>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> String {
+        overview.read_with(cx, |overview, cx| overview.search_text(cx))
+    }
+
+    fn set_mode(
+        overview: &Entity<crate::overview::Overview>,
+        mode: crate::overview::OverviewMode,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        overview.update(cx, |overview, cx| overview.set_mode_for_test(mode, cx));
+        redraw(cx);
+    }
+
+    /// Through the real keymap, ⌘F focuses the shared search field and
+    /// selects its text in List, Canvas and Outline, whatever had focus.
+    #[gpui::test]
+    fn find_focuses_the_search_in_list_canvas_and_outline(cx: &mut gpui::TestAppContext) {
+        use crate::overview::OverviewMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        for mode in [
+            OverviewMode::Outline,
+            OverviewMode::List,
+            OverviewMode::Canvas,
+        ] {
+            set_mode(&overview, mode, cx);
+            overview.update(cx, |overview, cx| {
+                overview.set_search_text_for_test("old", cx)
+            });
+            redraw(cx);
+            // From the tree / surface...
+            cx.update(|window, cx| match mode {
+                OverviewMode::Outline => {
+                    let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+                    window.focus(&handle, cx)
+                }
+                _ => window.blur(),
+            });
+            redraw(cx);
+            assert!(!search_focused(&overview, cx), "{mode:?} precondition");
+            cx.simulate_keystrokes(&find_key());
+            redraw(cx);
+            assert!(search_focused(&overview, cx), "{mode:?}: ⌘F focuses search");
+            // ...and its text is selected: typing replaces it.
+            cx.simulate_keystrokes("n e w");
+            assert_eq!(search_text(&overview, cx), "new", "{mode:?}");
+            // Again while already in the field: still selects.
+            cx.simulate_keystrokes(&find_key());
+            cx.simulate_keystrokes("x");
+            assert_eq!(search_text(&overview, cx), "x", "{mode:?}");
+            overview.update(cx, |overview, cx| overview.set_search_text_for_test("", cx));
+        }
+    }
+
+    /// On the full chat route ⌘F keeps doing what it did: nothing — the
+    /// composer keeps focus and the Overview search is not touched.
+    #[gpui::test]
+    fn find_inside_an_open_chat_is_left_alone(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, _outline, cx) = toggle_shell(cx, dir.path());
+        overview.update(cx, |overview, cx| {
+            overview.set_search_text_for_test("keep", cx)
+        });
+        shell.update(cx, |shell, cx| shell.open_chat(CHAT_API.to_owned(), cx));
+        redraw(cx);
+        assert!(route_is_chat(&shell, cx));
+        cx.update(|window, cx| {
+            let composer = shell.read(cx).composer.focus_handle(cx);
+            window.focus(&composer, cx)
+        });
+        redraw(cx);
+        assert!(composer_focused(&shell, cx));
+        cx.simulate_keystrokes(&find_key());
+        redraw(cx);
+        assert!(route_is_chat(&shell, cx));
+        assert!(composer_focused(&shell, cx), "composer keeps focus");
+        assert!(!search_focused(&overview, cx));
+        assert_eq!(search_text(&overview, cx), "keep");
+    }
+
+    /// Esc in the search field clears a non-empty query first, then hands
+    /// focus to the mode's body.
+    #[gpui::test]
+    fn escape_in_search_clears_then_returns_focus_to_the_body(cx: &mut gpui::TestAppContext) {
+        use crate::overview::OverviewMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        for mode in [
+            OverviewMode::List,
+            OverviewMode::Canvas,
+            OverviewMode::Outline,
+        ] {
+            set_mode(&overview, mode, cx);
+            cx.simulate_keystrokes(&find_key());
+            cx.simulate_keystrokes("z q");
+            assert_eq!(search_text(&overview, cx), "zq", "{mode:?}");
+            cx.simulate_keystrokes("escape");
+            redraw(cx);
+            assert_eq!(search_text(&overview, cx), "", "{mode:?}: Esc clears");
+            assert!(
+                search_focused(&overview, cx),
+                "{mode:?}: stays in the field"
+            );
+            cx.simulate_keystrokes("escape");
+            redraw(cx);
+            assert!(!search_focused(&overview, cx), "{mode:?}");
+            match mode {
+                OverviewMode::Outline => assert!(tree_focused(&outline, cx)),
+                _ => assert!(body_focused(&overview, cx), "{mode:?}: body focused"),
+            }
+        }
+    }
+
+    /// Enter and Down from the search select the first matching row (List
+    /// and Outline) so the arrows work immediately.
+    #[gpui::test]
+    fn enter_and_down_from_search_move_to_the_first_row(cx: &mut gpui::TestAppContext) {
+        use crate::overview::OverviewMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+
+        for key in ["down", "enter"] {
+            set_mode(&overview, OverviewMode::List, cx);
+            overview.update(cx, |overview, cx| {
+                overview.set_list_selection_for_test(None, cx)
+            });
+            cx.simulate_keystrokes(&find_key());
+            cx.simulate_keystrokes(key);
+            redraw(cx);
+            let (selected, order) = overview.read_with(cx, |o, _| o.list_selection_for_test());
+            assert!(order.len() > 1, "fixture shows several chats");
+            assert_eq!(selected.as_ref(), order.first(), "List {key}");
+            assert!(body_focused(&overview, cx));
+            assert!(!search_focused(&overview, cx));
+            // Arrows work immediately.
+            cx.simulate_keystrokes("down");
+            redraw(cx);
+            let (selected, _) = overview.read_with(cx, |o, _| o.list_selection_for_test());
+            assert_eq!(selected.as_ref(), order.get(1), "List down after {key}");
+            cx.simulate_keystrokes("up up");
+            redraw(cx);
+            assert!(
+                search_focused(&overview, cx),
+                "Up from the first row returns"
+            );
+        }
+
+        for key in ["down", "enter"] {
+            set_mode(&overview, OverviewMode::Outline, cx);
+            outline.update(cx, |outline, cx| {
+                let last = outline.model().rows.last().unwrap().key.clone();
+                outline.select(&last, cx)
+            });
+            cx.simulate_keystrokes(&find_key());
+            cx.simulate_keystrokes(key);
+            redraw(cx);
+            assert!(tree_focused(&outline, cx), "Outline {key}");
+            let first = outline.read_with(cx, |o, _| o.model().rows[0].key.clone());
+            assert_eq!(
+                outline_selection(&outline, cx),
+                Some(first),
+                "Outline {key}"
+            );
+            let second = outline.read_with(cx, |o, _| o.model().rows[1].key.clone());
+            cx.simulate_keystrokes("down");
+            redraw(cx);
+            assert_eq!(
+                outline_selection(&outline, cx),
+                Some(second),
+                "arrow after {key}"
+            );
+        }
+    }
+
+    /// Enter on a selected List row opens the chat beside the Overview.
+    #[gpui::test]
+    fn enter_on_a_selected_list_row_opens_the_chat_panel(cx: &mut gpui::TestAppContext) {
+        use crate::overview::OverviewMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_shell, overview, _outline, cx) = toggle_shell(cx, dir.path());
+        set_mode(&overview, OverviewMode::List, cx);
+        cx.simulate_keystrokes(&find_key());
+        cx.simulate_keystrokes("down");
+        redraw(cx);
+        let (selected, _) = overview.read_with(cx, |o, _| o.list_selection_for_test());
+        cx.simulate_keystrokes("enter");
+        redraw(cx);
+        assert_eq!(panel_chat(&overview, cx), selected);
+        assert!(panel_chat(&overview, cx).is_some());
+    }
 }

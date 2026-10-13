@@ -2391,6 +2391,14 @@ pub struct Overview {
     state: Entity<AppState>,
     shell: gpui::WeakEntity<Shell>,
     scroll: ScrollHandle,
+    /// The focus target for the List / Canvas surface: Esc, Enter and Down
+    /// from the search field land here, and a click on the surface takes it.
+    body_focus: gpui::FocusHandle,
+    /// The keyboard-selected List row (chat id).
+    list_selected: Option<String>,
+    /// Rendered List rows in on-screen order: `(chat id, child index in the
+    /// scroll container)`, headers counted. Rebuilt every List render.
+    list_order: Vec<(String, usize)>,
     view_mode: OverviewMode,
     /// Logical grid/drag positions, keyed by chat id. Populated lazily: a
     /// chat not yet here gets a default grid slot the first time canvas mode
@@ -2741,6 +2749,7 @@ impl Overview {
                 crate::composer::PALETTE_SEARCH_CONTEXT,
                 cx,
             )
+            .with_single_line()
             .with_accessibility_role(gpui::Role::SearchInput)
         });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
@@ -2831,6 +2840,9 @@ impl Overview {
             state,
             shell,
             scroll: ScrollHandle::new(),
+            body_focus: cx.focus_handle(),
+            list_selected: None,
+            list_order: Vec::new(),
             view_mode: OverviewMode::List,
             tile_positions: HashMap::new(),
             canvas_pan: (0.0, 0.0),
@@ -2935,21 +2947,130 @@ impl Overview {
         self.view_mode == OverviewMode::Canvas
     }
 
-    /// Cmd/Ctrl+F follows the platform Find convention while Canvas is the
-    /// active overview mode. Selecting the existing query makes a repeated
+    /// Cmd/Ctrl+F follows the platform Find convention in every Overview
+    /// mode (List, Canvas and Outline share the toolbar search, which also
+    /// filters the Outline). Selecting the existing query makes a repeated
     /// search immediately replaceable.
-    pub(crate) fn focus_canvas_search(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.is_canvas() {
-            return false;
-        }
+    pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let focus = gpui::Focusable::focus_handle(self.search.read(cx), cx);
         window.focus(&focus, cx);
         window.dispatch_action(Box::new(crate::composer::SelectAll), cx);
         true
+    }
+
+    /// Whether the toolbar search field holds focus.
+    pub(crate) fn search_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        gpui::Focusable::focus_handle(self.search.read(cx), cx).is_focused(window)
+    }
+
+    /// Hand focus from the search field to the body of the current mode:
+    /// the Outline tree, or the List / Canvas surface. With `first_row`
+    /// (Enter / Down) the first matching row is selected as well in List and
+    /// Outline, so the arrow keys work at once.
+    fn leave_search(&mut self, first_row: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match self.view_mode {
+            OverviewMode::Outline => {
+                self.outline.update(cx, |outline, cx| {
+                    if first_row {
+                        outline.focus_first_row(window, cx);
+                    } else {
+                        outline.focus(window, cx);
+                    }
+                });
+            }
+            OverviewMode::List | OverviewMode::Canvas => {
+                window.focus(&self.body_focus, cx);
+                if first_row && self.view_mode == OverviewMode::List {
+                    self.select_list_row(0, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Select the `ix`-th rendered List row and scroll it into view.
+    fn select_list_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some((chat_id, child)) = self.list_order.get(ix).cloned() else {
+            return;
+        };
+        self.scroll.scroll_to_item(child);
+        self.list_selected = Some(chat_id);
+        cx.notify();
+    }
+
+    /// Keys on the search field. Esc clears a non-empty query, else returns
+    /// focus to the mode's body; Enter / Down move to the first matching
+    /// row. Anything else (typing, editing) is left to the field. Esc with
+    /// an empty query while a side panel is open falls through to the
+    /// Overview's own handler, which closes the panel.
+    fn search_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                if !self.search.read(cx).text().is_empty() {
+                    self.search.update(cx, |search, cx| search.set_text("", cx));
+                } else if self.work_item_details.is_some()
+                    || self.required_actions_panel.is_some()
+                    || self.subagent_peek.is_some()
+                {
+                    return;
+                } else {
+                    self.leave_search(false, window, cx);
+                }
+            }
+            "enter" | "down" => self.leave_search(true, window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+        window.prevent_default();
+    }
+
+    /// Keys on the focused List surface (not on an input inside a row):
+    /// Up / Down move the selection (Up from the first row returns to the
+    /// search), Enter opens the selected chat in the side panel.
+    fn list_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.view_mode != OverviewMode::List
+            || !self.body_focus.is_focused(window)
+            || event.keystroke.modifiers.modified()
+        {
+            return;
+        }
+        let current = self
+            .list_selected
+            .as_ref()
+            .and_then(|id| self.list_order.iter().position(|(row, _)| row == id));
+        match event.keystroke.key.as_str() {
+            "down" => match current {
+                Some(ix) if ix + 1 < self.list_order.len() => self.select_list_row(ix + 1, cx),
+                Some(_) => {}
+                None => self.select_list_row(0, cx),
+            },
+            "up" => match current {
+                Some(ix) if ix > 0 => self.select_list_row(ix - 1, cx),
+                _ => {
+                    self.focus_search(window, cx);
+                }
+            },
+            "enter" => match self.list_selected.clone() {
+                Some(chat_id) if current.is_some() => self.open_chat_panel(chat_id, cx),
+                _ => self.select_list_row(0, cx),
+            },
+            _ => return,
+        }
+        cx.stop_propagation();
+        window.prevent_default();
     }
 
     /// Click-to-expand (tile or list row). Expanding also acknowledges an
@@ -6412,10 +6533,21 @@ impl Render for Overview {
                             .text_color(theme.text_muted)
                             .child(SharedString::from(format!("{} chats", rows.len()))),
                     )
-                    .child(div().w(px(260.0)).child(popover::search_input_frame(
-                        &theme,
-                        self.search.clone().into_any_element(),
-                    ))),
+                    .child(
+                        div()
+                            .id("overview-search")
+                            .w(px(260.0))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    this.search_key_down(event, window, cx)
+                                },
+                            ))
+                            .hint("Search", HintKey::Find)
+                            .child(popover::search_input_frame(
+                                &theme,
+                                self.search.clone().into_any_element(),
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -6698,8 +6830,14 @@ impl Render for Overview {
         // Built before the body, which consumes `rows`.
         let pr_sidebar = self.render_pr_sidebar(&rows, &theme, cx);
         let body = match self.view_mode {
-            OverviewMode::List => self.render_list_body(&rows, &theme, cx),
-            OverviewMode::Canvas => self.render_canvas_body(rows, &theme, cx),
+            OverviewMode::List => {
+                let body = self.render_list_body(&rows, &theme, cx);
+                self.surface_focus_wrapper(body, cx)
+            }
+            OverviewMode::Canvas => {
+                let body = self.render_canvas_body(rows, &theme, cx);
+                self.surface_focus_wrapper(body, cx)
+            }
             OverviewMode::Outline => self.render_outline_body(cx),
         };
         // A focus the body couldn't use (target filtered out / not a row)
@@ -6774,6 +6912,27 @@ impl Render for Overview {
 }
 
 impl Overview {
+    /// Wrap a List / Canvas body in its keyboard focus target (Esc / Enter /
+    /// Down from the search land on it; List arrows and Enter run here).
+    fn surface_focus_wrapper(
+        &self,
+        body: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id("overview-surface")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .track_focus(&self.body_focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.list_key_down(event, window, cx)
+            }))
+            .child(body)
+            .into_any_element()
+    }
+
     /// The overview's one clearly-primary action: reuses the exact same
     /// new-session flow as the titlebar `+` / `mod-n` (`Shell::open_new_session`,
     /// via the `open_new_session_from_overview` wrapper — `open_new_session`
@@ -7291,7 +7450,9 @@ impl Overview {
     ) -> gpui::AnyElement {
         let mounted_ids: Vec<String> = rows.iter().map(|row| row.chat.id.clone()).collect();
         reconcile_hovered_tile(&mut self.hovered_tile, &mounted_ids);
+        self.list_order.clear();
         if rows.is_empty() {
+            self.list_selected = None;
             return self.render_empty_state(theme, cx);
         }
 
@@ -7304,6 +7465,11 @@ impl Overview {
             focus_child = focus_id
                 .as_deref()
                 .and_then(|id| rows.iter().position(|r| r.chat.id == id));
+            self.list_order = rows
+                .iter()
+                .enumerate()
+                .map(|(ix, row)| (row.chat.id.clone(), ix))
+                .collect();
             rows.iter()
                 .enumerate()
                 .map(|(ix, row)| self.render_list_row(ix, row, theme, cx))
@@ -7343,6 +7509,7 @@ impl Overview {
                         if focus_id.as_deref() == Some(row.chat.id.as_str()) {
                             focus_child = Some(out.len());
                         }
+                        self.list_order.push((row.chat.id.clone(), out.len()));
                         out.push(self.render_list_row(ix, row, theme, cx));
                         ix += 1;
                     }
@@ -7352,6 +7519,14 @@ impl Overview {
         };
         if let Some(child) = focus_child {
             self.scroll.scroll_to_item(child);
+        }
+        // A filtered-out row loses the keyboard selection.
+        if self
+            .list_selected
+            .as_ref()
+            .is_some_and(|id| !self.list_order.iter().any(|(row, _)| row == id))
+        {
+            self.list_selected = None;
         }
 
         div()
@@ -7485,6 +7660,10 @@ impl Overview {
                 |el| el.border_color(theme.accent),
             )
             .when(is_expanded, |el| el.bg(theme.element_hover.opacity(0.5)))
+            .when(
+                self.list_selected.as_deref() == Some(chat_id.as_str()),
+                |el| el.bg(theme.element_active),
+            )
             .when_some(dim, |el, opacity| el.opacity(opacity))
             .hover(|el| el.bg(theme.element_hover))
             .when(has_subagent_overflow, |el| {
@@ -9938,6 +10117,53 @@ impl Overview {
         self.outline_preview.is_some()
     }
 
+    /// Tests: switch the view mode (after loading saved prefs, as the real
+    /// toggle does).
+    #[cfg(test)]
+    pub(crate) fn set_mode_for_test(&mut self, mode: OverviewMode, cx: &mut Context<Self>) {
+        self.ensure_prefs_loaded(cx);
+        self.set_mode(mode, cx);
+    }
+
+    /// Tests: the search field's text.
+    #[cfg(test)]
+    pub(crate) fn search_text(&self, cx: &gpui::App) -> String {
+        self.search.read(cx).text().to_string()
+    }
+
+    /// Tests: set the search text (emits an edit, as typing does).
+    #[cfg(test)]
+    pub(crate) fn set_search_text_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |search, cx| search.set_text(text, cx));
+    }
+
+    /// Tests: set (or clear) the List selection.
+    #[cfg(test)]
+    pub(crate) fn set_list_selection_for_test(
+        &mut self,
+        id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.list_selected = id;
+        cx.notify();
+    }
+
+    /// Tests: whether the List / Canvas surface holds focus.
+    #[cfg(test)]
+    pub(crate) fn body_focused(&self, window: &Window) -> bool {
+        self.body_focus.is_focused(window)
+    }
+
+    /// Tests: the keyboard-selected List row and the rendered row order.
+    #[cfg(test)]
+    pub(crate) fn list_selection_for_test(&self) -> (Option<String>, Vec<String>) {
+        (
+            self.list_selected.clone(),
+            self.list_order.iter().map(|(id, _)| id.clone()).collect(),
+        )
+    }
+
     /// Tests: switch to List mode and open the chat panel on `chat_id` (the
     /// row's "View full chat →"), which highlights that row.
     #[cfg(test)]
@@ -11360,39 +11586,36 @@ mod logic_tests {
     }
 
     #[gpui::test]
-    fn canvas_find_focuses_and_selects_the_chat_search(cx: &mut gpui::TestAppContext) {
+    fn find_focuses_and_selects_the_search_in_every_mode(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let state = state_with_repos(cx, dir.path(), &["alpha"]);
         let (overview, vcx) = overview_over(cx, &state);
-        overview.update(vcx, |overview, cx| {
-            overview.view_mode = OverviewMode::Canvas;
-            overview
-                .search
-                .update(cx, |search, cx| search.set_text("old query", cx));
-            cx.notify();
-        });
-        vcx.update(|window, cx| window.draw(cx).clear());
+        for mode in [
+            OverviewMode::Canvas,
+            OverviewMode::List,
+            OverviewMode::Outline,
+        ] {
+            overview.update(vcx, |overview, cx| {
+                overview.view_mode = mode;
+                overview
+                    .search
+                    .update(cx, |search, cx| search.set_text("old query", cx));
+                cx.notify();
+            });
+            vcx.update(|window, cx| {
+                window.blur();
+                window.draw(cx).clear();
+            });
 
-        vcx.update(|window, cx| {
-            assert!(overview.update(cx, |overview, cx| {
-                overview.focus_canvas_search(window, cx)
-            }));
-            let search = overview.read(cx).search.clone();
-            assert!(gpui::Focusable::focus_handle(search.read(cx), cx).is_focused(window));
-        });
-        vcx.simulate_keystrokes("replacement");
-        overview.read_with(vcx, |overview, cx| {
-            assert_eq!(overview.search.read(cx).text(), "replacement");
-        });
-
-        overview.update(vcx, |overview, _| overview.view_mode = OverviewMode::List);
-        vcx.update(|window, cx| {
-            window.blur();
-            assert!(!overview.update(cx, |overview, cx| {
-                overview.focus_canvas_search(window, cx)
-            }));
-            assert!(window.focused(cx).is_none());
-        });
+            vcx.update(|window, cx| {
+                assert!(overview.update(cx, |overview, cx| overview.focus_search(window, cx)));
+                assert!(overview.read(cx).search_focused(window, cx), "{mode:?}");
+            });
+            vcx.simulate_keystrokes("replacement");
+            overview.read_with(vcx, |overview, cx| {
+                assert_eq!(overview.search.read(cx).text(), "replacement", "{mode:?}");
+            });
+        }
     }
 
     fn state_with_repos(

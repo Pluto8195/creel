@@ -117,7 +117,11 @@ actions!(
     ]
 );
 
-const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
+/// Find (⌘F / Ctrl+F): focus the Overview's search field and select its text.
+/// Bound with no context so it works from an unfocused Overview; deeper
+/// contexts that own Find themselves (the file editor's `Search`) still win,
+/// and every other route ignores it.
+pub(crate) const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
 const OPEN_REPOSITORY_TOPOLOGY_COMBO: &str = "mod-shift-g";
 pub(crate) const OPEN_PR_REVIEW_CHATS_COMBO: &str = "mod-shift-p";
 
@@ -433,8 +437,9 @@ pub fn apply_keymap(
         // Fixed: ⌘⇧O (Ctrl+Shift+O elsewhere) opens the multi-chat overview.
         // Not (yet) a customizable `ShortcutId` — same tier as ⌘K above.
         KeyBinding::new(&platform_combo("mod-shift-o"), OpenOverview, None),
-        // Contextual overview navigation: Find targets the canvas search and
-        // ⌘⇧G moves from Canvas to the repository/worktree map.
+        // Contextual overview navigation: Find targets the Overview search
+        // (List, Canvas and Outline) and ⌘⇧G moves from Canvas to the
+        // repository/worktree map.
         KeyBinding::new(
             &platform_combo(FOCUS_OVERVIEW_SEARCH_COMBO),
             FocusOverviewSearch,
@@ -11981,7 +11986,7 @@ impl Render for Shell {
                         Route::Overview => {
                             let page = this.ensure_overview_page(cx);
                             page.update(cx, |overview, cx| {
-                                overview.focus_canvas_search(window, cx);
+                                overview.focus_search(window, cx);
                             });
                         }
                         Route::PrReviewChats => {
