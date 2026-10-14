@@ -252,8 +252,9 @@ fn space_root_toggle_and_connect_prompt(cx: &mut gpui::TestAppContext) {
     open_details(&overview, vcx, "");
     draw(vcx);
     assert!(vcx.debug_bounds("space-linear").is_some());
-    assert!(vcx.debug_bounds("space-linear-connect").is_some(), "no key: Connect Linear");
+    assert_eq!(called(&calls, "LinearStatus"), 0, "Linear off: no calls");
     press(vcx, "space-linear-toggle".into());
+    assert!(vcx.debug_bounds("space-linear-connect").is_some(), "no key: Connect Linear");
     let toggles = mutations(&calls, "setSpaceLinearEnabled");
     assert_eq!(toggles.len(), 1);
     assert_eq!(toggles[0]["enabled"], true);

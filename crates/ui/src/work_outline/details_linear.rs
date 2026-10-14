@@ -487,7 +487,11 @@ impl WorkItemDetails {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let enabled = snapshot.space_settings.linear_enabled;
-        store::ensure_status(&self.state, cx);
+        // A Space with Linear off makes no Linear calls; turning it on
+        // fetches the status (`set_linear_enabled`).
+        if enabled {
+            store::ensure_status(&self.state, cx);
+        }
         let store = &self.state.read(cx).linear;
         let configured = store.configured();
         let not_available = matches!(&store.status, Some(Err(error)) if error.not_available());
