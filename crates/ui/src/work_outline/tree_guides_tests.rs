@@ -65,8 +65,14 @@ fn guides_align_under_parent_disclosure(cx: &mut gpui::TestAppContext) {
     assert!(shown(vcx, format!("outline-guide-{auth}-0")));
     assert!(shown(vcx, format!("outline-guide-{auth}-1")));
     // Chats get guides too.
-    assert!(shown(vcx, format!("outline-guide-arm-{}", row_key::chat(CHAT_AUTH))));
-    assert!(shown(vcx, format!("outline-guide-arm-{}", row_key::chat(CHAT_UI))));
+    assert!(shown(
+        vcx,
+        format!("outline-guide-arm-{}", row_key::chat(CHAT_AUTH))
+    ));
+    assert!(shown(
+        vcx,
+        format!("outline-guide-arm-{}", row_key::chat(CHAT_UI))
+    ));
     // The row's own disclosure did not move: still one indent step in.
     let api_disclosure = row_bounds(vcx, format!("outline-disclosure-{api}")).unwrap();
     assert_eq!(
@@ -98,7 +104,10 @@ fn selection_lights_the_active_path(cx: &mut gpui::TestAppContext) {
     assert!(shown(vcx, format!("outline-guide-lit-{auth_chat}-2")));
     // Not on the path: Launch's line past API, API's Chats, UI.
     assert!(!shown(vcx, format!("outline-guide-lit-{auth}-0")));
-    assert!(!shown(vcx, format!("outline-guide-lit-{}-1", row_key::chat(CHAT_API))));
+    assert!(!shown(
+        vcx,
+        format!("outline-guide-lit-{}-1", row_key::chat(CHAT_API))
+    ));
     assert!(!shown(vcx, format!("outline-guide-lit-{ui}-0")));
 
     // Selecting UI lights Launch's column from API down to UI.
@@ -116,7 +125,9 @@ fn drag_onto(
     to: &str,
     upper: bool,
 ) -> gpui::Point<Pixels> {
-    let start = row_bounds(vcx, format!("outline-row-{from}")).unwrap().center();
+    let start = row_bounds(vcx, format!("outline-row-{from}"))
+        .unwrap()
+        .center();
     let target = row_bounds(vcx, format!("outline-row-{to}")).unwrap();
     let end = if upper {
         gpui::point(target.center().x, target.top() + px(2.0))
@@ -162,12 +173,20 @@ fn drop_indicator_starts_at_destination_parent_guide(cx: &mut gpui::TestAppConte
     let line = row_bounds(vcx, format!("outline-drop-before-{ui}")).expect("before line");
     let launch_guide = row_bounds(vcx, format!("outline-guide-{ui}-0")).unwrap();
     assert_eq!(line.left(), launch_guide.left() + px(3.0));
-    assert_eq!(label(&outline, vcx).as_deref(), Some("Before UI (under Launch v2)"));
+    assert_eq!(
+        label(&outline, vcx).as_deref(),
+        Some("Before UI (under Launch v2)")
+    );
     assert!(shown(vcx, "outline-drop-label".into()));
     release(vcx, at);
-    assert_eq!(label(&outline, vcx), None, "the label goes with the indicator");
+    assert_eq!(
+        label(&outline, vcx),
+        None,
+        "the label goes with the indicator"
+    );
     assert!(!shown(vcx, "outline-drop-label".into()));
-    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     draw(vcx);
 
     // Before Auth endpoints: under API (depth 1), one step further right.
@@ -182,7 +201,8 @@ fn drop_indicator_starts_at_destination_parent_guide(cx: &mut gpui::TestAppConte
         Some("Before Auth endpoints (under API)")
     );
     release(vcx, at);
-    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     draw(vcx);
 
     // Into UI: no insertion line, the row is the target, the label says so.
@@ -191,7 +211,8 @@ fn drop_indicator_starts_at_destination_parent_guide(cx: &mut gpui::TestAppConte
     assert!(!shown(vcx, format!("outline-drop-after-{ui}")));
     assert_eq!(label(&outline, vcx).as_deref(), Some("Into UI"));
     release(vcx, at);
-    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     draw(vcx);
 
     // A Chat drag goes into the item: "Into API".
@@ -225,7 +246,8 @@ fn keyboard_move_flashes_unless_reduced_motion(cx: &mut gpui::TestAppContext) {
     assert!(!shown(vcx, format!("outline-move-flash-{ui}")));
 
     // Reduced motion: the move still happens, without the flash.
-    vcx.executor().advance_clock(std::time::Duration::from_secs(3));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     vcx.run_until_parked();
     vcx.update(|_, cx| cx.set_reduce_motion(true));
     select(&outline, vcx, &ui);
