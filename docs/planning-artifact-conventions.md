@@ -166,10 +166,10 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 - At the start of every chat under a work item, call `artifact_get_plan {}`:
 
   ```
-  → { artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims } | null
+  → { artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims }
   ```
 
-  If a plan exists, work from it and update it (publish a new revision) rather than writing a new
+  With no plan, `artifactId` is `null` and a `note` explains why. If a plan exists, work from it and update it (publish a new revision) rather than writing a new
   one.
 - Zeron shows the work item's linked Linear project next to the plan. Syncing plan content into
   Linear is the skill's job (for example with the `linear` CLI); Zeron does not write to Linear.
