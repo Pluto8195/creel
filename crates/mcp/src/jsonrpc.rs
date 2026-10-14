@@ -47,7 +47,14 @@ missing information from the user, raise it with \
 `detail`, a `dedupeKey` per topic) in addition to asking in chat. After the \
 user answers, resolve it with `work_outline_resolve_user_action_request`. Use \
 your built-in quick question prompt only for small clarifications that do not \
-block the work item.";
+block the work item.\n\
+\n\
+Planning artifacts (plans, diagrams, state machines, option comparisons): \
+publish every file the user should see with `artifact_publish` and link the \
+returned `zeron-artifact:<id>` URL, never a bare path. At the start of a chat \
+under a work item call `artifact_get_plan`. After creating or changing a \
+visual artifact run `artifact_render_check`, fix what it reports, and look at \
+the screenshot before calling it done.";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -177,15 +184,19 @@ pub async fn handle_request(tools: &Tools, id: Value, method: &str, params: Valu
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match tools.call(name, arguments).await {
-                Ok(value) => ok_response(
-                    id,
-                    json!({
-                        "content": [{ "type": "text", "text": pretty(&value) }],
-                        "structuredContent": wrap_structured(value),
-                        "isError": false,
-                    }),
-                ),
+            match tools.call_with_content(name, arguments).await {
+                Ok((value, extra)) => {
+                    let mut content = vec![json!({ "type": "text", "text": pretty(&value) })];
+                    content.extend(extra);
+                    ok_response(
+                        id,
+                        json!({
+                            "content": content,
+                            "structuredContent": wrap_structured(value),
+                            "isError": false,
+                        }),
+                    )
+                }
                 Err(message) => ok_response(
                     id,
                     json!({
