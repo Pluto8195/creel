@@ -112,7 +112,7 @@ pub(super) fn relative_target(document: &str, target: &str) -> Option<(String, O
     Some((parts.join("/"), anchor.and_then(|a| decode(&a))))
 }
 
-pub(super) struct MarkdownPreview {
+pub(crate) struct MarkdownPreview {
     pub focus: FocusHandle,
     pub version: Option<(u64, u64, Option<String>)>,
     path: String,
@@ -161,9 +161,14 @@ pub(super) struct MarkdownPreview {
     preview_focus: FocusHandle,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
     open_web_link: Option<WebLinkHandler>,
+    /// Consulted first for non-web links (`path:line`, `zeron-file:`); a
+    /// `true` return means the owner handled it.
+    open_file_link: Option<FileLinkHandler>,
 }
 
-pub(super) type WebLinkHandler = Rc<dyn Fn(&render::LinkActivation, &mut gpui::App)>;
+pub(crate) type FileLinkHandler = Rc<dyn Fn(&render::LinkActivation, &mut gpui::App) -> bool>;
+
+pub(crate) type WebLinkHandler = Rc<dyn Fn(&render::LinkActivation, &mut gpui::App)>;
 
 impl MarkdownPreview {
     fn close_media_preview(&mut self, cx: &mut gpui::App) {
@@ -393,6 +398,7 @@ impl MarkdownPreview {
             truncated: false,
             open_file,
             open_web_link: None,
+            open_file_link: None,
         }
     }
 
@@ -966,18 +972,30 @@ impl MarkdownPreview {
             .unwrap_or_else(|| gpui::Empty.into_any_element())
     }
 
-    pub(super) fn set_web_link_handler(&mut self, handler: WebLinkHandler) {
+    pub(crate) fn set_web_link_handler(&mut self, handler: WebLinkHandler) {
         self.open_web_link = Some(handler);
+    }
+
+    pub(crate) fn set_file_link_handler(&mut self, handler: FileLinkHandler) {
+        self.open_file_link = Some(handler);
     }
 
     pub(super) fn link_ui(&self, cx: &Context<Self>) -> LinkUi {
         let weak = cx.weak_entity();
         let open_web_link = self.open_web_link.clone();
+        let open_file_link = self.open_file_link.clone();
         LinkUi {
             source_session: None,
             handler: Rc::new(move |activation, _, cx| {
                 if weak.upgrade().is_none() {
                     return render::LinkOutcome::Rejected;
+                }
+                if activation.target.navigation.is_err()
+                    && open_file_link
+                        .as_ref()
+                        .is_some_and(|handler| handler(activation, cx))
+                {
+                    return render::LinkOutcome::Internal;
                 }
                 if activation.target.navigation.is_ok() {
                     if let Some(open_web_link) = &open_web_link {

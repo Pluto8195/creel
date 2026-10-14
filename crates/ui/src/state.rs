@@ -769,6 +769,13 @@ pub struct AppState {
     /// Captured at attach time so the cx-less `set_work_outline_visible` and
     /// `work_outline_actions` can schedule work on the app.
     work_outline_runtime: Option<WorkOutlineRuntime>,
+    /// Planning artifact snapshots keyed by Space id, fed by
+    /// `WatchArtifacts` for the same Spaces the Work Outline watches.
+    artifacts: crate::artifacts::ArtifactStore,
+    /// One `WatchArtifacts` task per watched Space.
+    artifact_tasks: HashMap<String, Task<()>>,
+    /// The render-check executor's `WatchArtifactRenderRequests` loop.
+    artifact_render_task: Option<Task<()>>,
     /// Tests: answer every Work Outline mutation/query with this facade.
     #[cfg(test)]
     pub(crate) work_outline_actions_override: Option<crate::work_outline::WorkOutlineActions>,
@@ -862,6 +869,9 @@ impl AppState {
             work_outline_tasks: HashMap::new(),
             work_outline_visible: Vec::new(),
             work_outline_runtime: None,
+            artifacts: crate::artifacts::ArtifactStore::new(),
+            artifact_tasks: HashMap::new(),
+            artifact_render_task: None,
             #[cfg(test)]
             work_outline_actions_override: None,
             chat_execution: HashMap::new(),
@@ -2193,6 +2203,7 @@ impl AppState {
     /// hidden), and spawn a watch for each missing one. Re-run from the
     /// Spaces frame, `attach_engine` and `declare_work_outline_visible`.
     fn reconcile_work_outline_watches(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_artifact_watches(cx);
         let Some(handle) = self.engine.clone() else {
             self.work_outline_tasks.clear();
             return;
@@ -2212,6 +2223,91 @@ impl AppState {
             }
             let task = spawn_work_outline_watch(cx, handle.clone(), space_id.clone());
             self.work_outline_tasks.insert(space_id, task);
+        }
+        if dropped {
+            cx.notify();
+        }
+    }
+
+    /// Planning artifacts of the watched Spaces.
+    pub(crate) fn artifacts(&self) -> &crate::artifacts::ArtifactStore {
+        &self.artifacts
+    }
+
+    /// The artifact RPC facade (shares the Work Outline transport and its
+    /// test override).
+    pub(crate) fn artifact_actions(&self) -> crate::artifacts::ArtifactActions {
+        crate::artifacts::ArtifactActions::new(self.work_outline_actions())
+    }
+
+    /// Apply one `WatchArtifacts` frame; whether anything changed. Frames for
+    /// Spaces no longer watched are dropped.
+    pub(crate) fn apply_artifacts_frame(
+        &mut self,
+        space_id: &str,
+        snapshot: zeron_proto::ArtifactsSnapshot,
+    ) -> bool {
+        if snapshot.space_id != space_id || !self.artifact_tasks.contains_key(space_id) {
+            return false;
+        }
+        self.artifacts.set(
+            space_id,
+            crate::artifacts::ArtifactsLoad::Ready(Arc::new(snapshot)),
+        )
+    }
+
+    /// Register as the engine's render-capable UI and serve render checks
+    /// (`WatchArtifactRenderRequests`).
+    pub(crate) fn start_artifact_render_executor(
+        &mut self,
+        handle: EngineHandle,
+        renderer: Option<std::rc::Rc<dyn crate::artifacts::render_check::ArtifactRenderer>>,
+        config: crate::artifacts::render_check::RenderConfig,
+        cx: &mut Context<Self>,
+    ) {
+        self.artifact_render_task = Some(crate::artifacts::render_check::spawn_render_requests(
+            cx, handle, renderer, config,
+        ));
+    }
+
+    /// Tests: install a Space's artifacts without a watch.
+    #[cfg(test)]
+    pub(crate) fn set_test_artifacts(&mut self, snapshot: zeron_proto::ArtifactsSnapshot) {
+        let space_id = snapshot.space_id.clone();
+        self.artifacts.set(
+            &space_id,
+            crate::artifacts::ArtifactsLoad::Ready(Arc::new(snapshot)),
+        );
+    }
+
+    /// Apply a failed `WatchArtifacts` subscribe.
+    pub(crate) fn apply_artifacts_failure(&mut self, space_id: &str, message: &str) -> bool {
+        if !self.artifact_tasks.contains_key(space_id) {
+            return false;
+        }
+        self.artifacts.set(
+            space_id,
+            crate::artifacts::ArtifactsLoad::from_watch_error(message),
+        )
+    }
+
+    /// `WatchArtifacts` follows the Work Outline watch set exactly: the
+    /// declared visible Spaces plus the selected Chat's Space.
+    fn reconcile_artifact_watches(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.engine.clone() else {
+            self.artifact_tasks.clear();
+            return;
+        };
+        let wanted = self.desired_work_outline_spaces();
+        self.artifact_tasks
+            .retain(|space_id, _| wanted.contains(space_id));
+        let dropped = self.artifacts.retain(|space_id| wanted.contains(space_id));
+        for space_id in wanted {
+            if self.artifact_tasks.contains_key(&space_id) {
+                continue;
+            }
+            let task = spawn_artifacts_watch(cx, handle.clone(), space_id.clone());
+            self.artifact_tasks.insert(space_id, task);
         }
         if dropped {
             cx.notify();
@@ -2243,6 +2339,9 @@ impl AppState {
         self.work_outline_tasks.clear();
         self.work_outlines = crate::work_outline::WorkOutlineStore::new();
         self.work_outline_runtime = None;
+        self.artifact_tasks.clear();
+        self.artifacts = crate::artifacts::ArtifactStore::new();
+        self.artifact_render_task = None;
         self.connection = ConnectionStatus::Connecting;
         self.workspace_scope = None;
         self.auth = None;
@@ -2393,6 +2492,13 @@ impl AppState {
         });
         self.reconcile_change_request_watches(cx);
         self.reconcile_work_outline_watches(cx);
+        // This headed UI serves the engine's artifact render checks.
+        self.start_artifact_render_executor(
+            handle.clone(),
+            crate::artifacts::render_check::platform_renderer(),
+            crate::artifacts::render_check::RenderConfig::default(),
+            cx,
+        );
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
@@ -2896,6 +3002,88 @@ fn spawn_work_outline_watch(
             }
             // Keep the last good snapshot through a transport gap.
             tracing::debug!(%space_id, "work outline stream ended; resubscribing");
+            if this.update(cx, |_, _| {}).is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(work_outline_retry_delay(0))
+                .await;
+        }
+    })
+}
+
+/// One `WatchArtifacts` subscription per Space, mirroring
+/// [`spawn_work_outline_watch`]: `UnknownMethod` (a host without the
+/// artifact RPCs) marks the Space unsupported and stops; other failures
+/// retry with backoff; malformed frames are dropped; the last good snapshot
+/// survives stream gaps.
+fn spawn_artifacts_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    space_id: String,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let mut attempt: u32 = 0;
+        loop {
+            let params = serde_json::json!({ "spaceId": space_id });
+            let mut subscription = match handle
+                .client()
+                .subscribe_checked(methods::WATCH_ARTIFACTS, params)
+                .await
+            {
+                Ok(subscription) => subscription,
+                Err(err) => {
+                    let unsupported = matches!(err, RpcError::UnknownMethod(_));
+                    let message = if unsupported {
+                        "unknown method".to_owned()
+                    } else {
+                        err.to_string()
+                    };
+                    let terminal = unsupported
+                        || matches!(
+                            crate::artifacts::ArtifactsLoad::from_watch_error(&message),
+                            crate::artifacts::ArtifactsLoad::Unsupported
+                        );
+                    tracing::debug!(%space_id, error = %err, terminal, "artifacts watch unavailable");
+                    let alive = this.update(cx, |state, cx| {
+                        if state.apply_artifacts_failure(&space_id, &message) {
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() || terminal {
+                        return;
+                    }
+                    cx.background_executor()
+                        .timer(work_outline_retry_delay(attempt))
+                        .await;
+                    attempt = attempt.saturating_add(1);
+                    continue;
+                }
+            };
+            attempt = 0;
+            let mut newest_revision: u64 = 0;
+            while let Some(value) = subscription.recv().await {
+                let snapshot: zeron_proto::ArtifactsSnapshot = match serde_json::from_value(value) {
+                    Ok(snapshot) => snapshot,
+                    Err(err) => {
+                        tracing::warn!(%space_id, error = %err, "dropping malformed artifacts frame");
+                        continue;
+                    }
+                };
+                if snapshot.revision < newest_revision {
+                    continue;
+                }
+                newest_revision = snapshot.revision;
+                let alive = this.update(cx, |state, cx| {
+                    if state.apply_artifacts_frame(&space_id, snapshot) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            tracing::debug!(%space_id, "artifacts stream ended; resubscribing");
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
@@ -4714,6 +4902,10 @@ mod tests {
         let mut asked = Vec::new();
         while let Ok(frame) = requests.try_recv() {
             let request: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            // Artifacts follow the same watch set; their tests answer them.
+            if request["method"] == methods::WATCH_ARTIFACTS {
+                continue;
+            }
             assert_eq!(request["method"], methods::WATCH_WORK_OUTLINE);
             let space_id = request["params"]["spaceId"].as_str().unwrap().to_owned();
             let mut reply = reply_for(&space_id);
@@ -4779,6 +4971,101 @@ mod tests {
             state.declare_work_outline_visible(vec![], cx);
             assert!(state.work_outline_tasks.is_empty());
             assert!(outline_titles(state, "s1").is_none());
+        });
+    }
+
+    /// `WatchArtifacts` follows the Work Outline watch set; frames land in
+    /// the artifact store; `unknown method` marks the Space unsupported and
+    /// is terminal; hiding the Outline drops tasks and snapshots.
+    #[gpui::test]
+    fn artifact_watches_follow_the_outline_set(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.set_test_engine(EngineHandle::from_test_client(RpcClient::new(out, inbound)));
+            state.apply_spaces(vec![
+                space("s1", "dev", "/a", 1),
+                space("s2", "dev", "/b", 2),
+            ]);
+            state.declare_work_outline_visible(vec!["s1".into(), "s2".into()], cx);
+            assert_eq!(state.artifact_tasks.len(), 2);
+        });
+        cx.run_until_parked();
+        let mut asked = Vec::new();
+        while let Ok(frame) = requests.try_recv() {
+            let request: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            if request["method"] != methods::WATCH_ARTIFACTS {
+                continue;
+            }
+            let space_id = request["params"]["spaceId"].as_str().unwrap().to_owned();
+            let mut reply = if space_id == "s1" {
+                serde_json::json!({ "item": {
+                    "spaceId": "s1",
+                    "revision": 1,
+                    "artifacts": [{
+                        "id": "0123456789abcdef0123456789abcdef",
+                        "spaceId": "s1",
+                        "deviceId": "dev",
+                        "workItemId": "w-api",
+                        "title": "Plan",
+                        "kind": "markdown",
+                        "folder": "api",
+                        "storedPath": "/a/.zeron/artifacts/api/plan.md",
+                        "currentRevision": 1,
+                        "revisions": [{ "id": 1, "note": "first" }],
+                        "pinnedAsPlan": true,
+                        "createdAt": 1,
+                        "updatedAt": 1
+                    }]
+                }})
+            } else {
+                serde_json::json!({ "err": "unknown method: WatchArtifacts" })
+            };
+            reply["id"] = request["id"].clone();
+            runtime.block_on(async {
+                replies.send(reply.to_string()).await.unwrap();
+                while replies.capacity() < replies.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            });
+            asked.push(space_id);
+        }
+        asked.sort();
+        assert_eq!(asked, ["s1", "s2"]);
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            let plan = state
+                .artifacts()
+                .plan_of("s1", "w-api")
+                .map(|a| a.title.clone());
+            assert_eq!(plan.as_deref(), Some("Plan"));
+            assert!(matches!(
+                state.artifacts().load("s2"),
+                crate::artifacts::ArtifactsLoad::Unsupported
+            ));
+        });
+        state.update(cx, |state, cx| {
+            state.apply_spaces(vec![space("s1", "dev", "/a", 1)]);
+            state.reconcile_work_outline_watches(cx);
+            assert_eq!(state.artifact_tasks.keys().collect::<Vec<_>>(), ["s1"]);
+            assert!(state.artifacts().snapshot("s1").is_some());
+            state.declare_work_outline_visible(vec![], cx);
+            assert!(state.artifact_tasks.is_empty());
+            assert!(state.artifacts().snapshot("s1").is_none());
+            // A frame for an unwatched Space is dropped.
+            assert!(!state.apply_artifacts_frame(
+                "s1",
+                zeron_proto::ArtifactsSnapshot {
+                    space_id: "s1".into(),
+                    ..Default::default()
+                }
+            ));
         });
     }
 

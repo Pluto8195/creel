@@ -1114,6 +1114,13 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
+    /// A `[label](zeron-artifact:<id or path>)` link of a settled assistant
+    /// message, shown as an artifact card (title, kind, role, revision,
+    /// Open) resolved against the watched artifact snapshots at render time.
+    ArtifactCard {
+        label: SharedString,
+        target: SharedString,
+    },
 }
 
 #[cfg(test)]
@@ -1776,6 +1783,31 @@ pub fn rows_for_entry(
                 }
                 _ => {}
             }
+        }
+        // Planning artifact links get a card each (in order, deduplicated).
+        let mut linked: Vec<zeron_proto::artifacts::ArtifactLink> = Vec::new();
+        for part in &entry.parts {
+            if let MessagePart::Text { text, .. } = part {
+                for link in zeron_proto::artifacts::artifact_links(text) {
+                    if !linked.iter().any(|seen| seen.target == link.target) {
+                        linked.push(link);
+                    }
+                }
+            }
+        }
+        for (ix, link) in linked.into_iter().enumerate() {
+            rows.push(Row {
+                id: format!("{}#a{ix}", entry.id).into(),
+                version: fnv1a(format!("{}\0{}", link.label, link.target).as_bytes()) << 1,
+                turn_start: false,
+                entry_id: entry_id.clone(),
+                timestamp: None,
+                copy_text: None,
+                kind: RowKind::ArtifactCard {
+                    label: link.label.into(),
+                    target: link.target.into(),
+                },
+            });
         }
         for (ix, artifact) in mentioned_fragments(&texts, &referenced)
             .into_iter()
@@ -6378,13 +6410,33 @@ impl Transcript {
                 name,
                 mime_type,
             } => self.render_generated_image(&row.id, owner, path, name, mime_type, cx),
-            RowKind::Visualization { artifact } => visualization_card(
-                &row.id,
-                artifact.as_ref(),
-                workspace_root.as_deref(),
-                self.link_ui(),
-                &theme,
-            ),
+            RowKind::Visualization { artifact } => {
+                // A visualization registered as an artifact opens as one.
+                let registered = artifact.as_ref().and_then(|artifact| {
+                    self.state
+                        .read(cx)
+                        .artifacts()
+                        .artifact_by_path(&artifact.path, workspace_root.as_deref(), None)
+                        .map(|registered| registered.id.clone())
+                });
+                visualization_card(
+                    &row.id,
+                    artifact.as_ref(),
+                    workspace_root.as_deref(),
+                    registered,
+                    self.link_ui(),
+                    &theme,
+                )
+            }
+            RowKind::ArtifactCard { label, target } => {
+                let card = crate::artifacts::cards::card_model(
+                    label,
+                    target,
+                    self.state.read(cx).artifacts(),
+                    workspace_root.as_deref(),
+                );
+                crate::artifacts::cards::artifact_card(&row.id, card, self.link_ui(), &theme)
+            }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
@@ -7406,6 +7458,7 @@ fn visualization_card(
     row_id: &str,
     artifact: Option<&VisualizationArtifact>,
     workspace_root: Option<&str>,
+    registered: Option<String>,
     link_ui: Option<render::LinkUi>,
     theme: &Theme,
 ) -> AnyElement {
@@ -7563,8 +7616,18 @@ fn visualization_card(
                 )
                 .when_some(actions, |card, actions| card.child(actions))
                 .when_some(activation, |card, (artifact, ui)| {
-                    card.on_click(move |_, window, cx| {
-                        render::activate_link(
+                    card.on_click(move |_, window, cx| match &registered {
+                        Some(id) => render::activate_link(
+                            render::LinkTarget::new(
+                                &artifact.title,
+                                &format!("{}{id}", zeron_proto::artifacts::ARTIFACT_URL_SCHEME),
+                            ),
+                            render::LinkAction::Primary,
+                            ui.as_ref(),
+                            window,
+                            cx,
+                        ),
+                        None => render::activate_link(
                             render::LinkTarget::new(&artifact.title, &artifact.path),
                             render::LinkAction::Visualize {
                                 wide: artifact.wide,
@@ -7572,7 +7635,7 @@ fn visualization_card(
                             ui.as_ref(),
                             window,
                             cx,
-                        )
+                        ),
                     })
                 }),
         )
@@ -10704,6 +10767,65 @@ mod tests {
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].path, "/repo/work/flow.html");
         assert!(artifacts[0].wide);
+    }
+
+    #[test]
+    fn artifact_links_become_cards_once_the_reply_settles() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let raw = format!(
+            "Plan: [Receiving plan](zeron-artifact:{id}) and [notes](zeron-artifact:work/notes.md).\n\n\
+             Again [Receiving plan](zeron-artifact:{id})."
+        );
+        let cards = |status| {
+            let entry = assistant("a", status, vec![text_part("t", &raw)]);
+            let streaming = status == MessageStatus::Streaming;
+            rows_for_entry(&entry, streaming, &mut parse)
+                .into_iter()
+                .filter_map(|row| match row.kind {
+                    RowKind::ArtifactCard { label, target } => {
+                        Some((label.to_string(), target.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            cards(MessageStatus::Complete),
+            [
+                ("Receiving plan".to_owned(), id.to_owned()),
+                ("notes".to_owned(), "work/notes.md".to_owned()),
+            ]
+        );
+        assert!(cards(MessageStatus::Streaming).is_empty());
+    }
+
+    #[test]
+    fn artifact_cards_resolve_registered_artifacts() {
+        use crate::artifacts::cards::card_model;
+        use crate::artifacts::tests::{artifact, id, ready_store};
+        let mut plan = artifact(
+            &id(1),
+            "Receiving plan",
+            zeron_proto::ArtifactKind::Markdown,
+        );
+        plan.pinned_as_plan = true;
+        plan.role = Some("plan".into());
+        plan.origin_path = Some("/repo/work/plan.md".into());
+        let store = ready_store(vec![plan]);
+        let by_id = card_model("label", &id(1), &store, None);
+        assert!(by_id.registered);
+        assert_eq!(by_id.title, "Receiving plan");
+        assert_eq!(
+            by_id.detail,
+            "Markdown \u{b7} plan \u{b7} r2 \u{b7} the plan"
+        );
+        let by_path = card_model("x", "work/plan.md", &store, Some("/repo"));
+        assert_eq!(by_path.url, format!("zeron-artifact:{}", id(1)));
+        let unknown = card_model("Flow", "work/flow.fragment.html", &store, Some("/repo"));
+        assert!(!unknown.registered);
+        assert_eq!(unknown.title, "Flow");
+        assert_eq!(unknown.url, "zeron-artifact:work/flow.fragment.html");
+        assert_eq!(unknown.icon, crate::icons::FILE_CODE);
     }
 
     #[test]

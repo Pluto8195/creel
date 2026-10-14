@@ -1000,6 +1000,7 @@ impl RequiredActionsList {
         } else {
             format!("required-actions-history-row-{id}")
         };
+        let artifact_links = self.render_artifact_links(&id, &row, theme, cx);
         div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector.clone())
@@ -1033,6 +1034,7 @@ impl RequiredActionsList {
                     ),
             )
             .child(div().pl(px(12.0)).child(meta))
+            .when_some(artifact_links, |el, links| el.child(links))
             .when(info_open, |el| {
                 el.child(
                     div()
@@ -1054,6 +1056,73 @@ impl RequiredActionsList {
                 el.child(div().pl(px(12.0)).child(form))
             })
             .into_any_element()
+    }
+
+    /// `zeron-artifact:` links in a request's text or detail, as chips that
+    /// open the Artifact tab.
+    fn render_artifact_links(
+        &self,
+        id: &str,
+        row: &RequiredActionRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut links = zeron_proto::artifacts::artifact_links(&row.text);
+        for link in zeron_proto::artifacts::artifact_links(row.info.as_deref().unwrap_or_default())
+        {
+            if !links.iter().any(|seen| seen.target == link.target) {
+                links.push(link);
+            }
+        }
+        if links.is_empty() {
+            return None;
+        }
+        let chips = links.into_iter().enumerate().map(|(ix, link)| {
+            let selector = format!("required-actions-artifact-{id}-{ix}");
+            let url = format!(
+                "{}{}",
+                zeron_proto::artifacts::ARTIFACT_URL_SCHEME,
+                link.target
+            );
+            let label = if link.label.is_empty() {
+                link.target.clone()
+            } else {
+                link.label.clone()
+            };
+            div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .max_w(px(220.0))
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .px(px(4.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.accent)
+                .hover(|el| el.bg(theme.element_hover))
+                .child(crate::icons::icon(crate::icons::DOCUMENT).size(px(10.0)))
+                .child(div().min_w_0().truncate().child(SharedString::from(label)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(shell) = &this.shell {
+                        shell
+                            .update(cx, |shell, cx| shell.open_artifact_link(&url, window, cx))
+                            .ok();
+                    }
+                }))
+        });
+        Some(
+            div()
+                .pl(px(12.0))
+                .flex()
+                .flex_wrap()
+                .gap(px(4.0))
+                .children(chips)
+                .into_any_element(),
+        )
     }
 
     /// The list body: open rows, then the collapsed history.

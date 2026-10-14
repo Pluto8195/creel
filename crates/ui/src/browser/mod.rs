@@ -7,10 +7,12 @@ mod macos;
 use linux as native;
 #[cfg(target_os = "macos")]
 use macos as native;
+mod document_view;
 pub mod fragment;
 mod fragment_view;
 pub mod model;
 mod view;
+pub use document_view::StaticDocument;
 pub use fragment_view::{FragmentSource, FragmentView, file_url};
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -97,6 +99,10 @@ pub struct BrowserSurface {
     presentation: Presentation,
     /// Set when this tab shows a Codex visualization instead of a website.
     fragment: Option<FragmentView>,
+    /// Set when this surface shows a caller-built host document (artifacts).
+    document: Option<StaticDocument>,
+    /// The owner draws the chrome: no address toolbar.
+    embedded: bool,
     #[cfg(target_os = "macos")]
     resize_inset: gpui::Pixels,
     #[cfg(target_os = "macos")]
@@ -176,6 +182,8 @@ impl BrowserSurface {
             fixture_preview_open: Default::default(),
             presentation: Presentation::Hidden,
             fragment: None,
+            document: None,
+            embedded: false,
             #[cfg(target_os = "macos")]
             resize_inset: gpui::px(0.0),
             #[cfg(target_os = "macos")]
@@ -195,9 +203,10 @@ impl BrowserSurface {
     }
 
     pub fn title(&self) -> gpui::SharedString {
-        match &self.fragment {
-            Some(view) => view.source.title.clone().into(),
-            None => self.page.label().into(),
+        match (&self.fragment, &self.document) {
+            (Some(view), _) => view.source.title.clone().into(),
+            (None, Some(document)) => document.title.clone().into(),
+            (None, None) => self.page.label().into(),
         }
     }
     pub fn set_remote(&mut self, remote: bool) {
@@ -335,6 +344,7 @@ impl BrowserSurface {
             }
         };
         self.validation = None;
+        self.document = None;
         self.address
             .update(cx, |input, cx| input.set_text(url.clone(), cx));
         self.address_edited = false;

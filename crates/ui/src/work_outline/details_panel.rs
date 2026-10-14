@@ -57,6 +57,9 @@ mod linear_section;
 
 #[path = "details_pr_sync.rs"]
 mod pr_sync_section;
+
+#[path = "details_artifacts.rs"]
+pub(crate) mod artifacts_section;
 pub(crate) use user_actions_section::ProposalReview;
 
 /// `item_id` of the Space-root variant of the details surface.
@@ -222,7 +225,12 @@ pub(crate) struct WorkItemDetails {
     pub(crate) linear: linear_section::LinearDetailsState,
     /// PR review sync (`details_pr_sync.rs`).
     pub(crate) pr_sync: pr_sync_section::PrSyncDetailsState,
+    /// Planning artifacts (`details_artifacts.rs`).
+    pub(crate) artifacts: artifacts_section::ArtifactsDetailsState,
     _subscriptions: Vec<Subscription>,
+    /// Tests run without a Shell: the artifact a row click opened.
+    #[cfg(test)]
+    pub(crate) captured_artifact_open: Option<String>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
     pub(crate) captured_confirm: Option<WorkOutlineConfirmRequest>,
@@ -395,7 +403,10 @@ impl WorkItemDetails {
             proposals_error: None,
             linear: Default::default(),
             pr_sync: Default::default(),
+            artifacts: Default::default(),
             _subscriptions: subscriptions,
+            #[cfg(test)]
+            captured_artifact_open: None,
             #[cfg(test)]
             captured_confirm: None,
             #[cfg(test)]
@@ -1327,6 +1338,7 @@ impl Render for WorkItemDetails {
         );
         let linear = self.render_linear_section(&item, &snapshot, &theme, cx);
         let pull_request = self.render_pr_section(&item, &snapshot, &theme, cx);
+        let artifacts = self.render_artifacts_section(&item, &snapshot, &theme, cx);
         let linear_hint = self.render_linear_paste_hint(&theme, cx);
 
         // Associated chats.
@@ -1663,6 +1675,7 @@ impl Render for WorkItemDetails {
                 .child(required_actions)
                 .children(linear)
                 .children(pull_request)
+                .child(artifacts)
                 .child(description)
                 .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
                 .when_some(proposals, |el, section| el.child(section))

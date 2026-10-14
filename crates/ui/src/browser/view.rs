@@ -511,7 +511,7 @@ impl Render for BrowserSurface {
                 .child(open)
                 .into_any_element()
         };
-        let has_page = has_page || self.fragment.is_some();
+        let has_page = has_page || self.fragment.is_some() || self.document.is_some();
         let fragment_status = self.fragment_status(&theme, cx);
 
         let body = div()
@@ -655,6 +655,8 @@ impl Render for BrowserSurface {
             .on_action(cx.listener(|this, _: &super::Reload, window, cx| {
                 if this.fragment.is_some() {
                     this.reload_fragment(window, cx)
+                } else if this.document.is_some() {
+                    this.load_static_document(window, cx)
                 } else {
                     this.reload(cx)
                 }
@@ -664,7 +666,7 @@ impl Render for BrowserSurface {
             .on_action(cx.listener(|_, _: &super::CloseTab, _, cx| cx.emit(BrowserEvent::Close)))
             .on_action(cx.listener(|this, _: &super::Back, _, _| this.history(false)))
             .on_action(cx.listener(|this, _: &super::Forward, _, _| this.history(true)))
-            .child(toolbar)
+            .when(!self.embedded, |el| el.child(toolbar))
             .when_some(self.fragment_notice(&theme), |el, notice| el.child(notice))
             .when_some(self.validation.clone(), |el, message| el.child(div().px(px(12.0)).py(px(8.0)).text_size(crate::typography::ui_rems(11.0)).text_color(theme.danger).child(message)))
             .when(remote_loopback, |el| el.child(div().px(px(12.0)).py(px(8.0)).border_b_1().border_color(theme.border)

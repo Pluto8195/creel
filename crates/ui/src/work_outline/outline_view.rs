@@ -2403,6 +2403,45 @@ impl OutlineView {
             .into_any_element()
     }
 
+    /// A small "▤ 3" indicator: the item's live planning artifacts.
+    fn artifact_count_chip(
+        &self,
+        key: &str,
+        item: &model::ItemRow,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let count = self
+            .state
+            .read(cx)
+            .artifacts()
+            .count_for_work_item(&item.space_id, &item.item_id);
+        if count == 0 {
+            return None;
+        }
+        let selector = format!("outline-artifacts-{key}");
+        let tip: SharedString = if count == 1 {
+            "1 artifact".into()
+        } else {
+            format!("{count} artifacts").into()
+        };
+        Some(
+            div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.text_faint)
+                .child(crate::icons::icon(crate::icons::DOCUMENT).size(px(10.0)))
+                .child(SharedString::from(count.to_string()))
+                .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                .into_any_element(),
+        )
+    }
+
     fn render_row(
         &self,
         ix: usize,
@@ -2642,10 +2681,14 @@ impl OutlineView {
                         )
                     });
                     let linear = self.external_chips(&key, item, theme, cx);
+                    let artifacts = self.artifact_count_chip(&key, item, theme, cx);
                     item_body(
                         &key,
                         item,
-                        linear_outline::join_chips(proposals, linear),
+                        linear_outline::join_chips(
+                            linear_outline::join_chips(proposals, artifacts),
+                            linear,
+                        ),
                         theme,
                     )
                 }
