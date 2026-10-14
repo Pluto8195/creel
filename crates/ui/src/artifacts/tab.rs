@@ -260,12 +260,15 @@ impl ArtifactTab {
         self.notice.as_deref()
     }
 
+    /// The embedded web view, once one exists (it outlives mode switches).
     pub(crate) fn web_browser(&self) -> Option<Entity<crate::browser::BrowserSurface>> {
-        if matches!(self.presenter(), Presenter::Web(_)) || self.option_shown.is_some() {
-            self.web.as_ref().and_then(|web| web.browser())
-        } else {
-            None
-        }
+        self.web.as_ref().and_then(|web| web.browser())
+    }
+
+    /// Whether the body shows the web view right now (Source, Compare, and
+    /// native kinds hide it).
+    pub(crate) fn shows_web(&self) -> bool {
+        matches!(self.presenter(), Presenter::Web(_))
     }
 
     pub(crate) fn compare_state(&self) -> Option<&CompareState> {

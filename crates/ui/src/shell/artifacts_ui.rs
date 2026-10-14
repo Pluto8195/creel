@@ -39,14 +39,20 @@ impl Shell {
 
     /// The artifact tabs' embedded web views, for the native presentation
     /// pass (only the selected tab's view is visible).
+    /// `(surface id, web view, shows it now)` for every artifact tab with
+    /// a web view.
     pub(super) fn artifact_browsers(
         &self,
         cx: &App,
-    ) -> Vec<(u64, Entity<crate::browser::BrowserSurface>)> {
+    ) -> Vec<(u64, Entity<crate::browser::BrowserSurface>, bool)> {
         self.artifact_tabs
             .tabs
             .iter()
-            .filter_map(|(id, tab)| tab.read(cx).web_browser().map(|browser| (*id, browser)))
+            .filter_map(|(id, tab)| {
+                let tab = tab.read(cx);
+                tab.web_browser()
+                    .map(|browser| (*id, browser, tab.shows_web()))
+            })
             .collect()
     }
 

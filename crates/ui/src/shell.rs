@@ -12030,9 +12030,9 @@ impl Render for Shell {
             });
         }
         // Artifact tabs embed a web view the same way.
-        for (id, browser) in self.artifact_browsers(cx) {
+        for (id, browser, shows_web) in self.artifact_browsers(cx) {
             let presentation = crate::browser::model::presentation(
-                browser_active && selected_surface == RightSurface::Artifact(id),
+                browser_active && shows_web && selected_surface == RightSurface::Artifact(id),
                 browser_dragging,
             );
             browser.update(cx, |browser, cx| {

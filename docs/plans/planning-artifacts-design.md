@@ -165,6 +165,37 @@ revision is listed as outdated.
 | 4 | G HTML comments | medium |
 | 5 | F options; H canonical plan and Linear mirror | later |
 
+## UI behavior (phase 1, as built)
+
+Code: `crates/ui/src/artifacts/` (+ `shell/artifacts_ui.rs`, `work_outline/details_artifacts.rs`).
+
+- **Data.** `WatchArtifacts` follows the Work Outline watch set (visible Spaces + the selected
+  chat's Space). A host answering `unknown method` shows "Artifacts aren't available on this host
+  yet" everywhere instead of failing.
+- **Links.** `zeron-artifact:<id>` opens the Artifact tab in the right pane (reusing an open tab).
+  `zeron-artifact:<path>` resolves against `storedPath` / `originPath` / `previewPath` (relative
+  paths from the chat's checkout); an unknown path is registered into the chat's scope
+  (`ArtifactRegister`, its work item when assigned) and then opened. Works from transcripts, Details
+  references, and Required Actions (chips for links in the request text or detail). From the
+  Overview the tab opens in the artifact's chat, else a chat of its work item.
+- **Tab.** Markdown renders in the native preview (`zeron-file:` and `path:line` links open files,
+  resolved from the canonical checkout root). Fragments, pages, and Mermaid render through the
+  visualize sandbox in an embedded web view (Mermaid from jsDelivr, `securityLevel: strict`);
+  images natively; options as a list whose entries open their fragment. The revision picker reads
+  `ArtifactContent {revision}`; "Compare with…" shows a line diff (`revision_diff`); Open
+  standalone, Reveal in Finder, and Promote use the owning device (Reveal and standalone only when
+  it is this device).
+- **Details.** The Artifacts section lists the pinned plan first (with the item's Linear project
+  beside it), then newest first; right-click offers Pin/Unpin, Promote, Reveal, Copy link.
+  "Register existing file…" opens a native file picker for a Space on this device (a path field for
+  a remote one) and refuses paths outside the Space folder. Outline rows show an artifact count.
+- **Transcript.** Settled assistant messages show a card per artifact link (the inline link stays
+  clickable); a Codex visualize card opens the registered artifact when one covers its file.
+- **Render checks.** The headed UI subscribes to `WatchArtifactRenderRequests` as `zeron-ui` and
+  answers every request within 25 s with at most two offscreen web views. Markdown answers with a
+  "renders natively" warning and no screenshot; options render every option fragment stacked;
+  non-macOS answers `renderUnavailable`.
+
 ## Conventions for the agent-side planning skill
 
 Moved to `docs/planning-artifact-conventions.md` (v1), which is the binding version.

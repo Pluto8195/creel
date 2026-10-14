@@ -27,5 +27,5 @@ pub(crate) mod tab;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use actions::{ArtifactActions, ArtifactUiError};
+pub(crate) use actions::ArtifactActions;
 pub(crate) use store::{ArtifactStore, ArtifactsLoad};
