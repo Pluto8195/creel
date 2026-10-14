@@ -94,6 +94,7 @@ use crate::work_outline::store::WorkOutlineSnapshot;
 use crate::work_outline::{WorkOutlineCommand, WorkOutlineLoad};
 
 /// The Linear panel host (`overview/linear_host.rs`).
+mod github_host;
 mod linear_host;
 
 /// A chat with no activity for longer than this, and not currently
@@ -2710,6 +2711,17 @@ pub struct Overview {
     /// The Linear column's persisted open state and width, its open/close
     /// tween, and an in-flight edge drag (`overview/linear_host.rs`).
     linear_column: linear_host::LinearColumnState,
+    /// The GitHub section of the same left column (PR review sync;
+    /// `overview/github_host.rs`). `Some` while it shows.
+    github_panel: Option<Entity<crate::github::panel::GithubPanel>>,
+    _github_panel_events: Option<Subscription>,
+    /// Tests run without a Shell: PR review starts land here.
+    #[cfg(test)]
+    pub(crate) captured_pr_review: Option<(
+        zeron_proto::PullRequestRef,
+        Option<(String, String)>,
+        zeron_proto::PrReviewAction,
+    )>,
     /// "Add issues from <project>…" on a project-linked item: a picker over
     /// the Overview, independent of the Linear panel (`linear_host.rs`).
     project_issue_picker: Option<Entity<crate::linear::project_picker::ProjectIssuePicker>>,
@@ -2843,6 +2855,11 @@ impl Overview {
             } => {
                 this.linear_issue_dropped(space_id.clone(), item_id.clone(), (**issue).clone(), cx)
             }
+            OutlineEvent::PullRequestDropped {
+                space_id,
+                item_id,
+                pr,
+            } => this.pull_request_dropped(space_id.clone(), item_id.clone(), (**pr).clone(), cx),
             // The toolbar's Hidden projects count.
             OutlineEvent::SpacesArranged => cx.notify(),
         });
@@ -2956,6 +2973,10 @@ impl Overview {
             linear_panel: None,
             _linear_panel_events: None,
             linear_column: Default::default(),
+            github_panel: None,
+            _github_panel_events: None,
+            #[cfg(test)]
+            captured_pr_review: None,
             project_issue_picker: None,
             _project_issue_picker_events: None,
             #[cfg(test)]
@@ -9932,6 +9953,18 @@ impl Overview {
                         .update(cx, |outline, cx| outline.show_notice(notice, cx));
                 }
             }
+            DetailsEvent::StartPrReview {
+                space_id,
+                item_id,
+                action,
+            } => {
+                if let Err(notice) =
+                    this.start_pr_review_for_item(space_id.clone(), item_id.clone(), *action, cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
             DetailsEvent::AddLinearIssues { space_id, item_id } => {
                 if let Err(notice) =
                     this.open_project_issue_picker(space_id.clone(), item_id.clone(), cx)
@@ -10349,6 +10382,16 @@ impl Overview {
         if item.archived_at.is_some() {
             return Err("Restore the work item to start a Chat in it");
         }
+        // A PR review item (PR review sync) starts a code review of its PR,
+        // filed under the item, instead of the generic Start Chat dialog.
+        if crate::github::pr_review_item(&snapshot, &item_id).is_some() {
+            return self.start_pr_review_for_item(
+                space_id,
+                item_id,
+                zeron_proto::PrReviewAction::CodeReview,
+                cx,
+            );
+        }
         if crate::work_outline::launch::instructions_changed_since_last_launch(&snapshot, &item_id)
         {
             self.open_effective_instructions(space_id.clone(), item_id.clone(), cx);
@@ -10436,13 +10479,16 @@ impl Overview {
             use crate::work_outline::required_actions_view::{
                 RequiredActionsEvent, RequiredActionsList,
             };
+            let shell = self.shell.clone();
             let list = cx.new(|cx| {
-                RequiredActionsList::new(
+                let mut list = RequiredActionsList::new(
                     self.state.clone(),
                     crate::work_outline::required_actions::RequestScope::Global,
                     true,
                     cx,
-                )
+                );
+                list.shell = Some(shell);
+                list
             });
             let events = cx.subscribe(&list, |this: &mut Self, _, event, cx| match event {
                 RequiredActionsEvent::Close => this.close_required_actions(cx),
@@ -15159,6 +15205,12 @@ mod logic_tests {
     /// beside the Work Outline modules and shares this module's fixtures.
     mod linear_tests {
         include!("work_outline/linear_tests.rs");
+    }
+
+    /// PR review sync (destination, chips, the GitHub section, ⌘↩ reviews,
+    /// system Required Actions); shares this module's fixtures.
+    mod pr_sync_tests {
+        include!("work_outline/pr_sync_tests.rs");
     }
 
     /// Direct restructuring (keyboard, palette, picker placement, drag and

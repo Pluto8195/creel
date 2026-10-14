@@ -983,7 +983,7 @@ impl ShortcutId {
             ShortcutId::IndentWorkItem => "Indent work item",
             ShortcutId::OutdentWorkItem => "Outdent work item",
             ShortcutId::ShowOutlineShortcuts => "Show Outline shortcuts",
-            ShortcutId::OpenLinear => "Toggle Linear panel",
+            ShortcutId::OpenLinear => "Toggle Inbox column (Linear, GitHub)",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }

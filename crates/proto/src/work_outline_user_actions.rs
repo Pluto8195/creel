@@ -58,11 +58,37 @@ pub const COMPLETION_RESOLUTION_NOTE: &str = "Resolved by completing the work it
 // User action requests
 // --------------------------------------------------------------------------
 
-/// Where a request came from: the Chat (required) and, optionally, the
-/// message and tool call that raised it.
+/// What raised a request. Lenient: unknown reads as `chat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UserActionOriginKind {
+    /// No Chat: the engine itself raised it (the PR review sync). Only the
+    /// system actor may create such a request; `chatId` is empty and
+    /// `originChatAvailable` is always `false`.
+    System,
+    /// A Chat (the agent or the user acting from it). Declared last because
+    /// `#[serde(other)]` must sit on the last variant.
+    #[default]
+    #[serde(other)]
+    Chat,
+}
+
+impl UserActionOriginKind {
+    pub fn is_chat(&self) -> bool {
+        *self == Self::Chat
+    }
+}
+
+/// Where a request came from: the Chat (required for `kind: chat`, the
+/// default) and, optionally, the message and tool call that raised it; or
+/// `kind: system` with no Chat (system actor only).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserActionRequestOrigin {
+    #[serde(default, skip_serializing_if = "UserActionOriginKind::is_chat")]
+    pub kind: UserActionOriginKind,
+    /// Empty for `kind: system`.
+    #[serde(default)]
     pub chat_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
@@ -104,9 +130,14 @@ pub struct UserActionRequestView {
     pub space_id: String,
     #[serde(default)]
     pub work_item_id: String,
-    /// The originating Chat (kept when the Chat is archived or deleted).
+    /// The originating Chat (kept when the Chat is archived or deleted);
+    /// empty for a `system` origin.
     #[serde(default)]
     pub chat_id: String,
+    /// `system` for a request the engine raised without a Chat (omitted for
+    /// `chat`).
+    #[serde(default, skip_serializing_if = "UserActionOriginKind::is_chat")]
+    pub origin_kind: UserActionOriginKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

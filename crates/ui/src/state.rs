@@ -779,6 +779,9 @@ pub struct AppState {
     /// Linear integration: connection status and the issue cache the chips,
     /// details and panel share (`crate::linear::store`).
     pub(crate) linear: crate::linear::store::LinearStore,
+    /// PR review sync: the PR status cache and last Sync now results the
+    /// chips, details, panel, and ⇧⌘P share (`crate::github::store`).
+    pub(crate) github: crate::github::store::GithubStore,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -863,6 +866,7 @@ impl AppState {
             work_outline_actions_override: None,
             chat_execution: HashMap::new(),
             linear: Default::default(),
+            github: Default::default(),
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,
@@ -2098,6 +2102,16 @@ impl AppState {
             .ok();
         })
         .detach();
+    }
+
+    /// Tests: put a loaded Work Outline snapshot in the store.
+    #[cfg(test)]
+    pub(crate) fn set_work_outline_for_test(&mut self, snapshot: zeron_proto::WorkOutlineSnapshot) {
+        let space_id = snapshot.space_id.clone();
+        self.work_outlines.set(
+            &space_id,
+            crate::work_outline::WorkOutlineLoad::Ready(Arc::new(snapshot)),
+        );
     }
 
     /// Mutation facade bound to the current engine connection.

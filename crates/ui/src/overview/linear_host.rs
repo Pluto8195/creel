@@ -5,8 +5,10 @@
 //! button, Space row menu), the per-device open flag and width, the edge
 //! drag, the narrow-window rule (shrink to the minimum, then overlay the
 //! body), the reduced-motion-aware open/close tween, the Outline drop of a
-//! panel issue, and select + reveal after a create. Nothing here renders
-//! unless some Space has Linear on.
+//! panel issue, and select + reveal after a create. The column (headed
+//! "Inbox") stacks the Linear panel and the GitHub section
+//! (`overview/github_host.rs`), each shown only where it applies; nothing
+//! renders unless some Space has Linear on or the PR review sync.
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -102,6 +104,8 @@ pub(crate) struct LinearColumnState {
     pub(crate) tween: Option<LinearTween>,
     /// The panel kept on screen while the close tween runs.
     closing: Option<Entity<LinearPanel>>,
+    /// The GitHub section kept on screen while the close tween runs.
+    closing_github: Option<Entity<crate::github::panel::GithubPanel>>,
     /// Pointer x and shown width when an edge drag began.
     resize_from: Option<(f32, f32)>,
     /// Width the column showed last frame (the drag's base).
@@ -122,6 +126,7 @@ impl Default for LinearColumnState {
             touched: false,
             tween: None,
             closing: None,
+            closing_github: None,
             resize_from: None,
             shown_width: prefs::PANEL_DEFAULT_W,
             overview_width: Rc::new(Cell::new(None)),
@@ -166,6 +171,58 @@ impl Overview {
             }
             Some(_) => OutlineSelection::Other,
         }
+    }
+
+    /// Whether the left column shows (either section).
+    pub(crate) fn column_shown(&self) -> bool {
+        self.linear_panel.is_some() || self.github_panel.is_some()
+    }
+
+    /// Feed (or create) the GitHub section. Opening (`open`) retargets it:
+    /// `target` when it applies, else the selected row's Space, and
+    /// refreshes it; a new section starts on the first applicable Space and
+    /// refreshes once.
+    fn sync_github_panel(&mut self, target: Option<String>, open: bool, cx: &mut Context<Self>) {
+        let spaces = self.github_spaces(cx);
+        if spaces.is_empty() {
+            self.drop_github_panel();
+            return;
+        }
+        let applies = |id: &str| spaces.iter().any(|space| space.id == id);
+        let selected_space = match self.linear_selection(cx) {
+            OutlineSelection::Item { space_id, .. } | OutlineSelection::Space(space_id) => {
+                Some(space_id)
+            }
+            _ => None,
+        };
+        let target = open
+            .then(|| {
+                target
+                    .filter(|id| applies(id))
+                    .or(selected_space.filter(|id| applies(id)))
+            })
+            .flatten();
+        if self.github_panel.is_none()
+            && let Some(panel) = self.linear_column.closing_github.take()
+        {
+            self.github_panel = Some(panel);
+            self._github_panel_events = None;
+        }
+        let fresh = self.github_panel.is_none();
+        let panel =
+            self.ensure_github_panel(target.clone().unwrap_or_else(|| spaces[0].id.clone()), cx);
+        let selection = self.linear_selection(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_data(spaces, selection, cx);
+            let moved = target.is_some_and(|target| {
+                let moved = panel.space_id != target;
+                panel.set_space(target, cx);
+                moved
+            });
+            if (fresh || open) && !moved {
+                panel.refresh(cx);
+            }
+        });
     }
 
     #[cfg(test)]
@@ -234,6 +291,7 @@ impl Overview {
         });
         if !opening && self.linear_column.tween.is_none() {
             self.linear_column.closing = None;
+            self.linear_column.closing_github = None;
         }
     }
 
@@ -247,8 +305,23 @@ impl Overview {
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
         let spaces = self.linear_spaces(cx);
-        if spaces.is_empty() {
+        let github = !self.github_spaces(cx).is_empty();
+        if spaces.is_empty() && !github {
             return Err(crate::linear::LINEAR_OFF_NOTICE);
+        }
+        let was_shown = self.column_shown();
+        if github {
+            self.sync_github_panel(space_id.clone(), true, cx);
+        }
+        if spaces.is_empty() {
+            if !self.linear_column.open {
+                self.set_linear_open(true, cx);
+            }
+            if !was_shown {
+                self.start_linear_tween(true, cx);
+            }
+            cx.notify();
+            return Ok(());
         }
         let enabled = |id: &str| spaces.iter().any(|space| space.id == id);
         let selected_space = match self.linear_selection(cx) {
@@ -261,7 +334,6 @@ impl Overview {
             .filter(|id| enabled(id))
             .or(selected_space.filter(|id| enabled(id)))
             .unwrap_or_else(|| spaces[0].id.clone());
-        let was_shown = self.linear_panel.is_some();
         let panel = self.ensure_linear_panel(target, cx);
         let selection = self.linear_selection(cx);
         panel.update(cx, |panel, cx| {
@@ -284,9 +356,16 @@ impl Overview {
         if self.linear_column.open {
             self.set_linear_open(false, cx);
         }
+        let shown = self.column_shown();
         if let Some(panel) = self.linear_panel.take() {
             self._linear_panel_events = None;
             self.linear_column.closing = Some(panel);
+        }
+        if let Some(panel) = self.github_panel.take() {
+            self._github_panel_events = None;
+            self.linear_column.closing_github = Some(panel);
+        }
+        if shown {
             self.start_linear_tween(false, cx);
         }
         self.linear_column.return_focus |= return_focus;
@@ -303,22 +382,37 @@ impl Overview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
-        if let Some(panel) = self.linear_panel.clone() {
-            if panel.read(cx).contains_focus(window, cx) {
+        if self.column_shown() {
+            let focused = self
+                .linear_panel
+                .as_ref()
+                .is_some_and(|panel| panel.read(cx).contains_focus(window, cx))
+                || self
+                    .github_panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.read(cx).contains_focus(window, cx));
+            if focused {
                 self.close_linear_panel(false, cx);
                 self.focus_overview_body(window, cx);
             } else {
-                panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+                self.focus_column(window, cx);
             }
             cx.notify();
             return Ok(());
         }
         self.open_linear_panel(None, cx)?;
         self.linear_column.focus_search = true;
+        self.focus_column(window, cx);
+        Ok(())
+    }
+
+    /// The Linear search when Linear shows, else the GitHub section.
+    fn focus_column(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.linear_panel.clone() {
             panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+        } else if let Some(panel) = self.github_panel.clone() {
+            panel.update(cx, |panel, cx| panel.focus(window, cx));
         }
-        Ok(())
     }
 
     /// The Outline tree in Outline mode, else the List/Canvas body.
@@ -534,13 +628,25 @@ impl Overview {
         cx: &mut Context<Self>,
     ) -> Option<LinearSlot> {
         let spaces = self.linear_spaces(cx);
+        let github_spaces = self.github_spaces(cx);
         if spaces.is_empty() {
             if self.linear_panel.take().is_some() {
                 self._linear_panel_events = None;
             }
             self.linear_column.closing = None;
+        }
+        if github_spaces.is_empty() {
+            self.drop_github_panel();
+            self.linear_column.closing_github = None;
+        } else if self.linear_column.open {
+            // Restored open, or the PR review sync came to a Space: keep
+            // the GitHub section fed (it refreshes once when created).
+            self.sync_github_panel(None, false, cx);
+        }
+        if spaces.is_empty() && github_spaces.is_empty() {
             self.linear_column.tween = None;
-        } else if self.linear_column.open && self.linear_panel.is_none() {
+        }
+        if !spaces.is_empty() && self.linear_column.open && self.linear_panel.is_none() {
             // Restored open (a fresh Overview, or Linear came back on).
             let target = spaces[0].id.clone();
             let panel = self.ensure_linear_panel(target, cx);
@@ -560,20 +666,33 @@ impl Overview {
             if done {
                 self.linear_column.tween = None;
                 self.linear_column.closing = None;
+                self.linear_column.closing_github = None;
             } else {
                 fraction = shown;
                 window.request_animation_frame();
             }
         }
-        let closing = self.linear_panel.is_none();
+        let closing = !self.column_shown();
         let panel = self
             .linear_panel
             .clone()
-            .or_else(|| self.linear_column.closing.clone())?;
+            .or_else(|| self.linear_column.closing.clone());
+        let github = self
+            .github_panel
+            .clone()
+            .or_else(|| self.linear_column.closing_github.clone());
+        if panel.is_none() && github.is_none() {
+            return None;
+        }
         let selection = self.linear_selection(cx);
-        panel.update(cx, |panel, _| panel.set_data(spaces, selection));
+        if let Some(panel) = &panel {
+            panel.update(cx, |panel, _| {
+                panel.embedded = true;
+                panel.set_data(spaces, selection);
+            });
+        }
         if !closing && std::mem::take(&mut self.linear_column.focus_search) {
-            panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+            self.focus_column(window, cx);
         }
         let layout = linear_column(
             self.linear_column.overview_width.get(),
@@ -602,7 +721,32 @@ impl Overview {
                     .border_r_1()
                     .border_color(theme.border)
             })
-            .child(div().h_full().w(px(target)).child(panel))
+            .child(
+                div()
+                    .h_full()
+                    .w(px(target))
+                    .flex()
+                    .flex_col()
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .bg(theme.surface)
+                    .child(self.column_header(&theme, cx))
+                    .when_some(panel, |el, panel| {
+                        el.child(div().flex_1().min_h_0().child(panel))
+                    })
+                    .when_some(github, |el, github| {
+                        el.child(
+                            div()
+                                .when(!github.read(cx).folded, |el| el.flex_1())
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .border_t_1()
+                                .border_color(theme.border)
+                                .child(github),
+                        )
+                    }),
+            )
             .children(handle)
             .into_any_element();
         Some(if overlay {
@@ -610,6 +754,50 @@ impl Overview {
         } else {
             LinearSlot::Inline(column)
         })
+    }
+
+    /// The column's own header: "Inbox" and the close button (the toggle's
+    /// hint).
+    fn column_header(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .pt(px(8.0))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_faint)
+                    .child("INBOX"),
+            )
+            .child(
+                div()
+                    .id("inbox-column-close")
+                    .debug_selector(|| "inbox-column-close".into())
+                    .flex_none()
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.element_hover))
+                    .child(
+                        crate::icons::icon(crate::icons::CLOSE)
+                            .size(px(11.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .hint(
+                        "Hide the Inbox column",
+                        HintKey::Command(WorkOutlineCommand::OpenLinear),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.close_linear_panel(true, cx))),
+            )
+            .into_any_element()
     }
 
     fn linear_resize_handle(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -667,10 +855,10 @@ impl Overview {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.linear_spaces(cx).is_empty() {
+        if self.linear_spaces(cx).is_empty() && self.github_spaces(cx).is_empty() {
             return None;
         }
-        let active = self.linear_panel.is_some();
+        let active = self.column_shown();
         Some(
             div()
                 .id("outline-linear")
@@ -686,23 +874,23 @@ impl Overview {
                 })
                 .when(!active, |el| el.text_color(theme.text_muted))
                 .hover(|el| el.text_color(theme.text))
-                .child("Linear")
+                .child("Inbox")
                 .hint(
                     if active {
-                        "Hide the Linear panel"
+                        "Hide the Inbox column"
                     } else {
-                        "Show your Linear issues and projects beside the Outline"
+                        "Show your Linear issues and GitHub PRs beside the Outline"
                     },
                     HintKey::Command(WorkOutlineCommand::OpenLinear),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
-                    if this.linear_panel.is_some() {
+                    if this.column_shown() {
                         this.close_linear_panel(true, cx);
                     } else if let Err(notice) = this.open_linear_panel(None, cx) {
                         this.outline
                             .update(cx, |outline, cx| outline.show_notice(notice, cx));
-                    } else if let Some(panel) = this.linear_panel.clone() {
-                        panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+                    } else {
+                        this.focus_column(window, cx);
                     }
                 }))
                 .into_any_element(),

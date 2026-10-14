@@ -400,6 +400,11 @@ pub struct WorkItemView {
     /// reference is removed. Empty (omitted) for every other item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_sync_modified_fields: Vec<String>,
+    /// PR review sync: what the sync last synced on this item
+    /// (`workItems.externalSyncState`, written only by the system actor).
+    /// `None` (omitted) for every item the sync does not manage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_sync_state: Option<crate::pr_review_sync::WorkItemExternalSyncState>,
 }
 
 impl WorkItemView {
@@ -418,6 +423,10 @@ pub struct WorkOutlineSpaceSettings {
     /// Linear integration is on for this Space (default off).
     #[serde(default)]
     pub linear_enabled: bool,
+    /// PR review sync: the work item that receives one child per PR that
+    /// requests the user's review (`None` = the sync is off for this Space).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_review_sync_work_item_id: Option<String>,
 }
 
 /// How a Chat relates to the outline. Lenient: unknown reads as `unassociated`.
@@ -790,6 +799,27 @@ impl WorkOutlineSnapshot {
         None
     }
 
+    /// The GitHub pull request reference of an item (provider `github`,
+    /// type `pullRequest`), the earliest-created one when there are several.
+    pub fn github_pull_request_reference(
+        &self,
+        work_item_id: &str,
+    ) -> Option<&WorkItemExternalReferenceView> {
+        self.external_references
+            .iter()
+            .filter(|r| {
+                r.work_item_id == work_item_id
+                    && r.provider == crate::pr_review_sync::GITHUB_PROVIDER
+                    && r.reference_type == crate::pr_review_sync::GITHUB_PULL_REQUEST_REFERENCE
+            })
+            .min_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+    }
+
+    /// The Space's PR review sync destination, when set.
+    pub fn pr_review_sync_destination(&self) -> Option<&str> {
+        self.space_settings.pr_review_sync_work_item_id.as_deref()
+    }
+
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
         self.items.iter().find(|item| item.id == id)
     }
@@ -922,6 +952,11 @@ pub struct WorkItemChanges {
     /// Ignored for other statuses; agents may never set it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub resolve_open_requests: bool,
+    /// PR review sync: replace the item's `externalSyncState` record. Only
+    /// the system actor (the engine's sync) may set it; a user or agent
+    /// change carrying it is `unauthorized`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_sync_state: Option<crate::pr_review_sync::WorkItemExternalSyncState>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1172,6 +1207,22 @@ pub struct LinkLinearProjectParams {
     pub operation_id: String,
 }
 
+/// `setPrReviewSyncDestination` (PR review sync): pick the work item that
+/// receives the Space's synced PR review items, or turn the sync off with
+/// `workItemId: null` (the `workOutlineSpaceSettings` row's
+/// `prReviewSyncWorkItemId`, LWW). The item must be live, not archived, and
+/// in the Space. Reply `{}`. Turning the sync off (or moving the
+/// destination) never moves, archives, or deletes synced items. User action
+/// only (agents are refused).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetPrReviewSyncDestinationParams {
+    pub space_id: String,
+    #[serde(default)]
+    pub work_item_id: Option<String>,
+    pub operation_id: String,
+}
+
 /// The params of `WorkOutlineMutate`: one tagged enum (`op`, camelCase) so a
 /// peer that predates an operation answers a single, recognizable error.
 /// Each variant's fields sit beside `op`, e.g.
@@ -1209,6 +1260,8 @@ pub enum WorkOutlineMutation {
     SetSpaceLinearEnabled(SetSpaceLinearEnabledParams),
     CreateWorkItemFromLinear(CreateWorkItemFromLinearParams),
     LinkLinearProject(LinkLinearProjectParams),
+    // ── PR review sync ──
+    SetPrReviewSyncDestination(SetPrReviewSyncDestinationParams),
 }
 
 impl WorkOutlineMutation {
@@ -1241,6 +1294,7 @@ impl WorkOutlineMutation {
             Self::SetSpaceLinearEnabled(p) => &p.operation_id,
             Self::CreateWorkItemFromLinear(p) => &p.operation_id,
             Self::LinkLinearProject(p) => &p.operation_id,
+            Self::SetPrReviewSyncDestination(p) => &p.operation_id,
         }
     }
 
@@ -1273,6 +1327,7 @@ impl WorkOutlineMutation {
             Self::SetSpaceLinearEnabled(_) => "setSpaceLinearEnabled",
             Self::CreateWorkItemFromLinear(_) => "createWorkItemFromLinear",
             Self::LinkLinearProject(_) => "linkLinearProject",
+            Self::SetPrReviewSyncDestination(_) => "setPrReviewSyncDestination",
         }
     }
 
@@ -1804,6 +1859,7 @@ mod tests {
             status: Some(WorkItemStatus::Completed),
             inherit_parent_instructions: Some(false),
             resolve_open_requests: false,
+            external_sync_state: None,
         };
         round_trip(
             &all,
@@ -1854,6 +1910,7 @@ mod tests {
                     subtree_unresolved_user_action_count: 7,
                 },
                 external_sync_modified_fields: Vec::new(),
+                external_sync_state: None,
             }],
             assignments: vec![WorkItemChatAssignmentView {
                 chat_id: "chat-1".into(),
@@ -2190,6 +2247,7 @@ mod tests {
                     status: Some(WorkItemStatus::Completed),
                     inherit_parent_instructions: Some(true),
                     resolve_open_requests: false,
+            external_sync_state: None,
                 },
                 operation_id: "op".into(),
             }),

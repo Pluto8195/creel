@@ -35,7 +35,8 @@ use zeron_proto::work_outline_user_actions::{
     CreateUserActionRequestParams, InstructionProposalReview, InstructionProposalStatus,
     InstructionProposalTarget, ProposalReviewState, ProposalTargetScope,
     ProposeWorkItemInstructionParams, RejectWorkItemInstructionProposalParams,
-    ResolveUserActionRequestParams, UserActionRequestState, UserActionRequestView,
+    ResolveUserActionRequestParams, UserActionOriginKind, UserActionRequestState,
+    UserActionRequestView,
     UserActionResolution, WorkItemInstructionProposalView, user_action_limits,
 };
 
@@ -99,6 +100,10 @@ pub(crate) fn decode_request(row: &RegistryRow) -> Result<DecodedRequest, WorkOu
             space_id,
             work_item_id: str_field(row, "workItemId").unwrap_or_default(),
             chat_id: str_field(row, "chatId").unwrap_or_default(),
+            origin_kind: match row.fields.get("originKind").and_then(Value::as_str) {
+                Some("system") => UserActionOriginKind::System,
+                _ => UserActionOriginKind::Chat,
+            },
             message_id: str_field(row, "messageId").filter(|s| !s.is_empty()),
             tool_call_id: str_field(row, "toolCallId").filter(|s| !s.is_empty()),
             text: str_field(row, "text").unwrap_or_default(),
@@ -147,7 +152,9 @@ pub(crate) fn finish_requests(
             .or_insert(candidate);
     }
     for request in requests.iter_mut() {
-        request.view.origin_chat_available = available_chat(&request.view.chat_id);
+        request.view.origin_chat_available = request.view.origin_kind.is_chat()
+            && !request.view.chat_id.is_empty()
+            && available_chat(&request.view.chat_id);
         if let Some(key) = request.view.dedupe_key.as_ref()
             && request.view.is_open()
         {
@@ -488,7 +495,22 @@ impl RegistryDoc {
                 true,
             )?;
         }
-        check_id("origin Chat", &p.origin.chat_id)?;
+        let system_origin = p.origin.kind == UserActionOriginKind::System;
+        if system_origin {
+            if actor.kind != WorkOutlineActorKind::System {
+                return Err(unauthorized(
+                    "Only the system may raise a request without an origin Chat",
+                ));
+            }
+            if !p.origin.chat_id.is_empty()
+                || p.origin.message_id.is_some()
+                || p.origin.tool_call_id.is_some()
+            {
+                return Err(invalid("A system request has no origin Chat"));
+            }
+        } else {
+            check_id("origin Chat", &p.origin.chat_id)?;
+        }
         check_origin_id("message", p.origin.message_id.as_deref())?;
         check_origin_id("tool call", p.origin.tool_call_id.as_deref())?;
         let id = derive_id(&p.operation_id, roles::REQUEST);
@@ -518,25 +540,27 @@ impl RegistryDoc {
                 "The work item is archived",
             ));
         }
-        let chat = self
-            .chat(&p.origin.chat_id)
-            .ok()
-            .flatten()
-            .ok_or_else(|| not_found("The origin Chat was not found"))?;
-        match chat.space_id.as_deref().filter(|s| !s.is_empty()) {
-            None => {
-                return Err(err(
-                    WorkOutlineErrorCode::Projectless,
-                    "Chats outside a project cannot raise work item requests",
-                ));
+        if !system_origin {
+            let chat = self
+                .chat(&p.origin.chat_id)
+                .ok()
+                .flatten()
+                .ok_or_else(|| not_found("The origin Chat was not found"))?;
+            match chat.space_id.as_deref().filter(|s| !s.is_empty()) {
+                None => {
+                    return Err(err(
+                        WorkOutlineErrorCode::Projectless,
+                        "Chats outside a project cannot raise work item requests",
+                    ));
+                }
+                Some(space) if space != item.space_id => {
+                    return Err(err(
+                        WorkOutlineErrorCode::CrossSpace,
+                        "The origin Chat belongs to another Space",
+                    ));
+                }
+                Some(_) => {}
             }
-            Some(space) if space != item.space_id => {
-                return Err(err(
-                    WorkOutlineErrorCode::CrossSpace,
-                    "The origin Chat belongs to another Space",
-                ));
-            }
-            Some(_) => {}
         }
         let mut set = BTreeMap::from([
             ("spaceId".to_owned(), json!(item.space_id)),
@@ -549,6 +573,9 @@ impl RegistryDoc {
             ("inputsHash".to_owned(), json!(hash)),
             ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
         ]);
+        if system_origin {
+            set.insert("originKind".to_owned(), json!("system"));
+        }
         for (field, value) in [
             ("messageId", &p.origin.message_id),
             ("toolCallId", &p.origin.tool_call_id),
@@ -1002,7 +1029,8 @@ impl RegistryDoc {
                 let changes = &p.changes;
                 let status_only = changes.title.is_none()
                     && changes.description.is_unchanged()
-                    && changes.inherit_parent_instructions.is_none();
+                    && changes.inherit_parent_instructions.is_none()
+                    && changes.external_sync_state.is_none();
                 if !status_only {
                     return Err(unauthorized("Agents may only change a work item's status"));
                 }

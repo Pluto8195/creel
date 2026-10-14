@@ -41,9 +41,10 @@ pub(crate) enum WorkOutlineCommand {
     OutdentWorkItem,
     /// Discoverability: the on-demand Outline shortcut reference.
     ShowOutlineShortcuts,
-    /// Linear integration: show/hide the Linear panel (the Overview's left
-    /// column) — open and focus its search, or close it when focused.
-    /// Listed in the palette only while some Space has Linear on.
+    /// Show/hide the Overview's left "Inbox" column (the Linear panel and
+    /// the GitHub section) — open and focus it, or close it when focused.
+    /// Listed in the palette only while some Space has Linear on or the PR
+    /// review sync. The id stays `openLinear` (persisted keymap field).
     OpenLinear,
 }
 
@@ -89,7 +90,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => "Indent",
             Self::OutdentWorkItem => "Outdent",
             Self::ShowOutlineShortcuts => "Show Outline Shortcuts",
-            Self::OpenLinear => "Toggle Linear Panel",
+            Self::OpenLinear => "Toggle Inbox Column",
         }
     }
 

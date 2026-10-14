@@ -75,6 +75,7 @@ pub(crate) fn decode_space_settings(row: Option<&RegistryRow>) -> WorkOutlineSpa
             .and_then(|row| row.fields.get("linearEnabled"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        pr_review_sync_work_item_id: super::pr_review_sync::decode_destination(row),
     }
 }
 

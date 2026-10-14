@@ -243,6 +243,7 @@ fn apply_create(
         chat_ids: Vec::new(),
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
+        external_sync_state: None,
         external_sync_modified_fields: Vec::new(),
     });
     Some(out)

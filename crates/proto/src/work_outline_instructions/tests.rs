@@ -43,6 +43,7 @@ fn item(id: &str, parent: Option<&str>, title: &str, inherit: bool) -> WorkItemV
         external_reference_ids: Vec::new(),
         rollup: Default::default(),
         external_sync_modified_fields: Vec::new(),
+        external_sync_state: None,
     }
 }
 

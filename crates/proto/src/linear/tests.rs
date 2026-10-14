@@ -351,6 +351,7 @@ fn snapshot_settings_and_modified_fields_are_additive() {
     let settings = serde_json::to_value(WorkOutlineSnapshot {
         space_settings: WorkOutlineSpaceSettings {
             linear_enabled: true,
+            ..Default::default()
         },
         ..Default::default()
     })

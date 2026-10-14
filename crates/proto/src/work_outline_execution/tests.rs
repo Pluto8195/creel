@@ -53,6 +53,7 @@ fn item(id: &str, parent: Option<&str>) -> WorkItemView {
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
         external_sync_modified_fields: Vec::new(),
+        external_sync_state: None,
     }
 }
 

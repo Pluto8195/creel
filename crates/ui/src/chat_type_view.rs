@@ -20,6 +20,8 @@ use crate::shell::Shell;
 use crate::state::{AppState, format_time_ago};
 use crate::theme::Theme;
 
+mod pr_destination;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChatViewKind {
     PrReview,
@@ -580,6 +582,10 @@ impl ChatTypeView {
         if gpui::Focusable::focus_handle(self.review_input.read(cx), cx).is_focused(window) {
             return;
         }
+        if let Some(view) = self.destination(cx) {
+            self.destination_key_down(event, view, cx);
+            return;
+        }
         let count = self.rows(cx).len();
         match event.keystroke.key.as_str() {
             "down" if count > 0 => {
@@ -982,9 +988,25 @@ impl Render for ChatTypeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
-        let rows = self.rows(cx);
-        self.active = self.active.min(rows.len().saturating_sub(1));
-        let count = rows.len();
+        // With a PR review sync destination in the current Space, its PR
+        // items replace the classification-based list.
+        let destination = self.destination(cx);
+        let rows = if destination.is_some() {
+            Vec::new()
+        } else {
+            self.rows(cx)
+        };
+        let count_label = match &destination {
+            Some(view) => format!("{} PRs", view.items.len()),
+            None => format!("{} chats", rows.len()),
+        };
+        let count = destination
+            .as_ref()
+            .map_or(rows.len(), |view| view.items.len());
+        self.active = self.active.min(count.saturating_sub(1));
+        let destination_list =
+            destination.map(|view| self.render_destination(view, &theme, now, cx));
+        let destination_mode = destination_list.is_some();
         let shortcut = crate::settings::badge_combo(crate::shell::OPEN_PR_REVIEW_CHATS_COMBO);
 
         div()
@@ -1020,7 +1042,7 @@ impl Render for ChatTypeView {
                                 div()
                                     .text_size(crate::typography::ui_rems(11.0))
                                     .text_color(theme.text_muted)
-                                    .child(SharedString::from(format!("{count} chats"))),
+                                    .child(SharedString::from(count_label)),
                             )
                             .child(popover::kbd_hint(&theme, &shortcut)),
                     )
@@ -1062,52 +1084,56 @@ impl Render for ChatTypeView {
                     ),
             )
             .child(self.render_review_requested(&theme, cx))
-            .child(
-                div()
-                    .h(px(34.0))
-                    .flex_none()
-                    .grid()
-                    .grid_cols(7)
-                    .items_center()
-                    .gap(px(12.0))
-                    .px(px(14.0))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .bg(theme.element_hover.opacity(0.45))
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text_muted)
-                    .child(div().col_span(2).child("CHAT / PR TITLE"))
-                    .child("REPOSITORY")
-                    .child("PR")
-                    .child("BRANCH")
-                    .child("STATUS")
-                    .child("UPDATED"),
-            )
-            .child(
-                div()
-                    .id("chat-type-rows")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .when(rows.is_empty(), |element| {
-                        element.child(
-                            div()
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(self.kind.empty_message())),
-                        )
-                    })
-                    .children(
-                        rows.into_iter()
-                            .enumerate()
-                            .map(|(index, row)| self.render_row(row, index, &theme, now, cx)),
-                    ),
-            )
+            .when_some(destination_list, |el, list| el.child(list))
+            .when(!destination_mode, |el| {
+                el.child(
+                    div()
+                        .h(px(34.0))
+                        .flex_none()
+                        .grid()
+                        .grid_cols(7)
+                        .items_center()
+                        .gap(px(12.0))
+                        .px(px(14.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .bg(theme.element_hover.opacity(0.45))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_muted)
+                        .child(div().col_span(2).child("CHAT / PR TITLE"))
+                        .child("REPOSITORY")
+                        .child("PR")
+                        .child("BRANCH")
+                        .child("STATUS")
+                        .child("UPDATED"),
+                )
+                .child(
+                    div()
+                        .id("chat-type-rows")
+                        .debug_selector(|| "chat-type-rows".into())
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .when(rows.is_empty(), |element| {
+                            element.child(
+                                div()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(self.kind.empty_message())),
+                            )
+                        })
+                        .children(
+                            rows.into_iter()
+                                .enumerate()
+                                .map(|(index, row)| self.render_row(row, index, &theme, now, cx)),
+                        ),
+                )
+            })
     }
 }
 

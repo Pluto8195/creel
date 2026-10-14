@@ -138,6 +138,9 @@ pub(crate) struct RequiredActionsList {
     /// host held for a context-reset confirmation.
     error_chat: Option<String>,
     focus: FocusHandle,
+    /// Opens a system request's PR per the web-link preference (set by the
+    /// host; the browser without it).
+    pub(crate) shell: Option<gpui::WeakEntity<crate::shell::Shell>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -186,6 +189,7 @@ impl RequiredActionsList {
             error: None,
             error_chat: None,
             focus: cx.focus_handle(),
+            shell: None,
             _subscriptions: subscriptions,
         }
     }
@@ -569,12 +573,40 @@ impl RequiredActionsList {
         !self.replied.is_empty()
     }
 
-    /// Open: the origin Chat when it can be opened, else nothing (the row
-    /// stays inspectable in place).
+    /// Open: the origin Chat when it can be opened; a system request (PR
+    /// review sync, no Chat) opens its PR item in details, or the PR itself
+    /// once that item is gone; else nothing (the row stays inspectable in
+    /// place).
     pub(crate) fn open(&mut self, row: &RequiredActionRow, cx: &mut Context<Self>) {
         if row.chat_available {
             cx.emit(RequiredActionsEvent::OpenChat(row.chat_id.clone()));
+        } else if row.system {
+            if self.item_exists(&row.space_id, &row.work_item_id) {
+                cx.emit(RequiredActionsEvent::OpenItem {
+                    space_id: row.space_id.clone(),
+                    item_id: row.work_item_id.clone(),
+                });
+            } else if let Some(url) = &row.pr_url {
+                cx.open_url(url);
+            }
         }
+    }
+
+    fn item_exists(&self, space_id: &str, item_id: &str) -> bool {
+        self.spaces.iter().any(|space| {
+            space.space_id == space_id
+                && space
+                    .snapshot
+                    .item(item_id)
+                    .is_some_and(|item| item.archived_at.is_none())
+        })
+    }
+
+    /// Whether Open does something for `row`.
+    fn can_open(&self, row: &RequiredActionRow) -> bool {
+        row.chat_available
+            || (row.system
+                && (row.pr_url.is_some() || self.item_exists(&row.space_id, &row.work_item_id)))
     }
 
     // ----------------------------------------------------------------------
@@ -689,7 +721,11 @@ impl RequiredActionsList {
         let busy = self.in_flight.contains(&id);
         let attention = chips::attention_color(theme);
         let age = required_actions::age_label(row.created_at, now);
-        let chat_tip: SharedString = if row.chat_available {
+        let chat_tip: SharedString = if row.system {
+            "Raised by the PR review sync (no Chat). It resolves itself once you review, or \
+             when the PR is merged, closed, or the request is withdrawn."
+                .into()
+        } else if row.chat_available {
             format!("Open {}", row.chat_label).into()
         } else {
             "The originating Chat was archived or deleted. The request stays here until you \
@@ -732,7 +768,7 @@ impl RequiredActionsList {
                     .min_w_0()
                     .max_w(px(120.0))
                     .truncate()
-                    .when(!row.chat_available, |el| {
+                    .when(!row.chat_available && !row.system, |el| {
                         el.italic().text_color(theme.text_faint)
                     })
                     .child(SharedString::from(row.chat_label.clone()))
@@ -748,6 +784,21 @@ impl RequiredActionsList {
                     .child(SharedString::from(format!("+{} retried", row.duplicates))),
             );
         }
+        let can_open = self.can_open(&row);
+        let pr_link = row.pr_url.clone().filter(|_| row.system).map(|url| {
+            let shell = self.shell.clone();
+            Self::button(
+                SharedString::from(format!("required-actions-view-pr-{id}")),
+                "View PR",
+                true,
+                theme,
+            )
+            .debug_selector({
+                let selector = format!("required-actions-view-pr-{id}");
+                move || selector.clone()
+            })
+            .on_click(crate::github::chip::open_pr(shell, url))
+        });
         let actions = open.then(|| {
             let open_row = row.clone();
             let resolve_id = id.clone();
@@ -777,7 +828,7 @@ impl RequiredActionsList {
                     Self::button(
                         SharedString::from(format!("required-actions-open-{id}")),
                         "Open",
-                        row.chat_available,
+                        can_open,
                         theme,
                     )
                     .debug_selector({
@@ -786,6 +837,7 @@ impl RequiredActionsList {
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&open_row, cx))),
                 )
+                .children(pr_link)
                 .when(!resolving, |el| {
                     el.child(
                         Self::button(
@@ -804,26 +856,29 @@ impl RequiredActionsList {
                             },
                         )),
                     )
-                    .child({
-                        let reply_id = id.clone();
-                        let unavailable = (!row.chat_available).then(|| {
-                            required_actions::reply_unavailable_reason(&row, "x")
-                                .unwrap_or_default()
-                        });
-                        let button = Self::reply_button(
-                            &format!("required-actions-reply-{id}"),
-                            "Reply & resolve",
-                            unavailable,
-                            busy,
-                            theme,
-                        );
-                        if unavailable.is_none() && !busy {
-                            button.on_click(cx.listener(move |this, _, window, cx| {
-                                this.begin_resolve(reply_id.clone(), window, cx)
-                            }))
-                        } else {
-                            button
-                        }
+                    // A system request has no Chat to reply to: Resolve only.
+                    .when(!row.system, |el| {
+                        el.child({
+                            let reply_id = id.clone();
+                            let unavailable = (!row.chat_available).then(|| {
+                                required_actions::reply_unavailable_reason(&row, "x")
+                                    .unwrap_or_default()
+                            });
+                            let button = Self::reply_button(
+                                &format!("required-actions-reply-{id}"),
+                                "Reply & resolve",
+                                unavailable,
+                                busy,
+                                theme,
+                            );
+                            if unavailable.is_none() && !busy {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.begin_resolve(reply_id.clone(), window, cx)
+                                }))
+                            } else {
+                                button
+                            }
+                        })
                     })
                 })
         });
@@ -855,33 +910,37 @@ impl RequiredActionsList {
                     div()
                         .flex()
                         .gap(px(6.0))
-                        .child({
-                            let note = self.note_input.read(cx).text().to_owned();
-                            let intent = self.replies.get(&id);
-                            // A reply already sent only needs its resolve.
-                            let sent = intent.is_some_and(|intent| intent.sent);
-                            let unavailable = if sent {
-                                None
-                            } else {
-                                required_actions::reply_unavailable_reason(&row, &note)
-                            };
-                            let label = match (busy, sent) {
-                                (true, false) if intent.is_some() => "Sending\u{2026}",
-                                (true, _) => "Resolving\u{2026}",
-                                _ => "Reply & resolve",
-                            };
-                            let button = Self::reply_button(
-                                "required-actions-reply-submit",
-                                label,
-                                unavailable,
-                                busy,
-                                theme,
-                            );
-                            if unavailable.is_none() && !busy {
-                                button.on_click(cx.listener(|this, _, _, cx| this.submit_reply(cx)))
-                            } else {
-                                button
-                            }
+                        .when(!row.system, |el| {
+                            el.child({
+                                let note = self.note_input.read(cx).text().to_owned();
+                                let intent = self.replies.get(&id);
+                                // A reply already sent only needs its resolve.
+                                let sent = intent.is_some_and(|intent| intent.sent);
+                                let unavailable = if sent {
+                                    None
+                                } else {
+                                    required_actions::reply_unavailable_reason(&row, &note)
+                                };
+                                let label = match (busy, sent) {
+                                    (true, false) if intent.is_some() => "Sending\u{2026}",
+                                    (true, _) => "Resolving\u{2026}",
+                                    _ => "Reply & resolve",
+                                };
+                                let button = Self::reply_button(
+                                    "required-actions-reply-submit",
+                                    label,
+                                    unavailable,
+                                    busy,
+                                    theme,
+                                );
+                                if unavailable.is_none() && !busy {
+                                    button.on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_reply(cx)),
+                                    )
+                                } else {
+                                    button
+                                }
+                            })
                         })
                         .child(
                             Self::button(

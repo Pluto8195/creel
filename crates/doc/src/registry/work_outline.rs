@@ -46,6 +46,7 @@ pub mod execution;
 pub mod instructions;
 pub mod linear;
 mod materialize;
+pub mod pr_review_sync;
 pub mod user_actions;
 
 use materialize::{DecodedItem, OutlineTree, build_tree, cycle_victim, decode_item};
@@ -845,6 +846,9 @@ impl RegistryDoc {
                     ..Default::default()
                 })
             }
+            WorkOutlineMutation::SetPrReviewSyncDestination(p) => self
+                .set_pr_review_sync_destination(p, now_ms)
+                .map(|_| empty),
         }
     }
 
@@ -1007,6 +1011,18 @@ impl RegistryDoc {
             && item.inherit_parent_instructions != inherit
         {
             set.insert("inheritParentInstructions".to_owned(), json!(inherit));
+        }
+        // PR review sync: only the engine's sync (system actor) records it.
+        if let Some(state) = &p.changes.external_sync_state {
+            if actor.kind != WorkOutlineActorKind::System {
+                return Err(WorkOutlineError::unauthorized(
+                    "Only the PR review sync may change an item's sync record",
+                ));
+            }
+            let value = pr_review_sync::check_sync_state(state)?;
+            if item.external_sync_state.as_ref() != Some(state) {
+                set.insert(pr_review_sync::SYNC_STATE_FIELD.to_owned(), value);
+            }
         }
         // Linear: a user's own title/description edit on an issue-linked item
         // stops Linear sync for that field (same op, so it can never be lost).

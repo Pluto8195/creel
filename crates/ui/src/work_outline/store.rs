@@ -239,6 +239,7 @@ fn fixture_item(
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
         external_sync_modified_fields: Vec::new(),
+        external_sync_state: None,
     }
 }
 

@@ -50,15 +50,15 @@ use crate::work_outline::model;
 use crate::work_outline::outline_view::OutlineDrag;
 use crate::work_outline::outline_view::linear_outline::LinearIssueDrag;
 
-/// Whether the palette lists Toggle Linear Panel: some Space has Linear on.
+/// Whether the palette lists Toggle Inbox Column: some Space has Linear on
+/// or the PR review sync (`github::space_available`).
 pub(crate) fn palette_visible(state: &AppState) -> bool {
     state.spaces.iter().any(|space| {
-        super::space_enabled(
-            state
-                .work_outline(&space.id)
-                .snapshot()
-                .map(|snapshot| snapshot.as_ref()),
-        )
+        let load = state.work_outline(&space.id);
+        let snapshot = load.snapshot().map(|snapshot| snapshot.as_ref());
+        super::space_enabled(snapshot)
+            || snapshot
+                .is_some_and(|snapshot| crate::github::space_available(state, &space.id, snapshot))
     })
 }
 
@@ -339,6 +339,8 @@ pub(crate) struct LinearPanel {
     pub(crate) picker: Option<ParentPicker>,
     pub(crate) notice: Option<PanelNotice>,
     generation: u64,
+    /// The column's own header ("Inbox") carries the close button.
+    pub(crate) embedded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -395,6 +397,7 @@ impl LinearPanel {
             picker: None,
             notice: None,
             generation: 0,
+            embedded: false,
             _subscriptions: subscriptions,
         }
     }
@@ -1819,28 +1822,30 @@ impl Render for LinearPanel {
                     .tooltip(|_, cx| cx.new(|_| TextTooltip("Refresh from Linear".into())).into())
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
-            .child(
-                div()
-                    .id("linear-panel-close")
-                    .flex_none()
-                    .size(px(22.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.element_hover))
-                    .child(
-                        crate::icons::icon(crate::icons::CLOSE)
-                            .size(px(12.0))
-                            .text_color(theme.text_muted),
-                    )
-                    .hint(
-                        "Hide the Linear panel",
-                        HintKey::Command(crate::work_outline::WorkOutlineCommand::OpenLinear),
-                    )
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(LinearPanelEvent::Close))),
-            );
+            .when(!self.embedded, |el| {
+                el.child(
+                    div()
+                        .id("linear-panel-close")
+                        .flex_none()
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.element_hover))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOSE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .hint(
+                            "Hide the Linear panel",
+                            HintKey::Command(crate::work_outline::WorkOutlineCommand::OpenLinear),
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(LinearPanelEvent::Close))),
+                )
+            });
         let search = div()
             .mx(px(14.0))
             .mt(px(8.0))

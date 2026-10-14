@@ -752,6 +752,8 @@ pub struct EngineRpc {
     pr_review: crate::pr_review_launch::PrReviewLauncher,
     /// Linear integration (`LINEAR_*` methods; local, never forwarded).
     linear: crate::linear::LinearService,
+    /// PR review sync (`PR_*` methods; local, never forwarded).
+    pr_review_sync: crate::pr_review_sync::PrReviewSyncService,
     engine_info: EngineInfo,
 }
 
@@ -823,6 +825,13 @@ impl EngineRpc {
             doc_host.clone(),
             crate::pr_review_launch::PrReviewTools::default(),
         );
+        // Engine assembly replaces this with the shared service
+        // (`with_pr_review_sync`); a bare RPC surface has no background loop.
+        let pr_review_sync = crate::pr_review_sync::PrReviewSyncService::new(
+            workspace.clone(),
+            repos.clone(),
+            crate::pr_review_sync::PrReviewSyncConfig::default(),
+        );
         Self {
             sessions,
             doc_host,
@@ -851,7 +860,27 @@ impl EngineRpc {
             agent_tools,
             pr_review,
             linear: crate::linear::LinearService::default(),
+            pr_review_sync,
             engine_info,
+        }
+    }
+
+    /// Share the engine's PR review sync (caches, tools) with the RPC surface.
+    pub fn with_pr_review_sync(
+        mut self,
+        service: crate::pr_review_sync::PrReviewSyncService,
+    ) -> Self {
+        self.pr_review_sync = service;
+        self
+    }
+
+    /// Run a GitHub call, mapping its error to the `github/<code>` string.
+    fn github_reply<T: serde::Serialize>(
+        result: Result<T, zeron_proto::GithubError>,
+    ) -> Result<RpcReply, RpcError> {
+        match result {
+            Ok(value) => RpcReply::value(&value),
+            Err(error) => Err(RpcError::Failed(error.to_wire_message())),
         }
     }
 
@@ -2781,6 +2810,14 @@ impl RpcService for EngineRpc {
                     }
                     _ => None,
                 };
+                let pr_sync_space = match &mutation {
+                    zeron_proto::WorkOutlineMutation::SetPrReviewSyncDestination(p)
+                        if p.work_item_id.as_deref().is_some_and(|id| !id.is_empty()) =>
+                    {
+                        Some(p.space_id.clone())
+                    }
+                    _ => None,
+                };
                 let service = self.work_outline.clone();
                 // Materializing placement over a large outline is CPU work
                 // under the registry lock: keep it off the async workers.
@@ -2805,6 +2842,18 @@ impl RpcService for EngineRpc {
                             tracing::info!(code = error.code.as_str(), "linear: enable sync stopped");
                         }
                     });
+                }
+                // Picking a destination syncs the Space's review requests
+                // now (on the Space's own device; elsewhere it is a no-op).
+                if let Some(space) = pr_sync_space
+                    && self
+                        .workspace
+                        .space(&space)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|s| s.device_id == self.workspace.device_id())
+                {
+                    self.pr_review_sync.spawn_space_sync(space);
                 }
                 RpcReply::value(&reply)
             }
@@ -2847,6 +2896,22 @@ impl RpcService for EngineRpc {
                 .await
                 .map(|updated| zeron_proto::LinearRefreshLinkedItemsReply { updated });
                 Self::linear_reply(result).await
+            }
+            methods::PR_STATUS => {
+                let p: zeron_proto::PrStatusParams = parse_params(params)?;
+                Self::github_reply(self.pr_review_sync.status(&p).await)
+            }
+            methods::PR_REVIEW_SYNC_NOW => {
+                let p: zeron_proto::PrReviewSyncNowParams = parse_params(params)?;
+                Self::github_reply(self.pr_review_sync.sync_space(&p.space_id, true).await)
+            }
+            methods::PR_MY_OPEN => {
+                let p: zeron_proto::PrMyOpenParams = parse_params(params)?;
+                Self::github_reply(self.pr_review_sync.my_open(&p.space_id).await)
+            }
+            methods::PR_REVIEW_REQUESTED => {
+                let p: zeron_proto::PrReviewRequestedParams = parse_params(params)?;
+                Self::github_reply(self.pr_review_sync.review_requested(&p.space_id).await)
             }
             methods::WORK_OUTLINE_QUERY => {
                 let query: zeron_proto::WorkOutlineQueryRequest = parse_params(params)?;
@@ -4580,6 +4645,15 @@ mod tests {
             methods::LINEAR_REFRESH_LINKED_ITEMS,
         ] {
             assert!(!forwardable(linear), "{linear} is device-local");
+        }
+        for github in [
+            methods::PR_STATUS,
+            methods::PR_REVIEW_SYNC_NOW,
+            methods::PR_MY_OPEN,
+            methods::PR_REVIEW_REQUESTED,
+        ] {
+            assert!(!forwardable(github), "{github} is device-local");
+            assert!(!is_stream_method(github));
         }
         assert!(!forwardable(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WORK_OUTLINE_QUERY));

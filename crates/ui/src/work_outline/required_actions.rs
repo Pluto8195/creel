@@ -61,6 +61,12 @@ pub(crate) struct RequiredActionRow {
     pub chat_label: String,
     /// The origin Chat can be opened.
     pub chat_available: bool,
+    /// Raised by the engine itself (PR review sync): no Chat, origin
+    /// "GitHub", Resolve only.
+    pub system: bool,
+    /// A system request's PR (its work item's `github` / `pullRequest`
+    /// reference URL): Open goes there when the item is gone.
+    pub pr_url: Option<String>,
     pub created_at: i64,
     /// Open duplicates folded into this row (same dedupe key).
     pub duplicates: usize,
@@ -200,7 +206,12 @@ fn row_for(
     let chat = chats
         .get(request.chat_id.as_str())
         .filter(|chat| !chat.archived);
-    let chat_available = request.origin_chat_available && chat.is_some();
+    let system = request.origin_kind == zeron_proto::UserActionOriginKind::System;
+    let chat_available = !system && request.origin_chat_available && chat.is_some();
+    let pr_url = system
+        .then(|| snapshot.github_pull_request_reference(&request.work_item_id))
+        .flatten()
+        .map(|reference| reference.url.clone());
     RequiredActionRow {
         space_id: space.space_id.clone(),
         request_id: request.id.clone(),
@@ -210,10 +221,13 @@ fn row_for(
         path,
         chat_id: request.chat_id.clone(),
         chat_label: match chat {
+            _ if system => crate::github::SYSTEM_ORIGIN_LABEL.to_owned(),
             Some(chat) if chat_available => chat.title.clone(),
             _ => CHAT_UNAVAILABLE.to_owned(),
         },
         chat_available,
+        system,
+        pr_url,
         created_at: request.created_at,
         duplicates,
         resolution: (!request.is_open()).then(|| {
@@ -651,6 +665,7 @@ pub(crate) mod fixture {
             space_id: space_id.into(),
             work_item_id: item.into(),
             chat_id: chat.into(),
+            origin_kind: Default::default(),
             message_id: None,
             tool_call_id: None,
             text: text.into(),

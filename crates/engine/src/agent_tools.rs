@@ -877,6 +877,7 @@ impl AgentToolsService {
             WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
                 work_item_id: work_item_id.clone(),
                 origin: UserActionRequestOrigin {
+                    kind: Default::default(),
                     chat_id: context.grant.chat_id.clone(),
                     message_id: non_empty(args.message_id),
                     tool_call_id: non_empty(args.tool_call_id),

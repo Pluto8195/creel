@@ -30,12 +30,26 @@ impl PrReviewOperations {
         action: PrReviewAction,
         config: Option<ChatConfig>,
     ) -> StartPrReviewParams {
+        self.params_in_item(reference, action, config, None)
+    }
+
+    /// [`Self::params`] filed under a work item (`spaceId` + `workItemId`;
+    /// PR review sync): the item is part of the request's identity, so the
+    /// same PR reviewed from another item is another request.
+    pub(crate) fn params_in_item(
+        &mut self,
+        reference: &PrReference,
+        action: PrReviewAction,
+        config: Option<ChatConfig>,
+        item: Option<(String, String)>,
+    ) -> StartPrReviewParams {
         let key = serde_json::json!([
             reference.owner.to_ascii_lowercase(),
             reference.name.to_ascii_lowercase(),
             reference.number,
             action,
             config,
+            item,
         ])
         .to_string();
         let operation_id = self
@@ -43,13 +57,14 @@ impl PrReviewOperations {
             .entry(key)
             .or_insert_with(|| format!("pr-review-{}", uuid::Uuid::new_v4()))
             .clone();
+        let (space_id, work_item_id) = item.unzip();
         StartPrReviewParams {
             repo_owner: reference.owner.clone(),
             repo_name: reference.name.clone(),
             number: reference.number,
             action,
-            space_id: None,
-            work_item_id: None,
+            space_id,
+            work_item_id,
             config,
             operation_id,
             target_device_id: None,

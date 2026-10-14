@@ -63,6 +63,7 @@ mod actions_ui;
 mod closeout_ui;
 mod command_palette;
 mod files_panel;
+mod github_ui;
 mod instructions_ui;
 mod linear_ui;
 mod pr_review_ui;

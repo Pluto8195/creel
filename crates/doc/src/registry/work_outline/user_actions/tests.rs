@@ -121,6 +121,7 @@ fn request_params(
     WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
         work_item_id: work_item.into(),
         origin: UserActionRequestOrigin {
+            kind: Default::default(),
             chat_id: chat_id.into(),
             message_id: Some("m-1".into()),
             tool_call_id: Some("t-1".into()),

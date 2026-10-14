@@ -54,6 +54,9 @@ mod user_actions_section;
 
 #[path = "details_linear.rs"]
 mod linear_section;
+
+#[path = "details_pr_sync.rs"]
+mod pr_sync_section;
 pub(crate) use user_actions_section::ProposalReview;
 
 /// `item_id` of the Space-root variant of the details surface.
@@ -81,6 +84,12 @@ pub(crate) enum DetailsEvent {
     AddLinearIssues {
         space_id: String,
         item_id: String,
+    },
+    /// Review / Fix CI of the item's PR (PR review sync), filed under it.
+    StartPrReview {
+        space_id: String,
+        item_id: String,
+        action: zeron_proto::PrReviewAction,
     },
     /// Associate (`Some`) or disassociate (`None`) a Chat. The Outline sends
     /// it like its own Chat moves: applied at once, with its Undo toast when
@@ -211,6 +220,8 @@ pub(crate) struct WorkItemDetails {
     pub(crate) proposals_error: Option<String>,
     /// Linear integration (`details_linear.rs`).
     pub(crate) linear: linear_section::LinearDetailsState,
+    /// PR review sync (`details_pr_sync.rs`).
+    pub(crate) pr_sync: pr_sync_section::PrSyncDetailsState,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
@@ -304,6 +315,7 @@ impl WorkItemDetails {
         });
         let (required_actions, required_actions_events) =
             Self::new_required_actions(&state, &space_id, &item_id, cx);
+        required_actions.update(cx, |list, _| list.shell = Some(shell.clone()));
         let subscriptions = vec![
             required_actions_events,
             cx.subscribe(&reason_input, |this: &mut Self, _, event, cx| {
@@ -380,6 +392,7 @@ impl WorkItemDetails {
             proposal_history_open: false,
             proposals_error: None,
             linear: Default::default(),
+            pr_sync: Default::default(),
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_confirm: None,
@@ -1316,6 +1329,7 @@ impl Render for WorkItemDetails {
             &theme,
         );
         let linear = self.render_linear_section(&item, &snapshot, &theme, cx);
+        let pull_request = self.render_pr_section(&item, &snapshot, &theme, cx);
         let linear_hint = self.render_linear_paste_hint(&theme, cx);
 
         // Associated chats.
@@ -1651,6 +1665,7 @@ impl Render for WorkItemDetails {
                 .child(status_row)
                 .child(required_actions)
                 .children(linear)
+                .children(pull_request)
                 .child(description)
                 .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
                 .when_some(proposals, |el, section| el.child(section))
