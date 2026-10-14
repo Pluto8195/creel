@@ -3,7 +3,7 @@
 //! Work Item Details and Required Actions, above the chat panel), the
 //! Outline drop of a panel issue, and select + reveal after a create.
 //! Nothing here renders unless some Space has Linear on.
-use gpui::{AnyElement, Context, Entity, div, prelude::*};
+use gpui::{AnyElement, Context, div, prelude::*};
 
 use super::Overview;
 use crate::linear::panel::{LinearPanel, LinearPanelEvent, LinearSpace, OutlineSelection};
@@ -44,7 +44,7 @@ impl Overview {
     }
 
     #[cfg(test)]
-    pub(crate) fn linear_panel(&self) -> Option<Entity<LinearPanel>> {
+    pub(crate) fn linear_panel(&self) -> Option<gpui::Entity<LinearPanel>> {
         self.linear_panel.clone()
     }
 

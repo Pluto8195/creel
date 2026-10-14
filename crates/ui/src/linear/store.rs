@@ -46,6 +46,7 @@ impl LinearStore {
         self.issues.get(&identifier.to_uppercase())
     }
 
+    #[cfg(test)]
     pub(crate) fn ready_issue(&self, identifier: &str) -> Option<&LinearIssueSummary> {
         match self.issue(identifier)? {
             IssueEntry::Ready { issue, .. } => Some(issue),

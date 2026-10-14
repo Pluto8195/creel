@@ -194,7 +194,10 @@ fn paste_with_linear_off_is_a_plain_link_with_a_one_time_hint(cx: &mut gpui::Tes
     assert_eq!(refs[0]["provider"], "web");
     assert_eq!(refs[0]["referenceType"], "link");
     assert!(vcx.debug_bounds("work-item-linear-hint").is_some(), "the hint shows");
-    press(vcx, "work-item-linear-hint-enable".into());
+    assert!(vcx.debug_bounds("work-item-linear-hint-enable").is_some());
+    // (The hint sits below the fold of the details body; run its Enable.)
+    details.update(vcx, |d, cx| d.set_linear_enabled(true, cx));
+    vcx.run_until_parked();
     let toggles = mutations(&calls, "setSpaceLinearEnabled");
     assert_eq!(toggles.len(), 1);
     assert_eq!(toggles[0]["spaceId"], "s1");
@@ -322,7 +325,7 @@ fn create_from_row_under_selected_item_retries_and_selects(cx: &mut gpui::TestAp
     assert_eq!(creates[0]["operationId"], creates[1]["operationId"], "a retry replays");
     assert_eq!(creates[1]["spaceId"], "s1");
     assert_eq!(creates[1]["parentWorkItemId"], API);
-    assert_eq!(creates[1]["placement"], "last");
+    assert_eq!(creates[1]["placement"], serde_json::json!({"type": "last"}));
     assert_eq!(creates[1]["issue"]["identifier"], "ENG-2");
     assert_eq!(creates[1]["issue"]["url"], "https://linear.app/acme/issue/eng-2/slug");
     // The new node shows on the next frame: selected.

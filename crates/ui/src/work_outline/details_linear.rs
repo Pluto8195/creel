@@ -166,7 +166,7 @@ impl WorkItemDetails {
         .detach();
     }
 
-    fn set_linear_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_linear_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.linear.toggling {
             return;
         }
