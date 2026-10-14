@@ -211,6 +211,17 @@ impl WorkOutlineService {
         }
     }
 
+    /// This device's background writer (the Linear linked-item sync): never
+    /// marks user-modified fields and never overwrites them.
+    pub fn system_actor(&self) -> WorkOutlineActor {
+        WorkOutlineActor {
+            kind: WorkOutlineActorKind::System,
+            device_id: self.workspace.device_id().to_owned(),
+            chat_id: None,
+            message_id: None,
+        }
+    }
+
     /// An agent acting for `chat_id` on this device (optionally from one
     /// message), the actor agent tools pass to [`Self::mutate_as`].
     pub fn agent_actor(&self, chat_id: &str, message_id: Option<&str>) -> WorkOutlineActor {

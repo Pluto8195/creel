@@ -181,6 +181,28 @@ pub mod methods {
     /// to the Space's owning device (`pr-review-launch-v1`). Errors are
     /// `pr-review/<code>: <message>`.
     pub const START_PR_REVIEW: &str = "StartPrReview";
+    // ── Linear integration v1 (`zeron_proto::linear`, docs/plans/work-outline/
+    // linear-contract.md). All local/IPC (the key is this device's), never
+    // forwardable. Failures are `linear/<code>: <message>`
+    // (`zeron_proto::LinearError::from_wire_message`).
+    /// `LinearStatusParams` → `LinearConnectionStatus`.
+    pub const LINEAR_STATUS: &str = "LinearStatus";
+    /// `LinearSetApiKeyParams {apiKey}` → `LinearConnectionStatus` (validates
+    /// with `viewer` before storing).
+    pub const LINEAR_SET_API_KEY: &str = "LinearSetApiKey";
+    /// `LinearClearApiKeyParams {}` → `LinearConnectionStatus`.
+    pub const LINEAR_CLEAR_API_KEY: &str = "LinearClearApiKey";
+    /// `LinearIssueParams {identifier, forceRefresh?}` → `LinearIssueSummary`.
+    pub const LINEAR_ISSUE: &str = "LinearIssue";
+    /// `LinearMyIssuesParams {}` → `[LinearIssueSummary]`.
+    pub const LINEAR_MY_ISSUES: &str = "LinearMyIssues";
+    /// `LinearMyProjectsParams {}` → `[LinearProjectSummary]`.
+    pub const LINEAR_MY_PROJECTS: &str = "LinearMyProjects";
+    /// `LinearProjectIssuesParams {projectId}` → `[LinearIssueSummary]`.
+    pub const LINEAR_PROJECT_ISSUES: &str = "LinearProjectIssues";
+    /// `LinearRefreshLinkedItemsParams {spaceId}` →
+    /// `LinearRefreshLinkedItemsReply {updated}`.
+    pub const LINEAR_REFRESH_LINKED_ITEMS: &str = "LinearRefreshLinkedItems";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -573,6 +595,21 @@ mod tests {
     #[test]
     fn pr_review_wire_name_is_pinned() {
         assert_eq!(methods::START_PR_REVIEW, "StartPrReview");
+    }
+
+    #[test]
+    fn linear_wire_names_are_pinned() {
+        assert_eq!(methods::LINEAR_STATUS, "LinearStatus");
+        assert_eq!(methods::LINEAR_SET_API_KEY, "LinearSetApiKey");
+        assert_eq!(methods::LINEAR_CLEAR_API_KEY, "LinearClearApiKey");
+        assert_eq!(methods::LINEAR_ISSUE, "LinearIssue");
+        assert_eq!(methods::LINEAR_MY_ISSUES, "LinearMyIssues");
+        assert_eq!(methods::LINEAR_MY_PROJECTS, "LinearMyProjects");
+        assert_eq!(methods::LINEAR_PROJECT_ISSUES, "LinearProjectIssues");
+        assert_eq!(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            "LinearRefreshLinkedItems"
+        );
     }
 
     struct TestService;

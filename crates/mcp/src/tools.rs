@@ -222,7 +222,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: agent_tool_names::READ_CURRENT,
-            description: "Your chat's Work Outline item: title, status, path, children, the effective instructions it inherits, and its open user action requests. Null when your chat is not associated with an item.",
+            description: "Your chat's Work Outline item: title, status, path, children, the effective instructions it inherits, and its open user action requests. Null when your chat is not associated with an item. In Spaces with Linear turned on, also `linearIssue` (the linked Linear ticket of the item or its nearest ancestor, including its description) and `linearProject` (the nearest linked Linear project).",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {

@@ -238,6 +238,7 @@ fn fixture_item(
         chat_ids: chat_ids.iter().map(|c| (*c).to_owned()).collect(),
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
+        external_sync_modified_fields: Vec::new(),
     }
 }
 

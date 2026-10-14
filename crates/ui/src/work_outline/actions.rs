@@ -324,7 +324,7 @@ impl WorkOutlineActions {
 
     /// Send `params` to `method` with transient-failure retries; see the
     /// module docs for retry semantics.
-    fn call<T: Send + 'static>(
+    pub(crate) fn call<T: Send + 'static>(
         &self,
         method: &'static str,
         params: serde_json::Value,

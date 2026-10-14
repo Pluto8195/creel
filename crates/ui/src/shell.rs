@@ -64,6 +64,7 @@ mod closeout_ui;
 mod command_palette;
 mod files_panel;
 mod instructions_ui;
+mod linear_ui;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
@@ -496,19 +497,22 @@ pub enum SettingsSection {
     Appearance,
     Files,
     Notifications,
+    /// Linear integration: API key and connection status.
+    Linear,
     Shortcuts,
     Appshots,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 9] = [
+    pub const ALL: [SettingsSection; 10] = [
         SettingsSection::Devices,
         SettingsSection::Harnesses,
         SettingsSection::Agents,
         SettingsSection::Appearance,
         SettingsSection::Files,
         SettingsSection::Notifications,
+        SettingsSection::Linear,
         SettingsSection::Shortcuts,
         SettingsSection::Appshots,
         SettingsSection::Archived,
@@ -524,6 +528,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Files => "Files",
             SettingsSection::Notifications => "Notifications",
+            SettingsSection::Linear => "Linear",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
@@ -1633,6 +1638,7 @@ pub struct Shell {
     #[cfg(test)]
     pr_review_script: Option<pr_review_ui::PrReviewScript>,
     archived_page: Option<Entity<ArchivedPage>>,
+    linear_settings_page: Option<Entity<crate::linear::settings_page::LinearSettingsPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -1987,6 +1993,7 @@ impl Shell {
             Some("settings/harnesses") => Route::Settings(SettingsSection::Harnesses),
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
+            Some("settings/linear") => Route::Settings(SettingsSection::Linear),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/appshots") => Route::Settings(SettingsSection::Appshots),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
@@ -2088,6 +2095,7 @@ impl Shell {
             #[cfg(test)]
             pr_review_script: None,
             archived_page: None,
+            linear_settings_page: None,
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -5027,6 +5035,7 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            SettingsSection::Linear => self.linear_settings_outlet(cx),
             SettingsSection::Archived => {
                 if self.archived_page.is_none() {
                     let state = self.state.clone();
@@ -6964,6 +6973,7 @@ impl Shell {
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Files => icons::FOLDER,
             SettingsSection::Notifications => icons::BELL,
+            SettingsSection::Linear => icons::CHECKLIST,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,

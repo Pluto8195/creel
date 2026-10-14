@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod entities;
+pub mod linear;
 pub mod motion;
 pub mod pr_review;
 pub mod preview;
@@ -22,6 +23,7 @@ pub mod workspace;
 
 pub use agent::*;
 pub use entities::*;
+pub use linear::*;
 pub use pr_review::*;
 pub use preview::*;
 pub use repository_topology::*;

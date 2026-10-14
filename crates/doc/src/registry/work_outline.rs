@@ -44,6 +44,7 @@ use super::*;
 
 pub mod execution;
 pub mod instructions;
+pub mod linear;
 mod materialize;
 pub mod user_actions;
 
@@ -57,6 +58,7 @@ pub const KIND_WORK_ITEM_INSTRUCTIONS: &str = "workItemInstructions";
 pub const KIND_INSTRUCTION_REVISIONS: &str = "instructionRevisions";
 pub const KIND_INSTRUCTION_REVISION_APPLICATIONS: &str = "instructionRevisionApplications";
 pub use execution::{KIND_CHAT_EXECUTION_BINDINGS, KIND_EXECUTION_CONFIGURATIONS};
+pub use linear::KIND_WORK_OUTLINE_SPACE_SETTINGS;
 pub use user_actions::{KIND_USER_ACTION_REQUESTS, KIND_WORK_ITEM_INSTRUCTION_PROPOSALS};
 
 /// Every outline kind this build writes: the `delete_space` cascade and the
@@ -72,6 +74,7 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_CHAT_EXECUTION_BINDINGS,
     KIND_USER_ACTION_REQUESTS,
     KIND_WORK_ITEM_INSTRUCTION_PROPOSALS,
+    KIND_WORK_OUTLINE_SPACE_SETTINGS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
@@ -273,6 +276,19 @@ impl Planned {
     }
 }
 
+/// The inputs of one new item ([`RegistryDoc::plan_new_item`]).
+struct NewItem<'a> {
+    id: &'a str,
+    space_id: &'a str,
+    parent: Option<&'a str>,
+    placement: &'a WorkOutlinePlacement,
+    /// Already checked with [`check_title`].
+    title: &'a str,
+    description: Option<&'a str>,
+    status: WorkItemStatus,
+    inputs_hash: &'a str,
+}
+
 /// Raw placement link of one item (any Space), mutable while a batch is
 /// planned so a persisted cycle repair is visible to later steps.
 #[derive(Debug, Clone)]
@@ -391,6 +407,7 @@ impl RegistryDoc {
             assignments: self.overlay_rows(KIND_WORK_ITEM_CHAT_ASSIGNMENTS),
             references: self.overlay_rows(KIND_WORK_ITEM_EXTERNAL_REFERENCES),
             instructions: self.overlay_rows(KIND_WORK_ITEM_INSTRUCTIONS),
+            space_settings: self.overlay_row(KIND_WORK_OUTLINE_SPACE_SETTINGS, space_id),
             applications,
             revisions,
             sessions,
@@ -809,6 +826,25 @@ impl RegistryDoc {
             WorkOutlineMutation::RejectWorkItemInstructionProposal(p) => self
                 .reject_work_item_instruction_proposal(p, actor, now_ms)
                 .map(|_| empty),
+            WorkOutlineMutation::SetSpaceLinearEnabled(p) => {
+                self.set_space_linear_enabled(p, now_ms).map(|_| empty)
+            }
+            WorkOutlineMutation::CreateWorkItemFromLinear(p) => {
+                let (work_item_id, reference_id) =
+                    self.create_work_item_from_linear(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    work_item_id: Some(work_item_id),
+                    reference_id: Some(reference_id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::LinkLinearProject(p) => {
+                let id = self.link_linear_project(p, actor, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    reference_id: Some(id),
+                    ..Default::default()
+                })
+            }
         }
     }
 
@@ -828,35 +864,71 @@ impl RegistryDoc {
         }
         let id = derive_id(&p.operation_id, roles::ITEM);
         let hash = inputs_hash(p);
-        match self.row_state(KIND_WORK_ITEMS, &id) {
+        if self.created_item_replay(&id, &hash)? {
+            return Ok(id);
+        }
+        let parent = p.parent_work_item_id.as_deref();
+        let plan = self.plan_new_item(
+            NewItem {
+                id: &id,
+                space_id: &p.space_id,
+                parent,
+                placement: &p.placement,
+                title: &title,
+                description: p.description.as_deref(),
+                status: p.status.unwrap_or_default(),
+                inputs_hash: &hash,
+            },
+            actor,
+            now_ms,
+        )?;
+        let extra: Vec<(&str, &str)> = parent.map(|p| (KIND_WORK_ITEMS, p)).into_iter().collect();
+        self.commit(plan, &extra)?;
+        Ok(id)
+    }
+
+    /// Replay check of an item derived from an operation id: `Ok(true)` when
+    /// it already exists with the same inputs (nothing to write),
+    /// `OperationConflict` with other inputs, `NotFound` when deleted (a
+    /// deleted id is never revived, R1).
+    fn created_item_replay(&self, id: &str, hash: &str) -> Outcome<bool> {
+        match self.row_state(KIND_WORK_ITEMS, id) {
             RowState::Live => {
                 let stored = self
-                    .overlay_row(KIND_WORK_ITEMS, &id)
+                    .overlay_row(KIND_WORK_ITEMS, id)
                     .and_then(|row| row.fields.get("inputsHash").cloned());
-                return if stored == Some(json!(hash)) {
-                    Ok(id)
+                if stored == Some(json!(hash)) {
+                    Ok(true)
                 } else {
                     Err(err(
                         WorkOutlineErrorCode::OperationConflict,
                         "operationId was already used for a different work item",
                     ))
-                };
+                }
             }
-            RowState::Tombstoned => {
-                return Err(not_found("This work item was deleted"));
-            }
-            RowState::Absent => {}
+            RowState::Tombstoned => Err(not_found("This work item was deleted")),
+            RowState::Absent => Ok(false),
         }
-        self.require_space(&p.space_id)?;
-        let parent = p.parent_work_item_id.as_deref();
-        self.destination(&p.space_id, parent)?;
+    }
+
+    /// Plan the creation of one item (placement, sibling re-keys, pending
+    /// raw-cycle repairs on the parent chain, and the item's upsert).
+    fn plan_new_item(
+        &self,
+        new: NewItem<'_>,
+        actor: &WorkOutlineActor,
+        now_ms: i64,
+    ) -> Outcome<Vec<Planned>> {
+        self.require_space(new.space_id)?;
+        let parent = new.parent;
+        self.destination(new.space_id, parent)?;
 
         let mut plan = Vec::new();
         let mut links = self.raw_links();
         if let Some(parent) = parent {
-            Self::raw_chain_with_repairs(&mut links, &p.space_id, parent, &mut plan);
+            Self::raw_chain_with_repairs(&mut links, new.space_id, parent, &mut plan);
         }
-        let tree = self.outline_tree(&p.space_id);
+        let tree = self.outline_tree(new.space_id);
         let siblings = Self::siblings(&tree, parent, &BTreeSet::new());
         if siblings.len() >= limits::MAX_CHILDREN_PER_PARENT {
             return Err(err(
@@ -867,32 +939,27 @@ impl RegistryDoc {
                 ),
             ));
         }
-        let index = Self::placement_index(&siblings, &p.placement)?;
+        let index = Self::placement_index(&siblings, new.placement)?;
         let placed = place(&siblings, index, 1)?;
         Self::plan_rekeys(&links, &placed.rekeys, &mut plan);
 
         let mut set = placement_set(parent, &placed.keys[0]);
         set.extend([
-            ("spaceId".to_owned(), json!(p.space_id)),
-            ("title".to_owned(), json!(title)),
-            (
-                "status".to_owned(),
-                json!(status_str(p.status.unwrap_or_default())),
-            ),
+            ("spaceId".to_owned(), json!(new.space_id)),
+            ("title".to_owned(), json!(new.title)),
+            ("status".to_owned(), json!(status_str(new.status))),
             ("inheritParentInstructions".to_owned(), json!(true)),
             ("createdBy".to_owned(), actor_row_value(actor)),
             ("createdAt".to_owned(), json!(now_ms)),
             ("updatedAt".to_owned(), json!(now_ms)),
-            ("inputsHash".to_owned(), json!(hash)),
+            ("inputsHash".to_owned(), json!(new.inputs_hash)),
             ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
         ]);
-        if let Some(description) = &p.description {
+        if let Some(description) = new.description {
             set.insert("description".into(), json!(description));
         }
-        plan.push(Planned::upsert(KIND_WORK_ITEMS, &id, set));
-        let extra: Vec<(&str, &str)> = parent.map(|p| (KIND_WORK_ITEMS, p)).into_iter().collect();
-        self.commit(plan, &extra)?;
-        Ok(id)
+        plan.push(Planned::upsert(KIND_WORK_ITEMS, new.id, set));
+        Ok(plan)
     }
 
     /// `updateWorkItem`: LWW fields only (never `spaceId`, `createdBy`, …).
@@ -940,6 +1007,34 @@ impl RegistryDoc {
             && item.inherit_parent_instructions != inherit
         {
             set.insert("inheritParentInstructions".to_owned(), json!(inherit));
+        }
+        // Linear: a user's own title/description edit on an issue-linked item
+        // stops Linear sync for that field (same op, so it can never be lost).
+        if actor.kind == WorkOutlineActorKind::User {
+            let edited: Vec<&str> = [
+                ("title", zeron_proto::linear::SYNC_FIELD_TITLE),
+                ("description", zeron_proto::linear::SYNC_FIELD_DESCRIPTION),
+            ]
+            .into_iter()
+            .filter(|(field, _)| set.contains_key(*field))
+            .map(|(_, name)| name)
+            .collect();
+            if let Some(fields) = self.modified_fields_with(&item, &edited) {
+                set.insert(linear::MODIFIED_FIELDS_FIELD.to_owned(), json!(fields));
+            }
+        }
+        // The Linear sync writes as the system actor: a field the user has
+        // taken over since the sync read the item is never overwritten
+        // (checked here, under the registry lock).
+        if actor.kind == WorkOutlineActorKind::System {
+            for field in [
+                zeron_proto::linear::SYNC_FIELD_TITLE,
+                zeron_proto::linear::SYNC_FIELD_DESCRIPTION,
+            ] {
+                if item.external_sync_modified_fields.iter().any(|f| f == field) {
+                    set.remove(field);
+                }
+            }
         }
         let mut plan = if p.changes.status == Some(WorkItemStatus::Completed) {
             self.plan_completion_resolutions(
@@ -1333,14 +1428,31 @@ impl RegistryDoc {
         if let Some(title) = &p.cached_title {
             set.insert("cachedTitle".into(), json!(title));
         }
-        self.commit(
-            vec![Planned::upsert(
-                KIND_WORK_ITEM_EXTERNAL_REFERENCES,
-                &id,
-                set,
-            )],
-            &[(KIND_WORK_ITEMS, p.work_item_id.as_str())],
-        )?;
+        let mut plan = vec![Planned::upsert(
+            KIND_WORK_ITEM_EXTERNAL_REFERENCES,
+            &id,
+            set,
+        )];
+        // Linking an issue to an item that already has the user's own
+        // description keeps that description (Linear only takes the title).
+        if actor.kind == WorkOutlineActorKind::User
+            && linear::is_linear_issue(&p.provider, &p.reference_type)
+            && item
+                .description
+                .as_deref()
+                .is_some_and(|d| !d.trim().is_empty())
+            && let Some(fields) = linear::merge_modified_fields(
+                &item.external_sync_modified_fields,
+                &[zeron_proto::linear::SYNC_FIELD_DESCRIPTION],
+            )
+        {
+            plan.push(Planned::update(
+                KIND_WORK_ITEMS,
+                &p.work_item_id,
+                BTreeMap::from([(linear::MODIFIED_FIELDS_FIELD.to_owned(), json!(fields))]),
+            ));
+        }
+        self.commit(plan, &[(KIND_WORK_ITEMS, p.work_item_id.as_str())])?;
         Ok(id)
     }
 
@@ -1353,13 +1465,20 @@ impl RegistryDoc {
         if self.row_state(KIND_WORK_ITEM_EXTERNAL_REFERENCES, &p.reference_id) != RowState::Live {
             return Ok(());
         }
-        self.commit(
-            vec![Planned::delete(
-                KIND_WORK_ITEM_EXTERNAL_REFERENCES,
-                &p.reference_id,
-            )],
-            &[],
-        )
+        let mut plan = vec![Planned::delete(
+            KIND_WORK_ITEM_EXTERNAL_REFERENCES,
+            &p.reference_id,
+        )];
+        // Removing an item's last Linear issue reference ends the sync, so
+        // its modified-field marks go with it (same batch).
+        if let Some(work_item_id) = self.clears_modified_fields_on_unlink(&p.reference_id) {
+            plan.push(Planned::update(
+                KIND_WORK_ITEMS,
+                &work_item_id,
+                BTreeMap::from([(linear::MODIFIED_FIELDS_FIELD.to_owned(), json!([]))]),
+            ));
+        }
+        self.commit(plan, &[])
     }
 
     /// `repairWorkOutline`: persist the derived repairs that are safe to

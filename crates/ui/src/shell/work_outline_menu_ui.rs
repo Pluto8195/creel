@@ -431,6 +431,7 @@ impl Shell {
                 self.delete_space_confirm = Some(space_id);
                 cx.notify();
             }
+            MenuAction::Linear(action) => self.run_linear_menu_action(action, window, cx),
             MenuAction::Outline(_)
             | MenuAction::Command(_)
             | MenuAction::StatusPage

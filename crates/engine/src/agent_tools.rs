@@ -455,6 +455,8 @@ struct QueueChildTurnArgs {
 
 /// Most attachments a child's first Turn may carry.
 const MAX_CHILD_ATTACHMENTS: usize = 16;
+/// Longest `read_current` waits for a Linear issue that is not cached.
+const LINEAR_READ_TIMEOUT: Duration = Duration::from_secs(8);
 
 fn parse_args<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<T, AgentToolError> {
     let arguments = if arguments.is_null() {
@@ -526,6 +528,9 @@ pub struct AgentToolsService {
     doc_host: Option<DocHost>,
     /// Serializes `create_chat` input claims (check-then-mark).
     child_claims: Mutex<()>,
+    /// Linear integration: `read_current` adds the linked ticket in Spaces
+    /// with Linear on (the key itself never reaches the agent).
+    linear: Mutex<Option<crate::linear::LinearService>>,
 }
 
 impl AgentToolsService {
@@ -541,7 +546,86 @@ impl AgentToolsService {
             work_outline,
             doc_host,
             child_claims: Mutex::new(()),
+            linear: Mutex::new(None),
         }
+    }
+
+    /// Attach the engine's Linear service (engine assembly).
+    pub fn set_linear(&self, linear: crate::linear::LinearService) {
+        *lock(&self.linear) = Some(linear);
+    }
+
+    /// The Linear issue `identifier` for an agent: the cached copy, else a
+    /// fetch bounded by [`LINEAR_READ_TIMEOUT`] (this runs on a blocking
+    /// thread; the fetch runs on the engine's runtime). `Err(code)` on
+    /// failure.
+    fn linear_issue_for_agent(
+        &self,
+        identifier: &str,
+    ) -> Result<zeron_proto::LinearIssueSummary, &'static str> {
+        let Some(linear) = lock(&self.linear).clone() else {
+            return Err("unavailable");
+        };
+        if let Some(issue) = linear.cached_issue(identifier) {
+            return Ok(issue);
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return Err("unavailable");
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let identifier = identifier.to_owned();
+        handle.spawn(async move {
+            let _ = tx.send(linear.issue(&identifier, false).await);
+        });
+        match rx.recv_timeout(LINEAR_READ_TIMEOUT) {
+            Ok(Ok(issue)) => Ok(issue),
+            Ok(Err(error)) => Err(error.code.as_str()),
+            Err(_) => Err("network"),
+        }
+    }
+
+    /// `linearIssue` / `linearProject` fields of `read_current` for `item`
+    /// (nearest issue / project reference on its path), only in a Space with
+    /// Linear on.
+    fn linear_context(
+        &self,
+        snapshot: &zeron_proto::WorkOutlineSnapshot, item_id: &str) -> Option<Value> {
+        if !snapshot.space_settings.linear_enabled {
+            return None;
+        }
+        let mut out = serde_json::Map::new();
+        if let Some(reference) = snapshot
+            .nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_ISSUE_REFERENCE)
+        {
+            match self.linear_issue_for_agent(&reference.external_id) {
+                Ok(issue) => {
+                    out.insert("linearIssue".into(), json!(issue));
+                }
+                Err(code) => {
+                    out.insert(
+                        "linearIssue".into(),
+                        json!({
+                            "identifier": reference.external_id,
+                            "url": reference.url,
+                            "unavailable": code,
+                        }),
+                    );
+                }
+            }
+        }
+        if let Some(reference) = snapshot
+            .nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_PROJECT_REFERENCE)
+        {
+            out.insert(
+                "linearProject".into(),
+                json!(zeron_proto::LinearProjectRef {
+                    id: reference.external_id.clone(),
+                    name: reference.cached_title.clone().unwrap_or_default(),
+                    url: reference.url.clone(),
+                }),
+            );
+        }
+        (!out.is_empty()).then_some(Value::Object(out))
     }
 
     pub fn tokens(&self) -> &Arc<AgentTokens> {
@@ -662,7 +746,8 @@ impl AgentToolsService {
                 })
             })
             .collect();
-        json!({
+        let linear = self.linear_context(&snapshot, &item.id);
+        let mut reply = json!({
             "chatId": agent.chat_id,
             "spaceId": agent.space_id,
             "workItem": {
@@ -682,7 +767,11 @@ impl AgentToolsService {
                      status to active or completed, ask the user for an action on this item, \
                      resolve requests you raised, and propose instructions for it, its parent, \
                      or the Space root.",
-        })
+        });
+        if let (Some(Value::Object(linear)), Some(object)) = (linear, reply.as_object_mut()) {
+            object.extend(linear);
+        }
+        reply
     }
 
     fn create_child(

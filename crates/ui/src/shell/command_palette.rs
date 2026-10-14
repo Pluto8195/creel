@@ -170,6 +170,16 @@ impl Shell {
         let query = palette.search.read(cx).text().trim().to_lowercase();
         let mut entries = actions_for(&query, Theme::of(cx).appearance.is_dark());
         let state = self.state.read(cx);
+        // Open Linear only while some Space has Linear on.
+        if crate::linear::panel::palette_visible(state)
+            && matches_query(&query, WorkOutlineCommand::OpenLinear.label())
+        {
+            let at = entries
+                .iter()
+                .rposition(|entry| matches!(entry, Entry::WorkOutline(_)))
+                .map_or(entries.len(), |ix| ix + 1);
+            entries.insert(at, Entry::WorkOutline(WorkOutlineCommand::OpenLinear));
+        }
         // Global history deliberately ignores the sidebar's project filter and
         // collapsed groups. Archived conversations remain searchable too.
         let mut chats: Vec<_> = state
@@ -652,8 +662,8 @@ mod tests {
             })
             .collect();
         // The nine spec commands, Start Chat, restructuring, and the
-        // shortcut reference.
-        assert_eq!(listed, WorkOutlineCommand::ALL);
+        // shortcut reference; Open Linear joins only with Linear on.
+        assert_eq!(listed, WorkOutlineCommand::ALL[..17]);
         assert_eq!(
             actions_for("start chat", true),
             vec![Entry::WorkOutline(WorkOutlineCommand::StartChatForWorkItem)]

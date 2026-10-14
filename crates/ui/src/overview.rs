@@ -93,6 +93,9 @@ use crate::work_outline::outline_view::{OutlineEvent, OutlineInputs, OutlineView
 use crate::work_outline::store::WorkOutlineSnapshot;
 use crate::work_outline::{WorkOutlineCommand, WorkOutlineLoad};
 
+/// The Linear panel host (`overview/linear_host.rs`).
+mod linear_host;
+
 /// A chat with no activity for longer than this, and not currently
 /// working/awaiting input, reads as stale. Adapted from
 /// `session_canvas_server.py`'s `CURSOR_STALE_SECONDS` (3600s) — that value
@@ -2700,6 +2703,10 @@ pub struct Overview {
     required_actions_panel:
         Option<Entity<crate::work_outline::required_actions_view::RequiredActionsList>>,
     _required_actions_events: Option<Subscription>,
+    /// The Linear panel (Linear-enabled Spaces only): right slot, under
+    /// Work Item Details and Required Actions.
+    linear_panel: Option<Entity<crate::linear::panel::LinearPanel>>,
+    _linear_panel_events: Option<Subscription>,
     /// Tests run without a Shell: Start Chat requests land here.
     #[cfg(test)]
     pub(crate) captured_start_chat: Option<(String, String)>,
@@ -2822,6 +2829,13 @@ impl Overview {
                 this.open_proposals(space_id.clone(), item_id.clone(), cx);
             }
             OutlineEvent::OpenRequiredActions => this.open_required_actions(cx),
+            OutlineEvent::LinearIssueDropped {
+                space_id,
+                item_id,
+                issue,
+            } => {
+                this.linear_issue_dropped(space_id.clone(), item_id.clone(), (**issue).clone(), cx)
+            }
             // The toolbar's Hidden projects count.
             OutlineEvent::SpacesArranged => cx.notify(),
         });
@@ -2932,6 +2946,8 @@ impl Overview {
             pending_proposals: None,
             required_actions_panel: None,
             _required_actions_events: None,
+            linear_panel: None,
+            _linear_panel_events: None,
             #[cfg(test)]
             captured_start_chat: None,
             _details_events: None,
@@ -6875,6 +6891,8 @@ impl Render for Overview {
             let chats = self.outline_chats.clone();
             list.update(cx, |list, _| list.set_data(spaces, chats));
             Some(div().h_full().flex_none().child(list).into_any_element())
+        } else if let Some(panel) = self.render_linear_panel_slot(cx) {
+            Some(panel)
         } else if self.subagent_peek.is_some() {
             self.render_subagent_peek(&theme, cx)
         } else {
@@ -6899,6 +6917,9 @@ impl Render for Overview {
                     cx.stop_propagation();
                 } else if this.required_actions_panel.is_some() {
                     this.close_required_actions(cx);
+                    cx.stop_propagation();
+                } else if this.linear_panel.is_some() {
+                    this.close_linear_panel(cx);
                     cx.stop_propagation();
                 } else if this.subagent_peek.is_some() {
                     this.close_subagent_peek(cx);
@@ -9413,6 +9434,8 @@ impl Overview {
             }))
             .into_any_element(),
         );
+        // Linear (only while some Space has Linear on).
+        out.extend(self.linear_toolbar_button(theme, cx));
         // The shortcut reference, on demand (also `?` in the Outline and the
         // palette's Show Outline Shortcuts).
         out.push(
@@ -9960,6 +9983,7 @@ impl Overview {
                 self.open_required_actions(cx);
                 Ok(())
             }
+            WorkOutlineCommand::OpenLinear => self.open_linear_panel(None, cx),
             WorkOutlineCommand::StartChatForWorkItem => {
                 match self.outline.read(cx).selected_item() {
                     Some((space_id, item_id)) => self.start_chat_for_item(space_id, item_id, cx),
@@ -10052,8 +10076,9 @@ impl Overview {
         {
             return Some(chat_id);
         }
-        let panel_visible =
-            self.work_item_details.is_none() && self.required_actions_panel.is_none();
+        let panel_visible = self.work_item_details.is_none()
+            && self.required_actions_panel.is_none()
+            && self.linear_panel.is_none();
         panel_visible
             .then(|| self.shown_panel_chat(cx))
             .flatten()
@@ -10092,6 +10117,7 @@ impl Overview {
         if self.view_mode != OverviewMode::Outline
             || self.work_item_details.is_some()
             || self.required_actions_panel.is_some()
+            || self.linear_panel.is_some()
             || self.subagent_peek.is_some()
         {
             return;
@@ -15057,6 +15083,12 @@ mod logic_tests {
     /// Work Outline modules and shares this module's fixtures.
     mod required_actions_tests {
         include!("work_outline/required_actions_tests.rs");
+    }
+
+    /// Linear integration (panel, gating, chips, drops); the body lives
+    /// beside the Work Outline modules and shares this module's fixtures.
+    mod linear_tests {
+        include!("work_outline/linear_tests.rs");
     }
 
     /// Direct restructuring (keyboard, palette, picker placement, drag and

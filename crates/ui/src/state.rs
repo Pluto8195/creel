@@ -776,6 +776,9 @@ pub struct AppState {
     /// reply and the repository picked for branch/diff (Milestone 3). Shared
     /// by the composer's branch indicator and the Changes pane.
     chat_execution: HashMap<String, crate::work_outline::execution::ChatExecutionState>,
+    /// Linear integration: connection status and the issue cache the chips,
+    /// details and panel share (`crate::linear::store`).
+    pub(crate) linear: crate::linear::store::LinearStore,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
     /// subagent tabs read these). Independent of `selected_chat`: a tab's
     /// feed must survive chat switches — the tab itself is what scopes it.
@@ -859,6 +862,7 @@ impl AppState {
             #[cfg(test)]
             work_outline_actions_override: None,
             chat_execution: HashMap::new(),
+            linear: Default::default(),
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
             auto_selected: false,

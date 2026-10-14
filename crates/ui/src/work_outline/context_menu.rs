@@ -94,6 +94,8 @@ pub(crate) enum MenuAction {
     RenameSpace(String),
     /// The sidebar's Remove project confirmation.
     DeleteSpace(String),
+    /// Linear integration entries (`crate::linear::menu`).
+    Linear(crate::linear::menu::LinearMenuAction),
 }
 
 impl MenuAction {
@@ -117,6 +119,7 @@ impl MenuAction {
             Self::Command(command) => HintKey::Command(*command),
             // Archive session acts on the selected row in the tree.
             Self::Archive | Self::ArchiveChat(_) => HintKey::App(ShortcutId::ArchiveSession),
+            Self::Linear(action) => action.hint(),
             Self::StatusPage
             | Self::Back
             | Self::SetStatus(_)
@@ -383,20 +386,36 @@ impl OutlineView {
     pub(crate) fn context_menu(&self, key: &str, cx: &App) -> Option<OutlineContextMenu> {
         let row = self.model.row(key)?;
         match &row.kind {
-            OutlineRowKind::Item(item) => Some(self.item_context_menu(key, item)),
+            OutlineRowKind::Item(item) => {
+                let mut menu = self.item_context_menu(key, item);
+                crate::linear::menu::insert_item_entries(
+                    &mut menu,
+                    self.snapshot(&item.space_id),
+                    &item.item_id,
+                );
+                Some(menu)
+            }
             OutlineRowKind::Chat(chat) => Some(self.chat_context_menu(key, chat)),
             OutlineRowKind::Space {
                 space_id, hidden, ..
-            } => Some(space_root_menu(
-                Some(key.to_string()),
-                space_id,
-                self.space_unavailable(space_id),
-                Some(SpaceRowMenu {
-                    hidden: *hidden,
-                    up_blocked: self.space_move_blocked(space_id, true),
-                    down_blocked: self.space_move_blocked(space_id, false),
-                }),
-            )),
+            } => {
+                let mut menu = space_root_menu(
+                    Some(key.to_string()),
+                    space_id,
+                    self.space_unavailable(space_id),
+                    Some(SpaceRowMenu {
+                        hidden: *hidden,
+                        up_blocked: self.space_move_blocked(space_id, true),
+                        down_blocked: self.space_move_blocked(space_id, false),
+                    }),
+                );
+                crate::linear::menu::insert_space_entries(
+                    &mut menu,
+                    self.snapshot(space_id),
+                    space_id,
+                );
+                Some(menu)
+            }
             OutlineRowKind::Unassociated { .. } => self.unassociated_context_menu(key, cx),
             OutlineRowKind::Notice { .. } => None,
         }
