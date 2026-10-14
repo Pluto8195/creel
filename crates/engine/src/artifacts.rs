@@ -217,7 +217,9 @@ fn default_title_for(path: &Path) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("artifact");
-    zeron_proto::visualize::default_title(name)
+    let html = name.to_ascii_lowercase().ends_with(".html");
+    html.then(|| zeron_proto::visualize::default_title(name))
+        .flatten()
         .or_else(|| {
             Path::new(name)
                 .file_stem()
@@ -1345,8 +1347,14 @@ impl ArtifactsService {
                 (None, Some(PlanScope::Chat(chat))) => chat == caller.chat_id,
                 _ => false,
             });
+        // The RPC transport cannot carry a bare `null` result (`{ok: null}`
+        // decodes as no reply), so "no plan" is an object with a null id.
         let Some(plan) = plan else {
-            return Ok(Value::Null);
+            return Ok(json!({
+                "artifactId": null,
+                "note": "No plan is pinned for this work item yet. Publish one with \
+                         artifact_publish {role: \"plan\", pinAsPlan: true}.",
+            }));
         };
         let bytes = if plan.device_id == self.device_id() {
             self.current_bytes(&plan).ok()

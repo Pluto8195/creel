@@ -108,7 +108,8 @@ scoped to the token's Chat (and its work item).
   - `pinAsPlan: true` pins it and unpins the scope's other plans.
   - A file name already used by another artifact in the folder gets `-<id6>` before its suffix.
 - `artifact_get_plan {}` → `{artifactId, title, kind, revision, storedPath, url, content,
-  openQuestions, unverifiedClaims}` or `null`. Phase 1 counts questions and unverified claims with
+  openQuestions, unverifiedClaims}`, or `{artifactId: null, note}` when no plan is pinned (the RPC
+  transport cannot carry a bare `null` result, so the conventions' `null` is this object). Phase 1 counts questions and unverified claims with
   the simple syntax counters above (the full parser is phase 3).
 - `artifact_render_check {artifactId | path, viewport?, theme?}` → MCP content: one `image`
   block (PNG) + a text block with `{artifactId?, errors, warnings}`. An `artifactId` must belong to
