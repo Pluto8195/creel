@@ -1194,7 +1194,11 @@ impl PrReviewSyncService {
     }
 
     /// Sync one Space in the background (after the destination is set).
+    /// Automatic like the loop: off when the config turns background off.
     pub fn spawn_space_sync(&self, space_id: String) {
+        if !self.config().background {
+            return;
+        }
         let service = self.clone();
         tokio::spawn(async move {
             if let Err(error) = service.sync_space(&space_id, false).await {
