@@ -76,6 +76,12 @@ pub(crate) enum DetailsEvent {
         space_id: String,
         item_id: String,
     },
+    /// "Add issues from <project>…" on a project-linked item (the Overview
+    /// opens the picker).
+    AddLinearIssues {
+        space_id: String,
+        item_id: String,
+    },
     /// Associate (`Some`) or disassociate (`None`) a Chat. The Outline sends
     /// it like its own Chat moves: applied at once, with its Undo toast when
     /// the Chat's effective instructions change.

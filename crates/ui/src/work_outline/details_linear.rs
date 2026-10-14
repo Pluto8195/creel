@@ -5,7 +5,8 @@
 //!   Linear…" (Settings → Linear) while this device has no key.
 //! - Items of a Linear-enabled Space: the **Linear** section (live issue
 //!   chip, project chip, ↻ = `LinearRefreshLinkedItems` for the Space,
-//!   Unlink), and "Synced from Linear" on a title / description that still
+//!   Unlink; on a project link also "Add issues from <project>…" and, for a
+//!   pasted-URL link My projects resolves, Fix link), and "Synced from Linear" on a title / description that still
 //!   follows the issue (`externalSyncModifiedFields` does not list it).
 //! - Pasted references: a Linear URL becomes an `issue` / `project`
 //!   reference only with Linear on; otherwise it stays a plain link and the
@@ -423,6 +424,10 @@ impl WorkItemDetails {
         }
         if let Some(reference) = project {
             let id = reference.id.clone();
+            let project_name = reference
+                .cached_title
+                .clone()
+                .unwrap_or_else(|| "project".into());
             let repair = self
                 .state
                 .read(cx)
@@ -467,6 +472,28 @@ impl WorkItemDetails {
                                 this.unlink_linear(id.clone(), cx)
                             })),
                     ),
+            );
+            let add_selector = "work-item-linear-add-issues";
+            let tip: SharedString =
+                format!("Pick open issues of {project_name} to add as work items under this one")
+                    .into();
+            section = section.child(
+                div().flex().child(
+                    crate::linear::panel::LinearPanel::small_button(
+                        add_selector,
+                        format!("Add issues from {project_name}\u{2026}"),
+                        theme,
+                    )
+                    .max_w(px(320.0))
+                    .debug_selector(move || add_selector.into())
+                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.emit(super::DetailsEvent::AddLinearIssues {
+                            space_id: this.space_id.clone(),
+                            item_id: this.item_id.clone(),
+                        })
+                    })),
+                ),
             );
         }
         if let Some(line) = self.linear.status_line.clone() {

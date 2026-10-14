@@ -1053,3 +1053,173 @@ fn slug_project_link_matches_and_fix_link_repairs_it(cx: &mut gpui::TestAppConte
     open_details(&overview, vcx, UI);
     assert!(vcx.debug_bounds("work-item-linear-fix-link").is_some());
 }
+
+/// Project issues for the "Add issues from…" tests: ENG-3 (linked on
+/// `API` by `picker_snapshot`), ENG-4, ENG-5.
+fn picker_reply(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    if method == "LinearProjectIssues" {
+        return Ok(serde_json::to_value(vec![
+            lf::issue("ENG-3", "Docs"),
+            lf::issue("ENG-4", "Pricing page"),
+            lf::issue("ENG-5", "Checkout"),
+        ])
+        .unwrap());
+    }
+    default_reply(method, params)
+}
+
+fn picker_snapshot() -> WorkOutlineSnapshot {
+    let mut snapshot = project_linked_snapshot("p-launch", "https://linear.app/acme/project/launch-abc123");
+    snapshot.external_references.push(lf::reference(
+        "r-eng-3",
+        "s1",
+        API,
+        "issue",
+        "ENG-3",
+        "https://linear.app/acme/issue/eng-3/slug",
+    ));
+    snapshot
+}
+
+/// "Add issues from <project>…" (menu entry and Details button on a
+/// project-linked item) opens a picker without the Linear panel: it lists
+/// the project's open issues, shows already-added ones checked + disabled
+/// with Reveal, filters on search, Select all checks the rest, and Create
+/// adds one node per checked issue under the item, then selects the first.
+#[gpui::test]
+fn add_issues_from_project_lists_marks_added_and_creates_under_the_item(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), picker_snapshot(), picker_reply);
+    resize(vcx, 1800.0);
+    overview.read_with(vcx, |o, cx| {
+        let menu = o.outline.read(cx).context_menu(&row_key::item("s1", UI), cx).unwrap();
+        let entry = menu.entries.iter().find(|e| e.id == "linear-add-issues").expect("menu entry");
+        assert_eq!(entry.label, "Add Issues from Launch\u{2026}");
+    });
+    open_details(&overview, vcx, UI);
+    press(vcx, "work-item-linear-add-issues".into());
+    let picker = overview.read_with(vcx, |o, _| {
+        assert!(o.linear_panel().is_none(), "the Linear panel stays closed");
+        o.project_issue_picker().expect("the picker opens")
+    });
+    let asked: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, _)| m == "LinearProjectIssues")
+        .map(|(_, p)| p["projectId"].clone())
+        .collect();
+    assert_eq!(asked, [serde_json::json!("p-launch")]);
+    for selector in [
+        "linear-add-issues",
+        "linear-add-issues-row-ENG-3",
+        "linear-add-issues-reveal-ENG-3",
+        "linear-add-issues-row-ENG-4",
+        "linear-add-issues-row-ENG-5",
+    ] {
+        assert!(row_bounds(vcx, selector.into()).is_some(), "{selector}");
+    }
+    assert!(row_bounds(vcx, "linear-add-issues-reveal-ENG-4".into()).is_none());
+    // An added issue can't be toggled.
+    press(vcx, "linear-add-issues-check-ENG-3".into());
+    picker.read_with(vcx, |p, _| assert!(p.checked.is_empty()));
+    // Search narrows; Select all checks only shown, unadded issues.
+    picker.update(vcx, |p, cx| p.set_query("pricing", cx));
+    draw(vcx);
+    assert!(row_bounds(vcx, "linear-add-issues-row-ENG-5".into()).is_none());
+    press(vcx, "linear-add-issues-select-all".into());
+    picker.read_with(vcx, |p, _| {
+        assert_eq!(p.checked.iter().cloned().collect::<Vec<_>>(), ["ENG-4"])
+    });
+    picker.update(vcx, |p, cx| p.set_query("", cx));
+    draw(vcx);
+    press(vcx, "linear-add-issues-select-all".into());
+    picker.read_with(vcx, |p, _| {
+        assert_eq!(p.checked.iter().cloned().collect::<Vec<_>>(), ["ENG-4", "ENG-5"])
+    });
+    // Reveal an added issue.
+    press(vcx, "linear-add-issues-reveal-ENG-3".into());
+    overview.read_with(vcx, |o, cx| {
+        assert_eq!(o.outline.read(cx).selected_key(), Some(row_key::item("s1", API).as_str()))
+    });
+    // Create.
+    press(vcx, "linear-add-issues-create".into());
+    let creates = mutations(&calls, "createWorkItemFromLinear");
+    assert_eq!(
+        creates_parent(&calls),
+        [("ENG-4".to_string(), UI.to_string()), ("ENG-5".to_string(), UI.to_string())]
+    );
+    assert!(creates.iter().all(|c| c["placement"] == serde_json::json!({"type": "last"})));
+    assert!(creates.iter().all(|c| c["spaceId"] == "s1"));
+    assert_ne!(creates[0]["operationId"], creates[1]["operationId"]);
+    overview.read_with(vcx, |o, _| assert!(o.project_issue_picker().is_none(), "closes after"));
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(with_created(picker_snapshot(), "w-new-ENG-4", UI))), cx)
+    });
+    draw(vcx);
+    overview.read_with(vcx, |o, cx| {
+        assert_eq!(
+            o.outline.read(cx).selected_key(),
+            Some(row_key::item("s1", "w-new-ENG-4").as_str()),
+            "the first new node is selected"
+        )
+    });
+}
+
+/// A failed create keeps the picker open with that issue still checked,
+/// and the retry reuses its operation id.
+#[gpui::test]
+fn add_issues_retry_keeps_operation_ids(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = fail.clone();
+    let (overview, calls, vcx) =
+        linear_overview(cx, dir.path(), picker_snapshot(), move |method, params| {
+            if params["op"] == "createWorkItemFromLinear"
+                && flag.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(zeron_rpc::RpcError::Failed("linear/rateLimited: slow down".into()));
+            }
+            picker_reply(method, params)
+        });
+    overview.update(vcx, |o, cx| o.open_project_issue_picker("s1".into(), UI.into(), cx).unwrap());
+    vcx.run_until_parked();
+    draw(vcx);
+    press(vcx, "linear-add-issues-check-ENG-4".into());
+    press(vcx, "linear-add-issues-create".into());
+    assert!(vcx.debug_bounds("linear-add-issues-error").is_some());
+    let picker = overview.read_with(vcx, |o, _| o.project_issue_picker().expect("stays open"));
+    picker.read_with(vcx, |p, _| assert!(p.checked.contains("ENG-4")));
+    press(vcx, "linear-add-issues-create".into());
+    let creates = mutations(&calls, "createWorkItemFromLinear");
+    assert_eq!(creates.len(), 2);
+    assert_eq!(creates[0]["operationId"], creates[1]["operationId"], "a retry replays");
+    overview.read_with(vcx, |o, _| assert!(o.project_issue_picker().is_none()));
+}
+
+/// With Linear off nothing offers "Add issues from…" and the picker
+/// refuses to open (no Linear calls).
+#[gpui::test]
+fn add_issues_is_gated_on_linear(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut snapshot = picker_snapshot();
+    snapshot.space_settings.linear_enabled = false;
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), snapshot, picker_reply);
+    overview.read_with(vcx, |o, cx| {
+        let menu = o.outline.read(cx).context_menu(&row_key::item("s1", UI), cx).unwrap();
+        assert!(menu.entries.iter().all(|e| e.id != "linear-add-issues"));
+    });
+    open_details(&overview, vcx, UI);
+    assert!(vcx.debug_bounds("work-item-linear-add-issues").is_none());
+    let result = overview.update(vcx, |o, cx| o.open_project_issue_picker("s1".into(), UI.into(), cx));
+    assert!(result.is_err());
+    overview.read_with(vcx, |o, _| assert!(o.project_issue_picker().is_none()));
+    // Not project-linked: refused too.
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), picker_snapshot(), picker_reply);
+    let result = overview.update(vcx, |o, cx| o.open_project_issue_picker("s1".into(), API.into(), cx));
+    assert!(result.is_err());
+    assert_eq!(called(&calls, "LinearProjectIssues"), 0);
+}

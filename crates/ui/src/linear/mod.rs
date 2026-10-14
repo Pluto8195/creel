@@ -25,6 +25,7 @@ pub(crate) mod menu;
 pub(crate) mod panel;
 pub(crate) mod prefs;
 pub(crate) mod project_links;
+pub(crate) mod project_picker;
 pub(crate) mod settings_page;
 pub(crate) mod store;
 
