@@ -315,6 +315,7 @@ impl WorkItemDetails {
         });
         let (required_actions, required_actions_events) =
             Self::new_required_actions(&state, &space_id, &item_id, cx);
+        required_actions.update(cx, |list, _| list.shell = Some(shell.clone()));
         let subscriptions = vec![
             required_actions_events,
             cx.subscribe(&reason_input, |this: &mut Self, _, event, cx| {

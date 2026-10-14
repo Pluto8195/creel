@@ -10479,13 +10479,16 @@ impl Overview {
             use crate::work_outline::required_actions_view::{
                 RequiredActionsEvent, RequiredActionsList,
             };
+            let shell = self.shell.clone();
             let list = cx.new(|cx| {
-                RequiredActionsList::new(
+                let mut list = RequiredActionsList::new(
                     self.state.clone(),
                     crate::work_outline::required_actions::RequestScope::Global,
                     true,
                     cx,
-                )
+                );
+                list.shell = Some(shell);
+                list
             });
             let events = cx.subscribe(&list, |this: &mut Self, _, event, cx| match event {
                 RequiredActionsEvent::Close => this.close_required_actions(cx),
