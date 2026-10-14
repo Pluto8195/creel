@@ -628,6 +628,7 @@ pub(crate) fn bare_view(
         chat_ids: Vec::new(),
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
+        external_sync_modified_fields: Vec::new(),
     }
 }
 
@@ -869,6 +870,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             chat_ids,
             external_reference_ids,
             rollup,
+            external_sync_modified_fields: Vec::new(),
         });
     }
     for index in (0..views.len()).rev() {
@@ -939,6 +941,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         execution_exceptions: execution.exceptions,
         user_action_requests: user_actions.requests,
         instruction_proposals: user_actions.proposals,
+        space_settings: Default::default(),
     }
 }
 

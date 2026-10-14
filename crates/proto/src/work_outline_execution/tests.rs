@@ -52,6 +52,7 @@ fn item(id: &str, parent: Option<&str>) -> WorkItemView {
         chat_ids: Vec::new(),
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
+        external_sync_modified_fields: Vec::new(),
     }
 }
 

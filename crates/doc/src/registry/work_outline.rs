@@ -809,6 +809,12 @@ impl RegistryDoc {
             WorkOutlineMutation::RejectWorkItemInstructionProposal(p) => self
                 .reject_work_item_instruction_proposal(p, actor, now_ms)
                 .map(|_| empty),
+            WorkOutlineMutation::SetSpaceLinearEnabled(_)
+            | WorkOutlineMutation::CreateWorkItemFromLinear(_)
+            | WorkOutlineMutation::LinkLinearProject(_) => Err(err(
+                WorkOutlineErrorCode::Unsupported,
+                format!("{} is not implemented yet", mutation.op_name()),
+            )),
         }
     }
 

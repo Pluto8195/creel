@@ -394,6 +394,30 @@ pub struct WorkItemView {
     pub external_reference_ids: Vec<String>,
     #[serde(default)]
     pub rollup: WorkItemRollup,
+    /// Linear integration: fields of an issue-linked item the user edited
+    /// (`"title"`, `"description"`), which Linear sync no longer updates.
+    /// Sorted, deduplicated; cleared when the item's last Linear issue
+    /// reference is removed. Empty (omitted) for every other item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_sync_modified_fields: Vec<String>,
+}
+
+impl WorkItemView {
+    /// Whether Linear sync may still update `field`
+    /// ([`crate::linear::SYNC_FIELD_TITLE`] / `SYNC_FIELD_DESCRIPTION`).
+    pub fn follows_external_sync(&self, field: &str) -> bool {
+        !self.external_sync_modified_fields.iter().any(|f| f == field)
+    }
+}
+
+/// Per-Space Work Outline settings (registry kind `workOutlineSpaceSettings`,
+/// row id = Space id, LWW fields). A Space without a row has the defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkOutlineSpaceSettings {
+    /// Linear integration is on for this Space (default off).
+    #[serde(default)]
+    pub linear_enabled: bool,
 }
 
 /// How a Chat relates to the outline. Lenient: unknown reads as `unassociated`.
@@ -673,6 +697,10 @@ pub struct WorkOutlineSnapshot {
     /// review time), sorted by `(createdAt, id)` (Milestone 4).
     #[serde(default)]
     pub instruction_proposals: Vec<WorkItemInstructionProposalView>,
+    /// Per-Space settings (Linear integration); defaults when the Space has
+    /// no settings row or is unavailable.
+    #[serde(default)]
+    pub space_settings: WorkOutlineSpaceSettings,
 }
 
 impl WorkOutlineSnapshot {
@@ -708,6 +736,58 @@ impl WorkOutlineSnapshot {
             && self.execution_exceptions == other.execution_exceptions
             && self.user_action_requests == other.user_action_requests
             && self.instruction_proposals == other.instruction_proposals
+            && self.space_settings == other.space_settings
+    }
+
+    /// The Linear issue reference of an item (provider `linear`, type
+    /// `issue`), the earliest-created one when there are several.
+    pub fn linear_issue_reference(&self, work_item_id: &str) -> Option<&WorkItemExternalReferenceView> {
+        self.linear_reference(work_item_id, crate::linear::LINEAR_ISSUE_REFERENCE)
+    }
+
+    /// The Linear project reference of an item, if any.
+    pub fn linear_project_reference(
+        &self,
+        work_item_id: &str,
+    ) -> Option<&WorkItemExternalReferenceView> {
+        self.linear_reference(work_item_id, crate::linear::LINEAR_PROJECT_REFERENCE)
+    }
+
+    fn linear_reference(
+        &self,
+        work_item_id: &str,
+        reference_type: &str,
+    ) -> Option<&WorkItemExternalReferenceView> {
+        self.external_references
+            .iter()
+            .filter(|r| {
+                r.work_item_id == work_item_id
+                    && r.provider == crate::linear::LINEAR_PROVIDER
+                    && r.reference_type == reference_type
+            })
+            .min_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+    }
+
+    /// The nearest item on the path from `work_item_id` to its root (itself
+    /// first) carrying a Linear reference of `reference_type`.
+    pub fn nearest_linear_reference(
+        &self,
+        work_item_id: &str,
+        reference_type: &str,
+    ) -> Option<&WorkItemExternalReferenceView> {
+        let mut cursor = Some(work_item_id.to_owned());
+        let mut steps = 0;
+        while let Some(id) = cursor {
+            if let Some(reference) = self.linear_reference(&id, reference_type) {
+                return Some(reference);
+            }
+            steps += 1;
+            if steps > self.items.len() {
+                return None;
+            }
+            cursor = self.item(&id).and_then(|i| i.parent_work_item_id.clone());
+        }
+        None
     }
 
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
@@ -1047,6 +1127,51 @@ pub struct KeepInstructionSessionParams {
     pub operation_id: String,
 }
 
+/// `setSpaceLinearEnabled` (Linear integration): turn Linear on or off for a
+/// Space (the `workOutlineSpaceSettings` row's `linearEnabled`, LWW). Reply
+/// `{}`. Turning it off keeps every reference and title as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSpaceLinearEnabledParams {
+    pub space_id: String,
+    pub enabled: bool,
+    pub operation_id: String,
+}
+
+/// `createWorkItemFromLinear` (Linear integration): create a work item for a
+/// Linear issue and its `linear`/`issue` external reference in ONE batch.
+/// Title = [`crate::linear::linear_item_title`] (`"ENG-123 · title"`),
+/// description = [`crate::linear::linear_item_description`]. Reply:
+/// `workItemId` = `derive_id(operationId, "item")` and `referenceId`.
+/// Idempotent by `operationId`. `linear/disabledForSpace` when the Space has
+/// Linear off. User action only (agents are refused).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkItemFromLinearParams {
+    pub space_id: String,
+    /// `None` = a Space-level root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_work_item_id: Option<String>,
+    #[serde(default)]
+    pub placement: WorkOutlinePlacement,
+    pub issue: crate::linear::LinearIssueLink,
+    pub operation_id: String,
+}
+
+/// `linkLinearProject` (Linear integration): add a `linear`/`project`
+/// external reference (externalId = project id, url, cachedTitle = name) to
+/// an existing item. Reply: `referenceId`. `linear/disabledForSpace` when
+/// the item's Space has Linear off. Linking an ISSUE to an existing item is
+/// the ordinary `createWorkItemExternalReference` with provider `linear`,
+/// referenceType `issue`, externalId = identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkLinearProjectParams {
+    pub work_item_id: String,
+    pub project: crate::linear::LinearProjectRef,
+    pub operation_id: String,
+}
+
 /// The params of `WorkOutlineMutate`: one tagged enum (`op`, camelCase) so a
 /// peer that predates an operation answers a single, recognizable error.
 /// Each variant's fields sit beside `op`, e.g.
@@ -1080,6 +1205,10 @@ pub enum WorkOutlineMutation {
     ProposeWorkItemInstruction(ProposeWorkItemInstructionParams),
     ApproveWorkItemInstructionProposal(ApproveWorkItemInstructionProposalParams),
     RejectWorkItemInstructionProposal(RejectWorkItemInstructionProposalParams),
+    // ── Linear integration ──
+    SetSpaceLinearEnabled(SetSpaceLinearEnabledParams),
+    CreateWorkItemFromLinear(CreateWorkItemFromLinearParams),
+    LinkLinearProject(LinkLinearProjectParams),
 }
 
 impl WorkOutlineMutation {
@@ -1109,6 +1238,9 @@ impl WorkOutlineMutation {
             Self::ProposeWorkItemInstruction(p) => &p.operation_id,
             Self::ApproveWorkItemInstructionProposal(p) => &p.operation_id,
             Self::RejectWorkItemInstructionProposal(p) => &p.operation_id,
+            Self::SetSpaceLinearEnabled(p) => &p.operation_id,
+            Self::CreateWorkItemFromLinear(p) => &p.operation_id,
+            Self::LinkLinearProject(p) => &p.operation_id,
         }
     }
 
@@ -1138,7 +1270,19 @@ impl WorkOutlineMutation {
             Self::ProposeWorkItemInstruction(_) => "proposeWorkItemInstruction",
             Self::ApproveWorkItemInstructionProposal(_) => "approveWorkItemInstructionProposal",
             Self::RejectWorkItemInstructionProposal(_) => "rejectWorkItemInstructionProposal",
+            Self::SetSpaceLinearEnabled(_) => "setSpaceLinearEnabled",
+            Self::CreateWorkItemFromLinear(_) => "createWorkItemFromLinear",
+            Self::LinkLinearProject(_) => "linkLinearProject",
         }
+    }
+
+    /// Whether this is a Linear integration operation that is only allowed
+    /// in a Space with Linear on (`linear/disabledForSpace` otherwise).
+    pub fn requires_linear_enabled(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateWorkItemFromLinear(_) | Self::LinkLinearProject(_)
+        )
     }
 
     /// Whether this is a Milestone 2 instruction operation (hosts without
@@ -1165,8 +1309,9 @@ impl WorkOutlineMutation {
 /// `applyInstructionRevision` / `keepInstructionSession` -> `applicationId`,
 /// `createUserActionRequest` -> `userActionRequestId`,
 /// `proposeWorkItemInstruction` -> `proposalId`,
-/// `approveWorkItemInstructionProposal` -> `instructionId`); every other
-/// operation replies `{}`. [`CreateWorkItemResult`] and
+/// `approveWorkItemInstructionProposal` -> `instructionId`,
+/// `linkLinearProject` -> `referenceId`); `createWorkItemFromLinear` sets
+/// both `workItemId` and `referenceId`; every other operation replies `{}`. [`CreateWorkItemResult`] and
 /// [`CreateWorkItemExternalReferenceResult`] decode from the same reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1708,6 +1853,7 @@ mod tests {
                     associated_chat_count: 6,
                     subtree_unresolved_user_action_count: 7,
                 },
+                external_sync_modified_fields: Vec::new(),
             }],
             assignments: vec![WorkItemChatAssignmentView {
                 chat_id: "chat-1".into(),
@@ -1748,6 +1894,7 @@ mod tests {
             // `work_outline_user_actions::tests`.
             user_action_requests: Vec::new(),
             instruction_proposals: Vec::new(),
+            space_settings: Default::default(),
         };
         let actor_json =
             json!({"kind":"agent","deviceId":"dev-1","chatId":"chat-1","messageId":"msg-1"});
@@ -1824,7 +1971,8 @@ mod tests {
                 "chatExecutionBindings": [],
                 "executionExceptions": [],
                 "userActionRequests": [],
-                "instructionProposals": []
+                "instructionProposals": [],
+                "spaceSettings": {"linearEnabled": false}
             }),
         );
     }
@@ -1882,7 +2030,8 @@ mod tests {
                 "chatExecutionBindings": [],
                 "executionExceptions": [],
                 "userActionRequests": [],
-                "instructionProposals": []
+                "instructionProposals": [],
+                "spaceSettings": {"linearEnabled": false}
             })
         );
     }

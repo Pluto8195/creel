@@ -42,6 +42,7 @@ fn item(id: &str, parent: Option<&str>, title: &str, inherit: bool) -> WorkItemV
         chat_ids: Vec::new(),
         external_reference_ids: Vec::new(),
         rollup: Default::default(),
+        external_sync_modified_fields: Vec::new(),
     }
 }
 
