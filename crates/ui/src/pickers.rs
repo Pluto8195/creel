@@ -560,8 +560,26 @@ struct SettingGroup {
     choices: Vec<SettingChoice>,
 }
 
+/// A [`Pickers`] instance that configures a brand-new Chat started OUTSIDE
+/// the composer (Start Chat from a work item, Review PR): always the
+/// new-chat canvas — never the selected chat — with catalogs fetched from
+/// `device_id` (the device that runs the agent; `None` = the connected
+/// engine's own). Picks stay in memory until the launcher adopts them into
+/// the composer's sticky defaults ([`Pickers::adopt_new_chat_picks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewChatLauncher {
+    pub device_id: Option<String>,
+}
+
 pub struct Pickers {
     state: Entity<AppState>,
+    /// `Some` for a launcher instance (see [`NewChatLauncher`]); `None` for
+    /// the composer's own pickers.
+    launcher: Option<NewChatLauncher>,
+    /// Keyboard focus of the launcher's model chip and approval chip (the
+    /// launcher's dialog walks prompt → model → approval with Tab).
+    model_chip_focus: FocusHandle,
+    approval_chip_focus: FocusHandle,
     config: DraftConfig,
     /// Sticky last-used picks (zeron `zeron.composer.defaults:v1`): seeds the
     /// new-chat chips and is rewritten on every new-chat pick.
@@ -683,6 +701,74 @@ pub struct Pickers {
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        // Sticky last-used picks: loaded synchronously so the very first frame
+        // shows the remembered harness/model/reasoning, never a placeholder.
+        let data_dir = state.read(cx).data_dir.clone();
+        let defaults = data_dir
+            .as_deref()
+            .map(ComposerDefaults::load)
+            .unwrap_or_default();
+        // Restore explicit opt-outs as well as project picks before the first frame.
+        state.update(cx, |s, _| s.restore_composer_target(&defaults));
+        Self::build(state, None, defaults, data_dir, cx)
+    }
+
+    /// A launcher instance seeded from the composer's pickers: the same
+    /// sticky defaults (so the initial selection is exactly what a brand-new
+    /// regular chat starts with) and, when both fetch from the same device,
+    /// the already-loaded harness/model catalogs (no loading flash).
+    pub(crate) fn new_chat_launcher(
+        seed: &Entity<Pickers>,
+        device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let seed = seed.read(cx);
+        let state = seed.state.clone();
+        let defaults = seed.defaults.clone();
+        let data_dir = seed.data_dir.clone();
+        let local = state.read(cx).local_device_id.clone();
+        let target = device_id
+            .clone()
+            .filter(|device| local.as_deref() != Some(device.as_str()));
+        // Only settled catalogs carry over: a seed slot still Loading is
+        // answered into the seed, never into this instance.
+        let catalogs = (seed.space_target(cx) == target).then(|| {
+            let harnesses = match &seed.harnesses {
+                Loadable::Ready(list) => Loadable::Ready(list.clone()),
+                _ => Loadable::Idle,
+            };
+            let models: HashMap<HarnessId, Loadable<Vec<Model>>> = seed
+                .models
+                .iter()
+                .filter_map(|(harness, slot)| match slot {
+                    Loadable::Ready(models) => Some((*harness, Loadable::Ready(models.clone()))),
+                    _ => None,
+                })
+                .collect();
+            (harnesses, models)
+        });
+        let mut this = Self::build(
+            state,
+            Some(NewChatLauncher { device_id }),
+            defaults,
+            data_dir,
+            cx,
+        );
+        if let Some((harnesses, models)) = catalogs {
+            this.harnesses = harnesses;
+            this.models = models;
+            this.catalog_rev += 1;
+        }
+        this
+    }
+
+    fn build(
+        state: Entity<AppState>,
+        launcher: Option<NewChatLauncher>,
+        defaults: ComposerDefaults,
+        data_dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let search = cx.new(|cx| {
             ComposerInput::with_context("Search…", "PaletteSearch", cx)
                 .with_accessibility_role(gpui::Role::SearchInput)
@@ -729,6 +815,12 @@ impl Pickers {
         // only re-render on their own notify). A selection change also drops
         // the draft picks — they belonged to the previous chat/new-chat canvas.
         let state_observe = cx.observe(&state, |this: &mut Self, state, cx| {
+            // A launcher configures its own new chat on a fixed device: the
+            // composer's selection never resets it.
+            if this.launcher.is_some() {
+                cx.notify();
+                return;
+            }
             let selected = state.read(cx).selected_chat.clone();
             if selected != this.draft_owner {
                 // Leaving the new-chat canvas for a chat that has no row yet
@@ -788,6 +880,7 @@ impl Pickers {
         // with that popover open — synthetic input can't reach the app on
         // headless compositors, so captures need a data-side path.
         let boot_open = match std::env::var("ZERON_OPEN_PICKER").ok().as_deref() {
+            _ if launcher.is_some() => None,
             Some("model") => Some(PickerKind::HarnessModel),
             Some("traits") => Some(PickerKind::HarnessModel),
             Some("branch") => Some(PickerKind::Branch),
@@ -800,20 +893,14 @@ impl Pickers {
         if let Some(kind) = boot_open {
             open.open(kind);
         }
-        // Sticky last-used picks: loaded synchronously so the very first frame
-        // shows the remembered harness/model/reasoning, never a placeholder.
-        let data_dir = state.read(cx).data_dir.clone();
-        let defaults = data_dir
-            .as_deref()
-            .map(ComposerDefaults::load)
-            .unwrap_or_default();
-        // Restore explicit opt-outs as well as project picks before the first frame.
-        state.update(cx, |s, _| s.restore_composer_target(&defaults));
         let draft_owner = state.read(cx).selected_chat.clone();
         let space_owner = state.read(cx).selected_space.clone();
         let device_owner = state.read(cx).effective_device_id();
         Self {
             state,
+            launcher,
+            model_chip_focus: cx.focus_handle(),
+            approval_chip_focus: cx.focus_handle(),
             space_owner,
             device_owner,
             target_generation: 0,
@@ -876,11 +963,85 @@ impl Pickers {
 
     /// Persist the sticky defaults (best-effort; picks are rare and tiny).
     fn save_defaults(&self) {
+        // A launcher's picks reach the file only through the composer's
+        // instance (adopted when its chat starts) — two writers of one file
+        // would overwrite each other's in-memory copies.
+        if self.launcher.is_some() {
+            return;
+        }
         if let Some(dir) = self.data_dir.as_deref()
             && let Err(err) = self.defaults.save(dir)
         {
             tracing::warn!(error = %err, "composer-defaults save failed");
         }
+    }
+
+    /// The selected chat these pickers configure: always `None` for a
+    /// launcher (it configures a chat that does not exist yet).
+    fn chat_id<'a>(&self, cx: &'a App) -> Option<&'a str> {
+        if self.launcher.is_some() {
+            return None;
+        }
+        self.state.read(cx).selected_chat.as_deref()
+    }
+
+    /// The selected chat's row (see [`Self::chat_id`]).
+    fn chat_row<'a>(&self, cx: &'a App) -> Option<&'a zeron_proto::Chat> {
+        if self.launcher.is_some() {
+            return None;
+        }
+        self.state.read(cx).selected_chat_row()
+    }
+
+    /// A launcher's chips (Tab order after the dialog's prompt).
+    pub(crate) fn model_chip_focus(&self) -> &FocusHandle {
+        &self.model_chip_focus
+    }
+
+    pub(crate) fn approval_chip_focus(&self) -> &FocusHandle {
+        &self.approval_chip_focus
+    }
+
+    /// Close the open popover the way Escape does (launcher dialogs route
+    /// their capture-phase Escape here first). `true` when one was open.
+    pub(crate) fn close_open_popover(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        self.animate_close(cx);
+        cx.notify();
+        true
+    }
+
+    /// The composer's instance takes over a launcher's new-chat picks once
+    /// its chat started — the last-used harness/model/reasoning/options and
+    /// favorites — and persists them, exactly as if the pick had been made
+    /// on the new-chat canvas. Project/device targets stay the composer's.
+    pub(crate) fn adopt_new_chat_picks(
+        &mut self,
+        picks: &ComposerDefaults,
+        cx: &mut Context<Self>,
+    ) {
+        self.defaults.harness = picks.harness;
+        self.defaults.model_by_harness = picks.model_by_harness.clone();
+        self.defaults.reasoning = picks.reasoning;
+        self.defaults.model_options_by_model = picks.model_options_by_model.clone();
+        self.defaults.model_labels.extend(
+            picks
+                .model_labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        self.defaults.favorites = picks.favorites.clone();
+        self.catalog_rev += 1;
+        self.save_defaults();
+        cx.notify();
+    }
+
+    /// The sticky defaults these pickers resolve from (a launcher's carry
+    /// its in-memory picks; see [`Self::adopt_new_chat_picks`]).
+    pub(crate) fn new_chat_defaults(&self) -> &ComposerDefaults {
+        &self.defaults
     }
 
     pub fn draft(&self) -> &DraftConfig {
@@ -889,7 +1050,7 @@ impl Pickers {
 
     /// Harness is locked once the chat exists (feature-inventory §1.7).
     fn harness_locked(&self, cx: &App) -> bool {
-        self.state.read(cx).selected_chat.is_some()
+        self.chat_id(cx).is_some()
     }
 
     fn engine(&self, cx: &App) -> Option<EngineHandle> {
@@ -903,7 +1064,10 @@ impl Pickers {
     /// anywhere" from a Mac without codex).
     fn space_target(&self, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
-        let device = state.effective_device_id()?;
+        let device = match &self.launcher {
+            Some(launcher) => launcher.device_id.clone()?,
+            None => state.effective_device_id()?,
+        };
         (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
     }
 
@@ -912,12 +1076,7 @@ impl Pickers {
         if let Some(harness) = self.config.harness {
             return Some(harness);
         }
-        if let Some(config) = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.config.as_ref())
-        {
+        if let Some(config) = self.chat_row(cx).and_then(|c| c.config.as_ref()) {
             return Some(config.harness);
         }
         // New-chat canvas: the remembered last-used harness (sticky defaults),
@@ -947,7 +1106,7 @@ impl Pickers {
         if let Some(id) = self.config.model.as_deref() {
             return Some(id);
         }
-        if let Some(chat) = self.state.read(cx).selected_chat_row() {
+        if let Some(chat) = self.chat_row(cx) {
             return chat.config.as_ref().and_then(|c| c.model.as_deref());
         }
         let harness = self.effective_harness(cx)?;
@@ -959,7 +1118,7 @@ impl Pickers {
     /// model's ladder, falling back to the model's default level.
     fn effective_reasoning(&self, cx: &App) -> Option<ReasoningLevel> {
         let explicit = self.config.reasoning.or_else(|| {
-            match self.state.read(cx).selected_chat_row() {
+            match self.chat_row(cx) {
                 Some(chat) => chat.config.as_ref().and_then(|c| c.reasoning),
                 // New chat: the remembered last-used level.
                 None => self.defaults.reasoning,
@@ -1005,7 +1164,7 @@ impl Pickers {
     /// selections for existing chats, the remembered picks for the model the
     /// new-chat canvas resolves to (same id [`Self::resolved`] sends).
     fn explicit_options(&self, cx: &App) -> serde_json::Map<String, serde_json::Value> {
-        if let Some(chat) = self.state.read(cx).selected_chat_row() {
+        if let Some(chat) = self.chat_row(cx) {
             return chat
                 .config
                 .as_ref()
@@ -1060,60 +1219,29 @@ impl Pickers {
         }
     }
 
-    /// The agents a Start Chat from a work item can use: the composer's
-    /// resolved harness first (with its model, reasoning, and options), then
-    /// every other offered harness with its host defaults. Reuses the
-    /// composer's harness catalog and sticky defaults.
-    pub(crate) fn launch_agents(&self, cx: &App) -> Vec<crate::work_outline::launch::LaunchAgent> {
-        let resolved = self.resolved(cx);
-        let offered = self
-            .harnesses
-            .ready()
-            .map(|list| offered_harnesses(list))
-            .unwrap_or_default();
-        let name_of = |id: HarnessId| {
-            offered
-                .iter()
-                .find(|d| d.id == id)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| format!("{id:?}"))
+    /// The `ChatConfig` a brand-new regular chat would start with right now
+    /// (the new-chat canvas's resolution: sticky last-used harness, model,
+    /// reasoning, options; Ask) — independent of the selected chat. For
+    /// launchers without a picker of their own (Review PR).
+    pub(crate) fn new_chat_config(seed: &Entity<Pickers>, cx: &mut App) -> Option<ChatConfig> {
+        let device_id = {
+            let seed = seed.read(cx);
+            seed.launcher
+                .as_ref()
+                .map(|launcher| launcher.device_id.clone())
+                .unwrap_or_else(|| seed.state.read(cx).effective_device_id())
         };
-        let mut agents = Vec::new();
-        if let Some(config) = resolved.chat_config() {
-            agents.push(crate::work_outline::launch::LaunchAgent {
-                harness: config.harness,
-                name: name_of(config.harness),
-                config,
-            });
-        }
-        for descriptor in &offered {
-            if agents.iter().any(|agent| agent.harness == descriptor.id) {
-                continue;
-            }
-            agents.push(crate::work_outline::launch::LaunchAgent {
-                harness: descriptor.id,
-                name: descriptor.name.clone(),
-                config: ChatConfig {
-                    harness: descriptor.id,
-                    model: None,
-                    reasoning: None,
-                    model_options: Default::default(),
-                    sandbox: SandboxLevel::WorkspaceWrite,
-                    auto_approve: resolved.auto_approve,
-                },
-            });
-        }
-        agents
+        let launcher = cx.new(|cx| Pickers::new_chat_launcher(seed, device_id, cx));
+        launcher.read(cx).resolved(cx).chat_config()
     }
 
     // ---- the per-chat approval chip (see [`approval`]) ----
 
     /// The approval flag the next send carries (and the chip shows).
     pub fn effective_auto_approve(&self, cx: &App) -> bool {
-        let state = self.state.read(cx);
         approval::effective_auto_approve(
-            state.selected_chat.as_deref(),
-            state.selected_chat_row().and_then(|c| c.config.as_ref()),
+            self.chat_id(cx),
+            self.chat_row(cx).and_then(|c| c.config.as_ref()),
             self.carried_auto_approve
                 .as_ref()
                 .map(|(id, value)| (id.as_str(), *value)),
@@ -1129,7 +1257,7 @@ impl Pickers {
         let next = ApprovalMode::from_auto_approve(self.effective_auto_approve(cx))
             .next()
             .auto_approve();
-        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+        let Some(chat_id) = self.chat_id(cx).map(str::to_owned) else {
             self.config.auto_approve = next;
             cx.notify();
             return;
@@ -1214,6 +1342,17 @@ impl Pickers {
             .cursor_pointer()
             .tooltip(move |_, cx| cx.new(|_| WorkspaceChipTooltip(tooltip.clone())).into())
             .on_click(cx.listener(|this, _, _, cx| this.toggle_auto_approve(cx)))
+            .when(self.launcher.is_some(), |chip| {
+                chip.debug_selector(|| "picker-approval-mode".into())
+                    .track_focus(&self.approval_chip_focus)
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.toggle_auto_approve(cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+            })
             .child(
                 crate::icons::icon(icon_path)
                     .size(px(12.0))
@@ -1868,7 +2007,7 @@ impl Pickers {
         // The card stays open on a pick (user request): model and traits
         // share one popover now, and adjusting the tray right after choosing
         // a model is the expected flow. Esc, click-out, or the chip close it.
-        if self.state.read(cx).selected_chat.is_some() {
+        if self.chat_id(cx).is_some() {
             // Existing chat: persist to the chat row (Mutate setChatConfig) —
             // survives restarts and syncs; next runs in this chat use it.
             self.update_chat_config(cx, move |config| config.model = Some(model_id));
@@ -1892,7 +2031,7 @@ impl Pickers {
 
     fn pick_reasoning(&mut self, level: ReasoningLevel, cx: &mut Context<Self>) {
         // Always a concrete selection (no toggle-back-to-default).
-        if self.state.read(cx).selected_chat.is_some() {
+        if self.chat_id(cx).is_some() {
             self.update_chat_config(cx, move |config| config.reasoning = Some(level));
         } else {
             self.config.reasoning = Some(level);
@@ -1909,7 +2048,7 @@ impl Pickers {
         default: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.state.read(cx).selected_chat.is_some() {
+        if self.chat_id(cx).is_some() {
             self.update_chat_config(cx, move |config| {
                 if default {
                     config.model_options.remove(&option_id);
@@ -1944,7 +2083,7 @@ impl Pickers {
     /// row always carries the CONCRETE resolved model/reasoning, with the
     /// reasoning re-clamped to the (possibly just-changed) model's ladder.
     fn update_chat_config(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut ChatConfig)) {
-        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+        let Some(chat_id) = self.chat_id(cx).map(str::to_owned) else {
             return;
         };
         let resolved = self.resolved(cx);
@@ -4619,7 +4758,7 @@ impl Pickers {
         // Compact tabbed layout (user request, modeled on the referenced
         // picker): the model LIST gets a fixed band of roughly seven compact
         // rows; the pinned traits tray below sizes to its sections.
-        let list_height = if self.state.read(cx).selected_chat.is_none() {
+        let list_height = if self.chat_id(cx).is_none() {
             // Keep the settings tray visible while the model list scrolls
             // within the room below the new-chat composer.
             let tray_height = if self.setting_groups(cx).is_empty() {
@@ -6064,7 +6203,8 @@ impl Render for Pickers {
             &theme,
             cx,
         );
-        let new_chat = self.state.read(cx).selected_chat.is_none();
+        let new_chat = self.chat_id(cx).is_none();
+        let launcher = self.launcher.is_some();
         let entity = cx.entity().downgrade();
         let model_chip = model_chip.relative().child(
             gpui::canvas(
@@ -6087,17 +6227,34 @@ impl Render for Pickers {
             .absolute()
             .inset_0(),
         );
+        // A launcher's chip lives inside a modal dialog: a keyboard stop
+        // (Enter/Space opens the card) whose popover paints above the modal.
+        let model_chip = if launcher {
+            model_chip
+                .debug_selector(|| "picker-model".into())
+                .track_focus(&self.model_chip_focus)
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !this.is_open()
+                    {
+                        this.toggle(PickerKind::HarnessModel, window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+        } else {
+            model_chip
+        };
         let model_chip = if new_chat {
             if overlay
                 .as_ref()
                 .is_some_and(|(kind, _)| *kind == PickerKind::HarnessModel)
                 && let Some((_, content)) = overlay.take()
             {
-                model_chip.child(popover::anchored_menu_below_end(
-                    "model-popover",
-                    content,
-                    closing,
-                ))
+                model_chip.child(if launcher {
+                    popover::anchored_menu_below_start_over_modal("model-popover", content, closing)
+                } else {
+                    popover::anchored_menu_below_end("model-popover", content, closing)
+                })
             } else {
                 model_chip
             }
@@ -7941,6 +8098,37 @@ mod tests {
         ];
         let offered = offered_harnesses_impl(&catalog, false);
         assert!(offered.is_empty());
+    }
+}
+
+/// Hooks for tests outside this module (the Start Chat dialog drives a
+/// launcher instance through the Shell).
+#[cfg(test)]
+impl Pickers {
+    pub(crate) fn seed_catalog_for_tests(
+        &mut self,
+        harnesses: Vec<HarnessDescriptor>,
+        models: Vec<(HarnessId, Vec<Model>)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.harnesses = Loadable::Ready(harnesses);
+        for (harness, list) in models {
+            self.models.insert(harness, Loadable::Ready(list));
+        }
+        self.catalog_rev += 1;
+        cx.notify();
+    }
+
+    pub(crate) fn defaults_mut_for_tests(&mut self) -> &mut ComposerDefaults {
+        &mut self.defaults
+    }
+
+    pub(crate) fn pick_reasoning_for_tests(
+        &mut self,
+        level: ReasoningLevel,
+        cx: &mut Context<Self>,
+    ) {
+        self.pick_reasoning(level, cx);
     }
 }
 

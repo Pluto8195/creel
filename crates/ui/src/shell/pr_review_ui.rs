@@ -23,17 +23,12 @@ impl Shell {
         action: PrReviewAction,
         cx: &mut Context<Self>,
     ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
-        // The composer's agent for new chats (the Start Chat dialog's first
-        // choice); the host defaults to Claude Code when there is none.
-        let config = self
-            .composer
-            .read(cx)
-            .pickers()
-            .read(cx)
-            .launch_agents(cx)
-            .into_iter()
-            .next()
-            .map(|agent| agent.config);
+        // The composer's agent for new chats: exactly what a brand-new
+        // regular chat would start with (sticky harness, model, reasoning,
+        // options) — never the selected chat's config. The host defaults to
+        // Claude Code when nothing resolves.
+        let pickers = self.composer.read(cx).pickers().clone();
+        let config = crate::pickers::Pickers::new_chat_config(&pickers, cx);
         let params = self.pr_review_ops.params(&reference, action, config);
 
         #[cfg(test)]
