@@ -41,6 +41,23 @@ impl Shell {
         .detach();
     }
 
+    /// Open the Overview on Work Item Details of `item_id` (⇧⌘P's
+    /// destination rows).
+    pub(crate) fn open_work_item_in_overview(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.route, Route::Overview) {
+            self.open_overview(cx);
+        }
+        let page = self.ensure_overview_page(cx);
+        page.update(cx, |overview, cx| {
+            overview.open_work_item_details(space_id, item_id, cx)
+        });
+    }
+
     /// Run a GitHub entry of an Outline right-click menu.
     pub(super) fn run_github_menu_action(
         &mut self,
