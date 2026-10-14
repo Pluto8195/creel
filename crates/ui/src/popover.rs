@@ -11,6 +11,7 @@
 //! classification) lives in free functions with unit tests; the elements only
 //! feed them measurements/events.
 
+pub(crate) mod choice_menu;
 mod hover_intent;
 pub use hover_intent::{HoverAction, HoverIntent};
 

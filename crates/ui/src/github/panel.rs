@@ -3,19 +3,28 @@
 //! `overview/github_host.rs`). Shown for Spaces where the PR review sync
 //! applies (`github::space_available`).
 //!
+//! - The header's scope dropdown ([`menus`]): the project (when more than
+//!   one applies) and a repo filter (All repos + each repo), ↻.
+//! - The sync bar ([`sync_bar`]), the primary flow: pick (or create) the
+//!   work item that PR review requests sync into; once set, "Syncing into
+//!   <item> · last synced <age> · Sync now · Change ▾ · Stop".
 //! - **Review requested** (`PrReviewRequested`) and **My open PRs**
-//!   (`PrMyOpen`) for the panel's Space, each row with the PR chip info.
-//!   Refreshed on open and by ↻ only. Both lists and the whole section fold
-//!   (persisted per device: `prefs`).
-//! - A PR a live item of the Space links shows "Synced · Reveal" (selects
-//!   that item in the Outline).
-//! - Row actions: **Review** (`StartPrReview`, filed under the synced item
-//!   when there is one, else under the sync destination), **Link** (to the
-//!   selected item: `createWorkItemExternalReference`), **Create** (a work
-//!   item titled `<repo>#<n> · <title>` linking the PR, under the
-//!   destination, else the selected item), and drag onto an Outline item
-//!   (creates it there). Each action keeps one operation id per PR/target,
-//!   so a retry replays instead of duplicating.
+//!   (`PrMyOpen`) for the panel's Space, each row with the PR chip info and
+//!   its sync state: "Synced ✓" (a live item links it; the row's click
+//!   reveals it), "Pending first sync" (a destination is set, the next pass
+//!   adds it), or "Linked". Refreshed on open and by ↻ only. Both lists and
+//!   the whole section fold (persisted per device: `prefs`).
+//! - Secondary, manual actions in each row's ⋯ menu: **Start review**
+//!   (`StartPrReview`, filed under the synced item when there is one, else
+//!   under the sync destination), **Link to selected item**
+//!   (`createWorkItemExternalReference`), **Create work item** (titled
+//!   `<repo>#<n> · <title>` linking the PR, under the destination, else the
+//!   selected item), and drag onto an Outline item (creates it there). Each
+//!   action keeps one operation id per PR/target, so a retry replays instead
+//!   of duplicating.
+mod menus;
+mod sync_bar;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -29,10 +38,14 @@ use zeron_proto::{
     WorkOutlinePlacement, WorkOutlineSnapshot,
 };
 
+pub(crate) use menus::PanelMenu;
+
 use super::PrIndex;
 use super::client::GithubUiError;
 use super::prefs::{self, GithubList};
+use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::linear::panel::{LinearPanel, OutlineSelection, PanelNotice};
+use crate::popover::Popup;
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::work_outline::actions::OperationSlot;
@@ -110,6 +123,17 @@ pub(crate) struct GithubPanel {
     pub(crate) busy: HashSet<String>,
     pub(crate) notice: Option<PanelNotice>,
     generation: u64,
+    /// Show only this repo's PRs (`owner/repo`, lowercased); `None` = all.
+    pub(crate) repo_filter: Option<String>,
+    menu: Popup<PanelMenu>,
+    /// The open menu's keyboard cursor.
+    pub(crate) menu_active: Option<usize>,
+    destination_search: Entity<ComposerInput>,
+    /// A destination change (or the "PR reviews" create) is in flight.
+    pub(crate) destination_busy: bool,
+    destination_op: OperationSlot,
+    create_destination_op: OperationSlot,
+    _subscriptions: Vec<gpui::Subscription>,
 }
 
 impl EventEmitter<GithubPanelEvent> for GithubPanel {}
@@ -128,6 +152,27 @@ impl GithubPanel {
             .as_deref()
             .map(prefs::load_state)
             .unwrap_or_default();
+        let destination_search = cx.new(|cx| {
+            ComposerInput::with_context(
+                "Search work items",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+            .with_text_metrics(12.0, 18.0)
+        });
+        let subscriptions =
+            vec![
+                cx.subscribe(&destination_search, |this: &mut Self, _, event, cx| {
+                    if matches!(event, ComposerInputEvent::Edited) {
+                        // The cursor lands on the first matching item (row 0 is
+                        // "Create 'PR reviews' item").
+                        let count = this.menu_rows(cx).len();
+                        this.menu_active = Some(usize::from(count > 1));
+                        cx.notify();
+                    }
+                }),
+            ];
         Self {
             state,
             focus: cx.focus_handle(),
@@ -142,6 +187,14 @@ impl GithubPanel {
             busy: HashSet::new(),
             notice: None,
             generation: 0,
+            repo_filter: None,
+            menu: Popup::default(),
+            menu_active: None,
+            destination_search,
+            destination_busy: false,
+            destination_op: OperationSlot::default(),
+            create_destination_op: OperationSlot::default(),
+            _subscriptions: subscriptions,
         }
     }
 
@@ -157,6 +210,7 @@ impl GithubPanel {
         let moved = !spaces.iter().any(|space| space.id == self.space_id);
         if moved && let Some(first) = spaces.first() {
             self.space_id = first.id.clone();
+            self.repo_filter = None;
         }
         self.spaces = spaces;
         self.selection = selection;
@@ -168,6 +222,7 @@ impl GithubPanel {
     pub(crate) fn set_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         if self.space_id != space_id {
             self.space_id = space_id;
+            self.repo_filter = None;
             self.refresh(cx);
         }
     }
@@ -487,7 +542,7 @@ impl GithubPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = !self.collapsed.contains(&list);
-        let label = match self.list(list).ready() {
+        let label = match self.visible(list) {
             Some(all) => format!("{} ({})", list.label(), all.len()),
             None => list.label().to_string(),
         };
@@ -521,14 +576,88 @@ impl GithubPanel {
             .into_any_element()
     }
 
-    fn synced_marker(
+    /// `list`'s PRs under the repo filter (once loaded).
+    pub(crate) fn visible(&self, list: GithubList) -> Option<Vec<PullRequestStatusSummary>> {
+        let all = self.list(list).ready()?;
+        Some(
+            all.iter()
+                .filter(|pr| {
+                    self.repo_filter
+                        .as_ref()
+                        .is_none_or(|key| menus::repo_key(&pr.pr_ref) == *key)
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// A PR row's sync state.
+    pub(crate) fn row_sync(
         &self,
-        id: String,
-        item_id: Option<&str>,
+        list: GithubList,
+        pr: &PullRequestStatusSummary,
+        index: &PrIndex,
+    ) -> RowSync {
+        let snapshot = self.snapshot();
+        let destination = snapshot.and_then(|snapshot| super::live_destination(snapshot));
+        if let Some(item_id) = index.item(&pr.pr_ref) {
+            let synced = snapshot
+                .and_then(|snapshot| snapshot.item(item_id))
+                .is_some_and(|item| {
+                    destination
+                        .is_some_and(|dest| item.parent_work_item_id.as_deref() == Some(dest))
+                        || item
+                            .external_sync_state
+                            .as_ref()
+                            .is_some_and(|state| state.provider == GITHUB_PROVIDER)
+                });
+            return if synced {
+                RowSync::Synced(item_id.to_string())
+            } else {
+                RowSync::Linked(item_id.to_string())
+            };
+        }
+        if destination.is_some() && list == GithubList::ReviewRequested {
+            RowSync::Pending
+        } else {
+            RowSync::Unlinked
+        }
+    }
+
+    /// The row's sync marker: Synced ✓ / Linked (click reveals), Pending
+    /// first sync.
+    fn sync_marker(
+        &self,
+        key: &str,
+        sync: &RowSync,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let item_id = item_id?.to_string();
+        let (id, label, color, tip): (String, &'static str, gpui::Hsla, SharedString) = match sync {
+            RowSync::Synced(_) => (
+                format!("github-pr-synced-{key}"),
+                "Synced \u{2713}",
+                theme.accent,
+                "Synced into a work item: click the row to reveal it".into(),
+            ),
+            RowSync::Linked(_) => (
+                format!("github-pr-linked-{key}"),
+                "Linked",
+                theme.text_muted,
+                "A work item in this project links it: click the row to reveal it".into(),
+            ),
+            RowSync::Pending => (
+                format!("github-pr-pending-{key}"),
+                "Pending first sync",
+                theme.text_faint,
+                "The next sync pass (every 3 minutes, or Sync now) adds a work item for it".into(),
+            ),
+            RowSync::Unlinked => return None,
+        };
+        let reveal = match sync {
+            RowSync::Synced(item) | RowSync::Linked(item) => Some(item.clone()),
+            _ => None,
+        };
         let space_id = self.space_id.clone();
         let selector = id.clone();
         Some(
@@ -538,24 +667,78 @@ impl GithubPanel {
                 .flex_none()
                 .px(px(4.0))
                 .rounded(px(3.0))
-                .cursor_pointer()
                 .text_size(crate::typography::ui_rems(10.0))
-                .text_color(theme.accent)
-                .hover(|el| el.bg(theme.element_hover))
-                .child("Synced \u{00b7} Reveal")
-                .tooltip(|_, cx| {
-                    cx.new(|_| TextTooltip("Already a work item in this project: reveal it".into()))
-                        .into()
+                .text_color(color)
+                .child(label)
+                .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                .when_some(reveal, |el, item_id| {
+                    el.cursor_pointer()
+                        .hover(|el| el.bg(theme.element_hover))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.emit(GithubPanelEvent::Reveal {
+                                space_id: space_id.clone(),
+                                item_id: item_id.clone(),
+                            });
+                        }))
                 })
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.stop_propagation();
-                    cx.emit(GithubPanelEvent::Reveal {
-                        space_id: space_id.clone(),
-                        item_id: item_id.clone(),
-                    });
-                }))
                 .into_any_element(),
         )
+    }
+
+    /// The row's ⋯ trigger and its menu.
+    fn row_menu_trigger(
+        &self,
+        list: GithubList,
+        pr: &PullRequestStatusSummary,
+        key: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let menu = PanelMenu::Row {
+            list,
+            pr: Box::new(pr.clone()),
+        };
+        let selector = format!("github-pr-more-{key}");
+        let id = selector.clone();
+        let press = menu.clone();
+        let open = menu.clone();
+        let busy = self.busy.contains(&format!("create:{}", pr.pr_ref.key()))
+            || self.busy.contains(&format!("link:{}", pr.pr_ref.key()));
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                div()
+                    .id(SharedString::from(id))
+                    .debug_selector(move || selector.clone())
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.element_hover))
+                    .child(
+                        crate::icons::icon(crate::icons::MORE_HORIZONTAL)
+                            .size(px(12.0))
+                            .text_color(if busy { theme.accent } else { theme.text_faint }),
+                    )
+                    .tooltip(|_, cx| {
+                        cx.new(|_| TextTooltip("Review, link or create a work item by hand".into()))
+                            .into()
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, _| this.note_menu_press(&press)),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.toggle_menu(open.clone(), window, cx)
+                    })),
+            )
+            .children(self.render_menu_for(&menu, theme, cx))
+            .into_any_element()
     }
 
     fn render_row(
@@ -566,14 +749,14 @@ impl GithubPanel {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let key = format!("{}-{}-{}", pr.pr_ref.repo, pr.pr_ref.number, list.key())
-            .to_lowercase()
-            .replace(['/', '#'], "-");
+        let key = row_key(list, pr);
         let row_selector = format!("github-pr-row-{key}");
-        let linked = index.item(&pr.pr_ref);
-        let marker = self.synced_marker(format!("github-pr-synced-{key}"), linked, theme, cx);
-        let creating = self.busy.contains(&format!("create:{}", pr.pr_ref.key()));
-        let linking = self.busy.contains(&format!("link:{}", pr.pr_ref.key()));
+        let sync = self.row_sync(list, pr, index);
+        let marker = self.sync_marker(&key, &sync, theme, cx);
+        let reveal = match &sync {
+            RowSync::Synced(item) | RowSync::Linked(item) => Some(item.clone()),
+            _ => None,
+        };
         let drag = OutlineDrag::PullRequest(PrDrag {
             space_id: self.space_id.clone(),
             pr: Box::new(pr.clone()),
@@ -588,14 +771,7 @@ impl GithubPanel {
         };
         let state_color = super::chip::state_color(pr.state, theme);
         let tip: SharedString = super::chip::tooltip_text(pr).into();
-        let button = |id: String, label: &'static str| {
-            let selector = id.clone();
-            LinearPanel::small_button(SharedString::from(id), label, theme)
-                .debug_selector(move || selector.clone())
-        };
-        let review_pr = pr.pr_ref.clone();
-        let create_pr = pr.clone();
-        let link_pr = pr.clone();
+        let space_id = self.space_id.clone();
         div()
             .id(SharedString::from(row_selector.clone()))
             .debug_selector(move || row_selector.clone())
@@ -606,7 +782,16 @@ impl GithubPanel {
             .py(px(3.0))
             .rounded(px(4.0))
             .hover(|el| el.bg(theme.element_hover.opacity(0.6)))
-            .cursor_grab()
+            .when(reveal.is_none(), |el| el.cursor_grab())
+            .when_some(reveal, |el, item_id| {
+                el.cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(GithubPanelEvent::Reveal {
+                            space_id: space_id.clone(),
+                            item_id: item_id.clone(),
+                        })
+                    }))
+            })
             .on_drag(drag, |drag, _, _, cx| {
                 cx.stop_propagation();
                 let title = match drag {
@@ -651,63 +836,29 @@ impl GithubPanel {
                     .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
             )
             .children(marker)
-            .child(
-                button(format!("github-pr-review-{key}"), "Review")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| {
-                            TextTooltip(
-                                "Start a code review chat, filed under the synced item (else the \
-                                 PR review destination)"
-                                    .into(),
-                            )
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.review(review_pr.clone(), PrReviewAction::CodeReview, cx)
-                    })),
-            )
-            .child(
-                button(
-                    format!("github-pr-link-{key}"),
-                    if linking { "Linking\u{2026}" } else { "Link" },
-                )
-                .tooltip(|_, cx| {
-                    cx.new(|_| TextTooltip("Link to the selected work item".into()))
-                        .into()
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.link(link_pr.clone(), cx)
-                })),
-            )
-            .child(
-                button(
-                    format!("github-pr-create-{key}"),
-                    if creating {
-                        "Creating\u{2026}"
-                    } else {
-                        "Create"
-                    },
-                )
-                .tooltip(|_, cx| {
-                    cx.new(|_| {
-                        TextTooltip(
-                            "Create a work item for this PR under the PR review destination (else \
-                             the selected item); drag onto an item to choose"
-                                .into(),
-                        )
-                    })
-                    .into()
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.create(create_pr.clone(), cx)
-                })),
-            )
+            .child(self.row_menu_trigger(list, pr, &key, theme, cx))
             .into_any_element()
     }
+}
+
+/// A PR row's sync state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RowSync {
+    /// The item the sync keeps for it (under the destination, or written
+    /// by the sync).
+    Synced(String),
+    /// Another live item links it.
+    Linked(String),
+    /// A destination is set and nothing links it yet: the next pass adds it.
+    Pending,
+    Unlinked,
+}
+
+/// A row's selector key: `<repo>-<n>-<list>`, lowercased.
+pub(crate) fn row_key(list: GithubList, pr: &PullRequestStatusSummary) -> String {
+    format!("{}-{}-{}", pr.pr_ref.repo, pr.pr_ref.number, list.key())
+        .to_lowercase()
+        .replace(['/', '#'], "-")
 }
 
 /// The ghost that follows the pointer while dragging a PR row.
@@ -736,26 +887,46 @@ impl Render for PrDragGhost {
 impl Render for GithubPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let index = self
-            .snapshot()
-            .map(|snapshot| PrIndex::from_snapshot(snapshot))
+        let snapshot = self.snapshot().cloned();
+        let index = snapshot
+            .as_deref()
+            .map(PrIndex::from_snapshot)
             .unwrap_or_default();
-        let label = self
-            .spaces
-            .iter()
-            .find(|space| space.id == self.space_id)
-            .map(|space| space.label.clone())
-            .unwrap_or_default();
-        let multi = self.spaces.len() > 1;
-        let next_space = multi.then(|| {
-            let ix = self
-                .spaces
-                .iter()
-                .position(|space| space.id == self.space_id)
-                .unwrap_or(0);
-            self.spaces[(ix + 1) % self.spaces.len()].id.clone()
-        });
         let folded = self.folded;
+        let scope = div()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .child(
+                div()
+                    .id("github-panel-space")
+                    .debug_selector(|| "github-panel-space".into())
+                    .min_w_0()
+                    .truncate()
+                    .px(px(4.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_muted)
+                    .hover(|el| el.text_color(theme.text).bg(theme.element_hover))
+                    .child(SharedString::from(format!(
+                        "{} \u{25be}",
+                        self.scope_label()
+                    )))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| TextTooltip("Show one repo\u{2019}s PRs, or all".into()))
+                            .into()
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.note_menu_press(&PanelMenu::Scope)),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(PanelMenu::Scope, window, cx)
+                    })),
+            )
+            .children(self.render_menu_for(&PanelMenu::Scope, &theme, cx));
         let header = div()
             .flex_none()
             .flex()
@@ -797,29 +968,7 @@ impl Render for GithubPanel {
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_folded(cx))),
             )
-            .child(
-                div()
-                    .id("github-panel-space")
-                    .debug_selector(|| "github-panel-space".into())
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .text_color(theme.text_muted)
-                    .when(multi, |el| {
-                        el.cursor_pointer().hover(|el| el.text_color(theme.text))
-                    })
-                    .child(SharedString::from(if multi {
-                        format!("{label} \u{25be}")
-                    } else {
-                        label
-                    }))
-                    .when_some(next_space, |el, next| {
-                        el.on_click(
-                            cx.listener(move |this, _, _, cx| this.set_space(next.clone(), cx)),
-                        )
-                    }),
-            )
+            .child(scope)
             .child(
                 div()
                     .id("github-panel-refresh")
@@ -840,6 +989,13 @@ impl Render for GithubPanel {
                     .tooltip(|_, cx| cx.new(|_| TextTooltip("Refresh from GitHub".into())).into())
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             );
+        let blocker = self.blocker();
+        // The sync needs the host's PR review sync: no bar where it is
+        // missing.
+        let sync_bar = (!folded && !blocker.as_ref().is_some_and(GithubUiError::not_available))
+            .then_some(snapshot.as_deref())
+            .flatten()
+            .map(|snapshot| self.render_sync_bar(snapshot, &theme, cx));
         let mut body = div()
             .id("github-panel-body")
             .flex_1()
@@ -864,7 +1020,7 @@ impl Render for GithubPanel {
                         .child(SharedString::from(notice.text)),
                 );
             }
-            if let Some(error) = self.blocker() {
+            if let Some(error) = blocker {
                 body = body.child(
                     div()
                         .debug_selector(|| "github-panel-blocker".into())
@@ -908,19 +1064,26 @@ impl Render for GithubPanel {
                                     ),
                             )
                         }
-                        Load::Ready(all) => {
-                            if all.is_empty() {
+                        Load::Ready(_) => {
+                            let shown = self.visible(list).unwrap_or_default();
+                            if shown.is_empty() {
                                 body = body.child(Self::quiet(
-                                    match list {
-                                        GithubList::ReviewRequested => {
+                                    match (list, self.repo_filter.is_some()) {
+                                        (GithubList::ReviewRequested, false) => {
                                             "No PRs are waiting on your review"
                                         }
-                                        GithubList::MyOpen => "No open PRs of yours",
+                                        (GithubList::MyOpen, false) => "No open PRs of yours",
+                                        (GithubList::ReviewRequested, true) => {
+                                            "No PRs in this repo are waiting on your review"
+                                        }
+                                        (GithubList::MyOpen, true) => {
+                                            "No open PRs of yours in this repo"
+                                        }
                                     },
                                     &theme,
                                 ));
                             }
-                            for pr in &all {
+                            for pr in &shown {
                                 body = body.child(self.render_row(list, pr, &index, &theme, cx));
                             }
                         }
@@ -937,6 +1100,9 @@ impl Render for GithubPanel {
             .w_full()
             .flex()
             .flex_col()
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.menu_key_down(event, window, cx)
+            }))
             .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     cx.emit(GithubPanelEvent::Close);
@@ -944,6 +1110,7 @@ impl Render for GithubPanel {
                 }
             }))
             .child(header)
+            .children(sync_bar)
             .when(!folded, |el| el.child(body))
     }
 }

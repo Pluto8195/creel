@@ -1223,3 +1223,51 @@ fn add_issues_is_gated_on_linear(cx: &mut gpui::TestAppContext) {
     assert!(result.is_err());
     assert_eq!(called(&calls, "LinearProjectIssues"), 0);
 }
+
+/// With two Linear projects the header chip opens a menu (both projects,
+/// the current one checked) instead of cycling; ↓ ↩ picks the other one,
+/// Esc closes the menu only.
+#[gpui::test]
+fn project_chip_opens_a_menu_instead_of_cycling(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.update(vcx, |state, _| {
+        state.spaces.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "s2", "deviceId": "d", "path": "/work/beta",
+                "createdAt": "2026-01-01T00:00:00Z"
+            }))
+            .unwrap(),
+        );
+    });
+    let mut second = crate::work_outline::store::fixture_snapshot("s2");
+    second.space_settings.linear_enabled = true;
+    overview.update(vcx, |o, cx| {
+        let mut loads = fixture_loads(Some(linear_snapshot(true)));
+        loads.insert("s2".into(), WorkOutlineLoad::Ready(std::sync::Arc::new(second)));
+        o.set_outline_loads(loads, cx)
+    });
+    draw(vcx);
+    let panel = open_panel(&overview, vcx);
+    let first = panel.read_with(vcx, |panel, _| panel.space_id.clone());
+    press(vcx, "linear-panel-space".into());
+    assert!(vcx.debug_bounds("linear-space-menu").is_some(), "a menu opens");
+    assert!(vcx.debug_bounds("linear-space-s1").is_some());
+    assert!(vcx.debug_bounds("linear-space-s2").is_some());
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.space_menu_open());
+        assert_eq!(panel.space_id, first, "opening never switches");
+    });
+    vcx.simulate_keystrokes("down enter");
+    draw(vcx);
+    panel.read_with(vcx, |panel, _| {
+        assert!(!panel.space_menu_open());
+        assert_ne!(panel.space_id, first, "↓ ↩ picked the other project");
+    });
+    press(vcx, "linear-panel-space".into());
+    vcx.simulate_keystrokes("escape");
+    draw(vcx);
+    panel.read_with(vcx, |panel, _| assert!(!panel.space_menu_open()));
+    overview.read_with(vcx, |o, _| assert!(o.column_shown(), "Esc only closed the menu"));
+}
