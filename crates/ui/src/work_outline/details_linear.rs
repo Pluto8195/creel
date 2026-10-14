@@ -565,3 +565,14 @@ impl WorkItemDetails {
         section.into_any_element()
     }
 }
+
+#[cfg(test)]
+impl WorkItemDetails {
+    /// Paste `url` into the external-reference field and add it (tests).
+    pub(crate) fn paste_reference_for_test(&mut self, url: &str, cx: &mut Context<Self>) {
+        self.adding_reference = true;
+        self.reference_input
+            .update(cx, |input, cx| input.set_text(url, cx));
+        self.add_reference(cx);
+    }
+}
