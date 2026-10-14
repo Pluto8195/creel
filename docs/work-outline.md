@@ -532,6 +532,15 @@ that owns the project, through that device's `gh` login.
   and title with **↻ Refresh**, **Review**, **Fix CI**, and **Open on
   GitHub**; it refreshes when Details open. A synced item also shows
   **Synced from GitHub · round N**.
+- **PRs on your items.** Items also get their own PRs linked automatically:
+  an item linked to a Linear issue gets the GitHub PRs Linear attached to the
+  issue (on the Linear sync), and any item gets a PR its Chat created
+  (`gh pr create` in that Chat, or a PR you linked to the Chat yourself).
+  Only PRs of the project's repositories; links are added, never removed or
+  moved (a Chat moved to another item leaves its PR where it was), and a link
+  you remove stays removed. The item's status is not changed when a PR
+  merges. An item with several PRs shows a chip for each. Details:
+  [PRs on work items](pr-review.md#prs-on-work-items).
 - **Review.** `⌘↩` (`Ctrl+Enter`) on a PR review item (a synced item, a child
   of the destination, or an item created from the GitHub section) starts a
   code review Chat of its PR, filed under the item, instead of the Start Chat

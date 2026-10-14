@@ -148,3 +148,53 @@ When the current project has a destination, ⇧⌘P lists the destination's PR
 items with their review Chats nested instead of the `pr_review`
 classification; without one the classified list stays (classification is
 being retired).
+
+## PRs on work items
+
+Besides the review sync, the engine links a work item to the PRs that belong
+to it, so the item shows the PR chip (state, CI, review decision) and the
+Details **Pull request** section. Code: `crates/engine/src/work_outline_pr_links.rs`.
+Each link is a `github` / `pullRequest` reference (`externalId`
+`<owner>/<repo>#<n>`) added by the system actor. Status comes from `PrStatus`
+like every other PR chip; nothing is fetched twice.
+
+| Source | Applies to | When |
+| --- | --- | --- |
+| **Linear** (primary): the issue's GitHub PR attachments (Linear's GitHub integration attaches a PR whose branch or title names the issue) | items linked to a Linear issue, in projects with Linear on | the linked-item Linear sync: every 15 minutes, **↻ Refresh**, turning Linear on |
+| **Chats** (fallback): a PR the item's Chat created | any item with an associated Chat | every 3 minutes, with the PR review sync loop (no `gh` call) |
+
+What counts as "the Chat created PR X" (high confidence only):
+
+- the Chat's durable PR link with source `manual` (the user set it) or
+  `created_in_chat` (the live tap saw a `gh pr create` / `gh pr new` /
+  `create_pull_request` tool call print the URL). `mentioned` (a URL in text
+  or another tool's output) never counts, and neither does branch inference
+  (`gh pr view <branch>`, which at a superproject root resolves every Chat to
+  the same PR);
+- backfill: a Chat with no such link has its stored transcript re-read once
+  (at most 50 Chats per pass, logged) for PR-creation tool output; a hit is
+  stored as a `created_in_chat` Chat link (a `manual` link is never changed).
+
+Rules for both sources:
+
+- The PR's repository must be in the project (checkout, submodules, nested
+  repositories, by `origin`), and the project must live on this device.
+- Links are only added: never removed, never moved, never duplicated (one
+  reference per item and PR; the operation id is a hash of item and PR). A
+  reference you remove is not added back. An item can link several PRs (a
+  ticket's UI and Flagship PRs); the Outline shows a chip for each and
+  Details lists the others under the first.
+- A Chat's PR is linked once, to the item the Chat belongs to when the PR is
+  first seen, and only if no item of the project links that PR yet. Moving
+  the Chat to another item later keeps the existing link where it is (the
+  new item does not get it automatically).
+- Item status is left alone: a merged PR does not complete its item. (A
+  "complete the item when its PRs merge" toggle is a possible later option.)
+- These items are not PR review items: `⌘↩` opens the normal Start Chat, and
+  the review sync never adopts them for a review request (a requested review
+  of such a PR gets its own item under the destination).
+- The Linear attachment fields (`attachments { nodes { url title subtitle
+  sourceType metadata updatedAt } }`) were not verified against the real
+  API. The query is separate from the issue query, parsed leniently, and a
+  failure is logged (`linear: issue attachments could not be read`, target
+  `linear`) without stopping the title sync.
