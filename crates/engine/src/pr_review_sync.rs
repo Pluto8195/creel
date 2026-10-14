@@ -31,9 +31,10 @@ use zeron_proto::pr_review_sync::{
     pr_review_dedupe_key,
 };
 use zeron_proto::work_outline::{
-    CreateWorkItemExternalReferenceParams, CreateWorkItemParams, UpdateWorkItemParams,
-    WorkItemChanges, WorkItemStatus, WorkOutlineErrorCode, WorkOutlinePlacement, derive_id, limits,
-    roles,
+    ArchiveWorkItemParams, CreateWorkItemExternalReferenceParams, CreateWorkItemParams,
+    DescendantArchivePolicy, RestoreWorkItemParams, UpdateWorkItemParams, WorkItemArchiveCause,
+    WorkItemChanges, WorkItemStatus, WorkOutlineActorKind, WorkOutlineErrorCode,
+    WorkOutlinePlacement, derive_id, limits, roles,
 };
 use zeron_proto::work_outline_user_actions::{
     CreateUserActionRequestParams, ResolveUserActionRequestParams, UserActionOriginKind,
@@ -370,6 +371,23 @@ fn request_operation(space_id: &str, key: &str, round: u32) -> String {
         derive_id(
             &format!("{space_id}\0{key}\0{round}"),
             "pr-review-sync-request"
+        )
+    )
+}
+
+/// The archive of a finished PR's item: one id per (round, finished state),
+/// so the operation ledger also keeps the sync from archiving it twice.
+fn archive_operation(
+    space_id: &str,
+    key: &str,
+    round: u32,
+    finished: PrReviewRequestState,
+) -> String {
+    format!(
+        "pr-review-sync-{}",
+        derive_id(
+            &format!("{space_id}\0{key}\0{round}\0{finished:?}"),
+            "pr-review-sync-archive"
         )
     )
 }
@@ -850,6 +868,51 @@ impl PrReviewSyncService {
         }
     }
 
+    /// Archive a finished (merged or closed) PR's item as the system actor
+    /// (descendants archive with it; chats are never touched), then record
+    /// `archivedBySync` so the same round and state never archive it again.
+    /// `false` when the archive failed (the next pass retries).
+    async fn archive_finished(
+        &self,
+        space_id: &str,
+        key: &str,
+        work_item_id: &str,
+        state: &WorkItemExternalSyncState,
+    ) -> bool {
+        let archived = self
+            .mutate(WorkOutlineMutation::ArchiveWorkItem(
+                ArchiveWorkItemParams {
+                    work_item_id: work_item_id.to_owned(),
+                    descendant_archive_policy: DescendantArchivePolicy::ArchiveDescendants,
+                    operation_id: archive_operation(
+                        space_id,
+                        key,
+                        state.round,
+                        state.request_state,
+                    ),
+                },
+            ))
+            .await;
+        if let Err(error) = archived {
+            tracing::warn!(code = error.code.as_str(), "pr review sync: archive failed");
+            return false;
+        }
+        let marked = WorkItemExternalSyncState {
+            archived_by_sync: Some(state.request_state),
+            ..state.clone()
+        };
+        if let Err(error) = self
+            .write_record(work_item_id, None, marked, state.synced_status)
+            .await
+        {
+            tracing::warn!(
+                code = error.code.as_str(),
+                "pr review sync: archive record failed"
+            );
+        }
+        true
+    }
+
     /// The round's Required Action (deterministic id; a request that exists
     /// on any device, open or resolved, is left alone).
     async fn raise(
@@ -978,9 +1041,39 @@ impl PrReviewSyncService {
             let Some(item) = snapshot.item(&item_id) else {
                 continue;
             };
-            // The user archived it: leave it alone.
+            // The user archived it: leave it alone. One the sync archived
+            // (merged or closed) comes back only when GitHub reopened the PR
+            // and requests the review again: a new round.
             if item.archived_at.is_some() {
-                continue;
+                let by_sync = item
+                    .external_sync_state
+                    .as_ref()
+                    .is_some_and(|s| s.archived_by_sync.is_some())
+                    && item.archive_cause == Some(WorkItemArchiveCause::SelfArchived)
+                    && item
+                        .archived_by
+                        .as_ref()
+                        .is_some_and(|actor| actor.kind == WorkOutlineActorKind::System);
+                if !by_sync {
+                    continue;
+                }
+                match self.detail(pr, true).await {
+                    Ok(detail) if !detail.summary.state.is_finished() => {}
+                    Err(error) if is_fatal(&error) => return Err(error),
+                    _ => continue,
+                }
+                let restored = self
+                    .mutate(WorkOutlineMutation::RestoreWorkItem(
+                        RestoreWorkItemParams {
+                            work_item_id: item_id.clone(),
+                            operation_id: Self::fresh_operation(),
+                        },
+                    ))
+                    .await;
+                if let Err(error) = restored {
+                    tracing::warn!(code = error.code.as_str(), "pr review sync: restore failed");
+                    continue;
+                }
             }
             if snapshot.github_pull_request_reference(&item_id).is_none() {
                 self.link(&item_id, pr, hit.title.as_deref().unwrap_or_default())
@@ -1027,6 +1120,7 @@ impl PrReviewSyncService {
                         synced_status: WorkItemStatus::Active,
                         round_started_at: now,
                         synced_at: now,
+                        archived_by_sync: None,
                     };
                     if let Err(error) = self
                         .write_record(&item_id, Some(WorkItemStatus::Active), state, item.status)
@@ -1043,7 +1137,10 @@ impl PrReviewSyncService {
         }
 
         // Tracked PRs whose request went away: merged, closed, reviewed, or
-        // withdrawn.
+        // withdrawn. A merged or closed PR completes its item and then
+        // archives it, once per round and state (`archivedBySync`): a user
+        // who restores the item keeps it, and only a new round (the PR
+        // reopened and requested again) can archive it again.
         for (key, item_id) in &tracked {
             if requested.contains_key(key) {
                 continue;
@@ -1057,7 +1154,7 @@ impl PrReviewSyncService {
             let Some(state) = item.external_sync_state.clone() else {
                 continue;
             };
-            if state.request_state != PrReviewRequestState::Requested {
+            if state.archived_by_sync.is_some() {
                 continue;
             }
             let Some(pr) = PullRequestRef::parse_external_id(&state.external_id)
@@ -1069,64 +1166,123 @@ impl PrReviewSyncService {
             if !slugs.contains(&slug_of(&pr)) {
                 continue;
             }
-            let detail = match self.detail(&pr, true).await {
-                Ok(detail) => detail,
-                Err(error) if is_fatal(&error) => return Err(error),
-                Err(error) => {
-                    tracing::debug!(code = error.code.as_str(), "pr review sync: PR skipped");
-                    continue;
+            // `completed`: whether this pass writes the new state (else the
+            // item already finished and only its archive is missing).
+            let (request_state, note, completed) = match state.request_state {
+                // Merged or closed by an earlier pass, never archived (an
+                // archive that failed, or a record from before archiving).
+                PrReviewRequestState::Merged => {
+                    (PrReviewRequestState::Merged, PR_RESOLUTION_MERGED, false)
+                }
+                PrReviewRequestState::Closed => {
+                    (PrReviewRequestState::Closed, PR_RESOLUTION_CLOSED, false)
+                }
+                previous => {
+                    // Reviewed or withdrawn items only watch for the PR to
+                    // finish: the status cache is good enough.
+                    let fresh = force || previous == PrReviewRequestState::Requested;
+                    let detail = match self.detail(&pr, fresh).await {
+                        Ok(detail) => detail,
+                        Err(error) if is_fatal(&error) => return Err(error),
+                        Err(error) => {
+                            tracing::debug!(
+                                code = error.code.as_str(),
+                                "pr review sync: PR skipped"
+                            );
+                            continue;
+                        }
+                    };
+                    let finished = match detail.summary.state {
+                        PullRequestState::Merged => {
+                            Some((PrReviewRequestState::Merged, PR_RESOLUTION_MERGED))
+                        }
+                        PullRequestState::Closed => {
+                            Some((PrReviewRequestState::Closed, PR_RESOLUTION_CLOSED))
+                        }
+                        _ => None,
+                    };
+                    if let Some((request_state, note)) = finished {
+                        (request_state, note, true)
+                    } else if previous != PrReviewRequestState::Requested {
+                        // Reviewed or withdrawn and still open: settled
+                        // until it finishes or is requested again.
+                        continue;
+                    } else if detail.requested_me {
+                        // Search lags GitHub: the request is still there.
+                        continue;
+                    } else if detail.my_latest_review_at.is_some_and(|at| {
+                        state.round <= 1 || at + ROUND_SKEW_MS >= state.round_started_at
+                    }) {
+                        (
+                            PrReviewRequestState::Submitted,
+                            PR_RESOLUTION_REVIEW_SUBMITTED,
+                            true,
+                        )
+                    } else {
+                        (
+                            PrReviewRequestState::Withdrawn,
+                            PR_RESOLUTION_WITHDRAWN,
+                            true,
+                        )
+                    }
                 }
             };
-            let (request_state, note) = match detail.summary.state {
-                PullRequestState::Merged => (PrReviewRequestState::Merged, PR_RESOLUTION_MERGED),
-                PullRequestState::Closed => (PrReviewRequestState::Closed, PR_RESOLUTION_CLOSED),
-                // Search lags GitHub: the request is still there.
-                _ if detail.requested_me => continue,
-                _ if detail.my_latest_review_at.is_some_and(|at| {
-                    state.round <= 1 || at + ROUND_SKEW_MS >= state.round_started_at
-                }) =>
+            let next = WorkItemExternalSyncState {
+                request_state,
+                synced_at: if completed { now } else { state.synced_at },
+                ..state
+            };
+            let mut changed = false;
+            if completed {
+                let request = synced_request_id(space_id, key, next.round);
+                if snapshot
+                    .user_action_request(&request)
+                    .is_some_and(|r| r.is_open())
                 {
-                    (
-                        PrReviewRequestState::Submitted,
-                        PR_RESOLUTION_REVIEW_SUBMITTED,
-                    )
+                    let resolved = self
+                        .mutate(WorkOutlineMutation::ResolveUserActionRequest(
+                            ResolveUserActionRequestParams {
+                                user_action_request_id: request,
+                                note: Some(note.into()),
+                                operation_id: Self::fresh_operation(),
+                            },
+                        ))
+                        .await;
+                    match resolved {
+                        Ok(_) => reply.resolved += 1,
+                        Err(error) => {
+                            tracing::warn!(
+                                code = error.code.as_str(),
+                                "pr review sync: resolve failed"
+                            )
+                        }
+                    }
                 }
-                _ => (PrReviewRequestState::Withdrawn, PR_RESOLUTION_WITHDRAWN),
-            };
-            let request = synced_request_id(space_id, key, state.round);
-            if snapshot
-                .user_action_request(&request)
-                .is_some_and(|r| r.is_open())
-            {
-                let resolved = self
-                    .mutate(WorkOutlineMutation::ResolveUserActionRequest(
-                        ResolveUserActionRequestParams {
-                            user_action_request_id: request,
-                            note: Some(note.into()),
-                            operation_id: Self::fresh_operation(),
-                        },
-                    ))
-                    .await;
-                match resolved {
-                    Ok(_) => reply.resolved += 1,
+                match self
+                    .write_record(
+                        item_id,
+                        Some(WorkItemStatus::Completed),
+                        next.clone(),
+                        item.status,
+                    )
+                    .await
+                {
+                    Ok(()) => changed = true,
                     Err(error) => {
-                        tracing::warn!(code = error.code.as_str(), "pr review sync: resolve failed")
+                        tracing::warn!(code = error.code.as_str(), "pr review sync: update failed");
+                        continue;
                     }
                 }
             }
-            let next = WorkItemExternalSyncState {
+            if matches!(
                 request_state,
-                synced_at: now,
-                ..state
-            };
-            match self
-                .write_record(item_id, Some(WorkItemStatus::Completed), next, item.status)
-                .await
+                PrReviewRequestState::Merged | PrReviewRequestState::Closed
+            ) && self.archive_finished(space_id, key, item_id, &next).await
             {
-                Ok(()) => reply.updated += 1,
-                Err(error) => {
-                    tracing::warn!(code = error.code.as_str(), "pr review sync: update failed")
-                }
+                changed = true;
+            }
+            if changed {
+                reply.updated += 1;
             }
         }
         Ok(reply)
@@ -1189,6 +1345,7 @@ impl PrReviewSyncService {
             synced_status: WorkItemStatus::Active,
             round_started_at: now,
             synced_at: now,
+            archived_by_sync: None,
         };
         if let Err(error) = self
             .write_record(&item_id, None, state, WorkItemStatus::Active)
@@ -1285,8 +1442,23 @@ mod tests {
             request.chars().count() <= limits::MAX_OPERATION_ID_CHARS,
             "{request}"
         );
+        let archive = archive_operation(space, key, 42, PrReviewRequestState::Closed);
+        assert!(
+            archive.chars().count() <= limits::MAX_OPERATION_ID_CHARS,
+            "{archive}"
+        );
         assert_ne!(item, item_operation(space, "Cofactr/ui#1"));
         assert_ne!(request, request_operation(space, key, 43));
+        assert_ne!(archive, item);
+        assert_ne!(archive, request_operation(space, key, 42));
+        assert_ne!(
+            archive,
+            archive_operation(space, key, 42, PrReviewRequestState::Merged)
+        );
+        assert_ne!(
+            archive,
+            archive_operation(space, key, 43, PrReviewRequestState::Closed)
+        );
     }
     use zeron_proto::pr_review_sync::pr_key;
 

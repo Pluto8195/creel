@@ -281,6 +281,12 @@ pub struct WorkItemExternalSyncState {
     /// When the sync last wrote this record (epoch ms).
     #[serde(default)]
     pub synced_at: i64,
+    /// Set (to `merged` or `closed`, the PR state that caused it) once the
+    /// sync has archived the item for that state. The sync never archives
+    /// an item for the same round and state twice, so an item the user
+    /// restores stays restored; a new round resets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_by_sync: Option<PrReviewRequestState>,
 }
 
 // --------------------------------------------------------------------------

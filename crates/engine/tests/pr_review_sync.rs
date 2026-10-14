@@ -10,6 +10,8 @@
 //!   is a no-op;
 //! - submitted review / merged / closed / withdrawn resolve the round's
 //!   action and complete the item; a re-request starts a new round;
+//! - a merged or closed PR archives its synced item once (chats stay), a
+//!   user restore sticks until a new round, reviewed-then-merged archives;
 //! - a moved item is not moved back, an archived one is untouched, and a
 //!   user status stands until GitHub's state changes;
 //! - no destination → no sync; `ghMissing` / `unauthorized` → errors and no
@@ -951,4 +953,243 @@ async fn a_review_started_from_a_synced_item_is_assigned_to_it() {
         item,
         zeron_engine::pr_review_sync::synced_item_id(SPACE, "acme/ui#9")
     );
+}
+
+fn view_state(rig: &Rig, repo: &str, number: u64, title: &str, state: &str, requested: bool) {
+    rig.view(
+        repo,
+        number,
+        title,
+        View {
+            state,
+            reviews: vec![],
+            requested: if requested { vec!["me"] } else { vec![] },
+        },
+    );
+}
+
+const ZERO: fn() -> Value = || json!({ "created": 0, "updated": 0, "resolved": 0 });
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_pr_archives_its_item_and_leaves_chats_alone() {
+    let rig = rig().await;
+    rig.destination().await;
+    rig.requested(&[("acme/ui", 9, "Fix", "ada")]);
+    rig.open_requested("acme/ui", 9, "Fix");
+    rig.sync().await;
+    let item = synced_item_id(SPACE, "acme/ui#9");
+    let reply = rig
+        .call(
+            methods::START_PR_REVIEW,
+            json!({
+                "repoOwner": "acme", "repoName": "ui", "number": 9, "action": "codeReview",
+                "spaceId": SPACE, "workItemId": item, "operationId": "review-ui-9",
+                "config": serde_json::to_value(zeron_proto::ChatConfig {
+                    harness: HarnessId::Mock,
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    auto_approve: true,
+                }).unwrap(),
+            }),
+        )
+        .await
+        .unwrap();
+    let chat = reply["chatId"].as_str().unwrap().to_owned();
+
+    rig.requested(&[]);
+    view_state(&rig, "acme/ui", 9, "Fix", "MERGED", false);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 1 })
+    );
+    let archived = rig.item_for("acme/ui#9");
+    assert!(archived.archived_at.is_some());
+    assert_eq!(
+        archived.archived_by.as_ref().unwrap().kind,
+        zeron_proto::WorkOutlineActorKind::System
+    );
+    assert_eq!(archived.status, WorkItemStatus::Completed);
+    let state = archived.external_sync_state.clone().unwrap();
+    assert_eq!(state.request_state, PrReviewRequestState::Merged);
+    assert_eq!(state.archived_by_sync, Some(PrReviewRequestState::Merged));
+    let snapshot = rig.snapshot();
+    let request = snapshot
+        .user_action_request(&synced_request_id(SPACE, "acme/ui#9", 1))
+        .unwrap();
+    assert_eq!(
+        request.resolution.as_ref().unwrap().note.as_deref(),
+        Some("PR merged")
+    );
+    // Chats stay as they are: still assigned, assignment row untouched.
+    assert!(archived.chat_ids.iter().any(|c| *c == chat));
+    assert!(
+        rig.core
+            .workspace
+            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &chat)
+            .is_some()
+    );
+
+    // Idempotent: nothing is written or archived again.
+    assert_eq!(rig.sync().await, ZERO());
+    assert_eq!(rig.item_for("acme/ui#9"), archived);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_pr_archives_and_a_reopened_one_comes_back() {
+    let rig = rig().await;
+    rig.destination().await;
+    rig.requested(&[("acme/flagship", 12, "Search", "bob")]);
+    rig.open_requested("acme/flagship", 12, "Search");
+    rig.sync().await;
+
+    rig.requested(&[]);
+    view_state(&rig, "acme/flagship", 12, "Search", "CLOSED", true);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 1 })
+    );
+    let item = rig.item_for("acme/flagship#12");
+    assert!(item.archived_at.is_some());
+    let state = item.external_sync_state.unwrap();
+    assert_eq!(state.request_state, PrReviewRequestState::Closed);
+    assert_eq!(state.archived_by_sync, Some(PrReviewRequestState::Closed));
+    assert_eq!(rig.sync().await, ZERO());
+
+    // The PR is reopened and the review requested again: the item the sync
+    // archived returns for a new round (and is not archived while open).
+    rig.requested(&[("acme/flagship", 12, "Search", "bob")]);
+    view_state(&rig, "acme/flagship", 12, "Search", "OPEN", true);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 0 })
+    );
+    let item = rig.item_for("acme/flagship#12");
+    assert!(item.archived_at.is_none());
+    assert_eq!(item.status, WorkItemStatus::Active);
+    let state = item.external_sync_state.unwrap();
+    assert_eq!(state.round, 2);
+    assert_eq!(state.archived_by_sync, None);
+    assert_eq!(rig.sync().await, ZERO());
+
+    // Merged this time: archived again.
+    rig.requested(&[]);
+    view_state(&rig, "acme/flagship", 12, "Search", "MERGED", false);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 1 })
+    );
+    let item = rig.item_for("acme/flagship#12");
+    assert!(item.archived_at.is_some());
+    assert_eq!(
+        item.external_sync_state.unwrap().archived_by_sync,
+        Some(PrReviewRequestState::Merged)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_user_restore_is_not_archived_again_until_the_state_changes() {
+    let rig = rig().await;
+    rig.destination().await;
+    rig.requested(&[("acme/ui", 9, "Fix", "ada")]);
+    rig.open_requested("acme/ui", 9, "Fix");
+    rig.sync().await;
+    let item = synced_item_id(SPACE, "acme/ui#9");
+
+    rig.requested(&[]);
+    view_state(&rig, "acme/ui", 9, "Fix", "MERGED", false);
+    rig.sync().await;
+    assert!(rig.item_for("acme/ui#9").archived_at.is_some());
+
+    rig.mutate(json!({ "op": "restoreWorkItem", "workItemId": item, "operationId": "restore" }))
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(rig.sync().await, ZERO());
+        let restored = rig.item_for("acme/ui#9");
+        assert!(restored.archived_at.is_none(), "stays restored");
+        assert_eq!(restored.status, WorkItemStatus::Completed);
+    }
+
+    // A new state change: reopened and requested again (round 2), then
+    // merged again. Only now may the sync archive it again.
+    rig.requested(&[("acme/ui", 9, "Fix", "ada")]);
+    rig.open_requested("acme/ui", 9, "Fix");
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 0 })
+    );
+    assert!(rig.item_for("acme/ui#9").archived_at.is_none());
+    rig.requested(&[]);
+    view_state(&rig, "acme/ui", 9, "Fix", "MERGED", false);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 1, "resolved": 1 })
+    );
+    let item = rig.item_for("acme/ui#9");
+    assert!(item.archived_at.is_some());
+    assert_eq!(item.external_sync_state.unwrap().round, 2);
+    assert_eq!(rig.sync().await, ZERO());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reviewed_item_is_archived_when_its_pr_merges() {
+    let rig = rig().await;
+    rig.destination().await;
+    rig.requested(&[("acme/ui", 9, "Fix", "ada"), ("acme/kb", 3, "Docs", "cy")]);
+    rig.open_requested("acme/ui", 9, "Fix");
+    rig.open_requested("acme/kb", 3, "Docs");
+    rig.sync().await;
+
+    // ui#9 reviewed, kb#3 withdrawn: completed, not archived while open.
+    rig.requested(&[]);
+    let now = chrono::Utc::now().to_rfc3339();
+    rig.view(
+        "acme/ui",
+        9,
+        "Fix",
+        View {
+            state: "OPEN",
+            reviews: vec![("me", "APPROVED", &now)],
+            requested: vec![],
+        },
+    );
+    view_state(&rig, "acme/kb", 3, "Docs", "OPEN", false);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 2, "resolved": 2 })
+    );
+    for key in ["acme/ui#9", "acme/kb#3"] {
+        let item = rig.item_for(key);
+        assert_eq!(item.status, WorkItemStatus::Completed, "{key}");
+        assert!(item.archived_at.is_none(), "{key}");
+    }
+    assert_eq!(rig.sync().await, ZERO());
+
+    // Both merge later: archived at the merge.
+    rig.view(
+        "acme/ui",
+        9,
+        "Fix",
+        View {
+            state: "MERGED",
+            reviews: vec![("me", "APPROVED", &now)],
+            requested: vec![],
+        },
+    );
+    view_state(&rig, "acme/kb", 3, "Docs", "MERGED", false);
+    assert_eq!(
+        rig.sync().await,
+        json!({ "created": 0, "updated": 2, "resolved": 0 })
+    );
+    for key in ["acme/ui#9", "acme/kb#3"] {
+        let item = rig.item_for(key);
+        assert!(item.archived_at.is_some(), "{key}");
+        assert_eq!(item.status, WorkItemStatus::Completed, "{key}");
+        let state = item.external_sync_state.unwrap();
+        assert_eq!(state.request_state, PrReviewRequestState::Merged, "{key}");
+        assert_eq!(state.archived_by_sync, Some(PrReviewRequestState::Merged));
+    }
+    assert_eq!(rig.sync().await, ZERO());
 }

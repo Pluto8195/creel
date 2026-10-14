@@ -151,6 +151,7 @@ fn state(round: u32) -> WorkItemExternalSyncState {
         synced_status: WorkItemStatus::Active,
         round_started_at: NOW,
         synced_at: NOW,
+        archived_by_sync: None,
     }
 }
 
