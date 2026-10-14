@@ -20,6 +20,9 @@ use std::ops::Range;
 use super::model::{OutlineModel, OutlineRow, OutlineRowKind};
 use super::restructure::DropZone;
 
+/// How long a keyboard-moved row and its new parent's guide flash.
+pub(crate) const MOVE_FLASH: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Horizontal step per depth level, in px (matches the row indent).
 pub(crate) const INDENT_STEP: f32 = 14.0;
 /// Left padding before depth 0, in px.

@@ -13,11 +13,8 @@
 
 use super::*;
 use crate::work_outline::tree_guides::{
-    self, CellHighlight, GuideCell, GuideHighlight, GuideKind, TreeGuides,
+    self, CellHighlight, GuideCell, GuideHighlight, GuideKind, MOVE_FLASH, TreeGuides,
 };
-
-/// How long a keyboard-moved row and its new parent's guide flash.
-pub(crate) const MOVE_FLASH: Duration = Duration::from_millis(400);
 
 /// Guide state cached beside the flattened model.
 #[derive(Debug, Clone, Default)]

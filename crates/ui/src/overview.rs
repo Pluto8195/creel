@@ -15182,4 +15182,10 @@ mod logic_tests {
     mod space_roots_tests {
         include!("work_outline/space_roots_tests.rs");
     }
+
+    /// Outline tree guides, active path, drop labels, move flash; shares
+    /// this module's fixtures.
+    mod tree_guides_tests {
+        include!("work_outline/tree_guides_tests.rs");
+    }
 }
