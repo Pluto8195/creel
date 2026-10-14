@@ -8,8 +8,8 @@
 //! unchanged (`OperationSlot`); the Chat is never deleted on a partial
 //! failure.
 use zeron_proto::{
-    ChatConfig, ExecutionConfiguration, ExecutionValidationError, HarnessId,
-    ResolvedExecutionConfiguration, WorkOutlineError, WorkOutlineErrorCode,
+    ExecutionConfiguration, ExecutionValidationError, ResolvedExecutionConfiguration,
+    WorkOutlineError, WorkOutlineErrorCode,
 };
 
 use super::store::WorkOutlineSnapshot;
@@ -17,24 +17,6 @@ use super::store::WorkOutlineSnapshot;
 /// Prefix of the engine's execution rejection text
 /// (`execution_scope::rejection_message`).
 pub(crate) const REJECTION_PREFIX: &str = "execution-scope:";
-
-/// One agent the dialog offers: a harness with the config the launch sends.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LaunchAgent {
-    pub harness: HarnessId,
-    pub name: String,
-    pub config: ChatConfig,
-}
-
-impl LaunchAgent {
-    /// "Claude Code · opus" (the model only when one is chosen).
-    pub(crate) fn label(&self) -> String {
-        match self.config.model.as_deref().filter(|m| !m.is_empty()) {
-            Some(model) => format!("{} \u{b7} {model}", self.name),
-            None => self.name.clone(),
-        }
-    }
-}
 
 /// The work item's most recent launch: the associated Chat with a captured
 /// execution binding (bindings are captured at launch) and the latest

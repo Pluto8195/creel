@@ -12178,7 +12178,11 @@ impl Render for Shell {
             // this matched binding beats its key handler to the dispatch —
             // forward the slot instead of eating it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
-                let pickers = this.composer.read(cx).pickers().clone();
+                // Start Chat's model menu advertises the same slots.
+                let pickers = this
+                    .start_chat_pickers()
+                    .filter(|pickers| pickers.read(cx).is_open())
+                    .unwrap_or_else(|| this.composer.read(cx).pickers().clone());
                 let handled = pickers.update(cx, |pickers, cx| pickers.jump_model_slot(jump.0, cx));
                 if !handled && !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
@@ -12244,6 +12248,11 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
+                // Inside Start Chat the shortcut opens the dialog's picker.
+                if let Some(pickers) = this.start_chat_pickers() {
+                    pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
+                    return;
+                }
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     let pickers = this.composer.read(cx).pickers().clone();
                     pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));

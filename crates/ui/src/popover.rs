@@ -593,6 +593,16 @@ pub fn anchored_menu_below_over_modal(
     anchored_menu_below_layer(id, content, None, 4.0, 3)
 }
 
+/// A trigger's menu below its leading edge, painted above modal dialogs
+/// (priority 3) with the exit animation: pickers hosted inside a dialog.
+pub fn anchored_menu_below_start_over_modal(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+) -> AnyElement {
+    anchored_menu_below_layer(id, content, closing, 6.0, 3)
+}
+
 fn anchored_menu_below_layer(
     id: impl Into<SharedString>,
     content: AnyElement,

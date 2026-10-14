@@ -515,10 +515,14 @@ impl Shell {
         self.work_outline_modal.is_some()
     }
 
-    /// Escape inside a modal closes its open `/` skill popup first (the
-    /// shell's capture-phase Escape would otherwise cancel the whole modal
-    /// before the input sees the key). `true` when a popup was closed.
+    /// Escape inside a modal closes its open `/` skill popup or Start Chat's
+    /// model picker first (the shell's capture-phase Escape would otherwise
+    /// cancel the whole modal before the input sees the key). `true` when a
+    /// popup was closed.
     pub(super) fn dismiss_work_outline_modal_skills(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.close_start_chat_picker(cx) {
+            return true;
+        }
         let skills = match self.work_outline_modal.as_ref() {
             Some(WorkOutlineModal::StartChat(dialog)) => dialog.skills.clone(),
             Some(WorkOutlineModal::FromChat(dialog)) => dialog.skills.clone(),
@@ -863,6 +867,13 @@ impl Shell {
             });
         }
         let theme = Theme::of(cx).for_popup();
+        // Start Chat's picker closed (Esc / its chip): back to the prompt.
+        if let Some(WorkOutlineModal::StartChat(dialog)) = self.work_outline_modal.as_mut()
+            && std::mem::take(&mut dialog.focus_prompt_pending)
+        {
+            let handle = dialog.input_focus(cx);
+            window.focus(&handle, cx);
+        }
         let modal = self.work_outline_modal.as_ref()?;
         // Move keyboard focus into the modal (remembering where it was), so
         // the outline's key actions (Enter, n, ...) cannot fire underneath it.
