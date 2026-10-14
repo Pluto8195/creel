@@ -38,7 +38,16 @@ tools (`work_outline_*`): read your chat's work item and its instructions, \
 create child items, mark items active or completed, associate your chat, \
 ask the user for an action, and propose instructions. Each mutating call \
 (and `create_chat`) needs an idempotency key: reuse the key when retrying \
-the same change, use a new key for a new change.";
+the same change, use a new key for a new change.\n\
+\n\
+Blocked decisions: if your chat has a work item (check with \
+`work_outline_read_current`) and it is blocked on a decision, approval, or \
+missing information from the user, raise it with \
+`work_outline_create_user_action_request` (one-line question, context in \
+`detail`, a `dedupeKey` per topic) in addition to asking in chat. After the \
+user answers, resolve it with `work_outline_resolve_user_action_request`. Use \
+your built-in quick question prompt only for small clarifications that do not \
+block the work item.";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;

@@ -222,7 +222,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: agent_tool_names::READ_CURRENT,
-            description: "Your chat's Work Outline item: title, status, path, children, and the effective instructions it inherits. Null when your chat is not associated with an item.",
+            description: "Your chat's Work Outline item: title, status, path, children, the effective instructions it inherits, and its open user action requests. Null when your chat is not associated with an item.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
@@ -267,7 +267,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::CREATE_USER_ACTION_REQUEST,
-            description: "Ask the user for a specific decision, approval, or action on your chat's work item. It stays open in Required Actions until resolved.",
+            description: "Use this, alongside asking in chat and instead of relying only on your built-in ask-user prompt, whenever your chat's work item is blocked on a decision, approval, or missing information from the user; it stays open in Required Actions until resolved. Put a one-line question in `request`, context in `detail`, and a `dedupeKey` per topic. The user may answer via Required Actions' Reply & resolve, which arrives as a chat message starting `Re: \"…\"`; resolve the matching request when it does.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -282,7 +282,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
-            description: "Resolve a user action request your chat created (for example after the user answered in chat).",
+            description: "Resolve a user action request your chat created once the user has answered, in chat or via a chat message starting `Re: \"…\"` from Required Actions' Reply & resolve, if it is still open (see `work_outline_read_current`). Do not leave answered requests open.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
