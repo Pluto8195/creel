@@ -969,6 +969,26 @@ pub fn canonical_revision_hash(entries: &[InstructionRevisionEntry], version: u3
     sha256_hex(canonical_json(&value).as_bytes())
 }
 
+/// The instruction-content key drift compares: instruction ids, source
+/// kinds, text, and order, ignoring scope ids and titles and provenance. A
+/// renamed item (or ancestor) keeps its key, so a title change is not drift,
+/// while any instruction text, order, or membership change is. Not a stored
+/// value: revision hashes and the envelope are unchanged.
+pub fn instruction_content_key(entries: &[InstructionRevisionEntry]) -> String {
+    let content: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "instructionId": entry.instruction_id,
+                "sourceKind": entry.source_kind,
+                "text": entry.text,
+                "order": entry.order,
+            })
+        })
+        .collect();
+    sha256_hex(canonical_json(&Value::Array(content)).as_bytes())
+}
+
 /// `hex(sha256(utf8(rendered)))`.
 pub fn envelope_sha256(rendered: &str) -> String {
     sha256_hex(rendered.as_bytes())

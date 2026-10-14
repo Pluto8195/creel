@@ -771,7 +771,7 @@ fn drift_follows_selection_and_current_effective_hash() {
     assert!(!chat.drift && chat.selected_revision_id.is_none());
     assert!(chat.current_effective_hash.is_some());
     // Something effective but nothing selected: drift.
-    instruct(&mut doc, "a", Some(&a), "from A");
+    let from_a = instruct(&mut doc, "a", Some(&a), "from A");
     let s = snap(&doc);
     assert!(state(&s, "chat-1").drift);
     let revision = revise(&mut doc, "rev", &c).unwrap();
@@ -787,7 +787,9 @@ fn drift_follows_selection_and_current_effective_hash() {
             revision_hash: chat.selected_revision_hash.clone().unwrap(),
         })
     );
-    // Renaming an inherited item changes the snapshotted scope title: drift.
+    // Renaming an inherited item changes the snapshotted scope title (so
+    // the hash a new revision would carry), but it is not drift: drift
+    // compares instruction content only.
     apply(
         &mut doc,
         WorkOutlineMutation::UpdateWorkItem(zeron_proto::UpdateWorkItemParams {
@@ -800,7 +802,17 @@ fn drift_follows_selection_and_current_effective_hash() {
         }),
     )
     .unwrap();
+    let s = snap(&doc);
+    let renamed = state(&s, "chat-1");
+    assert!(!renamed.drift);
+    assert_ne!(renamed.selected_revision_hash, renamed.current_effective_hash);
+    // Editing the inherited instruction's text is drift.
+    edit(&mut doc, "edit-a", &from_a, "from A, edited").unwrap();
     assert!(state(&snap(&doc), "chat-1").drift);
+    // Re-selecting the current instructions clears it again.
+    let edited = revise(&mut doc, "rev-edited", &c).unwrap();
+    apply_revision(&mut doc, "app-edited", "chat-1", &edited).unwrap();
+    assert!(!state(&snap(&doc), "chat-1").drift);
     // Unassigned Chats keep their selection but never drift.
     apply(
         &mut doc,
@@ -813,10 +825,7 @@ fn drift_follows_selection_and_current_effective_hash() {
     let s = snap(&doc);
     let chat = state(&s, "chat-1");
     assert!(!chat.drift && chat.current_effective_hash.is_none());
-    assert_eq!(
-        chat.selected_revision_id.as_deref(),
-        Some(revision.as_str())
-    );
+    assert_eq!(chat.selected_revision_id.as_deref(), Some(edited.as_str()));
     // Applying needs an assignment.
     assert_eq!(
         apply_revision(&mut doc, "app3", "chat-1", &revision)
