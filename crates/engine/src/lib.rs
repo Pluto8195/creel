@@ -17,6 +17,7 @@ use zeron_sync::DocsStore;
 
 pub mod agent_accounts;
 pub mod agent_tools;
+pub mod artifacts;
 pub mod auth;
 pub mod change_requests;
 pub mod chat2_host;
@@ -186,6 +187,10 @@ pub struct EngineCore {
     /// fallback, both bounded/cheap; no background sweep needed (see
     /// `context_usage`'s module doc comment).
     pub context_usage: context_usage::ContextUsageProvider,
+    /// Planning artifacts (registry rows, profile-store snapshots, the
+    /// stored-file watcher, render-check routing). Shared by every RPC
+    /// surface so the UI's render registration reaches agent tool calls.
+    pub artifacts: artifacts::ArtifactsService,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -575,6 +580,14 @@ impl EngineCore {
             turn_diff.note_turn_start(chat_id, cwd);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
+        let artifacts = artifacts::ArtifactsService::new(workspace.clone());
+        {
+            let artifacts = artifacts.clone();
+            sessions.set_assistant_text_listener(Arc::new(move |chat_id, text| {
+                artifacts.note_assistant_text(chat_id, text);
+            }));
+        }
+        artifacts.spawn_watch_loop();
         Ok(Self {
             sessions,
             doc_host,
@@ -597,6 +610,7 @@ impl EngineCore {
             linear,
             pr_review_sync,
             context_usage,
+            artifacts,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -734,7 +748,8 @@ impl EngineCore {
         .with_pr_ticket_cache(self.pr_ticket_cache.clone())
         .with_linear(self.linear.clone())
         .with_pr_review_sync(self.pr_review_sync.clone())
-        .with_context_usage(self.context_usage.clone());
+        .with_context_usage(self.context_usage.clone())
+        .with_artifacts(self.artifacts.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }

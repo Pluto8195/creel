@@ -891,6 +891,47 @@ impl WorkspaceHost {
         self.read(|doc| doc.batches_written())
     }
 
+    // ── Planning artifacts (registry rows; policy in `crate::artifacts`) ──
+
+    /// A live artifact row.
+    pub fn artifact(&self, id: &str) -> Option<zeron_proto::ArtifactView> {
+        self.read(|doc| doc.artifact(id))
+    }
+
+    /// Every live artifact row (all Spaces).
+    pub fn all_artifacts(&self) -> Vec<zeron_proto::ArtifactView> {
+        self.read(|doc| doc.all_artifacts())
+    }
+
+    /// Live artifacts of one Space, sorted.
+    pub fn artifacts_of_space(&self, space_id: &str) -> Vec<zeron_proto::ArtifactView> {
+        self.read(|doc| doc.artifacts_of_space(space_id))
+    }
+
+    /// Change marker of the artifact rows.
+    pub fn artifacts_generation(&self) -> u64 {
+        self.read(|doc| doc.artifacts_generation())
+    }
+
+    /// Create or update one artifact row (returns the row as written).
+    pub fn put_artifact(
+        &self,
+        view: &zeron_proto::ArtifactView,
+    ) -> Result<zeron_proto::ArtifactView, EngineError> {
+        Ok(self.mutate(|doc| doc.put_artifact(view))?)
+    }
+
+    /// Pin or unpin one artifact as its scope's plan (see
+    /// `RegistryDoc::set_artifact_pin`).
+    pub fn set_artifact_pin(
+        &self,
+        id: &str,
+        pinned: bool,
+    ) -> Result<Option<Vec<String>>, EngineError> {
+        let now = Utc::now().timestamp_millis();
+        Ok(self.mutate(|doc| doc.set_artifact_pin(id, pinned, now))?)
+    }
+
     /// Whether a Space has the Linear integration turned on.
     pub fn space_linear_enabled(&self, space_id: &str) -> bool {
         self.read(|doc| doc.space_linear_enabled(space_id))

@@ -71,6 +71,8 @@ pub enum AgentToolError {
         message: String,
     },
     WorkOutline(WorkOutlineError),
+    /// A planning artifact tool failure (`artifact/<code>: …`).
+    Artifact(zeron_proto::ArtifactError),
 }
 
 impl AgentToolError {
@@ -97,6 +99,7 @@ impl AgentToolError {
         match self {
             Self::Refused { code, .. } => code.as_str(),
             Self::WorkOutline(error) => error.code.as_str(),
+            Self::Artifact(error) => error.code.as_str(),
         }
     }
 
@@ -105,7 +108,14 @@ impl AgentToolError {
         match self {
             Self::Refused { code, message } => agent_tools::error_wire_message(*code, message),
             Self::WorkOutline(error) => error.to_wire_message(),
+            Self::Artifact(error) => error.to_wire_message(),
         }
+    }
+}
+
+impl From<zeron_proto::ArtifactError> for AgentToolError {
+    fn from(error: zeron_proto::ArtifactError) -> Self {
+        Self::Artifact(error)
     }
 }
 
@@ -531,6 +541,8 @@ pub struct AgentToolsService {
     /// Linear integration: `read_current` adds the linked ticket in Spaces
     /// with Linear on (the key itself never reaches the agent).
     linear: Mutex<Option<crate::linear::LinearService>>,
+    /// Planning artifacts (`artifact_*` tools).
+    artifacts: Mutex<Option<crate::artifacts::ArtifactsService>>,
 }
 
 impl AgentToolsService {
@@ -547,7 +559,35 @@ impl AgentToolsService {
             doc_host,
             child_claims: Mutex::new(()),
             linear: Mutex::new(None),
+            artifacts: Mutex::new(None),
         }
+    }
+
+    /// Attach the engine's artifact service (engine assembly).
+    pub fn set_artifacts(&self, artifacts: crate::artifacts::ArtifactsService) {
+        *lock(&self.artifacts) = Some(artifacts);
+    }
+
+    /// The artifact service and the caller it acts for.
+    fn artifact_call(
+        &self,
+        context: &CallContext,
+    ) -> Result<(crate::artifacts::ArtifactsService, crate::artifacts::AgentCaller), AgentToolError>
+    {
+        let service = lock(&self.artifacts).clone().ok_or_else(|| {
+            AgentToolError::refused(
+                AgentToolErrorCode::Unsupported,
+                "planning artifacts are not available on this engine",
+            )
+        })?;
+        let caller = crate::artifacts::AgentCaller {
+            chat_id: context.grant.chat_id.clone(),
+            run_id: context.grant.run_id.clone(),
+            space_id: context.grant.space_id.clone(),
+            device_id: context.grant.device_id.clone(),
+            work_item_id: context.current_item_id(),
+        };
+        Ok((service, caller))
     }
 
     /// Attach the engine's Linear service (engine assembly).
@@ -675,6 +715,18 @@ impl AgentToolsService {
             tools::PROPOSE_INSTRUCTION => self.propose_instruction(&context, arguments),
             tools::QUEUE_CHILD_CHAT_TURN => self.queue_child_chat_turn(&context, arguments),
             tools::CLAIM_CHILD_CHAT => self.claim_child_chat(&context, arguments),
+            tools::ARTIFACT_PUBLISH => {
+                let (service, caller) = self.artifact_call(&context)?;
+                Ok(service.agent_publish(&caller, arguments)?)
+            }
+            tools::ARTIFACT_GET_PLAN => {
+                let (service, caller) = self.artifact_call(&context)?;
+                Ok(service.agent_get_plan(&caller)?)
+            }
+            tools::ARTIFACT_RENDER_CHECK => {
+                let (service, caller) = self.artifact_call(&context)?;
+                Ok(service.agent_render_check(&caller, arguments)?)
+            }
             other => Err(AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
                 format!("unknown agent tool: {other}"),

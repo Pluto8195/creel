@@ -4,6 +4,7 @@
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
 
 pub mod agent;
+pub mod artifacts;
 pub mod entities;
 pub mod linear;
 pub mod motion;
@@ -23,6 +24,14 @@ pub mod work_outline_user_actions;
 pub mod workspace;
 
 pub use agent::*;
+pub use artifacts::{
+    ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
+    ArtifactErrorCode, ArtifactKind, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
+    ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
+    ArtifactRenderResultReply, ArtifactRenderTheme, ArtifactRevision, ArtifactView,
+    ArtifactViewport, ArtifactsSnapshot, WatchArtifactRenderRequestsParams, WatchArtifactsParams,
+};
 pub use entities::*;
 pub use linear::*;
 pub use pr_review::*;

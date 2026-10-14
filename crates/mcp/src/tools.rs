@@ -310,6 +310,78 @@ fn work_outline_catalog() -> Vec<ToolDef> {
     ]
 }
 
+/// The planning artifact tools (agent mode only;
+/// `docs/planning-artifact-conventions.md`). The engine scopes each call to
+/// the calling Chat's work item (or the Chat).
+fn artifact_catalog() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: agent_tool_names::ARTIFACT_PUBLISH,
+            description: "Publish a file you wrote (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Zeron copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file you wrote: absolute, or relative to your working directory (your worktree, the project folder, or a temp folder)." },
+                    "title": { "type": "string", "description": "Human title, e.g. \"Receiving flow — plan\". Same title + role on the same work item = same artifact." },
+                    "kind": { "type": "string", "enum": ["markdown", "html-fragment", "html-page", "mermaid", "image", "options"], "description": "Defaults from the file extension." },
+                    "role": { "type": "string", "description": "plan, diagram, state-machine, comparison, or doc (free-form)." },
+                    "note": { "type": "string", "description": "One line: what changed in this revision." },
+                    "pinAsPlan": { "type": "boolean", "default": false, "description": "Make this the work item's plan (unpins the previous one)." },
+                    "idempotencyKey": idempotency_key_schema()
+                },
+                "required": ["path", "title", "note", "idempotencyKey"]
+            }),
+        },
+        ToolDef {
+            name: agent_tool_names::ARTIFACT_GET_PLAN,
+            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims}, or null. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: agent_tool_names::ARTIFACT_RENDER_CHECK,
+            description: "Render an artifact exactly as Zeron shows it (same wrapper, sandbox, and theme) in the Zeron window on this device and return a screenshot plus errors (console errors, blocked resources, Mermaid parse errors, empty render) and warnings (overflow, content outside the viewport, low contrast). Run it after creating or changing any visual artifact, fix every error and warning, and check again. If it fails with renderUnavailable, say the artifact was not checked.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "artifactId": { "type": "string", "description": "A published artifact of your work item." },
+                    "path": { "type": "string", "description": "Or an unpublished file you wrote." },
+                    "viewport": {
+                        "type": "object",
+                        "properties": {
+                            "width": { "type": "integer", "minimum": 200, "maximum": 4096, "default": 1280 },
+                            "height": { "type": "integer", "minimum": 200, "maximum": 4096, "default": 800 }
+                        }
+                    },
+                    "theme": { "type": "string", "enum": ["light", "dark"], "description": "Default: the user's current theme." }
+                }
+            }),
+        },
+    ]
+}
+
+/// Whether `name` is an engine-side agent tool (`AgentToolCall`).
+fn is_engine_agent_tool(name: &str) -> bool {
+    agent_tool_names::WORK_OUTLINE.contains(&name) || agent_tool_names::ARTIFACTS.contains(&name)
+}
+
+/// Split a render-check result into MCP content: the screenshot as an
+/// `image` block, the rest as structured data (without the image bytes).
+fn render_check_content(mut value: Value) -> (Value, Vec<Value>) {
+    let mut images = Vec::new();
+    if let Some(object) = value.as_object_mut()
+        && let Some(screenshot) = object.remove("screenshot")
+        && let Some(data) = screenshot.get("data").and_then(Value::as_str)
+    {
+        let mime = screenshot
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("image/png");
+        images.push(json!({ "type": "image", "data": data, "mimeType": mime }));
+        object.insert("screenshot".into(), json!({ "mimeType": mime, "attached": true }));
+    }
+    (value, images)
+}
+
 // ---- argument shapes ---------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -488,6 +560,7 @@ impl Tools {
         let mut defs = catalog();
         if self.zeron.has_token() {
             defs.extend(work_outline_catalog());
+            defs.extend(artifact_catalog());
         }
         defs
     }
@@ -502,8 +575,30 @@ impl Tools {
     /// With a token, every call (reads included) first re-authenticates it:
     /// once the Run that received it ends, nothing works.
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
+        self.call_with_content(name, args).await.map(|(value, _)| value)
+    }
+
+    /// [`Self::call`] plus extra MCP content blocks (the render check's
+    /// screenshot as an `image` block).
+    pub async fn call_with_content(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<(Value, Vec<Value>), String> {
+        if name == agent_tool_names::ARTIFACT_RENDER_CHECK {
+            let value = self
+                .zeron
+                .agent_tool(name, args)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(render_check_content(value));
+        }
+        self.call_value(name, args).await.map(|value| (value, Vec::new()))
+    }
+
+    async fn call_value(&self, name: &str, args: Value) -> Result<Value, String> {
         // `AgentToolCall` authenticates the token itself: one round trip.
-        if agent_tool_names::WORK_OUTLINE.contains(&name) {
+        if is_engine_agent_tool(name) {
             return self
                 .zeron
                 .agent_tool(name, args)
@@ -555,6 +650,11 @@ impl Tools {
             "workspaceScope": engine.get("workspaceScope").cloned().unwrap_or(Value::Null),
             "workOutlineTools": if origin.is_some() {
                 json!(agent_tool_names::WORK_OUTLINE)
+            } else {
+                json!([])
+            },
+            "artifactTools": if origin.is_some() {
+                json!(agent_tool_names::ARTIFACTS)
             } else {
                 json!([])
             },
@@ -1604,6 +1704,12 @@ mod tests {
                         .lock()
                         .unwrap()
                         .push((method.to_owned(), params.clone()));
+                    if params["tool"] == agent_tool_names::ARTIFACT_RENDER_CHECK {
+                        return Ok(RpcReply::Value(json!({
+                            "artifactId": "a1", "errors": [], "warnings": ["overflow"],
+                            "screenshot": { "mimeType": "image/png", "data": "iVBORw0KGgo=" },
+                        })));
+                    }
                     if params["tool"] == agent_tool_names::CLAIM_CHILD_CHAT {
                         let key = params["arguments"]["idempotencyKey"].as_str().unwrap();
                         let hash = params["arguments"]["inputsHash"].as_str().unwrap();
@@ -1678,6 +1784,52 @@ mod tests {
         }
         let wire: Vec<&str> = work_outline_catalog().iter().map(|d| d.name).collect();
         assert_eq!(wire, agent_tool_names::WORK_OUTLINE);
+        let artifacts: Vec<&str> = artifact_catalog().iter().map(|d| d.name).collect();
+        assert_eq!(artifacts, agent_tool_names::ARTIFACTS);
+        let publish = &artifact_catalog()[0];
+        let required = publish.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("idempotencyKey")));
+    }
+
+    #[tokio::test]
+    async fn artifact_tools_need_a_token_and_return_the_screenshot_as_an_image() {
+        let world = Arc::new(World::default());
+        let anonymous = tools(world.clone(), None);
+        assert!(!anonymous.has(agent_tool_names::ARTIFACT_PUBLISH));
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        for name in agent_tool_names::ARTIFACTS {
+            assert!(agent.has(name), "{name}");
+        }
+        agent
+            .call(
+                agent_tool_names::ARTIFACT_PUBLISH,
+                json!({ "path": "plan.md", "title": "Plan", "note": "n",
+                        "idempotencyKey": "k" }),
+            )
+            .await
+            .unwrap();
+        let calls = world.agent_calls(agent_tool_names::ARTIFACT_PUBLISH);
+        assert_eq!(calls[0]["token"], BETA_TOKEN);
+        assert_eq!(calls[0]["arguments"]["path"], "plan.md");
+
+        let response = crate::jsonrpc::handle_request(
+            &agent,
+            json!(7),
+            "tools/call",
+            json!({ "name": agent_tool_names::ARTIFACT_RENDER_CHECK,
+                    "arguments": { "artifactId": "a1" } }),
+        )
+        .await;
+        let content = response["result"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "{response}");
+        assert_eq!(content[0]["type"], "text");
+        assert!(!content[0]["text"].as_str().unwrap().contains("iVBORw0KGgo="));
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["mimeType"], "image/png");
+        assert_eq!(content[1]["data"], "iVBORw0KGgo=");
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["warnings"][0], "overflow");
+        assert_eq!(structured["screenshot"]["attached"], true);
     }
 
     #[tokio::test]

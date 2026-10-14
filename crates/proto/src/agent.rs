@@ -705,6 +705,18 @@ pub mod agent_tools {
         /// `work-outline/operationConflict`; returns `{replayed}`.
         pub const CLAIM_CHILD_CHAT: &str = "chat_claim_child";
 
+        /// Copy a file the agent wrote into the work item's artifact folder
+        /// and record a revision (`docs/planning-artifact-conventions.md`).
+        pub const ARTIFACT_PUBLISH: &str = "artifact_publish";
+        /// The pinned plan of the Chat's work item (or of the Chat).
+        pub const ARTIFACT_GET_PLAN: &str = "artifact_get_plan";
+        /// Render an artifact offscreen in the headed app and return a
+        /// screenshot plus errors and warnings.
+        pub const ARTIFACT_RENDER_CHECK: &str = "artifact_render_check";
+
+        /// The planning artifact tools, in catalog order.
+        pub const ARTIFACTS: [&str; 3] = [ARTIFACT_PUBLISH, ARTIFACT_GET_PLAN, ARTIFACT_RENDER_CHECK];
+
         /// The Work Outline tools, in catalog order.
         pub const WORK_OUTLINE: [&str; 7] = [
             READ_CURRENT,

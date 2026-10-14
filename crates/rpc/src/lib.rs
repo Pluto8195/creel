@@ -219,6 +219,35 @@ pub mod methods {
     /// `PrReviewRequestedParams {spaceId}` → `[PullRequestStatusSummary]`
     /// (open PRs in the Space's repositories requesting the user's review).
     pub const PR_REVIEW_REQUESTED: &str = "PrReviewRequested";
+    // ── Planning artifacts v1 (`zeron_proto::artifacts`,
+    // docs/plans/artifacts-contract.md). Failures are
+    // `artifact/<code>: <message>` (`zeron_proto::ArtifactError::from_wire_message`).
+    /// `WatchArtifactsParams {spaceId}` → stream of `ArtifactsSnapshot`
+    /// (current value first, then one frame per change). Served from the
+    /// local registry replica like `WatchWorkOutline`: NOT forwardable.
+    pub const WATCH_ARTIFACTS: &str = "WatchArtifacts";
+    /// `ArtifactContentParams {artifactId, revision?, companion?}` →
+    /// `ArtifactContentReply`. Forwardable: content lives on the owning
+    /// device (`targetDeviceId = artifact.deviceId`).
+    pub const ARTIFACT_CONTENT: &str = "ArtifactContent";
+    /// `ArtifactRegisterParams {spaceId, workItemId?, chatId?, path, title?,
+    /// kind?, role?}` → `ArtifactPublishReply` (user-side import of an
+    /// existing file as revision 1). Forwardable (Space's device).
+    pub const ARTIFACT_REGISTER: &str = "ArtifactRegister";
+    /// `ArtifactPromoteParams {artifactId}` → `ArtifactPromoteReply
+    /// {promotedPath}`. Forwardable (owning device).
+    pub const ARTIFACT_PROMOTE: &str = "ArtifactPromote";
+    /// `ArtifactPinParams {artifactId, pinned}` → `ArtifactPinReply`. Pure
+    /// registry write: local, NOT forwardable.
+    pub const ARTIFACT_PIN: &str = "ArtifactPin";
+    /// UI → engine, IPC-only: `WatchArtifactRenderRequestsParams` → stream of
+    /// `ArtifactRenderRequest`. Holding the stream open registers the caller
+    /// as this device's render-capable (headed) UI; each item must be
+    /// answered with `ArtifactRenderResult`.
+    pub const WATCH_ARTIFACT_RENDER_REQUESTS: &str = "WatchArtifactRenderRequests";
+    /// UI → engine, IPC-only: `ArtifactRenderResultParams {requestId,
+    /// result? | error?}` → `ArtifactRenderResultReply {accepted}`.
+    pub const ARTIFACT_RENDER_RESULT: &str = "ArtifactRenderResult";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -626,6 +655,20 @@ mod tests {
             methods::LINEAR_REFRESH_LINKED_ITEMS,
             "LinearRefreshLinkedItems"
         );
+    }
+
+    #[test]
+    fn artifact_wire_names_are_pinned() {
+        assert_eq!(methods::WATCH_ARTIFACTS, "WatchArtifacts");
+        assert_eq!(methods::ARTIFACT_CONTENT, "ArtifactContent");
+        assert_eq!(methods::ARTIFACT_REGISTER, "ArtifactRegister");
+        assert_eq!(methods::ARTIFACT_PROMOTE, "ArtifactPromote");
+        assert_eq!(methods::ARTIFACT_PIN, "ArtifactPin");
+        assert_eq!(
+            methods::WATCH_ARTIFACT_RENDER_REQUESTS,
+            "WatchArtifactRenderRequests"
+        );
+        assert_eq!(methods::ARTIFACT_RENDER_RESULT, "ArtifactRenderResult");
     }
 
     #[test]

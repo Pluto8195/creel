@@ -170,6 +170,9 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// Fired with `(chat_id, text)` for every completed assistant segment
+    /// (planning artifact marker fallback). Absent in bare tests.
+    assistant_text_listener: OnceLock<AssistantTextListener>,
     /// User message ids whose sender confirmed a context reset (a revision
     /// change on a `FreshSession` harness starts a new native session).
     context_reset_confirmed: Mutex<std::collections::HashSet<String>>,
@@ -196,6 +199,9 @@ pub const TURN_BOUNDARY_MESSAGE: &str = "A different Work Outline instruction re
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Completed-assistant-text hook: called with `(chat_id, text)`.
+pub type AssistantTextListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -228,6 +234,7 @@ impl SessionsEngine {
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                assistant_text_listener: OnceLock::new(),
                 context_reset_confirmed: Mutex::new(std::collections::HashSet::new()),
                 agent_tokens: AgentTokens::new(),
                 agent_tools_launch: Mutex::new(AgentToolsLaunch::from_current_exe()),
@@ -353,6 +360,12 @@ impl SessionsEngine {
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
+    }
+
+    /// Wire the completed-assistant-text listener (called once at engine
+    /// assembly; the planning artifact marker fallback).
+    pub fn set_assistant_text_listener(&self, listener: AssistantTextListener) {
+        let _ = self.inner.assistant_text_listener.set(listener);
     }
 
     /// Resolve a chat cwd exactly as run dispatch does. Non-agent surfaces
@@ -1319,7 +1332,7 @@ impl SessionsEngine {
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
             })?;
-            self.inner.note_message(&chat.id, &text);
+            self.inner.note_assistant_message(&chat.id, &text);
             recovered += 1;
             tracing::info!(chat = %chat.id, "recovered completed assistant tail from run journal");
         }
@@ -1580,6 +1593,17 @@ impl Inner {
             ws.note_message(chat_id, text);
             crate::chat_links::mine_ticket_mention(&ws, chat_id, text);
             crate::chat_links::mine_pr_mention(&ws, chat_id, text);
+        }
+    }
+
+    /// [`Self::note_message`] for a completed assistant segment, plus the
+    /// assistant-text listener.
+    fn note_assistant_message(&self, chat_id: &str, text: &str) {
+        self.note_message(chat_id, text);
+        if !text.is_empty()
+            && let Some(listener) = self.assistant_text_listener.get()
+        {
+            listener(chat_id, text);
         }
     }
 
@@ -2608,7 +2632,7 @@ async fn drive_run(
                         ) {
                             tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                         }
-                        inner.note_message(&chat_id, &folded_text(&folded));
+                        inner.note_assistant_message(&chat_id, &folded_text(&folded));
                     }
                     folded.clear();
                     dirty = false;
@@ -3054,7 +3078,7 @@ async fn drive_run(
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
-            inner.note_message(&chat_id, &folded_text(&folded));
+            inner.note_assistant_message(&chat_id, &folded_text(&folded));
             folded.clear();
             dirty = false;
             entry_id = next_assistant_message_id.clone().unwrap_or_else(new_id);
@@ -3179,7 +3203,7 @@ async fn drive_run(
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
-                inner.note_message(&chat_id, &folded_text(&folded));
+                inner.note_assistant_message(&chat_id, &folded_text(&folded));
             }
             inner.publish(&chat_id, &event);
             if *status == DoneStatus::Completed {
