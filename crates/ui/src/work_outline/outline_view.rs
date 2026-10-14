@@ -1561,10 +1561,10 @@ impl OutlineView {
     // Direct restructuring (keyboard, palette, drag and drop)
     // ----------------------------------------------------------------------
 
-    /// The restructuring keys: re-associate the selected Chat
-    /// ([`Self::move_selected_chat`]) or restructure the selected work item
-    /// ([`Self::restructure_selected`]).
-    fn restructure_selection(
+    /// The restructuring keys and palette commands: re-associate the
+    /// selected Chat ([`Self::move_selected_chat`]) or restructure the
+    /// selected work item ([`Self::restructure_selected`]).
+    pub(crate) fn restructure_selection(
         &mut self,
         op: RestructureOp,
         cx: &mut Context<Self>,
@@ -1577,8 +1577,8 @@ impl OutlineView {
 
     /// Move up / down, indent or outdent the selected work item (with its
     /// descendants). A boundary no-op is `Ok` and sends nothing; `Err`
-    /// carries the notice to show. The palette commands call this directly:
-    /// they act on work items only.
+    /// carries the notice to show. Chat rows go through
+    /// [`Self::restructure_selection`].
     pub(crate) fn restructure_selected(
         &mut self,
         op: RestructureOp,

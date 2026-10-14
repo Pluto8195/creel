@@ -9961,7 +9961,7 @@ impl Overview {
             | WorkOutlineCommand::MoveWorkItemDown
             | WorkOutlineCommand::IndentWorkItem
             | WorkOutlineCommand::OutdentWorkItem => match command.restructure_op() {
-                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selected(op, cx)),
+                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selection(op, cx)),
                 None => Ok(()),
             },
         };

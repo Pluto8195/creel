@@ -211,7 +211,8 @@ and the move applies at once, with the same **Undo** toast as **Move to Work
 Item…** when the Chat's instructions change. Rapid presses apply in order. Chats without a
 project, and Chats that no longer exist, cannot move. A move never changes a
 Chat's Canvas position, folder, or execution setup. The palette's Move Up /
-Down and Indent / Outdent commands act on work items only. Archiving an item that has children asks
+Down, Indent, and Outdent commands (and any shortcut you bind to them) do the
+same as the keys on a Chat row. Archiving an item that has children asks
 whether to archive them as well or move them to another parent first.
 
 ## Projects in the Outline
