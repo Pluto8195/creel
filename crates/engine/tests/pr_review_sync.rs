@@ -1193,3 +1193,38 @@ async fn a_reviewed_item_is_archived_when_its_pr_merges() {
     }
     assert_eq!(rig.sync().await, ZERO());
 }
+
+/// A ticket item that links a PR (a Chat created it, or Linear attached it)
+/// is not a PR review item: a review request for that PR gets its own synced
+/// item, and the ticket item keeps its status, record, and place.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ticket_item_linking_a_requested_pr_is_not_adopted() {
+    let rig = rig().await;
+    let dest = rig.destination().await;
+    let ticket = rig
+        .mutate(json!({ "op": "createWorkItem", "spaceId": SPACE,
+            "title": "ENG-2690 · Receive flow", "operationId": "ticket" }))
+        .await
+        .unwrap()["workItemId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    rig.mutate(json!({ "op": "createWorkItemExternalReference", "workItemId": ticket,
+        "provider": "github", "referenceType": "pullRequest", "externalId": "acme/ui#9",
+        "url": "https://github.com/acme/ui/pull/9", "operationId": "ticket-pr" }))
+        .await
+        .unwrap();
+    rig.requested(&[("acme/ui", 9, "Fix the button", "ada")]);
+    rig.open_requested("acme/ui", 9, "Fix the button");
+
+    let reply = rig.sync().await;
+    assert_eq!(reply["created"], 1);
+    let synced = rig.item_for("acme/ui#9");
+    assert_eq!(synced.parent_work_item_id.as_deref(), Some(dest.as_str()));
+    let snapshot = rig.snapshot();
+    let item = snapshot.item(&ticket).unwrap();
+    assert!(item.external_sync_state.is_none());
+    assert_eq!(item.status, WorkItemStatus::Pending);
+    assert!(item.parent_work_item_id.is_none());
+    assert_eq!(snapshot.unresolved_user_action_requests(&ticket).count(), 0);
+}
