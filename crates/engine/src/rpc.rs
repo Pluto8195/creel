@@ -4569,6 +4569,18 @@ mod tests {
     fn work_outline_methods_are_local_not_forwardable() {
         assert!(!forwardable(methods::WATCH_WORK_OUTLINE));
         assert!(!forwardable(methods::WORK_OUTLINE_MUTATE));
+        for linear in [
+            methods::LINEAR_STATUS,
+            methods::LINEAR_SET_API_KEY,
+            methods::LINEAR_CLEAR_API_KEY,
+            methods::LINEAR_ISSUE,
+            methods::LINEAR_MY_ISSUES,
+            methods::LINEAR_MY_PROJECTS,
+            methods::LINEAR_PROJECT_ISSUES,
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+        ] {
+            assert!(!forwardable(linear), "{linear} is device-local");
+        }
         assert!(!forwardable(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WORK_OUTLINE_QUERY));
         assert!(!is_stream_method(methods::WATCH_WORK_OUTLINE));
