@@ -56,9 +56,10 @@ pub(crate) fn last_launch_chat<'a>(
 }
 
 /// Whether the item's effective instructions changed since its last launch:
-/// the last launched Chat's selected revision hash differs from the item's
-/// current effective hash, or it launched without instructions and the item
-/// has some now. Never launched = not changed.
+/// the host's drift for the last launched Chat's selected revision (which
+/// compares instruction content, so item title renames such as Linear sync
+/// never count), or it launched without instructions and the item has some
+/// now. Never launched = not changed.
 pub(crate) fn instructions_changed_since_last_launch(
     snapshot: &WorkOutlineSnapshot,
     item_id: &str,
@@ -68,14 +69,8 @@ pub(crate) fn instructions_changed_since_last_launch(
     };
     let has_entries = !snapshot.effective_instructions(item_id).entries.is_empty();
     match snapshot.chat_instruction_state(chat_id) {
-        Some(state) => match state.selected_revision_hash.as_deref() {
-            Some(selected) => match state.current_effective_hash.as_deref() {
-                Some(current) => selected != current,
-                None => has_entries,
-            },
-            None => has_entries,
-        },
-        None => has_entries,
+        Some(state) if state.selected_revision_hash.is_some() => state.drift,
+        _ => has_entries,
     }
 }
 
@@ -361,6 +356,15 @@ mod tests {
         assert!(instructions_changed_since_last_launch(&snapshot, API));
         // chat-auth applied the current Auth revision.
         assert!(!instructions_changed_since_last_launch(&snapshot, API_AUTH));
+        // A changed hash the host does not call drift (an item title
+        // rename, e.g. Linear sync) is not a change.
+        for state in snapshot.chat_instruction_states.iter_mut() {
+            if state.chat_id == CHAT_API {
+                state.drift = false;
+                state.current_effective_hash = Some("renamed-title-hash".into());
+            }
+        }
+        assert!(!instructions_changed_since_last_launch(&snapshot, API));
     }
 
     #[test]

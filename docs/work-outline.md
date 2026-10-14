@@ -363,6 +363,55 @@ instructions.
   appear in Required Actions, even when notifications are off.
 - Completing an item with open requests asks for confirmation and resolves them.
 
+## Linear
+
+Linear is off until you turn it on for a project, and it never writes to
+Linear. While it is off, a project shows no Linear UI, makes no Linear calls,
+and keeps pasted Linear URLs as plain links. Nothing is added to the Outline
+automatically: items and links come only from the actions below.
+
+- **Connect.** In **Settings → Linear**, paste a Linear personal API key and
+  click **Save**. Zeron checks the key with Linear before storing it in this
+  Mac's Keychain, then shows **Connected as \<name\>**. The key is never shown
+  again or given to agents. **Disconnect** removes the stored key. If Linear
+  rejects the key later, Zeron deletes it and asks you to reconnect.
+- **Turn it on.** Open the project's Space-root details (**Instructions** on the
+  Space row) and switch on **Linear**. Without a key, **Connect Linear…** opens
+  Settings → Linear. The first time you paste a Linear URL in a project with
+  Linear off, Zeron offers **Enable** once.
+- **Linear panel.** Click **Linear** in the Outline toolbar, run **Open Linear**
+  from the command palette (no default key; bind one in Settings → Shortcuts),
+  or choose **Open Linear Panel** on a Space row. The panel lists **My issues**
+  and **My projects**. Expand a project to see its open issues. Search filters
+  both lists. Lists load when the panel opens and when you click ↻. Rows that
+  an item in this project already links show **Linked · Reveal**, which
+  selects that item in the Outline. With several Linear projects on, click the
+  project name in the panel header to switch.
+- **Create work item** (**Create** on an issue) adds `ENG-123 · title` under the
+  selected work item, as its last child. With a Space row selected it goes to
+  the top level. With nothing usable selected, the panel asks for the parent.
+  You can also drag an issue onto an Outline item to create it there. The new
+  item is selected when it appears.
+- **Link** on an issue or project links it to the selected work item.
+- **Create nodes for selected** on an expanded project creates one item per
+  checked issue, in order, under the selected item.
+- Retrying a create or link never duplicates it.
+- **Linked items.** Items linked to an issue show a live chip (state, priority,
+  assignee). Click the chip to open the issue. Items linked to a project show a
+  project chip. In Work Item Details, the **Linear** section has ↻ (refresh
+  every linked item in the project from Linear) and **Unlink**.
+- **Synced fields.** An issue item's title and description follow Linear
+  (Zeron syncs about every 15 minutes, and on ↻) until you edit them in Zeron.
+  A field that still follows Linear shows **Synced from Linear**. When you link
+  an issue to an item that already has a description, your description is kept
+  and only the title follows Linear.
+- **Pasting** a Linear issue or project URL into **External references** creates
+  an issue or project link when Linear is on.
+- **Right-click** an issue item for **Open in Linear**, **Refresh from Linear**,
+  and **Unlink Linear Issue**.
+- If the engine on this device has no Linear support, Linear surfaces say
+  **Linear isn't available on this host yet**.
+
 ## Agent tools
 
 Claude Code and Codex Chats that belong to a project get a `zeron-agent` MCP
