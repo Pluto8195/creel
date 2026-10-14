@@ -119,8 +119,9 @@ it.
 
 ## PR review sync
 
-With a destination picked for a project (Space-root details, or **Use as PR
-Review Destination** on an item), the engine on the project's device keeps one
+With a destination picked for a project (the Inbox column's GitHub section
+**Auto-sync review requests into… Choose item ▾**, the Space-root details, or
+**Auto-sync PR Review Requests Here** on an item), the engine on the project's device keeps one
 child item per PR that requests your review, each with a Required Action per
 review round, and resolves them when you review or the PR closes. Wire
 contract: `docs/plans/work-outline/pr-sync-contract.md`; user guide:
@@ -129,9 +130,9 @@ contract: `docs/plans/work-outline/pr-sync-contract.md`; user guide:
 | RPC | Used by |
 | --- | --- |
 | `PrStatus {owner, repo, number, forceRefresh?}` | PR chips (cached ~2 minutes; Details and ↻ force a refresh) |
-| `PrReviewSyncNow {spaceId}` | **↻ Sync now** in the Space-root details |
+| `PrReviewSyncNow {spaceId}` | **Sync now** in the GitHub section's sync bar and the Space-root details |
 | `PrReviewRequested {spaceId}` / `PrMyOpen {spaceId}` | the Inbox column's GitHub section |
-| `WorkOutlineMutate setPrReviewSyncDestination` | the destination picker, **Clear**, the item menu |
+| `WorkOutlineMutate setPrReviewSyncDestination` | the sync bar (**Choose item ▾**, **Change ▾**, **Stop**, **Create "PR reviews" item** after its `createWorkItem`), the Space-root picker and **Stop**, the item menu |
 
 Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
 `notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
