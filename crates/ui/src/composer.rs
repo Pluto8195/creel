@@ -4222,6 +4222,37 @@ fn mention_error_message(err: &RpcError) -> SharedString {
     }
 }
 
+/// The folder the chat composer's `/` list discovers project skills in: the
+/// folder the agent runs (or will run) in, because Claude Code loads
+/// `<cwd>/.claude/skills` (walking up to the cwd's git root, stopping at a
+/// nested repo/submodule) and nothing else.
+/// - A selected chat: its own cwd (a Work Outline chat's validated
+///   execution root, e.g. a submodule), else its Space folder.
+/// - A new-chat draft: the reused worktree when one is picked, else the
+///   selected Space folder. Empty only with no project at all — that list
+///   holds user-scoped skills only.
+fn slash_discovery_cwd(
+    chat: Option<&zeron_proto::Chat>,
+    chat_space: Option<&zeron_proto::Space>,
+    selected_space: Option<&zeron_proto::Space>,
+    reuse_worktree: Option<String>,
+) -> String {
+    let non_empty = |path: &str| (!path.trim().is_empty()).then(|| path.to_owned());
+    match chat {
+        Some(chat) => chat
+            .cwd
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| chat_space.and_then(|space| non_empty(&space.path)))
+            .unwrap_or_default(),
+        None => reuse_worktree
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| selected_space.and_then(|space| non_empty(&space.path)))
+            .unwrap_or_default(),
+    }
+}
+
 /// `ListCommands` params for `(harness, cwd)`, targeted like file search:
 /// the chat/space host device owns the agent binary, and a chat id lets the
 /// engine resolve the chat's own folder safely. Shared by the chat composer
@@ -5814,12 +5845,23 @@ impl Composer {
         }
         self.slash.dismissed = None;
         let harness = self.pickers.read(cx).resolved(cx).harness;
-        let cwd = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|chat| chat.cwd.clone())
-            .unwrap_or_default();
+        let reuse_worktree = match self.pickers.read(cx).checkout_plan() {
+            crate::pickers::CheckoutPlan::ReuseWorktree { path, .. } => Some(path),
+            _ => None,
+        };
+        let cwd = {
+            let state = self.state.read(cx);
+            let chat = state.selected_chat_row();
+            let chat_space = chat
+                .and_then(|chat| chat.space_id.as_deref())
+                .and_then(|id| state.space_row(id));
+            slash_discovery_cwd(
+                chat,
+                chat_space,
+                state.selected_space_row(),
+                reuse_worktree,
+            )
+        };
         let key_changed = self.slash.harness != harness || self.slash.cwd != cwd;
         if token == self.slash.token && !key_changed {
             self.refilter_slash(cx);
@@ -9529,6 +9571,51 @@ mod tests {
         // Same cwd, different harness: also a miss.
         let other_harness = (HarnessId::Codex, "/repo/a".to_string());
         assert!(!slash_cache_entry_is_fresh(&key, now, &other_harness, now));
+    }
+
+    /// The `/` list discovers skills where the agent runs: a chat whose cwd
+    /// is a submodule (a Work Outline chat rooted at `workspace/ui`) lists
+    /// that submodule's skills, not its Space folder's; a new-chat draft
+    /// uses the reused worktree or the Space folder rather than no folder
+    /// (which lists user skills only).
+    #[test]
+    fn slash_discovery_cwd_follows_the_agent_folder() {
+        let space: zeron_proto::Space = serde_json::from_value(serde_json::json!({
+            "id": "s1", "deviceId": "d", "path": "/work/workspace",
+            "createdAt": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let chat = |cwd: Option<&str>| -> zeron_proto::Chat {
+            serde_json::from_value(serde_json::json!({
+                "id": "c1", "deviceId": "d", "archived": false, "spaceId": "s1",
+                "cwd": cwd, "createdAt": "2026-01-01T00:00:00Z"
+            }))
+            .unwrap()
+        };
+        let submodule = chat(Some("/work/workspace/ui"));
+        assert_eq!(
+            slash_discovery_cwd(Some(&submodule), Some(&space), Some(&space), None),
+            "/work/workspace/ui"
+        );
+        let no_cwd = chat(None);
+        assert_eq!(
+            slash_discovery_cwd(Some(&no_cwd), Some(&space), Some(&space), None),
+            "/work/workspace"
+        );
+        assert_eq!(
+            slash_discovery_cwd(None, None, Some(&space), None),
+            "/work/workspace"
+        );
+        assert_eq!(
+            slash_discovery_cwd(
+                None,
+                None,
+                Some(&space),
+                Some("/work/workspace/.worktrees/fix".into())
+            ),
+            "/work/workspace/.worktrees/fix"
+        );
+        assert_eq!(slash_discovery_cwd(None, None, None, None), "");
     }
 
     #[test]
