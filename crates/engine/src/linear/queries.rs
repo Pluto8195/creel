@@ -68,6 +68,64 @@ pub fn project_issues() -> String {
     )
 }
 
+/// Most attachments read per issue.
+pub const MAX_ATTACHMENTS: usize = 50;
+
+/// An issue's attachments (Linear's GitHub integration attaches the PRs
+/// whose branch or title names the issue). Kept apart from [`issue`] so a
+/// wrong guess at this shape never breaks the issue query: these fields
+/// were not verified against the real API, and the parser is lenient.
+pub fn issue_attachments() -> String {
+    format!(
+        "query ZeronLinearIssueAttachments($id: String!) {{ issue(id: $id) {{ identifier \
+         attachments(first: {MAX_ATTACHMENTS}) {{ nodes {{ url title subtitle sourceType \
+         metadata updatedAt }} }} }} }}"
+    )
+}
+
+/// One issue attachment (only what the PR links use).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueAttachment {
+    pub url: String,
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    /// `github`, `slack`, ... (free-form; informational).
+    pub source_type: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// An `issue_attachments` response's list. `None` when the response does
+/// not have the expected shape (no `issue.attachments.nodes`); a missing
+/// issue reads as `Some(empty)` only when `issue` is explicitly null.
+pub fn parse_issue_attachments(data: &Value) -> Option<Vec<IssueAttachment>> {
+    let issue = data.get("issue")?;
+    if issue.is_null() {
+        return Some(Vec::new());
+    }
+    let nodes = issue.pointer("/attachments/nodes")?.as_array()?;
+    Some(
+        nodes
+            .iter()
+            .filter_map(|node| {
+                let url = opt_s(node, "url")?;
+                // `sourceType` was an enum-like string; tolerate an object.
+                let source_type = opt_s(node, "sourceType").or_else(|| {
+                    node.pointer("/sourceType/type")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+                Some(IssueAttachment {
+                    url,
+                    title: opt_s(node, "title"),
+                    subtitle: opt_s(node, "subtitle"),
+                    source_type,
+                    updated_at: opt_s(node, "updatedAt"),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Variables of a list page.
 pub fn page_variables(extra: Value, after: Option<&str>) -> Value {
     let mut variables = match extra {
@@ -160,16 +218,13 @@ pub fn issue_summary(node: &Value) -> Option<LinearIssueSummary> {
             key: s(&team, "key"),
             name: s(&team, "name"),
         },
-        project: node
-            .get("project")
-            .filter(|p| p.is_object())
-            .and_then(|p| {
-                Some(LinearProjectRef {
-                    id: opt_s(p, "id")?,
-                    name: s(p, "name"),
-                    url: s(p, "url"),
-                })
-            }),
+        project: node.get("project").filter(|p| p.is_object()).and_then(|p| {
+            Some(LinearProjectRef {
+                id: opt_s(p, "id")?,
+                name: s(p, "name"),
+                url: s(p, "url"),
+            })
+        }),
         labels: node
             .pointer("/labels/nodes")
             .and_then(Value::as_array)
@@ -211,7 +266,14 @@ mod tests {
 
     #[test]
     fn documents_are_read_only_named_queries() {
-        for doc in [viewer(), issue(), my_issues(), my_projects(), project_issues()] {
+        for doc in [
+            viewer(),
+            issue(),
+            issue_attachments(),
+            my_issues(),
+            my_projects(),
+            project_issues(),
+        ] {
             assert!(doc.starts_with("query ZeronLinear"), "{doc}");
             assert!(!doc.contains("mutation"), "{doc}");
             assert_eq!(doc.matches('{').count(), doc.matches('}').count(), "{doc}");
@@ -238,6 +300,30 @@ mod tests {
         assert_eq!(issue.labels.len(), 1);
         assert!(issue.assignee.is_none() && issue.project.is_none() && issue.branch_name.is_none());
         assert!(issue_summary(&json!({"title": "no identifier"})).is_none());
+    }
+
+    #[test]
+    fn attachments_parse_leniently() {
+        let data = json!({ "issue": { "identifier": "ENG-1", "attachments": { "nodes": [
+            { "url": "https://github.com/acme/ui/pull/9", "title": "Fix", "sourceType": "github",
+              "subtitle": "Open", "metadata": { "state": "open" }, "updatedAt": "2026-10-13" },
+            { "url": "https://acme.slack.com/archives/C1/p1", "sourceType": { "type": "slack" } },
+            { "title": "no url" },
+        ]}}});
+        let attachments = parse_issue_attachments(&data).unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[0].title.as_deref(), Some("Fix"));
+        assert_eq!(attachments[0].source_type.as_deref(), Some("github"));
+        assert_eq!(attachments[1].source_type.as_deref(), Some("slack"));
+        assert_eq!(
+            parse_issue_attachments(&json!({ "issue": null })),
+            Some(vec![])
+        );
+        assert_eq!(
+            parse_issue_attachments(&json!({ "issue": { "identifier": "ENG-1" } })),
+            None
+        );
+        assert_eq!(parse_issue_attachments(&json!({})), None);
     }
 
     #[test]

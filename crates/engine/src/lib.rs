@@ -32,12 +32,12 @@ mod http_error;
 pub mod instance_lock;
 pub mod instruction_delivery;
 pub mod instruction_registry;
+pub mod linear;
 pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
 pub mod pr_review_launch;
 pub mod pr_review_sync;
-pub mod linear;
 pub mod pr_ticket_cache;
 pub mod profile;
 pub mod project_actions;
@@ -58,6 +58,7 @@ pub mod typesafe;
 pub mod uploads;
 pub mod work_outline;
 pub mod work_outline_launch;
+pub mod work_outline_pr_links;
 pub mod workspace_files;
 pub mod workspace_host;
 
@@ -465,16 +466,24 @@ impl EngineCore {
                 }
             });
         }
-        let linear = linear::LinearService::default();
-        linear::sync::spawn_sync_loop(linear.clone(), workspace.clone());
-        let pr_ticket_cache = pr_ticket_cache::PrTicketCache::new();
-        pr_ticket_cache.set_linear(linear.clone(), workspace.clone());
-        pr_ticket_cache.spawn_sweep_loop();
         let pr_review_sync = pr_review_sync::PrReviewSyncService::new(
             workspace.clone(),
             repos.clone(),
             pr_review_sync::PrReviewSyncConfig::default(),
         );
+        // Work item PR links re-read stored transcripts once (backfill).
+        pr_review_sync.set_transcript_reader(work_outline_pr_links::store_transcript_reader(
+            store_for_import.clone(),
+        ));
+        let linear = linear::LinearService::default();
+        linear::sync::spawn_sync_loop(
+            linear.clone(),
+            workspace.clone(),
+            Some(pr_review_sync.clone()),
+        );
+        let pr_ticket_cache = pr_ticket_cache::PrTicketCache::new();
+        pr_ticket_cache.set_linear(linear.clone(), workspace.clone());
+        pr_ticket_cache.spawn_sweep_loop();
         pr_review_sync.spawn_sync_loop();
         // Same reasoning as the four repairs above (ticket 0xx design item
         // 6): backfill durable PR/ticket links for chats whose transcript
