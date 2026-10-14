@@ -91,6 +91,10 @@ struct MockState {
     my_issue_pages: Vec<Vec<Value>>,
     projects: Vec<Value>,
     project_issues: HashMap<String, Vec<Value>>,
+    /// Attachment nodes per issue identifier.
+    attachments: HashMap<String, Vec<Value>>,
+    /// Answer attachment queries with a GraphQL validation error.
+    attachments_error: bool,
     delay: Duration,
 }
 
@@ -131,6 +135,14 @@ impl MockLinear {
     fn set_issue(&self, node: Value) {
         let id = node["identifier"].as_str().unwrap().to_owned();
         self.state.lock().unwrap().issues.insert(id, node);
+    }
+
+    fn set_attachments(&self, identifier: &str, nodes: Vec<Value>) {
+        self.state
+            .lock()
+            .unwrap()
+            .attachments
+            .insert(identifier.to_owned(), nodes);
     }
 
     fn script(&self, reply: Reply) {
@@ -197,6 +209,19 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
             let nodes = state.my_issue_pages.get(index).cloned().unwrap_or_default();
             let next = (index + 1 < state.my_issue_pages.len()).then(|| format!("c{}", index + 1));
             Reply::ok(json!({ "viewer": { "assignedIssues": page(nodes, next.as_deref()) } }))
+        }
+        "ZeronLinearIssueAttachments" => {
+            if state.attachments_error {
+                return Reply {
+                    status: 400,
+                    headers: Vec::new(),
+                    body: json!({ "errors": [{ "message": "Cannot query field \"sourceType\" on type \"Attachment\".",
+                        "extensions": { "code": "GRAPHQL_VALIDATION_FAILED" } }] }),
+                };
+            }
+            let id = variables["id"].as_str().unwrap_or_default();
+            let nodes = state.attachments.get(id).cloned().unwrap_or_default();
+            Reply::ok(json!({ "issue": { "identifier": id, "attachments": { "nodes": nodes } } }))
         }
         "ZeronLinearMyProjects" => {
             Reply::ok(json!({ "projects": page(state.projects.clone(), None) }))
@@ -876,4 +901,177 @@ async fn the_key_never_appears_in_replies_agent_payloads_or_logs() {
         assert!(!log_text.contains(secret), "key in the logs");
     }
     assert!(log_text.contains("linear"), "logs were captured");
+}
+
+// ── PRs attached to linked issues ───────────────────────────────────────────
+
+const GIT_SPACE: &str = "space-git";
+
+/// A Linear-enabled Space whose folder is a git repository with origin
+/// `acme/ui`, and an item there linked to `identifier`.
+async fn git_space_item(rig: &Rig, identifier: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["remote", "add", "origin", "git@github.com:acme/ui.git"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&path)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    rig.call(
+        methods::MUTATE,
+        json!({ "op": "createSpace", "spaceId": GIT_SPACE, "deviceId": "dev-a",
+            "path": path.to_string_lossy() }),
+    )
+    .await
+    .unwrap();
+    rig.enable(GIT_SPACE, true).await;
+    let node = rig.mock.state.lock().unwrap().issues[identifier].clone();
+    let reply = rig
+        .mutate(json!({
+            "op": "createWorkItemFromLinear", "spaceId": GIT_SPACE,
+            "placement": { "type": "last" }, "operationId": format!("from-{identifier}"),
+            "issue": {
+                "id": node["id"], "identifier": identifier, "title": node["title"],
+                "description": node["description"], "url": node["url"],
+            },
+        }))
+        .await
+        .unwrap();
+    (dir, reply["workItemId"].as_str().unwrap().to_owned())
+}
+
+/// `(externalId, url, cachedTitle, created by system)` of the item's PRs.
+fn item_prs(rig: &Rig, item: &str) -> Vec<(String, String, Option<String>, bool)> {
+    let mut prs: Vec<_> = rig
+        .snapshot(GIT_SPACE)
+        .external_references
+        .into_iter()
+        .filter(|r| r.work_item_id == item && r.provider == "github")
+        .map(|r| {
+            let system = r
+                .created_by
+                .is_some_and(|a| a.kind == zeron_proto::WorkOutlineActorKind::System);
+            (r.external_id, r.url, r.cached_title, system)
+        })
+        .collect();
+    prs.sort();
+    prs
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn github_pr_attachments_become_references_on_the_linked_item() {
+    let rig = rig().await;
+    rig.mock.set_issue(issue_node("ENG-2690", "Receive flow", None, "started"));
+    rig.mock.set_attachments(
+        "ENG-2690",
+        vec![
+            json!({ "url": "https://github.com/acme/ui/pull/9", "title": "ENG-2690 Receive UI",
+                "sourceType": "github", "subtitle": "Open", "metadata": { "state": "open" },
+                "updatedAt": "2026-10-13T10:00:00.000Z" }),
+            json!({ "url": "https://acme.slack.com/archives/C1/p1", "title": "Thread",
+                "sourceType": "slack" }),
+            json!({ "url": "https://github.com/acme/ui/issues/3", "sourceType": "github" }),
+            json!({ "url": "https://github.com/other/thing/pull/1", "sourceType": "github" }),
+        ],
+    );
+    let (_dir, item) = git_space_item(&rig, "ENG-2690").await;
+    rig.call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await
+        .unwrap();
+    assert_eq!(
+        item_prs(&rig, &item),
+        vec![(
+            "acme/ui#9".to_owned(),
+            "https://github.com/acme/ui/pull/9".to_owned(),
+            Some("ENG-2690 Receive UI".to_owned()),
+            true
+        )],
+        "only the GitHub PR of a repository in the Space"
+    );
+    let snapshot = rig.snapshot(GIT_SPACE);
+    assert_eq!(snapshot.item(&item).unwrap().status, WorkItemStatus::Pending);
+    assert!(snapshot.linear_issue_reference(&item).is_some());
+
+    // Idempotent; a second PR attached later is added next to the first.
+    let reply = rig
+        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await
+        .unwrap();
+    assert_eq!(reply, json!({ "updated": 0 }));
+    rig.mock.set_attachments(
+        "ENG-2690",
+        vec![
+            json!({ "url": "https://github.com/acme/ui/pull/9", "sourceType": "github" }),
+            json!({ "url": "https://github.com/acme/ui/pull/10", "sourceType": "github" }),
+        ],
+    );
+    let reply = rig
+        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await
+        .unwrap();
+    assert_eq!(reply, json!({ "updated": 1 }));
+    assert_eq!(item_prs(&rig, &item).len(), 2);
+
+    // The user removes one: it stays removed.
+    let reference = rig
+        .snapshot(GIT_SPACE)
+        .external_references
+        .iter()
+        .find(|r| r.external_id == "acme/ui#10")
+        .unwrap()
+        .id
+        .clone();
+    rig.mutate(json!({ "op": "removeWorkItemExternalReference", "referenceId": reference,
+        "operationId": "rm-10" }))
+        .await
+        .unwrap();
+    let reply = rig
+        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await
+        .unwrap();
+    assert_eq!(reply, json!({ "updated": 0 }));
+    assert_eq!(item_prs(&rig, &item).len(), 1);
+
+    // Linear off: nothing is asked for and nothing is added.
+    rig.enable(GIT_SPACE, false).await;
+    rig.mock.set_attachments(
+        "ENG-2690",
+        vec![json!({ "url": "https://github.com/acme/ui/pull/11", "sourceType": "github" })],
+    );
+    let asked = rig.mock.count("ZeronLinearIssueAttachments");
+    let error = rig
+        .linear_err(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await;
+    assert_eq!(error.code, LinearErrorCode::DisabledForSpace);
+    assert_eq!(rig.mock.count("ZeronLinearIssueAttachments"), asked);
+    assert_eq!(item_prs(&rig, &item).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_attachments_are_logged_and_the_title_sync_still_runs() {
+    let rig = rig().await;
+    rig.mock.set_issue(issue_node("ENG-5", "Five", None, "started"));
+    let (_dir, item) = git_space_item(&rig, "ENG-5").await;
+    rig.mock.state.lock().unwrap().attachments_error = true;
+    rig.mock.set_issue(issue_node("ENG-5", "Five v2", None, "started"));
+    let reply = rig
+        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .await
+        .unwrap();
+    assert_eq!(reply, json!({ "updated": 1 }), "the title still follows Linear");
+    assert_eq!(rig.snapshot(GIT_SPACE).item(&item).unwrap().title, "ENG-5 · Five v2");
+    assert!(item_prs(&rig, &item).is_empty());
+    let text = String::from_utf8_lossy(&logs().0.lock().unwrap()).into_owned();
+    assert!(
+        text.contains("issue attachments could not be read"),
+        "logged for a fix from a real run"
+    );
 }
