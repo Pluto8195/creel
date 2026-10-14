@@ -1743,4 +1743,271 @@ mod tests {
             "the wheel scrolls inside: {after} vs {before}"
         );
     }
+
+    /// Claude Code (Fable first, as the live catalog leads) and Codex.
+    fn picker_catalog() -> (
+        Vec<zeron_engine::registry::HarnessDescriptor>,
+        Vec<(zeron_proto::HarnessId, Vec<zeron_proto::Model>)>,
+    ) {
+        let harnesses = serde_json::from_value(serde_json::json!([
+            {"id": "claude-code", "name": "Claude Code", "supportsSteering": true,
+             "steeringMode": "step-boundary", "reasoningLevels": []},
+            {"id": "codex", "name": "Codex", "supportsSteering": true,
+             "steeringMode": "step-boundary", "reasoningLevels": []},
+        ]))
+        .unwrap();
+        let claude = serde_json::from_value(serde_json::json!([
+            {"id": "fable", "label": "Fable", "reasoningLevels": ["low", "medium", "high"]},
+            {"id": "opus", "label": "Opus", "reasoningLevels": ["low", "medium", "high"]},
+            {"id": "sonnet", "label": "Sonnet", "reasoningLevels": ["low", "medium", "high"]},
+        ]))
+        .unwrap();
+        let codex = serde_json::from_value(serde_json::json!([
+            {"id": "gpt-5.4", "label": "GPT-5.4", "reasoningLevels": ["low", "medium", "high"]},
+        ]))
+        .unwrap();
+        (
+            harnesses,
+            vec![
+                (zeron_proto::HarnessId::ClaudeCode, claude),
+                (zeron_proto::HarnessId::Codex, codex),
+            ],
+        )
+    }
+
+    /// The composer remembers Claude Code · Opus · Medium for new chats
+    /// while a Codex chat is selected; its catalog is loaded for device `d`.
+    fn seed_composer_picker(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) {
+        // A selected chat renders the chat route (its history columns).
+        cx.update(|_, cx| {
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            )
+        });
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.selected_space = Some("s1".into());
+                state.selected_chat = Some(CHAT_API.into());
+                state.apply_chat_config(
+                    CHAT_API,
+                    zeron_proto::ChatConfig {
+                        harness: zeron_proto::HarnessId::Codex,
+                        model: Some("gpt-5.4".into()),
+                        reasoning: Some(zeron_proto::ReasoningLevel::Low),
+                        model_options: Default::default(),
+                        sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                        auto_approve: true,
+                    },
+                );
+            });
+            let pickers = shell.composer.read(cx).pickers().clone();
+            pickers.update(cx, |pickers, cx| {
+                let (harnesses, models) = picker_catalog();
+                pickers.seed_catalog_for_tests(harnesses, models, cx);
+                let defaults = pickers.defaults_mut_for_tests();
+                defaults.remember_model(
+                    zeron_proto::HarnessId::ClaudeCode,
+                    "opus".into(),
+                    "Opus".into(),
+                );
+                defaults.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
+            });
+        });
+    }
+
+    fn dialog_pickers(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Entity<Pickers> {
+        shell.update(cx, |shell, _| shell.start_chat_pickers().expect("dialog"))
+    }
+
+    fn focused(cx: &mut gpui::VisualTestContext, handle: &FocusHandle) -> bool {
+        let handle = handle.clone();
+        cx.update(|window, _| handle.is_focused(window))
+    }
+
+    /// The dialog hosts the composer's own model and approval chips, starts
+    /// from exactly what a brand-new regular chat would use (the remembered
+    /// Opus · Medium, not the harness's first model nor the selected chat's
+    /// Codex config), and Start sends the picked model/effort/approval as the
+    /// composer's `createChat` config — which the composer then remembers.
+    #[gpui::test]
+    fn start_chat_uses_the_composer_picker_and_sends_its_config(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-agent").is_some());
+        assert!(
+            cx.debug_bounds("picker-model").is_some(),
+            "the composer's model chip"
+        );
+        assert!(
+            cx.debug_bounds("picker-approval-mode").is_some(),
+            "the approval chip"
+        );
+        assert!(
+            cx.debug_bounds("start-chat-agent-0").is_none(),
+            "no harness list"
+        );
+
+        let pickers = dialog_pickers(&shell, cx);
+        let initial = pickers.read_with(cx, |pickers, cx| pickers.resolved(cx));
+        assert_eq!(initial.harness, Some(zeron_proto::HarnessId::ClaudeCode));
+        assert_eq!(
+            initial.model.as_deref(),
+            Some("opus"),
+            "not forced to Fable"
+        );
+        assert_eq!(initial.reasoning, Some(zeron_proto::ReasoningLevel::Medium));
+        assert!(!initial.auto_approve, "new chats start at Ask");
+        // Identical to the composer's own new-chat canvas resolution.
+        let composer_pickers =
+            shell.update(cx, |shell, cx| shell.composer.read(cx).pickers().clone());
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, cx| {
+                state.selected_chat = None;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let new_chat = composer_pickers.read_with(cx, |pickers, cx| pickers.resolved(cx));
+        assert_eq!(initial, new_chat);
+
+        // Keyboard: type, Tab to the model chip, Enter opens the composer's
+        // picker; a search + Enter picks a model without starting the chat.
+        let prompt = shell.read_with(cx, |shell, cx| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            dialog.input_focus(cx)
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&prompt, cx);
+        });
+        draw(cx);
+        cx.simulate_input("Ship it");
+        let (model_chip, approval_chip) = pickers.read_with(cx, |pickers, _| {
+            (
+                pickers.model_chip_focus().clone(),
+                pickers.approval_chip_focus().clone(),
+            )
+        });
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(focused(cx, &model_chip), "Tab reaches the model chip");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(focused(cx, &approval_chip));
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(pickers.read_with(cx, |pickers, cx| pickers.resolved(cx).auto_approve));
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(focused(cx, &model_chip));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        cx.simulate_input("sonnet");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            pickers
+                .read_with(cx, |pickers, cx| pickers.resolved(cx).model)
+                .as_deref(),
+            Some("sonnet")
+        );
+        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_reasoning_for_tests(zeron_proto::ReasoningLevel::High, cx)
+        });
+        // Esc closes the picker only and hands focus back to the prompt.
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        assert!(cx.debug_bounds("start-chat").is_some(), "dialog stays open");
+        assert!(focused(cx, &prompt));
+
+        // Enter in the prompt starts with the picked config.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0]["initialPrompt"]["text"], "Ship it");
+        assert_eq!(
+            creates[0]["config"],
+            serde_json::to_value(zeron_proto::ChatConfig {
+                harness: zeron_proto::HarnessId::ClaudeCode,
+                model: Some("sonnet".into()),
+                reasoning: Some(zeron_proto::ReasoningLevel::High),
+                model_options: Default::default(),
+                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                auto_approve: true,
+            })
+            .unwrap()
+        );
+        // The started chat's picks are the composer's last-used selection.
+        composer_pickers.read_with(cx, |pickers, _| {
+            let defaults = pickers.new_chat_defaults();
+            assert_eq!(
+                defaults
+                    .model_for(zeron_proto::HarnessId::ClaudeCode)
+                    .map(|m| m.id.as_str()),
+                Some("sonnet")
+            );
+            assert_eq!(defaults.reasoning, Some(zeron_proto::ReasoningLevel::High));
+        });
+        shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    /// Esc closes an open picker first, then the dialog.
+    #[gpui::test]
+    fn escape_closes_the_picker_before_the_dialog(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        cx.update(|window, _| window.activate_window());
+        click(cx, "picker-model");
+        let pickers = dialog_pickers(&shell, cx);
+        assert!(pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        assert!(cx.debug_bounds("start-chat").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat").is_none());
+        shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
 }

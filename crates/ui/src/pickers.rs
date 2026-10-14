@@ -8101,6 +8101,37 @@ mod tests {
     }
 }
 
+/// Hooks for tests outside this module (the Start Chat dialog drives a
+/// launcher instance through the Shell).
+#[cfg(test)]
+impl Pickers {
+    pub(crate) fn seed_catalog_for_tests(
+        &mut self,
+        harnesses: Vec<HarnessDescriptor>,
+        models: Vec<(HarnessId, Vec<Model>)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.harnesses = Loadable::Ready(harnesses);
+        for (harness, list) in models {
+            self.models.insert(harness, Loadable::Ready(list));
+        }
+        self.catalog_rev += 1;
+        cx.notify();
+    }
+
+    pub(crate) fn defaults_mut_for_tests(&mut self) -> &mut ComposerDefaults {
+        &mut self.defaults
+    }
+
+    pub(crate) fn pick_reasoning_for_tests(
+        &mut self,
+        level: ReasoningLevel,
+        cx: &mut Context<Self>,
+    ) {
+        self.pick_reasoning(level, cx);
+    }
+}
+
 /// Catalog for the isolated native screenshot fixture; never used by the app.
 #[cfg(feature = "project-palette-fixture")]
 impl Pickers {

@@ -303,6 +303,15 @@ instructions.
   move, Enter or Tab to insert, and Escape to close the list. Instructions
   receive plain text such as `` `code-review` skill ``. Start Chat inserts
   `/code-review`, the same form the composer uses.
+- The Start Chat dialog picks the agent with the chat composer's own model
+  picker: harness, model, reasoning effort, and model options, plus the Ask /
+  Auto approval chip. It starts with what a new chat in the composer would use
+  (your last-used picks), not the selected chat's settings. The new Chat runs
+  with that selection, and the selection becomes your last-used pick for new
+  chats. Tab moves from the prompt to the model chip and then the approval chip.
+  Enter or Space opens the picker or toggles approval. Escape closes an open
+  picker first, then the dialog. Enter in the prompt starts the Chat.
+- Review PR starts its Chat with the same new-chat selection.
 - Multi-line editors (instructions, description, proposal review, Create
   Instruction from Chat, and the Start Chat prompt) grow with their text from
   three lines up to 40% of the window height, then scroll inside the editor
