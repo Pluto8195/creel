@@ -826,3 +826,94 @@ fn unknown_method_reads_as_not_available(cx: &mut gpui::TestAppContext) {
     press(vcx, "space-pr-sync-clear".into());
     assert!(vcx.debug_bounds("space-pr-sync-error").is_some());
 }
+
+/// A ticket item (Linear issue) that links two PRs (from Linear's GitHub
+/// attachments or its Chats, system-created): one chip per PR in the
+/// Outline and in Details, and ⌘↩ still opens the generic Start Chat (it is
+/// not a PR review item: no sync record, not under the destination, not
+/// titled `<repo>#<number>`).
+#[gpui::test]
+fn a_ticket_item_with_linked_prs_shows_each_and_starts_a_chat(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut snapshot = sync_snapshot(Some(UI));
+    let system = zeron_proto::WorkOutlineActor {
+        kind: zeron_proto::WorkOutlineActorKind::System,
+        device_id: "d".into(),
+        chat_id: None,
+        message_id: None,
+    };
+    let mut add = |provider: &str, kind: &str, external_id: &str, url: &str, at: i64| {
+        let id = zeron_proto::external_reference_id(API, provider, kind, external_id);
+        snapshot
+            .external_references
+            .push(zeron_proto::WorkItemExternalReferenceView {
+                id: id.clone(),
+                space_id: "s1".into(),
+                work_item_id: API.into(),
+                provider: provider.into(),
+                reference_type: kind.into(),
+                external_id: external_id.into(),
+                url: url.into(),
+                cached_title: None,
+                created_by: Some(system.clone()),
+                created_at: at,
+            });
+        let item = snapshot.items.iter_mut().find(|i| i.id == API).unwrap();
+        item.external_reference_ids.push(id);
+    };
+    add(
+        "linear",
+        "issue",
+        "ENG-2690",
+        "https://linear.app/acme/issue/ENG-2690",
+        1,
+    );
+    add(
+        "github",
+        "pullRequest",
+        "acme/flagship#12",
+        "https://github.com/acme/flagship/pull/12",
+        4_000_000_000_000,
+    );
+    snapshot
+        .items
+        .iter_mut()
+        .find(|i| i.id == API)
+        .unwrap()
+        .title = "ENG-2690 \u{00b7} API".into();
+    let (overview, calls, vcx) = pr_overview(cx, dir.path(), snapshot, default_reply);
+    let key = row_key::item("s1", API);
+    assert!(row_bounds(vcx, format!("outline-pr-{key}")).is_some());
+    assert!(
+        row_bounds(vcx, format!("outline-pr-{key}-1")).is_some(),
+        "the second PR's chip"
+    );
+    let asked: Vec<_> = calls_to(&calls, "PrStatus")
+        .iter()
+        .map(|p| format!("{}#{}", p["repo"].as_str().unwrap(), p["number"]))
+        .collect();
+    assert!(asked.contains(&"launch#42".to_string()) && asked.contains(&"flagship#12".to_string()));
+
+    overview.update(vcx, |o, cx| {
+        o.outline.update(cx, |outline, cx| outline.select(&key, cx))
+    });
+    let handle = overview.read_with(vcx, |o, cx| {
+        gpui::Focusable::focus_handle(o.outline.read(cx), cx)
+    });
+    vcx.update(|window, cx| window.focus(&handle, cx));
+    draw(vcx);
+    vcx.dispatch_action(crate::work_outline::outline_view::StartChatSelected);
+    vcx.run_until_parked();
+    overview.update(vcx, |o, _| {
+        assert!(o.captured_pr_review.take().is_none(), "not a review");
+        assert_eq!(
+            o.captured_start_chat.take(),
+            Some(("s1".to_string(), API.to_string()))
+        );
+    });
+
+    open_details(&overview, vcx, API);
+    draw(vcx);
+    assert!(vcx.debug_bounds("work-item-pr-chip").is_some());
+    assert!(vcx.debug_bounds("work-item-pr-chip-1").is_some());
+}

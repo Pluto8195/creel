@@ -58,18 +58,23 @@ impl OutlineView {
         let snapshot = self.snapshot(&item.space_id)?;
         let destination = (snapshot.pr_review_sync_destination() == Some(item.item_id.as_str()))
             .then(|| destination_marker(format!("outline-pr-destination-{key}"), theme));
-        let chip = crate::github::item_pull_request(snapshot, &item.item_id).map(|pr| {
+        // One chip per linked PR (the first keeps the plain id).
+        let mut chips = None;
+        for (index, pr) in crate::github::item_pull_requests(snapshot, &item.item_id)
+            .into_iter()
+            .enumerate()
+        {
             store::request_status(&self.state, &pr, false, cx);
             let entry = self.state.read(cx).github.status(&pr).cloned();
-            crate::github::chip::pr_chip(
-                format!("outline-pr-{key}"),
-                &pr,
-                entry.as_ref(),
-                self.shell.clone(),
-                theme,
-            )
-        });
-        join_chips(chip, destination)
+            let id = match index {
+                0 => format!("outline-pr-{key}"),
+                n => format!("outline-pr-{key}-{n}"),
+            };
+            let chip =
+                crate::github::chip::pr_chip(id, &pr, entry.as_ref(), self.shell.clone(), theme);
+            chips = join_chips(chips, Some(chip));
+        }
+        join_chips(chips, destination)
     }
 
     /// Whether dropping `drag` on item `item_id` of `space_id` creates a

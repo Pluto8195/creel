@@ -379,6 +379,23 @@ impl WorkItemDetails {
             Some(self.shell.clone()),
             theme,
         );
+        // The item's other PRs (e.g. a ticket's UI and Flagship PRs).
+        let others: Vec<AnyElement> = crate::github::item_pull_requests(snapshot, &item.id)
+            .into_iter()
+            .skip(1)
+            .enumerate()
+            .map(|(index, other)| {
+                store::request_status(&self.state, &other, fresh_open, cx);
+                let entry = self.state.read(cx).github.status(&other).cloned();
+                crate::github::chip::pr_chip(
+                    format!("work-item-pr-chip-{}", index + 1),
+                    &other,
+                    entry.as_ref(),
+                    Some(self.shell.clone()),
+                    theme,
+                )
+            })
+            .collect();
         let loading = matches!(entry, Some(store::PrEntry::Loading));
         let synced = item
             .external_sync_state
@@ -454,6 +471,17 @@ impl WorkItemDetails {
                         .child(SharedString::from(title)),
                 ),
             )
+            .when(!others.is_empty(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "work-item-pr-others".into())
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(6.0))
+                        .children(others),
+                )
+            })
             .child(
                 div()
                     .flex()
