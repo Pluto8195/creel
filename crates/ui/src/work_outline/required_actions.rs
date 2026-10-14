@@ -651,6 +651,7 @@ pub(crate) mod fixture {
             space_id: space_id.into(),
             work_item_id: item.into(),
             chat_id: chat.into(),
+            origin_kind: Default::default(),
             message_id: None,
             tool_call_id: None,
             text: text.into(),
