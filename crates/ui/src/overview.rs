@@ -9842,6 +9842,15 @@ impl Overview {
             DetailsEvent::OpenItem { space_id, item_id } => {
                 this.open_work_item_details(space_id.clone(), item_id.clone(), cx);
             }
+            DetailsEvent::ReassociateChat {
+                space_id,
+                chat_id,
+                work_item_id,
+            } => {
+                this.outline.update(cx, |outline, cx| {
+                    outline.reassociate_chat(space_id, chat_id, work_item_id.clone(), cx)
+                });
+            }
             DetailsEvent::StartChat { space_id, item_id } => {
                 if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
                 {
@@ -9961,7 +9970,7 @@ impl Overview {
             | WorkOutlineCommand::MoveWorkItemDown
             | WorkOutlineCommand::IndentWorkItem
             | WorkOutlineCommand::OutdentWorkItem => match command.restructure_op() {
-                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selected(op, cx)),
+                Some(op) => outline.update(cx, |outline, cx| outline.restructure_selection(op, cx)),
                 None => Ok(()),
             },
         };
@@ -14188,6 +14197,74 @@ mod logic_tests {
             assert_eq!(calls.lock().unwrap().len(), outline_calls);
             outline.update_in(vcx, |outline, window, cx| outline.close_picker(window, cx));
         }
+    }
+
+    /// Associating or disassociating a Chat from Work Item Details applies at
+    /// once like an Outline move: an Undo toast (no modal) when the Chat's
+    /// effective instructions change, nothing when they do not.
+    #[gpui::test]
+    fn details_chat_association_toasts_drift_instead_of_confirming(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, calls, vcx) = instruction_overview(
+            cx,
+            dir.path(),
+            instruction_fixture::snapshot("s1"),
+            reply_ok,
+        );
+        let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+        let toast = |vcx: &mut gpui::VisualTestContext| {
+            outline.read_with(vcx, |outline, _| outline.move_toast_text())
+        };
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = vcx.debug_bounds(selector).expect(selector).center();
+            vcx.simulate_click(at, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            draw(vcx);
+        };
+
+        // Housekeeping gains the Space-root instruction for the loose chat.
+        let details = open_details(&overview, vcx, HOUSEKEEPING);
+        click(vcx, "work-item-associate-toggle");
+        click(vcx, "work-item-associate-0");
+        assert!(details.read_with(vcx, |d, _| d.captured_drift.is_none()));
+        assert_eq!(ops(&calls), ["assignChatToWorkItem"]);
+        let text = toast(vcx).expect("toast");
+        assert!(
+            text.ends_with("instructions changed for 1 chat (it keeps its current instructions)"),
+            "{text}"
+        );
+        // Undo sends the inverse (the chat was unassociated).
+        click(vcx, "outline-move-toast-undo");
+        assert_eq!(ops(&calls), ["assignChatToWorkItem", "removeChatFromWorkItem"]);
+        assert_eq!(toast(vcx), None);
+
+        // Disassociating chat-ui from Launch loses its instructions: toast
+        // with Undo that re-assigns it.
+        let details = open_details(&overview, vcx, UI);
+        click(vcx, "work-item-chat-remove-0");
+        assert!(details.read_with(vcx, |d, _| d.captured_drift.is_none()));
+        assert_eq!(ops(&calls).last().map(String::as_str), Some("removeChatFromWorkItem"));
+        assert!(toast(vcx).is_some());
+        click(vcx, "outline-move-toast-undo");
+        let last = calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last["op"], "assignChatToWorkItem");
+        assert_eq!(last["workItemId"], UI);
+
+        // Without instructions nothing changes for the chat: no toast.
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(
+                fixture_loads(Some(crate::work_outline::store::fixture_snapshot("s1"))),
+                cx,
+            )
+        });
+        outline.update(vcx, |outline, cx| outline.dismiss_move_toast(cx));
+        let before = calls.lock().unwrap().len();
+        let details = open_details(&overview, vcx, HOUSEKEEPING);
+        click(vcx, "work-item-associate-toggle");
+        click(vcx, "work-item-associate-0");
+        assert!(details.read_with(vcx, |d, _| d.captured_drift.is_none()));
+        assert_eq!(calls.lock().unwrap().len(), before + 1);
+        assert_eq!(toast(vcx), None);
     }
 
     #[gpui::test]

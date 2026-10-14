@@ -73,6 +73,14 @@ pub(crate) enum DetailsEvent {
         space_id: String,
         item_id: String,
     },
+    /// Associate (`Some`) or disassociate (`None`) a Chat. The Outline sends
+    /// it like its own Chat moves: applied at once, with its Undo toast when
+    /// the Chat's effective instructions change.
+    ReassociateChat {
+        space_id: String,
+        chat_id: String,
+        work_item_id: Option<String>,
+    },
 }
 
 /// A parsed external-reference URL.
@@ -684,38 +692,21 @@ impl WorkItemDetails {
     }
 
     pub(crate) fn disassociate(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let task =
-            self.state
-                .read(cx)
-                .work_outline_actions()
-                .remove_chat(RemoveChatFromWorkItemParams {
-                    chat_id: chat_id.clone(),
-                    operation_id: new_operation_id(),
-                });
-        self.run(format!("chat:{chat_id}"), task, cx, |_| {});
+        cx.emit(DetailsEvent::ReassociateChat {
+            space_id: self.space_id.clone(),
+            chat_id,
+            work_item_id: None,
+        });
     }
 
     fn associate(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let change = super::instructions::OutlineChange::AssignChat {
-            chat_id: chat_id.clone(),
-            work_item_id: self.item_id.clone(),
-        };
-        self.with_drift_confirm(change, cx, move |this, cx| this.send_associate(chat_id, cx));
-    }
-
-    fn send_associate(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let task =
-            self.state
-                .read(cx)
-                .work_outline_actions()
-                .assign_chat(AssignChatToWorkItemParams {
-                    chat_id: chat_id.clone(),
-                    work_item_id: self.item_id.clone(),
-                    operation_id: new_operation_id(),
-                });
-        self.run(format!("chat:{chat_id}"), task, cx, |this| {
-            this.associate_open = false
+        self.associate_open = false;
+        cx.emit(DetailsEvent::ReassociateChat {
+            space_id: self.space_id.clone(),
+            chat_id,
+            work_item_id: Some(self.item_id.clone()),
         });
+        cx.notify();
     }
 
     fn add_reference(&mut self, cx: &mut Context<Self>) {
@@ -1341,6 +1332,7 @@ impl Render for WorkItemDetails {
                 )
                 .child(
                     Self::small_button(("work-item-chat-remove", ix), "Disassociate", &theme)
+                        .debug_selector(move || format!("work-item-chat-remove-{ix}"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.disassociate(remove_id.clone(), cx)
                         })),
@@ -1381,6 +1373,7 @@ impl Render for WorkItemDetails {
                 .children(candidates.into_iter().enumerate().map(|(ix, (id, title))| {
                     div()
                         .id(("work-item-associate", ix))
+                        .debug_selector(move || format!("work-item-associate-{ix}"))
                         .h(px(22.0))
                         .flex()
                         .items_center()
@@ -1416,6 +1409,7 @@ impl Render for WorkItemDetails {
                     )
                     .child(
                         Self::small_button("work-item-associate-toggle", "Associate…", &theme)
+                            .debug_selector(|| "work-item-associate-toggle".into())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.associate_open = !this.associate_open;
                                 cx.notify();

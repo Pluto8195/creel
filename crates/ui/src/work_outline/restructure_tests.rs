@@ -432,9 +432,9 @@ fn palette_commands_restructure_the_selected_item(cx: &mut gpui::TestAppContext)
         refresh(&overview, vcx, fixture("s1"));
     }
 
-    // No selection: a notice, no request.
+    // A non-item row selected: a notice, no request.
     outline.update(vcx, |outline, cx| {
-        outline.select(&row_key::chat(CHAT_UI), cx)
+        outline.select(&row_key::unassociated(Some("s1")), cx)
     });
     run(WorkOutlineCommand::IndentWorkItem, vcx);
     assert_eq!(calls.lock().unwrap().len(), 4);
@@ -442,6 +442,42 @@ fn palette_commands_restructure_the_selected_item(cx: &mut gpui::TestAppContext)
         outline.read_with(vcx, |outline, _| outline.notice().map(str::to_owned)),
         Some("Select a work item first".to_owned())
     );
+}
+
+/// With a Chat row selected the palette commands (and so their rebindable
+/// shortcuts) do what the keys do: Move Up / Down re-associate the Chat with
+/// the previous / next item, Outdent with its parent, Indent is a no-op.
+#[gpui::test]
+fn palette_commands_move_the_selected_chat(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = restructure_overview(
+        cx,
+        dir.path(),
+        crate::work_outline::store::fixture_snapshot("s1"),
+        reply_ok,
+    );
+    let run = |command: WorkOutlineCommand, vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|window, cx| {
+            overview.update(cx, |o, cx| o.run_work_outline_command(command, window, cx))
+        });
+        vcx.run_until_parked();
+    };
+    let count = |calls: &OutlineCalls| calls.lock().unwrap().len();
+    select_chat(&outline, vcx, CHAT_UI);
+    run(WorkOutlineCommand::MoveWorkItemUp, vcx);
+    assert_eq!(chat_call_at(&calls, 0), assigned(CHAT_UI, API_AUTH));
+    run(WorkOutlineCommand::MoveWorkItemUp, vcx);
+    assert_eq!(chat_call_at(&calls, 1), assigned(CHAT_UI, API));
+    run(WorkOutlineCommand::MoveWorkItemDown, vcx);
+    assert_eq!(chat_call_at(&calls, 2), assigned(CHAT_UI, API_AUTH));
+    run(WorkOutlineCommand::OutdentWorkItem, vcx);
+    assert_eq!(chat_call_at(&calls, 3), assigned(CHAT_UI, API));
+    assert_eq!(selected(&outline, vcx), Some(row_key::chat(CHAT_UI)));
+    // Indent does nothing on a Chat, as with Shift+Right: no request, and
+    // no "select a work item" refusal.
+    run(WorkOutlineCommand::IndentWorkItem, vcx);
+    assert_eq!(count(&calls), 4);
+    assert!(outline.read_with(vcx, |o, _| o.notice().is_none()));
 }
 
 /// The move picker places at the bottom by default; "Top" (or Left) puts

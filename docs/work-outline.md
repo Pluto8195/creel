@@ -211,7 +211,8 @@ and the move applies at once, with the same **Undo** toast as **Move to Work
 Item…** when the Chat's instructions change. Rapid presses apply in order. Chats without a
 project, and Chats that no longer exist, cannot move. A move never changes a
 Chat's Canvas position, folder, or execution setup. The palette's Move Up /
-Down and Indent / Outdent commands act on work items only. Archiving an item that has children asks
+Down, Indent, and Outdent commands (and any shortcut you bind to them) do the
+same as the keys on a Chat row. Archiving an item that has children asks
 whether to archive them as well or move them to another parent first.
 
 ## Projects in the Outline
@@ -279,16 +280,16 @@ instructions.
     conversation's context if you confirm.
   - Cursor and ACP harnesses do not support Work Outline instructions. Sends
     that require instructions are rejected with an explanation.
-- Moving a work item (keys, drag and drop, menu, **Move To…**) or moving or
-  associating a Chat applies at once. If it changes an associated Chat's
+- Moving a work item (keys, drag and drop, menu, **Move To…**) or moving,
+  associating, or disassociating a Chat (including **Associate…** and
+  **Disassociate** in Work Item Details) applies at once. If it changes an associated Chat's
   instructions, a toast says "Moved <title> · instructions changed for N chats
   (they keep their current instructions)" with **Undo**. The toast does not take
   focus, so keys keep working in the tree. It closes itself after about six
   seconds, or on Esc or ✕. Rapid moves share one toast whose count grows, and
   **Undo** reverts only the most recent move.
-- Before you toggle inheritance, edit or archive an instruction, change
-  execution configuration, or associate a Chat from Work Item Details, a
-  confirmation counts the affected Chats and items if the change would alter
+- Before you toggle inheritance, edit or archive an instruction, or change
+  execution configuration, a confirmation counts the affected Chats and items if the change would alter
   any associated Chat's instructions.
 - **Create Instruction from Chat** turns the selected transcript text (or the
   last assistant message) into an instruction for this item, its parent, or the

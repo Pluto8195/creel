@@ -1561,10 +1561,10 @@ impl OutlineView {
     // Direct restructuring (keyboard, palette, drag and drop)
     // ----------------------------------------------------------------------
 
-    /// The restructuring keys: re-associate the selected Chat
-    /// ([`Self::move_selected_chat`]) or restructure the selected work item
-    /// ([`Self::restructure_selected`]).
-    fn restructure_selection(
+    /// The restructuring keys and palette commands: re-associate the
+    /// selected Chat ([`Self::move_selected_chat`]) or restructure the
+    /// selected work item ([`Self::restructure_selected`]).
+    pub(crate) fn restructure_selection(
         &mut self,
         op: RestructureOp,
         cx: &mut Context<Self>,
@@ -1577,8 +1577,8 @@ impl OutlineView {
 
     /// Move up / down, indent or outdent the selected work item (with its
     /// descendants). A boundary no-op is `Ok` and sends nothing; `Err`
-    /// carries the notice to show. The palette commands call this directly:
-    /// they act on work items only.
+    /// carries the notice to show. Chat rows go through
+    /// [`Self::restructure_selection`].
     pub(crate) fn restructure_selected(
         &mut self,
         op: RestructureOp,
@@ -1745,6 +1745,31 @@ impl OutlineView {
         self.attempt
             .as_ref()
             .is_some_and(|attempt| attempt.state == AttemptState::InFlight)
+    }
+
+    /// Work Item Details' associate / disassociate: the Chat move the keys
+    /// and drops send, so it applies at once and raises the Undo toast when
+    /// the Chat's effective instructions change.
+    pub(crate) fn reassociate_chat(
+        &mut self,
+        space_id: &str,
+        chat_id: &str,
+        work_item_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restructuring_busy() {
+            self.show_notice("Still applying the previous move. Try again in a moment", cx);
+            return;
+        }
+        let chat_id = chat_id.to_owned();
+        let mutation = match work_item_id {
+            Some(work_item_id) => DirectMutation::AssignChat {
+                chat_id,
+                work_item_id,
+            },
+            None => DirectMutation::RemoveChat { chat_id },
+        };
+        self.submit_direct(space_id.to_owned(), mutation, cx);
     }
 
     /// Send `mutation` at once (see the Undo toast when it changes an

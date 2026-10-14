@@ -79,10 +79,10 @@ impl WorkOutlineCommand {
             Self::CreateInstructionFromChat => "Create Instruction from Chat",
             Self::OpenRequiredActions => "Open Required Actions",
             Self::StartChatForWorkItem => "Start Chat in Work Item",
-            Self::MoveWorkItemUp => "Move Work Item Up",
-            Self::MoveWorkItemDown => "Move Work Item Down",
-            Self::IndentWorkItem => "Indent Work Item",
-            Self::OutdentWorkItem => "Outdent Work Item",
+            Self::MoveWorkItemUp => "Move Up",
+            Self::MoveWorkItemDown => "Move Down",
+            Self::IndentWorkItem => "Indent",
+            Self::OutdentWorkItem => "Outdent",
             Self::ShowOutlineShortcuts => "Show Outline Shortcuts",
         }
     }
