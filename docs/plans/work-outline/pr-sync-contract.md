@@ -5,7 +5,8 @@ Wire contract commit: `e073523f` (branch `pr-review-sync-engine`). Code:
 `work_outline_user_actions.rs` (Work Outline additions), `crates/rpc/src/lib.rs`
 (`methods::PR_*`), doc layer `crates/doc/src/registry/work_outline/pr_review_sync.rs`.
 Capability: `pr-review-sync-v1` (`capabilities::PR_REVIEW_SYNC_V1`). Engine:
-`crates/engine/src/pr_review_sync.rs`.
+`crates/engine/src/pr_review_sync.rs` (`71f8b8dc`), tests `crates/engine/tests/pr_review_sync.rs`
+(fake `gh`, `04378c08`).
 
 ## Decisions
 
@@ -112,6 +113,9 @@ which has its checkouts).
   `CI: <status>`, `<url>`; `dedupeKey` `pr-review:<owner>/<repo>#<n>:<round>`
   (`pr_review_dedupe_key`). A request the user resolved is never recreated for the same round.
 - `StartPrReview` with `workItemId` of a synced item starts the review Chat assigned to that item.
+- Tests and embedders swap the tools with `EngineCore.pr_review_sync.reconfigure(
+  PrReviewSyncConfig::for_tests(<fake gh>))`; `background: false` turns off the loop and the
+  destination-triggered pass (`PrReviewSyncNow` still runs).
 
 ## UI notes
 
