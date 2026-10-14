@@ -1085,52 +1085,55 @@ impl Render for ChatTypeView {
             )
             .child(self.render_review_requested(&theme, cx))
             .when_some(destination_list, |el, list| el.child(list))
-            .when(!destination_mode, |el| el.child(
-                div()
-                    .h(px(34.0))
-                    .flex_none()
-                    .grid()
-                    .grid_cols(7)
-                    .items_center()
-                    .gap(px(12.0))
-                    .px(px(14.0))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .bg(theme.element_hover.opacity(0.45))
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text_muted)
-                    .child(div().col_span(2).child("CHAT / PR TITLE"))
-                    .child("REPOSITORY")
-                    .child("PR")
-                    .child("BRANCH")
-                    .child("STATUS")
-                    .child("UPDATED"),
-            )
-            .child(
-                div()
-                    .id("chat-type-rows")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .when(rows.is_empty(), |element| {
-                        element.child(
-                            div()
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(self.kind.empty_message())),
-                        )
-                    })
-                    .children(
-                        rows.into_iter()
-                            .enumerate()
-                            .map(|(index, row)| self.render_row(row, index, &theme, now, cx)),
-                    ),
-            ))
+            .when(!destination_mode, |el| {
+                el.child(
+                    div()
+                        .h(px(34.0))
+                        .flex_none()
+                        .grid()
+                        .grid_cols(7)
+                        .items_center()
+                        .gap(px(12.0))
+                        .px(px(14.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .bg(theme.element_hover.opacity(0.45))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_muted)
+                        .child(div().col_span(2).child("CHAT / PR TITLE"))
+                        .child("REPOSITORY")
+                        .child("PR")
+                        .child("BRANCH")
+                        .child("STATUS")
+                        .child("UPDATED"),
+                )
+                .child(
+                    div()
+                        .id("chat-type-rows")
+                        .debug_selector(|| "chat-type-rows".into())
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .when(rows.is_empty(), |element| {
+                            element.child(
+                                div()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(self.kind.empty_message())),
+                            )
+                        })
+                        .children(
+                            rows.into_iter()
+                                .enumerate()
+                                .map(|(index, row)| self.render_row(row, index, &theme, now, cx)),
+                        ),
+                )
+            })
     }
 }
 

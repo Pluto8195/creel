@@ -2088,9 +2088,9 @@ impl OutlineView {
             }
             // Space roots only drop among Space roots; Linear issues create
             // through `linear_outline`.
-            OutlineDrag::Space { .. } | OutlineDrag::LinearIssue(_) | OutlineDrag::PullRequest(_) => {
-                None
-            }
+            OutlineDrag::Space { .. }
+            | OutlineDrag::LinearIssue(_)
+            | OutlineDrag::PullRequest(_) => None,
         }
     }
 

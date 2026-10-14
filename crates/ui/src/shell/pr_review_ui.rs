@@ -366,4 +366,81 @@ mod tests {
             assert!(shell.sidebar_notice.is_none(), "no warning when current");
         });
     }
+
+    /// ⇧⌘P with a PR review sync destination in the current Space: the
+    /// destination's PR items (chip, review Chats nested) replace the
+    /// classification list, and Review sends StartPrReview filed under the
+    /// item (`spaceId` + `workItemId`).
+    #[gpui::test]
+    fn destination_items_replace_the_classification_list(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::store::fixture_ids::{API, CHAT_API, LAUNCH};
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            // The Shell saves on state changes (the PR chip's status lands).
+            settings::init(settings::UiSettings::default(), dir.path(), cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+        });
+        let (shell, cx) = test_shell(cx, dir.path());
+        let state = shell.read_with(cx, |shell, _| shell.state.clone());
+        state.update(cx, |state, _| {
+            state.spaces = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "s1", "deviceId": "d", "path": "/work/alpha",
+                    "createdAt": "2026-01-01T00:00:00Z"
+                }))
+                .unwrap(),
+            ];
+            state.selected_space = Some("s1".into());
+            state.no_project = false;
+            let mut chat: zeron_proto::Chat = serde_json::from_value(serde_json::json!({
+                "id": CHAT_API, "deviceId": "d", "title": "Review launch#42", "archived": false,
+                "createdAt": "2026-10-01T00:00:00Z"
+            }))
+            .unwrap();
+            chat.space_id = Some("s1".into());
+            state.chats = vec![chat];
+            let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
+            snapshot.space_settings.pr_review_sync_work_item_id = Some(LAUNCH.into());
+            state.set_work_outline_for_test(snapshot);
+        });
+        let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-item-review", 0)));
+        for selector in [
+            "pr-destination-rows",
+            "pr-destination-row-w-api",
+            "pr-destination-chip-w-api",
+            "pr-destination-chat-chat-api",
+            "pr-destination-review-w-api",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector} renders");
+        }
+        assert!(
+            cx.debug_bounds("chat-type-rows").is_none(),
+            "the classification list is replaced"
+        );
+        click(cx, "pr-destination-review-w-api");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["repoOwner"], "acme");
+        assert_eq!(calls[0]["repoName"], "launch");
+        assert_eq!(calls[0]["number"], 42);
+        assert_eq!(calls[0]["action"], "codeReview");
+        assert_eq!(calls[0]["spaceId"], "s1");
+        assert_eq!(calls[0]["workItemId"], API);
+    }
+
+    /// Without a destination the classification-based list stays.
+    #[gpui::test]
+    fn without_a_destination_the_classification_list_stays(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat", 0)));
+        assert!(cx.debug_bounds("pr-destination-rows").is_none());
+        assert!(cx.debug_bounds("chat-type-rows").is_some());
+    }
 }

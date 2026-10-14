@@ -15207,6 +15207,12 @@ mod logic_tests {
         include!("work_outline/linear_tests.rs");
     }
 
+    /// PR review sync (destination, chips, the GitHub section, ⌘↩ reviews,
+    /// system Required Actions); shares this module's fixtures.
+    mod pr_sync_tests {
+        include!("work_outline/pr_sync_tests.rs");
+    }
+
     /// Direct restructuring (keyboard, palette, picker placement, drag and
     /// drop); shares this module's fixtures.
     mod restructure_tests {

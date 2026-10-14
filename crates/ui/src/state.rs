@@ -2104,6 +2104,16 @@ impl AppState {
         .detach();
     }
 
+    /// Tests: put a loaded Work Outline snapshot in the store.
+    #[cfg(test)]
+    pub(crate) fn set_work_outline_for_test(&mut self, snapshot: zeron_proto::WorkOutlineSnapshot) {
+        let space_id = snapshot.space_id.clone();
+        self.work_outlines.set(
+            &space_id,
+            crate::work_outline::WorkOutlineLoad::Ready(Arc::new(snapshot)),
+        );
+    }
+
     /// Mutation facade bound to the current engine connection.
     pub(crate) fn work_outline_actions(&self) -> crate::work_outline::WorkOutlineActions {
         #[cfg(test)]

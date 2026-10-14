@@ -857,27 +857,29 @@ impl RequiredActionsList {
                         )),
                     )
                     // A system request has no Chat to reply to: Resolve only.
-                    .when(!row.system, |el| el.child({
-                        let reply_id = id.clone();
-                        let unavailable = (!row.chat_available).then(|| {
-                            required_actions::reply_unavailable_reason(&row, "x")
-                                .unwrap_or_default()
-                        });
-                        let button = Self::reply_button(
-                            &format!("required-actions-reply-{id}"),
-                            "Reply & resolve",
-                            unavailable,
-                            busy,
-                            theme,
-                        );
-                        if unavailable.is_none() && !busy {
-                            button.on_click(cx.listener(move |this, _, window, cx| {
-                                this.begin_resolve(reply_id.clone(), window, cx)
-                            }))
-                        } else {
-                            button
-                        }
-                    }))
+                    .when(!row.system, |el| {
+                        el.child({
+                            let reply_id = id.clone();
+                            let unavailable = (!row.chat_available).then(|| {
+                                required_actions::reply_unavailable_reason(&row, "x")
+                                    .unwrap_or_default()
+                            });
+                            let button = Self::reply_button(
+                                &format!("required-actions-reply-{id}"),
+                                "Reply & resolve",
+                                unavailable,
+                                busy,
+                                theme,
+                            );
+                            if unavailable.is_none() && !busy {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.begin_resolve(reply_id.clone(), window, cx)
+                                }))
+                            } else {
+                                button
+                            }
+                        })
+                    })
                 })
         });
         let resolve_form = resolving.then(|| {
@@ -908,34 +910,38 @@ impl RequiredActionsList {
                     div()
                         .flex()
                         .gap(px(6.0))
-                        .when(!row.system, |el| el.child({
-                            let note = self.note_input.read(cx).text().to_owned();
-                            let intent = self.replies.get(&id);
-                            // A reply already sent only needs its resolve.
-                            let sent = intent.is_some_and(|intent| intent.sent);
-                            let unavailable = if sent {
-                                None
-                            } else {
-                                required_actions::reply_unavailable_reason(&row, &note)
-                            };
-                            let label = match (busy, sent) {
-                                (true, false) if intent.is_some() => "Sending\u{2026}",
-                                (true, _) => "Resolving\u{2026}",
-                                _ => "Reply & resolve",
-                            };
-                            let button = Self::reply_button(
-                                "required-actions-reply-submit",
-                                label,
-                                unavailable,
-                                busy,
-                                theme,
-                            );
-                            if unavailable.is_none() && !busy {
-                                button.on_click(cx.listener(|this, _, _, cx| this.submit_reply(cx)))
-                            } else {
-                                button
-                            }
-                        }))
+                        .when(!row.system, |el| {
+                            el.child({
+                                let note = self.note_input.read(cx).text().to_owned();
+                                let intent = self.replies.get(&id);
+                                // A reply already sent only needs its resolve.
+                                let sent = intent.is_some_and(|intent| intent.sent);
+                                let unavailable = if sent {
+                                    None
+                                } else {
+                                    required_actions::reply_unavailable_reason(&row, &note)
+                                };
+                                let label = match (busy, sent) {
+                                    (true, false) if intent.is_some() => "Sending\u{2026}",
+                                    (true, _) => "Resolving\u{2026}",
+                                    _ => "Reply & resolve",
+                                };
+                                let button = Self::reply_button(
+                                    "required-actions-reply-submit",
+                                    label,
+                                    unavailable,
+                                    busy,
+                                    theme,
+                                );
+                                if unavailable.is_none() && !busy {
+                                    button.on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_reply(cx)),
+                                    )
+                                } else {
+                                    button
+                                }
+                            })
+                        })
                         .child(
                             Self::button(
                                 "required-actions-resolve-submit",

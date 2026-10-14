@@ -209,10 +209,8 @@ impl Overview {
             self._github_panel_events = None;
         }
         let fresh = self.github_panel.is_none();
-        let panel = self.ensure_github_panel(
-            target.clone().unwrap_or_else(|| spaces[0].id.clone()),
-            cx,
-        );
+        let panel =
+            self.ensure_github_panel(target.clone().unwrap_or_else(|| spaces[0].id.clone()), cx);
         let selection = self.linear_selection(cx);
         panel.update(cx, |panel, cx| {
             panel.set_data(spaces, selection, cx);
