@@ -754,6 +754,9 @@ pub struct EngineRpc {
     linear: crate::linear::LinearService,
     /// PR review sync (`PR_*` methods; local, never forwarded).
     pr_review_sync: crate::pr_review_sync::PrReviewSyncService,
+    /// Planning artifacts (`*ARTIFACT*` methods; content-bearing ones are
+    /// forwardable to the owning device).
+    artifacts: crate::artifacts::ArtifactsService,
     engine_info: EngineInfo,
 }
 
@@ -832,6 +835,11 @@ impl EngineRpc {
             repos.clone(),
             crate::pr_review_sync::PrReviewSyncConfig::default(),
         );
+        // Engine assembly replaces this with the shared service
+        // (`with_artifacts`), so the UI's render registration and agent
+        // tool calls meet in one broker.
+        let artifacts = crate::artifacts::ArtifactsService::new(workspace.clone());
+        agent_tools.set_artifacts(artifacts.clone());
         Self {
             sessions,
             doc_host,
@@ -861,7 +869,35 @@ impl EngineRpc {
             pr_review,
             linear: crate::linear::LinearService::default(),
             pr_review_sync,
+            artifacts,
             engine_info,
+        }
+    }
+
+    /// Share the engine's artifact service (render broker, watcher cache)
+    /// with this RPC surface and its agent tools.
+    pub fn with_artifacts(mut self, artifacts: crate::artifacts::ArtifactsService) -> Self {
+        self.agent_tools.set_artifacts(artifacts.clone());
+        self.artifacts = artifacts;
+        self
+    }
+
+    /// Run a blocking artifact operation, mapping its error to the
+    /// `artifact/<code>` string.
+    async fn artifact_reply<T, F>(&self, f: F) -> Result<RpcReply, RpcError>
+    where
+        T: serde::Serialize + Send + 'static,
+        F: FnOnce(crate::artifacts::ArtifactsService) -> Result<T, zeron_proto::ArtifactError>
+            + Send
+            + 'static,
+    {
+        let service = self.artifacts.clone();
+        match tokio::task::spawn_blocking(move || f(service))
+            .await
+            .map_err(|e| RpcError::Failed(e.to_string()))?
+        {
+            Ok(value) => RpcReply::value(&value),
+            Err(error) => Err(RpcError::Failed(error.to_wire_message())),
         }
     }
 
@@ -2062,6 +2098,10 @@ fn forwardable(method: &str) -> bool {
             | methods::CREATE_CHAT_FOR_WORK_ITEM
             // A PR review start checks out and creates on the Space's owner.
             | methods::START_PR_REVIEW
+            // Planning artifacts: content lives on the owning device.
+            | methods::ARTIFACT_CONTENT
+            | methods::ARTIFACT_REGISTER
+            | methods::ARTIFACT_PROMOTE
     )
 }
 
@@ -2861,6 +2901,43 @@ impl RpcService for EngineRpc {
                     self.pr_review_sync.spawn_space_sync(space);
                 }
                 RpcReply::value(&reply)
+            }
+            methods::WATCH_ARTIFACTS => {
+                let p: zeron_proto::WatchArtifactsParams = parse_params(params)?;
+                Ok(RpcReply::Stream(self.artifacts.watch(p.space_id)))
+            }
+            methods::ARTIFACT_CONTENT => {
+                let p: zeron_proto::ArtifactContentParams = parse_params(params)?;
+                self.artifact_reply(move |service| service.content(&p)).await
+            }
+            methods::ARTIFACT_REGISTER => {
+                let p: zeron_proto::ArtifactRegisterParams = parse_params(params)?;
+                self.artifact_reply(move |service| service.register(&p))
+                    .await
+            }
+            methods::ARTIFACT_PROMOTE => {
+                let p: zeron_proto::ArtifactPromoteParams = parse_params(params)?;
+                self.artifact_reply(move |service| service.promote(&p.artifact_id))
+                    .await
+            }
+            methods::ARTIFACT_PIN => {
+                let p: zeron_proto::ArtifactPinParams = parse_params(params)?;
+                self.artifact_reply(move |service| service.pin(&p.artifact_id, p.pinned))
+                    .await
+            }
+            methods::WATCH_ARTIFACT_RENDER_REQUESTS => {
+                let _: zeron_proto::WatchArtifactRenderRequestsParams =
+                    parse_params(if params.is_null() {
+                        serde_json::json!({})
+                    } else {
+                        params
+                    })?;
+                Ok(RpcReply::Stream(self.artifacts.render().subscribe()))
+            }
+            methods::ARTIFACT_RENDER_RESULT => {
+                let p: zeron_proto::ArtifactRenderResultParams = parse_params(params)?;
+                let accepted = self.artifacts.render().respond(p);
+                RpcReply::value(&zeron_proto::ArtifactRenderResultReply { accepted })
             }
             methods::LINEAR_STATUS => {
                 let p: zeron_proto::LinearStatusParams = parse_params(params)?;
