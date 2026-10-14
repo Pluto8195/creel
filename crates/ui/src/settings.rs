@@ -983,7 +983,7 @@ impl ShortcutId {
             ShortcutId::IndentWorkItem => "Indent work item",
             ShortcutId::OutdentWorkItem => "Outdent work item",
             ShortcutId::ShowOutlineShortcuts => "Show Outline shortcuts",
-            ShortcutId::OpenLinear => "Open Linear",
+            ShortcutId::OpenLinear => "Toggle Linear panel",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1069,9 +1069,16 @@ impl ShortcutId {
             | ShortcutId::OutdentWorkItem
             // The reference opens with `?` inside the Outline; the global
             // chord is opt-in.
-            | ShortcutId::ShowOutlineShortcuts
-            // Linear integration: opt-in only.
-            | ShortcutId::OpenLinear => "",
+            | ShortcutId::ShowOutlineShortcuts => "",
+            // Linear panel toggle. Must fire from the chat panel composer and
+            // the panel's own search, so it is a primary chord. ⌥⌘L clashes
+            // with no default, fixed (`app_menus`, palette, overview),
+            // composer, browser or gpui-base binding. Off macOS Ctrl+Alt+L
+            // locks the screen on common Linux desktops, so it takes the
+            // free Ctrl+Shift+E there. It only acts while some Space has
+            // Linear on.
+            ShortcutId::OpenLinear if mac => "mod-alt-l",
+            ShortcutId::OpenLinear => "mod-shift-e",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1673,6 +1680,12 @@ impl UiSettings {
                         {
                             keymap.remove("toggleOutlineFocus");
                         }
+                        // The Linear toggle shipped unbound; an empty entry is
+                        // that first default, not a cleared chord.
+                        if keymap.get("openLinear").and_then(serde_json::Value::as_str) == Some("")
+                        {
+                            keymap.remove("openLinear");
+                        }
                         for (id, field) in [
                             (ShortcutId::ToggleFiles, "toggleFiles"),
                             (ShortcutId::OpenMyPrs, "openMyPrs"),
@@ -1680,6 +1693,7 @@ impl UiSettings {
                             (ShortcutId::ToggleOutlineFocus, "toggleOutlineFocus"),
                             (ShortcutId::OpenFullChat, "openFullChat"),
                             (ShortcutId::CreateWorkItem, "createWorkItem"),
+                            (ShortcutId::OpenLinear, "openLinear"),
                         ] {
                             let default = platform_combo(id.default_combo());
                             let taken = !keymap.contains_key(field)
@@ -3394,6 +3408,40 @@ mod tests {
         assert_eq!(ShortcutId::ToggleOutlineFocus.default_combo(), "mod-;");
         assert_eq!(ShortcutId::OpenFullChat.default_combo(), "mod-shift-enter");
         assert_eq!(ShortcutId::CreateWorkItem.default_combo(), "mod-shift-i");
+        assert_eq!(ShortcutId::OpenLinear.default_combo_on(true), "mod-alt-l");
+        assert_eq!(
+            ShortcutId::OpenLinear.default_combo_on(false),
+            "mod-shift-e"
+        );
+    }
+
+    #[test]
+    fn linear_toggle_takes_its_default_from_the_first_unbound_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |json: &str| {
+            std::fs::write(UiSettings::path(dir.path()), json).unwrap();
+            UiSettings::load(dir.path()).keymap
+        };
+        let default = ShortcutId::OpenLinear.default_combo();
+        // Stored on the shipped-unbound default: takes the new chord.
+        let keymap = load(r#"{"keymap": {"saveFile": "mod-s", "openLinear": ""}}"#);
+        assert_eq!(keymap.get(ShortcutId::OpenLinear), default);
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        // Missing (older file) takes it too.
+        let keymap = load(r#"{"keymap": {"saveFile": "mod-s"}}"#);
+        assert_eq!(keymap.get(ShortcutId::OpenLinear), default);
+        // A rebind survives.
+        let keymap = load(r#"{"keymap": {"saveFile": "mod-s", "openLinear": "mod-alt-k"}}"#);
+        assert_eq!(keymap.get(ShortcutId::OpenLinear), "mod-alt-k");
+        // Another action already holding the chord keeps it; the toggle
+        // arrives unbound rather than double-binding.
+        let json = format!(
+            r#"{{"keymap": {{"saveFile": "mod-s", "openLinear": "", "toggleTerminal": "{default}"}}}}"#
+        );
+        let keymap = load(&json);
+        assert_eq!(keymap.get(ShortcutId::ToggleTerminal), default);
+        assert_eq!(keymap.get(ShortcutId::OpenLinear), "");
+        assert!(conflicted_shortcuts(&keymap).is_empty());
     }
 
     #[test]
@@ -3507,7 +3555,7 @@ mod tests {
             .map(|(id, _)| keymap.get(*id))
             .filter(|combo| !combo.is_empty())
             .collect();
-        assert_eq!(bound.len(), 4);
+        assert_eq!(bound.len(), 5);
         // Binding one to another command's combo is a detected conflict.
         let mut clash = keymap.clone();
         clash.set(ShortcutId::MoveWorkItem, "mod-shift-l".into());
@@ -3524,6 +3572,7 @@ mod tests {
                 ShortcutId::ToggleOutlineFocus,
                 ShortcutId::OpenFullChat,
                 ShortcutId::CreateWorkItem,
+                ShortcutId::OpenLinear,
             ] {
                 let combo = id.default_combo_on(mac);
                 assert!(combo.starts_with("mod-"), "{combo}");
@@ -3542,6 +3591,11 @@ mod tests {
         assert_eq!(
             combo_from_keystroke_on(false, true, false, true, false, "l").as_deref(),
             Some("mod-shift-l")
+        );
+        // The Linear toggle's ⌥⌘L records back to its default.
+        assert_eq!(
+            combo_from_keystroke_on(true, false, true, false, true, "l").as_deref(),
+            Some(ShortcutId::OpenLinear.default_combo_on(true))
         );
         // The toggle's semicolon records back to its default and binds.
         assert_eq!(

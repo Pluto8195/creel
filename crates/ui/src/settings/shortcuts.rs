@@ -576,7 +576,8 @@ fn description(id: ShortcutId) -> &'static str {
             "List the Outline keys and Work Outline commands (Outline: ?)."
         }
         ShortcutId::OpenLinear => {
-            "Open the Linear panel in the Overview (projects with Linear turned on)."
+            "Show or hide the Linear panel beside the Overview body; from anywhere else in the \
+             Overview (including the chat panel) it focuses the panel's search."
         }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.

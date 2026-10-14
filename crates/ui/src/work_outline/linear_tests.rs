@@ -68,6 +68,9 @@ fn linear_overview<'a>(
     + 'static,
 ) -> (Entity<Overview>, LinearCalls, &'a mut gpui::VisualTestContext) {
     let (overview, state, vcx) = outline_overview(cx, dir);
+    // The column's open/close tween snaps, so rows are hit-testable at once
+    // (`linear_column_tween_respects_reduced_motion` covers the tween).
+    vcx.update(|_, cx| crate::motion::set_reduced_motion(cx, true));
     let calls: LinearCalls = Default::default();
     let sink = calls.clone();
     state.update(vcx, |state, _| {
@@ -561,4 +564,306 @@ fn space_row_menu_opens_the_panel(cx: &mut gpui::TestAppContext) {
     let panel = overview.read_with(vcx, |o, _| o.linear_panel().unwrap());
     panel.read_with(vcx, |panel, _| assert_eq!(panel.space_id, "s1"));
     assert!(vcx.debug_bounds("linear-panel").is_some());
+}
+
+fn resize(vcx: &mut gpui::VisualTestContext, width: f32) {
+    vcx.simulate_resize(gpui::size(px(width), px(900.0)));
+    draw(vcx);
+    draw(vcx);
+}
+
+fn open_chat_panel(overview: &Entity<Overview>, vcx: &mut gpui::VisualTestContext) {
+    overview.update(vcx, |o, cx| {
+        o.state.update(cx, |state, _| state.selected_chat = Some(CHAT_API.into()));
+        o.chat_panel_open = true;
+    });
+    draw(vcx);
+}
+
+/// The Linear panel is its own left column: it renders left of the
+/// Outline body while the chat panel stays up on the right, and Work Item
+/// Details / Required Actions take the right slot without closing it.
+#[gpui::test]
+fn linear_column_sits_left_of_the_body_beside_the_chat_panel(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    open_chat_panel(&overview, vcx);
+    open_panel(&overview, vcx);
+    let column = vcx.debug_bounds("linear-column").expect("the Linear column renders");
+    let chat = vcx.debug_bounds("overview-chat-panel").expect("the chat panel stays open");
+    let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", UI))).unwrap();
+    assert!(column.right() <= row.left(), "{column:?} left of {row:?}");
+    assert!(row.right() <= chat.left(), "{row:?} left of {chat:?}");
+    assert_eq!(column.size.width, px(crate::linear::prefs::PANEL_DEFAULT_W));
+    overview.read_with(vcx, |o, cx| {
+        assert!(o.chat_panel_open);
+        assert_eq!(o.shown_panel_chat(cx).as_deref(), Some(CHAT_API));
+    });
+    // Details take the right slot; the Linear column stays.
+    overview.update(vcx, |o, cx| o.open_work_item_details("s1".into(), API.into(), cx));
+    draw(vcx);
+    assert!(vcx.debug_bounds("work-item-details").is_some());
+    assert!(vcx.debug_bounds("linear-panel").is_some());
+    overview.update(vcx, |o, cx| {
+        let details = o.work_item_details.clone().unwrap();
+        details.update(cx, |d, cx| d.request_close(cx));
+    });
+    draw(vcx);
+    assert!(vcx.debug_bounds("overview-chat-panel").is_some());
+    assert!(vcx.debug_bounds("linear-panel").is_some());
+    // Escape with focus outside the panel (the tree) leaves it open...
+    vcx.update(|window, cx| {
+        let handle = gpui::Focusable::focus_handle(overview.read(cx).outline.read(cx), cx);
+        window.focus(&handle, cx)
+    });
+    vcx.simulate_keystrokes("escape");
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-panel").is_some());
+    // ...and inside it (the search the toggle focused) closes it.
+    let panel = overview.read_with(vcx, |o, _| o.linear_panel().unwrap());
+    vcx.update(|window, cx| panel.update(cx, |p, cx| p.focus_search(window, cx)));
+    vcx.simulate_keystrokes("escape");
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-panel").is_none());
+    assert!(vcx.debug_bounds("overview-chat-panel").is_some(), "the chat panel stays");
+}
+
+/// Too narrow for body + Linear + chat panel: the column shrinks (the body
+/// keeps its minimum), then at its minimum it overlays the body instead.
+#[gpui::test]
+fn narrow_window_shrinks_then_overlays_the_linear_column(cx: &mut gpui::TestAppContext) {
+    use crate::linear::prefs::{PANEL_DEFAULT_W, PANEL_MIN_W};
+    use crate::overview::linear_host::OVERVIEW_BODY_MIN_W;
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    open_chat_panel(&overview, vcx);
+    open_panel(&overview, vcx);
+    let chat_w = f32::from(vcx.debug_bounds("overview-chat-panel").unwrap().size.width);
+    // Room for 300px of column.
+    resize(vcx, chat_w + OVERVIEW_BODY_MIN_W + 300.0);
+    let column = vcx.debug_bounds("linear-column").unwrap();
+    assert_eq!(column.size.width, px(300.0));
+    let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", UI))).unwrap();
+    assert!(column.right() <= row.left(), "still inline");
+    // Narrower than body minimum + column minimum: overlay at the minimum.
+    resize(vcx, chat_w + OVERVIEW_BODY_MIN_W + PANEL_MIN_W - 80.0);
+    let column = vcx.debug_bounds("linear-column").unwrap();
+    assert_eq!(column.size.width, px(PANEL_MIN_W));
+    let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", UI))).unwrap();
+    assert!(row.left() < column.right(), "the column floats over the body");
+    assert!(
+        f32::from(vcx.debug_bounds("overview-chat-panel").unwrap().left()) > PANEL_MIN_W,
+        "the body keeps its width instead of being squeezed"
+    );
+    assert!(vcx.debug_bounds("linear-column-resize").is_none(), "no grabber while overlaid");
+    // Wide again: back inline at the preferred width.
+    resize(vcx, 1800.0);
+    assert_eq!(vcx.debug_bounds("linear-column").unwrap().size.width, px(PANEL_DEFAULT_W));
+}
+
+/// Dragging the column's edge resizes it within its bounds; width and open
+/// state survive a fresh Overview on the same device (data dir).
+#[gpui::test]
+fn linear_column_width_and_open_state_persist(cx: &mut gpui::TestAppContext) {
+    use crate::linear::prefs::{PANEL_DEFAULT_W, PANEL_MAX_W};
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    open_panel(&overview, vcx);
+    let handle = vcx.debug_bounds("linear-column-resize").unwrap().center();
+    let left = Some(gpui::MouseButton::Left);
+    vcx.simulate_mouse_down(handle, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(handle + gpui::point(px(10.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(handle + gpui::point(px(60.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_up(handle + gpui::point(px(60.0), px(0.0)), gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(vcx);
+    let width = f32::from(vcx.debug_bounds("linear-column").unwrap().size.width);
+    assert_eq!(width, PANEL_DEFAULT_W + 60.0);
+    // Past the maximum it clamps.
+    let handle = vcx.debug_bounds("linear-column-resize").unwrap().center();
+    vcx.simulate_mouse_down(handle, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(handle + gpui::point(px(10.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(handle + gpui::point(px(900.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_up(handle + gpui::point(px(900.0), px(0.0)), gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(vcx);
+    assert_eq!(vcx.debug_bounds("linear-column").unwrap().size.width, px(PANEL_MAX_W));
+    // Back to a known width.
+    overview.update(vcx, |o, cx| {
+        o.linear_column.width = PANEL_DEFAULT_W + 60.0;
+        o.persist_linear_width(cx);
+    });
+
+    // A fresh Overview on the same data dir: open, at that width.
+    let (fresh, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    fresh.read_with(vcx, |o, _| {
+        assert!(o.linear_panel().is_some(), "restored open");
+        assert_eq!(o.linear_column_state().width, PANEL_DEFAULT_W + 60.0);
+    });
+    assert_eq!(
+        vcx.debug_bounds("linear-column").unwrap().size.width,
+        px(PANEL_DEFAULT_W + 60.0)
+    );
+    // Closing persists too.
+    fresh.update(vcx, |o, cx| o.close_linear_panel(false, cx));
+    draw(vcx);
+    let (again, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    again.read_with(vcx, |o, _| assert!(o.linear_panel().is_none(), "restored closed"));
+    assert!(vcx.debug_bounds("linear-column").is_none());
+}
+
+/// Persisted open but no Space with Linear on: nothing renders and the
+/// toggle only explains; Linear coming back on shows the column again.
+#[gpui::test]
+fn linear_column_hides_while_no_space_has_linear_on(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    open_panel(&overview, vcx);
+    overview.update(vcx, |o, cx| o.set_outline_loads(fixture_loads(Some(linear_snapshot(false))), cx));
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-column").is_none());
+    let before = called(&calls, "LinearMyIssues");
+    vcx.update(|window, cx| {
+        overview.update(cx, |o, cx| {
+            o.run_work_outline_command(WorkOutlineCommand::OpenLinear, window, cx)
+        })
+    });
+    draw(vcx);
+    overview.read_with(vcx, |o, cx| {
+        assert!(o.linear_panel().is_none());
+        assert_eq!(o.outline.read(cx).notice(), Some(crate::linear::LINEAR_OFF_NOTICE));
+    });
+    assert_eq!(called(&calls, "LinearMyIssues"), before, "no Linear calls");
+    overview.update(vcx, |o, cx| o.set_outline_loads(fixture_loads(Some(linear_snapshot(true))), cx));
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-column").is_some(), "the saved open state returns");
+}
+
+/// Open and close tween the column's width unless reduced motion is on,
+/// when both snap.
+#[gpui::test]
+fn linear_column_tween_respects_reduced_motion(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    vcx.update(|_, cx| crate::motion::set_reduced_motion(cx, false));
+    overview.update(vcx, |o, cx| o.open_linear_panel(None, cx).unwrap());
+    overview.read_with(vcx, |o, _| assert!(o.linear_column_state().tween.is_some()));
+    overview.update(vcx, |o, cx| o.close_linear_panel(false, cx));
+    overview.read_with(vcx, |o, _| assert!(o.linear_column_state().tween.is_some()));
+    vcx.update(|_, cx| crate::motion::set_reduced_motion(cx, true));
+    overview.update(vcx, |o, cx| o.open_linear_panel(None, cx).unwrap());
+    overview.read_with(vcx, |o, _| assert!(o.linear_column_state().tween.is_none()));
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-column").is_some());
+    overview.update(vcx, |o, cx| o.close_linear_panel(false, cx));
+    overview.read_with(vcx, |o, _| assert!(o.linear_column_state().tween.is_none()));
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-column").is_none(), "gone at once");
+}
+
+/// "My issues" / "My projects" headers show their counts and fold by click
+/// and by ←/→ while focused (keys stay in the panel); folds and expanded
+/// projects survive a fresh Overview.
+#[gpui::test]
+fn sections_fold_by_click_and_arrows_and_persist_with_expanded_projects(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::linear::prefs::PanelSection;
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    let panel = open_panel(&overview, vcx);
+    panel.read_with(vcx, |p, cx| {
+        assert_eq!(p.section_count(PanelSection::MyIssues, cx), Some(2));
+        assert_eq!(p.section_count(PanelSection::MyProjects, cx), Some(1));
+    });
+    panel.update(vcx, |p, cx| p.set_query("billing", cx));
+    panel.read_with(vcx, |p, cx| {
+        assert_eq!(p.section_count(PanelSection::MyIssues, cx), Some(1), "counts follow search");
+        assert_eq!(p.section_count(PanelSection::MyProjects, cx), Some(0));
+    });
+    panel.update(vcx, |p, cx| p.set_query("", cx));
+    draw(vcx);
+    select_row(&overview, vcx, &row_key::item("s1", UI));
+
+    // Click folds (and focuses the header).
+    press(vcx, "linear-section-my-issues".into());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none(), "folded");
+    assert!(vcx.debug_bounds("linear-section-my-issues").is_some(), "the header stays");
+    assert!(vcx.debug_bounds("linear-project-row-p-launch").is_some(), "projects unaffected");
+    let focused = vcx.update(|window, cx| {
+        panel.read(cx).section_focus_handle(PanelSection::MyIssues).is_focused(window)
+    });
+    assert!(focused, "the header has focus");
+    // → unfolds, ← folds; the Outline selection never moves.
+    vcx.simulate_keystrokes("right");
+    draw(vcx);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_some());
+    vcx.simulate_keystrokes("left");
+    draw(vcx);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none());
+    overview.read_with(vcx, |o, cx| {
+        assert_eq!(o.outline.read(cx).selected_key(), Some(row_key::item("s1", UI).as_str()))
+    });
+    // Fold projects by keyboard too, then unfold and expand Launch.
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).section_focus_handle(PanelSection::MyProjects);
+        window.focus(&handle, cx)
+    });
+    vcx.simulate_keystrokes("left");
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-project-row-p-launch").is_none());
+    vcx.simulate_keystrokes("right");
+    draw(vcx);
+    press(vcx, "linear-project-row-p-launch".into());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-3".into()).is_some(), "expanded");
+    assert_eq!(called(&calls, "LinearProjectIssues"), 1);
+
+    // A fresh Overview: My issues still folded, Launch still expanded (and
+    // its issues fetched on open).
+    let (fresh, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    let panel = fresh.read_with(vcx, |o, _| o.linear_panel().expect("restored open"));
+    panel.read_with(vcx, |p, _| {
+        assert!(p.collapsed.contains(&PanelSection::MyIssues));
+        assert!(!p.collapsed.contains(&PanelSection::MyProjects));
+        assert!(p.expanded.contains("p-launch"));
+    });
+    assert_eq!(called(&calls, "LinearProjectIssues"), 1);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-3".into()).is_some());
+    // Collapsing the project is remembered as well.
+    press(vcx, "linear-project-row-p-launch".into());
+    let state = crate::linear::prefs::load_panel_state(dir.path());
+    assert!(state.expanded_projects.is_empty());
+    assert!(state.collapsed.contains(&PanelSection::MyIssues));
+}
+
+/// Dragging from the left column onto an Outline row still creates the
+/// work item with the chat panel open on the right.
+#[gpui::test]
+fn drag_from_the_left_column_creates_beside_the_chat_panel(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    open_chat_panel(&overview, vcx);
+    open_panel(&overview, vcx);
+    let start = row_bounds(vcx, "linear-issue-row-ENG-2".into()).unwrap();
+    let target = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", API))).unwrap();
+    assert!(start.right() <= target.left(), "dragging rightward from the left column");
+    let start = gpui::point(start.left() + px(30.0), start.center().y);
+    let end = target.center();
+    let left = Some(gpui::MouseButton::Left);
+    vcx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(start + gpui::point(px(6.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    vcx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    draw(vcx);
+    let creates = mutations(&calls, "createWorkItemFromLinear");
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0]["parentWorkItemId"], API);
+    assert!(vcx.debug_bounds("overview-chat-panel").is_some());
 }

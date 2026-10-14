@@ -170,7 +170,7 @@ impl Shell {
         let query = palette.search.read(cx).text().trim().to_lowercase();
         let mut entries = actions_for(&query, Theme::of(cx).appearance.is_dark());
         let state = self.state.read(cx);
-        // Open Linear only while some Space has Linear on.
+        // Toggle Linear Panel only while some Space has Linear on.
         if crate::linear::panel::palette_visible(state)
             && matches_query(&query, WorkOutlineCommand::OpenLinear.label())
         {
@@ -662,7 +662,7 @@ mod tests {
             })
             .collect();
         // The nine spec commands, Start Chat, restructuring, and the
-        // shortcut reference; Open Linear joins only with Linear on.
+        // shortcut reference; Toggle Linear Panel joins only with Linear on.
         assert_eq!(listed, WorkOutlineCommand::ALL[..17]);
         assert_eq!(
             actions_for("start chat", true),

@@ -1,7 +1,7 @@
 //! Linear entries of the Outline's right-click menus (Linear-enabled Spaces
 //! only): an issue-linked item gets Open in Linear / Refresh from Linear /
 //! Unlink Linear issue; a Space row gets Open Linear Panel, which shows the
-//! Open Linear binding when one is recorded. The Shell runs them
+//! Toggle Linear Panel binding. The Shell runs them
 //! (`shell/linear_ui.rs`).
 use zeron_proto::WorkOutlineSnapshot;
 

@@ -1,6 +1,7 @@
-//! The Linear panel: the Overview's right-side surface for Linear-enabled
-//! Spaces (same slot rules as Required Actions: Work Item Details render
-//! over it; closing them shows it again).
+//! The Linear panel: the Overview's left column for Linear-enabled Spaces,
+//! beside the Outline/List/Canvas body and independent of the right slot
+//! (chat panel, Work Item Details, Required Actions). The Overview owns the
+//! column (width, open state, overlay rule: `overview/linear_host.rs`).
 //!
 //! - **My issues** (`LinearMyIssues`) and **My projects**
 //!   (`LinearMyProjects`, each expandable to `LinearProjectIssues` with
@@ -33,19 +34,18 @@ use zeron_proto::{
 
 use super::LinkedIndex;
 use super::client::LinearUiError;
+use super::prefs::{self, PanelSection};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::work_outline::actions::OperationSlot;
 use crate::work_outline::chips::TextTooltip;
+use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::model;
 use crate::work_outline::outline_view::OutlineDrag;
 use crate::work_outline::outline_view::linear_outline::LinearIssueDrag;
 
-/// Fixed width of the panel (the details surface's).
-pub(crate) const LINEAR_PANEL_W: f32 = crate::work_outline::details_panel::DETAILS_PANEL_W;
-
-/// Whether the palette lists Open Linear: some Space has Linear on.
+/// Whether the palette lists Toggle Linear Panel: some Space has Linear on.
 pub(crate) fn palette_visible(state: &AppState) -> bool {
     state.spaces.iter().any(|space| {
         super::space_enabled(
@@ -226,6 +226,10 @@ pub(crate) struct LinearPanel {
     pub(crate) my_issues: Load<Vec<LinearIssueSummary>>,
     pub(crate) my_projects: Load<Vec<LinearProjectSummary>>,
     pub(crate) expanded: BTreeSet<String>,
+    /// Folded section headers (persisted per device with `expanded`).
+    pub(crate) collapsed: BTreeSet<PanelSection>,
+    /// One focus stop per section header (←/→ fold and unfold).
+    section_focus: [FocusHandle; 2],
     pub(crate) project_issues: HashMap<String, Load<Vec<LinearIssueSummary>>>,
     /// Per project: the identifiers checked for Create nodes for selected.
     pub(crate) checked: HashMap<String, BTreeSet<String>>,
@@ -261,6 +265,12 @@ impl LinearPanel {
                 cx.notify();
             }
         })];
+        let restored = state
+            .read(cx)
+            .data_dir
+            .as_deref()
+            .map(prefs::load_panel_state)
+            .unwrap_or_default();
         Self {
             state,
             focus: cx.focus_handle(),
@@ -270,7 +280,12 @@ impl LinearPanel {
             selection: OutlineSelection::None,
             my_issues: Load::Loading,
             my_projects: Load::Loading,
-            expanded: BTreeSet::new(),
+            expanded: restored.expanded_projects,
+            collapsed: restored.collapsed,
+            section_focus: [
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+            ],
             project_issues: HashMap::new(),
             checked: HashMap::new(),
             op_slots: HashMap::new(),
@@ -315,6 +330,22 @@ impl LinearPanel {
         self.search.read(cx).text().trim().to_lowercase()
     }
 
+    /// Put the keyboard in the search box (the toggle hotkey's landing).
+    pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.search.focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Whether focus is anywhere inside the panel.
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focus.contains_focused(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn search_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.search.focus_handle(cx).is_focused(window)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search
@@ -357,6 +388,13 @@ impl LinearPanel {
                     return;
                 }
                 if let Ok(projects) = &projects {
+                    // A remembered expansion of a project that is gone.
+                    let before = this.expanded.len();
+                    this.expanded
+                        .retain(|id| projects.iter().any(|project| &project.id == id));
+                    if this.expanded.len() != before {
+                        this.save_state(cx);
+                    }
                     let projects = projects.clone();
                     this.state
                         .update(cx, |state, _| state.linear.projects = Some(projects));
@@ -407,10 +445,12 @@ impl LinearPanel {
 
     pub(crate) fn toggle_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         if self.expanded.remove(project_id) {
+            self.save_state(cx);
             cx.notify();
             return;
         }
         self.expanded.insert(project_id.to_string());
+        self.save_state(cx);
         if !matches!(
             self.project_issues.get(project_id),
             Some(Load::Ready(_) | Load::Loading)
@@ -418,6 +458,73 @@ impl LinearPanel {
             self.load_project(project_id.to_string(), cx);
         }
         cx.notify();
+    }
+
+    /// Fold (`false`) or unfold (`true`) a section header; persisted.
+    pub(crate) fn set_section_open(
+        &mut self,
+        section: PanelSection,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if open {
+            self.collapsed.remove(&section)
+        } else {
+            self.collapsed.insert(section)
+        };
+        if changed {
+            self.save_state(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn toggle_section(&mut self, section: PanelSection, cx: &mut Context<Self>) {
+        let open = self.collapsed.contains(&section);
+        self.set_section_open(section, open, cx);
+    }
+
+    fn section_focus(&self, section: PanelSection) -> &FocusHandle {
+        match section {
+            PanelSection::MyIssues => &self.section_focus[0],
+            PanelSection::MyProjects => &self.section_focus[1],
+        }
+    }
+
+    /// The count a section header shows: rows matching the search, once
+    /// the list has loaded.
+    pub(crate) fn section_count(&self, section: PanelSection, cx: &gpui::App) -> Option<usize> {
+        let query = self.query(cx);
+        match section {
+            PanelSection::MyIssues => self.my_issues.ready().map(|all| {
+                all.iter()
+                    .filter(|issue| issue_matches(&query, issue))
+                    .count()
+            }),
+            PanelSection::MyProjects => self.my_projects.ready().map(|all| {
+                all.iter()
+                    .filter(|project| self.project_visible(project, &query))
+                    .count()
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn section_focus_handle(&self, section: PanelSection) -> FocusHandle {
+        self.section_focus(section).clone()
+    }
+
+    /// Write section folds and expanded projects to this device's file.
+    fn save_state(&self, cx: &gpui::App) {
+        let Some(data_dir) = self.state.read(cx).data_dir.clone() else {
+            return;
+        };
+        prefs::save_panel_state(
+            &data_dir,
+            &prefs::PanelState {
+                collapsed: self.collapsed.clone(),
+                expanded_projects: self.expanded.clone(),
+            },
+        );
     }
 
     pub(crate) fn toggle_checked(
@@ -721,13 +828,93 @@ impl LinearPanel {
             .child(label)
     }
 
-    fn section_title(label: String, theme: &Theme) -> gpui::Div {
+    /// A section header: click (or ↩ / Space) folds and unfolds it; with
+    /// the header focused ← folds and → unfolds. `count` shows once loaded.
+    fn render_section_header(
+        &self,
+        section: PanelSection,
+        count: Option<usize>,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = !self.collapsed.contains(&section);
+        let focus = self.section_focus(section).clone();
+        let focused = focus.is_focused(window);
+        let label = match count {
+            Some(count) => format!("{} ({count})", section.label()),
+            None => section.label().to_string(),
+        };
+        let selector = format!("linear-section-{}", section.key());
+        let click_focus = focus.clone();
         div()
-            .pt(px(6.0))
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .track_focus(&focus)
+            .mt(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(2.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
             .text_size(crate::typography::ui_rems(11.0))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(theme.text_muted)
+            .when(focused, |el| {
+                el.bg(theme.element_hover).text_color(theme.text)
+            })
+            .hover(|el| el.text_color(theme.text))
+            .child(
+                crate::icons::icon(if open {
+                    crate::icons::ALT_ARROW_DOWN
+                } else {
+                    crate::icons::ALT_ARROW_RIGHT
+                })
+                .size(px(10.0))
+                .text_color(theme.text_muted),
+            )
             .child(SharedString::from(label))
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    TextTooltip(if open {
+                        "Collapse (\u{2190})".into()
+                    } else {
+                        "Expand (\u{2192})".into()
+                    })
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&click_focus, cx);
+                this.toggle_section(section, cx);
+            }))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let modifiers = event.keystroke.modifiers;
+                if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+                    return;
+                }
+                match event.keystroke.key.as_str() {
+                    "left" => this.set_section_open(section, false, cx),
+                    "right" => this.set_section_open(section, true, cx),
+                    "enter" | "space" => this.toggle_section(section, cx),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    /// Whether a project row shows under `query`: its own fields match, or
+    /// one of its loaded issues does.
+    fn project_visible(&self, project: &LinearProjectSummary, query: &str) -> bool {
+        project_matches(query, project)
+            || self
+                .project_issues
+                .get(&project.id)
+                .and_then(Load::ready)
+                .is_some_and(|issues| issues.iter().any(|issue| issue_matches(query, issue)))
     }
 
     fn quiet(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
@@ -1049,7 +1236,7 @@ impl LinearPanel {
                     .collect()
             })
             .unwrap_or_default();
-        if !project_matches(query, project) && matching_issues.is_empty() {
+        if !self.project_visible(project, query) {
             return None;
         }
         let id = project.id.clone();
@@ -1313,7 +1500,7 @@ impl Render for LinearDragGhost {
 }
 
 impl Render for LinearPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let query = self.query(cx);
         let linked = self
@@ -1408,6 +1595,10 @@ impl Render for LinearPanel {
                             .size(px(12.0))
                             .text_color(theme.text_muted),
                     )
+                    .hint(
+                        "Hide the Linear panel",
+                        HintKey::Command(crate::work_outline::WorkOutlineCommand::OpenLinear),
+                    )
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(LinearPanelEvent::Close))),
             );
         let search = div()
@@ -1460,63 +1651,84 @@ impl Render for LinearPanel {
                         .collect()
                 })
                 .unwrap_or_default();
-            body = body.child(Self::section_title(
-                match &self.my_issues {
-                    Load::Ready(_) => format!("My issues ({})", issues.len()),
-                    _ => "My issues".to_string(),
-                },
+            let issues_open = !self.collapsed.contains(&PanelSection::MyIssues);
+            body = body.child(self.render_section_header(
+                PanelSection::MyIssues,
+                self.section_count(PanelSection::MyIssues, cx),
                 &theme,
+                window,
+                cx,
             ));
-            match &self.my_issues {
-                Load::Loading => body = body.child(Self::quiet("Loading\u{2026}", &theme)),
-                Load::Failed(error) => {
-                    let error = error.clone();
-                    body = body.child(self.render_list_error(
-                        "linear-issues-retry",
-                        &error,
-                        &theme,
-                        cx,
-                    ))
-                }
-                Load::Ready(all) => {
-                    if all.is_empty() {
-                        body = body.child(Self::quiet("No open issues assigned to you", &theme));
-                    } else if issues.is_empty() {
-                        body = body.child(Self::quiet("No matching issues", &theme));
+            if issues_open {
+                match &self.my_issues {
+                    Load::Loading => body = body.child(Self::quiet("Loading\u{2026}", &theme)),
+                    Load::Failed(error) => {
+                        let error = error.clone();
+                        body = body.child(self.render_list_error(
+                            "linear-issues-retry",
+                            &error,
+                            &theme,
+                            cx,
+                        ))
                     }
-                    for issue in &issues {
-                        body = body.child(self.render_issue_row(issue, &linked, None, &theme, cx));
+                    Load::Ready(all) => {
+                        if all.is_empty() {
+                            body =
+                                body.child(Self::quiet("No open issues assigned to you", &theme));
+                        } else if issues.is_empty() {
+                            body = body.child(Self::quiet("No matching issues", &theme));
+                        }
+                        for issue in &issues {
+                            body =
+                                body.child(self.render_issue_row(issue, &linked, None, &theme, cx));
+                        }
                     }
                 }
             }
             // My projects.
-            body = body.child(Self::section_title("My projects".to_string(), &theme));
-            match &self.my_projects {
-                Load::Loading => body = body.child(Self::quiet("Loading\u{2026}", &theme)),
-                Load::Failed(error) => {
-                    let error = error.clone();
-                    body = body.child(self.render_list_error(
-                        "linear-projects-retry",
-                        &error,
-                        &theme,
-                        cx,
-                    ))
-                }
-                Load::Ready(all) => {
-                    let all = all.clone();
-                    if all.is_empty() {
-                        body = body.child(Self::quiet("No active projects", &theme));
+            let projects: Vec<LinearProjectSummary> = self
+                .my_projects
+                .ready()
+                .map(|all| {
+                    all.iter()
+                        .filter(|project| self.project_visible(project, &query))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let projects_open = !self.collapsed.contains(&PanelSection::MyProjects);
+            body = body.child(self.render_section_header(
+                PanelSection::MyProjects,
+                self.section_count(PanelSection::MyProjects, cx),
+                &theme,
+                window,
+                cx,
+            ));
+            if projects_open {
+                match &self.my_projects {
+                    Load::Loading => body = body.child(Self::quiet("Loading\u{2026}", &theme)),
+                    Load::Failed(error) => {
+                        let error = error.clone();
+                        body = body.child(self.render_list_error(
+                            "linear-projects-retry",
+                            &error,
+                            &theme,
+                            cx,
+                        ))
                     }
-                    let mut shown = 0;
-                    for project in &all {
-                        if let Some(row) = self.render_project(project, &query, &linked, &theme, cx)
-                        {
-                            shown += 1;
-                            body = body.child(row);
+                    Load::Ready(all) => {
+                        if all.is_empty() {
+                            body = body.child(Self::quiet("No active projects", &theme));
+                        } else if projects.is_empty() {
+                            body = body.child(Self::quiet("No matching projects", &theme));
                         }
-                    }
-                    if !all.is_empty() && shown == 0 {
-                        body = body.child(Self::quiet("No matching projects", &theme));
+                        for project in &projects {
+                            if let Some(row) =
+                                self.render_project(project, &query, &linked, &theme, cx)
+                            {
+                                body = body.child(row);
+                            }
+                        }
                     }
                 }
             }
@@ -1525,12 +1737,10 @@ impl Render for LinearPanel {
             .id("linear-panel")
             .debug_selector(|| "linear-panel".into())
             .track_focus(&self.focus)
-            .flex_none()
-            .w(px(LINEAR_PANEL_W))
-            .h_full()
+            .size_full()
             .flex()
             .flex_col()
-            .border_l_1()
+            .border_r_1()
             .border_color(theme.border)
             .bg(theme.surface)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
