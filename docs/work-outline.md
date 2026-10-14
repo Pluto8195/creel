@@ -194,6 +194,21 @@ Restructuring never deletes anything. A move that changes assigned Chats'
 instructions shows an **Undo** toast instead of asking first (see Instructions,
 revisions, and drift).
 
+Thin guide lines show what is nested under what. Each parent's line runs down
+from its disclosure triangle and turns into each child row (├, or └ for the
+last child), and it stops after the parent's last child. Chat rows get the same
+lines, slightly dimmer. The selected row's path up to its top-level item, and
+the lines of its own children, are drawn in the accent color. Hover over a line
+to highlight everything under that parent.
+
+While you drag a work item, a Chat, or a Linear issue, the Outline shows where
+it will land. A before/after line starts at the new parent's guide, so its
+depth tells you the parent. A target row for "into" drops is highlighted. A
+small label names the spot, for example **Into API** or **Before UI (under
+Launch v2)**. After a keyboard move (`⇧↑` / `⇧↓`, `⇥` / `⇧⇥`), the moved row and
+its new parent's line flash briefly. The flash is skipped when the system's
+Reduce Motion setting is on.
+
 Chats have no order inside an item, so with a Chat row selected the same keys
 move the Chat between work items instead:
 

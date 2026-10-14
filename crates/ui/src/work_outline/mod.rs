@@ -41,6 +41,7 @@ pub(crate) mod required_actions_view;
 pub(crate) mod restructure;
 pub(crate) mod revision_diff;
 pub(crate) mod store;
+pub(crate) mod tree_guides;
 
 #[allow(unused_imports)]
 pub(crate) use actions::WorkOutlineActions;
