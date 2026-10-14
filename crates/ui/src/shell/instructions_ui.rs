@@ -270,7 +270,6 @@ pub(super) struct FromChatDialog {
     /// `/` skill autocomplete inserting plain "`name` skill" text, listed
     /// for the chosen target's resolved execution root.
     pub(super) skills: Entity<SkillCompletion>,
-    skill_harness: zeron_proto::HarnessId,
     /// The Space's folder and owning device (the root's fallback).
     space_path: String,
     space_device: String,
@@ -290,7 +289,6 @@ impl FromChatDialog {
             &self.snapshot,
             &self.space_id,
             self.target_item().map(|(id, _)| id.as_str()),
-            self.skill_harness,
             &self.space_path,
             &self.space_device,
         )
@@ -908,6 +906,7 @@ impl Shell {
                 cx,
             )
             .over_modal()
+            .surface("instruction-from-chat")
         });
         let (space_path, space_device) = self
             .state
@@ -915,7 +914,6 @@ impl Shell {
             .space_row(&space_id)
             .map(|space| (space.path.clone(), space.device_id.clone()))
             .unwrap_or_default();
-        let skill_harness = self.skill_harness(cx);
         let input_events = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.save_instruction_from_chat(window, cx);
@@ -936,7 +934,6 @@ impl Shell {
             snapshot,
             input,
             skills,
-            skill_harness,
             space_path,
             space_device,
             op: OperationSlot::default(),

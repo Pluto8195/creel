@@ -278,6 +278,7 @@ impl WorkItemDetails {
                 SkillInsertion::InstructionText,
                 cx,
             )
+            .surface("work-item-instruction")
         });
         let execution_root_input = cx.new(|cx| {
             ComposerInput::with_context(
@@ -303,6 +304,7 @@ impl WorkItemDetails {
                 SkillInsertion::InstructionText,
                 cx,
             )
+            .surface("proposal-review")
         });
         let reason_input = cx.new(|cx| {
             ComposerInput::with_context(
@@ -930,9 +932,10 @@ impl WorkItemDetails {
     }
 
     /// Point the editors' skill lists at this item's resolved execution root
-    /// (the Space root's on the Space-root variant) for the harness a new
-    /// Chat would use. Cheap when nothing changed; runs every render so a
-    /// snapshot or configuration change re-targets an open list.
+    /// (the Space root's on the Space-root variant), whatever Chat the
+    /// composer shows (instructions are harness-agnostic). Cheap when
+    /// nothing changed; runs every render so a snapshot or configuration
+    /// change re-targets an open list.
     fn sync_skill_sources(&self, cx: &mut Context<Self>) {
         if self.instruction_draft.is_none() && self.proposal_review.is_none() {
             return;
@@ -940,11 +943,6 @@ impl WorkItemDetails {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
         };
-        let harness = self
-            .shell
-            .upgrade()
-            .map(|shell| shell.read(cx).skill_harness(cx))
-            .unwrap_or(zeron_proto::HarnessId::ClaudeCode);
         let (space_path, space_device) = self
             .state
             .read(cx)
@@ -955,7 +953,6 @@ impl WorkItemDetails {
             &snapshot,
             &self.space_id,
             Some(self.item_id.as_str()),
-            harness,
             &space_path,
             &space_device,
         );

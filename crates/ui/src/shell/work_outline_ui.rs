@@ -535,8 +535,10 @@ impl Shell {
         true
     }
 
-    /// The harness whose skills the Work Outline editors offer: the one a
-    /// new Chat would use (the composer's resolved harness), else Claude Code.
+    /// The composer's resolved harness (it follows the selected Chat), else
+    /// Claude Code: Start Chat's fallback before its own picker resolves.
+    /// Instruction editors never use it (their lists are harness-agnostic,
+    /// see `SkillSource::for_outline_scope`).
     pub(crate) fn skill_harness(&self, cx: &App) -> zeron_proto::HarnessId {
         self.composer
             .read(cx)
@@ -2760,5 +2762,9 @@ mod tests {
             shell.read_with(cx, |shell, _| shell.sidebar_notice.clone()),
             Some(crate::linear::LINEAR_OFF_NOTICE.into())
         );
+    }
+
+    mod instruction_skill_tests {
+        include!("instruction_skill_tests.rs");
     }
 }
