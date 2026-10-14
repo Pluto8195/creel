@@ -76,6 +76,9 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_USER_ACTION_REQUESTS,
     KIND_WORK_ITEM_INSTRUCTION_PROPOSALS,
     KIND_WORK_OUTLINE_SPACE_SETTINGS,
+    // Planning artifacts carry `spaceId` too: the Space cascade and the
+    // orphan sweep cover them.
+    zeron_proto::artifacts::KIND_ARTIFACTS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
