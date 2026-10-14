@@ -89,6 +89,17 @@ Account-wide methods (`Status`, `SetApiKey`, `ClearApiKey`, `Issue`, `MyIssues`,
   `externalSyncModifiedFields`, written as a system actor.
 - Chat ticket chips in Linear-enabled Spaces use the API client when a key is set; the `linear`
   CLI remains the fallback.
+- The sync writes as the `system` actor; the registry drops any title/description in a system
+  update whose field the user has marked, under the registry lock (no lost user edit when a sync
+  races an edit).
+- `work_outline_read_current` adds `linearIssue` (full `LinearIssueSummary`, from the cache or
+  a fetch bounded at 8 s; on failure `{identifier, url, unavailable: <code>}`) and
+  `linearProject` (`{id, name, url}` from the nearest project reference) only when the Space has
+  Linear on.
+- GraphQL documents live in `crates/engine/src/linear/queries.rs`. Project membership is
+  filtered server-side with `or: [{lead: {isMe: {eq: true}}}, {members: {some: {isMe: {eq:
+  true}}}}]`; project status (`completed`/`canceled`) is filtered on the client from
+  `Project.state` to avoid depending on the `ProjectStatus` filter shape.
 - Instruction drift ignores item title renames (compares instruction ids, text, order, and source
   kind); stored revision hashes and the envelope are unchanged.
 
