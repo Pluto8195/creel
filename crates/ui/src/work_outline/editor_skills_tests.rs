@@ -171,6 +171,92 @@ fn instruction_editors_insert_skills_as_plain_text(cx: &mut gpui::TestAppContext
     assert_eq!(skill_lists(&calls).last().unwrap()["cwd"], "/work/alpha");
 }
 
+/// Skill discovery answers per folder, like Claude Code does: the Space
+/// folder has its own skills (and the built-in `design` command), the `ui`
+/// submodule has the Storybook `design` skill and `design-system`.
+fn reply_by_folder(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    match params.get("cwd").and_then(serde_json::Value::as_str) {
+        Some("/work/alpha/ui") => Ok(serde_json::json!([
+            {"name": "design", "description": "Storybook design loop"},
+            {"name": "design-system", "description": "Design-system allowlist"},
+            {"name": "compact", "description": "Compact the conversation"},
+        ])),
+        Some(_) => Ok(serde_json::json!([
+            {"name": "db-query", "description": "Query the database"},
+            {"name": "design", "description": "Grant or revoke Design access"},
+        ])),
+        None => reply_ok(params),
+    }
+}
+
+/// The Design item's shape: rooted at a submodule folder below the Space
+/// path, with that submodule bound as a pinned, non-primary member.
+fn rooted_at_ui_submodule(snapshot: &mut WorkOutlineSnapshot, item: &str) {
+    let scope = zeron_proto::ExecutionScope::WorkItem {
+        work_item_id: item.into(),
+    };
+    let mut binding = execution_fixture::binding("repo:ui", "/work/alpha/ui", true, false);
+    binding.worktree_id = Some("checkout:ui".into());
+    binding.worktree_path = Some("/work/alpha/ui".into());
+    snapshot
+        .execution_configurations
+        .push(zeron_proto::ExecutionConfigurationView {
+            id: scope.row_id(),
+            space_id: "s1".into(),
+            work_item_id: Some(item.into()),
+            configuration: Some(zeron_proto::ExecutionConfiguration {
+                execution_root: "/work/alpha/ui".into(),
+                bindings: vec![binding],
+                schema: 1,
+            }),
+            invalid_reason: None,
+            updated_by: None,
+            updated_at: 1,
+        });
+}
+
+/// An item rooted at a subfolder (`<Space>/ui`) lists that subfolder's
+/// skills in its instruction editor. The same editor first listed the Space
+/// folder (no configuration yet); rooting the item there re-lists for `ui`
+/// and never answers from the Space folder's cached list.
+#[gpui::test]
+fn instruction_editor_lists_the_subfolder_root_skills_without_leaking_the_space_list(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) =
+        instruction_overview(cx, dir.path(), skills_snapshot(), reply_by_folder);
+    let details = open_details(&overview, vcx, HOUSEKEEPING);
+    vcx.update(|window, cx| {
+        details.update(cx, |d, cx| d.begin_instruction_draft(None, window, cx))
+    });
+    draw(vcx);
+    let (input, skills) = details.read_with(vcx, |d, _| d.editor("instruction"));
+    let skills = skills.unwrap();
+    typing_into(vcx, &input);
+    vcx.simulate_input("/");
+    draw(vcx);
+    assert_eq!(skill_lists(&calls).last().unwrap()["cwd"], "/work/alpha");
+    assert_eq!(open_names(vcx, &skills), vec!["db-query", "design"]);
+    vcx.simulate_keystrokes("escape");
+    draw(vcx);
+
+    // The user roots the item at the `ui` submodule.
+    let mut rooted = skills_snapshot();
+    rooted_at_ui_submodule(&mut rooted, HOUSEKEEPING);
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(rooted)), cx)
+    });
+    draw(vcx);
+    vcx.simulate_input(" /des");
+    draw(vcx);
+    let lists = skill_lists(&calls);
+    assert_eq!(lists.len(), 2, "the new folder is fetched, not served from cache");
+    assert_eq!(lists[1]["cwd"], "/work/alpha/ui");
+    assert_eq!(lists[1]["targetDeviceId"], "d");
+    assert_eq!(open_names(vcx, &skills), vec!["design", "design-system"]);
+}
+
 /// The instruction and description editors start at three rows, grow with
 /// their text up to 40% of the window, then scroll internally with the caret
 /// in view; their frames never cap (and clip) them.

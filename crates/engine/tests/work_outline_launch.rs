@@ -1764,3 +1764,66 @@ async fn diff_sync_skips_a_member_path_whose_checkout_is_not_the_bound_one() {
     }
     rig.core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// A work item rooted at a nested repository (a submodule folder below the
+// Space path) runs its Chat there, so the agent loads that folder's skills
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn item_rooted_at_a_nested_repository_runs_its_chat_there() {
+    let rig = rig().await;
+    // The Space folder is the superproject; `ui` is its own repository below
+    // it (a submodule checkout), bound as a pinned, non-primary member.
+    let ui = rig.repo.join("ui");
+    init_repo(&ui, "package.json");
+    let ui = std::fs::canonicalize(&ui).unwrap();
+    let identity = describe(&rig, &ui).await;
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({
+                "op": "configureExecution", "spaceId": SPACE,
+                "scope": { "type": "workItem", "workItemId": rig.item },
+                "configuration": {
+                    "executionRoot": ui.to_string_lossy(),
+                    "bindings": [{
+                        "repoId": identity.repo_id,
+                        "repoFingerprint": identity.repo_fingerprint,
+                        "repoPath": identity.repo_path,
+                        "member": true, "primary": false,
+                        "worktreeId": identity.checkout_id,
+                        "worktreePath": ui.to_string_lossy(),
+                    }],
+                    "schema": 1,
+                },
+                "operationId": "op-configure-ui",
+            }),
+        )
+        .await
+        .expect("configure the item at ui");
+
+    let reply = launch(&rig, &params(&rig, "op-ui", "launch ui"))
+        .await
+        .expect("launch");
+    assert_eq!(reply.execution_root, ui.to_string_lossy());
+    let chat = reply.chat_id.clone();
+    wait_for(
+        || turns_with(&rig, "launch ui").len() == 1,
+        "the first turn",
+    )
+    .await;
+    settle(&rig, &chat).await;
+    assert_eq!(
+        run_cwd(&rig, &turns_with(&rig, "launch ui")[0]),
+        ui.to_string_lossy(),
+        "the agent runs in the submodule, not the Space folder"
+    );
+    let row = rig.core.workspace.chat(&chat).unwrap().expect("chat row");
+    assert_eq!(
+        row.cwd.as_deref(),
+        Some(&*ui.to_string_lossy()),
+        "the composer's `/` list discovers skills in the chat's cwd"
+    );
+    rig.core.shutdown().await;
+}

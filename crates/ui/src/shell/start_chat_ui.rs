@@ -1674,6 +1674,69 @@ mod tests {
         );
     }
 
+    /// An item rooted at a submodule folder below the Space path (the
+    /// Design item: root `<Space>/ui`, `ui` bound as a pinned non-primary
+    /// member) lists that folder's skills, never the Space folder's.
+    #[gpui::test]
+    fn prompt_offers_skills_for_a_submodule_root_below_the_space(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let mut snapshot = execution_fixture::snapshot("s1");
+        let scope = ExecutionScope::WorkItem {
+            work_item_id: HOUSEKEEPING.into(),
+        };
+        let mut binding = execution_fixture::binding("repo:ui", "/work/alpha/ui", true, false);
+        binding.worktree_id = Some("checkout:ui".into());
+        binding.worktree_path = Some("/work/alpha/ui".into());
+        snapshot
+            .execution_configurations
+            .push(zeron_proto::ExecutionConfigurationView {
+                id: scope.row_id(),
+                space_id: "s1".into(),
+                work_item_id: Some(HOUSEKEEPING.into()),
+                configuration: Some(zeron_proto::ExecutionConfiguration {
+                    execution_root: "/work/alpha/ui".into(),
+                    bindings: vec![binding],
+                    schema: 1,
+                }),
+                invalid_reason: None,
+                updated_by: None,
+                updated_at: 1,
+            });
+        let calls = seed(
+            &shell,
+            cx,
+            snapshot,
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        let focus = shell.read_with(cx, |shell, cx| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            dialog.input_focus(cx)
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        cx.simulate_input("/");
+        draw(cx);
+        let lists = calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0]["cwd"], "/work/alpha/ui");
+        assert_eq!(lists[0]["targetDeviceId"], "d");
+        assert!(!prompt_skills(&shell, cx).is_empty());
+    }
+
     /// The prompt grows with its text from three rows up to 40% of the
     /// window, then scrolls internally with the caret in view; the wheel
     /// scrolls it; nothing caps (and clips) it from outside.
