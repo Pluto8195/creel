@@ -25,7 +25,7 @@ impl Shell {
         self.open_settings(SettingsSection::Linear, cx);
     }
 
-    /// Open the Overview's Linear panel on `space_id`.
+    /// Open the Overview's Linear panel (its left column) on `space_id`.
     pub(crate) fn open_linear_panel(&mut self, space_id: Option<String>, cx: &mut Context<Self>) {
         if !matches!(self.route, Route::Overview) {
             self.open_overview(cx);

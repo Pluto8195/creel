@@ -23,6 +23,7 @@ pub(crate) mod client;
 pub(crate) mod masked_input;
 pub(crate) mod menu;
 pub(crate) mod panel;
+pub(crate) mod prefs;
 pub(crate) mod settings_page;
 pub(crate) mod store;
 
@@ -32,6 +33,10 @@ use zeron_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE, LINE
 
 #[allow(unused_imports)]
 pub(crate) use client::{LinearFailure, LinearUiError};
+
+/// What the Linear toggle says while no visible Space has Linear on.
+pub(crate) const LINEAR_OFF_NOTICE: &str =
+    "Linear is off for every Space \u{2014} turn it on in a Space\u{2019}s details";
 
 /// Where to create a personal API key (opened in the external browser).
 pub(crate) const API_KEY_SETTINGS_URL: &str = "https://linear.app/settings/account/security";

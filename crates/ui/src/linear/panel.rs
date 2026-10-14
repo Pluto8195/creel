@@ -1,6 +1,7 @@
-//! The Linear panel: the Overview's right-side surface for Linear-enabled
-//! Spaces (same slot rules as Required Actions: Work Item Details render
-//! over it; closing them shows it again).
+//! The Linear panel: the Overview's left column for Linear-enabled Spaces,
+//! beside the Outline/List/Canvas body and independent of the right slot
+//! (chat panel, Work Item Details, Required Actions). The Overview owns the
+//! column (width, open state, overlay rule: `overview/linear_host.rs`).
 //!
 //! - **My issues** (`LinearMyIssues`) and **My projects**
 //!   (`LinearMyProjects`, each expandable to `LinearProjectIssues` with
@@ -41,9 +42,6 @@ use crate::work_outline::chips::TextTooltip;
 use crate::work_outline::model;
 use crate::work_outline::outline_view::OutlineDrag;
 use crate::work_outline::outline_view::linear_outline::LinearIssueDrag;
-
-/// Fixed width of the panel (the details surface's).
-pub(crate) const LINEAR_PANEL_W: f32 = crate::work_outline::details_panel::DETAILS_PANEL_W;
 
 /// Whether the palette lists Open Linear: some Space has Linear on.
 pub(crate) fn palette_visible(state: &AppState) -> bool {
@@ -313,6 +311,22 @@ impl LinearPanel {
 
     pub(crate) fn query(&self, cx: &gpui::App) -> String {
         self.search.read(cx).text().trim().to_lowercase()
+    }
+
+    /// Put the keyboard in the search box (the toggle hotkey's landing).
+    pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.search.focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Whether focus is anywhere inside the panel.
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focus.contains_focused(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn search_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.search.focus_handle(cx).is_focused(window)
     }
 
     #[cfg(test)]
@@ -1525,12 +1539,10 @@ impl Render for LinearPanel {
             .id("linear-panel")
             .debug_selector(|| "linear-panel".into())
             .track_focus(&self.focus)
-            .flex_none()
-            .w(px(LINEAR_PANEL_W))
-            .h_full()
+            .size_full()
             .flex()
             .flex_col()
-            .border_l_1()
+            .border_r_1()
             .border_color(theme.border)
             .bg(theme.surface)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {

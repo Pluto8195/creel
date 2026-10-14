@@ -2703,10 +2703,13 @@ pub struct Overview {
     required_actions_panel:
         Option<Entity<crate::work_outline::required_actions_view::RequiredActionsList>>,
     _required_actions_events: Option<Subscription>,
-    /// The Linear panel (Linear-enabled Spaces only): right slot, under
-    /// Work Item Details and Required Actions.
+    /// The Linear panel (Linear-enabled Spaces only): its own left column,
+    /// independent of the right slot. `Some` while it shows.
     linear_panel: Option<Entity<crate::linear::panel::LinearPanel>>,
     _linear_panel_events: Option<Subscription>,
+    /// The Linear column's persisted open state and width, its open/close
+    /// tween, and an in-flight edge drag (`overview/linear_host.rs`).
+    linear_column: linear_host::LinearColumnState,
     /// Tests run without a Shell: Start Chat requests land here.
     #[cfg(test)]
     pub(crate) captured_start_chat: Option<(String, String)>,
@@ -2948,6 +2951,7 @@ impl Overview {
             _required_actions_events: None,
             linear_panel: None,
             _linear_panel_events: None,
+            linear_column: Default::default(),
             #[cfg(test)]
             captured_start_chat: None,
             _details_events: None,
@@ -3135,6 +3139,7 @@ impl Overview {
         }
         self.pr_collapsed_sections
             .extend(pr_collapsed_sections_from_flags(&flags));
+        self.restore_linear_column(&flags);
         self.acknowledged_done
             .extend(overview_positions::load_string_set(
                 &data_dir,
@@ -5018,6 +5023,7 @@ impl Overview {
         Some(
             div()
                 .id("overview-chat-panel")
+                .debug_selector(|| "overview-chat-panel".into())
                 .flex_none()
                 .w(px(CHAT_PANEL_W))
                 .h_full()
@@ -6880,31 +6886,61 @@ impl Render for Overview {
         // One right-side panel. Work Item Details, while open, renders in the
         // slot without touching the chat panel / peek state underneath, so
         // closing it brings back exactly what was there.
-        let panel = if let Some(details) = self.work_item_details.clone() {
+        // The Linear panel is NOT in this slot: it has its own left column
+        // (below), so it shows alongside whichever of these is up.
+        let (panel, right_w) = if let Some(details) = self.work_item_details.clone() {
             let space_id = details.read(cx).space_id.clone();
             let snapshot = self.outline_snapshot(&space_id, cx);
             let chats = self.outline_chats.clone();
             details.update(cx, |details, _| details.set_data(snapshot, chats));
-            Some(div().h_full().flex_none().child(details).into_any_element())
+            (
+                Some(div().h_full().flex_none().child(details).into_any_element()),
+                crate::work_outline::details_panel::DETAILS_PANEL_W,
+            )
         } else if let Some(list) = self.required_actions_panel.clone() {
             let spaces = self.required_action_spaces(cx);
             let chats = self.outline_chats.clone();
             list.update(cx, |list, _| list.set_data(spaces, chats));
-            Some(div().h_full().flex_none().child(list).into_any_element())
-        } else if let Some(panel) = self.render_linear_panel_slot(cx) {
-            Some(panel)
-        } else if self.subagent_peek.is_some() {
-            self.render_subagent_peek(&theme, cx)
+            (
+                Some(div().h_full().flex_none().child(list).into_any_element()),
+                crate::work_outline::details_panel::DETAILS_PANEL_W,
+            )
         } else {
-            self.render_chat_panel(&theme, cx)
+            let panel = if self.subagent_peek.is_some() {
+                self.render_subagent_peek(&theme, cx)
+            } else {
+                self.render_chat_panel(&theme, cx)
+            };
+            let width = if panel.is_some() { CHAT_PANEL_W } else { 0.0 };
+            (panel, width)
+        };
+        let pr_w = if pr_sidebar.is_some() {
+            PR_SIDEBAR_W
+        } else {
+            0.0
+        };
+        let linear = self.render_linear_column(pr_w + right_w, window, cx);
+        let (linear_inline, linear_overlay) = match linear {
+            Some(linear_host::LinearSlot::Inline(el)) => (Some(el), None),
+            Some(linear_host::LinearSlot::Overlay(el)) => (None, Some(el)),
+            None => (None, None),
         };
 
-        // `[PR sidebar | main | chat panel]`: both side panels are
-        // `flex_none` fixed widths and `main` is `flex_1().min_w_0()`, so
-        // the list/canvas is what shrinks when either (or both) is open.
+        // `[PR sidebar | Linear | main | right panel]`: the side panels are
+        // `flex_none` widths and `main` is `flex_1().min_w_0()`, so the
+        // list/canvas/Outline is what shrinks. The Linear column yields
+        // first (down to its minimum, then it overlays `main`) so the body
+        // keeps `linear_host::OVERVIEW_BODY_MIN_W`.
         div()
             .size_full()
+            .relative()
             .flex()
+            .child(self.linear_width_capture())
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<linear_host::LinearPanelResize>, _, cx| {
+                    this.linear_resize_drag(f32::from(event.event.position.x), cx)
+                },
+            ))
             // Escape closes a subagent peek from anywhere in the overview
             // (the peek panel's own handler covers focus inside it; this
             // covers focus elsewhere here, e.g. the search box).
@@ -6918,17 +6954,25 @@ impl Render for Overview {
                 } else if this.required_actions_panel.is_some() {
                     this.close_required_actions(cx);
                     cx.stop_propagation();
-                } else if this.linear_panel.is_some() {
-                    this.close_linear_panel(cx);
-                    cx.stop_propagation();
                 } else if this.subagent_peek.is_some() {
                     this.close_subagent_peek(cx);
                     cx.stop_propagation();
                 }
             }))
             .when_some(pr_sidebar, |el, sidebar| el.child(sidebar))
+            .when_some(linear_inline, |el, linear| el.child(linear))
             .child(main)
             .when_some(panel, |el, panel| el.child(panel))
+            .when_some(linear_overlay, |el, linear| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(pr_w))
+                        .child(linear),
+                )
+            })
     }
 }
 
@@ -9926,6 +9970,17 @@ impl Overview {
         // Load saved view prefs before changing mode: `set_mode` persists the
         // in-memory prefs, which would overwrite the saved file with defaults.
         self.ensure_prefs_loaded(cx);
+        // The Linear toggle reads where focus is now, and keeps the mode: the
+        // column sits beside every body. Only its notice needs the Outline.
+        if command == WorkOutlineCommand::OpenLinear {
+            if let Err(notice) = self.toggle_linear_panel(window, cx) {
+                self.set_mode(OverviewMode::Outline, cx);
+                self.outline
+                    .update(cx, |outline, cx| outline.show_notice(notice, cx));
+            }
+            cx.notify();
+            return;
+        }
         self.set_mode(OverviewMode::Outline, cx);
         let _ = self.rows(cx);
         self.sync_outline(cx);
@@ -9983,7 +10038,8 @@ impl Overview {
                 self.open_required_actions(cx);
                 Ok(())
             }
-            WorkOutlineCommand::OpenLinear => self.open_linear_panel(None, cx),
+            // Handled above, before the Outline takes focus.
+            WorkOutlineCommand::OpenLinear => Ok(()),
             WorkOutlineCommand::StartChatForWorkItem => {
                 match self.outline.read(cx).selected_item() {
                     Some((space_id, item_id)) => self.start_chat_for_item(space_id, item_id, cx),
@@ -10076,9 +10132,9 @@ impl Overview {
         {
             return Some(chat_id);
         }
-        let panel_visible = self.work_item_details.is_none()
-            && self.required_actions_panel.is_none()
-            && self.linear_panel.is_none();
+        // The Linear panel has its own column; it never hides the chat panel.
+        let panel_visible =
+            self.work_item_details.is_none() && self.required_actions_panel.is_none();
         panel_visible
             .then(|| self.shown_panel_chat(cx))
             .flatten()
@@ -10117,7 +10173,6 @@ impl Overview {
         if self.view_mode != OverviewMode::Outline
             || self.work_item_details.is_some()
             || self.required_actions_panel.is_some()
-            || self.linear_panel.is_some()
             || self.subagent_peek.is_some()
         {
             return;

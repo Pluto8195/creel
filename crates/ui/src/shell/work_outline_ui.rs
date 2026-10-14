@@ -712,6 +712,16 @@ impl Shell {
         {
             return;
         }
+        // The Linear toggle is a no-op (with a notice) while no Space has
+        // Linear on: it never leaves the current route just to explain.
+        if command == WorkOutlineCommand::OpenLinear
+            && !matches!(self.route, Route::Overview)
+            && !crate::linear::panel::palette_visible(self.state.read(cx))
+        {
+            self.sidebar_notice = Some(crate::linear::LINEAR_OFF_NOTICE.into());
+            cx.notify();
+            return;
+        }
         if !matches!(self.route, Route::Overview) {
             self.open_overview(cx);
         }
