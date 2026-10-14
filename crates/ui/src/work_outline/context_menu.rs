@@ -96,6 +96,8 @@ pub(crate) enum MenuAction {
     DeleteSpace(String),
     /// Linear integration entries (`crate::linear::menu`).
     Linear(crate::linear::menu::LinearMenuAction),
+    /// PR review sync entries (`crate::github::menu`).
+    Github(crate::github::menu::GithubMenuAction),
 }
 
 impl MenuAction {
@@ -120,6 +122,8 @@ impl MenuAction {
             // Archive session acts on the selected row in the tree.
             Self::Archive | Self::ArchiveChat(_) => HintKey::App(ShortcutId::ArchiveSession),
             Self::Linear(action) => action.hint(),
+            // Entries set their own (⌘↩ on a PR review item's Review).
+            Self::Github(_) => HintKey::None,
             Self::StatusPage
             | Self::Back
             | Self::SetStatus(_)
@@ -393,6 +397,11 @@ impl OutlineView {
                     self.snapshot(&item.space_id),
                     &item.item_id,
                 );
+                if let Some(snapshot) = self.snapshot(&item.space_id).filter(|snapshot| {
+                    crate::github::space_available(self.state.read(cx), &item.space_id, snapshot)
+                }) {
+                    crate::github::menu::insert_item_entries(&mut menu, snapshot, &item.item_id);
+                }
                 Some(menu)
             }
             OutlineRowKind::Chat(chat) => Some(self.chat_context_menu(key, chat)),

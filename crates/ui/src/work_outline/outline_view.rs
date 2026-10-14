@@ -46,6 +46,8 @@ use crate::theme::Theme;
 pub(crate) mod context_menu;
 #[path = "linear_outline.rs"]
 pub(crate) mod linear_outline;
+#[path = "pr_sync_outline.rs"]
+pub(crate) mod pr_sync_outline;
 #[path = "space_roots.rs"]
 pub(crate) mod space_roots;
 
@@ -144,6 +146,12 @@ pub(crate) enum OutlineEvent {
         space_id: String,
         item_id: String,
         issue: Box<zeron_proto::linear::LinearIssueSummary>,
+    },
+    /// A GitHub panel PR was dropped on a work item: create it there.
+    PullRequestDropped {
+        space_id: String,
+        item_id: String,
+        pr: Box<zeron_proto::PullRequestStatusSummary>,
     },
 }
 
@@ -364,6 +372,8 @@ pub(crate) enum OutlineDrag {
     Space { space_id: String, title: String },
     /// A Linear panel issue: dropped on a work item, creates it there.
     LinearIssue(linear_outline::LinearIssueDrag),
+    /// A GitHub panel PR: dropped on a work item, creates it there.
+    PullRequest(pr_sync_outline::PrDrag),
 }
 
 impl OutlineDrag {
@@ -373,6 +383,7 @@ impl OutlineDrag {
                 title
             }
             Self::LinearIssue(drag) => &drag.issue.title,
+            Self::PullRequest(drag) => &drag.pr.title,
         }
     }
 }
@@ -2077,7 +2088,9 @@ impl OutlineView {
             }
             // Space roots only drop among Space roots; Linear issues create
             // through `linear_outline`.
-            OutlineDrag::Space { .. } | OutlineDrag::LinearIssue(_) => None,
+            OutlineDrag::Space { .. } | OutlineDrag::LinearIssue(_) | OutlineDrag::PullRequest(_) => {
+                None
+            }
         }
     }
 
@@ -2102,7 +2115,9 @@ impl OutlineView {
             let zone = match drag {
                 // A Chat (or a Linear issue) goes into the item wherever it
                 // lands on the row.
-                OutlineDrag::Chat { .. } | OutlineDrag::LinearIssue(_) => DropZone::Into,
+                OutlineDrag::Chat { .. }
+                | OutlineDrag::LinearIssue(_)
+                | OutlineDrag::PullRequest(_) => DropZone::Into,
                 OutlineDrag::Item { .. } | OutlineDrag::Space { .. } => restructure::drop_zone(
                     f32::from(position.y - bounds.top()),
                     f32::from(bounds.size.height),
@@ -2112,6 +2127,7 @@ impl OutlineView {
                 OutlineDrag::LinearIssue(drag) => {
                     self.accepts_linear_drop(drag, target.0, target.1)
                 }
+                OutlineDrag::PullRequest(drag) => self.accepts_pr_drop(drag, target.0, target.1),
                 _ => self.drop_mutation(drag, target.0, target.1, zone).is_some(),
             };
             accepted.then(|| DropHint {
@@ -2146,6 +2162,10 @@ impl OutlineView {
         };
         if let OutlineDrag::LinearIssue(drag) = drag {
             self.drop_linear_issue(drag, target, cx);
+            return;
+        }
+        if let OutlineDrag::PullRequest(drag) = drag {
+            self.drop_pull_request(drag, target, cx);
             return;
         }
         if let Some(mutation) = self.drop_mutation(drag, target.0, target.1, hint.zone) {
@@ -2614,7 +2634,7 @@ impl OutlineView {
                             cx,
                         )
                     });
-                    let linear = self.linear_chips(&key, item, theme, cx);
+                    let linear = self.external_chips(&key, item, theme, cx);
                     item_body(
                         &key,
                         item,

@@ -23,13 +23,28 @@ impl Shell {
         action: PrReviewAction,
         cx: &mut Context<Self>,
     ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
+        self.start_pr_review_in_item(reference, action, None, cx)
+    }
+
+    /// [`Self::start_pr_review`] filed under work item `item` (`(spaceId,
+    /// workItemId)`): the new Chat is associated with that item (PR review
+    /// sync: ⌘↩ on a PR item, the GitHub panel's Review).
+    pub(crate) fn start_pr_review_in_item(
+        &mut self,
+        reference: PrReference,
+        action: PrReviewAction,
+        item: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
         // The composer's agent for new chats: exactly what a brand-new
         // regular chat would start with (sticky harness, model, reasoning,
         // options) — never the selected chat's config. The host defaults to
         // Claude Code when nothing resolves.
         let pickers = self.composer.read(cx).pickers().clone();
         let config = crate::pickers::Pickers::new_chat_config(&pickers, cx);
-        let params = self.pr_review_ops.params(&reference, action, config);
+        let params = self
+            .pr_review_ops
+            .params_in_item(&reference, action, config, item);
 
         #[cfg(test)]
         if let Some(script) = self.pr_review_script.clone() {

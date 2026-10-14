@@ -94,6 +94,7 @@ use crate::work_outline::store::WorkOutlineSnapshot;
 use crate::work_outline::{WorkOutlineCommand, WorkOutlineLoad};
 
 /// The Linear panel host (`overview/linear_host.rs`).
+mod github_host;
 mod linear_host;
 
 /// A chat with no activity for longer than this, and not currently
@@ -2710,6 +2711,17 @@ pub struct Overview {
     /// The Linear column's persisted open state and width, its open/close
     /// tween, and an in-flight edge drag (`overview/linear_host.rs`).
     linear_column: linear_host::LinearColumnState,
+    /// The GitHub section of the same left column (PR review sync;
+    /// `overview/github_host.rs`). `Some` while it shows.
+    github_panel: Option<Entity<crate::github::panel::GithubPanel>>,
+    _github_panel_events: Option<Subscription>,
+    /// Tests run without a Shell: PR review starts land here.
+    #[cfg(test)]
+    pub(crate) captured_pr_review: Option<(
+        zeron_proto::PullRequestRef,
+        Option<(String, String)>,
+        zeron_proto::PrReviewAction,
+    )>,
     /// "Add issues from <project>…" on a project-linked item: a picker over
     /// the Overview, independent of the Linear panel (`linear_host.rs`).
     project_issue_picker: Option<Entity<crate::linear::project_picker::ProjectIssuePicker>>,
@@ -2843,6 +2855,11 @@ impl Overview {
             } => {
                 this.linear_issue_dropped(space_id.clone(), item_id.clone(), (**issue).clone(), cx)
             }
+            OutlineEvent::PullRequestDropped {
+                space_id,
+                item_id,
+                pr,
+            } => this.pull_request_dropped(space_id.clone(), item_id.clone(), (**pr).clone(), cx),
             // The toolbar's Hidden projects count.
             OutlineEvent::SpacesArranged => cx.notify(),
         });
@@ -2956,6 +2973,10 @@ impl Overview {
             linear_panel: None,
             _linear_panel_events: None,
             linear_column: Default::default(),
+            github_panel: None,
+            _github_panel_events: None,
+            #[cfg(test)]
+            captured_pr_review: None,
             project_issue_picker: None,
             _project_issue_picker_events: None,
             #[cfg(test)]
@@ -10348,6 +10369,16 @@ impl Overview {
         let item = snapshot.item(&item_id).ok_or("That work item is gone")?;
         if item.archived_at.is_some() {
             return Err("Restore the work item to start a Chat in it");
+        }
+        // A PR review item (PR review sync) starts a code review of its PR,
+        // filed under the item, instead of the generic Start Chat dialog.
+        if crate::github::pr_review_item(&snapshot, &item_id).is_some() {
+            return self.start_pr_review_for_item(
+                space_id,
+                item_id,
+                zeron_proto::PrReviewAction::CodeReview,
+                cx,
+            );
         }
         if crate::work_outline::launch::instructions_changed_since_last_launch(&snapshot, &item_id)
         {

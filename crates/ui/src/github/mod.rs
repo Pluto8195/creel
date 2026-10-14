@@ -25,6 +25,8 @@
 
 pub(crate) mod chip;
 pub(crate) mod client;
+pub(crate) mod menu;
+pub(crate) mod panel;
 pub(crate) mod prefs;
 pub(crate) mod store;
 
@@ -52,6 +54,33 @@ pub(crate) fn item_pull_request(
         pr.url = reference.url.clone();
     }
     Some(pr)
+}
+
+/// The PR of a PR review item: a live item linking a PR that the sync
+/// manages (`externalSyncState` from `github`), that sits directly under
+/// the sync destination, or whose title starts with `<repo>#<number>` (the
+/// panel's manual Create). ⌘↩ on such an item starts a code review of the
+/// PR instead of the generic Start Chat; any other PR-linked item (a
+/// feature item linking its own PR) keeps the generic Start Chat.
+pub(crate) fn pr_review_item(
+    snapshot: &WorkOutlineSnapshot,
+    item_id: &str,
+) -> Option<PullRequestRef> {
+    let item = snapshot
+        .item(item_id)
+        .filter(|item| item.archived_at.is_none())?;
+    let pr = item_pull_request(snapshot, item_id)?;
+    let synced = item
+        .external_sync_state
+        .as_ref()
+        .is_some_and(|state| state.provider == GITHUB_PROVIDER);
+    let under_destination = live_destination(snapshot)
+        .is_some_and(|destination| item.parent_work_item_id.as_deref() == Some(destination));
+    let titled = item
+        .title
+        .to_lowercase()
+        .starts_with(&format!("{}#{}", pr.repo, pr.number).to_lowercase());
+    (synced || under_destination || titled).then_some(pr)
 }
 
 /// The `StartPrReview` reference of `pr`.
