@@ -60,6 +60,7 @@ use crate::transcript::{self, Transcript, TranscriptEvent};
 use crate::workspace_links::resolve_workspace_file_link;
 
 mod actions_ui;
+pub(crate) mod artifacts_ui;
 mod closeout_ui;
 mod command_palette;
 mod files_panel;
@@ -578,6 +579,9 @@ pub enum RightSurface {
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
     /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
+    /// A planning artifact (`zeron-artifact:` links) — keys
+    /// `Shell::artifact_tabs`.
+    Artifact(u64),
 }
 
 fn push_unique_right_surface(tabs: &mut Vec<RightSurface>, surface: RightSurface) -> bool {
@@ -1612,6 +1616,8 @@ pub struct Shell {
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
+    /// Planning artifact tabs (`shell/artifacts_ui.rs`).
+    pub(crate) artifact_tabs: artifacts_ui::ArtifactTabs,
     browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
     browser_subs: std::collections::HashMap<u64, Subscription>,
     browser_seq: u64,
@@ -2077,6 +2083,7 @@ impl Shell {
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
+            artifact_tabs: Default::default(),
             subagent_seq: 0,
             browsers: std::collections::HashMap::new(),
             browser_subs: std::collections::HashMap::new(),
@@ -2805,6 +2812,9 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone(), false, None)),
+                RightSurface::Artifact(id) => self
+                    .artifact_tab_title(*id, cx)
+                    .map(|title| (*surface, title, false, None)),
                 RightSurface::Browser(id) => self.browsers.get(id).map(|browser| {
                     let browser = browser.read(cx);
                     (
@@ -2830,6 +2840,7 @@ impl Shell {
             | RightSurface::Diff(_)
             | RightSurface::Terminal(_)
             | RightSurface::Subagent(_)
+            | RightSurface::Artifact(_)
             | RightSurface::Browser(_) => {
                 return None;
             }
@@ -2927,7 +2938,7 @@ impl Shell {
             }
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
-            RightSurface::Subagent(_) | RightSurface::Browser(_) => {}
+            RightSurface::Subagent(_) | RightSurface::Browser(_) | RightSurface::Artifact(_) => {}
             RightSurface::Picker => {}
         }
         self.sync_explorer_selection(cx);
@@ -3047,6 +3058,14 @@ impl Shell {
             return LinkOutcome::Rejected;
         }
         if activation.target.navigation.is_err() {
+            if crate::artifacts::model::link_target(&activation.target.original).is_some() {
+                if activation.action == LinkAction::Copy {
+                    return LinkOutcome::Rejected;
+                }
+                self.leave_overview_for_chat(cx);
+                self.open_artifact_link(&activation.target.original, window, cx);
+                return LinkOutcome::Internal;
+            }
             if let Some(outcome) = self.activate_workspace_artifact(activation, window, cx) {
                 if outcome != LinkOutcome::Rejected {
                     self.leave_overview_for_chat(cx);
@@ -3788,6 +3807,7 @@ impl Shell {
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
+            RightSurface::Artifact(id) => self.close_artifact_tab(id, cx),
             RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
@@ -5582,6 +5602,16 @@ impl Shell {
                     }
                     self.browser_subs.remove(id);
                 }
+            }
+            let artifacts: Vec<u64> = tabs
+                .iter()
+                .filter_map(|surface| match surface {
+                    RightSurface::Artifact(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            for id in artifacts {
+                self.close_artifact_tab(id, cx);
             }
         }
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
@@ -10414,6 +10444,10 @@ impl Shell {
                     .cloned()
                     .map(|browser| browser.into_any_element())
                     .unwrap_or_else(|| self.render_surface_picker(cx)),
+                RightSurface::Artifact(id) => self
+                    .artifact_tab(id)
+                    .map(|tab| tab.into_any_element())
+                    .unwrap_or_else(|| self.render_surface_picker(cx)),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -10778,6 +10812,11 @@ impl Shell {
                     })
                     .unwrap_or(icons::LIST),
                 RightSurface::Subagent(_) => icons::BOT,
+                RightSurface::Artifact(id) => self
+                    .artifact_tab(id)
+                    .and_then(|tab| tab.read(cx).artifact(cx))
+                    .map(|artifact| crate::artifacts::model::kind_icon(artifact.kind))
+                    .unwrap_or(icons::DOCUMENT),
                 RightSurface::Terminal(_) => icons::TERMINAL,
                 RightSurface::Browser(_) => icons::GLOBE,
                 RightSurface::Picker => icons::PLUS,
@@ -11978,6 +12017,22 @@ impl Render for Shell {
         for (id, browser) in &self.browsers {
             let presentation = crate::browser::model::presentation(
                 browser_active && selected_surface == RightSurface::Browser(*id),
+                browser_dragging,
+            );
+            browser.update(cx, |browser, cx| {
+                #[cfg(target_os = "macos")]
+                {
+                    browser.set_resize_inset(browser_resize_inset, cx);
+                    browser.set_right_occlusion(browser_overlay_width, cx);
+                }
+                browser.set_shortcuts(&self.settings.keymap);
+                browser.set_presentation(presentation, cx);
+            });
+        }
+        // Artifact tabs embed a web view the same way.
+        for (id, browser) in self.artifact_browsers(cx) {
+            let presentation = crate::browser::model::presentation(
+                browser_active && selected_surface == RightSurface::Artifact(id),
                 browser_dragging,
             );
             browser.update(cx, |browser, cx| {

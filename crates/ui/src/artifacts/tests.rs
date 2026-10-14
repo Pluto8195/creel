@@ -129,3 +129,329 @@ fn links_resolve_by_id_and_by_stored_origin_or_preview_path() {
     assert_eq!(model::link_target("zeron-artifact:abc"), Some("abc"));
     assert_eq!(model::link_target("zeron-file:abc"), None);
 }
+
+// --------------------------------------------------------------------------
+// Artifact tab (headless gpui, fake web renderer)
+// --------------------------------------------------------------------------
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Mutex;
+
+use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+use zeron_proto::{ArtifactContentEncoding, ArtifactContentReply};
+use zeron_rpc::RpcError;
+
+use super::document::MERMAID_SRC;
+use super::model::WebKind;
+use super::tab::{ArtifactTab, CompareState, FakeWebHost, Presenter};
+use crate::state::AppState;
+use crate::theme::Theme;
+use crate::work_outline::WorkOutlineActions;
+
+pub(crate) type Calls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+pub(crate) type Reply =
+    Arc<dyn Fn(&str, &serde_json::Value) -> Result<serde_json::Value, RpcError> + Send + Sync>;
+pub(crate) type Shown = Rc<RefCell<Vec<(String, String)>>>;
+
+pub(crate) fn init_ui(cx: &mut TestAppContext) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_dir = dir.path().join("settings");
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        cx.set_global(Theme::default());
+        crate::settings::init(crate::settings::UiSettings::default(), &settings_dir, cx);
+    });
+    dir
+}
+
+/// A scripted engine: records `(method, params)` and answers with `reply`.
+pub(crate) fn scripted(reply: Reply) -> (WorkOutlineActions, Calls) {
+    let calls: Calls = Arc::default();
+    let sink = calls.clone();
+    let actions = WorkOutlineActions::scripted(Arc::new(move |method, params| {
+        sink.lock()
+            .unwrap()
+            .push((method.to_owned(), params.clone()));
+        reply(method, &params)
+    }));
+    (actions, calls)
+}
+
+pub(crate) fn content_reply(
+    kind: ArtifactKind,
+    revision: u32,
+    content: &str,
+    encoding: ArtifactContentEncoding,
+) -> serde_json::Value {
+    serde_json::to_value(ArtifactContentReply {
+        artifact_id: id(1),
+        kind,
+        revision,
+        hash: "h".into(),
+        mime_type: if kind == ArtifactKind::Image {
+            "image/png".into()
+        } else {
+            "text/plain".into()
+        },
+        encoding,
+        content: content.into(),
+        size_bytes: content.len() as u64,
+        wrapper_html: None,
+    })
+    .unwrap()
+}
+
+fn open_tab(
+    cx: &mut TestAppContext,
+    artifact: ArtifactView,
+    reply: Reply,
+) -> (Entity<ArtifactTab>, Calls, Shown, &mut VisualTestContext) {
+    let (actions, calls) = scripted(reply);
+    let shown: Shown = Rc::default();
+    let factory = FakeWebHost::factory(shown.clone());
+    let state = cx.new(|_| AppState::new());
+    state.update(cx, |state, _| {
+        state.local_device_id = Some("dev".into());
+        state.work_outline_actions_override = Some(actions);
+        state.set_test_artifacts(snapshot(vec![artifact.clone()]));
+    });
+    let artifact_id = artifact.id.clone();
+    let (tab, vcx) = cx.add_window_view(move |window, cx| {
+        ArtifactTab::new(state, None, artifact_id, factory, window, cx)
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    (tab, calls, shown, vcx)
+}
+
+fn content_calls(calls: &Calls) -> Vec<serde_json::Value> {
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_CONTENT)
+        .map(|(_, params)| params.clone())
+        .collect()
+}
+
+fn reply_with(value: serde_json::Value) -> Reply {
+    Arc::new(move |_, _| Ok(value.clone()))
+}
+
+#[gpui::test]
+fn each_kind_renders_with_its_component(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let utf8 = ArtifactContentEncoding::Utf8;
+    let cases: Vec<(ArtifactKind, String, ArtifactContentEncoding, Presenter)> = vec![
+        (ArtifactKind::Markdown, "# Plan\n\nBody".into(), utf8, Presenter::Markdown),
+        (
+            ArtifactKind::HtmlFragment,
+            "<div>flow</div>".into(),
+            utf8,
+            Presenter::Web(WebKind::Fragment),
+        ),
+        (
+            ArtifactKind::HtmlPage,
+            "<!doctype html><html><head></head><body>page</body></html>".into(),
+            utf8,
+            Presenter::Web(WebKind::Page),
+        ),
+        (
+            ArtifactKind::Mermaid,
+            "graph TD; A-->B".into(),
+            utf8,
+            Presenter::Web(WebKind::Mermaid),
+        ),
+        (
+            ArtifactKind::Image,
+            // 1×1 PNG.
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".into(),
+            ArtifactContentEncoding::Base64,
+            Presenter::Image,
+        ),
+        (
+            ArtifactKind::Options,
+            r#"{"title":"Layouts","options":[{"id":"a","label":"Grid","path":"a.fragment.html"}]}"#.into(),
+            utf8,
+            Presenter::Options,
+        ),
+    ];
+    for (kind, content, encoding, expected) in cases {
+        let artifact = artifact(&id(1), "Thing", kind);
+        let reply = reply_with(content_reply(kind, 2, &content, encoding));
+        let (tab, calls, shown, vcx) = open_tab(cx, artifact, reply);
+        let presenter = tab.read_with(vcx, |tab, _| tab.presenter());
+        assert_eq!(presenter, expected, "{kind:?}");
+        let calls = content_calls(&calls);
+        assert_eq!(calls[0]["artifactId"], id(1));
+        assert!(calls[0].get("revision").is_none(), "current file first");
+        // Same-device artifacts are read locally (no forwarding).
+        assert!(calls[0].get("targetDeviceId").is_none());
+        let documents = shown.borrow();
+        match kind {
+            ArtifactKind::HtmlFragment => {
+                assert_eq!(documents.len(), 1);
+                assert!(documents[0].1.contains("sandbox=\"allow-scripts\""));
+                assert!(documents[0].1.contains("&lt;div&gt;flow&lt;/div&gt;"));
+            }
+            ArtifactKind::HtmlPage => {
+                assert!(documents[0].1.contains("srcdoc="));
+                assert!(documents[0].1.contains("sandbox=\"allow-scripts\""));
+            }
+            ArtifactKind::Mermaid => {
+                assert!(documents[0].1.contains(MERMAID_SRC));
+            }
+            _ => assert!(documents.is_empty(), "{kind:?} renders natively"),
+        }
+    }
+}
+
+#[gpui::test]
+fn options_open_their_fragment_through_the_companion_read(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let manifest =
+        r#"{"title":"Layouts","options":[{"id":"a","label":"Grid","path":"a.fragment.html"}]}"#;
+    let reply: Reply = Arc::new(move |_, params| {
+        Ok(if params.get("companion").is_some() {
+            content_reply(
+                ArtifactKind::HtmlFragment,
+                0,
+                "<p>grid</p>",
+                ArtifactContentEncoding::Utf8,
+            )
+        } else {
+            content_reply(
+                ArtifactKind::Options,
+                2,
+                manifest,
+                ArtifactContentEncoding::Utf8,
+            )
+        })
+    });
+    let (tab, calls, shown, vcx) = open_tab(
+        cx,
+        artifact(&id(1), "Layouts", ArtifactKind::Options),
+        reply,
+    );
+    let bounds = vcx.debug_bounds("artifact-option-a").expect("option row");
+    vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.presenter()),
+        Presenter::Web(WebKind::Fragment)
+    );
+    assert_eq!(content_calls(&calls)[1]["companion"], "a.fragment.html");
+    assert!(shown.borrow()[0].1.contains("&lt;p&gt;grid&lt;/p&gt;"));
+}
+
+#[gpui::test]
+fn revision_picker_loads_that_revision(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &format!("rev {revision}"),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, calls, _, vcx) =
+        open_tab(cx, artifact(&id(1), "Plan", ArtifactKind::Markdown), reply);
+    let picker = vcx
+        .debug_bounds("artifact-revision-picker")
+        .expect("picker");
+    vcx.simulate_click(picker.center(), gpui::Modifiers::default());
+    vcx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    let row = vcx.debug_bounds("artifact-revision-1").expect("r1 row");
+    vcx.simulate_click(row.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let calls = content_calls(&calls);
+    assert_eq!(calls.last().unwrap()["revision"], 1);
+    tab.read_with(vcx, |tab, cx| {
+        assert_eq!(tab.shown_revision(), Some(1));
+        let header = super::model::header(&tab.artifact(cx).unwrap(), Some(1));
+        assert_eq!(header.note.as_deref(), Some("first"));
+        assert!(!header.current);
+    });
+}
+
+#[gpui::test]
+fn compare_uses_the_revision_text_diff(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        let text = if revision == 1 { "a\nb\n" } else { "a\nc\n" };
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            text,
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, calls, _, vcx) =
+        open_tab(cx, artifact(&id(1), "Plan", ArtifactKind::Markdown), reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    vcx.run_until_parked();
+    assert_eq!(content_calls(&calls).last().unwrap()["revision"], 1);
+    tab.read_with(vcx, |tab, _| {
+        assert_eq!(tab.presenter(), Presenter::Compare);
+        let Some(CompareState::Ready {
+            older,
+            newer,
+            lines,
+        }) = tab.compare_state()
+        else {
+            panic!("compare ready");
+        };
+        assert_eq!((*older, *newer), (1, 2));
+        assert_eq!(lines, &zeron_proto::diff_lines("a\nb\n", "a\nc\n"));
+    });
+    vcx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    assert!(vcx.debug_bounds("artifact-compare-diff").is_some());
+}
+
+#[gpui::test]
+fn unknown_method_reads_as_not_available_yet(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|method, _| Err(RpcError::UnknownMethod(method.to_owned())));
+    let (tab, _, _, vcx) = open_tab(cx, artifact(&id(1), "Plan", ArtifactKind::Markdown), reply);
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.presenter()),
+        Presenter::Message(super::store::UNSUPPORTED_TEXT.to_owned())
+    );
+    // Pin answers the same way.
+    tab.update(vcx, |tab, cx| tab.set_pinned(true, cx));
+    vcx.run_until_parked();
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.notice().map(str::to_owned)),
+        Some(super::store::UNSUPPORTED_TEXT.to_owned())
+    );
+}
+
+#[gpui::test]
+fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let mut plan = artifact(&id(1), "Plan", ArtifactKind::Markdown);
+    plan.pinned_as_plan = true;
+    plan.revisions[0].note = zeron_proto::artifacts::EDITED_WITHOUT_NOTE.into();
+    let reply = reply_with(content_reply(
+        ArtifactKind::Markdown,
+        2,
+        "x",
+        ArtifactContentEncoding::Utf8,
+    ));
+    let (_tab, _, _, vcx) = open_tab(cx, plan, reply);
+    assert!(vcx.debug_bounds("artifact-edited-warning").is_some());
+    assert!(vcx.debug_bounds("artifact-plan-badge").is_some());
+}

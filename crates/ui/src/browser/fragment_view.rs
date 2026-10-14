@@ -90,6 +90,7 @@ impl BrowserSurface {
             title: source.title.clone(),
             ..Default::default()
         };
+        self.document = None;
         self.fragment = Some(FragmentView {
             source,
             html: None,

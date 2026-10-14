@@ -558,6 +558,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.open_artifact_link(url, window, cx) {
+            return;
+        }
         let on_chat = matches!(self.route, Route::Chat) && !self.active_chat.is_empty();
         let in_app = crate::settings::current(cx).open_web_links_in_zeron;
         match reference_open(

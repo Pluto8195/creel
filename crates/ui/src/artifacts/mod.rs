@@ -20,9 +20,10 @@ pub(crate) mod actions;
 pub(crate) mod document;
 pub(crate) mod model;
 pub(crate) mod store;
+pub(crate) mod tab;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use actions::{ArtifactActions, ArtifactUiError};
 pub(crate) use store::{ArtifactStore, ArtifactsLoad};

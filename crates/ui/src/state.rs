@@ -2256,6 +2256,16 @@ impl AppState {
         )
     }
 
+    /// Tests: install a Space's artifacts without a watch.
+    #[cfg(test)]
+    pub(crate) fn set_test_artifacts(&mut self, snapshot: zeron_proto::ArtifactsSnapshot) {
+        let space_id = snapshot.space_id.clone();
+        self.artifacts.set(
+            &space_id,
+            crate::artifacts::ArtifactsLoad::Ready(Arc::new(snapshot)),
+        );
+    }
+
     /// Apply a failed `WatchArtifacts` subscribe.
     pub(crate) fn apply_artifacts_failure(&mut self, space_id: &str, message: &str) -> bool {
         if !self.artifact_tasks.contains_key(space_id) {
