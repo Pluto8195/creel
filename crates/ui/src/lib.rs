@@ -15,6 +15,7 @@
 pub mod app_menus;
 pub mod appearance;
 pub mod appshots;
+pub(crate) mod artifacts;
 pub mod attachments;
 pub mod badges;
 pub mod browser;
