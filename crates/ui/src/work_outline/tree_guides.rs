@@ -527,4 +527,67 @@ mod tests {
             "guides for 20k rows took {elapsed:?}"
         );
     }
+
+    /// 20k work items through the real flatten, then the guides: both stay
+    /// well inside a frame budget (debug build, generous bound).
+    #[test]
+    fn twenty_thousand_item_flatten_and_guides_within_budget() {
+        use crate::work_outline::model::{OutlineOptions, OutlineSpace, flatten};
+        use crate::work_outline::store::{WorkOutlineLoad, fixture_snapshot};
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let mut snapshot = fixture_snapshot("s1");
+        let mut template = snapshot.items[0].clone();
+        template.chat_ids.clear();
+        template.external_reference_ids.clear();
+        template.archived_at = None;
+        let item = |id: String, parent: Option<String>, children: Vec<String>, depth| {
+            let mut item = template.clone();
+            item.id = id.clone();
+            item.title = id;
+            item.parent_work_item_id = parent.clone();
+            item.raw_parent_work_item_id = parent;
+            item.child_ids = children;
+            item.depth = depth;
+            item
+        };
+        let mut items = Vec::new();
+        let mut roots = Vec::new();
+        for r in 0..400 {
+            let root = format!("r{r}");
+            let kids: Vec<String> = (0..10).map(|c| format!("{root}c{c}")).collect();
+            items.push(item(root.clone(), None, kids.clone(), 0));
+            for kid in kids {
+                let grand: Vec<String> = (0..4).map(|g| format!("{kid}g{g}")).collect();
+                items.push(item(kid.clone(), Some(root.clone()), grand.clone(), 1));
+                for g in grand {
+                    items.push(item(g, Some(kid.clone()), Vec::new(), 2));
+                }
+            }
+            roots.push(root);
+        }
+        snapshot.items = items;
+        snapshot.root_work_item_ids = roots;
+        snapshot.assignments.clear();
+        let spaces = vec![OutlineSpace {
+            id: "s1".into(),
+            label: "Space".into(),
+            load: WorkOutlineLoad::Ready(Arc::new(snapshot)),
+            hidden: false,
+        }];
+        let start = Instant::now();
+        let model = flatten(&spaces, &[], &HashSet::new(), &OutlineOptions::default());
+        let flattened = start.elapsed();
+        let guides = TreeGuides::compute(&model);
+        let total = start.elapsed();
+        assert!(model.len() >= 20_000, "{} rows", model.len());
+        assert_eq!(guides.len(), model.len());
+        assert!(
+            (total - flattened).as_millis() < 50,
+            "guides took {:?}",
+            total - flattened
+        );
+        assert!(total.as_millis() < 1_000, "flatten + guides took {total:?}");
+    }
 }
