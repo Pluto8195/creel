@@ -24,6 +24,7 @@ pub(crate) mod masked_input;
 pub(crate) mod menu;
 pub(crate) mod panel;
 pub(crate) mod prefs;
+pub(crate) mod project_links;
 pub(crate) mod settings_page;
 pub(crate) mod store;
 
@@ -75,15 +76,25 @@ pub(crate) fn parse_linear_url(raw: &str) -> Option<LinearUrl> {
 }
 
 /// The short id at the end of a project slug or URL (`launch-v2-5a8b7c9d0e1f`
-/// → `5a8b7c9d0e1f`), used to match a pasted project URL to a project.
+/// → `5a8b7c9d0e1f`), used to match a pasted project URL to a project. In a
+/// URL it reads the segment after `project/` (so `…/overview` tails don't
+/// count).
 pub(crate) fn project_short_id(slug_or_url: &str) -> Option<&str> {
     let path = slug_or_url
         .split(['?', '#'])
         .next()
         .unwrap_or("")
         .trim_end_matches('/');
-    let last = path.rsplit('/').next()?;
-    let short = last.rsplit('-').next()?;
+    let mut segments = path.split('/');
+    let slug = if path.contains("/project/") {
+        segments
+            .by_ref()
+            .skip_while(|segment| *segment != "project")
+            .nth(1)?
+    } else {
+        path.rsplit('/').next()?
+    };
+    let short = slug.rsplit('-').next()?;
     (!short.is_empty()).then_some(short)
 }
 
@@ -299,6 +310,14 @@ mod tests {
         assert_eq!(parse_linear_url("https://example.com/issue/x"), None);
         assert_eq!(
             project_short_id("https://linear.app/acme/project/launch-v2-5a8b7c9d0e1f"),
+            Some("5a8b7c9d0e1f")
+        );
+        assert_eq!(
+            project_short_id("https://linear.app/acme/project/launch-v2-5a8b7c9d0e1f/overview"),
+            Some("5a8b7c9d0e1f")
+        );
+        assert_eq!(
+            project_short_id("launch-v2-5a8b7c9d0e1f"),
             Some("5a8b7c9d0e1f")
         );
     }

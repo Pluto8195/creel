@@ -1,6 +1,7 @@
 //! Linear in the Outline tree (Linear-enabled Spaces only): the live issue
 //! chip (state color + name, priority, assignee; click opens the issue per
-//! the web-link preference) and the project chip on linked items, and the
+//! the web-link preference) and the project chip on linked items (with
+//! "Fix link" when a pasted-URL link stores the slug), and the
 //! drop of a Linear panel issue onto a work item row (same indicator as an
 //! Item drop's "into"; creates the work item under that row).
 //!
@@ -12,6 +13,7 @@ use zeron_proto::linear::LinearIssueSummary;
 use super::super::chips::TextTooltip;
 use super::super::model::{ItemRow, row_key};
 use super::{OutlineEvent, OutlineView};
+use crate::linear::project_links;
 use crate::linear::store::{self, IssueEntry};
 use crate::theme::Theme;
 
@@ -113,17 +115,22 @@ impl OutlineView {
         let issue = snapshot
             .linear_issue_reference(&item.item_id)
             .map(|reference| (reference.external_id.clone(), reference.url.clone()));
-        let project = snapshot
-            .linear_project_reference(&item.item_id)
-            .map(|reference| {
-                (
-                    reference
-                        .cached_title
-                        .clone()
-                        .unwrap_or_else(|| "Linear project".into()),
-                    reference.url.clone(),
-                )
-            });
+        let project_reference = snapshot.linear_project_reference(&item.item_id).cloned();
+        let project = project_reference.as_ref().map(|reference| {
+            (
+                reference
+                    .cached_title
+                    .clone()
+                    .unwrap_or_else(|| "Linear project".into()),
+                reference.url.clone(),
+            )
+        });
+        // A pasted-URL link (slug, not id) that My projects resolves.
+        let repair = project_reference.and_then(|reference| {
+            let projects = self.state.read(cx).linear.projects.clone()?;
+            let project = project_links::repair_target(&reference, &projects)?.clone();
+            Some((reference, project))
+        });
         let shell = self.shell.clone();
         let issue_chip = issue.map(|(identifier, url)| {
             store::request_issue(&self.state, &identifier, false, cx);
@@ -146,8 +153,66 @@ impl OutlineView {
                 theme,
             )
         });
-        join_chips(issue_chip, project_chip)
+        let fix_chip = repair.map(|(reference, project)| {
+            fix_link_chip(format!("outline-linear-fix-{key}"), &project.name, theme)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.fix_project_link(reference.clone(), project.clone(), cx)
+                }))
+                .into_any_element()
+        });
+        join_chips(join_chips(issue_chip, project_chip), fix_chip)
     }
+
+    /// Fix link on a slug-keyed project link: relink by the real project id,
+    /// then drop the old reference (`project_links::fix_project_link`).
+    pub(super) fn fix_project_link(
+        &mut self,
+        reference: zeron_proto::WorkItemExternalReferenceView,
+        project: zeron_proto::linear::LinearProjectSummary,
+        cx: &mut Context<Self>,
+    ) {
+        let task = project_links::fix_project_link(&self.state, &reference, &project, cx);
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => this.show_notice(format!("Fixed the link to {}", project.name), cx),
+                Err(error) => this.show_notice(
+                    format!("Couldn\u{2019}t fix the link: {}", error.user_text()),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// "Fix link" beside a project chip whose link stores the URL slug instead
+/// of the project id (pasted before My projects knew it). The caller adds
+/// the click.
+pub(crate) fn fix_link_chip(id: String, project: &str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    let selector = id.clone();
+    let tip: SharedString = format!(
+        "This link to {project} was pasted as a URL. Fix link relinks it by the project\u{2019}s \
+         id so its issues land here"
+    )
+    .into();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .px(px(4.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(theme.warning.opacity(0.6))
+        .cursor_pointer()
+        .text_size(crate::typography::ui_rems(10.0))
+        .text_color(theme.warning)
+        .hover(|el| el.bg(theme.element_hover))
+        .child("Fix link")
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn open_link(

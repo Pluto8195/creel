@@ -9,13 +9,18 @@
 //!   open and by ↻ only.
 //! - Rows referenced by a live item of the panel's Space show "Linked" and
 //!   Reveal (selects the item in the Outline).
-//! - Explicit actions only: Create (`createWorkItemFromLinear` under the
-//!   Outline's selected item, or a parent the user picks; placement Last),
-//!   Link (issue: `createWorkItemExternalReference`; project:
-//!   `linkLinearProject`) to the selected item, drag an issue onto an
-//!   Outline item, and Create nodes for the selected issues of a project.
-//!   Each action keeps one operation id per issue/target, so a retry or a
-//!   double click replays instead of duplicating.
+//! - Explicit actions only: Create (button, double-click, or ↩ on a focused
+//!   row: `createWorkItemFromLinear`, placement Last), Link (issue:
+//!   `createWorkItemExternalReference`; project: `linkLinearProject`) to the
+//!   selected item, drag an issue onto an Outline item, and Create nodes for
+//!   the checked issues (My issues, or an expanded project). Each action
+//!   keeps one operation id per issue/target, so a retry or a double click
+//!   replays instead of duplicating.
+//! - Destination rule (`project_links`): an issue whose project a live item
+//!   of the Space links goes under THAT item (the most recently linked one),
+//!   whatever the Outline selection; the action label names it ("Create
+//!   under ReceiveAI UI upgrades"). Other issues go under the selected item,
+//!   or a parent the user picks. A drag drops wherever the user drops.
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -55,6 +60,98 @@ pub(crate) fn palette_visible(state: &AppState) -> bool {
                 .map(|snapshot| snapshot.as_ref()),
         )
     })
+}
+
+/// The `checked` key of My issues (projects use their id).
+pub(crate) const MY_ISSUES_LIST: &str = "my-issues";
+
+/// The label of a create action: "Create under <item>" when the destination
+/// rule picked an item, else `fallback`.
+pub(crate) fn create_label(destination: Option<&str>, fallback: &str) -> SharedString {
+    match destination {
+        Some(title) => format!("Create under {title}").into(),
+        None => SharedString::from(fallback.to_string()),
+    }
+}
+
+/// The issue text block every issue row shows: identifier + title, then the
+/// state dot and state · priority · assignee · project.
+pub(crate) fn issue_summary(issue: &LinearIssueSummary, theme: &Theme) -> gpui::Div {
+    let state_color = super::hex_color(&issue.state.color, theme.text_muted);
+    let mut meta = vec![issue.state.name.clone()];
+    meta.extend(super::priority_text(issue.priority, &issue.priority_label));
+    meta.extend(issue.assignee.as_ref().map(super::user_name));
+    meta.extend(issue.project.as_ref().map(|p| p.name.clone()));
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(issue.identifier.clone())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.text)
+                        .child(SharedString::from(issue.title.clone())),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_faint)
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(7.0))
+                        .rounded_full()
+                        .bg(state_color),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(meta.join(" \u{00b7} "))),
+                ),
+        )
+}
+
+/// An issue row's checkbox (`disabled`: checked and inert, e.g. an issue
+/// already added). The caller adds the click.
+pub(crate) fn issue_checkbox(
+    selector: String,
+    checked: bool,
+    disabled: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let id = selector.clone();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .size(px(13.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(if checked { theme.accent } else { theme.border })
+        .when(checked, |el| el.bg(theme.accent))
+        .when(disabled, |el| el.opacity(0.45))
+        .when(!disabled, |el| el.cursor_pointer())
 }
 
 /// One Linear-enabled Space the panel can show.
@@ -231,8 +328,12 @@ pub(crate) struct LinearPanel {
     /// One focus stop per section header (←/→ fold and unfold).
     section_focus: [FocusHandle; 2],
     pub(crate) project_issues: HashMap<String, Load<Vec<LinearIssueSummary>>>,
-    /// Per project: the identifiers checked for Create nodes for selected.
+    /// Per list (a project id, or [`MY_ISSUES_LIST`]): the identifiers
+    /// checked for Create nodes for selected.
     pub(crate) checked: HashMap<String, BTreeSet<String>>,
+    /// One focus stop per shown issue row (`<list>:<identifier>`): ↩ on a
+    /// focused row creates its work item.
+    row_focus: HashMap<String, FocusHandle>,
     op_slots: HashMap<String, OperationSlot>,
     pub(crate) busy: HashSet<String>,
     pub(crate) picker: Option<ParentPicker>,
@@ -288,6 +389,7 @@ impl LinearPanel {
             ],
             project_issues: HashMap::new(),
             checked: HashMap::new(),
+            row_focus: HashMap::new(),
             op_slots: HashMap::new(),
             busy: HashSet::new(),
             picker: None,
@@ -395,9 +497,13 @@ impl LinearPanel {
                     if this.expanded.len() != before {
                         this.save_state(cx);
                     }
+                    // Remembered for pasted project URLs and for Fix link
+                    // on slug-keyed project links (the chips re-render).
                     let projects = projects.clone();
-                    this.state
-                        .update(cx, |state, _| state.linear.projects = Some(projects));
+                    this.state.update(cx, |state, cx| {
+                        state.linear.projects = Some(projects);
+                        cx.notify();
+                    });
                 }
                 this.my_projects = match projects {
                     Ok(projects) => Load::Ready(projects),
@@ -562,50 +668,129 @@ impl LinearPanel {
         }
     }
 
-    /// Create a work item for `issue` under the selected item (or ask).
+    /// The destination rule for `issue`: the live item of this Space that
+    /// links the issue's project (most recently linked), as (id, title).
+    pub(crate) fn destination(&self, issue: &LinearIssueSummary) -> Option<(String, String)> {
+        let snapshot = self.snapshot()?;
+        super::project_links::issue_destination(snapshot, issue)
+            .map(|item| (item.id.clone(), item.title.clone()))
+    }
+
+    /// The one destination every checked issue of `list` shares, if any
+    /// (labels "Create under <item>").
+    fn list_destination(&self, list: &str) -> Option<(String, String)> {
+        let issues = self.checked_issues(list);
+        let first = self.destination(issues.first()?)?;
+        issues
+            .iter()
+            .skip(1)
+            .all(|issue| self.destination(issue).as_ref() == Some(&first))
+            .then_some(first)
+    }
+
+    /// The label of an issue row's Create: "Create under <item>" when the
+    /// destination rule applies, else "Create".
+    pub(crate) fn create_action_label(&self, issue: &LinearIssueSummary) -> SharedString {
+        let destination = self.destination(issue);
+        create_label(
+            destination.as_ref().map(|(_, title)| title.as_str()),
+            "Create",
+        )
+    }
+
+    /// The label of a list's Create nodes for selected (see
+    /// [`Self::create_action_label`]).
+    pub(crate) fn create_selected_label(&self, list: &str) -> SharedString {
+        let count = self.checked.get(list).map_or(0, BTreeSet::len);
+        let fallback = if count == 1 {
+            "Create node for selected"
+        } else {
+            "Create nodes for selected"
+        };
+        let destination = self.list_destination(list);
+        create_label(
+            destination.as_ref().map(|(_, title)| title.as_str()),
+            fallback,
+        )
+    }
+
+    /// Create a work item for `issue`: under its project's linked item, else
+    /// the selected item (or ask). Also double-click and ↩ on a row.
     pub(crate) fn create_issue(&mut self, issue: LinearIssueSummary, cx: &mut Context<Self>) {
         self.create_with_target(vec![issue], None, cx);
     }
 
-    /// Create one work item per checked issue of `project_id`.
-    pub(crate) fn create_selected(&mut self, project_id: &str, cx: &mut Context<Self>) {
-        let checked = self.checked.get(project_id).cloned().unwrap_or_default();
-        let issues: Vec<LinearIssueSummary> = self
-            .project_issues
-            .get(project_id)
-            .and_then(Load::ready)
-            .map(|issues| {
-                issues
-                    .iter()
-                    .filter(|issue| checked.contains(&issue.identifier))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// The checked issues of `list` (a project id or [`MY_ISSUES_LIST`]),
+    /// in list order.
+    fn checked_issues(&self, list: &str) -> Vec<LinearIssueSummary> {
+        let Some(checked) = self.checked.get(list) else {
+            return Vec::new();
+        };
+        let all = if list == MY_ISSUES_LIST {
+            self.my_issues.ready()
+        } else {
+            self.project_issues.get(list).and_then(Load::ready)
+        };
+        all.map(|issues| {
+            issues
+                .iter()
+                .filter(|issue| checked.contains(&issue.identifier))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Create one work item per checked issue of `list` (a project id or
+    /// [`MY_ISSUES_LIST`]).
+    pub(crate) fn create_selected(&mut self, list: &str, cx: &mut Context<Self>) {
+        let issues = self.checked_issues(list);
         if issues.is_empty() {
-            self.set_notice("Select issues of the project first", false);
+            self.set_notice("Select issues first", false);
             cx.notify();
             return;
         }
-        self.create_with_target(issues, Some(project_id.to_string()), cx);
+        self.create_with_target(issues, Some(list.to_string()), cx);
     }
 
+    /// Issues with a destination go under it (one batch per destination,
+    /// in list order); the rest under the selected item, or the picker.
     fn create_with_target(
         &mut self,
         issues: Vec<LinearIssueSummary>,
-        project_id: Option<String>,
+        list: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let Some(snapshot) = self.snapshot().cloned() else {
             return;
         };
+        let mut routed: Vec<(String, Vec<LinearIssueSummary>)> = Vec::new();
+        let mut rest = Vec::new();
+        for issue in issues {
+            match self.destination(&issue) {
+                Some((item_id, _)) => match routed.iter_mut().find(|(id, _)| *id == item_id) {
+                    Some((_, group)) => group.push(issue),
+                    None => routed.push((item_id, vec![issue])),
+                },
+                None => rest.push(issue),
+            }
+        }
+        let space_id = self.space_id.clone();
+        for (item_id, group) in routed {
+            self.create_under(space_id.clone(), Some(item_id), group, list.clone(), cx);
+        }
+        if rest.is_empty() {
+            return;
+        }
         match parent_target(&self.selection, &self.space_id, &snapshot) {
             ParentTarget::Resolved(parent) => {
-                let space_id = self.space_id.clone();
-                self.create_under(space_id, parent, issues, project_id, cx);
+                self.create_under(space_id, parent, rest, list, cx);
             }
             ParentTarget::Ask => {
-                self.picker = Some(ParentPicker { issues, project_id });
+                self.picker = Some(ParentPicker {
+                    issues: rest,
+                    project_id: list,
+                });
                 cx.notify();
             }
         }
@@ -808,14 +993,16 @@ impl LinearPanel {
     // Rendering
     // ----------------------------------------------------------------------
 
-    fn small_button(
+    pub(crate) fn small_button(
         id: impl Into<gpui::ElementId>,
-        label: &'static str,
+        label: impl Into<SharedString>,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
             .flex_none()
+            .max_w(px(180.0))
+            .truncate()
             .px(px(6.0))
             .py(px(1.0))
             .rounded(px(4.0))
@@ -825,7 +1012,7 @@ impl LinearPanel {
             .text_size(crate::typography::ui_rems(10.5))
             .text_color(theme.text_muted)
             .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
-            .child(label)
+            .child(label.into())
     }
 
     /// A section header: click (or ↩ / Space) folds and unfolds it; with
@@ -1050,23 +1237,64 @@ impl LinearPanel {
         )
     }
 
+    /// The focus key of an issue row in `list`.
+    fn row_focus_key(list: &str, identifier: &str) -> String {
+        format!("{list}:{identifier}")
+    }
+
+    /// Keep one focus handle per shown issue row (dropping gone ones).
+    fn sync_row_focus(&mut self, cx: &mut Context<Self>) {
+        let mut keys: HashSet<String> = HashSet::new();
+        if let Some(issues) = self.my_issues.ready() {
+            keys.extend(
+                issues
+                    .iter()
+                    .map(|issue| Self::row_focus_key(MY_ISSUES_LIST, &issue.identifier)),
+            );
+        }
+        for project_id in &self.expanded {
+            if let Some(issues) = self.project_issues.get(project_id).and_then(Load::ready) {
+                keys.extend(
+                    issues
+                        .iter()
+                        .map(|issue| Self::row_focus_key(project_id, &issue.identifier)),
+                );
+            }
+        }
+        self.row_focus.retain(|key, _| keys.contains(key));
+        for key in keys {
+            self.row_focus
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn row_focus_handle(&self, list: &str, identifier: &str) -> Option<FocusHandle> {
+        self.row_focus
+            .get(&Self::row_focus_key(list, identifier))
+            .cloned()
+    }
+
+    /// One issue row of `list` (a project id or [`MY_ISSUES_LIST`]):
+    /// checkbox, summary, Linked · Reveal, Create (named after the
+    /// destination rule's item when there is one), Link. Double-click or ↩
+    /// (row focused) runs Create; drag it onto an Outline item to choose.
     fn render_issue_row(
         &self,
         issue: &LinearIssueSummary,
         linked: &LinkedIndex,
-        check: Option<(String, bool)>,
+        list: &str,
+        checked: bool,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let identifier = issue.identifier.clone();
-        let state_color = super::hex_color(&issue.state.color, theme.text_muted);
-        let mut meta = vec![issue.state.name.clone()];
-        meta.extend(super::priority_text(issue.priority, &issue.priority_label));
-        meta.extend(issue.assignee.as_ref().map(super::user_name));
-        meta.extend(issue.project.as_ref().map(|p| p.name.clone()));
         let row_selector = format!("linear-issue-row-{identifier}");
         let creating = self.busy.contains(&format!("create:{identifier}"));
         let linking = self.busy.contains(&format!("link:{identifier}"));
+        let destination = self.destination(issue);
         let marker = self.linked_marker(
             format!("linear-issue-linked-{identifier}"),
             linked.issue_item(&identifier),
@@ -1078,38 +1306,56 @@ impl LinearPanel {
             issue: Box::new(issue.clone()),
         });
         let create_issue = issue.clone();
+        let activate_issue = issue.clone();
+        let key_issue = issue.clone();
         let link_issue = issue.clone();
-        let checkbox = check.map(|(project_id, checked)| {
+        let focus = self
+            .row_focus
+            .get(&Self::row_focus_key(list, &identifier))
+            .cloned();
+        let focused = focus.as_ref().is_some_and(|focus| focus.is_focused(window));
+        let checkbox = {
+            let list = list.to_string();
             let id = identifier.clone();
-            div()
-                .id(SharedString::from(format!(
-                    "linear-issue-check-{identifier}"
-                )))
-                .debug_selector({
-                    let selector = format!("linear-issue-check-{identifier}");
-                    move || selector.clone()
-                })
-                .flex_none()
-                .size(px(13.0))
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(if checked { theme.accent } else { theme.border })
-                .when(checked, |el| el.bg(theme.accent))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_checked(&project_id, &id, cx)
-                }))
-        });
+            issue_checkbox(
+                format!("linear-issue-check-{identifier}"),
+                checked,
+                false,
+                theme,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.toggle_checked(&list, &id, cx)
+            }))
+        };
+        let create_tip: SharedString = match &destination {
+            Some((_, title)) => format!(
+                "Create a work item under \u{201c}{title}\u{201d} (it links this issue\u{2019}s \
+                 Linear project). Double-click or \u{21a9} does the same; drag onto an item to \
+                 choose another"
+            )
+            .into(),
+            None => "Create a work item under the selected item (double-click or \u{21a9} does \
+                     the same; drag onto an item to choose)"
+                .into(),
+        };
+        let create_label = if creating {
+            SharedString::from("Creating\u{2026}")
+        } else {
+            self.create_action_label(issue)
+        };
+        let click_focus = focus.clone();
         div()
             .id(SharedString::from(row_selector.clone()))
             .debug_selector(move || row_selector.clone())
+            .when_some(focus, |el, focus| el.track_focus(&focus))
             .flex()
             .items_center()
             .gap(px(6.0))
             .px(px(4.0))
             .py(px(3.0))
             .rounded(px(4.0))
+            .when(focused, |el| el.bg(theme.element_hover))
             .hover(|el| el.bg(theme.element_hover.opacity(0.6)))
             .cursor_grab()
             .on_drag(drag, |drag, _, _, cx| {
@@ -1125,71 +1371,50 @@ impl LinearPanel {
                     title: title.into(),
                 })
             })
-            .children(checkbox)
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let modifiers = event.keystroke.modifiers;
+                if event.keystroke.key == "enter"
+                    && !(modifiers.platform
+                        || modifiers.control
+                        || modifiers.alt
+                        || modifiers.shift)
+                {
+                    cx.stop_propagation();
+                    this.create_issue(key_issue.clone(), cx);
+                }
+            }))
+            .child(checkbox)
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(identifier.clone())),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(issue.title.clone())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .text_size(crate::typography::ui_rems(10.5))
-                            .text_color(theme.text_faint)
-                            .child(div().flex_none().size(px(7.0)).rounded_full().bg(state_color))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(SharedString::from(meta.join(" \u{00b7} "))),
-                            ),
-                    ),
+                // Mouse down on the text (not a click, so a drag still
+                // starts from the first press): focus the row; a double
+                // press creates. Buttons and the checkbox stay single-click.
+                issue_summary(issue, theme).min_w(px(90.0)).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        if let Some(focus) = &click_focus {
+                            window.focus(focus, cx);
+                        }
+                        if event.click_count >= 2 {
+                            this.create_issue(activate_issue.clone(), cx);
+                        }
+                    }),
+                ),
             )
             .children(marker)
             .child(
                 Self::small_button(
                     SharedString::from(format!("linear-issue-create-{identifier}")),
-                    if creating { "Creating\u{2026}" } else { "Create" },
+                    create_label,
                     theme,
                 )
+                // A long "Create under <item>" yields to the issue text.
+                .flex_shrink_1()
+                .min_w(px(44.0))
                 .debug_selector({
                     let selector = format!("linear-issue-create-{identifier}");
                     move || selector.clone()
                 })
-                .tooltip(|_, cx| {
-                    cx.new(|_| {
-                        TextTooltip(
-                            "Create a work item under the selected item (drag onto an item to choose)"
-                                .into(),
-                        )
-                    })
-                    .into()
-                })
+                .tooltip(move |_, cx| cx.new(|_| TextTooltip(create_tip.clone())).into())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.create_issue(create_issue.clone(), cx)
@@ -1217,12 +1442,67 @@ impl LinearPanel {
             .into_any_element()
     }
 
+    /// The "Create nodes for selected" bar under a list with checked issues;
+    /// names the destination when every checked issue shares one.
+    fn render_create_selected(
+        &self,
+        list: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let count = self.checked.get(list).map_or(0, BTreeSet::len);
+        if count == 0 {
+            return None;
+        }
+        let destination = self.list_destination(list);
+        let label = self.create_selected_label(list);
+        let tip: SharedString = match &destination {
+            Some((_, title)) => format!(
+                "One work item per checked issue, under \u{201c}{title}\u{201d} (it links their \
+                 Linear project)"
+            )
+            .into(),
+            None => "One work item per checked issue: under the item linked to its Linear \
+                     project, else under the selected item"
+                .into(),
+        };
+        let selector = if list == MY_ISSUES_LIST {
+            "linear-my-issues-create-selected".to_string()
+        } else {
+            format!("linear-project-create-selected-{list}")
+        };
+        let create_list = list.to_string();
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .py(px(4.0))
+                .child(
+                    Self::small_button(SharedString::from(selector.clone()), label, theme)
+                        .debug_selector(move || selector.clone())
+                        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.create_selected(&create_list, cx)
+                        })),
+                )
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(format!("{count} selected"))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_project(
         &self,
         project: &LinearProjectSummary,
         query: &str,
         linked: &LinkedIndex,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.expanded.contains(&project.id);
@@ -1336,54 +1616,13 @@ impl LinearPanel {
                     let checked = self.checked.get(&id).cloned().unwrap_or_default();
                     for issue in &matching_issues {
                         let is_checked = checked.contains(&issue.identifier);
-                        body = body.child(self.render_issue_row(
-                            issue,
-                            linked,
-                            Some((id.clone(), is_checked)),
-                            theme,
-                            cx,
-                        ));
+                        body =
+                            body.child(self.render_issue_row(
+                                issue, linked, &id, is_checked, theme, window, cx,
+                            ));
                     }
-                    if !checked.is_empty() {
-                        let create_id = id.clone();
-                        let label: &'static str = if checked.len() == 1 {
-                            "Create node for selected"
-                        } else {
-                            "Create nodes for selected"
-                        };
-                        body = body.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .py(px(4.0))
-                                .child(
-                                    Self::small_button(
-                                        SharedString::from(format!(
-                                            "linear-project-create-selected-{id}"
-                                        )),
-                                        label,
-                                        theme,
-                                    )
-                                    .debug_selector({
-                                        let selector =
-                                            format!("linear-project-create-selected-{id}");
-                                        move || selector.clone()
-                                    })
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| this.create_selected(&create_id, cx),
-                                    )),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(crate::typography::ui_rems(10.5))
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from(format!(
-                                            "{} selected",
-                                            checked.len()
-                                        ))),
-                                ),
-                        );
+                    if let Some(bar) = self.render_create_selected(&id, theme, cx) {
+                        body = body.child(bar);
                     }
                 }
             }
@@ -1502,6 +1741,7 @@ impl Render for LinearDragGhost {
 impl Render for LinearPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        self.sync_row_focus(cx);
         let query = self.query(cx);
         let linked = self
             .snapshot()
@@ -1678,9 +1918,24 @@ impl Render for LinearPanel {
                         } else if issues.is_empty() {
                             body = body.child(Self::quiet("No matching issues", &theme));
                         }
+                        let checked = self
+                            .checked
+                            .get(MY_ISSUES_LIST)
+                            .cloned()
+                            .unwrap_or_default();
                         for issue in &issues {
-                            body =
-                                body.child(self.render_issue_row(issue, &linked, None, &theme, cx));
+                            body = body.child(self.render_issue_row(
+                                issue,
+                                &linked,
+                                MY_ISSUES_LIST,
+                                checked.contains(&issue.identifier),
+                                &theme,
+                                window,
+                                cx,
+                            ));
+                        }
+                        if let Some(bar) = self.render_create_selected(MY_ISSUES_LIST, &theme, cx) {
+                            body = body.child(bar);
                         }
                     }
                 }
@@ -1724,7 +1979,7 @@ impl Render for LinearPanel {
                         }
                         for project in &projects {
                             if let Some(row) =
-                                self.render_project(project, &query, &linked, &theme, cx)
+                                self.render_project(project, &query, &linked, &theme, window, cx)
                             {
                                 body = body.child(row);
                             }

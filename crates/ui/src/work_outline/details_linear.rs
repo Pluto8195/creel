@@ -257,6 +257,39 @@ impl WorkItemDetails {
         self.run(format!("reference:{reference_id}"), task, cx, |_| {});
     }
 
+    /// Fix link: relink a slug-keyed project link by the real project id.
+    fn fix_linear_project_link(
+        &mut self,
+        reference: zeron_proto::WorkItemExternalReferenceView,
+        project: zeron_proto::linear::LinearProjectSummary,
+        cx: &mut Context<Self>,
+    ) {
+        let key = format!("linear:fix:{}", reference.id);
+        if !self.in_flight.insert(key.clone()) {
+            return;
+        }
+        self.linear.error = None;
+        let task =
+            crate::linear::project_links::fix_project_link(&self.state, &reference, &project, cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.in_flight.remove(&key);
+                match result {
+                    Ok(()) => {
+                        this.linear.status_line =
+                            Some(format!("Fixed the link to {}", project.name))
+                    }
+                    Err(error) => this.linear.error = Some(error.user_text()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     // ----------------------------------------------------------------------
     // Rendering
     // ----------------------------------------------------------------------
@@ -390,6 +423,26 @@ impl WorkItemDetails {
         }
         if let Some(reference) = project {
             let id = reference.id.clone();
+            let repair = self
+                .state
+                .read(cx)
+                .linear
+                .projects
+                .clone()
+                .and_then(|projects| {
+                    crate::linear::project_links::repair_target(&reference, &projects).cloned()
+                });
+            let fix = repair.map(|project| {
+                let reference = reference.clone();
+                super::super::outline_view::linear_outline::fix_link_chip(
+                    "work-item-linear-fix-link".into(),
+                    &project.name,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.fix_linear_project_link(reference.clone(), project.clone(), cx)
+                }))
+            });
             let chip = super::super::outline_view::linear_outline::project_chip(
                 "work-item-linear-project".into(),
                 reference
@@ -406,6 +459,7 @@ impl WorkItemDetails {
                     .items_center()
                     .gap(px(6.0))
                     .child(chip)
+                    .children(fix)
                     .child(div().flex_1())
                     .child(
                         Self::small_button("work-item-linear-unlink-project", "Unlink", theme)
