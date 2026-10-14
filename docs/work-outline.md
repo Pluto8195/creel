@@ -44,7 +44,8 @@ row selected, and press it again to return to the Chat. Press `⇧⌘↩`
 [Jumping between a Chat and the Outline](#jumping-between-a-chat-and-the-outline).
 
 Press `?` while the Outline has focus, or click the keyboard button in the
-Outline toolbar, to open the shortcut reference. Hover over any Outline control
+Outline toolbar, to open the shortcut reference (its **Linear** group covers the
+Linear panel's issue rows and project-linked items). Hover over any Outline control
 to see what it does and its current key. Right-click any row for everything you
 can do with it.
 
@@ -417,14 +418,35 @@ automatically: items and links come only from the actions below.
   you click ↻. Rows that an item in this project already links show
   **Linked · Reveal**, which selects that item in the Outline. With several
   Linear projects on, click the project name in the panel header to switch.
-- **Create work item** (**Create** on an issue) adds `ENG-123 · title` under the
-  selected work item, as its last child. With a Space row selected it goes to
-  the top level. With nothing usable selected, the panel asks for the parent.
-  You can also drag an issue onto an Outline item to create it there. The new
-  item is selected when it appears.
+- **Create work item** (**Create** on an issue, or double-click the issue, or
+  focus its row and press `↩`) adds `ENG-123 · title` as the last child of:
+  - the work item linked to the issue's Linear project, whatever is selected
+    in the Outline. If several items link that project, the most recently
+    linked one wins. The button then reads **Create under \<item\>**.
+  - otherwise the selected work item. With a Space row selected it goes to the
+    top level. With nothing usable selected, the panel asks for the parent.
+
+  Dragging an issue onto an Outline item always creates it there. The new item
+  is selected when it appears.
 - **Link** on an issue or project links it to the selected work item.
-- **Create nodes for selected** on an expanded project creates one item per
-  checked issue, in order, under the selected item.
+- **Create nodes for selected** (check issues in **My issues** or in an
+  expanded project) creates one item per checked issue, in order, each by the
+  same rule: under its project's linked item, else under the selected item.
+  When they all share one linked item the button reads **Create under
+  \<item\>**.
+- **Add issues from \<project\>…** on a project-linked item (its right-click
+  menu, or its Details **Linear** section) opens a picker of the project's open
+  issues. It works with the Linear panel closed. Issues that already have a
+  work item in this project show checked and greyed out, with **Added ·
+  Reveal**. Search filters the list, **Select all** checks every shown issue
+  not added yet, and **Create** adds one work item per checked issue as the
+  item's last children, then selects the first new one. `Esc` or **Cancel**
+  closes it.
+- A project link made by pasting a project URL is keyed by the URL. It still
+  counts for the rules above (Zeron matches the id at the end of the URL).
+  Once the panel has loaded **My projects**, its project chip shows **Fix
+  link**, which relinks it by the project's id (link anew, then remove the old
+  link).
 - Retrying a create or link never duplicates it.
 - **Linked items.** Items linked to an issue show a live chip (state, priority,
   assignee). Click the chip to open the issue. Items linked to a project show a
@@ -438,7 +460,8 @@ automatically: items and links come only from the actions below.
 - **Pasting** a Linear issue or project URL into **External references** creates
   an issue or project link when Linear is on.
 - **Right-click** an issue item for **Open in Linear**, **Refresh from Linear**,
-  and **Unlink Linear Issue**.
+  and **Unlink Linear Issue**, and a project-linked item for **Add Issues from
+  \<project\>…**.
 - If the engine on this device has no Linear support, Linear surfaces say
   **Linear isn't available on this host yet**.
 

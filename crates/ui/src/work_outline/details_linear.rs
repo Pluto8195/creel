@@ -5,7 +5,8 @@
 //!   Linear…" (Settings → Linear) while this device has no key.
 //! - Items of a Linear-enabled Space: the **Linear** section (live issue
 //!   chip, project chip, ↻ = `LinearRefreshLinkedItems` for the Space,
-//!   Unlink), and "Synced from Linear" on a title / description that still
+//!   Unlink; on a project link also "Add issues from <project>…" and, for a
+//!   pasted-URL link My projects resolves, Fix link), and "Synced from Linear" on a title / description that still
 //!   follows the issue (`externalSyncModifiedFields` does not list it).
 //! - Pasted references: a Linear URL becomes an `issue` / `project`
 //!   reference only with Linear on; otherwise it stays a plain link and the
@@ -257,6 +258,39 @@ impl WorkItemDetails {
         self.run(format!("reference:{reference_id}"), task, cx, |_| {});
     }
 
+    /// Fix link: relink a slug-keyed project link by the real project id.
+    fn fix_linear_project_link(
+        &mut self,
+        reference: zeron_proto::WorkItemExternalReferenceView,
+        project: zeron_proto::linear::LinearProjectSummary,
+        cx: &mut Context<Self>,
+    ) {
+        let key = format!("linear:fix:{}", reference.id);
+        if !self.in_flight.insert(key.clone()) {
+            return;
+        }
+        self.linear.error = None;
+        let task =
+            crate::linear::project_links::fix_project_link(&self.state, &reference, &project, cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.in_flight.remove(&key);
+                match result {
+                    Ok(()) => {
+                        this.linear.status_line =
+                            Some(format!("Fixed the link to {}", project.name))
+                    }
+                    Err(error) => this.linear.error = Some(error.user_text()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     // ----------------------------------------------------------------------
     // Rendering
     // ----------------------------------------------------------------------
@@ -390,6 +424,30 @@ impl WorkItemDetails {
         }
         if let Some(reference) = project {
             let id = reference.id.clone();
+            let project_name = reference
+                .cached_title
+                .clone()
+                .unwrap_or_else(|| "project".into());
+            let repair = self
+                .state
+                .read(cx)
+                .linear
+                .projects
+                .clone()
+                .and_then(|projects| {
+                    crate::linear::project_links::repair_target(&reference, &projects).cloned()
+                });
+            let fix = repair.map(|project| {
+                let reference = reference.clone();
+                super::super::outline_view::linear_outline::fix_link_chip(
+                    "work-item-linear-fix-link".into(),
+                    &project.name,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.fix_linear_project_link(reference.clone(), project.clone(), cx)
+                }))
+            });
             let chip = super::super::outline_view::linear_outline::project_chip(
                 "work-item-linear-project".into(),
                 reference
@@ -406,6 +464,7 @@ impl WorkItemDetails {
                     .items_center()
                     .gap(px(6.0))
                     .child(chip)
+                    .children(fix)
                     .child(div().flex_1())
                     .child(
                         Self::small_button("work-item-linear-unlink-project", "Unlink", theme)
@@ -413,6 +472,28 @@ impl WorkItemDetails {
                                 this.unlink_linear(id.clone(), cx)
                             })),
                     ),
+            );
+            let add_selector = "work-item-linear-add-issues";
+            let tip: SharedString =
+                format!("Pick open issues of {project_name} to add as work items under this one")
+                    .into();
+            section = section.child(
+                div().flex().child(
+                    crate::linear::panel::LinearPanel::small_button(
+                        add_selector,
+                        format!("Add issues from {project_name}\u{2026}"),
+                        theme,
+                    )
+                    .max_w(px(320.0))
+                    .debug_selector(move || add_selector.into())
+                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.emit(super::DetailsEvent::AddLinearIssues {
+                            space_id: this.space_id.clone(),
+                            item_id: this.item_id.clone(),
+                        })
+                    })),
+                ),
             );
         }
         if let Some(line) = self.linear.status_line.clone() {

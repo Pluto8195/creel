@@ -332,7 +332,34 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
                 })
                 .collect(),
         },
+        linear_group(mac),
     ]
+}
+
+/// The Linear rows of the shortcut reference (projects with Linear on): an
+/// issue row creates under its project's linked item (else the selected
+/// item); a project-linked item adds issues from its project.
+fn linear_group(mac: bool) -> ShortcutGroup {
+    ShortcutGroup {
+        title: "Linear",
+        rows: vec![
+            ShortcutRow {
+                label: "Create from issue (Linear panel row)",
+                keys: Some(format!("{} / Double-click", key_label_on(mac, "enter"))),
+            },
+            ShortcutRow {
+                label: "Add issues from project (project-linked item)",
+                keys: Some(
+                    if mac {
+                        "Right-click / \u{2303}-click"
+                    } else {
+                        "Right-click"
+                    }
+                    .into(),
+                ),
+            },
+        ],
+    }
 }
 
 /// The shortcut reference's footer: where Outline keys work, how to reach a
@@ -536,7 +563,10 @@ mod tests {
         let mut keymap = KeymapConfig::default();
         let groups = shortcut_reference_on(true, &keymap);
         let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
-        assert_eq!(titles, ["Navigate", "Edit", "Restructure", "Commands"]);
+        assert_eq!(
+            titles,
+            ["Navigate", "Edit", "Restructure", "Commands", "Linear"]
+        );
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
         // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename;
         // the Chat-row moves add their own rows.
@@ -558,6 +588,12 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
+        assert_eq!(
+            row(&groups, "Create from issue (Linear panel row)")
+                .keys
+                .as_deref(),
+            Some("\u{21a9} / Double-click")
+        );
         assert_eq!(row(&groups, "Search").keys.as_deref(), Some("\u{2318}F"));
         assert_eq!(
             row(&groups, "Project up (project row)").keys.as_deref(),

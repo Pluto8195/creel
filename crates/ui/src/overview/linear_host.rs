@@ -17,6 +17,7 @@ use gpui::{AnyElement, Context, Entity, MouseButton, Window, div, prelude::*, px
 use super::Overview;
 use crate::linear::panel::{LinearPanel, LinearPanelEvent, LinearSpace, OutlineSelection};
 use crate::linear::prefs;
+use crate::linear::project_picker::ProjectIssuePicker;
 use crate::theme::Theme;
 use crate::work_outline::WorkOutlineCommand;
 use crate::work_outline::hints::{HintKey, WithHint};
@@ -379,6 +380,100 @@ impl Overview {
         panel.update(cx, |panel, cx| {
             panel.create_under(space_id, Some(item_id), vec![issue], None, cx)
         });
+    }
+
+    /// "Add issues from <project>…" on project-linked item `item_id` (its
+    /// menu or Details): open the picker over the Overview. Works with the
+    /// Linear panel closed; refused outside Linear-enabled Spaces.
+    pub(crate) fn open_project_issue_picker(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let snapshot = self
+            .outline_snapshot(&space_id, cx)
+            .filter(|snapshot| crate::linear::space_enabled(Some(snapshot)))
+            .ok_or(crate::linear::LINEAR_OFF_NOTICE)?;
+        let reference = snapshot
+            .item(&item_id)
+            .filter(|item| item.archived_at.is_none())
+            .and_then(|_| snapshot.linear_project_reference(&item_id))
+            .cloned()
+            .ok_or("This work item isn\u{2019}t linked to a Linear project")?;
+        let state = self.state.clone();
+        let picker = cx.new(|cx| {
+            let mut picker = ProjectIssuePicker::new(state, snapshot, item_id, reference, cx);
+            picker.load(cx);
+            picker
+        });
+        let events = cx.subscribe(&picker, |this: &mut Self, _, event, cx| match event {
+            LinearPanelEvent::Close => this.close_project_issue_picker(cx),
+            LinearPanelEvent::Created { .. } | LinearPanelEvent::Reveal { .. } => {
+                this.on_linear_panel_event(event.clone(), cx)
+            }
+            LinearPanelEvent::OpenSettings => this.on_linear_panel_event(event.clone(), cx),
+        });
+        self.project_issue_picker = Some(picker);
+        self._project_issue_picker_events = Some(events);
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn close_project_issue_picker(&mut self, cx: &mut Context<Self>) {
+        if self.project_issue_picker.take().is_some() {
+            self._project_issue_picker_events = None;
+            self.linear_column.return_focus = true;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_issue_picker(&self) -> Option<Entity<ProjectIssuePicker>> {
+        self.project_issue_picker.clone()
+    }
+
+    /// The picker overlay (a dimmed backdrop that closes it on click), or
+    /// nothing. Closes itself once the item or Linear goes away.
+    pub(super) fn render_project_issue_picker(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let picker = self.project_issue_picker.clone()?;
+        let space_id = picker.read(cx).space_id.clone();
+        let snapshot = self.outline_snapshot(&space_id, cx);
+        let valid = picker.update(cx, |picker, _| {
+            picker.set_snapshot(snapshot);
+            picker.still_valid()
+        });
+        if !valid {
+            self.project_issue_picker = None;
+            self._project_issue_picker_events = None;
+            return None;
+        }
+        let theme = Theme::of(cx).clone();
+        Some(
+            div()
+                .id("linear-add-issues-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .items_start()
+                .pt(px(64.0))
+                .bg(theme.scrim())
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.close_project_issue_picker(cx)),
+                )
+                .child(
+                    div()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(picker),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Zero-size paint hook recording the Overview's own width (the

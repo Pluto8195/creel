@@ -2710,6 +2710,10 @@ pub struct Overview {
     /// The Linear column's persisted open state and width, its open/close
     /// tween, and an in-flight edge drag (`overview/linear_host.rs`).
     linear_column: linear_host::LinearColumnState,
+    /// "Add issues from <project>…" on a project-linked item: a picker over
+    /// the Overview, independent of the Linear panel (`linear_host.rs`).
+    project_issue_picker: Option<Entity<crate::linear::project_picker::ProjectIssuePicker>>,
+    _project_issue_picker_events: Option<Subscription>,
     /// Tests run without a Shell: Start Chat requests land here.
     #[cfg(test)]
     pub(crate) captured_start_chat: Option<(String, String)>,
@@ -2952,6 +2956,8 @@ impl Overview {
             linear_panel: None,
             _linear_panel_events: None,
             linear_column: Default::default(),
+            project_issue_picker: None,
+            _project_issue_picker_events: None,
             #[cfg(test)]
             captured_start_chat: None,
             _details_events: None,
@@ -6973,6 +6979,7 @@ impl Render for Overview {
                         .child(linear),
                 )
             })
+            .children(self.render_project_issue_picker(cx))
     }
 }
 
@@ -9920,6 +9927,14 @@ impl Overview {
             }
             DetailsEvent::StartChat { space_id, item_id } => {
                 if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
+            DetailsEvent::AddLinearIssues { space_id, item_id } => {
+                if let Err(notice) =
+                    this.open_project_issue_picker(space_id.clone(), item_id.clone(), cx)
                 {
                     this.outline
                         .update(cx, |outline, cx| outline.show_notice(notice, cx));

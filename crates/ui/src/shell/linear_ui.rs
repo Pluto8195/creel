@@ -91,6 +91,19 @@ impl Shell {
                 .detach();
             }
             LinearMenuAction::OpenPanel(space_id) => self.open_linear_panel(Some(space_id), cx),
+            LinearMenuAction::AddProjectIssues { space_id, item_id } => {
+                if !matches!(self.route, Route::Overview) {
+                    self.open_overview(cx);
+                }
+                let page = self.ensure_overview_page(cx);
+                let result = page.update(cx, |overview, cx| {
+                    overview.open_project_issue_picker(space_id, item_id, cx)
+                });
+                if let Err(notice) = result {
+                    self.sidebar_notice = Some(notice.into());
+                    cx.notify();
+                }
+            }
         }
     }
 }
