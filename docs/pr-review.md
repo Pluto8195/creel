@@ -127,6 +127,12 @@ review round, and resolves them when you review or the PR closes. Wire
 contract: `docs/plans/work-outline/pr-sync-contract.md`; user guide:
 [Work Outline → PR review sync](work-outline.md#pr-review-sync).
 
+When a synced PR is **merged** (or **closed** without merging, where the review is moot), the sync
+resolves its Required Action, marks the item completed, and archives it as the system actor; the
+item's Chats are left as they are. The same applies to an item you already completed by reviewing
+once its PR merges or closes. Restoring an archived item keeps it restored: the sync archives it
+again only after a new round (the PR reopened and your review requested again) finishes.
+
 | RPC | Used by |
 | --- | --- |
 | `PrStatus {owner, repo, number, forceRefresh?}` | PR chips (cached ~2 minutes; Details and ↻ force a refresh) |

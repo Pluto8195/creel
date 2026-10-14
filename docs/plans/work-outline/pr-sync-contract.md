@@ -22,7 +22,7 @@ Capability: `pr-review-sync-v1` (`capabilities::PR_REVIEW_SYNC_V1`). Engine:
   the destination, linked by an external reference provider `github`, referenceType `pullRequest`,
   externalId `<owner>/<repo>#<number>` (GitHub's spelling), `url`, `cachedTitle` = PR title.
 - Items are tracked by reference, never by position: an item the user moved stays where it is and
-  is still updated; an archived item is never touched; nothing is ever deleted or moved by the sync.
+  is still updated; an archived item is never touched (except one the sync itself archived, below); nothing is ever deleted or moved by the sync.
 - Nothing is written to GitHub.
 
 ## RPCs (local/IPC, never forwarded)
@@ -59,8 +59,9 @@ which has its checkouts).
     (unknown → `none`). `requested` = requested and never reviewed; `reRequested` = requested
     after a review; otherwise the latest review's state.
 - `WorkItemExternalSyncState {provider, externalId, round, requestState, syncedStatus,
-  roundStartedAt, syncedAt}`; `requestState`: `requested|submitted|withdrawn|merged|closed`
-  (unknown → `requested`).
+  roundStartedAt, syncedAt, archivedBySync?}`; `requestState`:
+  `requested|submitted|withdrawn|merged|closed` (unknown → `requested`). `archivedBySync`
+  (`merged|closed`, absent otherwise): the sync archived the item for that PR state (see below).
 
 ## Work Outline additions
 
@@ -106,6 +107,19 @@ which has its checkouts).
   `merged` ("PR merged"), `closed` ("PR closed"), `submitted` (the user reviewed during this round;
   "Review submitted"), else `withdrawn` ("Review request withdrawn"); the round's Required Action is
   resolved with that note and the item set `completed`.
+- Archive on finish: when the PR is `merged` or `closed` (closed without merge: the review is moot,
+  so it archives like a merge), after resolving the Required Action and completing the item the sync
+  archives it with `archiveWorkItem` as the system actor (`archiveDescendants`; synced items have
+  none; Chats are never archived or unassigned) and then records `archivedBySync` = that state.
+  This also covers a reviewed/withdrawn (completed) item whose PR later merges or closes: each pass
+  checks such items' PRs (`gh pr view`, through the status cache) until they finish. The archive
+  operation id is hashed from (Space, PR key, round, finished state) like the other derived ids.
+- Never archived twice: a record with `archivedBySync` is skipped, so an item the user restores
+  stays restored. A new round (the PR reopened and the review requested again) clears the marker, so
+  a later merge/close archives again. A `merged`/`closed` record without the marker (an earlier
+  archive failed, or a record from before this rule) is archived on the next pass. An item the user
+  archived is never touched; an item the *sync* archived (marker set, system actor) is restored
+  when GitHub shows the PR open again and requests the review, then starts the new round.
 - The status is written only on those transitions, so a status the user set stands until GitHub's
   review-request state changes again (`syncedStatus` records what the sync last wrote).
 - Required Action text `Review requested: <repo>#<n> <title>` (or `Re-review requested: …` when the

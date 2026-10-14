@@ -217,6 +217,7 @@ fn sync_state_and_work_outline_additions_are_pinned() {
         synced_status: crate::WorkItemStatus::Completed,
         round_started_at: 100,
         synced_at: 200,
+        archived_by_sync: None,
     };
     round_trip(
         &state,
@@ -319,4 +320,17 @@ fn system_origin_requests_are_pinned() {
 fn capability_is_advertised() {
     assert_eq!(PR_REVIEW_SYNC_CAPABILITY_V1, "pr-review-sync-v1");
     assert!(crate::capabilities::current().contains(&"pr-review-sync-v1".to_owned()));
+}
+
+#[test]
+fn archived_by_sync_marker_is_optional_and_round_trips() {
+    let mut state = WorkItemExternalSyncState {
+        request_state: PrReviewRequestState::Merged,
+        ..Default::default()
+    };
+    assert!(serde_json::to_value(&state).unwrap().get("archivedBySync").is_none());
+    state.archived_by_sync = Some(PrReviewRequestState::Merged);
+    let value = serde_json::to_value(&state).unwrap();
+    assert_eq!(value["archivedBySync"], "merged");
+    assert_eq!(serde_json::from_value::<WorkItemExternalSyncState>(value).unwrap(), state);
 }
