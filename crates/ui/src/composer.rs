@@ -5855,12 +5855,7 @@ impl Composer {
             let chat_space = chat
                 .and_then(|chat| chat.space_id.as_deref())
                 .and_then(|id| state.space_row(id));
-            slash_discovery_cwd(
-                chat,
-                chat_space,
-                state.selected_space_row(),
-                reuse_worktree,
-            )
+            slash_discovery_cwd(chat, chat_space, state.selected_space_row(), reuse_worktree)
         };
         let key_changed = self.slash.harness != harness || self.slash.cwd != cwd;
         if token == self.slash.token && !key_changed {

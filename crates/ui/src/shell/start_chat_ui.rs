@@ -1678,9 +1678,7 @@ mod tests {
     /// Design item: root `<Space>/ui`, `ui` bound as a pinned non-primary
     /// member) lists that folder's skills, never the Space folder's.
     #[gpui::test]
-    fn prompt_offers_skills_for_a_submodule_root_below_the_space(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn prompt_offers_skills_for_a_submodule_root_below_the_space(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let mut snapshot = execution_fixture::snapshot("s1");
@@ -1714,7 +1712,9 @@ mod tests {
             launched("chat-new"),
         );
         shell
-            .update(cx, |shell, cx| shell.open_start_chat("s1", HOUSEKEEPING, cx))
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
             .unwrap();
         draw(cx);
         let focus = shell.read_with(cx, |shell, cx| {
