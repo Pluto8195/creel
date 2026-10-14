@@ -18,6 +18,7 @@
 use std::ops::Range;
 
 use super::model::{OutlineModel, OutlineRow, OutlineRowKind};
+use super::restructure::DropZone;
 
 /// Horizontal step per depth level, in px (matches the row indent).
 pub(crate) const INDENT_STEP: f32 = 14.0;
@@ -181,6 +182,21 @@ impl TreeGuides {
 
     pub(crate) fn has_next_sibling(&self, ix: usize) -> bool {
         self.has_next_sibling.get(ix).copied().unwrap_or(false)
+    }
+}
+
+/// The label beside a drop indicator: "Into X", or "Before X (under Y)" /
+/// "After X (under Y)"; `parent` is `None` where no parent applies (Space
+/// roots reorder among themselves).
+pub(crate) fn drop_label(zone: DropZone, target: &str, parent: Option<&str>) -> String {
+    let edge = match zone {
+        DropZone::Into => return format!("Into {target}"),
+        DropZone::Before => "Before",
+        DropZone::After => "After",
+    };
+    match parent {
+        Some(parent) => format!("{edge} {target} (under {parent})"),
+        None => format!("{edge} {target}"),
     }
 }
 
@@ -454,6 +470,26 @@ mod tests {
         assert_eq!(hover.cell(3, &cell), CellHighlight::Full);
         let cell = guides.cells(3)[1];
         assert_eq!(hover.cell(3, &cell), CellHighlight::None);
+    }
+
+    #[test]
+    fn drop_labels_name_target_and_parent() {
+        assert_eq!(
+            drop_label(DropZone::Into, "API", Some("Launch")),
+            "Into API"
+        );
+        assert_eq!(
+            drop_label(DropZone::Before, "UI", Some("Launch v2")),
+            "Before UI (under Launch v2)"
+        );
+        assert_eq!(
+            drop_label(DropZone::After, "API", Some("top level")),
+            "After API (under top level)"
+        );
+        assert_eq!(
+            drop_label(DropZone::After, "Space B", None),
+            "After Space B"
+        );
     }
 
     #[test]

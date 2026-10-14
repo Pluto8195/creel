@@ -24,6 +24,7 @@ use gpui::{
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
 mod move_toast;
+mod tree_guides_view;
 
 use super::hints::{HintKey, WithHint};
 use super::instructions::{self, OutlineChange};
@@ -440,6 +441,8 @@ pub(crate) struct OutlineView {
     follow: Option<String>,
     /// The drop indicator of an in-progress drag.
     drop_hint: Option<DropHint>,
+    /// Tree guides (cached with the model), hovered guide, move flash.
+    guide_state: tree_guides_view::GuideState,
     /// The user's Space-root order (device-local; see `space_roots`).
     space_order: Vec<String>,
     /// Spaces hidden from the Outline (device-local; see `space_roots`).
@@ -504,6 +507,7 @@ impl OutlineView {
             optimistic: Vec::new(),
             follow: None,
             drop_hint: None,
+            guide_state: Default::default(),
             space_order: Vec::new(),
             hidden_spaces: std::collections::BTreeSet::new(),
             show_hidden_spaces: false,
@@ -714,6 +718,7 @@ impl OutlineView {
     fn reflatten(&mut self) {
         let previous = std::mem::take(&mut self.model);
         self.model = self.flatten_inputs(&self.collapsed);
+        self.refresh_guides();
         if let Some(follow) = self.follow.clone() {
             let place =
                 |model: &OutlineModel| model.position(&follow).map(|ix| (ix, model.rows[ix].depth));
@@ -1746,8 +1751,10 @@ impl OutlineView {
             );
             return;
         }
-        if let Err(notice) = self.restructure_selection(op, cx) {
-            self.show_notice(notice, cx);
+        let anchor = self.move_anchor();
+        match self.restructure_selection(op, cx) {
+            Ok(()) => self.flash_if_moved(anchor, cx),
+            Err(notice) => self.show_notice(notice, cx),
         }
     }
 
@@ -2746,24 +2753,10 @@ impl OutlineView {
             .map(|hint| hint.zone);
         let drop_line = drop_zone
             .filter(|zone| *zone != DropZone::Into)
-            .map(|zone| {
-                let edge = if zone == DropZone::Before {
-                    "before"
-                } else {
-                    "after"
-                };
-                let selector = format!("outline-drop-{edge}-{key}");
-                div()
-                    .debug_selector(move || selector.clone())
-                    .absolute()
-                    .left(px(Self::indent(row.depth)))
-                    .right(px(4.0))
-                    .h(px(2.0))
-                    .rounded(px(1.0))
-                    .bg(theme.accent)
-                    .when(zone == DropZone::Before, |el| el.top_0())
-                    .when(zone == DropZone::After, |el| el.bottom_0())
-            });
+            .map(|zone| self.drop_line(ix, zone, theme));
+        let drop_label = drop_zone.and_then(|_| self.drop_label_element(theme));
+        let guides = self.guide_layer(ix, compact, theme, cx);
+        let flash = self.move_flash_overlay(&key, theme);
         div()
             .id(SharedString::from(format!("outline-row-{key}")))
             .debug_selector(move || selector.clone())
@@ -2889,10 +2882,13 @@ impl OutlineView {
                     );
                 }),
             )
+            .children(flash)
+            .children(guides)
             .child(disclosure)
             .child(body)
             .children(start_chat)
             .children(drop_line)
+            .children(drop_label)
             .into_any_element()
     }
 
