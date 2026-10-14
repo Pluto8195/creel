@@ -464,3 +464,40 @@ fn space_deletion_removes_the_settings_row() {
     );
     assert!(doc.linear_enabled_space_ids().is_empty());
 }
+
+#[test]
+fn system_writes_never_overwrite_a_field_the_user_took_over() {
+    let mut doc = doc();
+    enable(&mut doc, SPACE, "on", true);
+    let id = from_linear(&mut doc, SPACE, "op-1", None, issue("ENG-1", "One", Some("Body")))
+        .unwrap()
+        .work_item_id
+        .unwrap();
+    update(
+        &mut doc,
+        WorkOutlineActorKind::User,
+        "rename",
+        &id,
+        WorkItemChanges {
+            title: Some("Mine".into()),
+            ..Default::default()
+        },
+    );
+    // A sync that read the item before the rename still sends a title.
+    update(
+        &mut doc,
+        WorkOutlineActorKind::System,
+        "sync",
+        &id,
+        WorkItemChanges {
+            title: Some("ENG-1 · One v2".into()),
+            description: FieldPatch::Set("Body v2".into()),
+            ..Default::default()
+        },
+    );
+    let s = snap(&doc);
+    let item = s.item(&id).unwrap();
+    assert_eq!(item.title, "Mine");
+    assert_eq!(item.description.as_deref(), Some("Body v2"));
+    assert_eq!(item.status, WorkItemStatus::Pending);
+}

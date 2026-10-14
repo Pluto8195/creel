@@ -36,6 +36,7 @@ pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
 pub mod pr_review_launch;
+pub mod linear;
 pub mod pr_ticket_cache;
 pub mod profile;
 pub mod project_actions;
@@ -172,6 +173,9 @@ pub struct EngineCore {
     /// 2) — a pure cache read; its background sweep is spawned once here and
     /// runs for the process's lifetime.
     pub pr_ticket_cache: pr_ticket_cache::PrTicketCache,
+    /// Linear integration (key, client, caches); its linked-item sync loop
+    /// is spawned once here. Tests `reconfigure` it onto a mock endpoint.
+    pub linear: linear::LinearService,
     /// Per-chat context-window usage percent for the overview's tile sizing
     /// (session-canvas parity) — a live-doc read backed by a transcript-tail
     /// fallback, both bounded/cheap; no background sweep needed (see
@@ -457,7 +461,10 @@ impl EngineCore {
                 }
             });
         }
+        let linear = linear::LinearService::default();
+        linear::sync::spawn_sync_loop(linear.clone(), workspace.clone());
         let pr_ticket_cache = pr_ticket_cache::PrTicketCache::new();
+        pr_ticket_cache.set_linear(linear.clone(), workspace.clone());
         pr_ticket_cache.spawn_sweep_loop();
         // Same reasoning as the four repairs above (ticket 0xx design item
         // 6): backfill durable PR/ticket links for chats whose transcript
@@ -568,6 +575,7 @@ impl EngineCore {
             local_import,
             external_import,
             pr_ticket_cache,
+            linear,
             context_usage,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
@@ -704,6 +712,7 @@ impl EngineCore {
         .with_previews(self.previews.clone())
         .with_external_import(self.external_import.clone())
         .with_pr_ticket_cache(self.pr_ticket_cache.clone())
+        .with_linear(self.linear.clone())
         .with_context_usage(self.context_usage.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);

@@ -291,6 +291,12 @@ struct Inner {
     /// swept on a different tick from the authored search.
     review_prs_list: Mutex<Option<(Vec<MyOpenPr>, Instant)>>,
     review_prs_failed_at: Mutex<Option<Instant>>,
+    /// Linear integration: the API client and the registry (to know which
+    /// Spaces have Linear on). Tickets asked for by chats in such Spaces are
+    /// fetched through the API when a key is set; the `linear` CLI stays
+    /// the fallback.
+    linear: Mutex<Option<(crate::linear::LinearService, crate::workspace_host::WorkspaceHost)>>,
+    linear_tickets: Mutex<HashSet<String>>,
 }
 
 /// Cheap to clone (an `Arc` around the shared cache) — hand a clone to the
@@ -317,8 +323,67 @@ impl PrTicketCache {
                 my_prs_ready,
                 review_prs_list: Mutex::new(None),
                 review_prs_failed_at: Mutex::new(None),
+                linear: Mutex::new(None),
+                linear_tickets: Mutex::new(HashSet::new()),
             }),
         }
+    }
+
+    /// Attach the Linear API client (engine assembly).
+    pub fn set_linear(
+        &self,
+        linear: crate::linear::LinearService,
+        workspace: crate::workspace_host::WorkspaceHost,
+    ) {
+        *lock(&self.inner.linear) = Some((linear, workspace));
+    }
+
+    /// [`Self::status_for_links`] for a chat in `space_id`: when that Space
+    /// has Linear on, its ticket is fetched through the Linear API (if a
+    /// key is set) instead of the `linear` CLI.
+    pub fn status_for_chat_links(
+        &self,
+        space_id: Option<&str>,
+        cwd: Option<&str>,
+        branch: Option<&str>,
+        linked_pr_links: &[zeron_proto::ChatPrLink],
+        linked_ticket_id: Option<&str>,
+    ) -> ChatLinkStatus {
+        let linear_space = space_id.is_some_and(|space| {
+            lock(&self.inner.linear)
+                .as_ref()
+                .is_some_and(|(_, workspace)| workspace.space_linear_enabled(space))
+        });
+        if linear_space
+            && let Some(ticket) = linked_ticket_id
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .or_else(|| branch.and_then(extract_ticket_id))
+        {
+            lock(&self.inner.linear_tickets).insert(ticket);
+        }
+        self.status_for_links(cwd, branch, linked_pr_links, linked_ticket_id)
+    }
+
+    /// One ticket: through the Linear API when the ticket came from a
+    /// Linear-enabled Space and a key is set, else the `linear` CLI.
+    async fn fetch_ticket(&self, id: String) -> Option<TicketStatus> {
+        let use_api = lock(&self.inner.linear_tickets).contains(&id);
+        let linear = lock(&self.inner.linear).as_ref().map(|(l, _)| l.clone());
+        if use_api
+            && let Some(linear) = linear
+            && linear.has_key().await
+        {
+            return linear.issue(&id, false).await.ok().map(|issue| TicketStatus {
+                identifier: issue.identifier,
+                title: Some(issue.title),
+                url: Some(issue.url),
+                status: Some(issue.state.name),
+            });
+        }
+        tokio::task::spawn_blocking(move || fetch_linear_ticket(&id))
+            .await
+            .unwrap_or(None)
     }
 
     /// Pure cache read, never blocks on a live `gh`/`linear` call. A branch
@@ -576,10 +641,7 @@ impl PrTicketCache {
         };
         for id in ticket_ids {
             let inner = self.inner.clone();
-            let id2 = id.clone();
-            let data = tokio::task::spawn_blocking(move || fetch_linear_ticket(&id2))
-                .await
-                .unwrap_or(None);
+            let data = self.fetch_ticket(id.clone()).await;
             lock(&inner.ticket_cache).insert(
                 id,
                 Entry {

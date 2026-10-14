@@ -1023,6 +1023,19 @@ impl RegistryDoc {
                 set.insert(linear::MODIFIED_FIELDS_FIELD.to_owned(), json!(fields));
             }
         }
+        // The Linear sync writes as the system actor: a field the user has
+        // taken over since the sync read the item is never overwritten
+        // (checked here, under the registry lock).
+        if actor.kind == WorkOutlineActorKind::System {
+            for field in [
+                zeron_proto::linear::SYNC_FIELD_TITLE,
+                zeron_proto::linear::SYNC_FIELD_DESCRIPTION,
+            ] {
+                if item.external_sync_modified_fields.iter().any(|f| f == field) {
+                    set.remove(field);
+                }
+            }
+        }
         let mut plan = if p.changes.status == Some(WorkItemStatus::Completed) {
             self.plan_completion_resolutions(
                 &p.work_item_id,

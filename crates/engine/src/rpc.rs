@@ -750,6 +750,8 @@ pub struct EngineRpc {
     agent_tools: std::sync::Arc<crate::agent_tools::AgentToolsService>,
     /// `StartPrReview` (docs/pr-review.md): runs on the Space's owner.
     pr_review: crate::pr_review_launch::PrReviewLauncher,
+    /// Linear integration (`LINEAR_*` methods; local, never forwarded).
+    linear: crate::linear::LinearService,
     engine_info: EngineInfo,
 }
 
@@ -848,7 +850,58 @@ impl EngineRpc {
             launch,
             agent_tools,
             pr_review,
+            linear: crate::linear::LinearService::default(),
             engine_info,
+        }
+    }
+
+    /// Share the engine's Linear service (key, caches) with the RPC surface
+    /// and the agent tools.
+    pub fn with_linear(mut self, linear: crate::linear::LinearService) -> Self {
+        self.agent_tools.set_linear(linear.clone());
+        self.linear = linear;
+        self
+    }
+
+    /// Run a Linear call, mapping its error to the `linear/<code>` string.
+    async fn linear_reply<T: serde::Serialize>(
+        result: Result<T, zeron_proto::LinearError>,
+    ) -> Result<RpcReply, RpcError> {
+        match result {
+            Ok(value) => RpcReply::value(&value),
+            Err(error) => Err(RpcError::Failed(error.to_wire_message())),
+        }
+    }
+
+    /// `linear/disabledForSpace` for a Space-scoped Linear mutation in a
+    /// Space with Linear off.
+    fn linear_mutation_gate(
+        &self,
+        mutation: &zeron_proto::WorkOutlineMutation,
+    ) -> Result<(), RpcError> {
+        if !mutation.requires_linear_enabled() {
+            return Ok(());
+        }
+        let space = match mutation {
+            zeron_proto::WorkOutlineMutation::CreateWorkItemFromLinear(p) => {
+                Some(p.space_id.clone())
+            }
+            zeron_proto::WorkOutlineMutation::LinkLinearProject(p) => {
+                self.workspace.work_item_space(&p.work_item_id)
+            }
+            _ => None,
+        };
+        // An unknown item or Space falls through to the registry's error.
+        match space {
+            Some(space)
+                if self.workspace.space(&space).ok().flatten().is_some()
+                    && !self.workspace.space_linear_enabled(&space) =>
+            {
+                Err(RpcError::Failed(
+                    zeron_proto::LinearError::disabled_for_space().to_wire_message(),
+                ))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -2721,6 +2774,13 @@ impl RpcService for EngineRpc {
             }
             methods::WORK_OUTLINE_MUTATE => {
                 let mutation: zeron_proto::WorkOutlineMutation = parse_params(params)?;
+                self.linear_mutation_gate(&mutation)?;
+                let enabled_space = match &mutation {
+                    zeron_proto::WorkOutlineMutation::SetSpaceLinearEnabled(p) if p.enabled => {
+                        Some(p.space_id.clone())
+                    }
+                    _ => None,
+                };
                 let service = self.work_outline.clone();
                 // Materializing placement over a large outline is CPU work
                 // under the registry lock: keep it off the async workers.
@@ -2728,7 +2788,65 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                     .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                // Turning Linear on brings the Space's linked items up to date.
+                if let Some(space) = enabled_space {
+                    let linear = self.linear.clone();
+                    let work_outline = self.work_outline.clone();
+                    tokio::spawn(async move {
+                        if linear.has_key().await
+                            && let Err(error) = crate::linear::sync::sync_space(
+                                &linear,
+                                &work_outline,
+                                &space,
+                                false,
+                            )
+                            .await
+                        {
+                            tracing::info!(code = error.code.as_str(), "linear: enable sync stopped");
+                        }
+                    });
+                }
                 RpcReply::value(&reply)
+            }
+            methods::LINEAR_STATUS => {
+                let p: zeron_proto::LinearStatusParams = parse_params(params)?;
+                Self::linear_reply(self.linear.status(p.force_refresh).await).await
+            }
+            methods::LINEAR_SET_API_KEY => {
+                let p: zeron_proto::LinearSetApiKeyParams = parse_params(params)?;
+                Self::linear_reply(self.linear.set_api_key(&p.api_key).await).await
+            }
+            methods::LINEAR_CLEAR_API_KEY => {
+                let _: zeron_proto::LinearClearApiKeyParams = parse_params(params)?;
+                Self::linear_reply(self.linear.clear_api_key().await).await
+            }
+            methods::LINEAR_ISSUE => {
+                let p: zeron_proto::LinearIssueParams = parse_params(params)?;
+                Self::linear_reply(self.linear.issue(&p.identifier, p.force_refresh).await).await
+            }
+            methods::LINEAR_MY_ISSUES => {
+                let _: zeron_proto::LinearMyIssuesParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_issues().await).await
+            }
+            methods::LINEAR_MY_PROJECTS => {
+                let _: zeron_proto::LinearMyProjectsParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_projects().await).await
+            }
+            methods::LINEAR_PROJECT_ISSUES => {
+                let p: zeron_proto::LinearProjectIssuesParams = parse_params(params)?;
+                Self::linear_reply(self.linear.project_issues(&p.project_id).await).await
+            }
+            methods::LINEAR_REFRESH_LINKED_ITEMS => {
+                let p: zeron_proto::LinearRefreshLinkedItemsParams = parse_params(params)?;
+                let result = crate::linear::sync::sync_space(
+                    &self.linear,
+                    &self.work_outline,
+                    &p.space_id,
+                    true,
+                )
+                .await
+                .map(|updated| zeron_proto::LinearRefreshLinkedItemsReply { updated });
+                Self::linear_reply(result).await
             }
             methods::WORK_OUTLINE_QUERY => {
                 let query: zeron_proto::WorkOutlineQueryRequest = parse_params(params)?;
@@ -2929,7 +3047,8 @@ impl RpcService for EngineRpc {
                     .workspace
                     .chat_pr_links(&p.chat_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let mut status = self.pr_ticket_cache()?.status_for_links(
+                let mut status = self.pr_ticket_cache()?.status_for_chat_links(
+                    chat.as_ref().and_then(|c| c.space_id.as_deref()),
                     chat.as_ref().and_then(|c| c.cwd.as_deref()),
                     chat.as_ref().and_then(|c| c.branch.as_deref()),
                     &pr_links,
