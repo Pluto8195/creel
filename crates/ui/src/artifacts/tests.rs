@@ -482,3 +482,300 @@ fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext
     });
     assert!(vcx.debug_bounds("artifact-linear-project").is_some());
 }
+
+// --------------------------------------------------------------------------
+// Render-check executor (fake offscreen renderer)
+// --------------------------------------------------------------------------
+
+use super::render_check::{self, ArtifactRenderer, RenderConfig, RenderFuture, RenderOutput};
+use zeron_proto::{ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactViewport};
+
+/// Records each document and answers from `answer` (or holds the render
+/// until released when `gated`).
+#[derive(Default)]
+struct FakeRenderer {
+    documents: RefCell<Vec<(String, ArtifactViewport)>>,
+    gates: RefCell<Vec<futures::channel::oneshot::Sender<()>>>,
+    gated: bool,
+    hang: bool,
+    report: Option<super::document::ProbeReport>,
+}
+
+impl ArtifactRenderer for Rc<FakeRenderer> {
+    fn render(
+        &self,
+        document: String,
+        viewport: ArtifactViewport,
+        _: &mut gpui::AsyncApp,
+    ) -> RenderFuture {
+        self.documents.borrow_mut().push((document, viewport));
+        let report = self.report.clone();
+        if self.hang {
+            return Box::pin(futures::future::pending());
+        }
+        let gate = self.gated.then(|| {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            self.gates.borrow_mut().push(tx);
+            rx
+        });
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.await.ok();
+            }
+            Ok(RenderOutput {
+                png: Some(vec![0x89, b'P', b'N', b'G']),
+                report,
+            })
+        })
+    }
+}
+
+fn render_request(n: u8, kind: ArtifactKind, content: &str) -> ArtifactRenderRequest {
+    ArtifactRenderRequest {
+        request_id: format!("req-{n}"),
+        artifact_id: Some(id(1)),
+        title: "Flow".into(),
+        kind,
+        path: "/repo/.zeron/artifacts/x/flow.fragment.html".into(),
+        content: content.into(),
+        viewport: ArtifactViewport {
+            width: 100,
+            height: 9000,
+        },
+        ..Default::default()
+    }
+}
+
+fn serve_now(
+    cx: &mut TestAppContext,
+    request: ArtifactRenderRequest,
+    renderer: Option<Rc<dyn ArtifactRenderer>>,
+) -> ArtifactRenderResultParams {
+    let theme = cx.update(|cx| render_check::request_theme(request.theme, cx));
+    let task = cx.spawn(async move |mut cx| {
+        render_check::serve(
+            request,
+            renderer,
+            theme,
+            std::time::Duration::from_secs(25),
+            |_| futures::future::ready(()),
+            &mut cx,
+        )
+        .await
+    });
+    cx.run_until_parked();
+    futures::executor::block_on(task)
+}
+
+#[gpui::test]
+fn render_check_returns_screenshot_errors_and_warnings(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let renderer = Rc::new(FakeRenderer {
+        report: Some(super::document::ProbeReport {
+            errors: vec!["Console error: boom".into()],
+            warnings: vec!["Horizontal overflow: content is 900px wide in a 600px viewport".into()],
+        }),
+        ..Default::default()
+    });
+    // A timeout clock that never fires: the render always wins.
+    let params = {
+        let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
+        let request = render_request(1, ArtifactKind::HtmlFragment, "<div>flow</div>");
+        let dyn_renderer: Rc<dyn ArtifactRenderer> = Rc::new(renderer.clone());
+        let task = cx.spawn(async move |mut cx| {
+            render_check::serve(
+                request,
+                Some(dyn_renderer),
+                theme,
+                std::time::Duration::from_secs(25),
+                |_| futures::future::pending::<()>(),
+                &mut cx,
+            )
+            .await
+        });
+        cx.run_until_parked();
+        futures::executor::block_on(task)
+    };
+    assert_eq!(params.request_id, "req-1");
+    assert!(params.error.is_none());
+    let result = params.result.unwrap();
+    use base64::Engine as _;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(result.screenshot_png_base64.unwrap())
+            .unwrap(),
+        [0x89, b'P', b'N', b'G']
+    );
+    assert_eq!(result.errors, ["Console error: boom"]);
+    assert_eq!(result.warnings.len(), 1);
+    // Rendered exactly like the tab (visualize sandbox) plus the probe and
+    // its collector; the viewport is clamped.
+    let (document, viewport) = renderer.documents.borrow()[0].clone();
+    assert!(document.contains("sandbox=\"allow-scripts\""));
+    assert!(document.contains("window.__zeronProbe"));
+    assert!(document.contains("securitypolicyviolation"));
+    assert!(document.contains("&lt;div&gt;flow&lt;/div&gt;"));
+    assert_eq!(
+        viewport,
+        ArtifactViewport {
+            width: 200,
+            height: 4096
+        }
+    );
+}
+
+#[gpui::test]
+fn render_check_times_out_and_reports_missing_probes_and_platforms(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let hanging: Rc<dyn ArtifactRenderer> = Rc::new(Rc::new(FakeRenderer {
+        hang: true,
+        ..Default::default()
+    }));
+    let timed_out = serve_now(
+        cx,
+        render_request(1, ArtifactKind::Mermaid, "graph TD; A-->B"),
+        Some(hanging),
+    );
+    assert!(timed_out.result.is_none());
+    assert!(
+        timed_out
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("artifact/renderTimeout:")
+    );
+
+    // No probe report: still a result, flagged.
+    let silent = Rc::new(FakeRenderer::default());
+    let dyn_silent: Rc<dyn ArtifactRenderer> = Rc::new(silent.clone());
+    let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
+    let request = render_request(
+        2,
+        ArtifactKind::HtmlPage,
+        "<html><head></head><body>x</body></html>",
+    );
+    let task = cx.spawn(async move |mut cx| {
+        render_check::serve(
+            request,
+            Some(dyn_silent),
+            theme,
+            std::time::Duration::from_secs(25),
+            |_| futures::future::pending::<()>(),
+            &mut cx,
+        )
+        .await
+    });
+    cx.run_until_parked();
+    let params = futures::executor::block_on(task);
+    let result = params.result.unwrap();
+    assert!(result.errors[0].contains("probe did not report"));
+    // The page got the probe at the top of its head.
+    assert!(
+        silent.documents.borrow()[0]
+            .0
+            .contains("&lt;head&gt;&lt;script&gt;")
+    );
+
+    // No offscreen renderer on this platform.
+    let unavailable = serve_now(
+        cx,
+        render_request(3, ArtifactKind::HtmlFragment, "<p>x</p>"),
+        None,
+    );
+    assert!(
+        unavailable
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("artifact/renderUnavailable:")
+    );
+
+    // Markdown renders natively: answered with a warning, no screenshot.
+    let any: Rc<dyn ArtifactRenderer> = Rc::new(Rc::new(FakeRenderer::default()));
+    let markdown = serve_now(
+        cx,
+        render_request(4, ArtifactKind::Markdown, "# x"),
+        Some(any),
+    );
+    let result = markdown.result.unwrap();
+    assert!(result.screenshot_png_base64.is_none());
+    assert_eq!(result.warnings.len(), 1);
+}
+
+#[gpui::test]
+fn render_executor_serves_the_stream_with_bounded_concurrency(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
+    let (replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+    let renderer = Rc::new(FakeRenderer {
+        gated: true,
+        report: Some(Default::default()),
+        ..Default::default()
+    });
+    let (actions, calls) = scripted(Arc::new(|_, _| Ok(serde_json::json!({ "accepted": true }))));
+    let state = cx.new(|_| AppState::new());
+    let dyn_renderer: Rc<dyn ArtifactRenderer> = Rc::new(renderer.clone());
+    state.update(cx, |state, cx| {
+        state.work_outline_actions_override = Some(actions);
+        let handle =
+            crate::state::EngineHandle::from_test_client(zeron_rpc::RpcClient::new(out, inbound));
+        state.start_artifact_render_executor(
+            handle,
+            Some(dyn_renderer),
+            RenderConfig {
+                timeout: std::time::Duration::from_secs(25),
+                concurrency: 2,
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let frame: serde_json::Value = serde_json::from_str(&requests.try_recv().unwrap()).unwrap();
+    assert_eq!(
+        frame["method"],
+        zeron_rpc::methods::WATCH_ARTIFACT_RENDER_REQUESTS
+    );
+    assert_eq!(frame["params"]["client"], "zeron-ui");
+    for n in 1..=3 {
+        let item = serde_json::json!({
+            "id": frame["id"].clone(),
+            "item": render_request(n, ArtifactKind::HtmlFragment, "<p>x</p>"),
+        });
+        runtime.block_on(async {
+            replies.send(item.to_string()).await.unwrap();
+            while replies.capacity() < replies.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+    cx.run_until_parked();
+    assert_eq!(
+        renderer.documents.borrow().len(),
+        2,
+        "two offscreen views at most"
+    );
+    let release = |renderer: &Rc<FakeRenderer>| {
+        let gate = renderer.gates.borrow_mut().remove(0);
+        gate.send(()).unwrap();
+    };
+    release(&renderer);
+    cx.run_until_parked();
+    assert_eq!(renderer.documents.borrow().len(), 3);
+    release(&renderer);
+    release(&renderer);
+    cx.run_until_parked();
+    let mut answered: Vec<String> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_RENDER_RESULT)
+        .map(|(_, params)| params["requestId"].as_str().unwrap().to_owned())
+        .collect();
+    answered.sort();
+    assert_eq!(answered, ["req-1", "req-2", "req-3"]);
+}

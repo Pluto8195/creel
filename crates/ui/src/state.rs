@@ -2256,6 +2256,20 @@ impl AppState {
         )
     }
 
+    /// Register as the engine's render-capable UI and serve render checks
+    /// (`WatchArtifactRenderRequests`).
+    pub(crate) fn start_artifact_render_executor(
+        &mut self,
+        handle: EngineHandle,
+        renderer: Option<std::rc::Rc<dyn crate::artifacts::render_check::ArtifactRenderer>>,
+        config: crate::artifacts::render_check::RenderConfig,
+        cx: &mut Context<Self>,
+    ) {
+        self.artifact_render_task = Some(crate::artifacts::render_check::spawn_render_requests(
+            cx, handle, renderer, config,
+        ));
+    }
+
     /// Tests: install a Space's artifacts without a watch.
     #[cfg(test)]
     pub(crate) fn set_test_artifacts(&mut self, snapshot: zeron_proto::ArtifactsSnapshot) {
@@ -2478,6 +2492,13 @@ impl AppState {
         });
         self.reconcile_change_request_watches(cx);
         self.reconcile_work_outline_watches(cx);
+        // This headed UI serves the engine's artifact render checks.
+        self.start_artifact_render_executor(
+            handle.clone(),
+            crate::artifacts::render_check::platform_renderer(),
+            crate::artifacts::render_check::RenderConfig::default(),
+            cx,
+        );
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
