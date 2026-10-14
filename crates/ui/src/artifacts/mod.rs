@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod actions;
+pub(crate) mod cards;
 pub(crate) mod document;
 pub(crate) mod model;
 pub(crate) mod store;
