@@ -1,6 +1,7 @@
 # Planning artifacts — design
 
-Status: proposal for review (2026-10-14). Nothing here is built yet.
+Status: decisions recorded 2026-10-14 (see "Decisions"); phase 1 = A + B + conventions.
+Conventions for the planning skill: `docs/planning-artifact-conventions.md` (versioned).
 
 Planning chats already produce artifacts: plan documents, HTML diagrams, state machines, option
 comparisons. Zeron is where the user reads, reviews, and hands them off. This design turns them
@@ -9,9 +10,10 @@ the last section.
 
 ## Principles
 
-- **Files stay files.** An artifact is a file in the chat's checkout that the agent wrote and
-  registered. Zeron never asks agents to write somewhere special to be viewable; it records which
-  file, keeps revision snapshots, and renders it.
+- **Files stay files, in a Zeron-owned place.** An artifact is a file under the work item's
+  canonical checkout (`<canonical>/.zeron/artifacts/<work-item>/`, see Decisions). Agents publish
+  files from wherever they wrote them; Zeron copies them there, keeps revision snapshots, and
+  renders them.
 - **Content never goes in the registry.** Registry operations are capped at 16 KiB, so the registry
   holds only artifact metadata. Content and revision snapshots live in the profile store on the
   owning device, addressed by content hash. Other devices read through the existing workspace file
@@ -28,7 +30,7 @@ the last section.
 **Registration.** New `zeron-agent` tool `artifact_publish {path, title, kind?, role?, note?,
 pinAsPlan?, idempotencyKey}`:
 
-- `path` is a file inside the chat's checkout; `kind` is inferred from the extension when omitted:
+- `path` is the file the agent wrote (anywhere it can write: its worktree or tmp); Zeron copies it into the work item's artifact folder. `kind` is inferred from the extension when omitted:
   `markdown`, `html-fragment`, `html-page`, `mermaid`, `image`, `options` (see F).
 - `role` is free-form with known values `plan`, `diagram`, `state-machine`, `comparison`, `doc`.
 - It returns `{artifactId, revision, url: "zeron-artifact:<artifactId>"}`. The agent puts that URL in
@@ -165,55 +167,30 @@ revision is listed as outdated.
 
 ## Conventions for the agent-side planning skill
 
-1. **Publish every artifact you want the user to see:**
-   - call `artifact_publish` after writing or changing it, with a one-line `note` saying what
-     changed;
-   - link the returned `zeron-artifact:` URL in your message, never a bare path;
-   - without the tool, use `[title](zeron-artifact:relative/path)`.
-2. **HTML:** write `<name>.fragment.html` (body content only, no `<html>`/`<body>`) and, if useful,
-   `<name>.preview.html` for standalone viewing. Publish the fragment.
-3. **Check what you made:** after any visual artifact, call `artifact_render_check`, fix every
-   reported error and warning, and look at the screenshot before saying it is done.
-4. **Questions (Markdown):** one block per question:
+Moved to `docs/planning-artifact-conventions.md` (v1), which is the binding version.
 
-   ```markdown
-   > [!question] Q-3 · Should receiving lines merge by MPN or by internal part number?
-   > example: two lines for LM358 from different suppliers
-   > blocks: ENG-2690 data model; §4 Receiving flow
-   > status: open
-   ```
+## Decisions (2026-10-14)
 
-   When answered, keep the block and update it: `status: resolved` and `decision: <one line>`.
-   Question ids are stable for the life of the artifact. In HTML, use
-   `<div data-zeron-question="Q-3" data-status="open">` with `data-blocks` and `data-example`
-   attributes.
-5. **Citations:** every factual claim about the system cites a source with a status:
-   - links carry the status as the link title: `[orders.py:120](flagship/orders.py:120 "measured")`,
-     `[#6265](https://github.com/Cofactr/flagship/pull/6265 "claimed")`;
-   - a claim with no source gets an inline marker: `{unverified}` or `{inferred}`;
-   - statuses: `measured` (you ran or read it), `claimed` (a source says so), `inferred` (your
-     reasoning), `unverified` (not checked);
-   - in HTML, use `data-claim="<status>"` on the link or span.
-6. **Options:** for N design options, write one fragment per option rendering the same records and
-   an options manifest, then publish the manifest with `kind: options`:
-
-   ```json
-   {"title": "Receiving table layouts", "question": "Q-2",
-    "options": [{"id": "A", "label": "Dense grid", "path": "receiving.option-a.fragment.html"},
-                {"id": "B", "label": "Grouped by PO", "path": "receiving.option-b.fragment.html"}]}
-   ```
-
-7. **The plan:** publish the work item's plan with `role: plan, pinAsPlan: true`. At the start of
-   any chat under a work item, call `artifact_get_plan`; if a plan exists, work from it and update
-   it rather than creating a new one.
-8. **Stable anchors:** give diagram nodes and major HTML sections `id` or `data-zeron-anchor`
-   attributes so comments survive revisions.
-
-## Open decisions
-
-1. **Default location for artifact files:** a gitignored `.zeron/artifacts/<work-item>/` in the
-   chat's checkout (recommended for drafts), or anywhere the agent chooses (registration works
-   either way). Plans meant for the team can still be committed under `docs/plans/`.
-2. **Should questions become Required Actions automatically** (recommended, as in D), or only
-   appear in the artifact's Questions panel?
-3. **Linear plan mirror (H):** confirm it is wanted, since it is the first write to Linear.
+1. **Location: Zeron-owned and keyed by work item, never the chat checkout.** Planning chats run in
+   worktrees that agents clean up, so artifacts live under the work item's *canonical* checkout:
+   `<canonical>/.zeron/artifacts/<work-item>/`. The canonical checkout is the main checkout of the
+   item's resolved repository, never a worktree. Chats without a work item use
+   `<canonical>/.zeron/artifacts/_chats/<chat-id>/`.
+   - **Publishing copies.** `artifact_publish` copies the agent's file, wherever the agent could write
+     it (worktree, tmp), into that location and snapshots a revision. Agents never need write access
+     outside their sandbox.
+   - **Existing paths** (`work/`, `.local/`, old Claude artifacts) can be registered: the file is
+     imported as revision 1 and its origin path is kept for provenance.
+   - **Promote to docs/plans/** copies the current revision into the canonical repo's `docs/plans/`
+     as an uncommitted file for the team, and records the link.
+   - **Ignored with `.git/info/exclude`**, resolved with `git rev-parse --git-path info/exclude`
+     (which also covers submodules), never `.gitignore`. Zeron does not modify tracked repo files.
+2. **Questions: only blocking ones become their own Required Action.** Non-blocking open questions
+   roll up into one "N open questions in <artifact>" action per artifact. The dedupe key is the
+   question id, so revisions never duplicate. Resolution syncs both ways: answering in Zeron
+   writes the answer into the artifact (new revision, `status: resolved`, `decision:`) and sends it
+   to the chat; editing the artifact to `status: resolved` resolves the action.
+3. **No Linear mirror.** Show the work item's linked Linear project next to the pinned plan instead.
+   Agents keep pushing to Linear with the `linear` CLI; the planning skill owns that sync.
+4. **Phase 1 = A + B + the conventions doc**, so visuals are never shown unchecked and the skill can
+   be built in parallel.
