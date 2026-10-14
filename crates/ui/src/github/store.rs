@@ -80,6 +80,7 @@ impl GithubStore {
         self.statuses.get(&pr.key())
     }
 
+    #[cfg(test)]
     pub(crate) fn ready(&self, pr: &PullRequestRef) -> Option<&PullRequestStatusSummary> {
         self.status(pr).and_then(PrEntry::ready)
     }
