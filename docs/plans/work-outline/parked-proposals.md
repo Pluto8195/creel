@@ -23,12 +23,35 @@ Proposed, in order:
 
 ## Linear integration (modelled on Tod, `~/Projects/tod`; no license, so reimplement)
 
-Version 1 (read-only): Linear personal API key in the macOS keychain (bare `Authorization`
-header, prompt on first Linear URL, re-prompt on 401); live issue chips (title, state, assignee,
-priority) on work-item references and chat ticket chips, replacing the `linear` CLI; New Work
-Item from Linear URL or "My open issues" (local field edits win over refresh); linked issue
-summary in `work_outline_read_current`.
+Reviewed with the user 2026-10-13. Principle: nothing in the Outline is created or changed
+automatically; Linear is opt-in per Space. A more automatic mode (project-linked items whose
+children track the project's issues, Tod "generators") is deferred until the user asks.
 
-Version 2: a Linear inbox work item mirroring a simple filter with an accept-into action
-(Tod "generators"); optional per-Space forward-only state write-back (Tod `linear_sync.rs`).
+Version 1 (read-only, per-Space opt-in, off by default):
+- Connection: Linear personal API key in the macOS keychain (bare `Authorization` header,
+  `viewer` check before saving, prompt on first Linear URL in a Linear-enabled Space, clear and
+  re-prompt on 401, retry-after capped at 30 s). Never exposed to agents. Spaces with Linear off
+  make no calls, show no Linear UI, and keep pasted Linear URLs as plain links.
+- Linear panel (on demand, Overview right-side slot): My issues (assigned, open); My projects
+  (lead/member) expandable to their open issues; search; already-linked markers with Reveal in
+  Outline; refresh on open and manual only.
+- User-initiated node creation only: Create work item (under the selected item or a chosen
+  parent), drag a row onto an Outline item, Link to selected item (issue or project), and
+  Create nodes for selected issues of a project.
+- Linked nodes: live chip (state, assignee, priority, labels) is informational only. Title and
+  description changes in Linear surface as "Updated in Linear · Update"; nothing changes until
+  the user applies it (pending decision: prompt vs. automatic-until-edited, Tod's
+  `ticket_modified_fields`). Status, children, placement, and archive state are never changed
+  by Linear.
+- Item title renames must not count as instruction drift (only instruction text should).
+- Chat ticket chips use the same client in Linear-enabled Spaces; chats whose branch or messages
+  name a ticket get a dismissible "Move under ENG-…" suggestion, never an automatic move.
+- `work_outline_read_current` returns the linked ticket summary when the Space has Linear on.
+- Nothing is written to Linear.
+
+Open decisions: title format ("ENG-123 · title" vs. title); Linear text changes as prompt vs.
+automatic-until-edited; agent ticket context (full description vs. id/title/status/url).
+
+Later: automatic project sync (Tod generators), optional per-Space forward-only state write-back
+(Tod `linear_sync.rs`), filter presets.
 Study notes: `/tmp/tod-linear-study.md` (not versioned).
