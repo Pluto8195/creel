@@ -798,7 +798,7 @@ pub(crate) fn extract_ticket_id(text: &str) -> Option<String> {
     None
 }
 
-fn summarize_checks(checks: Option<&Value>) -> Option<ChecksStatus> {
+pub(crate) fn summarize_checks(checks: Option<&Value>) -> Option<ChecksStatus> {
     let checks = checks?.as_array()?;
     if checks.is_empty() {
         return None;
@@ -839,7 +839,7 @@ fn summarize_checks(checks: Option<&Value>) -> Option<ChecksStatus> {
 }
 
 /// Bot/self-review filtering, matching `is_bot_login` (`session_canvas_server.py:1370`).
-fn is_bot_login(login: &str) -> bool {
+pub(crate) fn is_bot_login(login: &str) -> bool {
     let lower = login.to_lowercase();
     lower.contains("bot") || lower.contains("github-actions") || lower.contains("greptile")
 }
@@ -1068,7 +1068,7 @@ fn run_pr_search(qualifier: &str, json_fields: &str) -> Option<Vec<MyOpenPr>> {
     parse_pr_search(&output.stdout)
 }
 
-fn parse_pr_search(stdout: &[u8]) -> Option<Vec<MyOpenPr>> {
+pub(crate) fn parse_pr_search(stdout: &[u8]) -> Option<Vec<MyOpenPr>> {
     let data: Vec<Value> = serde_json::from_slice(stdout).ok()?;
     Some(
         data.iter()

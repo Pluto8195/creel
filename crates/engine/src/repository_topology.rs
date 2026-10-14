@@ -57,61 +57,7 @@ pub async fn build(
     }
     let workspace_root = std::fs::canonicalize(&requested_root).unwrap_or(requested_root);
 
-    let mut candidates = Vec::<RepoCandidate>::new();
-    let mut candidate_paths = HashSet::<PathBuf>::new();
-    if repos.is_repo(&workspace_root).await {
-        let identity = repos.checkout_identity(&workspace_root).await?;
-        candidate_paths.insert(identity.root.clone());
-        candidates.push(RepoCandidate {
-            path: identity.root,
-            kind: RepositoryTopologyKind::Workspace,
-            configured_parent_path: None,
-        });
-    }
-
-    // Product scope includes embedded repositories as well as submodules. The
-    // walk is bounded, does not follow symlinks, respects common heavyweight
-    // build-directory boundaries, and merely looks for .git markers.
-    let scan_root = workspace_root.clone();
-    let nested = tokio::task::spawn_blocking(move || scan_nested_repo_markers(&scan_root))
-        .await
-        .map_err(|err| EngineError::Other(format!("repository scan join failed: {err}")))?;
-    for path in nested {
-        if candidate_paths.insert(path.clone()) {
-            candidates.push(RepoCandidate {
-                path,
-                kind: RepositoryTopologyKind::Repository,
-                configured_parent_path: None,
-            });
-        }
-    }
-
-    // Git config handles quoting/escaping in .gitmodules. Iterate because an
-    // initialized submodule may itself declare more submodules; unavailable
-    // submodules are retained as graph nodes with unknown state.
-    let mut ix = 0;
-    while ix < candidates.len() && candidates.len() < NESTED_REPO_SCAN_MAX_REPOS {
-        let parent = candidates[ix].path.clone();
-        ix += 1;
-        if !repos.is_repo(&parent).await {
-            continue;
-        }
-        for relative in submodule_paths(repos, &parent).await {
-            let path = normalize_lexical(&parent.join(relative));
-            let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-            if candidate_paths.insert(canonical.clone()) {
-                candidates.push(RepoCandidate {
-                    path: canonical,
-                    kind: RepositoryTopologyKind::Submodule,
-                    configured_parent_path: Some(parent.clone()),
-                });
-            } else if let Some(candidate) = candidates.iter_mut().find(|c| c.path == canonical) {
-                candidate.kind = RepositoryTopologyKind::Submodule;
-                candidate.configured_parent_path = Some(parent.clone());
-            }
-        }
-    }
-
+    let mut candidates = discover_candidates(repos, &workspace_root).await?;
     candidates.sort_by_key(|candidate| candidate.path.components().count());
     let mut topology_repos = Vec::new();
     let mut repo_path_to_id = HashMap::<PathBuf, String>::new();
@@ -228,6 +174,82 @@ pub async fn build(
         repositories: topology_repos,
     };
     Ok(RepositoryTopology { workspace })
+}
+
+/// Every repository folder of a Space: its own checkout (when the folder is
+/// one), every nested repository the bounded scan finds, and every submodule
+/// (recursively), canonicalized and deduplicated, outermost first. Uninitialized
+/// submodules are included (their folders may not be repositories). Shared by
+/// the topology canvas and the PR review sync's repository set.
+pub(crate) async fn repository_paths(
+    repos: &Repos,
+    workspace_root: &Path,
+) -> Result<Vec<PathBuf>, EngineError> {
+    let mut candidates = discover_candidates(repos, workspace_root).await?;
+    candidates.sort_by_key(|candidate| candidate.path.components().count());
+    Ok(candidates.into_iter().map(|candidate| candidate.path).collect())
+}
+
+async fn discover_candidates(
+    repos: &Repos,
+    workspace_root: &Path,
+) -> Result<Vec<RepoCandidate>, EngineError> {
+    let mut candidates = Vec::<RepoCandidate>::new();
+    let mut candidate_paths = HashSet::<PathBuf>::new();
+    if repos.is_repo(workspace_root).await {
+        let identity = repos.checkout_identity(workspace_root).await?;
+        candidate_paths.insert(identity.root.clone());
+        candidates.push(RepoCandidate {
+            path: identity.root,
+            kind: RepositoryTopologyKind::Workspace,
+            configured_parent_path: None,
+        });
+    }
+
+    // Product scope includes embedded repositories as well as submodules. The
+    // walk is bounded, does not follow symlinks, respects common heavyweight
+    // build-directory boundaries, and merely looks for .git markers.
+    let scan_root = workspace_root.to_path_buf();
+    let nested = tokio::task::spawn_blocking(move || scan_nested_repo_markers(&scan_root))
+        .await
+        .map_err(|err| EngineError::Other(format!("repository scan join failed: {err}")))?;
+    for path in nested {
+        if candidate_paths.insert(path.clone()) {
+            candidates.push(RepoCandidate {
+                path,
+                kind: RepositoryTopologyKind::Repository,
+                configured_parent_path: None,
+            });
+        }
+    }
+
+    // Git config handles quoting/escaping in .gitmodules. Iterate because an
+    // initialized submodule may itself declare more submodules; unavailable
+    // submodules are retained as graph nodes with unknown state.
+    let mut ix = 0;
+    while ix < candidates.len() && candidates.len() < NESTED_REPO_SCAN_MAX_REPOS {
+        let parent = candidates[ix].path.clone();
+        ix += 1;
+        if !repos.is_repo(&parent).await {
+            continue;
+        }
+        for relative in submodule_paths(repos, &parent).await {
+            let path = normalize_lexical(&parent.join(relative));
+            let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+            if candidate_paths.insert(canonical.clone()) {
+                candidates.push(RepoCandidate {
+                    path: canonical,
+                    kind: RepositoryTopologyKind::Submodule,
+                    configured_parent_path: Some(parent.clone()),
+                });
+            } else if let Some(candidate) = candidates.iter_mut().find(|c| c.path == canonical) {
+                candidate.kind = RepositoryTopologyKind::Submodule;
+                candidate.configured_parent_path = Some(parent.clone());
+            }
+        }
+    }
+
+    Ok(candidates)
 }
 
 async fn attach_chats(

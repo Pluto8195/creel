@@ -36,6 +36,7 @@ pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
 pub mod pr_review_launch;
+pub mod pr_review_sync;
 pub mod linear;
 pub mod pr_ticket_cache;
 pub mod profile;
@@ -176,6 +177,9 @@ pub struct EngineCore {
     /// Linear integration (key, client, caches); its linked-item sync loop
     /// is spawned once here. Tests `reconfigure` it onto a mock endpoint.
     pub linear: linear::LinearService,
+    /// PR review sync (Work Outline items for review requests); its loop is
+    /// spawned once here. Tests `reconfigure` it onto a fake `gh`.
+    pub pr_review_sync: pr_review_sync::PrReviewSyncService,
     /// Per-chat context-window usage percent for the overview's tile sizing
     /// (session-canvas parity) — a live-doc read backed by a transcript-tail
     /// fallback, both bounded/cheap; no background sweep needed (see
@@ -466,6 +470,12 @@ impl EngineCore {
         let pr_ticket_cache = pr_ticket_cache::PrTicketCache::new();
         pr_ticket_cache.set_linear(linear.clone(), workspace.clone());
         pr_ticket_cache.spawn_sweep_loop();
+        let pr_review_sync = pr_review_sync::PrReviewSyncService::new(
+            workspace.clone(),
+            repos.clone(),
+            pr_review_sync::PrReviewSyncConfig::default(),
+        );
+        pr_review_sync.spawn_sync_loop();
         // Same reasoning as the four repairs above (ticket 0xx design item
         // 6): backfill durable PR/ticket links for chats whose transcript
         // predates the feature — off the boot path, needs `context_usage`'s
@@ -576,6 +586,7 @@ impl EngineCore {
             external_import,
             pr_ticket_cache,
             linear,
+            pr_review_sync,
             context_usage,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
@@ -713,6 +724,7 @@ impl EngineCore {
         .with_external_import(self.external_import.clone())
         .with_pr_ticket_cache(self.pr_ticket_cache.clone())
         .with_linear(self.linear.clone())
+        .with_pr_review_sync(self.pr_review_sync.clone())
         .with_context_usage(self.context_usage.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
