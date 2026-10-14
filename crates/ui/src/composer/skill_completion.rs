@@ -17,6 +17,15 @@
 //! (its first message behaves like a chat message), instruction editors
 //! insert plain text an agent reads (`` `name` skill ``) because
 //! instructions are delivered as text, never as chat chips.
+//!
+//! Instruction editors are harness-agnostic: an instruction applies to
+//! whichever agent later runs the item, so their list never follows the
+//! composer's selected Chat. It is the union of Claude Code discovery at the
+//! item's execution root and a direct read of the `SKILL.md` files Claude
+//! Code would load there ([`super::skill_files`]: project skills up to the
+//! git root, then `~/.claude/skills`) when the root is on this device,
+//! deduped by name (project skills win), built-ins dropped. Every fetched
+//! list logs one `skill_completion` line (surface, harness, root, counts).
 use std::collections::HashMap;
 use std::ops::Range;
 use std::time::Instant;
@@ -68,15 +77,21 @@ impl SkillInsertion {
 /// discovery lists skills only.
 const BUILT_IN_COMMANDS: &[&str] = &[
     "add-dir",
+    "advisor",
     "agents",
+    "auto-mode-setup",
+    "autocompact",
     "bashes",
     "bug",
     "clear",
+    "color",
     "compact",
     "config",
     "context",
     "copy",
     "cost",
+    "design-consent",
+    "design-revoke",
     "doctor",
     "effort",
     "exit",
@@ -84,6 +99,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "extra-usage",
     "fast",
     "feedback",
+    "focus",
     "heapdump",
     "help",
     "hooks",
@@ -106,7 +122,10 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "pr-comments",
     "privacy-settings",
     "quit",
+    "recap",
     "release-notes",
+    "reload-plugins",
+    "reload-skills",
     "rename",
     "resume",
     "review",
@@ -126,12 +145,38 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "undo",
     "upgrade",
     "usage",
+    "usage-credits",
     "vim",
 ];
 
-/// Whether `name` is a built-in harness command rather than a skill.
+/// Whether `name` is a built-in harness command rather than a skill
+/// (Claude Code's internal `__`-prefixed entries included).
 fn is_built_in_command(name: &str) -> bool {
-    BUILT_IN_COMMANDS.contains(&name)
+    BUILT_IN_COMMANDS.contains(&name) || name.starts_with("__")
+}
+
+/// An instruction editor's list: project skills read from disk (nearest
+/// folder first), then the engine's discovery without built-ins, then user
+/// skills read from disk; one entry per name (the first wins, so a project
+/// skill shadows a same-named user skill), sorted by name.
+pub(crate) fn merge_instruction_skills(
+    project: Vec<SlashCommand>,
+    engine: Vec<SlashCommand>,
+    user: Vec<SlashCommand>,
+) -> Vec<SlashCommand> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged: Vec<SlashCommand> = project
+        .into_iter()
+        .chain(
+            engine
+                .into_iter()
+                .filter(|command| !is_built_in_command(&command.name)),
+        )
+        .chain(user)
+        .filter(|command| seen.insert(command.name.clone()))
+        .collect();
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
+    merged
 }
 
 /// Where the skill list comes from: the harness that would run the work and
@@ -144,17 +189,20 @@ pub(crate) struct SkillSource {
 }
 
 impl SkillSource {
-    /// The source for text about `item_id` (the Space root when `None` or
-    /// empty): the item's resolved execution root (`resolve_execution`),
-    /// else the Space path.
+    /// The source for instruction text about `item_id` (the Space root when
+    /// `None` or empty): the item's resolved execution root
+    /// (`resolve_execution`: the winning configuration row's
+    /// `executionRoot`, whichever binding is primary, if any), else the Space
+    /// path. Always Claude Code discovery, never the selected Chat's harness:
+    /// instructions are harness-agnostic text.
     pub(crate) fn for_outline_scope(
         snapshot: &WorkOutlineSnapshot,
         space_id: &str,
         item_id: Option<&str>,
-        harness: HarnessId,
         space_path: &str,
         space_device: &str,
     ) -> Self {
+        let harness = HarnessId::ClaudeCode;
         let scope = match item_id.filter(|id| !id.is_empty()) {
             Some(id) => ExecutionScope::WorkItem {
                 work_item_id: id.to_owned(),
@@ -193,6 +241,8 @@ pub(crate) struct SkillCompletion {
     input: Entity<ComposerInput>,
     insertion: SkillInsertion,
     source: Option<SkillSource>,
+    /// Which editor this is, for the `skill_completion` log line.
+    surface: &'static str,
     /// Paint above modal dialogs (Start Chat, Create Instruction from Chat).
     over_modal: bool,
     token: Option<MentionToken>,
@@ -206,6 +256,8 @@ pub(crate) struct SkillCompletion {
     dismissed: Option<(Range<usize>, String)>,
     request: u64,
     cache: HashMap<SkillSource, SlashCacheEntry>,
+    /// Whose `~/.claude/skills` the instruction editors read.
+    home: Option<std::path::PathBuf>,
     scroll: ScrollHandle,
     _fetch: Option<Task<()>>,
     _input_events: Subscription,
@@ -232,6 +284,10 @@ impl SkillCompletion {
             input,
             insertion,
             source: None,
+            surface: match insertion {
+                SkillInsertion::SlashCommand => "start-chat",
+                SkillInsertion::InstructionText => "instruction",
+            },
             over_modal: false,
             token: None,
             listing: None,
@@ -242,6 +298,7 @@ impl SkillCompletion {
             dismissed: None,
             request: 0,
             cache: HashMap::new(),
+            home: std::env::var_os("HOME").map(std::path::PathBuf::from),
             scroll: ScrollHandle::new(),
             _fetch: None,
             _input_events: input_events,
@@ -253,16 +310,49 @@ impl SkillCompletion {
         self
     }
 
+    /// Name this editor in the `skill_completion` log line.
+    pub(crate) fn surface(mut self, surface: &'static str) -> Self {
+        self.surface = surface;
+        self
+    }
+
     /// Point the list at `source` (cheap when unchanged; an open popup
-    /// re-lists for the new folder).
+    /// re-lists for the new folder). A changed root drops the old root's
+    /// cached list, so coming back to it lists afresh.
     pub(crate) fn set_source(&mut self, source: SkillSource, cx: &mut Context<Self>) {
         if self.source.as_ref() == Some(&source) {
             return;
+        }
+        if let Some(previous) = self.source.take() {
+            self.cache.remove(&previous);
         }
         self.source = Some(source);
         if self.token.is_some() {
             self.open_listing(cx);
         }
+    }
+
+    /// Read user skills from `home` instead of `$HOME` (tests).
+    #[cfg(test)]
+    pub(crate) fn set_home(&mut self, home: Option<std::path::PathBuf>) {
+        self.home = home;
+    }
+
+    /// The open popup's rows `(name, description)`, in display order (tests).
+    #[cfg(test)]
+    pub(crate) fn visible_rows(&self) -> Vec<(String, String)> {
+        let commands = self.commands();
+        self.filtered
+            .iter()
+            .filter_map(|&ix| commands.get(ix))
+            .map(|command| (command.name.clone(), command.description.clone()))
+            .collect()
+    }
+
+    /// The open popup's error line, if any (tests).
+    #[cfg(test)]
+    pub(crate) fn error_text(&self) -> Option<SharedString> {
+        self.error.clone()
     }
 
     #[cfg(test)]
@@ -350,19 +440,76 @@ impl SkillCompletion {
             source.device_id.as_deref(),
             None,
         );
-        let task = self
-            .state
-            .read(cx)
-            .work_outline_actions()
-            .list_commands(params);
+        let (task, root_is_local) = {
+            let state = self.state.read(cx);
+            let root_is_local = source
+                .device_id
+                .as_deref()
+                .is_none_or(|device| state.is_local_device(device));
+            (
+                state.work_outline_actions().list_commands(params),
+                root_is_local,
+            )
+        };
+        // Instruction editors also read the root's SKILL.md files directly
+        // (only this device's folders are readable here).
+        let skills_only = self.insertion.skills_only();
+        let local = (skills_only && root_is_local && !source.cwd.is_empty()).then(|| {
+            let root = std::path::PathBuf::from(&source.cwd);
+            let home = self.home.clone();
+            cx.background_spawn(async move { super::skill_files::scan(&root, home.as_deref()) })
+        });
+        let surface = self.surface;
         self._fetch = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
+            let local = match local {
+                Some(local) => Some(local.await),
+                None => None,
+            };
             this.update(cx, |this, cx| {
                 if this.request != request {
                     return;
                 }
                 this.loading = false;
-                match result {
+                let engine_count = result.as_ref().map_or(0, Vec::len);
+                let engine_error = result.as_ref().err().map(|error| error.message.clone());
+                let (project_count, user_count) = local
+                    .as_ref()
+                    .map_or((0, 0), |local| (local.project.len(), local.user.len()));
+                // Files on disk still list when discovery fails.
+                let listed = match local {
+                    None => result,
+                    Some(local) => match result {
+                        Err(error) if local.project.is_empty() && local.user.is_empty() => {
+                            Err(error)
+                        }
+                        result => Ok(merge_instruction_skills(
+                            local.project,
+                            result.unwrap_or_default(),
+                            local.user,
+                        )),
+                    },
+                };
+                tracing::info!(
+                    target: "skill_completion",
+                    surface,
+                    harness = ?source.harness,
+                    root = %source.cwd,
+                    device = source.device_id.as_deref().unwrap_or("-"),
+                    root_is_local,
+                    engine = engine_count,
+                    engine_error = engine_error.as_deref().unwrap_or("-"),
+                    project = project_count,
+                    user = user_count,
+                    listed = listed.as_ref().map_or(0, |commands| {
+                        commands
+                            .iter()
+                            .filter(|command| !(skills_only && is_built_in_command(&command.name)))
+                            .count()
+                    }),
+                    "skill list",
+                );
+                match listed {
                     Ok(commands) => {
                         this.cache.insert(
                             source,
@@ -373,7 +520,6 @@ impl SkillCompletion {
                         );
                     }
                     Err(error) => {
-                        tracing::debug!(error = %error.message, "skill discovery failed");
                         this.error = Some(
                             if crate::work_outline::actions::is_transport_failure(&error) {
                                 "The project's device is unreachable".into()
@@ -614,6 +760,41 @@ mod tests {
         ] {
             assert!(!is_built_in_command(name), "{name}");
         }
+    }
+
+    #[test]
+    fn instruction_lists_union_dedupe_and_drop_built_ins() {
+        let skill = |name: &str, description: &str| SlashCommand {
+            name: name.into(),
+            description: description.into(),
+            input_hint: None,
+        };
+        let merged = merge_instruction_skills(
+            vec![
+                skill("design", "project"),
+                skill("design-system", "project"),
+            ],
+            vec![
+                skill("compact", "built-in"),
+                skill("__remote-workflow", "internal"),
+                skill("design", "engine"),
+                skill("code-review", "engine"),
+            ],
+            vec![skill("design", "user"), skill("my-voice", "user")],
+        );
+        let rows: Vec<(&str, &str)> = merged
+            .iter()
+            .map(|command| (command.name.as_str(), command.description.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("code-review", "engine"),
+                ("design", "project"),
+                ("design-system", "project"),
+                ("my-voice", "user"),
+            ]
+        );
     }
 
     #[test]

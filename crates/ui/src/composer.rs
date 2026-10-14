@@ -35,6 +35,7 @@ use crate::appshots::{self, CapturedAppshot};
 
 pub(crate) mod instruction_reset;
 pub(crate) mod skill_completion;
+pub(crate) mod skill_files;
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::notice::{NoticeChipIcon, notice_chip};
