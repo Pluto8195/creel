@@ -30,7 +30,14 @@ answers with the Chat the token was minted for. `ZERON_CHAT_ID` is no longer
 read: no self-declared origin is trusted. With a token, every `send_message` is
 prefixed with a `[Message from Zeron chat <title> (<id8>) …]` line, the server
 refuses to message its own chat, and the Work Outline agent tools
-(`work_outline_*`, forwarded to `AgentToolCall`) are listed. A token also scopes
+(`work_outline_*`, forwarded to `AgentToolCall`) are listed. The server
+instructions and the create/resolve tool descriptions tell agents to raise
+blocking decisions, approvals, or missing information with
+`work_outline_create_user_action_request` (in addition to asking in chat),
+resolve the request once the user answers (including a `Re: "…"` chat message
+from Required Actions' Reply & resolve), and use the built-in quick question
+prompt only for non-blocking clarifications; `work_outline_read_current` also
+returns the item's open requests. A token also scopes
 the original tools to the token's Chat, project, and device:
 
 | Tool | With a token |
