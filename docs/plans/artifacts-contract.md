@@ -1,6 +1,6 @@
 # Planning artifacts v1 — wire contract (phase 1: A + B)
 
-Wire contract commit: `STAGE1_COMMIT` (branch `artifacts-engine`). Code:
+Wire contract commit: `8e3bd0f1` (branch `artifacts-engine`). Code:
 `crates/proto/src/artifacts.rs` (+ `artifacts/tests.rs`), tool names in
 `crates/proto/src/agent.rs` (`agent_tools::tools::ARTIFACTS`), RPC names in
 `crates/rpc/src/lib.rs` (`methods::*ARTIFACT*`). Capability: `artifacts-v1`
