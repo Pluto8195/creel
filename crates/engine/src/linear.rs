@@ -90,6 +90,8 @@ struct Inner {
     /// The last successful `viewer` check.
     verified: Mutex<Option<LinearConnectionStatus>>,
     issues: Mutex<HashMap<String, (Instant, LinearIssueSummary)>>,
+    /// Per-identifier attachments, same TTL as `issues`.
+    attachments: Mutex<HashMap<String, (Instant, Vec<queries::IssueAttachment>)>>,
     inflight: Mutex<HashMap<String, SharedCall>>,
     /// Serializes key changes (set/clear/forget).
     key_change: tokio::sync::Mutex<()>,
@@ -141,6 +143,7 @@ impl LinearService {
                 key: Mutex::new(None),
                 verified: Mutex::new(None),
                 issues: Mutex::new(HashMap::new()),
+                attachments: Mutex::new(HashMap::new()),
                 inflight: Mutex::new(HashMap::new()),
                 key_change: tokio::sync::Mutex::new(()),
             }),
@@ -169,6 +172,7 @@ impl LinearService {
         *lock(&self.inner.key) = None;
         *lock(&self.inner.verified) = None;
         lock(&self.inner.issues).clear();
+        lock(&self.inner.attachments).clear();
     }
 
     /// The key and its source, reading the store once (off the async
@@ -249,7 +253,10 @@ impl LinearService {
         tracing::info!("linear: API key rejected (401); stored key removed");
     }
 
-    fn status_without_viewer(&self, key: Option<&(String, LinearKeySource)>) -> LinearConnectionStatus {
+    fn status_without_viewer(
+        &self,
+        key: Option<&(String, LinearKeySource)>,
+    ) -> LinearConnectionStatus {
         LinearConnectionStatus {
             configured: key.is_some(),
             source: key.map_or(LinearKeySource::None, |(_, source)| *source),
@@ -307,7 +314,10 @@ impl LinearService {
             .graphql(&api_key, &queries::viewer(), json!({}))
             .await?;
         let viewer = queries::parse_viewer(&data).ok_or_else(|| {
-            LinearError::new(LinearErrorCode::Unauthorized, "Linear did not accept the key")
+            LinearError::new(
+                LinearErrorCode::Unauthorized,
+                "Linear did not accept the key",
+            )
         })?;
         let _guard = self.inner.key_change.lock().await;
         let stored_ok = {
@@ -389,6 +399,36 @@ impl LinearService {
         Ok(issue)
     }
 
+    /// The issue's attachments (GitHub PRs among them), cached like issues
+    /// unless `force`. A response without the expected shape is `invalid`
+    /// (the query is isolated from [`Self::issue`] for exactly that case).
+    pub async fn issue_attachments(
+        &self,
+        identifier: &str,
+        force: bool,
+    ) -> Result<Vec<queries::IssueAttachment>, LinearError> {
+        let id = normalize_identifier(identifier)?;
+        let ttl = self.backend().ttl;
+        if !force
+            && let Some((_, cached)) = lock(&self.inner.attachments)
+                .get(&id)
+                .filter(|(at, _)| at.elapsed() < ttl)
+        {
+            return Ok(cached.clone());
+        }
+        let data = self
+            .call(&queries::issue_attachments(), json!({ "id": id }))
+            .await?;
+        let attachments = queries::parse_issue_attachments(&data).ok_or_else(|| {
+            LinearError::new(
+                LinearErrorCode::Invalid,
+                "Linear answered issue attachments in an unexpected shape",
+            )
+        })?;
+        lock(&self.inner.attachments).insert(id, (Instant::now(), attachments.clone()));
+        Ok(attachments)
+    }
+
     /// Follow a connection at `path` (JSON pointer into `data`) page by page
     /// until it ends or `cap` nodes were read.
     async fn paginate(
@@ -403,7 +443,10 @@ impl LinearService {
         let mut found = false;
         loop {
             let data = self
-                .call(query, queries::page_variables(extra.clone(), after.as_deref()))
+                .call(
+                    query,
+                    queries::page_variables(extra.clone(), after.as_deref()),
+                )
                 .await?;
             let connection = data.pointer(path);
             found |= connection.is_some_and(|c| !c.is_null());
@@ -448,7 +491,12 @@ impl LinearService {
     /// `LinearMyProjects`.
     pub async fn my_projects(&self) -> Result<Vec<LinearProjectSummary>, LinearError> {
         let (nodes, _) = self
-            .paginate(&queries::my_projects(), json!({}), "/projects", MAX_PROJECTS)
+            .paginate(
+                &queries::my_projects(),
+                json!({}),
+                "/projects",
+                MAX_PROJECTS,
+            )
             .await?;
         Ok(nodes
             .iter()
@@ -464,7 +512,10 @@ impl LinearService {
     ) -> Result<Vec<LinearIssueSummary>, LinearError> {
         let project_id = project_id.trim();
         if project_id.is_empty() {
-            return Err(LinearError::new(LinearErrorCode::Invalid, "projectId is required"));
+            return Err(LinearError::new(
+                LinearErrorCode::Invalid,
+                "projectId is required",
+            ));
         }
         let (nodes, found) = self
             .paginate(

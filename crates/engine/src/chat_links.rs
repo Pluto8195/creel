@@ -7,20 +7,13 @@
 //! `pr_ticket_cache::extract_ticket_id`, which this module reuses for the
 //! ticket side rather than re-deriving the same pattern.
 //!
-//! Live-tap AND backfill caveat: `AgentEvent::ToolResult.output` is populated
-//! for ACP-driven harnesses (cursor, devin, grok, hermes, pi, antigravity)
-//! but deliberately `None` for claude/codex (see the field's own doc comment
-//! in `crates/proto/src/agent.rs`) — those two adapters never surface a
-//! tool's raw output on the live wire, and `external_import.rs::
-//! parse_transcript` (the ONLY backfill source, Claude Code transcripts)
-//! doesn't capture tool-result text either (its `RawBlock` has no field for
-//! it). So for a Claude Code chat — live or backfilled — a `gh pr create`
-//! result's PR URL only becomes visible once the agent narrates it back in
-//! its own text reply, which lands as `mentioned` (via `note_message`'s
-//! mining / the `Text` branch of `mine_links_from_entries`) rather than
-//! `created_in_chat`. The `ToolResult`/`Tool.output` paths here still exist
-//! for the harnesses that DO populate it live, and stay correct if a future
-//! transcript source ever does too.
+//! Tool output: `AgentEvent::ToolResult.output` is populated by the ACP
+//! harnesses, by claude (`tool_result` block content) and by codex
+//! (`commandExecution.aggregatedOutput`); `parse_transcript` keeps a bounded
+//! copy for Claude Code transcripts. A chat whose run predates that capture
+//! only saw the agent narrate the URL back (`mentioned`); the Work Outline PR
+//! link pass (`work_outline_pr_links`) re-reads such chats' stored tool
+//! parts once to recover `created_in_chat`.
 
 use crate::workspace_host::{ChatLinkKind, WorkspaceHost};
 use std::collections::BTreeSet;
@@ -110,8 +103,21 @@ fn pull_path_len(rest: &str) -> Option<usize> {
 /// quoted/piped variant just as well; a comment or string that happens to
 /// contain the same words is an accepted false-positive-on-purpose, same
 /// spirit as `is_bot_login`'s substring checks in `pr_ticket_cache.rs`).
+///
+/// Also matches `gh pr new` (the CLI's alias) and MCP/unknown tools whose
+/// name says they create a pull request (`create_pull_request`,
+/// `createPullRequest`): their result carries the new PR's URL just like
+/// `gh pr create`'s stdout.
 pub(crate) fn looks_like_pr_create(command_or_input: &str) -> bool {
-    command_or_input.contains("gh pr create")
+    if command_or_input.contains("gh pr create") || command_or_input.contains("gh pr new") {
+        return true;
+    }
+    let squashed: String = command_or_input
+        .chars()
+        .filter(|c| !matches!(c, '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    squashed.contains("createpullrequest")
 }
 
 /// The text a [`ToolCall`] invocation is judged by — the shell command for
@@ -272,6 +278,12 @@ mod tests {
         ));
         assert!(!looks_like_pr_create("gh pr view 42"));
         assert!(!looks_like_pr_create("gh pr merge 42"));
+        assert!(looks_like_pr_create("gh pr new --fill"));
+        assert!(looks_like_pr_create(
+            "mcp__github__create_pull_request {\"owner\":\"acme\"}"
+        ));
+        assert!(looks_like_pr_create("createPullRequest {}"));
+        assert!(!looks_like_pr_create("mcp__github__get_pull_request {}"));
     }
 
     #[test]

@@ -2829,17 +2829,22 @@ impl RpcService for EngineRpc {
                 if let Some(space) = enabled_space {
                     let linear = self.linear.clone();
                     let work_outline = self.work_outline.clone();
+                    let pr_review_sync = self.pr_review_sync.clone();
                     tokio::spawn(async move {
                         if linear.has_key().await
                             && let Err(error) = crate::linear::sync::sync_space(
                                 &linear,
                                 &work_outline,
+                                Some(&pr_review_sync),
                                 &space,
                                 false,
                             )
                             .await
                         {
-                            tracing::info!(code = error.code.as_str(), "linear: enable sync stopped");
+                            tracing::info!(
+                                code = error.code.as_str(),
+                                "linear: enable sync stopped"
+                            );
                         }
                     });
                 }
@@ -2890,6 +2895,7 @@ impl RpcService for EngineRpc {
                 let result = crate::linear::sync::sync_space(
                     &self.linear,
                     &self.work_outline,
+                    Some(&self.pr_review_sync),
                     &p.space_id,
                     true,
                 )

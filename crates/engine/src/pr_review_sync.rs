@@ -126,6 +126,9 @@ struct Inner {
     statuses: Mutex<HashMap<String, (Instant, PrDetail)>>,
     searches: Mutex<HashMap<&'static str, (Instant, Vec<MyOpenPr>)>>,
     repo_sets: Mutex<HashMap<String, (Instant, BTreeSet<String>)>>,
+    /// Stored Chat transcripts, for the work item PR link backfill
+    /// (`work_outline_pr_links`); `None` = no backfill.
+    transcripts: RwLock<Option<crate::work_outline_pr_links::TranscriptReader>>,
     /// One sync pass at a time (background, `PrReviewSyncNow`, destination
     /// set), so two passes never race on the same derived ids.
     passes: tokio::sync::Mutex<()>,
@@ -420,8 +423,32 @@ fn ci_label(status: PullRequestCiStatus) -> &'static str {
     }
 }
 
+/// Whether an item linking `pr` is a PR review item (the UI's
+/// `github::pr_review_item` rule): it carries a GitHub sync record, sits
+/// directly under the destination, or is titled `<repo>#<number>` (the
+/// panel's manual Create). A feature or ticket item that merely links its own
+/// PR (`work_outline_pr_links`) is not, so the sync never adopts it.
+fn is_review_item(
+    snapshot: &WorkOutlineSnapshot,
+    item: &zeron_proto::WorkItemView,
+    pr: &PullRequestRef,
+) -> bool {
+    let synced = item
+        .external_sync_state
+        .as_ref()
+        .is_some_and(|state| state.provider == GITHUB_PROVIDER);
+    let under_destination = snapshot.pr_review_sync_destination().is_some()
+        && item.parent_work_item_id.as_deref() == snapshot.pr_review_sync_destination();
+    let titled = item
+        .title
+        .to_lowercase()
+        .starts_with(&format!("{}#{}", pr.repo, pr.number).to_lowercase());
+    synced || under_destination || titled
+}
+
 /// Items of the Space tracked for each PR key: the sync's derived item
-/// first, else the earliest-created item carrying the PR reference.
+/// first, else the earliest-created PR review item carrying the PR reference
+/// ([`is_review_item`]).
 fn tracked_items(snapshot: &WorkOutlineSnapshot, space_id: &str) -> BTreeMap<String, String> {
     let mut tracked: BTreeMap<String, (bool, i64, String)> = BTreeMap::new();
     for reference in &snapshot.external_references {
@@ -438,6 +465,9 @@ fn tracked_items(snapshot: &WorkOutlineSnapshot, space_id: &str) -> BTreeMap<Str
         };
         let key = pr.key();
         let derived = synced_item_id(space_id, &key) == item.id;
+        if !derived && !is_review_item(snapshot, item, &pr) {
+            continue;
+        }
         let rank = (!derived, item.created_at, item.id.clone());
         tracked
             .entry(key)
@@ -467,6 +497,7 @@ impl PrReviewSyncService {
                 statuses: Mutex::new(HashMap::new()),
                 searches: Mutex::new(HashMap::new()),
                 repo_sets: Mutex::new(HashMap::new()),
+                transcripts: RwLock::new(None),
                 passes: tokio::sync::Mutex::new(()),
             }),
         }
@@ -778,6 +809,87 @@ impl PrReviewSyncService {
             .await
             .ok()?;
         crate::pr_review_launch::github_slug(&url)
+    }
+
+    // ── work item PR links (`work_outline_pr_links`) ───────────────────────
+
+    /// Where the work item PR link backfill reads stored Chat transcripts.
+    pub fn set_transcript_reader(&self, reader: crate::work_outline_pr_links::TranscriptReader) {
+        *self
+            .inner
+            .transcripts
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(reader);
+    }
+
+    pub(crate) fn transcript_reader(
+        &self,
+    ) -> Option<crate::work_outline_pr_links::TranscriptReader> {
+        self.inner
+            .transcripts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn workspace(&self) -> &WorkspaceHost {
+        &self.inner.workspace
+    }
+
+    pub(crate) async fn outline_snapshot(
+        &self,
+        space_id: &str,
+    ) -> Result<WorkOutlineSnapshot, GithubError> {
+        self.snapshot(space_id).await
+    }
+
+    /// The Space's repository set (`owner/repo`, lowercased); the Space
+    /// must live on this device.
+    pub(crate) async fn space_repo_slugs(
+        &self,
+        space_id: &str,
+    ) -> Result<BTreeSet<String>, GithubError> {
+        let space = self.local_space(space_id)?;
+        self.repo_set(&space, false).await
+    }
+
+    pub(crate) async fn system_mutate(
+        &self,
+        mutation: WorkOutlineMutation,
+    ) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
+        self.mutate(mutation).await
+    }
+
+    /// Link the PRs the Space's Chats created to their work items
+    /// (`work_outline_pr_links::link_chat_pull_requests`). No `gh` call.
+    pub async fn link_chat_pull_requests(
+        &self,
+        space_id: &str,
+    ) -> Result<crate::work_outline_pr_links::ChatLinkPass, GithubError> {
+        let _pass = self.inner.passes.lock().await;
+        crate::work_outline_pr_links::link_chat_pull_requests(self, space_id).await
+    }
+
+    /// [`Self::link_chat_pull_requests`] for every Space this device owns.
+    pub async fn link_all_chat_pull_requests(&self) {
+        let device = self.inner.workspace.device_id().to_owned();
+        let Ok(spaces) = self.inner.workspace.read_spaces() else {
+            return;
+        };
+        for space in spaces {
+            if space.device_id != device
+                || crate::repos::is_automatic_access_blocked(Path::new(&space.path))
+            {
+                continue;
+            }
+            if let Err(error) = self.link_chat_pull_requests(&space.id).await {
+                tracing::debug!(
+                    code = error.code.as_str(),
+                    space = %space.id,
+                    "work item PR link: Space skipped"
+                );
+            }
+        }
     }
 
     // ── writes ─────────────────────────────────────────────────────────────
@@ -1416,6 +1528,7 @@ impl PrReviewSyncService {
             loop {
                 if service.config().background {
                     service.sync_all().await;
+                    service.link_all_chat_pull_requests().await;
                 }
                 tokio::time::sleep(SYNC_INTERVAL).await;
             }

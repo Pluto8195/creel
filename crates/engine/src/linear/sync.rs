@@ -5,6 +5,11 @@
 //! through the ordinary mutation path as the system actor (the registry
 //! re-checks the user's marks under its lock). Status, parent, order,
 //! archive state, and the set of items are never touched.
+//!
+//! The same pass adds each issue's GitHub PR attachments as `github` /
+//! `pullRequest` references on its item (`work_outline_pr_links`): only for
+//! Spaces this device owns (the PR's repository must be in the Space), add
+//! only, never a reference the user removed.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,6 +23,7 @@ use zeron_proto::work_outline::{FieldPatch, UpdateWorkItemParams, WorkItemChange
 use zeron_proto::{WorkOutlineMutation, WorkOutlineSnapshot};
 
 use super::LinearService;
+use crate::pr_review_sync::PrReviewSyncService;
 use crate::work_outline::WorkOutlineService;
 use crate::workspace_host::WorkspaceHost;
 
@@ -54,11 +60,13 @@ pub fn changes_for(
 }
 
 /// Sync one Space's issue-linked items. `force` bypasses the issue cache
-/// (manual refresh). Returns how many items changed. `disabledForSpace`
-/// when the Space has Linear off; `missingKey` / `unauthorized` abort.
+/// (manual refresh). Returns how many items changed (PR references added
+/// count too). `disabledForSpace` when the Space has Linear off;
+/// `missingKey` / `unauthorized` abort. `prs` = no PR links when `None`.
 pub async fn sync_space(
     linear: &LinearService,
     work_outline: &Arc<WorkOutlineService>,
+    prs: Option<&PrReviewSyncService>,
     space_id: &str,
     force: bool,
 ) -> Result<u32, LinearError> {
@@ -135,6 +143,21 @@ pub async fn sync_space(
             Err(error) => tracing::warn!(%error, "linear sync: update task failed"),
         }
     }
+    // Only issues that resolved this pass: a missing issue has no PRs.
+    let resolved: Vec<(String, String)> = linked
+        .into_iter()
+        .filter(|(_, identifier)| matches!(issues.get(identifier), Some(Some(_))))
+        .collect();
+    if let Some(prs) = prs {
+        updated += crate::work_outline_pr_links::link_issue_pull_requests(
+            prs,
+            &snapshot,
+            space_id,
+            &resolved,
+            |identifier| async move { linear.issue_attachments(&identifier, force).await },
+        )
+        .await?;
+    }
     Ok(updated)
 }
 
@@ -144,13 +167,14 @@ pub async fn sync_enabled_spaces(
     linear: &LinearService,
     work_outline: &Arc<WorkOutlineService>,
     workspace: &WorkspaceHost,
+    prs: Option<&PrReviewSyncService>,
 ) {
     let spaces = workspace.linear_enabled_space_ids();
     if spaces.is_empty() || !linear.has_key().await {
         return;
     }
     for space in spaces {
-        match sync_space(linear, work_outline, &space, false).await {
+        match sync_space(linear, work_outline, prs, &space, false).await {
             Ok(0) => {}
             Ok(n) => tracing::info!(space = %space, updated = n, "linear sync: items updated"),
             Err(error) if error.code == LinearErrorCode::DisabledForSpace => {}
@@ -166,12 +190,13 @@ pub async fn sync_enabled_spaces(
 pub fn spawn_sync_loop(
     linear: LinearService,
     workspace: WorkspaceHost,
+    prs: Option<PrReviewSyncService>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let work_outline = Arc::new(WorkOutlineService::new(workspace.clone()));
         tokio::time::sleep(FIRST_SYNC_DELAY).await;
         loop {
-            sync_enabled_spaces(&linear, &work_outline, &workspace).await;
+            sync_enabled_spaces(&linear, &work_outline, &workspace, prs.as_ref()).await;
             tokio::time::sleep(SYNC_INTERVAL).await;
         }
     })

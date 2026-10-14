@@ -43,7 +43,8 @@ pub(crate) use client::{GithubFailure, GithubUiError};
 /// The origin label a system-created Required Action shows.
 pub(crate) const SYSTEM_ORIGIN_LABEL: &str = "GitHub";
 
-/// The PR a live item of `snapshot` links (`github` / `pullRequest`), if any.
+/// The PR a live item of `snapshot` links (`github` / `pullRequest`), if any
+/// (the earliest linked, when it links several).
 pub(crate) fn item_pull_request(
     snapshot: &WorkOutlineSnapshot,
     item_id: &str,
@@ -54,6 +55,35 @@ pub(crate) fn item_pull_request(
         pr.url = reference.url.clone();
     }
     Some(pr)
+}
+
+/// Every PR the item links, earliest linked first (an item can link
+/// several: a ticket's UI and Flagship PRs, from Linear or its Chats).
+pub(crate) fn item_pull_requests(
+    snapshot: &WorkOutlineSnapshot,
+    item_id: &str,
+) -> Vec<PullRequestRef> {
+    let mut references: Vec<_> = snapshot
+        .external_references
+        .iter()
+        .filter(|r| {
+            r.work_item_id == item_id
+                && r.provider == GITHUB_PROVIDER
+                && r.reference_type == GITHUB_PULL_REQUEST_REFERENCE
+        })
+        .collect();
+    references.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    let mut keys = std::collections::HashSet::new();
+    references
+        .into_iter()
+        .filter_map(|reference| {
+            let mut pr = PullRequestRef::parse_external_id(&reference.external_id)?;
+            if !reference.url.trim().is_empty() {
+                pr.url = reference.url.clone();
+            }
+            keys.insert(pr.key()).then_some(pr)
+        })
+        .collect()
 }
 
 /// The PR of a PR review item: a live item linking a PR that the sync
