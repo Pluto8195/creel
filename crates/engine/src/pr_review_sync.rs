@@ -197,12 +197,18 @@ fn parse_time_ms(text: &str) -> Option<i64> {
 fn parse_detail(data: &Value, fallback: &PullRequestRef, viewer: &str) -> PrDetail {
     let viewer_lc = viewer.to_ascii_lowercase();
     let is_me = |login: Option<&str>| login.is_some_and(|l| l.to_ascii_lowercase() == viewer_lc);
-    let number = data.get("number").and_then(Value::as_u64).unwrap_or(fallback.number);
+    let number = data
+        .get("number")
+        .and_then(Value::as_u64)
+        .unwrap_or(fallback.number);
     let mut pr_ref = PullRequestRef::new(fallback.owner.clone(), fallback.repo.clone(), number);
     if let Some(url) = data.get("url").and_then(Value::as_str) {
         pr_ref.url = url.to_owned();
     }
-    let is_draft = data.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
+    let is_draft = data
+        .get("isDraft")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let state = match data.get("state").and_then(Value::as_str).unwrap_or("") {
         s if s.eq_ignore_ascii_case("merged") => PullRequestState::Merged,
         s if s.eq_ignore_ascii_case("closed") => PullRequestState::Closed,
@@ -229,7 +235,10 @@ fn parse_detail(data: &Value, fallback: &PullRequestRef, viewer: &str) -> PrDeta
         .flatten()
         .filter(|review| is_me(str_at(review, &["author", "login"])))
         .filter_map(|review| {
-            let state = review.get("state").and_then(Value::as_str)?.to_ascii_uppercase();
+            let state = review
+                .get("state")
+                .and_then(Value::as_str)?
+                .to_ascii_uppercase();
             (state != "PENDING").then(|| {
                 (
                     review
@@ -284,7 +293,9 @@ fn parse_detail(data: &Value, fallback: &PullRequestRef, viewer: &str) -> PrDeta
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            author: str_at(data, &["author", "login"]).unwrap_or_default().to_owned(),
+            author: str_at(data, &["author", "login"])
+                .unwrap_or_default()
+                .to_owned(),
             state,
             ci_status,
             review_decision,
@@ -344,12 +355,23 @@ fn summary_from_hit(pr: PullRequestRef, hit: &MyOpenPr) -> PullRequestStatusSumm
     }
 }
 
+/// Operation ids are capped at `limits::MAX_OPERATION_ID_CHARS`, and a Space
+/// id plus an `owner/repo#number` key exceeds it, so the inputs are hashed.
 fn item_operation(space_id: &str, key: &str) -> String {
-    format!("pr-review-sync:{space_id}:{key}")
+    format!(
+        "pr-review-sync-{}",
+        derive_id(&format!("{space_id}\0{key}"), "pr-review-sync-item")
+    )
 }
 
 fn request_operation(space_id: &str, key: &str, round: u32) -> String {
-    format!("pr-review-sync:{space_id}:{key}:round:{round}")
+    format!(
+        "pr-review-sync-{}",
+        derive_id(
+            &format!("{space_id}\0{key}\0{round}"),
+            "pr-review-sync-request"
+        )
+    )
 }
 
 /// The derived id of the sync's item for `key` in `space_id`.
@@ -434,11 +456,7 @@ impl PrReviewSyncService {
 
     /// Swap the tools (tests) and drop every cache.
     pub fn reconfigure(&self, config: PrReviewSyncConfig) {
-        *self
-            .inner
-            .config
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = config;
+        *self.inner.config.write().unwrap_or_else(|e| e.into_inner()) = config;
         *lock(&self.inner.viewer) = None;
         lock(&self.inner.statuses).clear();
         lock(&self.inner.searches).clear();
@@ -589,7 +607,15 @@ impl PrReviewSyncService {
         let repo = format!("{}/{}", pr.owner, pr.repo);
         let number = pr.number.to_string();
         let data = self
-            .gh_json(&["pr", "view", &number, "--repo", &repo, "--json", PR_VIEW_FIELDS])
+            .gh_json(&[
+                "pr",
+                "view",
+                &number,
+                "--repo",
+                &repo,
+                "--json",
+                PR_VIEW_FIELDS,
+            ])
             .await?;
         let detail = parse_detail(&data, pr, &viewer);
         lock(&self.inner.statuses).insert(key, (Instant::now(), detail.clone()));
@@ -841,7 +867,11 @@ impl PrReviewSyncService {
         } else {
             "Review requested"
         };
-        let title = summary.title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title = summary
+            .title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let text = truncate(
             format!("{verb}: {head} {title}").trim(),
             user_action_limits::MAX_REQUEST_TEXT_CHARS,
@@ -924,9 +954,7 @@ impl PrReviewSyncService {
             .into_iter()
             .filter_map(|hit| {
                 let pr = hit_ref(&hit)?;
-                slugs
-                    .contains(&slug_of(&pr))
-                    .then(|| (pr.key(), (pr, hit)))
+                slugs.contains(&slug_of(&pr)).then(|| (pr.key(), (pr, hit)))
             })
             .collect();
         let tracked = tracked_items(&snapshot, space_id);
@@ -939,9 +967,12 @@ impl PrReviewSyncService {
                 .cloned()
                 .or_else(|| snapshot.item(&derived).map(|_| derived.clone()));
             let Some(item_id) = existing else {
-                self.create_synced_item(space_id, &destination, pr, hit, now)
-                    .await?;
-                reply.created += 1;
+                if self
+                    .create_synced_item(space_id, &destination, pr, hit, now)
+                    .await?
+                {
+                    reply.created += 1;
+                }
                 continue;
             };
             let Some(item) = snapshot.item(&item_id) else {
@@ -971,14 +1002,18 @@ impl PrReviewSyncService {
                 }
                 previous => {
                     // A new request: a new round.
-                    let round = previous.as_ref().map_or(1, |s| s.round.saturating_add(1).max(1));
+                    let round = previous
+                        .as_ref()
+                        .map_or(1, |s| s.round.saturating_add(1).max(1));
                     let detail = match self.detail(pr, true).await {
                         Ok(detail) => Some(detail),
                         Err(error) if is_fatal(&error) => return Err(error),
                         Err(_) => None,
                     };
                     let re_request = detail.as_ref().map_or(
-                        previous.as_ref().is_some_and(|s| s.request_state == PrReviewRequestState::Submitted),
+                        previous
+                            .as_ref()
+                            .is_some_and(|s| s.request_state == PrReviewRequestState::Submitted),
                         |d| d.reviewed_by_me,
                     );
                     let summary = detail
@@ -1105,7 +1140,7 @@ impl PrReviewSyncService {
         pr: &PullRequestRef,
         hit: &MyOpenPr,
         now: i64,
-    ) -> Result<(), GithubError> {
+    ) -> Result<bool, GithubError> {
         let detail = match self.detail(pr, true).await {
             Ok(detail) => Some(detail),
             Err(error) if is_fatal(&error) => return Err(error),
@@ -1136,8 +1171,13 @@ impl PrReviewSyncService {
                 .unwrap_or_else(|| synced_item_id(space_id, &key)),
             // Created elsewhere with other inputs, or deleted: leave it.
             Err(error) => {
-                tracing::warn!(code = error.code.as_str(), "pr review sync: create failed");
-                return Ok(());
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    message = %error.message,
+                    pr = %key,
+                    "pr review sync: create failed"
+                );
+                return Ok(false);
             }
         };
         self.link(&item_id, pr, &summary.title).await;
@@ -1156,8 +1196,9 @@ impl PrReviewSyncService {
         {
             tracing::warn!(code = error.code.as_str(), "pr review sync: record failed");
         }
-        self.raise(space_id, &item_id, &summary, 1, re_request).await;
-        Ok(())
+        self.raise(space_id, &item_id, &summary, 1, re_request)
+            .await;
+        Ok(true)
     }
 
     /// One background pass over every Space this device owns that has a
@@ -1202,7 +1243,10 @@ impl PrReviewSyncService {
         let service = self.clone();
         tokio::spawn(async move {
             if let Err(error) = service.sync_space(&space_id, false).await {
-                tracing::info!(code = error.code.as_str(), "pr review sync: destination sync stopped");
+                tracing::info!(
+                    code = error.code.as_str(),
+                    "pr review sync: destination sync stopped"
+                );
             }
         });
     }
@@ -1226,6 +1270,24 @@ impl PrReviewSyncService {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn operation_ids_fit_the_limit_for_real_space_ids_and_long_keys() {
+        let space = "f9117668-f2f4-4dd2-b16c-ef80bc8e46f3";
+        let key = "Cofactr/receive-ai-workflows-and-tooling#123456";
+        let item = item_operation(space, key);
+        let request = request_operation(space, key, 42);
+        assert!(
+            item.chars().count() <= limits::MAX_OPERATION_ID_CHARS,
+            "{item}"
+        );
+        assert!(
+            request.chars().count() <= limits::MAX_OPERATION_ID_CHARS,
+            "{request}"
+        );
+        assert_ne!(item, item_operation(space, "Cofactr/ui#1"));
+        assert_ne!(request, request_operation(space, key, 43));
+    }
     use zeron_proto::pr_review_sync::pr_key;
 
     #[test]
@@ -1280,7 +1342,10 @@ mod tests {
             Some(PullRequestReviewDecision::ChangesRequested)
         );
         assert_eq!(s.my_review_state, PullRequestMyReviewState::ReRequested);
-        assert_eq!(s.requested_reviewers, vec!["me".to_owned(), "eng".to_owned()]);
+        assert_eq!(
+            s.requested_reviewers,
+            vec!["me".to_owned(), "eng".to_owned()]
+        );
         assert_eq!(s.author, "ada");
         assert_eq!(s.head_ref_name.as_deref(), Some("ada/fix"));
 
@@ -1299,8 +1364,14 @@ mod tests {
         assert_eq!(merged.summary.ci_status, PullRequestCiStatus::None);
         let draft = parse_detail(&json!({"state": "OPEN", "isDraft": true}), &pr(), "me");
         assert_eq!(draft.summary.state, PullRequestState::Draft);
-        assert_eq!(draft.summary.my_review_state, PullRequestMyReviewState::None);
-        assert_eq!(draft.summary.pr_ref.url, "https://github.com/acme/ui/pull/9");
+        assert_eq!(
+            draft.summary.my_review_state,
+            PullRequestMyReviewState::None
+        );
+        assert_eq!(
+            draft.summary.pr_ref.url,
+            "https://github.com/acme/ui/pull/9"
+        );
     }
 
     #[test]

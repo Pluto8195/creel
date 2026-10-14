@@ -29,7 +29,7 @@ use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::mock::InstructionMockHarness;
 use zeron_proto::{
     GithubError, GithubErrorCode, HarnessId, PrReviewRequestState, UserActionOriginKind,
-    WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineSnapshot, derive_id, roles,
+    WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineSnapshot,
 };
 use zeron_rpc::{RpcClient, methods};
 
@@ -109,7 +109,12 @@ async fn rig() -> Rig {
     commit(&ws, "WORKSPACE", "ws\n");
     git(
         &ws,
-        &["remote", "add", "origin", "git@github.com:acme/workspace.git"],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:acme/workspace.git",
+        ],
     );
     for name in ["ui", "flagship"] {
         let bare = bare_remote(&root, name);
@@ -134,7 +139,10 @@ async fn rig() -> Rig {
     std::fs::create_dir_all(&kb).unwrap();
     git(&kb, &["init", "-q"]);
     commit(&kb, "KB", "kb\n");
-    git(&kb, &["remote", "add", "origin", "ssh://git@github.com/acme/kb"]);
+    git(
+        &kb,
+        &["remote", "add", "origin", "ssh://git@github.com/acme/kb"],
+    );
 
     // The fake gh: fixtures from files, every call logged.
     let gh_dir = root.join("gh");
@@ -242,17 +250,21 @@ impl Rig {
     /// A root item "PR reviews" set as the destination.
     async fn destination(&self) -> String {
         let item = self
-            .mutate(json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "PR reviews",
-                "operationId": "dest" }))
+            .mutate(
+                json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "PR reviews",
+                "operationId": "dest" }),
+            )
             .await
             .unwrap()["workItemId"]
             .as_str()
             .unwrap()
             .to_owned();
-        self.mutate(json!({ "op": "setPrReviewSyncDestination", "spaceId": SPACE,
-            "workItemId": item, "operationId": "set-dest" }))
-            .await
-            .unwrap();
+        self.mutate(
+            json!({ "op": "setPrReviewSyncDestination", "spaceId": SPACE,
+            "workItemId": item, "operationId": "set-dest" }),
+        )
+        .await
+        .unwrap();
         item
     }
 
@@ -413,7 +425,10 @@ async fn review_requests_across_the_space_repos_become_items_once() {
     let detail = request.info.as_deref().unwrap();
     assert!(detail.contains("Author: @ada"), "{detail}");
     assert!(detail.contains("CI: passing"), "{detail}");
-    assert!(detail.contains("https://github.com/acme/ui/pull/9"), "{detail}");
+    assert!(
+        detail.contains("https://github.com/acme/ui/pull/9"),
+        "{detail}"
+    );
     assert_eq!(snapshot.user_action_requests.len(), 4);
 
     // A second pass changes nothing and calls only the search.
@@ -426,7 +441,9 @@ async fn review_requests_across_the_space_repos_become_items_once() {
     assert_eq!(after.external_references.len(), 4);
     let calls = rig.gh_calls()[before..].to_vec();
     assert!(
-        calls.iter().all(|c| c.starts_with("search prs") || c == "api user"),
+        calls
+            .iter()
+            .all(|c| c.starts_with("search prs") || c == "api user"),
         "{calls:?}"
     );
 
@@ -439,12 +456,24 @@ async fn review_requests_across_the_space_repos_become_items_once() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|s| format!("{}/{}#{}", s["ref"]["owner"].as_str().unwrap(), s["ref"]["repo"].as_str().unwrap(), s["ref"]["number"]))
+        .map(|s| {
+            format!(
+                "{}/{}#{}",
+                s["ref"]["owner"].as_str().unwrap(),
+                s["ref"]["repo"].as_str().unwrap(),
+                s["ref"]["number"]
+            )
+        })
         .collect();
     refs.sort();
     assert_eq!(
         refs,
-        vec!["acme/flagship#12", "acme/kb#3", "acme/ui#9", "acme/workspace#5"]
+        vec![
+            "acme/flagship#12",
+            "acme/kb#3",
+            "acme/ui#9",
+            "acme/workspace#5"
+        ]
     );
     assert!(
         listed
@@ -464,7 +493,11 @@ async fn review_rounds_resolve_and_reopen() {
         ("acme/flagship", 12, "Search", "bob"),
         ("acme/kb", 3, "Docs", "cy"),
     ]);
-    for (repo, n, title) in [("acme/ui", 9, "Fix"), ("acme/flagship", 12, "Search"), ("acme/kb", 3, "Docs")] {
+    for (repo, n, title) in [
+        ("acme/ui", 9, "Fix"),
+        ("acme/flagship", 12, "Search"),
+        ("acme/kb", 3, "Docs"),
+    ] {
         rig.open_requested(repo, n, title);
     }
     assert_eq!(rig.sync().await["created"], 3);
@@ -506,19 +539,42 @@ async fn review_rounds_resolve_and_reopen() {
     assert_eq!(reply, json!({ "created": 0, "updated": 3, "resolved": 3 }));
     let snapshot = rig.snapshot();
     for (key, state, note) in [
-        ("acme/ui#9", PrReviewRequestState::Submitted, "Review submitted"),
-        ("acme/flagship#12", PrReviewRequestState::Closed, "PR closed"),
-        ("acme/kb#3", PrReviewRequestState::Withdrawn, "Review request withdrawn"),
+        (
+            "acme/ui#9",
+            PrReviewRequestState::Submitted,
+            "Review submitted",
+        ),
+        (
+            "acme/flagship#12",
+            PrReviewRequestState::Closed,
+            "PR closed",
+        ),
+        (
+            "acme/kb#3",
+            PrReviewRequestState::Withdrawn,
+            "Review request withdrawn",
+        ),
     ] {
         let item = rig.item_for(key);
         assert_eq!(item.status, WorkItemStatus::Completed, "{key}");
-        assert_eq!(item.effective_status, WorkItemEffectiveStatus::Completed, "{key}");
-        assert_eq!(item.external_sync_state.unwrap().request_state, state, "{key}");
+        assert_eq!(
+            item.effective_status,
+            WorkItemEffectiveStatus::Completed,
+            "{key}"
+        );
+        assert_eq!(
+            item.external_sync_state.unwrap().request_state,
+            state,
+            "{key}"
+        );
         let request = snapshot
             .user_action_request(&synced_request_id(SPACE, key, 1))
             .unwrap();
         assert!(!request.is_open(), "{key}");
-        assert_eq!(request.resolution.as_ref().unwrap().note.as_deref(), Some(note));
+        assert_eq!(
+            request.resolution.as_ref().unwrap().note.as_deref(),
+            Some(note)
+        );
     }
     // Nothing more to do.
     assert_eq!(
@@ -542,7 +598,10 @@ async fn review_rounds_resolve_and_reopen() {
     assert_eq!(reply, json!({ "created": 0, "updated": 1, "resolved": 0 }));
     let item = rig.item_for("acme/ui#9");
     assert_eq!(item.status, WorkItemStatus::Active);
-    assert_eq!(item.effective_status, WorkItemEffectiveStatus::UserActionRequired);
+    assert_eq!(
+        item.effective_status,
+        WorkItemEffectiveStatus::UserActionRequired
+    );
     let state = item.external_sync_state.unwrap();
     assert_eq!(state.round, 2);
     assert_eq!(state.request_state, PrReviewRequestState::Requested);
@@ -594,7 +653,10 @@ async fn review_rounds_resolve_and_reopen() {
 async fn user_moves_archives_and_status_changes_are_respected() {
     let rig = rig().await;
     let dest = rig.destination().await;
-    rig.requested(&[("acme/ui", 9, "Fix", "ada"), ("acme/flagship", 12, "Search", "bob")]);
+    rig.requested(&[
+        ("acme/ui", 9, "Fix", "ada"),
+        ("acme/flagship", 12, "Search", "bob"),
+    ]);
     rig.open_requested("acme/ui", 9, "Fix");
     rig.open_requested("acme/flagship", 12, "Search");
     rig.sync().await;
@@ -621,7 +683,10 @@ async fn user_moves_archives_and_status_changes_are_respected() {
     let item = rig.item_for("acme/ui#9");
     assert_eq!(item.parent_work_item_id, None, "never moved back");
     assert_eq!(item.status, WorkItemStatus::Pending, "user status stands");
-    assert_eq!(rig.snapshot().item(&dest).unwrap().child_ids, vec![flagship.clone()]);
+    assert_eq!(
+        rig.snapshot().item(&dest).unwrap().child_ids,
+        vec![flagship.clone()]
+    );
 
     // GitHub's state changes: the review is submitted and flagship merges.
     rig.requested(&[]);
@@ -677,10 +742,12 @@ async fn no_destination_means_no_sync() {
 
     // Set, then cleared: no sync again.
     rig.destination().await;
-    rig.mutate(json!({ "op": "setPrReviewSyncDestination", "spaceId": SPACE,
-        "workItemId": null, "operationId": "clear" }))
-        .await
-        .unwrap();
+    rig.mutate(
+        json!({ "op": "setPrReviewSyncDestination", "spaceId": SPACE,
+        "workItemId": null, "operationId": "clear" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(rig.snapshot().pr_review_sync_destination(), None);
     let error = rig
         .github_err(methods::PR_REVIEW_SYNC_NOW, json!({ "spaceId": SPACE }))
@@ -702,10 +769,17 @@ async fn setting_the_destination_syncs_the_space() {
     rig.destination().await;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
-        if rig.snapshot().item(&synced_item_id(SPACE, "acme/ui#9")).is_some() {
+        if rig
+            .snapshot()
+            .item(&synced_item_id(SPACE, "acme/ui#9"))
+            .is_some()
+        {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "no sync after setting the destination");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no sync after setting the destination"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -780,7 +854,12 @@ async fn pr_status_is_cached_and_lists_are_filtered() {
     assert_eq!(status["headRefName"], "feature-x");
     assert_eq!(status["baseRefName"], "main");
     assert_eq!(status["author"], "ada");
-    let views = |rig: &Rig| rig.gh_calls().iter().filter(|c| c.starts_with("pr view")).count();
+    let views = |rig: &Rig| {
+        rig.gh_calls()
+            .iter()
+            .filter(|c| c.starts_with("pr view"))
+            .count()
+    };
     rig.call(methods::PR_STATUS, params.clone()).await.unwrap();
     assert_eq!(views(&rig), 1, "served from the cache");
     let mut forced = params.clone();
@@ -804,7 +883,10 @@ async fn pr_status_is_cached_and_lists_are_filtered() {
 
     rig.write_hits(
         "authored.json",
-        &[("acme/ui", 9, "Fix", "me"), ("other/thing", 2, "Elsewhere", "me")],
+        &[
+            ("acme/ui", 9, "Fix", "me"),
+            ("other/thing", 2, "Elsewhere", "me"),
+        ],
     );
     let mine = rig
         .call(methods::PR_MY_OPEN, json!({ "spaceId": SPACE }))
@@ -856,10 +938,17 @@ async fn a_review_started_from_a_synced_item_is_assigned_to_it() {
         .expect("assignment row");
     assert_eq!(row.fields["workItemId"], item.as_str());
     let snapshot = rig.snapshot();
-    assert!(snapshot.item(&item).unwrap().chat_ids.iter().any(|c| c == chat));
+    assert!(
+        snapshot
+            .item(&item)
+            .unwrap()
+            .chat_ids
+            .iter()
+            .any(|c| c == chat)
+    );
     // The synced item id is the derived one.
     assert_eq!(
         item,
-        derive_id(&format!("pr-review-sync:{SPACE}:acme/ui#9"), roles::ITEM)
+        zeron_engine::pr_review_sync::synced_item_id(SPACE, "acme/ui#9")
     );
 }
