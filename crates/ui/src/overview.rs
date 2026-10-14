@@ -9953,6 +9953,18 @@ impl Overview {
                         .update(cx, |outline, cx| outline.show_notice(notice, cx));
                 }
             }
+            DetailsEvent::StartPrReview {
+                space_id,
+                item_id,
+                action,
+            } => {
+                if let Err(notice) =
+                    this.start_pr_review_for_item(space_id.clone(), item_id.clone(), *action, cx)
+                {
+                    this.outline
+                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                }
+            }
             DetailsEvent::AddLinearIssues { space_id, item_id } => {
                 if let Err(notice) =
                     this.open_project_issue_picker(space_id.clone(), item_id.clone(), cx)
