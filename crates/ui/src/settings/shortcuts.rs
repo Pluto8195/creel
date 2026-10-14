@@ -508,7 +508,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::MoveWorkItemDown
         | ShortcutId::IndentWorkItem
         | ShortcutId::OutdentWorkItem
-        | ShortcutId::ShowOutlineShortcuts => "Work Outline",
+        | ShortcutId::ShowOutlineShortcuts
+        | ShortcutId::OpenLinear => "Work Outline",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -573,6 +574,9 @@ fn description(id: ShortcutId) -> &'static str {
         }
         ShortcutId::ShowOutlineShortcuts => {
             "List the Outline keys and Work Outline commands (Outline: ?)."
+        }
+        ShortcutId::OpenLinear => {
+            "Open the Linear panel in the Overview (projects with Linear turned on)."
         }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.

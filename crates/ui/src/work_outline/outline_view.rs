@@ -44,6 +44,8 @@ use crate::theme::Theme;
 
 #[path = "context_menu.rs"]
 pub(crate) mod context_menu;
+#[path = "linear_outline.rs"]
+pub(crate) mod linear_outline;
 #[path = "space_roots.rs"]
 pub(crate) mod space_roots;
 
@@ -137,6 +139,12 @@ pub(crate) enum OutlineEvent {
     /// The Space roots' order, hidden set, or reveal changed (the Overview
     /// redraws its toolbar count).
     SpacesArranged,
+    /// A Linear panel issue was dropped on a work item: create it there.
+    LinearIssueDropped {
+        space_id: String,
+        item_id: String,
+        issue: Box<zeron_proto::linear::LinearIssueSummary>,
+    },
 }
 
 /// What the Overview feeds the Outline each time its inputs change.
@@ -354,6 +362,8 @@ pub(crate) enum OutlineDrag {
     },
     /// A Space root (multi-Space Outline): reorders the roots.
     Space { space_id: String, title: String },
+    /// A Linear panel issue: dropped on a work item, creates it there.
+    LinearIssue(linear_outline::LinearIssueDrag),
 }
 
 impl OutlineDrag {
@@ -362,6 +372,7 @@ impl OutlineDrag {
             Self::Item { title, .. } | Self::Chat { title, .. } | Self::Space { title, .. } => {
                 title
             }
+            Self::LinearIssue(drag) => &drag.issue.title,
         }
     }
 }
@@ -2039,8 +2050,9 @@ impl OutlineView {
                     work_item_id: target_id.to_string(),
                 })
             }
-            // Space roots only drop among Space roots.
-            OutlineDrag::Space { .. } => None,
+            // Space roots only drop among Space roots; Linear issues create
+            // through `linear_outline`.
+            OutlineDrag::Space { .. } | OutlineDrag::LinearIssue(_) => None,
         }
     }
 
@@ -2063,18 +2075,24 @@ impl OutlineView {
     ) {
         let hint = if bounds.contains(&position) {
             let zone = match drag {
-                // A Chat goes into the item wherever it lands on the row.
-                OutlineDrag::Chat { .. } => DropZone::Into,
+                // A Chat (or a Linear issue) goes into the item wherever it
+                // lands on the row.
+                OutlineDrag::Chat { .. } | OutlineDrag::LinearIssue(_) => DropZone::Into,
                 OutlineDrag::Item { .. } | OutlineDrag::Space { .. } => restructure::drop_zone(
                     f32::from(position.y - bounds.top()),
                     f32::from(bounds.size.height),
                 ),
             };
-            self.drop_mutation(drag, target.0, target.1, zone)
-                .map(|_| DropHint {
-                    key: key.to_string(),
-                    zone,
-                })
+            let accepted = match drag {
+                OutlineDrag::LinearIssue(drag) => {
+                    self.accepts_linear_drop(drag, target.0, target.1)
+                }
+                _ => self.drop_mutation(drag, target.0, target.1, zone).is_some(),
+            };
+            accepted.then(|| DropHint {
+                key: key.to_string(),
+                zone,
+            })
         } else if self.drop_hint.as_ref().is_some_and(|hint| hint.key != key) {
             // Another row owns the indicator.
             return;
@@ -2101,6 +2119,10 @@ impl OutlineView {
         let Some(hint) = hint.filter(|hint| hint.key == key) else {
             return;
         };
+        if let OutlineDrag::LinearIssue(drag) = drag {
+            self.drop_linear_issue(drag, target, cx);
+            return;
+        }
         if let Some(mutation) = self.drop_mutation(drag, target.0, target.1, hint.zone) {
             self.submit_direct(target.0.to_string(), mutation, cx);
         }
@@ -2567,7 +2589,13 @@ impl OutlineView {
                             cx,
                         )
                     });
-                    item_body(&key, item, proposals, theme)
+                    let linear = self.linear_chips(&key, item, theme, cx);
+                    item_body(
+                        &key,
+                        item,
+                        linear_outline::join_chips(proposals, linear),
+                        theme,
+                    )
                 }
             }
             OutlineRowKind::Chat(chat) => {

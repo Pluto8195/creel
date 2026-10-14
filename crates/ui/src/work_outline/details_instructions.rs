@@ -841,6 +841,7 @@ impl WorkItemDetails {
         let section = self.render_instructions_section(None, &snapshot, theme, cx);
         let proposals = self.render_proposals_section(&snapshot, theme, cx);
         let execution = self.render_execution_section(&snapshot, theme, cx);
+        let linear = self.render_space_linear(&snapshot, theme, cx);
         frame.child(header).child(
             div()
                 .id("work-item-details-body")
@@ -863,7 +864,8 @@ impl WorkItemDetails {
                 .child(required_actions)
                 .child(section)
                 .when_some(proposals, |el, proposals| el.child(proposals))
-                .child(execution),
+                .child(execution)
+                .child(linear),
         )
     }
 }

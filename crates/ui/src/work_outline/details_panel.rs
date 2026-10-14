@@ -51,6 +51,9 @@ mod execution_section;
 
 #[path = "details_user_actions.rs"]
 mod user_actions_section;
+
+#[path = "details_linear.rs"]
+mod linear_section;
 pub(crate) use user_actions_section::ProposalReview;
 
 /// `item_id` of the Space-root variant of the details surface.
@@ -128,6 +131,7 @@ pub(crate) fn parse_reference(raw: &str) -> Option<ParsedReference> {
             ))
         }
         ["linear.app", _, "issue", id, ..] => Some(make("linear", "issue", id.to_uppercase())),
+        ["linear.app", _, "project", slug, ..] => Some(make("linear", "project", slug.to_string())),
         _ => Some(make("web", "link", url.to_string())),
     }
 }
@@ -191,6 +195,8 @@ pub(crate) struct WorkItemDetails {
     reason_input: Entity<ComposerInput>,
     pub(crate) proposal_history_open: bool,
     pub(crate) proposals_error: Option<String>,
+    /// Linear integration (`details_linear.rs`).
+    pub(crate) linear: linear_section::LinearDetailsState,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the discard confirmation lands here.
     #[cfg(test)]
@@ -359,6 +365,7 @@ impl WorkItemDetails {
             reason_input,
             proposal_history_open: false,
             proposals_error: None,
+            linear: Default::default(),
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_confirm: None,
@@ -723,6 +730,9 @@ impl WorkItemDetails {
         let Some(parsed) = parse_reference(&raw) else {
             self.error = Some("Enter an http(s) URL".into());
             cx.notify();
+            return;
+        };
+        let Some(parsed) = self.linear_gate_reference(parsed, cx) else {
             return;
         };
         let task = self
@@ -1296,6 +1306,21 @@ impl Render for WorkItemDetails {
             }
         }
 
+        let description = description.children(self.linear_sync_marker(
+            &item,
+            &snapshot,
+            zeron_proto::linear::SYNC_FIELD_DESCRIPTION,
+            &theme,
+        ));
+        let title_synced = self.linear_sync_marker(
+            &item,
+            &snapshot,
+            zeron_proto::linear::SYNC_FIELD_TITLE,
+            &theme,
+        );
+        let linear = self.render_linear_section(&item, &snapshot, &theme, cx);
+        let linear_hint = self.render_linear_paste_hint(&theme, cx);
+
         // Associated chats.
         let chat_rows = item.chat_ids.iter().enumerate().map(|(ix, chat_id)| {
             let chat = self.chats.iter().find(|chat| &chat.id == chat_id);
@@ -1621,9 +1646,11 @@ impl Render for WorkItemDetails {
                 .px(px(14.0))
                 .py(px(10.0))
                 .child(title)
+                .children(title_synced)
                 .when_some(created_by, |el, line| el.child(line))
                 .child(status_row)
                 .child(required_actions)
+                .children(linear)
                 .child(description)
                 .child(self.render_instructions_section(Some(&item), &snapshot, &theme, cx))
                 .when_some(proposals, |el, section| el.child(section))
@@ -1632,6 +1659,7 @@ impl Render for WorkItemDetails {
                 .child(chats_section)
                 .when_some(children_section, |el, section| el.child(section))
                 .child(refs_section)
+                .children(linear_hint)
                 .when_some(error, |el, error| {
                     el.child(
                         div()

@@ -41,10 +41,13 @@ pub(crate) enum WorkOutlineCommand {
     OutdentWorkItem,
     /// Discoverability: the on-demand Outline shortcut reference.
     ShowOutlineShortcuts,
+    /// Linear integration: the Linear panel in the Overview's right slot.
+    /// Listed in the palette only while some Space has Linear on.
+    OpenLinear,
 }
 
 impl WorkOutlineCommand {
-    pub(crate) const ALL: [WorkOutlineCommand; 17] = [
+    pub(crate) const ALL: [WorkOutlineCommand; 18] = [
         Self::OpenOutline,
         Self::ToggleOutlineFocus,
         Self::OpenFullChat,
@@ -62,6 +65,7 @@ impl WorkOutlineCommand {
         Self::IndentWorkItem,
         Self::OutdentWorkItem,
         Self::ShowOutlineShortcuts,
+        Self::OpenLinear,
     ];
 
     /// Palette / menu label (sentence-style, matches the existing palette).
@@ -84,6 +88,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => "Indent Work Item",
             Self::OutdentWorkItem => "Outdent Work Item",
             Self::ShowOutlineShortcuts => "Show Outline Shortcuts",
+            Self::OpenLinear => "Open Linear",
         }
     }
 
@@ -106,6 +111,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => icons::ARROW_RIGHT,
             Self::OutdentWorkItem => icons::ARROW_LEFT,
             Self::ShowOutlineShortcuts => icons::KEYBOARD,
+            Self::OpenLinear => icons::CHECKLIST,
         }
     }
 
@@ -131,6 +137,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => "indentWorkItem",
             Self::OutdentWorkItem => "outdentWorkItem",
             Self::ShowOutlineShortcuts => "showOutlineShortcuts",
+            Self::OpenLinear => "openLinear",
         }
     }
 
@@ -155,6 +162,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => ShortcutId::IndentWorkItem,
             Self::OutdentWorkItem => ShortcutId::OutdentWorkItem,
             Self::ShowOutlineShortcuts => ShortcutId::ShowOutlineShortcuts,
+            Self::OpenLinear => ShortcutId::OpenLinear,
         }
     }
 
@@ -165,10 +173,12 @@ impl WorkOutlineCommand {
             .find(|command| command.shortcut_id() == id)
     }
 
-    /// Whether the command appears in the command palette: every command
-    /// since Milestone 4 enabled Open Required Actions.
+    /// Whether the command appears in the command palette unconditionally:
+    /// every command since Milestone 4 enabled Open Required Actions, except
+    /// Open Linear, which the palette adds only while some Space has Linear
+    /// on (`linear::panel::palette_visible`).
     pub(crate) fn in_palette(self) -> bool {
-        true
+        self != Self::OpenLinear
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
@@ -274,12 +284,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn seventeen_commands_with_unique_labels_and_ids() {
-        assert_eq!(WorkOutlineCommand::ALL.len(), 17);
+    fn eighteen_commands_with_unique_labels_and_ids() {
+        assert_eq!(WorkOutlineCommand::ALL.len(), 18);
         let ids: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.id()).collect();
         let labels: HashSet<_> = WorkOutlineCommand::ALL.iter().map(|c| c.label()).collect();
-        assert_eq!(ids.len(), 17);
-        assert_eq!(labels.len(), 17);
+        assert_eq!(ids.len(), 18);
+        assert_eq!(labels.len(), 18);
         assert!(
             WorkOutlineCommand::ALL
                 .iter()
@@ -314,6 +324,7 @@ mod tests {
                 "indentWorkItem",
                 "outdentWorkItem",
                 "showOutlineShortcuts",
+                "openLinear",
             ]
         );
     }
@@ -333,12 +344,13 @@ mod tests {
     }
 
     #[test]
-    fn every_command_is_in_the_palette_including_required_actions() {
+    fn every_command_but_open_linear_is_always_in_the_palette() {
         let listed: Vec<_> = WorkOutlineCommand::ALL
             .into_iter()
             .filter(|c| c.in_palette())
             .collect();
-        assert_eq!(listed, WorkOutlineCommand::ALL);
+        assert_eq!(listed, WorkOutlineCommand::ALL[..17]);
+        assert!(!WorkOutlineCommand::OpenLinear.in_palette());
         assert!(WorkOutlineCommand::OpenRequiredActions.in_palette());
         // Global: no selection needed.
         assert!(!WorkOutlineCommand::OpenRequiredActions.needs_selected_work_item());
