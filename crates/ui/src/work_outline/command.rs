@@ -41,7 +41,8 @@ pub(crate) enum WorkOutlineCommand {
     OutdentWorkItem,
     /// Discoverability: the on-demand Outline shortcut reference.
     ShowOutlineShortcuts,
-    /// Linear integration: the Linear panel in the Overview's right slot.
+    /// Linear integration: show/hide the Linear panel (the Overview's left
+    /// column) — open and focus its search, or close it when focused.
     /// Listed in the palette only while some Space has Linear on.
     OpenLinear,
 }
@@ -88,7 +89,7 @@ impl WorkOutlineCommand {
             Self::IndentWorkItem => "Indent",
             Self::OutdentWorkItem => "Outdent",
             Self::ShowOutlineShortcuts => "Show Outline Shortcuts",
-            Self::OpenLinear => "Open Linear",
+            Self::OpenLinear => "Toggle Linear Panel",
         }
     }
 
@@ -175,7 +176,7 @@ impl WorkOutlineCommand {
 
     /// Whether the command appears in the command palette unconditionally:
     /// every command since Milestone 4 enabled Open Required Actions, except
-    /// Open Linear, which the palette adds only while some Space has Linear
+    /// Toggle Linear Panel, which the palette adds only while some Space has Linear
     /// on (`linear::panel::palette_visible`).
     pub(crate) fn in_palette(self) -> bool {
         self != Self::OpenLinear

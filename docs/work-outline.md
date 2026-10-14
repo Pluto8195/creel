@@ -98,7 +98,7 @@ In List, `↑` / `↓` then move the selected row (`↑` on the first row return
 search) and `↩` opens the selected Chat beside the Overview.
 
 Every Work Outline command is also in the command palette and can be rebound in
-**Settings → Shortcuts**. Only four commands ship with a global key, because
+**Settings → Shortcuts**. Only five commands ship with a global key, because
 global keys also fire while a text field has focus:
 
 | Command | Default |
@@ -107,6 +107,7 @@ global keys also fire while a text field has focus:
 | Toggle Outline Focus | `⌘;` / `Ctrl+;` |
 | Open Full Chat | `⇧⌘↩` / `Ctrl+Shift+Enter` |
 | Create Work Item | `⇧⌘I` / `Ctrl+Shift+I` |
+| Toggle Linear Panel (only while a project has Linear on) | `⌥⌘L` / `Ctrl+Shift+E` |
 | Create Child Work Item, Rename, Move, Associate Chat with Work Item, Open Effective Instructions, Create Instruction from Chat, Open Required Actions, Start Chat in Work Item, Move Up / Down, Indent / Outdent, Show Outline Shortcuts | Unbound |
 
 **Start Chat in Work Item** has no global key because `⌘↩` (`Ctrl+Enter`) sends
@@ -380,14 +381,30 @@ automatically: items and links come only from the actions below.
   Space row) and switch on **Linear**. Without a key, **Connect Linear…** opens
   Settings → Linear. The first time you paste a Linear URL in a project with
   Linear off, Zeron offers **Enable** once.
-- **Linear panel.** Click **Linear** in the Outline toolbar, run **Open Linear**
-  from the command palette (no default key; bind one in Settings → Shortcuts),
-  or choose **Open Linear Panel** on a Space row. The panel lists **My issues**
-  and **My projects**. Expand a project to see its open issues. Search filters
-  both lists. Lists load when the panel opens and when you click ↻. Rows that
-  an item in this project already links show **Linked · Reveal**, which
-  selects that item in the Outline. With several Linear projects on, click the
-  project name in the panel header to switch.
+- **Linear panel.** Press `⌥⌘L` (`Ctrl+Shift+E` on Windows and Linux;
+  rebind **Toggle Linear Panel** in Settings → Shortcuts), click **Linear** in
+  the Outline toolbar, run **Toggle Linear Panel** from the command palette, or
+  choose **Open Linear Panel** on a Space row. The panel opens as its own column
+  on the left of the Outline (List and Canvas too), so the chat panel, Work
+  Item Details, and Required Actions stay open beside it on the right.
+  - The key works anywhere in the Overview, including the chat panel's
+    composer. With the panel closed it opens it and puts the cursor in its
+    search. With the panel open and the cursor elsewhere, it moves the cursor
+    to the search. With the cursor in the panel, it closes the panel and
+    returns to the Outline tree. `Esc` in the panel also closes it.
+  - With no project on Linear, the key and the command only show a notice.
+  - Drag the panel's right edge to resize it (double-click the edge to reset).
+    Its width and whether it is open are remembered on this device. If the
+    window is too narrow for the panel, the Outline, and the right-side panel,
+    the Linear panel narrows first, then floats over the Outline's left edge
+    instead of squeezing it.
+  - With Reduce Motion on, the panel opens and closes without animating.
+
+  The panel lists **My issues** and **My projects**. Expand a project to see its
+  open issues. Search filters both lists. Lists load when the panel opens and
+  when you click ↻. Rows that an item in this project already links show
+  **Linked · Reveal**, which selects that item in the Outline. With several
+  Linear projects on, click the project name in the panel header to switch.
 - **Create work item** (**Create** on an issue) adds `ENG-123 · title` under the
   selected work item, as its last child. With a Space row selected it goes to
   the top level. With nothing usable selected, the panel asks for the parent.

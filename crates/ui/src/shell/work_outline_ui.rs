@@ -1283,19 +1283,19 @@ mod tests {
     #[test]
     fn command_bindings_skip_unbound_and_fall_back_for_unparseable() {
         let mut keymap = KeymapConfig::default();
-        // Defaults: only Open Outline, Toggle Outline Focus, Open Full Chat
-        // and Create Work Item ship bound.
-        assert_eq!(work_outline_bindings(&keymap).len(), 4);
-        keymap.set(ShortcutId::RenameWorkItem, "mod-shift-m".into());
+        // Defaults: only Open Outline, Toggle Outline Focus, Open Full Chat,
+        // Create Work Item and Toggle Linear Panel ship bound.
         assert_eq!(work_outline_bindings(&keymap).len(), 5);
+        keymap.set(ShortcutId::RenameWorkItem, "mod-shift-m".into());
+        assert_eq!(work_outline_bindings(&keymap).len(), 6);
         // Unparseable with a default: falls back to it.
         keymap.set(ShortcutId::OpenOutline, "mod-bogus-???".into());
-        assert_eq!(work_outline_bindings(&keymap).len(), 5);
+        assert_eq!(work_outline_bindings(&keymap).len(), 6);
         // Unparseable without a default: unbound, never a panic.
         keymap.set(ShortcutId::MoveWorkItem, "mod-bogus-???".into());
-        assert_eq!(work_outline_bindings(&keymap).len(), 5);
+        assert_eq!(work_outline_bindings(&keymap).len(), 6);
         keymap.set(ShortcutId::OpenOutline, String::new());
-        assert_eq!(work_outline_bindings(&keymap).len(), 4);
+        assert_eq!(work_outline_bindings(&keymap).len(), 5);
     }
 
     fn test_shell<'a>(
@@ -2595,5 +2595,159 @@ mod tests {
         redraw(cx);
         assert_eq!(panel_chat(&overview, cx), selected);
         assert!(panel_chat(&overview, cx).is_some());
+    }
+
+    /// The Toggle Linear Panel key as the app binds it on this platform.
+    fn linear_key() -> String {
+        platform_combo(ShortcutId::OpenLinear.default_combo())
+    }
+
+    /// Turn Linear on (or off) for the fixture's Space, with scripted
+    /// Linear replies (nothing reaches Linear).
+    fn set_linear(
+        shell: &Entity<Shell>,
+        overview: &Entity<crate::overview::Overview>,
+        enabled: bool,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.work_outline_actions_override =
+                    Some(crate::work_outline::WorkOutlineActions::scripted(
+                        std::sync::Arc::new(|method, _| {
+                            Ok(match method {
+                                "LinearMyIssues" | "LinearMyProjects" => serde_json::json!([]),
+                                _ => serde_json::json!({}),
+                            })
+                        }),
+                    ));
+            })
+        });
+        let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
+        snapshot.space_settings.linear_enabled = enabled;
+        overview.update(cx, |overview, cx| {
+            overview.set_outline_loads(
+                std::collections::HashMap::from([(
+                    "s1".to_string(),
+                    crate::work_outline::store::WorkOutlineLoad::Ready(std::sync::Arc::new(
+                        snapshot,
+                    )),
+                )]),
+                cx,
+            )
+        });
+        redraw(cx);
+    }
+
+    fn linear_search_focused(
+        overview: &Entity<crate::overview::Overview>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        cx.update(|window, cx| {
+            overview
+                .read(cx)
+                .linear_panel()
+                .is_some_and(|panel| panel.read(cx).search_focused(window, cx))
+        })
+    }
+
+    /// The Linear toggle through the real keymap: from the chat panel's
+    /// focused composer it opens the panel beside the chat panel and focuses
+    /// its search (the draft untouched); from the composer again it only
+    /// moves focus back to the search; from the search it closes the panel
+    /// and returns focus to the tree. The chat panel stays up throughout.
+    #[gpui::test]
+    fn linear_key_toggles_the_panel_beside_the_chat_panel(cx: &mut gpui::TestAppContext) {
+        use crate::work_outline::model::row_key;
+        use crate::work_outline::store::fixture_ids::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        cx.update(|_, cx| crate::motion::set_reduced_motion(cx, true));
+        cx.simulate_resize(gpui::size(px(1900.0), px(900.0)));
+        set_linear(&shell, &overview, true, cx);
+
+        // Enter on a Chat row: the chat panel opens, composer focused.
+        outline.update(cx, |outline, cx| {
+            outline.select(&row_key::chat(CHAT_AUTH), cx)
+        });
+        cx.update(|window, cx| {
+            let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
+            window.focus(&handle, cx)
+        });
+        redraw(cx);
+        cx.simulate_keystrokes("enter");
+        redraw(cx);
+        assert!(composer_focused(&shell, cx));
+        cx.simulate_input("draft");
+        redraw(cx);
+
+        // Composer -> open + search focused; the chat panel stays.
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(overview.read_with(cx, |o, _| o.linear_panel().is_some()));
+        assert!(linear_search_focused(&overview, cx), "the search has focus");
+        assert!(cx.debug_bounds("linear-panel").is_some());
+        assert!(
+            cx.debug_bounds("overview-chat-panel").is_some(),
+            "both open"
+        );
+        assert_eq!(
+            overview.read_with(cx, |o, cx| o.shown_panel_chat(cx)),
+            Some(CHAT_AUTH.to_owned())
+        );
+        let composer = shell.read_with(cx, |shell, _| shell.composer.clone());
+        assert_eq!(composer.read_with(cx, |c, cx| c.draft_text(cx)), "draft");
+
+        // The chat composer is still focusable beside the panel, and the
+        // key from there goes back to the search without closing.
+        cx.update(|window, cx| window.focus(&composer.focus_handle(cx), cx));
+        redraw(cx);
+        assert!(composer_focused(&shell, cx));
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(overview.read_with(cx, |o, _| o.linear_panel().is_some()));
+        assert!(linear_search_focused(&overview, cx));
+        assert_eq!(composer.read_with(cx, |c, cx| c.draft_text(cx)), "draft");
+
+        // Search -> closed, focus back on the tree.
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(overview.read_with(cx, |o, _| o.linear_panel().is_none()));
+        assert!(cx.debug_bounds("linear-panel").is_none());
+        assert!(tree_focused(&outline, cx), "the tree has focus again");
+        assert!(cx.debug_bounds("overview-chat-panel").is_some());
+
+        // From the tree it opens again.
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(linear_search_focused(&overview, cx));
+    }
+
+    /// No Space with Linear on: the key does nothing but explain, on the
+    /// Overview and off it (where it does not even switch route).
+    #[gpui::test]
+    fn linear_key_is_a_no_op_while_linear_is_off(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, overview, outline, cx) = toggle_shell(cx, dir.path());
+        set_linear(&shell, &overview, false, cx);
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(overview.read_with(cx, |o, _| o.linear_panel().is_none()));
+        assert_eq!(
+            outline.read_with(cx, |o, _| o.notice().map(str::to_owned)),
+            Some(crate::linear::LINEAR_OFF_NOTICE.to_owned())
+        );
+        shell.update(cx, |shell, cx| {
+            shell.open_settings(SettingsSection::Linear, cx)
+        });
+        redraw(cx);
+        cx.simulate_keystrokes(&linear_key());
+        redraw(cx);
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.route, Route::Settings(_))));
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.sidebar_notice.clone()),
+            Some(crate::linear::LINEAR_OFF_NOTICE.into())
+        );
     }
 }

@@ -39,11 +39,12 @@ use crate::state::AppState;
 use crate::theme::Theme;
 use crate::work_outline::actions::OperationSlot;
 use crate::work_outline::chips::TextTooltip;
+use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::model;
 use crate::work_outline::outline_view::OutlineDrag;
 use crate::work_outline::outline_view::linear_outline::LinearIssueDrag;
 
-/// Whether the palette lists Open Linear: some Space has Linear on.
+/// Whether the palette lists Toggle Linear Panel: some Space has Linear on.
 pub(crate) fn palette_visible(state: &AppState) -> bool {
     state.spaces.iter().any(|space| {
         super::space_enabled(
@@ -1421,6 +1422,10 @@ impl Render for LinearPanel {
                         crate::icons::icon(crate::icons::CLOSE)
                             .size(px(12.0))
                             .text_color(theme.text_muted),
+                    )
+                    .hint(
+                        "Hide the Linear panel",
+                        HintKey::Command(crate::work_outline::WorkOutlineCommand::OpenLinear),
                     )
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(LinearPanelEvent::Close))),
             );
