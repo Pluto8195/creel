@@ -89,6 +89,30 @@ fn press(vcx: &mut gpui::VisualTestContext, selector: String) {
     draw(vcx);
 }
 
+/// Run pending timers and work, then redraw (after a menu closes).
+fn settle(vcx: &mut gpui::VisualTestContext) {
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    vcx.run_until_parked();
+    draw(vcx);
+}
+
+/// The Space's device advertises the PR review sync (so the section shows
+/// without a destination).
+fn advertise_pr_sync(overview: &Entity<Overview>, vcx: &mut gpui::VisualTestContext) {
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.update(vcx, |state, _| {
+        state.devices = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "d", "name": "Mac", "platform": "macos", "lastSeenAt": null,
+                "capabilities": [zeron_proto::capabilities::PR_REVIEW_SYNC_V1],
+            }))
+            .unwrap(),
+        ];
+    });
+    draw(vcx);
+}
+
 fn mutations(calls: &PrCalls, op: &str) -> Vec<serde_json::Value> {
     calls
         .lock()
@@ -331,9 +355,9 @@ fn item_menu_offers_github_entries(cx: &mut gpui::TestAppContext) {
 }
 
 /// The GitHub section (Linear off): both lists for the Space, the synced
-/// marker with Reveal, Review filed under the synced item (else the
-/// destination), Create under the destination (item + PR reference), Link
-/// to the selected item, and folds that persist.
+/// marker with Reveal, and from each row's ⋯ menu: Review filed under the
+/// synced item (else the destination), Create under the destination (item
+/// + PR reference), Link to the selected item; folds that persist.
 #[gpui::test]
 fn github_section_lists_marks_and_acts(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
@@ -372,9 +396,11 @@ fn github_section_lists_marks_and_acts(cx: &mut gpui::TestAppContext) {
             .update(cx, |outline, cx| outline.select("no-such-row", cx))
     });
     draw(vcx);
+    press(vcx, "github-pr-more-app-3-my-open".into());
     press(vcx, "github-pr-link-app-3-my-open".into());
     assert!(mutations(&calls, "createWorkItemExternalReference").is_empty());
     panel.read_with(vcx, |panel, _| assert!(panel.notice.is_some()));
+    settle(vcx);
 
     // Reveal selects the synced item.
     press(vcx, "github-pr-synced-launch-42-review-requested".into());
@@ -386,20 +412,26 @@ fn github_section_lists_marks_and_acts(cx: &mut gpui::TestAppContext) {
     });
 
     // Review: filed under the synced item, else the destination.
+    press(vcx, "github-pr-more-launch-42-review-requested".into());
     press(vcx, "github-pr-review-launch-42-review-requested".into());
+    settle(vcx);
     overview.update(vcx, |o, _| {
         let (pr, item, _) = o.captured_pr_review.take().unwrap();
         assert_eq!(pr.number, 42);
         assert_eq!(item, Some(("s1".to_string(), API.to_string())));
     });
+    press(vcx, "github-pr-more-launch-7-review-requested".into());
     press(vcx, "github-pr-review-launch-7-review-requested".into());
+    settle(vcx);
     overview.update(vcx, |o, _| {
         let (_, item, _) = o.captured_pr_review.take().unwrap();
         assert_eq!(item, Some(("s1".to_string(), LAUNCH.to_string())));
     });
 
     // Create: an item under the destination, then its PR reference.
+    press(vcx, "github-pr-more-launch-7-review-requested".into());
     press(vcx, "github-pr-create-launch-7-review-requested".into());
+    settle(vcx);
     let created = mutations(&calls, "createWorkItem");
     assert_eq!(created.len(), 1);
     assert_eq!(created[0]["parentWorkItemId"], LAUNCH);
@@ -418,7 +450,9 @@ fn github_section_lists_marks_and_acts(cx: &mut gpui::TestAppContext) {
             .update(cx, |outline, cx| outline.select(&ui_key, cx))
     });
     draw(vcx);
+    press(vcx, "github-pr-more-app-3-my-open".into());
     press(vcx, "github-pr-link-app-3-my-open".into());
+    settle(vcx);
     let refs = mutations(&calls, "createWorkItemExternalReference");
     assert_eq!(refs.len(), 2);
     assert_eq!(refs[1]["workItemId"], UI);
@@ -443,6 +477,209 @@ fn github_section_lists_marks_and_acts(cx: &mut gpui::TestAppContext) {
     assert_eq!(calls_to(&calls, "PrMyOpen").len(), 2);
     press(vcx, "inbox-column-close".into());
     overview.read_with(vcx, |o, _| assert!(!o.column_shown()));
+}
+
+/// The header's scope chip opens a real menu (All repos + each repo, the
+/// current one checked) and picking a repo filters both lists; ↑/↓/↩ pick
+/// from the keyboard; Esc closes the menu, not the column. Nothing cycles.
+#[gpui::test]
+fn scope_dropdown_filters_by_repo(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) =
+        pr_overview(cx, dir.path(), sync_snapshot(Some(LAUNCH)), default_reply);
+    let panel = open_column(&overview, vcx);
+    let space = panel.read_with(vcx, |panel, _| panel.space_id.clone());
+    press(vcx, "github-panel-space".into());
+    assert!(
+        vcx.debug_bounds("github-scope-menu").is_some(),
+        "a menu opens"
+    );
+    for selector in [
+        "github-scope-repo-all",
+        "github-scope-repo-acme-app",
+        "github-scope-repo-acme-launch",
+    ] {
+        assert!(row_bounds(vcx, selector.into()).is_some(), "{selector}");
+    }
+    panel.read_with(vcx, |panel, cx| {
+        let rows = panel.menu_rows(cx);
+        assert!(rows[0].0.checked, "All repos is current");
+        assert_eq!(rows[0].0.label.as_ref(), "All repos");
+        assert_eq!(panel.space_id, space, "opening never switches anything");
+    });
+    press(vcx, "github-scope-repo-acme-app".into());
+    settle(vcx);
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.open_menu_kind().is_none(), "picking closes it");
+        assert_eq!(panel.repo_filter.as_deref(), Some("acme/app"));
+        assert_eq!(panel.space_id, space);
+    });
+    assert!(row_bounds(vcx, "github-pr-row-app-3-my-open".into()).is_some());
+    assert!(row_bounds(vcx, "github-pr-row-launch-7-review-requested".into()).is_none());
+    assert!(
+        row_bounds(vcx, "github-panel-space".into()).is_some(),
+        "the chip stays"
+    );
+
+    // Keyboard: the cursor starts on the current repo (app); ↓ ↩ = launch.
+    press(vcx, "github-panel-space".into());
+    vcx.simulate_keystrokes("down enter");
+    settle(vcx);
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.open_menu_kind().is_none());
+        assert_eq!(panel.repo_filter.as_deref(), Some("acme/launch"));
+    });
+    assert!(row_bounds(vcx, "github-pr-row-launch-7-review-requested".into()).is_some());
+    assert!(row_bounds(vcx, "github-pr-row-app-3-my-open".into()).is_none());
+
+    // Esc closes the menu and leaves the column open; All repos clears.
+    press(vcx, "github-panel-space".into());
+    vcx.simulate_keystrokes("escape");
+    settle(vcx);
+    panel.read_with(vcx, |panel, _| assert!(panel.open_menu_kind().is_none()));
+    overview.read_with(vcx, |o, _| {
+        assert!(o.column_shown(), "Esc only closed the menu")
+    });
+    press(vcx, "github-panel-space".into());
+    press(vcx, "github-scope-repo-all".into());
+    panel.read_with(vcx, |panel, _| assert_eq!(panel.repo_filter, None));
+    assert!(row_bounds(vcx, "github-pr-row-app-3-my-open".into()).is_some());
+}
+
+/// No destination: the section leads with "Auto-sync review requests
+/// into… Choose item ▾"; picking an item sends setPrReviewSyncDestination;
+/// once set the bar reads "Syncing into <item>" with Sync now, Change ▾
+/// (searchable, keyboard) and Stop.
+#[gpui::test]
+fn sync_cta_sets_the_destination(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = pr_overview(cx, dir.path(), sync_snapshot(None), default_reply);
+    advertise_pr_sync(&overview, vcx);
+    let panel = open_column(&overview, vcx);
+    assert!(vcx.debug_bounds("github-sync-cta").is_some());
+    assert!(vcx.debug_bounds("github-sync-status").is_none());
+    assert!(
+        row_bounds(vcx, "github-pr-pending-launch-7-review-requested".into()).is_none(),
+        "nothing is pending without a destination"
+    );
+    press(vcx, "github-sync-choose".into());
+    assert!(vcx.debug_bounds("github-sync-menu").is_some());
+    assert!(vcx.debug_bounds("github-sync-create").is_some());
+    assert!(
+        row_bounds(vcx, format!("github-sync-pick-{RETIRED}")).is_none(),
+        "archived items are not offered"
+    );
+    press(vcx, format!("github-sync-pick-{UI}"));
+    settle(vcx);
+    let set = mutations(&calls, "setPrReviewSyncDestination");
+    assert_eq!(set.len(), 1);
+    assert_eq!(set[0]["spaceId"], "s1");
+    assert_eq!(set[0]["workItemId"], UI);
+    panel.read_with(vcx, |panel, _| assert!(panel.open_menu_kind().is_none()));
+
+    // Set: "Syncing into UI".
+    overview.update(vcx, |o, cx| {
+        o.set_outline_loads(fixture_loads(Some(sync_snapshot(Some(UI)))), cx)
+    });
+    draw(vcx);
+    assert!(vcx.debug_bounds("github-sync-cta").is_none());
+    assert!(vcx.debug_bounds("github-sync-status").is_some());
+    assert!(vcx.debug_bounds("github-sync-destination").is_some());
+    assert!(vcx.debug_bounds("github-sync-last").is_some());
+    assert!(
+        row_bounds(vcx, "github-pr-pending-launch-7-review-requested".into()).is_some(),
+        "launch#7 waits for its first sync"
+    );
+    press(vcx, "github-sync-now".into());
+    assert_eq!(
+        calls_to(&calls, "PrReviewSyncNow"),
+        [serde_json::json!({"spaceId": "s1"})]
+    );
+
+    // Change ▾: type to search, ↩ picks the first match.
+    press(vcx, "github-sync-change".into());
+    assert!(vcx.debug_bounds("github-sync-search").is_some());
+    vcx.simulate_input("house");
+    draw(vcx);
+    assert!(row_bounds(vcx, format!("github-sync-pick-{HOUSEKEEPING}")).is_some());
+    assert!(row_bounds(vcx, format!("github-sync-pick-{API}")).is_none());
+    vcx.simulate_keystrokes("enter");
+    settle(vcx);
+    let set = mutations(&calls, "setPrReviewSyncDestination");
+    assert_eq!(set.len(), 2);
+    assert_eq!(set[1]["workItemId"], HOUSEKEEPING);
+
+    // Stop clears it.
+    press(vcx, "github-sync-stop".into());
+    let set = mutations(&calls, "setPrReviewSyncDestination");
+    assert_eq!(set.len(), 3);
+    assert!(set[2]["workItemId"].is_null());
+}
+
+/// "Create 'PR reviews' item" creates a top-level item and makes it the
+/// destination.
+#[gpui::test]
+fn create_pr_reviews_item_creates_and_sets(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = pr_overview(cx, dir.path(), sync_snapshot(None), default_reply);
+    advertise_pr_sync(&overview, vcx);
+    open_column(&overview, vcx);
+    press(vcx, "github-sync-choose".into());
+    press(vcx, "github-sync-create".into());
+    let created = mutations(&calls, "createWorkItem");
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0]["title"], "PR reviews");
+    assert!(created[0]["parentWorkItemId"].is_null(), "top level");
+    let set = mutations(&calls, "setPrReviewSyncDestination");
+    assert_eq!(set.len(), 1);
+    assert_eq!(set[0]["workItemId"], "w-new-pr");
+    assert_eq!(set[0]["spaceId"], "s1");
+}
+
+/// With a destination: a synced PR reads "Synced ✓" and its row's click
+/// reveals the item; the manual actions live in the row's ⋯ menu only.
+#[gpui::test]
+fn synced_rows_reveal_and_manual_actions_are_secondary(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) =
+        pr_overview(cx, dir.path(), sync_snapshot(Some(LAUNCH)), default_reply);
+    let panel = open_column(&overview, vcx);
+    assert!(vcx.debug_bounds("github-sync-status").is_some());
+    let key = "launch-42-review-requested";
+    assert!(row_bounds(vcx, format!("github-pr-synced-{key}")).is_some());
+    for action in ["review", "link", "create"] {
+        assert!(
+            row_bounds(vcx, format!("github-pr-{action}-{key}")).is_none(),
+            "{action} is not a row button"
+        );
+    }
+    // The row's primary click reveals the synced item.
+    let row = row_bounds(vcx, format!("github-pr-row-{key}")).unwrap();
+    vcx.simulate_click(
+        gpui::point(row.left() + px(30.0), row.center().y),
+        gpui::Modifiers::default(),
+    );
+    vcx.run_until_parked();
+    draw(vcx);
+    overview.read_with(vcx, |o, cx| {
+        assert_eq!(
+            o.outline.read(cx).selected_key(),
+            Some(row_key::item("s1", API).as_str())
+        )
+    });
+    // ⋯ opens the secondary actions.
+    press(vcx, format!("github-pr-more-{key}"));
+    assert!(vcx.debug_bounds("github-pr-menu").is_some());
+    for selector in ["reveal", "review", "link", "create"] {
+        assert!(
+            row_bounds(vcx, format!("github-pr-{selector}-{key}")).is_some(),
+            "{selector} in the menu"
+        );
+    }
+    vcx.simulate_keystrokes("escape");
+    settle(vcx);
+    panel.read_with(vcx, |panel, _| assert!(panel.open_menu_kind().is_none()));
+    assert!(mutations(&calls, "createWorkItem").is_empty());
 }
 
 /// Dragging a PR row onto an Outline item shows the "into" indicator and

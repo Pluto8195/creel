@@ -21,6 +21,8 @@
 //!   whatever the Outline selection; the action label names it ("Create
 //!   under ReceiveAI UI upgrades"). Other issues go under the selected item,
 //!   or a parent the user picks. A drag drops wherever the user drops.
+mod space_menu;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -341,6 +343,9 @@ pub(crate) struct LinearPanel {
     generation: u64,
     /// The column's own header ("Inbox") carries the close button.
     pub(crate) embedded: bool,
+    /// The header's project dropdown (`space_menu`).
+    space_menu: crate::popover::Popup<()>,
+    space_menu_active: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -398,6 +403,8 @@ impl LinearPanel {
             notice: None,
             generation: 0,
             embedded: false,
+            space_menu: crate::popover::Popup::default(),
+            space_menu_active: None,
             _subscriptions: subscriptions,
         }
     }
@@ -1750,21 +1757,6 @@ impl Render for LinearPanel {
             .snapshot()
             .map(|snapshot| LinkedIndex::from_snapshot(snapshot))
             .unwrap_or_default();
-        let label = self
-            .spaces
-            .iter()
-            .find(|space| space.id == self.space_id)
-            .map(|space| space.label.clone())
-            .unwrap_or_default();
-        let multi = self.spaces.len() > 1;
-        let next_space = multi.then(|| {
-            let ix = self
-                .spaces
-                .iter()
-                .position(|space| space.id == self.space_id)
-                .unwrap_or(0);
-            self.spaces[(ix + 1) % self.spaces.len()].id.clone()
-        });
         let header = div()
             .flex_none()
             .flex()
@@ -1779,29 +1771,7 @@ impl Render for LinearPanel {
                     .text_color(theme.text)
                     .child("Linear"),
             )
-            .child(
-                div()
-                    .id("linear-panel-space")
-                    .debug_selector(|| "linear-panel-space".into())
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .text_color(theme.text_muted)
-                    .when(multi, |el| {
-                        el.cursor_pointer().hover(|el| el.text_color(theme.text))
-                    })
-                    .child(SharedString::from(if multi {
-                        format!("{label} \u{25be}")
-                    } else {
-                        label
-                    }))
-                    .when_some(next_space, |el, next| {
-                        el.on_click(
-                            cx.listener(move |this, _, _, cx| this.set_space(next.clone(), cx)),
-                        )
-                    }),
-            )
+            .child(self.render_space_chip(&theme, cx))
             .child(
                 div()
                     .id("linear-panel-refresh")
@@ -2003,6 +1973,9 @@ impl Render for LinearPanel {
             .border_r_1()
             .border_color(theme.border)
             .bg(theme.surface)
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.space_menu_key_down(event, window, cx)
+            }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     if this.picker.take().is_none() {

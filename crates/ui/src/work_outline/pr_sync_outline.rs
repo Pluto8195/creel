@@ -124,12 +124,8 @@ pub(crate) fn destination_marker(id: String, theme: &Theme) -> AnyElement {
         )
         .child("\u{2193}")
         .tooltip(|_, cx| {
-            cx.new(|_| {
-                TextTooltip(
-                    "PR review destination: PRs that request your review sync in here".into(),
-                )
-            })
-            .into()
+            cx.new(|_| TextTooltip("PR review requests sync here (every 3 minutes)".into()))
+                .into()
         })
         .into_any_element()
 }

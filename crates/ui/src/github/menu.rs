@@ -1,5 +1,5 @@
 //! GitHub entries of the Outline's item menu (Spaces where the PR review
-//! sync applies only): "Use as PR Review Destination" (or "Stop Syncing PR
+//! sync applies only): "Auto-sync PR Review Requests Here" (or "Stop Syncing PR
 //! Reviews Here" on the destination), and on an item linking a PR: Review,
 //! Fix CI, Open on GitHub, Refresh PR Status. The Shell runs them
 //! (`shell/github_ui.rs`).
@@ -106,7 +106,7 @@ pub(crate) fn item_entries(snapshot: &WorkOutlineSnapshot, item_id: &str) -> Vec
     } else {
         MenuEntry::new(
             "github-use-destination",
-            "Use as PR Review Destination",
+            "Auto-sync PR Review Requests Here",
             icons::PULL_REQUEST,
             MenuAction::Github(GithubMenuAction::SetDestination {
                 space_id: space_id.clone(),

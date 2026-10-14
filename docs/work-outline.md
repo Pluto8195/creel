@@ -499,21 +499,27 @@ its submodules, and nested repositories, matched by `origin`). It is off until
 you pick a destination, and it never writes to GitHub. It runs on the device
 that owns the project, through that device's `gh` login.
 
-- **Pick the destination.** In the Space-root details, **PR reviews sync
-  into:** shows the destination; **Choose…** (or **Change…**) lists every live
-  work item of the project. **Clear** turns the sync off; synced items stay
-  where they are. Or right-click any work item and choose **Use as PR Review
-  Destination** (**Stop Syncing PR Reviews Here** on the destination). The
-  destination row shows a small PR marker in the Outline.
+- **Pick the destination.** The quickest way is the Inbox column's GitHub
+  section: while the sync is off it leads with **Auto-sync review requests
+  into… Choose item ▾**, a searchable menu of the project's live work items
+  plus **Create "PR reviews" item** (a new top-level item that becomes the
+  destination). Once set, the section reads **Syncing into <item> · last
+  synced 5m ago** with **Sync now**, **Change ▾**, and **Stop** (synced items
+  stay where they are); click the item's name to reveal it. The Space-root
+  details show the same: **Auto-sync review requests into… Choose item…**,
+  then **Syncing into <item>** with **Change…** and **Stop**. Or right-click
+  any work item and choose **Auto-sync PR Review Requests Here** (**Stop
+  Syncing PR Reviews Here** on the destination). The destination row shows a
+  small PR marker in the Outline ("PR review requests sync here").
 - **What it keeps.** Each requested PR gets a child of the destination titled
   `<repo>#<number> · <PR title>` (renaming the PR later does not rename the
   item), linked to the PR, status Active, and a Required Action **Review
   requested: …** (**Re-review requested: …** for a later round, see
   [Required actions](#required-actions-and-notifications)). The sync runs
   every 3 minutes (first about a minute after the app starts), right after you
-  set a destination, and on **↻ Sync now** in the Space-root details, which
-  shows the last result (`Synced: 1 created · 2 updated · 0 resolved`, `Up to
-  date`, or what went wrong). When you review, or the PR is merged, closed, or
+  set a destination, and on **Sync now** (GitHub section) or **↻ Sync now**
+  (Space-root details, which shows the last result: `Synced: 1 created · 2
+  updated · 0 resolved`, `Up to date`, or what went wrong). When you review, or the PR is merged, closed, or
   no longer asks for you, the round's request resolves and the item becomes
   Completed. A status you set yourself stands until GitHub's state changes
   again. Moved items keep syncing; archived ones are left alone.
@@ -533,15 +539,19 @@ that owns the project, through that device's `gh` login.
   link a PR keep the normal Start Chat. Right-click any PR-linked item for
   **Review**, **Fix CI**, **Open on GitHub**, and **Refresh PR Status**.
 - **GitHub section.** The **Inbox** column (`⌥⌘L`, the toolbar's **Inbox**)
-  shows a **GitHub** section for the project under its Linear panel:
-  **Review requested** and **My open PRs**, each foldable (click **GitHub**
-  to fold the whole section; folds are remembered on this device). Lists load
-  when the column opens and on ↻; with several projects, click the project
-  name to switch. Rows that already have an item show **Synced · Reveal**.
-  Row actions: **Review** (filed under the PR's item, else the destination),
-  **Link** (to the selected work item), **Create** (an item for the PR under
-  the destination, else the selected item), or drag the row onto an Outline
-  item to create it there. Retries never duplicate.
+  shows a **GitHub** section for the project under its Linear panel: the sync
+  bar (above), then **Review requested** and **My open PRs**, each foldable
+  (click **GitHub** to fold the whole section; folds are remembered on this
+  device). Lists load when the column opens and on ↻. The header's **All repos
+  ▾** menu filters both lists to one repository of the project (and, with
+  several projects, switches the project); ↑/↓, ↩, and Esc work in every menu
+  of the column. With a destination, each requested PR shows **Synced ✓** once
+  its item exists (click the row to reveal it) or **Pending first sync** until
+  the next pass adds it; a PR some other item links shows **Linked**. Manual
+  actions sit in each row's **⋯** menu: **Start review** (filed under the PR's
+  item, else the destination), **Link to selected item**, and **Create work
+  item** (under the destination, else the selected item); or drag the row onto
+  an Outline item to create it there. Retries never duplicate.
 - **PR review chats (⇧⌘P).** With a destination in the current project, the
   page lists the destination's PR items (chip, Review, Fix CI) with their
   review Chats under each; click an item for its Details. Without one, the

@@ -1,9 +1,10 @@
 //! PR review sync in Work Item Details.
 //!
-//! - Space-root variant: "PR reviews sync into: <item>" with an item
-//!   picker (any live work item of the Space; Clear turns the sync off:
-//!   `setPrReviewSyncDestination`), and Sync now (`PrReviewSyncNow`) with
-//!   the last result.
+//! - Space-root variant, worded like the GitHub section's sync bar:
+//!   "Auto-sync review requests into… [Choose item…]" while off, "Syncing
+//!   into <item> [Change…] [Stop]" once set (an item picker over every live
+//!   work item of the Space: `setPrReviewSyncDestination`; Stop clears
+//!   it), and Sync now (`PrReviewSyncNow`) with the last result.
 //! - Items of a Space where the sync applies that link a PR: the **Pull
 //!   request** section (live chip, title, ↻ = `PrStatus` with
 //!   `forceRefresh`, Review / Fix CI = `StartPrReview` filed under this
@@ -109,7 +110,7 @@ impl WorkItemDetails {
             .pr_review_sync_destination()
             .map(|id| (id.to_string(), snapshot.item(id).cloned()));
         let target_label = match &destination {
-            None => "Off".to_string(),
+            None => "no item chosen".to_string(),
             Some((_, Some(item))) if item.archived_at.is_none() => model::path_label(
                 model::item_path(snapshot, &item.id)
                     .iter()
@@ -143,7 +144,11 @@ impl WorkItemDetails {
                             .flex_none()
                             .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text_muted)
-                            .child("PR reviews sync into:"),
+                            .child(if set {
+                                "Syncing into"
+                            } else {
+                                "Auto-sync review requests into\u{2026}"
+                            }),
                     )
                     .child(
                         div()
@@ -163,7 +168,7 @@ impl WorkItemDetails {
                             } else if set {
                                 "Change\u{2026}"
                             } else {
-                                "Choose\u{2026}"
+                                "Choose item\u{2026}"
                             },
                             theme,
                         )
@@ -175,12 +180,12 @@ impl WorkItemDetails {
                     )
                     .when(set, |el| {
                         el.child(
-                            LinearPanel::small_button("space-pr-sync-clear", "Clear", theme)
+                            LinearPanel::small_button("space-pr-sync-clear", "Stop", theme)
                                 .debug_selector(|| "space-pr-sync-clear".into())
                                 .tooltip(|_, cx| {
                                     cx.new(|_| {
                                         TextTooltip(
-                                            "Turn the sync off. Synced items stay where they are."
+                                            "Stop syncing. Synced items stay where they are."
                                                 .into(),
                                         )
                                     })
@@ -201,7 +206,8 @@ impl WorkItemDetails {
                          repositories gets an item here, with a Required Action per review \
                          round. Kept in step every 3 minutes; nothing is written to GitHub."
                     } else {
-                        "Off: pick a work item to collect the PRs that request your review."
+                        "Off: choose a work item and every PR that requests your review gets \
+                         an item there automatically."
                     }),
             );
         if picker_open {
