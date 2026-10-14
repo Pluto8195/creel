@@ -61,7 +61,7 @@ inline editor, a picker, the search field, or any other text input.
 | Collapse / expand | `←` / `→` | `←` / `→` |
 | Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
 | Open Work Item Details | `↩` | `Enter` |
-| Start a Chat in the selected work item (on a Chat row: in the Chat's work item) | `⌘↩` | `Ctrl+Enter` |
+| Start a Chat in the selected work item (on a Chat row: in the Chat's work item; on a PR review item: review its PR, see [PR review sync](#pr-review-sync)) | `⌘↩` | `Ctrl+Enter` |
 | Rename (a work item in place; a Chat row opens the rename dialog) | `F2` or `R` | `F2` or `R` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |
 | Move before previous / after next sibling | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
@@ -175,6 +175,9 @@ at the top level).
 | Chat | Open Chat, Open Full Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
 | Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts. A project row also has Move Up, Move Down, Hide from Outline (Unhide on a hidden project), Rename Project…, and Delete Project… |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
+
+Linear and PR review sync add their own entries where they apply (see
+[Linear](#linear) and [PR review sync](#pr-review-sync)).
 
 In the menu, `↑` / `↓` move between entries, `↩` (`Enter`) runs one, `→` opens
 **Set Status** and `←` returns, and `Esc` or a click outside closes it. Every
@@ -345,6 +348,11 @@ instructions.
   first, with its item, its originating Chat, and its age. Click **Open** to go to
   the Chat. The same list appears in Work Item Details (the item and its
   descendants) and in the Space root's details (the whole Space).
+- Requests that [PR review sync](#pr-review-sync) raises have no Chat: their
+  origin reads **GitHub**, **Open** shows the PR item (or the PR once the item
+  is gone), **View PR** opens the PR, and **Resolve** is the only answer
+  (there is no agent to reply to). They resolve themselves when you submit
+  the review or the PR is merged, closed, or no longer asks for you.
 - **Reply & resolve** answers the agent. Type your answer in the note box and
   press Enter (or Cmd+Enter). Zeron sends it to the Chat that asked, as your
   own message: `Re: "<request>": <your note>`, with the request cut to about
@@ -392,17 +400,20 @@ automatically: items and links come only from the actions below.
   Settings → Linear. The first time you paste a Linear URL in a project with
   Linear off, Zeron offers **Enable** once.
 - **Linear panel.** Press `⌥⌘L` (`Ctrl+Shift+E` on Windows and Linux;
-  rebind **Toggle Linear Panel** in Settings → Shortcuts), click **Linear** in
-  the Outline toolbar, run **Toggle Linear Panel** from the command palette, or
-  choose **Open Linear Panel** on a Space row. The panel opens as its own column
-  on the left of the Outline (List and Canvas too), so the chat panel, Work
-  Item Details, and Required Actions stay open beside it on the right.
+  rebind **Toggle Inbox column** in Settings → Shortcuts), click **Inbox** in
+  the Outline toolbar, run **Toggle Inbox Column** from the command palette, or
+  choose **Open Linear Panel** on a Space row. The panel opens in the
+  **Inbox** column on the left of the Outline (List and Canvas too), above
+  the [GitHub section](#pr-review-sync) when that applies, so the chat panel,
+  Work Item Details, and Required Actions stay open beside it on the right.
+  The column's × closes both.
   - The key works anywhere in the Overview, including the chat panel's
     composer. With the panel closed it opens it and puts the cursor in its
     search. With the panel open and the cursor elsewhere, it moves the cursor
     to the search. With the cursor in the panel, it closes the panel and
     returns to the Outline tree. `Esc` in the panel also closes it.
-  - With no project on Linear, the key and the command only show a notice.
+  - With no project on Linear and none with PR review sync, the key and the
+    command only show a notice.
   - Drag the panel's right edge to resize it (double-click the edge to reset).
     Its width and whether it is open are remembered on this device. If the
     window is too narrow for the panel, the Outline, and the right-side panel,
@@ -464,6 +475,65 @@ automatically: items and links come only from the actions below.
   \<project\>…**.
 - If the engine on this device has no Linear support, Linear surfaces say
   **Linear isn't available on this host yet**.
+
+## PR review sync
+
+PR review sync keeps one work item per pull request that asks for your
+review, in the project's GitHub repositories (the project folder's checkout,
+its submodules, and nested repositories, matched by `origin`). It is off until
+you pick a destination, and it never writes to GitHub. It runs on the device
+that owns the project, through that device's `gh` login.
+
+- **Pick the destination.** In the Space-root details, **PR reviews sync
+  into:** shows the destination; **Choose…** (or **Change…**) lists every live
+  work item of the project. **Clear** turns the sync off; synced items stay
+  where they are. Or right-click any work item and choose **Use as PR Review
+  Destination** (**Stop Syncing PR Reviews Here** on the destination). The
+  destination row shows a small PR marker in the Outline.
+- **What it keeps.** Each requested PR gets a child of the destination titled
+  `<repo>#<number> · <PR title>` (renaming the PR later does not rename the
+  item), linked to the PR, status Active, and a Required Action **Review
+  requested: …** (**Re-review requested: …** for a later round, see
+  [Required actions](#required-actions-and-notifications)). The sync runs
+  every 3 minutes (first about a minute after the app starts), right after you
+  set a destination, and on **↻ Sync now** in the Space-root details, which
+  shows the last result (`Synced: 1 created · 2 updated · 0 resolved`, `Up to
+  date`, or what went wrong). When you review, or the PR is merged, closed, or
+  no longer asks for you, the round's request resolves and the item becomes
+  Completed. A status you set yourself stands until GitHub's state changes
+  again. Moved items keep syncing; archived ones are left alone.
+- **PR chips.** Every item linked to a GitHub PR (synced or not) shows a live
+  chip in projects with the sync: state (Open, Draft, Merged, Closed), CI
+  (✓ passing, ✕ failing, ● pending), and your review state (Review requested,
+  Re-review requested, Approved by you, …) or GitHub's review decision. Click
+  it to open the PR (in Zeron or your browser, per **Open web links in
+  Zeron**). In Work Item Details, the **Pull request** section shows the chip
+  and title with **↻ Refresh**, **Review**, **Fix CI**, and **Open on
+  GitHub**; it refreshes when Details open. A synced item also shows
+  **Synced from GitHub · round N**.
+- **Review.** `⌘↩` (`Ctrl+Enter`) on a PR review item (a synced item, a child
+  of the destination, or an item created from the GitHub section) starts a
+  code review Chat of its PR, filed under the item, instead of the Start Chat
+  dialog (see [Review PR launcher](pr-review.md)). Other items that merely
+  link a PR keep the normal Start Chat. Right-click any PR-linked item for
+  **Review**, **Fix CI**, **Open on GitHub**, and **Refresh PR Status**.
+- **GitHub section.** The **Inbox** column (`⌥⌘L`, the toolbar's **Inbox**)
+  shows a **GitHub** section for the project under its Linear panel:
+  **Review requested** and **My open PRs**, each foldable (click **GitHub**
+  to fold the whole section; folds are remembered on this device). Lists load
+  when the column opens and on ↻; with several projects, click the project
+  name to switch. Rows that already have an item show **Synced · Reveal**.
+  Row actions: **Review** (filed under the PR's item, else the destination),
+  **Link** (to the selected work item), **Create** (an item for the PR under
+  the destination, else the selected item), or drag the row onto an Outline
+  item to create it there. Retries never duplicate.
+- **PR review chats (⇧⌘P).** With a destination in the current project, the
+  page lists the destination's PR items (chip, Review, Fix CI) with their
+  review Chats under each; click an item for its Details. Without one, the
+  page keeps its classified list of review Chats.
+- If `gh` is missing or signed out, the surfaces say so (`gh auth login`). If
+  the engine on this device has no PR review sync, they say **PR review sync
+  isn't available on this host yet**.
 
 ## Agent tools
 

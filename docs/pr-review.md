@@ -14,6 +14,11 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
 - **Overview → My PRs → Needs my review**: rows without a linked chat get a
   **Review** button; rows with one still jump to that chat.
 - **Command palette → Review PR…** opens ⇧⌘P with the PR box focused.
+- **PR review sync** ([Work Outline](work-outline.md#pr-review-sync)): `⌘↩`
+  on a PR review item, **Review** / **Fix CI** in its Details or right-click
+  menu, the Inbox column's GitHub section, and ⇧⌘P's destination list send
+  `StartPrReview` with the item's `spaceId` and `workItemId`, so the review
+  Chat is filed under that item.
 
 After a start Zeron opens the new chat. Refusals (fork, repository not in any
 project, occupied worktree path, `gh` missing, device offline) stay inline on
@@ -108,5 +113,31 @@ it.
 - `claude --permission-mode acceptEdits` becomes the chat's agent config from
   the composer (approval mode included).
 - The devcontainer mount note is conditional on `.devcontainer` (above).
-- There is no "default review work item" setting; only an explicit
-  `workItemId` assigns the chat.
+- Chats are filed under a work item only with an explicit `workItemId`.
+  The PR review sync's destination (one work item per project) collects the
+  requested PRs as items, and every sync surface sends the PR item's id.
+
+## PR review sync
+
+With a destination picked for a project (Space-root details, or **Use as PR
+Review Destination** on an item), the engine on the project's device keeps one
+child item per PR that requests your review, each with a Required Action per
+review round, and resolves them when you review or the PR closes. Wire
+contract: `docs/plans/work-outline/pr-sync-contract.md`; user guide:
+[Work Outline → PR review sync](work-outline.md#pr-review-sync).
+
+| RPC | Used by |
+| --- | --- |
+| `PrStatus {owner, repo, number, forceRefresh?}` | PR chips (cached ~2 minutes; Details and ↻ force a refresh) |
+| `PrReviewSyncNow {spaceId}` | **↻ Sync now** in the Space-root details |
+| `PrReviewRequested {spaceId}` / `PrMyOpen {spaceId}` | the Inbox column's GitHub section |
+| `WorkOutlineMutate setPrReviewSyncDestination` | the destination picker, **Clear**, the item menu |
+
+Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
+`notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
+sync isn't available on this host yet".
+
+When the current project has a destination, ⇧⌘P lists the destination's PR
+items with their review Chats nested instead of the `pr_review`
+classification; without one the classified list stays (classification is
+being retired).
