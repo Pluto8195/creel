@@ -333,7 +333,36 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
                 .collect(),
         },
         linear_group(mac),
+        github_group(mac),
     ]
+}
+
+/// The GitHub rows of the shortcut reference (projects with the PR review
+/// sync): ⌘↩ on a PR review item starts a code review of its PR filed under
+/// the item; the item menu picks the sync destination and offers Review /
+/// Fix CI / Open on GitHub.
+fn github_group(mac: bool) -> ShortcutGroup {
+    let right_click = if mac {
+        "Right-click / \u{2303}-click"
+    } else {
+        "Right-click"
+    };
+    ShortcutGroup {
+        title: "GitHub",
+        rows: vec![
+            ShortcutRow {
+                label: "Review the PR (PR review item)",
+                keys: Some(key_label_on(
+                    mac,
+                    &crate::settings::platform_combo_on(mac, "mod-enter"),
+                )),
+            },
+            ShortcutRow {
+                label: "Use as PR review destination; Review / Fix CI",
+                keys: Some(right_click.into()),
+            },
+        ],
+    }
 }
 
 /// The Linear rows of the shortcut reference (projects with Linear on): an
@@ -565,7 +594,14 @@ mod tests {
         let titles: Vec<_> = groups.iter().map(|group| group.title).collect();
         assert_eq!(
             titles,
-            ["Navigate", "Edit", "Restructure", "Commands", "Linear"]
+            [
+                "Navigate",
+                "Edit",
+                "Restructure",
+                "Commands",
+                "Linear",
+                "GitHub"
+            ]
         );
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
         // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename;
