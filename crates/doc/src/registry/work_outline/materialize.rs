@@ -33,7 +33,8 @@ use zeron_proto::work_outline_instructions::{
     InstructionApplicationReason, InstructionApplicationResult, InstructionRevisionApplicationView,
     InstructionRevisionBody, InstructionRevisionIntegrity, InstructionRevisionView,
     InstructionTurnBoundary, SelectedRevisionIntegrity, WorkItemInstructionView,
-    canonical_revision_hash, resolve_effective_instructions, verify_revision_body,
+    canonical_revision_hash, instruction_content_key, resolve_effective_instructions,
+    verify_revision_body,
 };
 use zeron_proto::work_outline_order::valid_order_key;
 
@@ -89,6 +90,8 @@ pub struct WorkOutlineInputs {
     pub user_action_requests: Vec<RegistryRow>,
     /// Live `workItemInstructionProposals` rows of this Space (Milestone 4).
     pub instruction_proposals: Vec<RegistryRow>,
+    /// The Space's live `workOutlineSpaceSettings` row (Linear), if any.
+    pub space_settings: Option<RegistryRow>,
 }
 
 // ── lenient row decoding ────────────────────────────────────────────────────
@@ -149,6 +152,8 @@ pub(crate) struct DecodedItem {
     pub created_by: Option<WorkOutlineActor>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// `externalSyncModifiedFields`, sorted and deduplicated (Linear).
+    pub external_sync_modified_fields: Vec<String>,
 }
 
 impl DecodedItem {
@@ -202,6 +207,7 @@ pub(crate) fn decode_item(row: &RegistryRow) -> Result<DecodedItem, WorkOutlineR
         created_by: actor_field(row, "createdBy"),
         created_at,
         updated_at: i64_field(row, "updatedAt").unwrap_or(created_at),
+        external_sync_modified_fields: super::linear::decode_modified_fields(row),
     })
 }
 
@@ -632,17 +638,21 @@ pub(crate) fn bare_view(
     }
 }
 
-/// `(canonical hash, entry count)` of `work_item_id`'s current effective
-/// instructions: the hash a revision created now would carry.
+/// `(canonical hash, entry count, instruction-content key)` of
+/// `work_item_id`'s current effective instructions: the hash a revision
+/// created now would carry, and the key drift compares
+/// ([`instruction_content_key`]).
 pub(crate) fn effective_hash<'a>(
     work_item_id: &str,
     items_by_id: impl Fn(&str) -> Option<&'a WorkItemView>,
     instructions: &[WorkItemInstructionView],
-) -> (String, usize) {
+) -> (String, usize, String) {
     let effective = resolve_effective_instructions(work_item_id, items_by_id, instructions);
+    let entries = effective.revision_entries();
     (
-        canonical_revision_hash(&effective.revision_entries(), INSTRUCTION_ENVELOPE_VERSION),
+        canonical_revision_hash(&entries, INSTRUCTION_ENVELOPE_VERSION),
         effective.entries.len(),
+        instruction_content_key(&entries),
     )
 }
 
@@ -870,7 +880,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             chat_ids,
             external_reference_ids,
             rollup,
-            external_sync_modified_fields: Vec::new(),
+            external_sync_modified_fields: item.external_sync_modified_fields.clone(),
         });
     }
     for index in (0..views.len()).rev() {
@@ -941,7 +951,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         execution_exceptions: execution.exceptions,
         user_action_requests: user_actions.requests,
         instruction_proposals: user_actions.proposals,
-        space_settings: Default::default(),
+        space_settings: super::linear::decode_space_settings(inputs.space_settings.as_ref()),
     }
 }
 
@@ -1005,7 +1015,7 @@ fn materialize_instructions(
 
     let views_by_id: HashMap<&str, &WorkItemView> =
         views.iter().map(|view| (view.id.as_str(), view)).collect();
-    let mut effective: BTreeMap<&str, (String, usize)> = BTreeMap::new();
+    let mut effective: BTreeMap<&str, (String, usize, String)> = BTreeMap::new();
 
     let revision_rows: BTreeMap<&str, &RegistryRow> = inputs
         .revisions
@@ -1097,9 +1107,22 @@ fn materialize_instructions(
                 ),
                 None => (None, None, None),
             };
+        // Drift compares instruction content, not the revision hash: a
+        // renamed item or ancestor changes the hash (scope titles are part
+        // of the stored entries) but is not an instruction change. A
+        // selection whose revision is missing or corrupt keeps the hash
+        // comparison (fail toward showing drift).
+        let selected_content_key = match (&selected_revision_id, selected_revision_integrity) {
+            (Some(id), Some(SelectedRevisionIntegrity::Ok)) => revision(id, repairs)
+                .map(|view| instruction_content_key(&view.body.entries)),
+            _ => None,
+        };
         let drift = match (&selected_revision_hash, &current) {
-            (Some(selected), Some((current, _))) => selected != current,
-            (None, Some((_, count))) => *count > 0,
+            (Some(selected), Some((current_hash, _, current_key))) => match &selected_content_key {
+                Some(selected_key) => selected_key != current_key,
+                None => selected != current_hash,
+            },
+            (None, Some((_, count, _))) => *count > 0,
             (_, None) => false,
         };
         let report = delivered.get(chat_id);
@@ -1117,7 +1140,7 @@ fn materialize_instructions(
             selected_revision_id,
             selected_revision_hash,
             selected_revision_integrity,
-            current_effective_hash: current.map(|(hash, _)| hash),
+            current_effective_hash: current.map(|(hash, _, _)| hash),
             drift,
             delivered_revision_id,
             delivered_revision_hash: report.and_then(|r| r.revision_hash.clone()),

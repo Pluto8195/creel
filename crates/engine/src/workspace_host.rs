@@ -891,6 +891,16 @@ impl WorkspaceHost {
         self.read(|doc| doc.batches_written())
     }
 
+    /// Whether a Space has the Linear integration turned on.
+    pub fn space_linear_enabled(&self, space_id: &str) -> bool {
+        self.read(|doc| doc.space_linear_enabled(space_id))
+    }
+
+    /// Live Spaces with Linear turned on.
+    pub fn linear_enabled_space_ids(&self) -> Vec<String> {
+        self.read(|doc| doc.linear_enabled_space_ids())
+    }
+
     /// The Space of a live work item (overlay view).
     pub fn work_item_space(&self, work_item_id: &str) -> Option<String> {
         self.read(|doc| doc.work_item_space(work_item_id))
