@@ -451,7 +451,34 @@ fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext
         "x",
         ArtifactContentEncoding::Utf8,
     ));
-    let (_tab, _, _, vcx) = open_tab(cx, plan, reply);
+    let (tab, _, _, vcx) = open_tab(cx, plan, reply);
     assert!(vcx.debug_bounds("artifact-edited-warning").is_some());
     assert!(vcx.debug_bounds("artifact-plan-badge").is_some());
+    assert!(vcx.debug_bounds("artifact-linear-project").is_none());
+    // Pinned as the plan: the work item's Linear project shows beside it.
+    let mut outline = crate::work_outline::store::fixture_snapshot(SPACE);
+    outline
+        .external_references
+        .push(zeron_proto::WorkItemExternalReferenceView {
+            id: "ref".into(),
+            space_id: SPACE.into(),
+            work_item_id: "w-api".into(),
+            provider: zeron_proto::linear::LINEAR_PROVIDER.into(),
+            reference_type: zeron_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
+            external_id: "p".into(),
+            url: "https://linear.app/acme/project/p-1".into(),
+            cached_title: Some("Receiving".into()),
+            created_by: None,
+            created_at: 1,
+        });
+    let state = tab.read_with(vcx, |tab, _| tab.state_for_tests());
+    state.update(vcx, |state, _| {
+        state.set_work_outline_visible(vec![SPACE.into()]);
+        assert!(state.apply_work_outline_frame(SPACE, outline));
+    });
+    vcx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    assert!(vcx.debug_bounds("artifact-linear-project").is_some());
 }

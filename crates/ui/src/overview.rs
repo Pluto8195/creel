@@ -13559,6 +13559,146 @@ mod logic_tests {
         );
     }
 
+    /// Planning artifacts: Details lists the pinned plan first (with the
+    /// item's Linear project beside it), then newest first; the row menu pins;
+    /// "Register existing" sends `ArtifactRegister` for the item; the Outline
+    /// row shows the artifact count.
+    #[gpui::test]
+    fn work_item_details_list_artifacts_and_the_outline_counts_them(cx: &mut gpui::TestAppContext) {
+        use crate::artifacts::tests::{artifact, id, scripted, snapshot as artifacts_snapshot};
+        use zeron_proto::ArtifactKind;
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, state, vcx) = outline_overview(cx, dir.path());
+        let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
+        snapshot
+            .external_references
+            .push(zeron_proto::WorkItemExternalReferenceView {
+                id: "ref-project".into(),
+                space_id: "s1".into(),
+                work_item_id: API.into(),
+                provider: zeron_proto::linear::LINEAR_PROVIDER.into(),
+                reference_type: zeron_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
+                external_id: "p1".into(),
+                url: "https://linear.app/acme/project/receiving-1".into(),
+                cached_title: Some("Receiving".into()),
+                created_by: None,
+                created_at: 1,
+            });
+        let mut plan = artifact(&id(1), "Plan", ArtifactKind::Markdown);
+        plan.pinned_as_plan = true;
+        plan.updated_at = 1;
+        let mut newer = artifact(&id(2), "Flow", ArtifactKind::HtmlFragment);
+        newer.updated_at = 30;
+        let mut older = artifact(&id(3), "Notes", ArtifactKind::Markdown);
+        older.updated_at = 10;
+        let (actions, calls) = scripted(std::sync::Arc::new(|method, _| {
+            Ok(match method {
+                zeron_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
+                    "artifactId": id(4), "revision": 1, "url": "zeron-artifact:x",
+                    "storedPath": "/work/alpha/.zeron/artifacts/api/plan.md", "changed": true
+                }),
+                _ => serde_json::json!({ "artifactId": id(1), "pinned": true, "unpinned": [] }),
+            })
+        }));
+        state.update(vcx, |state, _| {
+            state.local_device_id = Some("d".into());
+            state.work_outline_actions_override = Some(actions);
+            state.set_test_artifacts(artifacts_snapshot(vec![older, newer, plan]));
+        });
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(fixture_loads(Some(snapshot)), cx);
+            o.set_mode(OverviewMode::Outline, cx);
+        });
+        draw(vcx);
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-artifacts-{}", row_key::item("s1", API))
+            )
+            .is_some(),
+            "the Outline row counts the item's artifacts"
+        );
+        assert!(
+            row_bounds(
+                vcx,
+                format!("outline-artifacts-{}", row_key::item("s1", UI))
+            )
+            .is_none()
+        );
+
+        let details = open_details(&overview, vcx, API);
+        let y = |vcx: &mut gpui::VisualTestContext, n: u8| {
+            row_bounds(vcx, format!("work-item-artifact-{}", id(n)))
+                .unwrap_or_else(|| panic!("artifact {n} row"))
+                .origin
+                .y
+        };
+        let (plan_y, newer_y, older_y) = (y(vcx, 1), y(vcx, 2), y(vcx, 3));
+        assert!(
+            plan_y < newer_y && newer_y < older_y,
+            "plan, then newest first"
+        );
+        let chip = vcx
+            .debug_bounds("work-item-artifact-plan-linear")
+            .expect("Linear project next to the plan");
+        assert!((f32::from(chip.center().y) - f32::from(plan_y)).abs() < 24.0);
+
+        // Right-click a row: its menu pins it.
+        let row = row_bounds(vcx, format!("work-item-artifact-{}", id(2))).unwrap();
+        vcx.simulate_mouse_down(
+            row.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        vcx.run_until_parked();
+        draw(vcx);
+        let pin = vcx
+            .debug_bounds("work-item-artifact-menu-pin")
+            .expect("menu");
+        vcx.simulate_click(pin.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let sent = |method: &str| {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| m == method)
+                .map(|(_, params)| params.clone())
+                .collect::<Vec<_>>()
+        };
+        let pins = sent(zeron_rpc::methods::ARTIFACT_PIN);
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0]["artifactId"], id(2));
+        assert_eq!(pins[0]["pinned"], true);
+
+        // Register existing: outside the Space is refused; inside registers.
+        details.update(vcx, |d, cx| d.register_existing("/etc/passwd".into(), cx));
+        vcx.run_until_parked();
+        assert!(sent(zeron_rpc::methods::ARTIFACT_REGISTER).is_empty());
+        details.update(vcx, |d, cx| {
+            d.register_existing("/work/alpha/work/plan.md".into(), cx)
+        });
+        vcx.run_until_parked();
+        let registers = sent(zeron_rpc::methods::ARTIFACT_REGISTER);
+        assert_eq!(registers.len(), 1);
+        assert_eq!(registers[0]["spaceId"], "s1");
+        assert_eq!(registers[0]["workItemId"], API);
+        assert_eq!(registers[0]["path"], "/work/alpha/work/plan.md");
+        assert!(registers[0].get("targetDeviceId").is_none());
+        details.read_with(vcx, |d, _| {
+            assert_eq!(d.artifacts.status.as_deref(), Some("Registered as r1"));
+        });
+        // The register button opens the path field in tests (no native picker).
+        draw(vcx);
+        let register = vcx.debug_bounds("work-item-artifacts-register").unwrap();
+        vcx.simulate_click(register.center(), gpui::Modifiers::default());
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("work-item-artifacts-register-input")
+                .is_some()
+        );
+    }
+
     /// Acceptance 30: only the visible slice of a large outline renders.
     #[gpui::test]
     fn large_outlines_render_only_the_visible_slice(cx: &mut gpui::TestAppContext) {

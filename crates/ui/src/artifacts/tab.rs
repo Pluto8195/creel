@@ -247,6 +247,11 @@ impl ArtifactTab {
             .into()
     }
 
+    #[cfg(test)]
+    pub(crate) fn state_for_tests(&self) -> Entity<AppState> {
+        self.state.clone()
+    }
+
     pub(crate) fn shown_revision(&self) -> Option<u32> {
         self.shown
     }
