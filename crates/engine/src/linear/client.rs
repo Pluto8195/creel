@@ -29,23 +29,30 @@ pub fn tokio_sleeper() -> Sleeper {
 
 #[derive(Clone)]
 pub struct LinearClient {
-    http: reqwest::Client,
+    /// Built on first use: engines that never talk to Linear never load
+    /// TLS roots.
+    http: Arc<std::sync::OnceLock<reqwest::Client>>,
     endpoint: String,
     sleeper: Sleeper,
 }
 
 impl LinearClient {
     pub fn new(endpoint: impl Into<String>, sleeper: Sleeper) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            http,
+            http: Arc::default(),
             endpoint: endpoint.into(),
             sleeper,
         }
+    }
+
+    fn http(&self) -> &reqwest::Client {
+        self.http.get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
     }
 
     /// POST one GraphQL document; the response's `data` on success.
@@ -81,7 +88,7 @@ impl LinearClient {
 
     async fn attempt(&self, key: &str, body: &Value) -> Attempt {
         let response = match self
-            .http
+            .http()
             .post(&self.endpoint)
             .header(reqwest::header::AUTHORIZATION, key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
