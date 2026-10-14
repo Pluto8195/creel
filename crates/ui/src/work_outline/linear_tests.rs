@@ -761,3 +761,109 @@ fn linear_column_tween_respects_reduced_motion(cx: &mut gpui::TestAppContext) {
     draw(vcx);
     assert!(vcx.debug_bounds("linear-column").is_none(), "gone at once");
 }
+
+/// "My issues" / "My projects" headers show their counts and fold by click
+/// and by ←/→ while focused (keys stay in the panel); folds and expanded
+/// projects survive a fresh Overview.
+#[gpui::test]
+fn sections_fold_by_click_and_arrows_and_persist_with_expanded_projects(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::linear::prefs::PanelSection;
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    let panel = open_panel(&overview, vcx);
+    panel.read_with(vcx, |p, cx| {
+        assert_eq!(p.section_count(PanelSection::MyIssues, cx), Some(2));
+        assert_eq!(p.section_count(PanelSection::MyProjects, cx), Some(1));
+    });
+    panel.update(vcx, |p, cx| p.set_query("billing", cx));
+    panel.read_with(vcx, |p, cx| {
+        assert_eq!(p.section_count(PanelSection::MyIssues, cx), Some(1), "counts follow search");
+        assert_eq!(p.section_count(PanelSection::MyProjects, cx), Some(0));
+    });
+    panel.update(vcx, |p, cx| p.set_query("", cx));
+    draw(vcx);
+    select_row(&overview, vcx, &row_key::item("s1", UI));
+
+    // Click folds (and focuses the header).
+    press(vcx, "linear-section-my-issues".into());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none(), "folded");
+    assert!(vcx.debug_bounds("linear-section-my-issues").is_some(), "the header stays");
+    assert!(vcx.debug_bounds("linear-project-row-p-launch").is_some(), "projects unaffected");
+    let focused = vcx.update(|window, cx| {
+        panel.read(cx).section_focus_handle(PanelSection::MyIssues).is_focused(window)
+    });
+    assert!(focused, "the header has focus");
+    // → unfolds, ← folds; the Outline selection never moves.
+    vcx.simulate_keystrokes("right");
+    draw(vcx);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_some());
+    vcx.simulate_keystrokes("left");
+    draw(vcx);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none());
+    overview.read_with(vcx, |o, cx| {
+        assert_eq!(o.outline.read(cx).selected_key(), Some(row_key::item("s1", UI).as_str()))
+    });
+    // Fold projects by keyboard too, then unfold and expand Launch.
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).section_focus_handle(PanelSection::MyProjects);
+        window.focus(&handle, cx)
+    });
+    vcx.simulate_keystrokes("left");
+    draw(vcx);
+    assert!(vcx.debug_bounds("linear-project-row-p-launch").is_none());
+    vcx.simulate_keystrokes("right");
+    draw(vcx);
+    press(vcx, "linear-project-row-p-launch".into());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-3".into()).is_some(), "expanded");
+    assert_eq!(called(&calls, "LinearProjectIssues"), 1);
+
+    // A fresh Overview: My issues still folded, Launch still expanded (and
+    // its issues fetched on open).
+    let (fresh, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    let panel = fresh.read_with(vcx, |o, _| o.linear_panel().expect("restored open"));
+    panel.read_with(vcx, |p, _| {
+        assert!(p.collapsed.contains(&PanelSection::MyIssues));
+        assert!(!p.collapsed.contains(&PanelSection::MyProjects));
+        assert!(p.expanded.contains("p-launch"));
+    });
+    assert_eq!(called(&calls, "LinearProjectIssues"), 1);
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-1".into()).is_none());
+    assert!(row_bounds(vcx, "linear-issue-row-ENG-3".into()).is_some());
+    // Collapsing the project is remembered as well.
+    press(vcx, "linear-project-row-p-launch".into());
+    let state = crate::linear::prefs::load_panel_state(dir.path());
+    assert!(state.expanded_projects.is_empty());
+    assert!(state.collapsed.contains(&PanelSection::MyIssues));
+}
+
+/// Dragging from the left column onto an Outline row still creates the
+/// work item with the chat panel open on the right.
+#[gpui::test]
+fn drag_from_the_left_column_creates_beside_the_chat_panel(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    resize(vcx, 1800.0);
+    open_chat_panel(&overview, vcx);
+    open_panel(&overview, vcx);
+    let start = row_bounds(vcx, "linear-issue-row-ENG-2".into()).unwrap();
+    let target = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", API))).unwrap();
+    assert!(start.right() <= target.left(), "dragging rightward from the left column");
+    let start = gpui::point(start.left() + px(30.0), start.center().y);
+    let end = target.center();
+    let left = Some(gpui::MouseButton::Left);
+    vcx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(start + gpui::point(px(6.0), px(0.0)), left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(end, left, gpui::Modifiers::default());
+    vcx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    draw(vcx);
+    let creates = mutations(&calls, "createWorkItemFromLinear");
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0]["parentWorkItemId"], API);
+    assert!(vcx.debug_bounds("overview-chat-panel").is_some());
+}

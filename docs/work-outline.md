@@ -400,9 +400,12 @@ automatically: items and links come only from the actions below.
     instead of squeezing it.
   - With Reduce Motion on, the panel opens and closes without animating.
 
-  The panel lists **My issues** and **My projects**. Expand a project to see its
-  open issues. Search filters both lists. Lists load when the panel opens and
-  when you click ↻. Rows that an item in this project already links show
+  The panel lists **My issues** and **My projects**, each header with its count
+  (of rows matching the search). Click a header to fold or unfold its list, or
+  focus it and press `←` to fold and `→` to unfold. Expand a project to see its
+  open issues. Folded sections and expanded projects are remembered on this
+  device. Search filters both lists. Lists load when the panel opens and when
+  you click ↻. Rows that an item in this project already links show
   **Linked · Reveal**, which selects that item in the Outline. With several
   Linear projects on, click the project name in the panel header to switch.
 - **Create work item** (**Create** on an issue) adds `ENG-123 · title` under the
