@@ -154,6 +154,8 @@ pub(crate) struct DecodedItem {
     pub updated_at: i64,
     /// `externalSyncModifiedFields`, sorted and deduplicated (Linear).
     pub external_sync_modified_fields: Vec<String>,
+    /// `externalSyncState` (PR review sync).
+    pub external_sync_state: Option<zeron_proto::pr_review_sync::WorkItemExternalSyncState>,
 }
 
 impl DecodedItem {
@@ -208,6 +210,7 @@ pub(crate) fn decode_item(row: &RegistryRow) -> Result<DecodedItem, WorkOutlineR
         created_at,
         updated_at: i64_field(row, "updatedAt").unwrap_or(created_at),
         external_sync_modified_fields: super::linear::decode_modified_fields(row),
+        external_sync_state: super::pr_review_sync::decode_sync_state(row),
     })
 }
 
@@ -635,6 +638,7 @@ pub(crate) fn bare_view(
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
         external_sync_modified_fields: Vec::new(),
+        external_sync_state: None,
     }
 }
 
@@ -881,6 +885,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             external_reference_ids,
             rollup,
             external_sync_modified_fields: item.external_sync_modified_fields.clone(),
+            external_sync_state: item.external_sync_state.clone(),
         });
     }
     for index in (0..views.len()).rev() {

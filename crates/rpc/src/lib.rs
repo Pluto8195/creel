@@ -203,6 +203,22 @@ pub mod methods {
     /// `LinearRefreshLinkedItemsParams {spaceId}` →
     /// `LinearRefreshLinkedItemsReply {updated}`.
     pub const LINEAR_REFRESH_LINKED_ITEMS: &str = "LinearRefreshLinkedItems";
+    // ── PR review sync v1 (`zeron_proto::pr_review_sync`, docs/plans/
+    // work-outline/pr-sync-contract.md). All local/IPC (this device's `gh`
+    // login and checkouts), never forwardable. Failures are
+    // `github/<code>: <message>` (`zeron_proto::GithubError::from_wire_message`).
+    /// `PrStatusParams {owner, repo, number, forceRefresh?}` →
+    /// `PullRequestStatusSummary` (~2 minute per-PR cache).
+    pub const PR_STATUS: &str = "PrStatus";
+    /// `PrReviewSyncNowParams {spaceId}` → `PrReviewSyncNowReply {created,
+    /// updated, resolved}`.
+    pub const PR_REVIEW_SYNC_NOW: &str = "PrReviewSyncNow";
+    /// `PrMyOpenParams {spaceId}` → `[PullRequestStatusSummary]` (the user's
+    /// open PRs in the Space's repositories).
+    pub const PR_MY_OPEN: &str = "PrMyOpen";
+    /// `PrReviewRequestedParams {spaceId}` → `[PullRequestStatusSummary]`
+    /// (open PRs in the Space's repositories requesting the user's review).
+    pub const PR_REVIEW_REQUESTED: &str = "PrReviewRequested";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
@@ -610,6 +626,14 @@ mod tests {
             methods::LINEAR_REFRESH_LINKED_ITEMS,
             "LinearRefreshLinkedItems"
         );
+    }
+
+    #[test]
+    fn pr_review_sync_wire_names_are_pinned() {
+        assert_eq!(methods::PR_STATUS, "PrStatus");
+        assert_eq!(methods::PR_REVIEW_SYNC_NOW, "PrReviewSyncNow");
+        assert_eq!(methods::PR_MY_OPEN, "PrMyOpen");
+        assert_eq!(methods::PR_REVIEW_REQUESTED, "PrReviewRequested");
     }
 
     struct TestService;

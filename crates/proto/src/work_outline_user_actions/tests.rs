@@ -48,6 +48,7 @@ fn user_action_request_view_field_names_are_pinned() {
         space_id: "sp".into(),
         work_item_id: "w-1".into(),
         chat_id: "chat-1".into(),
+        origin_kind: UserActionOriginKind::Chat,
         message_id: Some("m-1".into()),
         tool_call_id: Some("t-1".into()),
         text: "Approve the migration?".into(),
@@ -151,6 +152,7 @@ fn mutation_field_names_are_pinned() {
         &WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
             work_item_id: "w-1".into(),
             origin: UserActionRequestOrigin {
+                kind: UserActionOriginKind::Chat,
                 chat_id: "chat-1".into(),
                 message_id: Some("m-1".into()),
                 tool_call_id: Some("t-1".into()),
@@ -269,6 +271,7 @@ fn resolve_open_requests_rides_in_changes_and_is_omitted_when_false() {
             changes: WorkItemChanges {
                 status: Some(WorkItemStatus::Completed),
                 resolve_open_requests: true,
+                external_sync_state: None,
                 ..Default::default()
             },
             operation_id: "op".into(),
