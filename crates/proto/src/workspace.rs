@@ -45,6 +45,11 @@ pub mod capabilities {
     /// and understands `setPrReviewSyncDestination` and system-origin
     /// Required Actions.
     pub const PR_REVIEW_SYNC_V1: &str = crate::pr_review_sync::PR_REVIEW_SYNC_CAPABILITY_V1;
+    /// The host stores planning artifacts for its Spaces, serves the
+    /// artifact RPCs (`WatchArtifacts`, `ArtifactContent`, `ArtifactRegister`,
+    /// `ArtifactPromote`, `ArtifactPin`, render-check routing), and gives
+    /// agents the `artifact_*` tools.
+    pub const ARTIFACTS_V1: &str = crate::artifacts::ARTIFACTS_CAPABILITY_V1;
 
     /// Per-harness token: `work-outline-instruction-envelope-v1/<harness>`,
     /// where `<harness>` is the harness id's wire spelling (`claude-code`,
@@ -70,6 +75,7 @@ pub mod capabilities {
         PR_REVIEW_LAUNCH_V1,
         LINEAR_V1,
         PR_REVIEW_SYNC_V1,
+        ARTIFACTS_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -187,7 +193,8 @@ mod tests {
                     "work-outline-launch-v1",
                     "pr-review-launch-v1",
                     "linear-v1",
-                    "pr-review-sync-v1"
+                    "pr-review-sync-v1",
+                    "artifacts-v1"
                 ],
             })
         );
