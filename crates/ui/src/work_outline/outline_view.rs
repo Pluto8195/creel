@@ -1747,6 +1747,31 @@ impl OutlineView {
             .is_some_and(|attempt| attempt.state == AttemptState::InFlight)
     }
 
+    /// Work Item Details' associate / disassociate: the Chat move the keys
+    /// and drops send, so it applies at once and raises the Undo toast when
+    /// the Chat's effective instructions change.
+    pub(crate) fn reassociate_chat(
+        &mut self,
+        space_id: &str,
+        chat_id: &str,
+        work_item_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restructuring_busy() {
+            self.show_notice("Still applying the previous move. Try again in a moment", cx);
+            return;
+        }
+        let chat_id = chat_id.to_owned();
+        let mutation = match work_item_id {
+            Some(work_item_id) => DirectMutation::AssignChat {
+                chat_id,
+                work_item_id,
+            },
+            None => DirectMutation::RemoveChat { chat_id },
+        };
+        self.submit_direct(space_id.to_owned(), mutation, cx);
+    }
+
     /// Send `mutation` at once (see the Undo toast when it changes an
     /// assigned Chat's effective instructions). Ignored while the previous
     /// restructuring is in flight (the engine must apply them in order).
