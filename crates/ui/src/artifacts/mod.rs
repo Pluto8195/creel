@@ -19,6 +19,7 @@
 
 pub(crate) mod actions;
 pub(crate) mod cards;
+pub(crate) mod compare;
 pub(crate) mod document;
 pub(crate) mod layout_heuristics;
 pub(crate) mod links;
