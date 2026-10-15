@@ -562,9 +562,10 @@ async fn marker_links_and_visualize_references_register_once() {
     std::fs::write(&file, "# Notes\n").unwrap();
     let fragment = rig.worktree.join("viz.fragment.html");
     std::fs::write(&fragment, "<div>v</div>").unwrap();
+    std::fs::write(rig.worktree.join(".env"), "K=v").unwrap();
     let text = format!(
         "Here is [Rollout notes](zeron-artifact:notes/plan.md) and \
-         [missing](zeron-artifact:/nope/x.md) and [secret](zeron-artifact:/etc/hosts).\n\
+         [missing](zeron-artifact:/nope/x.md) and [secret](zeron-artifact:.env).\n\
          visualize{{\"path\":\"{}\",\"title\":\"Viz\"}}\n",
         fragment.display()
     );
@@ -709,16 +710,32 @@ async fn register_imports_an_existing_space_file_as_revision_one() {
     // Outside the Space: refused.
     let outside = rig.root.join("elsewhere.md");
     std::fs::write(&outside, "x").unwrap();
+    // Outside the Space: allowed (any regular local file) ...
+    let reply = rig
+        .client
+        .call(
+            methods::ARTIFACT_REGISTER,
+            json!({ "spaceId": SPACE, "path": outside.to_string_lossy(),
+                    "workItemId": rig.item }),
+        )
+        .await
+        .unwrap();
+    let row = artifact(&rig, reply["artifactId"].as_str().unwrap());
+    assert_eq!(row.title, "elsewhere");
+    assert!(row.stored_path.starts_with(item_folder(&rig).to_str().unwrap()));
+    // ... unless denied.
+    let secret = rig.root.join(".env");
+    std::fs::write(&secret, "K=v").unwrap();
     let err = rig
         .client
         .call(
             methods::ARTIFACT_REGISTER,
-            json!({ "spaceId": SPACE, "path": outside.to_string_lossy() }),
+            json!({ "spaceId": SPACE, "path": secret.to_string_lossy() }),
         )
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("artifact/forbidden"), "{err}");
+    assert!(err.contains("artifact/denied"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -808,16 +825,16 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
 #[tokio::test(flavor = "multi_thread")]
 async fn agents_are_scoped_to_their_chat_and_folders() {
     let rig = rig().await;
-    // Files outside the chat's folders are refused.
+    // Directories are not regular files.
     let err = tool(
         &rig,
         &rig.token,
         "artifact_publish",
-        json!({ "path": "/etc/hosts", "title": "Hosts", "note": "n", "idempotencyKey": "k" }),
+        json!({ "path": "/etc", "title": "Etc", "note": "n", "idempotencyKey": "k" }),
     )
     .await
     .unwrap_err();
-    assert!(err.contains("artifact/forbidden"), "{err}");
+    assert!(err.contains("artifact/denied"), "{err}");
     // A key is required.
     std::fs::write(rig.worktree.join("p.md"), "x").unwrap();
     let err = tool(
@@ -902,4 +919,75 @@ async fn watch_artifacts_streams_the_space_s_artifacts() {
         next.plan_of(&rig.item).unwrap().id,
         reply["artifactId"].as_str().unwrap()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publish_accepts_any_local_file_outside_the_deny_list() {
+    let rig = rig().await;
+    // A fake HOME with credential folders; the file lives outside every root.
+    let home = rig.root.join("home");
+    for dir in [".ssh", ".aws", ".config/gh", "Library/Keychains", ".gnupg", ".docker"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    rig.core.artifacts.set_home(Some(home.clone()));
+    let elsewhere = rig.root.join("notes/outside.md");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    std::fs::write(&elsewhere, "# v1\n").unwrap();
+    let args = |title: &str, key: &str| {
+        json!({ "path": elsewhere.to_string_lossy(), "title": title, "note": "n",
+                "idempotencyKey": key })
+    };
+    let first = publish(&rig, &rig.token, args("Outside", "k1")).await;
+    assert_eq!(first["revision"], 1);
+    let row = artifact(&rig, first["artifactId"].as_str().unwrap());
+    assert!(row.stored_path.starts_with(item_folder(&rig).to_str().unwrap()));
+    assert_eq!(std::fs::read_to_string(&row.stored_path).unwrap(), "# v1\n");
+    std::fs::write(&elsewhere, "# v2\n").unwrap();
+    let second = publish(&rig, &rig.token, args("Outside", "k2")).await;
+    assert_eq!(second["artifactId"], first["artifactId"]);
+    assert_eq!(second["revision"], 2);
+
+    let denied = |path: &Path| {
+        let args = json!({ "path": path.to_string_lossy(), "title": "X", "note": "n",
+                           "idempotencyKey": "kd" });
+        let rig = &rig;
+        async move { tool(rig, &rig.token, "artifact_publish", args).await.unwrap_err() }
+    };
+    for (rel, body) in [
+        (".ssh/id_ed25519", "key"),
+        (".aws/credentials", "k"),
+        (".config/gh/hosts.yml", "t"),
+        ("Library/Keychains/login.keychain", "k"),
+        (".gnupg/pubring.kbx", "k"),
+        (".docker/config.json", "{}"),
+        (".netrc", "machine"),
+    ] {
+        let file = home.join(rel);
+        std::fs::write(&file, body).unwrap();
+        let err = denied(&file).await;
+        assert!(err.contains("artifact/denied"), "{rel}: {err}");
+    }
+    // A symlink from an innocent place into the deny-list is judged by its target.
+    let link = rig.root.join("notes/innocent.md");
+    std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), &link).unwrap();
+    let err = denied(&link).await;
+    assert!(err.contains("artifact/denied") && err.contains(".ssh"), "{err}");
+    // .env files.
+    for name in [".env", ".env.production"] {
+        let file = rig.root.join("notes").join(name);
+        std::fs::write(&file, "K=v").unwrap();
+        let err = denied(&file).await;
+        assert!(err.contains("artifact/denied"), "{name}: {err}");
+    }
+    // Oversize.
+    let big = rig.root.join("notes/big.md");
+    let handle = std::fs::File::create(&big).unwrap();
+    handle.set_len(11 * 1024 * 1024).unwrap();
+    let err = denied(&big).await;
+    assert!(err.contains("artifact/denied"), "{err}");
+    // Non-regular (fifo).
+    let fifo = rig.root.join("notes/pipe.md");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let err = denied(&fifo).await;
+    assert!(err.contains("artifact/denied") && err.contains("regular"), "{err}");
 }
