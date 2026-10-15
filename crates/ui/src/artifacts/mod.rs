@@ -9,6 +9,7 @@
 //!   which component renders a kind);
 //! - [`document`] — the sandboxed web documents (visualize wrapper) and the
 //!   render-check probe;
+//! - [`layout_heuristics`] — the probe's layout checks (clipped text, overlaps, …);
 //! - [`tab`] — the Artifact pane tab;
 //! - [`details`] — the Work Item Details "Artifacts" section;
 //! - [`cards`] — transcript artifact cards;
@@ -19,6 +20,7 @@
 pub(crate) mod actions;
 pub(crate) mod cards;
 pub(crate) mod document;
+pub(crate) mod layout_heuristics;
 pub(crate) mod model;
 pub(crate) mod render_check;
 pub(crate) mod store;
