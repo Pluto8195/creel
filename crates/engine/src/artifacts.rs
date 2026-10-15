@@ -1860,6 +1860,7 @@ mod tests {
                     screenshot_png_base64: Some("iVBOR".into()),
                     errors: vec!["e".into()],
                     warnings: vec![],
+                    ..Default::default()
                 }),
                 error: None,
             }));
