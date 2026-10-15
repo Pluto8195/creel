@@ -26,11 +26,12 @@ pub mod workspace;
 pub use agent::*;
 pub use artifacts::{
     ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
-    ArtifactErrorCode, ArtifactKind, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
-    ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
-    ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
-    ArtifactRenderResultReply, ArtifactRenderTheme, ArtifactRevision, ArtifactView,
-    ArtifactViewport, ArtifactsSnapshot, WatchArtifactRenderRequestsParams, WatchArtifactsParams,
+    ArtifactErrorCode, ArtifactKind, ArtifactLayoutWarning, ArtifactPinParams, ArtifactPinReply,
+    ArtifactPromoteParams, ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams,
+    ArtifactRenderCheckResult, ArtifactRenderCompanion, ArtifactRenderRequest,
+    ArtifactRenderResultParams, ArtifactRenderResultReply, ArtifactRenderScreenshot,
+    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
+    ArtifactsSnapshot, WatchArtifactRenderRequestsParams, WatchArtifactsParams,
 };
 pub use entities::*;
 pub use linear::*;

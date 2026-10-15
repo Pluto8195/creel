@@ -240,6 +240,7 @@ fn render_types_use_camel_case_and_defaults() {
             height: 600,
         },
         theme: ArtifactRenderTheme::Dark,
+        ..Default::default()
     })
     .unwrap();
     for field in [
@@ -272,6 +273,53 @@ fn render_types_use_camel_case_and_defaults() {
     assert_eq!((clamped.width, clamped.height), (200, 4096));
     let theme: ArtifactRenderTheme = serde_json::from_value(json!("sepia")).unwrap();
     assert_eq!(theme, ArtifactRenderTheme::System);
+}
+
+#[test]
+fn render_plans_are_viewport_major_and_capped_at_four_images() {
+    let mut request: ArtifactRenderRequest =
+        serde_json::from_value(json!({ "requestId": "r1" })).unwrap();
+    // Old shape: the single viewport and theme.
+    let (plan, warning) = request.renders();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].0.width, 1280);
+    assert!(warning.is_none());
+
+    request.viewports = ArtifactRenderViewport::defaults();
+    request.themes = vec![ArtifactRenderTheme::Light, ArtifactRenderTheme::Dark];
+    let (plan, warning) = request.renders();
+    assert!(warning.is_none());
+    let order: Vec<_> = plan
+        .iter()
+        .map(|(v, t)| (v.display_label(), *t))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("narrow".to_owned(), ArtifactRenderTheme::Light),
+            ("narrow".to_owned(), ArtifactRenderTheme::Dark),
+            ("wide".to_owned(), ArtifactRenderTheme::Light),
+            ("wide".to_owned(), ArtifactRenderTheme::Dark),
+        ]
+    );
+
+    request.viewports.push(ArtifactRenderViewport {
+        width: 10,
+        height: 99_999,
+        label: Some("  ".into()),
+    });
+    let (plan, warning) = request.renders();
+    assert_eq!(plan.len(), 4);
+    assert!(warning.unwrap().contains("4 of 6"));
+
+    // Unlabelled viewports read as their clamped size.
+    let clamped = ArtifactRenderViewport {
+        width: 10,
+        height: 99_999,
+        label: None,
+    }
+    .clamped();
+    assert_eq!(clamped.display_label(), "200x4096");
 }
 
 #[test]

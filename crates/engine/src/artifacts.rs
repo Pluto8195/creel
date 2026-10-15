@@ -35,11 +35,11 @@ use zeron_proto::artifacts::{
     ArtifactError, ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply,
     ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
     ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
-    ArtifactRenderTheme, ArtifactRevision, ArtifactView, ArtifactViewport, ArtifactsSnapshot,
-    EDITED_WITHOUT_NOTE, IMPORTED_NOTE, OptionsManifest, PROMOTE_DIR, PlanScope, SPACE_FOLDER,
-    ZERON_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note, clean_title,
-    content_hash, count_open_questions, count_unverified_claims, is_safe_relative_path,
-    mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
+    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
+    ArtifactsSnapshot, EDITED_WITHOUT_NOTE, IMPORTED_NOTE, OptionsManifest, PROMOTE_DIR, PlanScope,
+    SPACE_FOLDER, ZERON_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
+    clean_title, content_hash, count_open_questions, count_unverified_claims,
+    is_safe_relative_path, mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
 };
 use zeron_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
 
@@ -164,7 +164,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Outcome<()> {
     std::fs::create_dir_all(parent).map_err(|e| io_error("create", parent, e))?;
     let tmp = parent.join(format!(
         ".{}.zeron-tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("artifact"),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("artifact"),
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::write(&tmp, bytes).map_err(|e| io_error("write", &tmp, e))?;
@@ -339,9 +341,42 @@ struct RenderCheckArgs {
     #[serde(default)]
     viewport: Option<ArtifactViewport>,
     #[serde(default)]
+    viewports: Option<Vec<ArtifactRenderViewport>>,
+    #[serde(default)]
     theme: Option<ArtifactRenderTheme>,
     #[serde(default)]
+    themes: Option<Vec<ArtifactRenderTheme>>,
+    #[serde(default)]
     kind: Option<String>,
+}
+
+impl RenderCheckArgs {
+    /// `viewports` (when non-empty), else the single `viewport` (replacing
+    /// the default list), else the narrow + wide defaults. Clamped.
+    fn effective_viewports(&self) -> Vec<ArtifactRenderViewport> {
+        let list = match (&self.viewports, self.viewport) {
+            (Some(list), _) if !list.is_empty() => list.clone(),
+            (_, Some(single)) => vec![ArtifactRenderViewport {
+                width: single.width,
+                height: single.height,
+                label: None,
+            }],
+            _ => ArtifactRenderViewport::defaults(),
+        };
+        list.into_iter()
+            .map(ArtifactRenderViewport::clamped)
+            .collect()
+    }
+
+    /// `themes` (when non-empty), else the single `theme`, else the current
+    /// theme only.
+    fn effective_themes(&self) -> Vec<ArtifactRenderTheme> {
+        match (&self.themes, self.theme) {
+            (Some(list), _) if !list.is_empty() => list.clone(),
+            (_, Some(single)) => vec![single],
+            _ => vec![ArtifactRenderTheme::System],
+        }
+    }
 }
 
 fn parse_args<T: serde::de::DeserializeOwned>(arguments: &Value) -> Outcome<T> {
@@ -362,7 +397,12 @@ type RenderReply = Result<ArtifactRenderCheckResult, String>;
 /// `WatchArtifactRenderRequests` open; requests go to the newest live
 /// subscriber; replies arrive through `ArtifactRenderResult`.
 pub struct RenderBroker {
-    subscribers: Mutex<Vec<(u64, tokio::sync::mpsc::UnboundedSender<ArtifactRenderRequest>)>>,
+    subscribers: Mutex<
+        Vec<(
+            u64,
+            tokio::sync::mpsc::UnboundedSender<ArtifactRenderRequest>,
+        )>,
+    >,
     pending: Mutex<HashMap<String, std::sync::mpsc::Sender<RenderReply>>>,
     next: AtomicU64,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -463,7 +503,10 @@ impl RenderBroker {
 
     /// Send one request to the newest live UI and wait (blocking) for its
     /// answer.
-    pub fn request(&self, mut request: ArtifactRenderRequest) -> Outcome<ArtifactRenderCheckResult> {
+    pub fn request(
+        &self,
+        mut request: ArtifactRenderRequest,
+    ) -> Outcome<ArtifactRenderCheckResult> {
         let request_id = format!(
             "render-{}-{}",
             self.next.fetch_add(1, Ordering::Relaxed),
@@ -620,10 +663,13 @@ impl ArtifactsService {
                     return None;
                 }
                 let configuration = &resolved.configuration;
-                let binding = configuration.primary().or(match configuration.bindings.as_slice() {
-                    [only] => Some(only),
-                    _ => None,
-                })?;
+                let binding =
+                    configuration
+                        .primary()
+                        .or(match configuration.bindings.as_slice() {
+                            [only] => Some(only),
+                            _ => None,
+                        })?;
                 Some(PathBuf::from(&binding.repo_path))
             })
             .unwrap_or(space_path);
@@ -680,7 +726,11 @@ impl ArtifactsService {
             .as_deref()
             .map(str::trim)
             .filter(|r| !r.is_empty())
-            .map(|r| r.chars().take(artifact_limits::MAX_ROLE_CHARS).collect::<String>());
+            .map(|r| {
+                r.chars()
+                    .take(artifact_limits::MAX_ROLE_CHARS)
+                    .collect::<String>()
+            });
         if !request.source.is_absolute() {
             return Err(ArtifactError::invalid(format!(
                 "{} is not an absolute path",
@@ -770,11 +820,17 @@ impl ArtifactsService {
                     self.folder_for(&space, work_item_id.as_deref(), request.chat_id.as_deref())?;
                 let dir = canonical.join(ARTIFACTS_DIR).join(&folder);
                 let mut name = file_name_of(&source)?;
-                let taken = self.workspace().artifacts_of_space(&space.id).into_iter().any(|a| {
-                    a.folder == folder
-                        && Path::new(&a.stored_path).file_name().and_then(|n| n.to_str())
-                            == Some(name.as_str())
-                });
+                let taken = self
+                    .workspace()
+                    .artifacts_of_space(&space.id)
+                    .into_iter()
+                    .any(|a| {
+                        a.folder == folder
+                            && Path::new(&a.stored_path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                == Some(name.as_str())
+                    });
                 if taken {
                     name = tagged_file_name(&name, &id[..6]);
                 }
@@ -937,9 +993,10 @@ impl ArtifactsService {
                 continue;
             }
             let now = now_ms();
-            let next = view.current_revision.max(
-                view.revisions.iter().map(|r| r.id).max().unwrap_or(0),
-            ) + 1;
+            let next = view
+                .current_revision
+                .max(view.revisions.iter().map(|r| r.id).max().unwrap_or(0))
+                + 1;
             view.revisions.insert(
                 0,
                 ArtifactRevision {
@@ -1051,7 +1108,13 @@ impl ArtifactsService {
                 }
             },
         };
-        Ok(encode_reply(&artifact, artifact.kind, revision, &stored, bytes))
+        Ok(encode_reply(
+            &artifact,
+            artifact.kind,
+            revision,
+            &stored,
+            bytes,
+        ))
     }
 
     /// The current text of an artifact (stored file, else the current
@@ -1298,9 +1361,15 @@ impl ArtifactsService {
     /// `artifact_publish`.
     pub fn agent_publish(&self, caller: &AgentCaller, arguments: &Value) -> Outcome<Value> {
         let args: PublishArgs = parse_args(arguments)?;
-        let key = zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
-            .map_err(ArtifactError::invalid)?;
-        let kind = match args.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let key =
+            zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
+                .map_err(ArtifactError::invalid)?;
+        let kind = match args
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             Some(raw) => Some(ArtifactKind::parse(raw).ok_or_else(|| {
                 ArtifactError::invalid(format!(
                     "kind must be markdown, html-fragment, html-page, mermaid, image, or \
@@ -1382,11 +1451,15 @@ impl ArtifactsService {
     /// `artifact_render_check`.
     pub fn agent_render_check(&self, caller: &AgentCaller, arguments: &Value) -> Outcome<Value> {
         let args: RenderCheckArgs = parse_args(arguments)?;
-        let artifact_id = args.artifact_id.filter(|id| !id.trim().is_empty());
-        let path = args.path.filter(|p| !p.trim().is_empty());
+        let viewports = args.effective_viewports();
+        let themes = args.effective_themes();
+        let artifact_id = args.artifact_id.clone().filter(|id| !id.trim().is_empty());
+        let path = args.path.clone().filter(|p| !p.trim().is_empty());
         let mut request = ArtifactRenderRequest {
-            viewport: args.viewport.unwrap_or_default().clamped(),
-            theme: args.theme.unwrap_or_default(),
+            viewport: viewports[0].size(),
+            theme: themes[0],
+            viewports,
+            themes,
             ..ArtifactRenderRequest::default()
         };
         match (artifact_id, path) {
@@ -1458,16 +1531,31 @@ impl ArtifactsService {
         self.inner.render.check_rate(&caller.run_id)?;
         let artifact_id = request.artifact_id.clone();
         let result = self.inner.render.request(request)?;
+        // `screenshot` stays the first image for older callers.
+        let first = result
+            .screenshots
+            .first()
+            .map(|shot| shot.png_base64.clone())
+            .or(result.screenshot_png_base64);
         Ok(json!({
             "artifactId": artifact_id,
             "errors": result.errors,
             "warnings": result.warnings,
-            "screenshot": result.screenshot_png_base64.map(|data| json!({
+            "layoutWarnings": result.layout_warnings,
+            "screenshots": result.screenshots.iter().map(|shot| json!({
+                "viewport": shot.viewport,
+                "width": shot.width,
+                "height": shot.height,
+                "theme": shot.theme,
+                "png": shot.png_base64,
+            })).collect::<Vec<_>>(),
+            "screenshot": first.map(|data| json!({
                 "mimeType": "image/png",
                 "data": data,
             })),
-            "note": "Fix every error and warning, check again, and look at the screenshot \
-                     before you say the artifact is done.",
+            "note": "Layout warnings are heuristics and can be wrong or miss problems: fix \
+                     every error, look at every screenshot, and check again before you say \
+                     the artifact is done.",
         }))
     }
 

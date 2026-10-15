@@ -339,20 +339,39 @@ fn artifact_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ARTIFACT_RENDER_CHECK,
-            description: "Render an artifact exactly as Zeron shows it (same wrapper, sandbox, and theme) in the Zeron window on this device and return a screenshot plus errors (console errors, blocked resources, Mermaid parse errors, empty render) and warnings (overflow, content outside the viewport, low contrast). Run it after creating or changing any visual artifact, fix every error and warning, and check again. If it fails with renderUnavailable, say the artifact was not checked.",
+            description: "Render an artifact exactly as Zeron shows it (same wrapper, sandbox, and theme) in the Zeron window on this device and return screenshots plus errors (console errors, blocked resources, Mermaid parse errors, empty render) and warnings (overflow, content outside the viewport, low contrast, and layout heuristics in layoutWarnings: clipped text, overlapping siblings, narrow text columns, elements wider than their parent, fixed widths wider than the viewport). By default it renders a narrow (800x800) and a wide (1440x900) viewport in the current theme; pass `themes: [\"light\", \"dark\"]` to check both themes (at most 4 images per call; each image comes with a label). Warnings are heuristics: always look at every screenshot. Run it after creating or changing any visual artifact, fix what is wrong, and check again. If it fails with renderUnavailable, say the artifact was not checked.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "artifactId": { "type": "string", "description": "A published artifact of your work item." },
                     "path": { "type": "string", "description": "Or an unpublished file you wrote." },
-                    "viewport": {
-                        "type": "object",
-                        "properties": {
-                            "width": { "type": "integer", "minimum": 200, "maximum": 4096, "default": 1280 },
-                            "height": { "type": "integer", "minimum": 200, "maximum": 4096, "default": 800 }
+                    "viewports": {
+                        "type": "array",
+                        "description": "Viewports to render. Default: [{width: 800, height: 800, label: \"narrow\"}, {width: 1440, height: 900, label: \"wide\"}].",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "width": { "type": "integer", "minimum": 200, "maximum": 4096 },
+                                "height": { "type": "integer", "minimum": 200, "maximum": 4096 },
+                                "label": { "type": "string" }
+                            },
+                            "required": ["width", "height"]
                         }
                     },
-                    "theme": { "type": "string", "enum": ["light", "dark"], "description": "Default: the user's current theme." }
+                    "viewport": {
+                        "type": "object",
+                        "description": "A single viewport; replaces the default list.",
+                        "properties": {
+                            "width": { "type": "integer", "minimum": 200, "maximum": 4096 },
+                            "height": { "type": "integer", "minimum": 200, "maximum": 4096 }
+                        }
+                    },
+                    "themes": {
+                        "type": "array",
+                        "description": "Themes to render every viewport in. Default: the user's current theme only. At most 4 images (viewports x themes) per call.",
+                        "items": { "type": "string", "enum": ["light", "dark"] }
+                    },
+                    "theme": { "type": "string", "enum": ["light", "dark"], "description": "A single theme. Default: the user's current theme." }
                 }
             }),
         },
@@ -364,22 +383,62 @@ fn is_engine_agent_tool(name: &str) -> bool {
     agent_tool_names::WORK_OUTLINE.contains(&name) || agent_tool_names::ARTIFACTS.contains(&name)
 }
 
-/// Split a render-check result into MCP content: the screenshot as an
-/// `image` block, the rest as structured data (without the image bytes).
+/// Split a render-check result into MCP content: every screenshot as an
+/// `image` block (each preceded by a text label naming its viewport and
+/// theme), the rest as structured data without the image bytes. Falls back to
+/// the single `screenshot` field for engines that predate `screenshots`.
 fn render_check_content(mut value: Value) -> (Value, Vec<Value>) {
-    let mut images = Vec::new();
-    if let Some(object) = value.as_object_mut()
-        && let Some(screenshot) = object.remove("screenshot")
-        && let Some(data) = screenshot.get("data").and_then(Value::as_str)
-    {
-        let mime = screenshot
-            .get("mimeType")
+    let mut content = Vec::new();
+    let Some(object) = value.as_object_mut() else {
+        return (value, content);
+    };
+    let single = object.remove("screenshot");
+    let mime = |shot: &Value| {
+        shot.get("mimeType")
             .and_then(Value::as_str)
-            .unwrap_or("image/png");
-        images.push(json!({ "type": "image", "data": data, "mimeType": mime }));
-        object.insert("screenshot".into(), json!({ "mimeType": mime, "attached": true }));
+            .unwrap_or("image/png")
+            .to_owned()
+    };
+    let mut attached = false;
+    if let Some(Value::Array(shots)) = object.get_mut("screenshots") {
+        for shot in shots.iter_mut() {
+            let Some(data) = shot.get("png").and_then(Value::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let label = format!(
+                "Screenshot: {} ({}x{}), {} theme",
+                shot.get("viewport")
+                    .and_then(Value::as_str)
+                    .unwrap_or("viewport"),
+                shot.get("width").and_then(Value::as_u64).unwrap_or(0),
+                shot.get("height").and_then(Value::as_u64).unwrap_or(0),
+                shot.get("theme")
+                    .and_then(Value::as_str)
+                    .unwrap_or("current"),
+            );
+            content.push(json!({ "type": "text", "text": label }));
+            content.push(json!({ "type": "image", "data": data, "mimeType": "image/png" }));
+            if let Some(shot) = shot.as_object_mut() {
+                shot.remove("png");
+                shot.insert("attached".into(), json!(true));
+            }
+            attached = true;
+        }
     }
-    (value, images)
+    if let Some(screenshot) = single {
+        let mime = mime(&screenshot);
+        if !attached && let Some(data) = screenshot.get("data").and_then(Value::as_str) {
+            content.push(json!({ "type": "image", "data": data, "mimeType": mime }));
+            attached = true;
+        }
+        if attached {
+            object.insert(
+                "screenshot".into(),
+                json!({ "mimeType": mime, "attached": true }),
+            );
+        }
+    }
+    (value, content)
 }
 
 // ---- argument shapes ---------------------------------------------------------
@@ -575,7 +634,9 @@ impl Tools {
     /// With a token, every call (reads included) first re-authenticates it:
     /// once the Run that received it ends, nothing works.
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
-        self.call_with_content(name, args).await.map(|(value, _)| value)
+        self.call_with_content(name, args)
+            .await
+            .map(|(value, _)| value)
     }
 
     /// [`Self::call`] plus extra MCP content blocks (the render check's
@@ -593,7 +654,9 @@ impl Tools {
                 .map_err(|e| e.to_string())?;
             return Ok(render_check_content(value));
         }
-        self.call_value(name, args).await.map(|value| (value, Vec::new()))
+        self.call_value(name, args)
+            .await
+            .map(|value| (value, Vec::new()))
     }
 
     async fn call_value(&self, name: &str, args: Value) -> Result<Value, String> {
@@ -1707,6 +1770,12 @@ mod tests {
                     if params["tool"] == agent_tool_names::ARTIFACT_RENDER_CHECK {
                         return Ok(RpcReply::Value(json!({
                             "artifactId": "a1", "errors": [], "warnings": ["overflow"],
+                            "screenshots": [
+                                { "viewport": "narrow", "width": 800, "height": 800,
+                                  "theme": "light", "png": "iVBORw0KGgo=" },
+                                { "viewport": "wide", "width": 1440, "height": 900,
+                                  "theme": "dark", "png": "AAAA" },
+                            ],
                             "screenshot": { "mimeType": "image/png", "data": "iVBORw0KGgo=" },
                         })));
                     }
@@ -1821,15 +1890,67 @@ mod tests {
         )
         .await;
         let content = response["result"]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2, "{response}");
+        // The JSON, then a label + image per screenshot.
+        assert_eq!(content.len(), 5, "{response}");
         assert_eq!(content[0]["type"], "text");
-        assert!(!content[0]["text"].as_str().unwrap().contains("iVBORw0KGgo="));
-        assert_eq!(content[1]["type"], "image");
-        assert_eq!(content[1]["mimeType"], "image/png");
-        assert_eq!(content[1]["data"], "iVBORw0KGgo=");
+        assert!(
+            !content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("iVBORw0KGgo=")
+        );
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(
+            content[1]["text"],
+            "Screenshot: narrow (800x800), light theme"
+        );
+        assert_eq!(content[2]["type"], "image");
+        assert_eq!(content[2]["mimeType"], "image/png");
+        assert_eq!(content[2]["data"], "iVBORw0KGgo=");
+        assert_eq!(
+            content[3]["text"],
+            "Screenshot: wide (1440x900), dark theme"
+        );
+        assert_eq!(content[4]["type"], "image");
+        assert_eq!(content[4]["data"], "AAAA");
         let structured = &response["result"]["structuredContent"];
         assert_eq!(structured["warnings"][0], "overflow");
         assert_eq!(structured["screenshot"]["attached"], true);
+        assert_eq!(structured["screenshots"][1]["attached"], true);
+        assert!(structured["screenshots"][1].get("png").is_none());
+    }
+
+    #[test]
+    fn render_check_content_falls_back_to_the_single_screenshot() {
+        let (value, content) = render_check_content(json!({
+            "errors": [],
+            "screenshot": { "mimeType": "image/png", "data": "QUJD" },
+        }));
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["data"], "QUJD");
+        assert_eq!(value["screenshot"]["attached"], true);
+    }
+
+    #[test]
+    fn render_check_schema_lists_viewports_and_themes() {
+        let catalog = artifact_catalog();
+        let tool = catalog
+            .iter()
+            .find(|t| t.name == agent_tool_names::ARTIFACT_RENDER_CHECK)
+            .unwrap();
+        let props = &tool.input_schema["properties"];
+        assert_eq!(props["viewports"]["type"], "array");
+        assert_eq!(
+            props["viewports"]["items"]["required"],
+            json!(["width", "height"])
+        );
+        assert!(
+            props["viewports"]["items"]["properties"]
+                .get("label")
+                .is_some()
+        );
+        assert_eq!(props["themes"]["items"]["enum"], json!(["light", "dark"]));
+        assert!(props.get("viewport").is_some() && props.get("theme").is_some());
     }
 
     #[tokio::test]
