@@ -1213,6 +1213,7 @@ impl ArtifactTab {
             .child(
                 div()
                     .id("artifact-compare-onion")
+                    .debug_selector(|| "artifact-compare-onion".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_scroll()

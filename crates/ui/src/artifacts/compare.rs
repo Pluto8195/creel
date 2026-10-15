@@ -413,9 +413,17 @@ mod tests {
         assert_eq!(html.matches("data-zeron-change ").count(), 2);
         assert_eq!(overlay_html(&[], 1.0, (16, 16), 488), "");
         // A Retina snapshot (2 pixels per CSS pixel).
-        let retina = [Region { x: 72, y: 92, width: 80, height: 20 }];
+        let retina = [Region {
+            x: 72,
+            y: 92,
+            width: 80,
+            height: 20,
+        }];
         let html = overlay_html(&retina, 2.0, (16, 16), 488);
-        assert!(html.contains("left:20px;top:30px;width:40px;height:10px"), "{html}");
+        assert!(
+            html.contains("left:20px;top:30px;width:40px;height:10px"),
+            "{html}"
+        );
     }
 
     #[test]

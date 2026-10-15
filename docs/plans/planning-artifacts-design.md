@@ -86,6 +86,19 @@ capture and needs no Screen Recording permission. A headless engine with no UI r
   - **Markdown:** a section-level summary ("changed: §3 Data model, §5 Rollout; added: Q-7"), then a
     line diff reusing the generic revision-diff presenter built for instructions.
   - **HTML and Mermaid:** source diff plus the two renders side by side.
+  - **As built (kind-aware Compare view).** The Artifact tab's Compare opens a view per kind, not
+    the text diff. HTML fragment/page, Mermaid, and image render both revisions side by side at the
+    same width (520 px each) in one sandboxed web document with synchronized scrolling; the toolbar
+    has left/right revision pickers (default: previous vs shown), **Highlight changes** (both
+    revisions rendered offscreen by the render-check renderer at the same viewport, a per-pixel
+    threshold + dilate + bounding-box diff, translucent boxes over the right pane, "N regions
+    changed" / "No visual change"), **Onion skin** (the two snapshots stacked under an opacity
+    control), and **Source** (the line diff). Markdown shows both rendered previews with
+    added/removed/changed blocks tinted, a section summary on top (headings split sections; question
+    blocks are reported by id), and Source = line diff. Options compare two options of the manifest
+    (option pickers; companions are stored for the current copy only), then as the visual kinds.
+    The last mode chosen per kind is remembered for the session. Highlight and onion cover the
+    first 520x1400 px of each render.
 - **Decision drift.** When a question is answered (D) but the artifact has no newer revision, the
   artifact shows "1 answered question not reflected in the doc", which directly addresses "u only
   changed the one section right?".

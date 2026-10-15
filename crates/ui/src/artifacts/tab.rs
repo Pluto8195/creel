@@ -27,7 +27,7 @@ use zeron_proto::{
     ArtifactPromoteParams, ArtifactView, TextDiffLine,
 };
 
-mod compare_view;
+pub(crate) mod compare_view;
 pub(crate) use compare_view::CompareView;
 
 use super::actions::ArtifactUiError;

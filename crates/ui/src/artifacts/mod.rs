@@ -31,6 +31,8 @@ pub(crate) mod store;
 pub(crate) mod tab;
 
 #[cfg(test)]
+mod compare_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 pub(crate) use actions::ArtifactActions;
