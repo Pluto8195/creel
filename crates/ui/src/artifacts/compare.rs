@@ -230,18 +230,31 @@ pub(crate) const SYNC_HOST_SCRIPT: &str = r##"addEventListener("message", (event
   if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*");
 });"##;
 
-/// Translucent boxes at `regions` (render pixels) inside a frame whose
-/// top-left sits at `origin` in the render. Boxes outside the frame are
+/// Translucent boxes at `regions` (render pixels; `scale` is render pixels
+/// per CSS pixel, 2 on a Retina snapshot) inside a frame whose top-left sits
+/// at `origin` (CSS pixels) in the render. Boxes outside the frame are
 /// dropped, the rest clipped to it. Positioned against the frame document,
 /// so they scroll with the content.
-pub(crate) fn overlay_html(regions: &[Region], origin: (u32, u32), frame_width: u32) -> String {
+pub(crate) fn overlay_html(
+    regions: &[Region],
+    scale: f32,
+    origin: (u32, u32),
+    frame_width: u32,
+) -> String {
+    let scale = if scale.is_finite() && scale >= 1.0 {
+        scale
+    } else {
+        1.0
+    };
+    let down = |value: u32| (value as f32 / scale).floor() as u32;
+    let up = |value: u32| (value as f32 / scale).ceil() as u32;
     let boxes: String = regions
         .iter()
         .filter_map(|region| {
-            let left = region.x.max(origin.0);
-            let right = (region.x + region.width).min(origin.0 + frame_width);
-            let top = region.y.max(origin.1);
-            let bottom = region.y + region.height;
+            let left = down(region.x).max(origin.0);
+            let right = up(region.x + region.width).min(origin.0 + frame_width);
+            let top = down(region.y).max(origin.1);
+            let bottom = up(region.y + region.height);
             (right > left && bottom > top).then(|| {
                 format!(
                     "<div data-zeron-change style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;\
@@ -388,7 +401,7 @@ mod tests {
                 height: 10,
             },
         ];
-        let html = overlay_html(&regions, (16, 16), 488);
+        let html = overlay_html(&regions, 1.0, (16, 16), 488);
         assert!(
             html.contains("left:20px;top:30px;width:40px;height:10px"),
             "{html}"
@@ -398,7 +411,11 @@ mod tests {
             "{html}"
         );
         assert_eq!(html.matches("data-zeron-change ").count(), 2);
-        assert_eq!(overlay_html(&[], (16, 16), 488), "");
+        assert_eq!(overlay_html(&[], 1.0, (16, 16), 488), "");
+        // A Retina snapshot (2 pixels per CSS pixel).
+        let retina = [Region { x: 72, y: 92, width: 80, height: 20 }];
+        let html = overlay_html(&retina, 2.0, (16, 16), 488);
+        assert!(html.contains("left:20px;top:30px;width:40px;height:10px"), "{html}");
     }
 
     #[test]
