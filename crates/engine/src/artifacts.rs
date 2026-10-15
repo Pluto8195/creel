@@ -164,7 +164,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Outcome<()> {
     std::fs::create_dir_all(parent).map_err(|e| io_error("create", parent, e))?;
     let tmp = parent.join(format!(
         ".{}.zeron-tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("artifact"),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("artifact"),
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::write(&tmp, bytes).map_err(|e| io_error("write", &tmp, e))?;
@@ -420,7 +422,12 @@ type RenderReply = Result<ArtifactRenderCheckResult, String>;
 /// `WatchArtifactRenderRequests` open; requests go to the newest live
 /// subscriber; replies arrive through `ArtifactRenderResult`.
 pub struct RenderBroker {
-    subscribers: Mutex<Vec<(u64, tokio::sync::mpsc::UnboundedSender<ArtifactRenderRequest>)>>,
+    subscribers: Mutex<
+        Vec<(
+            u64,
+            tokio::sync::mpsc::UnboundedSender<ArtifactRenderRequest>,
+        )>,
+    >,
     pending: Mutex<HashMap<String, std::sync::mpsc::Sender<RenderReply>>>,
     next: AtomicU64,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -521,7 +528,10 @@ impl RenderBroker {
 
     /// Send one request to the newest live UI and wait (blocking) for its
     /// answer.
-    pub fn request(&self, mut request: ArtifactRenderRequest) -> Outcome<ArtifactRenderCheckResult> {
+    pub fn request(
+        &self,
+        mut request: ArtifactRenderRequest,
+    ) -> Outcome<ArtifactRenderCheckResult> {
         let request_id = format!(
             "render-{}-{}",
             self.next.fetch_add(1, Ordering::Relaxed),
@@ -692,10 +702,13 @@ impl ArtifactsService {
                     return None;
                 }
                 let configuration = &resolved.configuration;
-                let binding = configuration.primary().or(match configuration.bindings.as_slice() {
-                    [only] => Some(only),
-                    _ => None,
-                })?;
+                let binding =
+                    configuration
+                        .primary()
+                        .or(match configuration.bindings.as_slice() {
+                            [only] => Some(only),
+                            _ => None,
+                        })?;
                 Some(PathBuf::from(&binding.repo_path))
             })
             .unwrap_or(space_path);
@@ -752,7 +765,11 @@ impl ArtifactsService {
             .as_deref()
             .map(str::trim)
             .filter(|r| !r.is_empty())
-            .map(|r| r.chars().take(artifact_limits::MAX_ROLE_CHARS).collect::<String>());
+            .map(|r| {
+                r.chars()
+                    .take(artifact_limits::MAX_ROLE_CHARS)
+                    .collect::<String>()
+            });
         if !request.source.is_absolute() {
             return Err(ArtifactError::invalid(format!(
                 "{} is not an absolute path",
@@ -842,11 +859,17 @@ impl ArtifactsService {
                     self.folder_for(&space, work_item_id.as_deref(), request.chat_id.as_deref())?;
                 let dir = canonical.join(ARTIFACTS_DIR).join(&folder);
                 let mut name = file_name_of(&source)?;
-                let taken = self.workspace().artifacts_of_space(&space.id).into_iter().any(|a| {
-                    a.folder == folder
-                        && Path::new(&a.stored_path).file_name().and_then(|n| n.to_str())
-                            == Some(name.as_str())
-                });
+                let taken = self
+                    .workspace()
+                    .artifacts_of_space(&space.id)
+                    .into_iter()
+                    .any(|a| {
+                        a.folder == folder
+                            && Path::new(&a.stored_path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                == Some(name.as_str())
+                    });
                 if taken {
                     name = tagged_file_name(&name, &id[..6]);
                 }
@@ -1009,9 +1032,10 @@ impl ArtifactsService {
                 continue;
             }
             let now = now_ms();
-            let next = view.current_revision.max(
-                view.revisions.iter().map(|r| r.id).max().unwrap_or(0),
-            ) + 1;
+            let next = view
+                .current_revision
+                .max(view.revisions.iter().map(|r| r.id).max().unwrap_or(0))
+                + 1;
             view.revisions.insert(
                 0,
                 ArtifactRevision {
@@ -1123,7 +1147,13 @@ impl ArtifactsService {
                 }
             },
         };
-        Ok(encode_reply(&artifact, artifact.kind, revision, &stored, bytes))
+        Ok(encode_reply(
+            &artifact,
+            artifact.kind,
+            revision,
+            &stored,
+            bytes,
+        ))
     }
 
     /// The current text of an artifact (stored file, else the current
@@ -1345,9 +1375,15 @@ impl ArtifactsService {
     /// `artifact_publish`.
     pub fn agent_publish(&self, caller: &AgentCaller, arguments: &Value) -> Outcome<Value> {
         let args: PublishArgs = parse_args(arguments)?;
-        let key = zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
-            .map_err(ArtifactError::invalid)?;
-        let kind = match args.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let key =
+            zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
+                .map_err(ArtifactError::invalid)?;
+        let kind = match args
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             Some(raw) => Some(ArtifactKind::parse(raw).ok_or_else(|| {
                 ArtifactError::invalid(format!(
                     "kind must be markdown, html-fragment, html-page, mermaid, image, or \

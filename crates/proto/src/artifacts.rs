@@ -548,12 +548,7 @@ impl Default for ArtifactViewport {
 impl ArtifactViewport {
     /// Clamped to `[MIN_VIEWPORT, MAX_VIEWPORT]`.
     pub fn clamped(self) -> Self {
-        let clamp = |v: u32| {
-            v.clamp(
-                artifact_limits::MIN_VIEWPORT,
-                artifact_limits::MAX_VIEWPORT,
-            )
-        };
+        let clamp = |v: u32| v.clamp(artifact_limits::MIN_VIEWPORT, artifact_limits::MAX_VIEWPORT);
         Self {
             width: clamp(self.width),
             height: clamp(self.height),
@@ -698,8 +693,7 @@ impl ArtifactErrorCode {
     }
 
     fn parse(code: &str) -> Self {
-        serde_json::from_value(serde_json::Value::String(code.to_owned()))
-            .unwrap_or(Self::Internal)
+        serde_json::from_value(serde_json::Value::String(code.to_owned())).unwrap_or(Self::Internal)
     }
 }
 
@@ -925,7 +919,10 @@ impl ArtifactLink {
 
 /// 32 lowercase hex characters.
 pub fn is_artifact_id(text: &str) -> bool {
-    text.len() == 32 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Every Markdown link whose target uses the `zeron-artifact:` scheme, in
@@ -1081,9 +1078,7 @@ pub fn count_open_questions(text: &str) -> u32 {
                 in_block = true;
                 continue;
             }
-            if in_block
-                && let Some(status) = rest.strip_prefix("status:")
-            {
+            if in_block && let Some(status) = rest.strip_prefix("status:") {
                 resolved = status.trim().eq_ignore_ascii_case("resolved");
             }
             continue;
