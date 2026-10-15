@@ -38,7 +38,13 @@ pub(crate) fn web_document(
     reduced_motion: bool,
     probe: bool,
 ) -> String {
-    let probe_script = probe.then(probe_script);
+    // Every frame carries the link bridge; render checks add the probe.
+    let frame_scripts = if probe {
+        format!("{LINK_FRAME_SCRIPT}{}", probe_script())
+    } else {
+        LINK_FRAME_SCRIPT.to_owned()
+    };
+    let probe_script = Some(frame_scripts);
     let document = match kind {
         WebKind::Fragment => {
             let body = with_probe_prefix(source, probe_script.as_deref());
@@ -60,11 +66,62 @@ pub(crate) fn web_document(
         }
         WebKind::Page => page_host_document(source, title, theme, probe_script.as_deref()),
     };
+    let document = with_link_host(&document);
     if probe {
         with_collector(&document)
     } else {
         document
     }
+}
+
+/// In the frame: clicks on links (other than same-document `#id`) post the
+/// link's raw `href` to the outer document instead of navigating. The frame
+/// is `sandbox="allow-scripts"` (no popups, no top navigation) and its
+/// `about:srcdoc` base cannot resolve relative links like `ui/foo.tsx:120`,
+/// so the page's own `href` text is what the host needs.
+pub(crate) const LINK_FRAME_SCRIPT: &str = r##"(() => {
+  if (window.__zeronLinksInstalled) return;
+  window.__zeronLinksInstalled = true;
+  const handle = (event) => {
+    const node = event.target;
+    const a = node && node.closest ? node.closest("a, area") : null;
+    if (!a) return;
+    const href = (a.getAttribute("href") || a.getAttribute("xlink:href") || "").trim();
+    if (href.startsWith("#")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type === "click" && href) {
+      try { parent.postMessage({ zeronLink: href }, "*"); } catch (_) {}
+    }
+  };
+  document.addEventListener("click", handle, true);
+  document.addEventListener("auxclick", handle, true);
+})();
+"##;
+
+/// In the outer document: turns the frame's link message into a navigation
+/// the native delegate recognises (`zeron-link:<encoded href>`, see
+/// `browser::document_view`), and cancels.
+pub(crate) const LINK_HOST_SCRIPT: &str = r##"window.addEventListener("message", (event) => {
+  const frame = document.querySelector("iframe");
+  if (!frame || event.source !== frame.contentWindow) return;
+  const href = event.data && event.data.zeronLink;
+  if (typeof href !== "string" || href.length > 4096) return;
+  const a = document.createElement("a");
+  a.href = "zeron-link:" + encodeURIComponent(href);
+  a.rel = "noreferrer";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});"##;
+
+fn with_link_host(document: &str) -> String {
+    document.replacen(
+        "</head>",
+        &format!("<script>{LINK_HOST_SCRIPT}</script>\n</head>"),
+        1,
+    )
 }
 
 fn with_probe_prefix(body: &str, probe: Option<&str>) -> String {

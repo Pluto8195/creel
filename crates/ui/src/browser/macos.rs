@@ -1,6 +1,7 @@
 //! AppKit boundary for the browser. Wry owns the native child and its UI
 //! delegate; our navigation delegate supplies browser policy and state. All
 //! callbacks enqueue events, never re-enter GPUI. No page-to-engine IPC.
+use super::document_view::{DocumentAction, document_decision};
 use super::model::{PageState, Presentation, allowed_navigation};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
@@ -145,6 +146,8 @@ pub(super) enum NativeEvent {
     Changed,
     Finished,
     NewTab(String),
+    /// A link activated inside a static document, as the page wrote it.
+    Link(String),
     Key(gpui::Keystroke),
     Favicon { page: String, url: String },
 }
@@ -157,14 +160,6 @@ struct ObserverState {
     /// A host document (visualization) is loaded from a string: only its own
     /// `about:` frames may load; link activations become new Browser tabs.
     document: Cell<bool>,
-}
-
-/// URLs a string-loaded host document and its srcdoc frame commit under.
-pub(super) fn document_navigation(url: &str) -> bool {
-    url == "about:blank"
-        || url
-            .strip_prefix("about:srcdoc")
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('#'))
 }
 
 define_class!(
@@ -185,11 +180,18 @@ define_class!(
         fn policy(&self, _view: &WKWebView, action: &WKNavigationAction, decision: &block2::Block<dyn Fn(WKNavigationActionPolicy)>) {
             let url = unsafe { action.request().URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
             if self.ivars().document.get() {
-                let allow = document_navigation(&url);
-                if !allow && allowed_navigation(&url) && unsafe { action.navigationType() } == objc2_web_kit::WKNavigationType::LinkActivated {
-                    let _ = self.ivars().tx.try_send(NativeEvent::NewTab(url));
+                let link = unsafe { action.navigationType() } == objc2_web_kit::WKNavigationType::LinkActivated;
+                let decision_made = document_decision(&url, link);
+                match decision_made.action {
+                    DocumentAction::None => {}
+                    DocumentAction::NewTab(url) => {
+                        let _ = self.ivars().tx.try_send(NativeEvent::NewTab(url));
+                    }
+                    DocumentAction::Link(raw) => {
+                        let _ = self.ivars().tx.try_send(NativeEvent::Link(raw));
+                    }
                 }
-                decision.call((if allow { WKNavigationActionPolicy::Allow } else { WKNavigationActionPolicy::Cancel },));
+                decision.call((if decision_made.allow { WKNavigationActionPolicy::Allow } else { WKNavigationActionPolicy::Cancel },));
                 return;
             }
             if allowed_navigation(&url) && unsafe { action.targetFrame() }.is_some_and(|frame| unsafe { frame.isMainFrame() }) {
@@ -857,7 +859,7 @@ impl NativePage {
 
 #[cfg(test)]
 mod document_policy_tests {
-    use super::document_navigation;
+    use super::super::document_view::document_navigation;
 
     #[test]
     fn visualization_pages_only_commit_their_own_about_frames() {

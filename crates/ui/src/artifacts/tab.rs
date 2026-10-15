@@ -45,6 +45,10 @@ pub(crate) enum ArtifactTabEvent {
     },
     /// A web link inside the artifact.
     OpenUrl(String),
+    /// Any other link activated inside the artifact, as written. The owner
+    /// classifies it ([`super::links::classify`]) against `root` (the
+    /// artifact's canonical checkout) and the chat's checkout.
+    OpenLink { url: String, root: Option<String> },
     /// Title or state changed (tab strip label).
     Changed,
 }
@@ -83,17 +87,26 @@ impl BrowserWebHost {
                 browser.set_embedded(true, cx);
                 browser
             });
-            let subscription = window.subscribe(&browser, cx, move |_, event, _, cx| {
-                let forward = match event {
-                    crate::browser::BrowserEvent::NewTab(Some(url)) => {
-                        Some(ArtifactTabEvent::OpenUrl(url.clone()))
-                    }
-                    crate::browser::BrowserEvent::Changed => Some(ArtifactTabEvent::Changed),
-                    _ => None,
-                };
-                if let Some(event) = forward {
+            let subscription = window.subscribe(&browser, cx, move |_, event, _, cx| match event {
+                crate::browser::BrowserEvent::NewTab(Some(url)) => {
+                    let event = ArtifactTabEvent::OpenUrl(url.clone());
                     tab.update(cx, |_, cx| cx.emit(event)).ok();
                 }
+                crate::browser::BrowserEvent::DocumentLink(url) => {
+                    tab.update(cx, |tab, cx| {
+                        let event = ArtifactTabEvent::OpenLink {
+                            url: url.clone(),
+                            root: tab.canonical_root(cx),
+                        };
+                        cx.emit(event)
+                    })
+                    .ok();
+                }
+                crate::browser::BrowserEvent::Changed => {
+                    tab.update(cx, |_, cx| cx.emit(ArtifactTabEvent::Changed))
+                        .ok();
+                }
+                _ => {}
             });
             Box::new(BrowserWebHost {
                 browser,
@@ -117,6 +130,19 @@ impl ArtifactWebHost for BrowserWebHost {
 
     fn browser(&self) -> Option<Entity<crate::browser::BrowserSurface>> {
         Some(self.browser.clone())
+    }
+}
+
+/// Whether the Markdown preview hands `url` (a non-web link) to the artifact
+/// router. Anchors, and relative paths that do not resolve, keep the
+/// preview's own document-relative handling; everything else (files at a
+/// line, artifacts, mail, blocked schemes) is routed.
+pub(crate) fn markdown_link_is_routed(url: &str, root: Option<&str>) -> bool {
+    use super::links::{ArtifactLink, BlockedReason, classify};
+    match classify(url, root, None) {
+        ArtifactLink::Anchor | ArtifactLink::Web(_) => false,
+        ArtifactLink::Blocked(BlockedReason::Path) => url.trim().starts_with('/'),
+        _ => true,
     }
 }
 
@@ -238,6 +264,13 @@ impl ArtifactTab {
             .artifacts()
             .artifact(&self.artifact_id)
             .cloned()
+    }
+
+    /// The artifact's canonical checkout (the parent of `.zeron/`), the root
+    /// its links resolve against first.
+    pub(crate) fn canonical_root(&self, cx: &App) -> Option<String> {
+        let artifact = self.artifact(cx)?;
+        model::canonical_root(&artifact.stored_path).map(str::to_owned)
     }
 
     pub(crate) fn title(&self, cx: &App) -> SharedString {
@@ -462,23 +495,15 @@ impl ArtifactTab {
             );
             let files = weak.clone();
             preview.set_file_link_handler(Rc::new(move |activation, cx| {
-                let Some(link) = root.as_deref().and_then(|root| {
-                    crate::workspace_links::resolve_workspace_file_link(
-                        &activation.target.original,
-                        root,
-                    )
-                }) else {
+                let url = &activation.target.original;
+                if !markdown_link_is_routed(url, root.as_deref()) {
                     return false;
+                }
+                let event = ArtifactTabEvent::OpenLink {
+                    url: url.clone(),
+                    root: root.clone(),
                 };
-                files
-                    .update(cx, |_, cx| {
-                        cx.emit(ArtifactTabEvent::OpenFile {
-                            path: link.path,
-                            line: link.line,
-                            column: link.column,
-                        })
-                    })
-                    .is_ok()
+                files.update(cx, |_, cx| cx.emit(event)).is_ok()
             }));
             let web = weak.clone();
             preview.set_web_link_handler(Rc::new(move |activation, cx| {

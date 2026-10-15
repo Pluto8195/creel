@@ -3,6 +3,7 @@
 //! transcripts, Details, and Required Actions, and registering unknown paths.
 use super::*;
 
+use crate::artifacts::links as artifact_links;
 use crate::artifacts::model::{self as artifact_model, LinkResolution};
 use crate::artifacts::tab::{ArtifactTab, ArtifactTabEvent, BrowserWebHost, WebHostFactory};
 
@@ -204,14 +205,9 @@ impl Shell {
                 ArtifactTabEvent::OpenFile { path, line, column } => {
                     this.add_file_surface_at(path.clone(), *line, *column, window, cx)
                 }
-                ArtifactTabEvent::OpenUrl(url) => {
-                    if crate::settings::current(cx).open_web_links_in_zeron
-                        && cfg!(any(target_os = "macos", target_os = "linux"))
-                    {
-                        this.add_browser_surface(Some(url.clone()), window, cx);
-                    } else {
-                        cx.open_url(url);
-                    }
+                ArtifactTabEvent::OpenUrl(url) => this.open_artifact_web_link(url, window, cx),
+                ArtifactTabEvent::OpenLink { url, root } => {
+                    this.activate_artifact_content_link(url, root.as_deref(), window, cx)
                 }
             }
         });
@@ -222,6 +218,51 @@ impl Shell {
             .or_default()
             .push(RightSurface::Artifact(id));
         self.set_right_active(RightSurface::Artifact(id), cx);
+    }
+
+    /// A web link in an artifact follows the web-link preference.
+    fn open_artifact_web_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::settings::current(cx).open_web_links_in_zeron
+            && cfg!(any(target_os = "macos", target_os = "linux"))
+        {
+            self.add_browser_surface(Some(url.to_owned()), window, cx);
+        } else {
+            cx.open_url(url);
+        }
+    }
+
+    /// A link clicked inside a rendered artifact (HTML document or
+    /// Markdown). `root` is the artifact's canonical checkout.
+    fn activate_artifact_content_link(
+        &mut self,
+        url: &str,
+        root: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use artifact_links::{ArtifactLink, classify};
+        let cwd = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == self.active_chat)
+            .and_then(|chat| chat.cwd.clone());
+        match classify(url, root, cwd.as_deref()) {
+            ArtifactLink::File { path, line, column } => {
+                self.add_file_surface_at(path, line, column, window, cx)
+            }
+            ArtifactLink::Artifact(link) => {
+                self.open_artifact_link(&link, window, cx);
+            }
+            ArtifactLink::Web(url) => self.open_artifact_web_link(&url, window, cx),
+            ArtifactLink::External(url) => cx.open_url(&url),
+            ArtifactLink::Anchor => {}
+            ArtifactLink::Blocked(_) => {
+                self.sidebar_notice = Some(artifact_links::BLOCKED_NOTICE.into());
+                cx.notify();
+            }
+        }
     }
 
     /// `zeron-artifact:<path>` that no artifact covers: register the file
