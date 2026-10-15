@@ -215,6 +215,7 @@ where
                         "Markdown renders natively in Zeron; there is no web render to check"
                             .to_owned(),
                     ],
+                    ..Default::default()
                 }),
                 error: None,
             };
@@ -267,6 +268,7 @@ pub(crate) fn check_result(output: RenderOutput) -> ArtifactRenderCheckResult {
             .map(|png| base64::engine::general_purpose::STANDARD.encode(png)),
         errors,
         warnings,
+        ..Default::default()
     }
 }
 
