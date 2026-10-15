@@ -69,6 +69,9 @@ pub(crate) fn bind_keys(cx: &mut App, keymap: &crate::settings::KeymapConfig) {
 pub enum BrowserEvent {
     Changed,
     NewTab(Option<String>),
+    /// A link clicked inside a static document (planning artifact), exactly
+    /// as the page wrote it; the owner decides where it goes.
+    DocumentLink(String),
     Close,
     /// Open this checkout-relative file's source in an editor tab.
     ViewSource(String),
@@ -486,6 +489,11 @@ impl BrowserSurface {
                         cx.emit(BrowserEvent::NewTab(Some(url)));
                     }
                 }
+                native::NativeEvent::Link(raw) => {
+                    if self.presentation == Presentation::Live {
+                        cx.emit(BrowserEvent::DocumentLink(raw));
+                    }
+                }
                 native::NativeEvent::Key(key) => {
                     if self.presentation == Presentation::Live {
                         window.focus(&self.focus, cx);
@@ -540,6 +548,8 @@ impl BrowserSurface {
                     cx.emit(BrowserEvent::NewTab(Some(url)));
                 }
             }
+            // Only static documents report raw links.
+            native::NativeEvent::Link(_) => {}
             native::NativeEvent::Key(key) => {
                 if self.presentation == Presentation::Live {
                     window.focus(&self.focus, cx);

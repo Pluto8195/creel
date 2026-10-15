@@ -124,7 +124,7 @@ fn positive_number(value: &str) -> Option<u32> {
     value.parse::<u32>().ok().filter(|number| *number > 0)
 }
 
-fn percent_decode_path(encoded: &str) -> Option<String> {
+pub(crate) fn percent_decode_path(encoded: &str) -> Option<String> {
     let raw = encoded.as_bytes();
     let mut bytes = Vec::with_capacity(raw.len());
     let mut at = 0;

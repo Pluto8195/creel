@@ -138,3 +138,23 @@ scoped to the token's Chat (and its work item).
 - Pinned plan: `ArtifactsSnapshot::plan_of(itemId)`; pin/unpin with `ArtifactPin`.
 - Render requests: render exactly as the artifact tab (fragment wrapper, sandbox, theme), snapshot
   offscreen (no screen capture), answer every request, including failures (`error`).
+
+## Links inside rendered artifacts
+
+Classified by `artifacts::links::classify`; HTML documents and Markdown share it.
+
+- `path`, `path:line[:col]`, `path:line-line`, `path#L12`, `zeron-file:` open in the file viewer at
+  that line. Resolution: canonical checkout (parent of `.zeron/`), then the chat's checkout
+  (absolute paths under either root); a relative path names the same file in both. `..`, `./`,
+  queries, and unresolvable paths are blocked. `zeron-artifact:` opens that tab; `http(s)` follows
+  the web-link preference; `mailto:` is external; `#id` stays in the page.
+- Blocked (`file:`, `javascript:`, `data:`, unknown schemes, other local files): navigation is
+  cancelled and the sidebar notice says so.
+- HTML mechanism: the sandboxed srcdoc frame cannot navigate the host and cannot resolve relative
+  hrefs, so an injected click handler posts the raw `href` to the outer document, which clicks a
+  hidden `zeron-link:<encoded href>` anchor. The WKWebView navigation delegate
+  (`browser::document_view::document_decision`) cancels every non-`about:` navigation and reports
+  link clicks as `BrowserEvent::DocumentLink`; the Shell routes them. Markdown uses the preview's
+  file-link handler, which routes the same classes and keeps `#anchor`/doc-relative behavior.
+- Tests: resolver, delegate decision (fake navigation per scheme), and Markdown routing unit tests;
+  no real-click test (headless only).

@@ -19,6 +19,7 @@
 pub(crate) mod actions;
 pub(crate) mod cards;
 pub(crate) mod document;
+pub(crate) mod links;
 pub(crate) mod model;
 pub(crate) mod render_check;
 pub(crate) mod store;
