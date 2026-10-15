@@ -81,6 +81,16 @@ pub mod artifact_limits {
     /// Viewport bounds a render request is clamped to.
     pub const MIN_VIEWPORT: u32 = 200;
     pub const MAX_VIEWPORT: u32 = 4096;
+    /// Images (viewport × theme) one render check produces; the rest are
+    /// dropped with a warning.
+    pub const MAX_RENDER_IMAGES: usize = 4;
+    /// Layout warnings (the probe's heuristics) one render check reports.
+    pub const MAX_LAYOUT_WARNINGS: usize = 50;
+    /// Longest `textSample` of a layout warning, in Unicode scalar values.
+    pub const MAX_WARNING_TEXT_CHARS: usize = 80;
+    /// Default viewports when a request names none: a narrow and a wide one.
+    pub const DEFAULT_VIEWPORTS: [(u32, u32, &str); 2] =
+        [(800, 800, "narrow"), (1440, 900, "wide")];
 }
 
 /// Known `role` values (the field is free-form).
@@ -548,17 +558,105 @@ impl Default for ArtifactViewport {
 impl ArtifactViewport {
     /// Clamped to `[MIN_VIEWPORT, MAX_VIEWPORT]`.
     pub fn clamped(self) -> Self {
-        let clamp = |v: u32| {
-            v.clamp(
-                artifact_limits::MIN_VIEWPORT,
-                artifact_limits::MAX_VIEWPORT,
-            )
-        };
+        let clamp = |v: u32| v.clamp(artifact_limits::MIN_VIEWPORT, artifact_limits::MAX_VIEWPORT);
         Self {
             width: clamp(self.width),
             height: clamp(self.height),
         }
     }
+}
+
+/// One viewport of a render check, optionally labelled (`narrow`, `wide`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRenderViewport {
+    pub width: u32,
+    pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl ArtifactRenderViewport {
+    /// Clamped to the viewport bounds; an empty label reads as none.
+    pub fn clamped(self) -> Self {
+        let size = ArtifactViewport {
+            width: self.width,
+            height: self.height,
+        }
+        .clamped();
+        Self {
+            width: size.width,
+            height: size.height,
+            label: self.label.filter(|l| !l.trim().is_empty()),
+        }
+    }
+
+    pub fn size(&self) -> ArtifactViewport {
+        ArtifactViewport {
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    /// The label, else `WIDTHxHEIGHT`.
+    pub fn display_label(&self) -> String {
+        match &self.label {
+            Some(label) if !label.trim().is_empty() => label.clone(),
+            _ => format!("{}x{}", self.width, self.height),
+        }
+    }
+
+    /// The default pair: 800 narrow and 1440 wide.
+    pub fn defaults() -> Vec<Self> {
+        artifact_limits::DEFAULT_VIEWPORTS
+            .iter()
+            .map(|(width, height, label)| Self {
+                width: *width,
+                height: *height,
+                label: Some((*label).to_owned()),
+            })
+            .collect()
+    }
+}
+
+/// The (viewport, theme) renders of one check: viewport-major, at most
+/// [`artifact_limits::MAX_RENDER_IMAGES`]. Returns a warning when the cap
+/// dropped renders. Empty `themes` reads as one system (current) theme.
+pub fn plan_renders(
+    viewports: &[ArtifactRenderViewport],
+    themes: &[ArtifactRenderTheme],
+) -> (
+    Vec<(ArtifactRenderViewport, ArtifactRenderTheme)>,
+    Option<String>,
+) {
+    let themes: Vec<ArtifactRenderTheme> = if themes.is_empty() {
+        vec![ArtifactRenderTheme::System]
+    } else {
+        let mut unique = Vec::new();
+        for theme in themes {
+            if !unique.contains(theme) {
+                unique.push(*theme);
+            }
+        }
+        unique
+    };
+    let mut all = Vec::new();
+    for viewport in viewports {
+        for theme in &themes {
+            all.push((viewport.clone(), *theme));
+        }
+    }
+    let total = all.len();
+    all.truncate(artifact_limits::MAX_RENDER_IMAGES);
+    let warning = (total > all.len()).then(|| {
+        format!(
+            "Rendered {} of {total} requested viewport/theme combinations (at most {} images per \
+             check); run the check again with fewer viewports or themes for the rest",
+            all.len(),
+            artifact_limits::MAX_RENDER_IMAGES
+        )
+    });
+    (all, warning)
 }
 
 /// `WatchArtifactRenderRequests` params: the UI registers as render-capable
@@ -596,10 +694,50 @@ pub struct ArtifactRenderRequest {
     /// For `options`: companion fragments, relative path → content.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub companions: Vec<ArtifactRenderCompanion>,
+    /// Single viewport (older clients); the first of `viewports` when set.
     #[serde(default)]
     pub viewport: ArtifactViewport,
     #[serde(default)]
     pub theme: ArtifactRenderTheme,
+    /// Viewports to render; empty reads as `[viewport]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub viewports: Vec<ArtifactRenderViewport>,
+    /// Themes to render each viewport in; empty reads as `[theme]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub themes: Vec<ArtifactRenderTheme>,
+}
+
+impl ArtifactRenderRequest {
+    /// The viewports × themes this request renders (see [`plan_renders`]).
+    pub fn renders(
+        &self,
+    ) -> (
+        Vec<(ArtifactRenderViewport, ArtifactRenderTheme)>,
+        Option<String>,
+    ) {
+        let viewports = if self.viewports.is_empty() {
+            vec![
+                ArtifactRenderViewport {
+                    width: self.viewport.width,
+                    height: self.viewport.height,
+                    label: None,
+                }
+                .clamped(),
+            ]
+        } else {
+            self.viewports
+                .iter()
+                .cloned()
+                .map(ArtifactRenderViewport::clamped)
+                .collect()
+        };
+        let themes = if self.themes.is_empty() {
+            vec![self.theme]
+        } else {
+            self.themes.clone()
+        };
+        plan_renders(&viewports, &themes)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,6 +762,43 @@ pub struct ArtifactRenderCheckResult {
     /// Horizontal overflow, content outside the viewport, low contrast.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Every image rendered (viewport × theme); the first is also
+    /// `screenshot_png_base64`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<ArtifactRenderScreenshot>,
+    /// The probe's layout heuristics (clipped text, overlaps, narrow
+    /// columns, children wider than their parent, fixed widths).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout_warnings: Vec<ArtifactLayoutWarning>,
+}
+
+/// One rendered image of a check.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRenderScreenshot {
+    /// The viewport's label.
+    pub viewport: String,
+    pub width: u32,
+    pub height: u32,
+    /// `light` or `dark` (the theme actually rendered).
+    pub theme: String,
+    /// PNG, base64 (no data: prefix).
+    pub png_base64: String,
+}
+
+/// One layout-heuristic finding. A heuristic: always look at the screenshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactLayoutWarning {
+    /// `clippedText`, `overlappingSiblings`, `narrowTextColumn`,
+    /// `widerThanParent`, `fixedWidth`.
+    pub kind: String,
+    pub selector: String,
+    /// At most [`artifact_limits::MAX_WARNING_TEXT_CHARS`] characters.
+    pub text_sample: String,
+    /// The viewport label it was found at.
+    pub viewport: String,
+    pub theme: String,
 }
 
 /// `ArtifactRenderResult` params (UI → engine, IPC-only). Exactly one of
@@ -694,8 +869,7 @@ impl ArtifactErrorCode {
     }
 
     fn parse(code: &str) -> Self {
-        serde_json::from_value(serde_json::Value::String(code.to_owned()))
-            .unwrap_or(Self::Internal)
+        serde_json::from_value(serde_json::Value::String(code.to_owned())).unwrap_or(Self::Internal)
     }
 }
 
@@ -921,7 +1095,10 @@ impl ArtifactLink {
 
 /// 32 lowercase hex characters.
 pub fn is_artifact_id(text: &str) -> bool {
-    text.len() == 32 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Every Markdown link whose target uses the `zeron-artifact:` scheme, in
@@ -1077,9 +1254,7 @@ pub fn count_open_questions(text: &str) -> u32 {
                 in_block = true;
                 continue;
             }
-            if in_block
-                && let Some(status) = rest.strip_prefix("status:")
-            {
+            if in_block && let Some(status) = rest.strip_prefix("status:") {
                 resolved = status.trim().eq_ignore_ascii_case("resolved");
             }
             continue;

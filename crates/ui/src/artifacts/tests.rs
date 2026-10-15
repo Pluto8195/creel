@@ -551,7 +551,7 @@ fn serve_now(
     request: ArtifactRenderRequest,
     renderer: Option<Rc<dyn ArtifactRenderer>>,
 ) -> ArtifactRenderResultParams {
-    let theme = cx.update(|cx| render_check::request_theme(request.theme, cx));
+    let theme = cx.update(|cx| render_check::request_themes(&request, cx));
     let task = cx.spawn(async move |mut cx| {
         render_check::serve(
             request,
@@ -574,13 +574,14 @@ fn render_check_returns_screenshot_errors_and_warnings(cx: &mut TestAppContext) 
         report: Some(super::document::ProbeReport {
             errors: vec!["Console error: boom".into()],
             warnings: vec!["Horizontal overflow: content is 900px wide in a 600px viewport".into()],
+            ..Default::default()
         }),
         ..Default::default()
     });
     // A timeout clock that never fires: the render always wins.
     let params = {
-        let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
         let request = render_request(1, ArtifactKind::HtmlFragment, "<div>flow</div>");
+        let theme = cx.update(|cx| render_check::request_themes(&request, cx));
         let dyn_renderer: Rc<dyn ArtifactRenderer> = Rc::new(renderer.clone());
         let task = cx.spawn(async move |mut cx| {
             render_check::serve(
@@ -624,6 +625,165 @@ fn render_check_returns_screenshot_errors_and_warnings(cx: &mut TestAppContext) 
     );
 }
 
+/// Serve `request` against `renderer` (the timeout clock never fires).
+fn serve_with(
+    cx: &mut TestAppContext,
+    request: ArtifactRenderRequest,
+    renderer: &Rc<FakeRenderer>,
+) -> ArtifactRenderResultParams {
+    let themes = cx.update(|cx| render_check::request_themes(&request, cx));
+    let dyn_renderer: Rc<dyn ArtifactRenderer> = Rc::new(renderer.clone());
+    let task = cx.spawn(async move |mut cx| {
+        render_check::serve(
+            request,
+            Some(dyn_renderer),
+            themes,
+            std::time::Duration::from_secs(25),
+            |_| futures::future::pending::<()>(),
+            &mut cx,
+        )
+        .await
+    });
+    cx.run_until_parked();
+    futures::executor::block_on(task)
+}
+
+fn probe_report_with_a_clipped_title() -> super::document::ProbeReport {
+    super::document::ProbeReport {
+        errors: vec!["Console error: boom".into()],
+        metrics: vec![super::layout_heuristics::ElementMetrics {
+            sel: "h2.title".into(),
+            text: "A title that does not fit".into(),
+            w: 100,
+            h: 20,
+            sw: 300,
+            cw: 100,
+            sh: 20,
+            ch: 20,
+            clips: true,
+            pos: "static".into(),
+            parent: -1,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[gpui::test]
+fn render_check_renders_every_viewport_and_theme_and_keeps_the_single_screenshot(
+    cx: &mut TestAppContext,
+) {
+    let _dir = init_ui(cx);
+    let renderer = Rc::new(FakeRenderer {
+        report: Some(probe_report_with_a_clipped_title()),
+        ..Default::default()
+    });
+    let mut request = render_request(1, ArtifactKind::HtmlFragment, "<div>flow</div>");
+    request.viewports = zeron_proto::ArtifactRenderViewport::defaults();
+    request.themes = vec![
+        zeron_proto::ArtifactRenderTheme::Light,
+        zeron_proto::ArtifactRenderTheme::Dark,
+    ];
+    let result = serve_with(cx, request, &renderer).result.unwrap();
+    let seen: Vec<_> = result
+        .screenshots
+        .iter()
+        .map(|s| (s.viewport.as_str(), s.width, s.height, s.theme.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("narrow", 800, 800, "light"),
+            ("narrow", 800, 800, "dark"),
+            ("wide", 1440, 900, "light"),
+            ("wide", 1440, 900, "dark"),
+        ]
+    );
+    // The renderer got each viewport size, in order.
+    let sizes: Vec<_> = renderer
+        .documents
+        .borrow()
+        .iter()
+        .map(|(_, v)| (v.width, v.height))
+        .collect();
+    assert_eq!(sizes, [(800, 800), (800, 800), (1440, 900), (1440, 900)]);
+    // The first image is also the old single `screenshot`.
+    assert_eq!(
+        result.screenshot_png_base64.as_deref(),
+        Some(result.screenshots[0].png_base64.as_str())
+    );
+    // The same console error is reported once; layout findings carry their
+    // viewport and theme.
+    assert_eq!(result.errors, ["Console error: boom"]);
+    let found: Vec<_> = result
+        .layout_warnings
+        .iter()
+        .map(|w| (w.kind.as_str(), w.viewport.as_str(), w.theme.as_str()))
+        .collect();
+    assert_eq!(found.len(), 4);
+    assert!(found.contains(&("clippedText", "wide", "dark")));
+    assert_eq!(result.layout_warnings[0].selector, "h2.title");
+    assert_eq!(
+        result.layout_warnings[0].text_sample,
+        "A title that does not fit"
+    );
+    assert!(result.warnings.is_empty());
+}
+
+#[gpui::test]
+fn render_check_caps_images_at_four_and_says_so(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let renderer = Rc::new(FakeRenderer {
+        report: Some(Default::default()),
+        ..Default::default()
+    });
+    let mut request = render_request(1, ArtifactKind::HtmlFragment, "<p>x</p>");
+    request.viewports = vec![
+        zeron_proto::ArtifactRenderViewport::defaults().remove(0),
+        zeron_proto::ArtifactRenderViewport::defaults().remove(1),
+        zeron_proto::ArtifactRenderViewport {
+            width: 1920,
+            height: 1080,
+            label: Some("huge".into()),
+        },
+    ];
+    request.themes = vec![
+        zeron_proto::ArtifactRenderTheme::Light,
+        zeron_proto::ArtifactRenderTheme::Dark,
+    ];
+    let result = serve_with(cx, request, &renderer).result.unwrap();
+    assert_eq!(result.screenshots.len(), 4);
+    assert_eq!(renderer.documents.borrow().len(), 4);
+    assert_eq!(result.warnings.len(), 1);
+    assert!(
+        result.warnings[0].contains("4 of 6"),
+        "{:?}",
+        result.warnings
+    );
+    assert!(result.screenshots.iter().all(|s| s.viewport != "huge"));
+}
+
+#[gpui::test]
+fn render_check_single_viewport_and_theme_stay_one_image(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let renderer = Rc::new(FakeRenderer {
+        report: Some(Default::default()),
+        ..Default::default()
+    });
+    // An older engine's request: no lists, one viewport (clamped), the
+    // current theme.
+    let request = render_request(1, ArtifactKind::HtmlFragment, "<p>x</p>");
+    let result = serve_with(cx, request, &renderer).result.unwrap();
+    assert_eq!(result.screenshots.len(), 1);
+    assert_eq!(result.screenshots[0].viewport, "200x4096");
+    assert!(["light", "dark"].contains(&result.screenshots[0].theme.as_str()));
+    assert_eq!(
+        result.screenshot_png_base64.as_deref(),
+        Some(result.screenshots[0].png_base64.as_str())
+    );
+    assert!(result.warnings.is_empty());
+}
+
 #[gpui::test]
 fn render_check_times_out_and_reports_missing_probes_and_platforms(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
@@ -648,12 +808,12 @@ fn render_check_times_out_and_reports_missing_probes_and_platforms(cx: &mut Test
     // No probe report: still a result, flagged.
     let silent = Rc::new(FakeRenderer::default());
     let dyn_silent: Rc<dyn ArtifactRenderer> = Rc::new(silent.clone());
-    let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
     let request = render_request(
         2,
         ArtifactKind::HtmlPage,
         "<html><head></head><body>x</body></html>",
     );
+    let theme = cx.update(|cx| render_check::request_themes(&request, cx));
     let task = cx.spawn(async move |mut cx| {
         render_check::serve(
             request,

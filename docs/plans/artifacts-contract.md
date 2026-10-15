@@ -82,8 +82,15 @@ Wire contract commit: `8e3bd0f1` (branch `artifacts-engine`). Code:
   `for_chat`, `plan_of`.
 - Render: `ArtifactRenderRequest {requestId, artifactId?, title, kind, path, encoding, content,
   companions[{path, content}], viewport {width, height} (default 1280×800, clamped 200–4096),
-  theme light|dark|system}`; `ArtifactRenderCheckResult {screenshotPngBase64?, errors[],
-  warnings[]}`.
+  theme light|dark|system, viewports[{width, height, label?}]?, themes[]?}`. `viewports` /
+  `themes` (v1.1) are the lists to render; empty reads as `[viewport]` / `[theme]`. The UI renders
+  viewport × theme (viewport-major), at most `MAX_RENDER_IMAGES` = 4 (`plan_renders`), and
+  answers `ArtifactRenderCheckResult {screenshotPngBase64? (the first image), screenshots[{viewport
+  (label), width, height, theme, pngBase64}], errors[], warnings[], layoutWarnings[{kind, selector,
+  textSample ≤ 80 chars, viewport, theme}]}`. Layout warnings come from the probe's per-element
+  metrics classified in `crates/ui/src/artifacts/layout_heuristics.rs` (`clippedText`,
+  `overlappingSiblings`, `narrowTextColumn`, `widerThanParent`, `fixedWidth`); at most 50 per
+  call, identical errors across renders reported once.
 - Helpers: `artifact_id`, `publish_operation_id` (`artifact-<32 hex>`, ≤ 64 chars),
   `artifact_links` (Markdown `[label](zeron-artifact:…)` links), `work_item_folder`,
   `chat_folder`, `OptionsManifest::parse`, `count_open_questions`, `count_unverified_claims`.
@@ -111,8 +118,15 @@ scoped to the token's Chat (and its work item).
   openQuestions, unverifiedClaims}`, or `{artifactId: null, note}` when no plan is pinned (the RPC
   transport cannot carry a bare `null` result, so the conventions' `null` is this object). Phase 1 counts questions and unverified claims with
   the simple syntax counters above (the full parser is phase 3).
-- `artifact_render_check {artifactId | path, viewport?, theme?}` → MCP content: one `image`
-  block (PNG) + a text block with `{artifactId?, errors, warnings}`. An `artifactId` must belong to
+- `artifact_render_check {artifactId | path, viewports?, viewport?, themes?, theme?}` →
+  `{artifactId?, errors, warnings, layoutWarnings, screenshots[{viewport, width, height, theme,
+  png}], screenshot (the first image, v1 compatibility)}`. `viewports` defaults to
+  `[{800,800,"narrow"}, {1440,900,"wide"}]`; a single `viewport` replaces that list; `themes`
+  defaults to the current theme only (a single `theme` is `themes: [theme]`). At most 4 images per
+  call; a truncation is reported in `warnings`. MCP content: a text block with the JSON (image
+  bytes elided), then for each screenshot a text label (`Screenshot: <viewport> (<w>x<h>), <theme>
+  theme`) followed by an `image` block (PNG). Warnings are heuristics; agents look at every image.
+  An `artifactId` must belong to
   the Chat's scope (`forbidden` otherwise). Rate limit: 20 per Run per minute (`rateLimited`).
   No headed UI subscribed → `artifact/renderUnavailable`; no answer in 30 s →
   `artifact/renderTimeout`.

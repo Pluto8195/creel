@@ -772,6 +772,38 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
             .await
             .unwrap();
         assert_eq!(accepted["accepted"], true);
+        // The single `viewport` replaced the default list.
+        assert_eq!(request.viewports.len(), 1);
+        assert_eq!(request.viewports[0].width, 900);
+        assert!(request.themes == [zeron_proto::ArtifactRenderTheme::System]);
+
+        // Second check: the defaults (narrow + wide) and both themes.
+        let item = requests.recv().await.unwrap();
+        let request: zeron_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
+        let labels: Vec<_> = request.viewports.iter().map(|v| v.label.clone().unwrap()).collect();
+        assert_eq!(labels, ["narrow", "wide"]);
+        assert_eq!((request.viewports[0].width, request.viewports[1].width), (800, 1440));
+        assert_eq!(
+            request.themes,
+            [zeron_proto::ArtifactRenderTheme::Light, zeron_proto::ArtifactRenderTheme::Dark]
+        );
+        assert_eq!(request.viewport.width, 800);
+        ui.call(
+            methods::ARTIFACT_RENDER_RESULT,
+            json!({ "requestId": request.request_id,
+                    "result": { "errors": [], "warnings": [],
+                                "screenshots": [
+                                    { "viewport": "narrow", "width": 800, "height": 800,
+                                      "theme": "light", "pngBase64": "AAAA" },
+                                    { "viewport": "wide", "width": 1440, "height": 900,
+                                      "theme": "dark", "pngBase64": "BBBB" } ],
+                                "layoutWarnings": [
+                                    { "kind": "clippedText", "selector": "p.x",
+                                      "textSample": "hi", "viewport": "narrow",
+                                      "theme": "light" } ] } }),
+        )
+        .await
+        .unwrap();
         (ui, requests)
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -791,6 +823,22 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
     assert_eq!(result["warnings"][0], "horizontal overflow");
     assert_eq!(result["screenshot"]["mimeType"], "image/png");
     assert_eq!(result["screenshot"]["data"], "iVBORw0KGgo=");
+    let result = tool(
+        &rig,
+        &rig.token,
+        "artifact_render_check",
+        json!({ "artifactId": id, "themes": ["light", "dark"] }),
+    )
+    .await
+    .unwrap();
+    let shots = result["screenshots"].as_array().unwrap();
+    assert_eq!(shots.len(), 2);
+    assert_eq!(shots[1]["viewport"], "wide");
+    assert_eq!(shots[1]["theme"], "dark");
+    assert_eq!(shots[1]["png"], "BBBB");
+    // The old single field is the first image.
+    assert_eq!(result["screenshot"]["data"], "AAAA");
+    assert_eq!(result["layoutWarnings"][0]["kind"], "clippedText");
     let (_ui, _requests) = responder.await.unwrap();
 
     // Another item's chat may not check this artifact.
