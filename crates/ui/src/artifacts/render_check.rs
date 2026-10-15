@@ -24,11 +24,13 @@ use gpui::{AsyncApp, Context, Task, WeakEntity};
 use zeron_proto::artifacts::{ArtifactErrorCode, artifact_limits};
 use zeron_proto::{
     ArtifactContentEncoding, ArtifactError, ArtifactKind, ArtifactRenderCheckResult,
-    ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderTheme, ArtifactViewport,
+    ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderScreenshot,
+    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactViewport,
 };
 use zeron_rpc::{RpcError, methods};
 
 use super::document::{self, ProbeReport};
+use super::layout_heuristics;
 use super::model::{self, WebKind};
 use crate::browser::fragment::FragmentTheme;
 use crate::state::{AppState, EngineHandle};
@@ -176,13 +178,25 @@ fn wire_error(code: ArtifactErrorCode, message: impl Into<String>) -> String {
     ArtifactError::new(code, message).to_wire_message()
 }
 
-/// Serve one request: build the document, render it with `renderer` within
-/// `timeout`, and turn the outcome into the `ArtifactRenderResult` params.
-/// `sleep` is the timeout clock (injected for tests).
+/// A theme a request renders in: what was asked, what it resolves to, and
+/// the tokens for the wrapper.
+#[derive(Debug, Clone)]
+pub(crate) struct ThemeChoice {
+    pub(crate) requested: ArtifactRenderTheme,
+    /// `light` or `dark`.
+    pub(crate) label: &'static str,
+    pub(crate) theme: FragmentTheme,
+}
+
+/// Serve one request: build each viewport × theme document, render them one
+/// after another with `renderer` within `timeout` overall, and turn the
+/// outcome into the `ArtifactRenderResult` params. `themes` holds a choice for
+/// every theme the request names. `sleep` is the timeout clock (injected for
+/// tests).
 pub(crate) async fn serve<Sleep, SleepFut>(
     request: ArtifactRenderRequest,
     renderer: Option<Rc<dyn ArtifactRenderer>>,
-    theme: FragmentTheme,
+    themes: Vec<ThemeChoice>,
     timeout: Duration,
     sleep: Sleep,
     cx: &mut AsyncApp,
@@ -203,72 +217,184 @@ where
             "this Zeron window cannot render artifacts offscreen on this platform",
         ));
     };
-    let document = match request_document(&request, &theme) {
-        Ok(document) => document,
-        Err(RenderSkip::Native) => {
-            return ArtifactRenderResultParams {
-                request_id,
-                result: Some(ArtifactRenderCheckResult {
-                    screenshot_png_base64: None,
-                    errors: Vec::new(),
-                    warnings: vec![
-                        "Markdown renders natively in Zeron; there is no web render to check"
-                            .to_owned(),
-                    ],
-                    ..Default::default()
-                }),
-                error: None,
-            };
+    let (plan, cap_warning) = request.renders();
+    let mut renders = Vec::new();
+    for (viewport, requested) in &plan {
+        let Some(choice) = themes
+            .iter()
+            .find(|choice| choice.requested == *requested)
+            .or(themes.first())
+        else {
+            return failed(wire_error(
+                ArtifactErrorCode::RenderFailed,
+                "no theme to render in",
+            ));
+        };
+        match request_document(&request, &choice.theme) {
+            Ok(document) => renders.push((viewport.clone(), choice.label, document)),
+            Err(RenderSkip::Native) => {
+                return ArtifactRenderResultParams {
+                    request_id,
+                    result: Some(ArtifactRenderCheckResult {
+                        warnings: vec![
+                            "Markdown renders natively in Zeron; there is no web render to check"
+                                .to_owned(),
+                        ],
+                        ..Default::default()
+                    }),
+                    error: None,
+                };
+            }
+            Err(RenderSkip::Invalid(message)) => {
+                return failed(wire_error(ArtifactErrorCode::RenderFailed, message));
+            }
         }
-        Err(RenderSkip::Invalid(message)) => {
-            return failed(wire_error(ArtifactErrorCode::RenderFailed, message));
+    }
+    let renderer = &renderer;
+    let all = async {
+        let mut finished = Vec::new();
+        for (viewport, theme, document) in renders {
+            let output = renderer.render(document, viewport.size(), cx).await;
+            finished.push((viewport, theme, output));
         }
+        finished
     };
-    let viewport = request.viewport.clamped();
-    let render = renderer.render(document, viewport, cx);
+    futures::pin_mut!(all);
     let deadline = sleep(timeout);
     futures::pin_mut!(deadline);
-    let outcome = match futures::future::select(render, deadline).await {
-        futures::future::Either::Left((outcome, _)) => Some(outcome),
+    let outcome = match futures::future::select(all, deadline).await {
+        futures::future::Either::Left((finished, _)) => Some(finished),
         futures::future::Either::Right(((), _)) => None,
     };
-    match outcome {
-        None => failed(wire_error(
+    let Some(finished) = outcome else {
+        return failed(wire_error(
             ArtifactErrorCode::RenderTimeout,
             format!("the render did not finish within {} s", timeout.as_secs()),
-        )),
-        Some(Err(message)) => failed(wire_error(ArtifactErrorCode::RenderFailed, message)),
-        Some(Ok(output)) => ArtifactRenderResultParams {
-            request_id,
-            result: Some(check_result(output)),
-            error: None,
-        },
+        ));
+    };
+    let mut outputs = Vec::new();
+    for (viewport, theme, output) in finished {
+        match output {
+            Ok(output) => outputs.push((viewport, theme, output)),
+            Err(message) => return failed(wire_error(ArtifactErrorCode::RenderFailed, message)),
+        }
+    }
+    let mut result = check_results(outputs);
+    result.warnings.extend(cap_warning);
+    ArtifactRenderResultParams {
+        request_id,
+        result: Some(result),
+        error: None,
     }
 }
 
-/// The agent-facing result of a finished render. Pure.
+/// The agent-facing result of one finished render. Pure.
 pub(crate) fn check_result(output: RenderOutput) -> ArtifactRenderCheckResult {
+    check_results(vec![(
+        ArtifactRenderViewport {
+            width: 0,
+            height: 0,
+            label: None,
+        },
+        "",
+        output,
+    )])
+}
+
+/// The agent-facing result of every finished render (viewport, theme label,
+/// output). Errors and warnings repeated across renders are reported once;
+/// layout findings carry their viewport and theme. Pure.
+pub(crate) fn check_results(
+    outputs: Vec<(ArtifactRenderViewport, &'static str, RenderOutput)>,
+) -> ArtifactRenderCheckResult {
     use base64::Engine as _;
-    let (mut errors, warnings) = match output.report {
-        Some(report) => (report.errors, report.warnings),
-        None => (
-            vec![
+    let many = outputs.len() > 1;
+    let mut result = ArtifactRenderCheckResult::default();
+    let mut layout_dropped = false;
+    let mut add = |list: &mut Vec<String>, text: String| {
+        if !list.contains(&text) {
+            list.push(text);
+        }
+    };
+    for (viewport, theme, output) in outputs {
+        let label = viewport.display_label();
+        let at = if many {
+            format!(" [{label}, {theme}]")
+        } else {
+            String::new()
+        };
+        match output.report {
+            Some(report) => {
+                for error in report.errors {
+                    add(&mut result.errors, error);
+                }
+                for warning in report.warnings {
+                    add(&mut result.warnings, format!("{warning}{at}"));
+                }
+                let raw = layout_heuristics::classify(&report.metrics, viewport.size().width);
+                layout_dropped |=
+                    layout_heuristics::tag(&mut result.layout_warnings, raw, &label, theme);
+            }
+            None => add(
+                &mut result.errors,
                 "The render probe did not report: the page's scripts may have failed or never finished loading"
                     .to_owned(),
-            ],
-            Vec::new(),
-        ),
-    };
-    if output.png.is_none() {
-        errors.push("No screenshot could be taken".to_owned());
+            ),
+        }
+        match output.png {
+            Some(png) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(png);
+                if result.screenshot_png_base64.is_none() {
+                    result.screenshot_png_base64 = Some(data.clone());
+                }
+                let size = viewport.size();
+                result.screenshots.push(ArtifactRenderScreenshot {
+                    viewport: label,
+                    width: size.width,
+                    height: size.height,
+                    theme: theme.to_owned(),
+                    png_base64: data,
+                });
+            }
+            None => add(
+                &mut result.errors,
+                format!("No screenshot could be taken{at}"),
+            ),
+        }
     }
-    ArtifactRenderCheckResult {
-        screenshot_png_base64: output
-            .png
-            .map(|png| base64::engine::general_purpose::STANDARD.encode(png)),
-        errors,
-        warnings,
-        ..Default::default()
+    if layout_dropped {
+        result.warnings.push(format!(
+            "More than {} layout findings; only the first are listed",
+            zeron_proto::artifacts::artifact_limits::MAX_LAYOUT_WARNINGS
+        ));
+    }
+    result
+}
+
+/// The themes a request renders in (each distinct one it plans).
+pub(crate) fn request_themes(request: &ArtifactRenderRequest, cx: &gpui::App) -> Vec<ThemeChoice> {
+    let mut choices: Vec<ThemeChoice> = Vec::new();
+    for (_, requested) in request.renders().0 {
+        if choices.iter().all(|choice| choice.requested != requested) {
+            choices.push(ThemeChoice {
+                requested,
+                label: if request_theme_is_dark(requested, cx) {
+                    "dark"
+                } else {
+                    "light"
+                },
+                theme: request_theme(requested, cx),
+            });
+        }
+    }
+    choices
+}
+
+fn request_theme_is_dark(theme: ArtifactRenderTheme, cx: &gpui::App) -> bool {
+    match theme {
+        ArtifactRenderTheme::Dark => true,
+        ArtifactRenderTheme::Light => false,
+        ArtifactRenderTheme::System => Theme::of(cx).appearance.is_dark(),
     }
 }
 
@@ -368,14 +494,14 @@ async fn serve_and_answer(
     config: RenderConfig,
     cx: &mut AsyncApp,
 ) -> bool {
-    let Ok(theme) = this.update(cx, |_, cx| request_theme(request.theme, cx)) else {
+    let Ok(themes) = this.update(cx, |_, cx| request_themes(&request, cx)) else {
         return false;
     };
     let executor = cx.background_executor().clone();
     let params = serve(
         request,
         renderer,
-        theme,
+        themes,
         config.timeout,
         move |duration| executor.timer(duration),
         cx,

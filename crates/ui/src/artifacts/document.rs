@@ -182,8 +182,10 @@ pub(crate) const READ_PROBE_SCRIPT: &str =
 /// The in-frame probe: console errors, uncaught errors and rejections, CSP
 /// violations, failed resource loads, Mermaid errors, empty render, and
 /// layout warnings (horizontal overflow, elements outside the viewport, low
-/// contrast text). Posts `{zeronRenderProbe: {errors, warnings}}` to the
-/// parent once the page has loaded and settled.
+/// contrast text), plus per-element metrics the native side classifies into
+/// the layout heuristics ([`super::layout_heuristics`]). Posts
+/// `{zeronRenderProbe: {errors, warnings, metrics}}` to the parent once the
+/// page has loaded and settled.
 pub(crate) fn probe_script() -> String {
     PROBE_TEMPLATE
         .replace("__SETTLE_MS__", &SETTLE_MS.to_string())
@@ -286,7 +288,7 @@ const PROBE_TEMPLATE: &str = r##"(() => {
     }
     if (outside) push(warnings, outside + " element(s) extend outside the viewport horizontally (" + examples.join(", ") + ")");
     if (lowContrast) push(warnings, lowContrast + " text element(s) have contrast below 3:1 (" + contrastExamples.join(", ") + ")");
-    try { parent.postMessage({ zeronRenderProbe: { errors, warnings } }, "*"); } catch (_) {}
+    try { parent.postMessage({ zeronRenderProbe: { errors, warnings, metrics } }, "*"); } catch (_) {}
   };
   const waitMermaid = (deadline) => {
     const pending = Array.from(document.querySelectorAll("pre.mermaid, div.mermaid")).some((el) =>
@@ -306,4 +308,7 @@ pub(crate) struct ProbeReport {
     pub(crate) errors: Vec<String>,
     #[serde(default)]
     pub(crate) warnings: Vec<String>,
+    /// Per-element measurements for [`super::layout_heuristics::classify`].
+    #[serde(default)]
+    pub(crate) metrics: Vec<super::layout_heuristics::ElementMetrics>,
 }

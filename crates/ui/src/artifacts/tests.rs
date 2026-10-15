@@ -551,7 +551,7 @@ fn serve_now(
     request: ArtifactRenderRequest,
     renderer: Option<Rc<dyn ArtifactRenderer>>,
 ) -> ArtifactRenderResultParams {
-    let theme = cx.update(|cx| render_check::request_theme(request.theme, cx));
+    let theme = cx.update(|cx| render_check::request_themes(&request, cx));
     let task = cx.spawn(async move |mut cx| {
         render_check::serve(
             request,
@@ -574,13 +574,14 @@ fn render_check_returns_screenshot_errors_and_warnings(cx: &mut TestAppContext) 
         report: Some(super::document::ProbeReport {
             errors: vec!["Console error: boom".into()],
             warnings: vec!["Horizontal overflow: content is 900px wide in a 600px viewport".into()],
+            ..Default::default()
         }),
         ..Default::default()
     });
     // A timeout clock that never fires: the render always wins.
     let params = {
-        let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
         let request = render_request(1, ArtifactKind::HtmlFragment, "<div>flow</div>");
+        let theme = cx.update(|cx| render_check::request_themes(&request, cx));
         let dyn_renderer: Rc<dyn ArtifactRenderer> = Rc::new(renderer.clone());
         let task = cx.spawn(async move |mut cx| {
             render_check::serve(
@@ -648,12 +649,12 @@ fn render_check_times_out_and_reports_missing_probes_and_platforms(cx: &mut Test
     // No probe report: still a result, flagged.
     let silent = Rc::new(FakeRenderer::default());
     let dyn_silent: Rc<dyn ArtifactRenderer> = Rc::new(silent.clone());
-    let theme = cx.update(|cx| render_check::request_theme(Default::default(), cx));
     let request = render_request(
         2,
         ArtifactKind::HtmlPage,
         "<html><head></head><body>x</body></html>",
     );
+    let theme = cx.update(|cx| render_check::request_themes(&request, cx));
     let task = cx.spawn(async move |mut cx| {
         render_check::serve(
             request,
