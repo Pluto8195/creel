@@ -56,14 +56,21 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     to 4 images, and layout heuristics.
   - Links inside rendered artifacts route through Zeron. Files outside the workspace get "Open as
     artifact" (credential paths, `.env*`, and files over 10 MB are refused).
-- **Visual compare for artifact revisions:** see "In flight" for status at the time of writing.
+- **Visual compare for artifact revisions** (`crates/ui/src/artifacts/{compare,pixel_diff,
+  markdown_diff}.rs`). Mikey's complaint: text diffs of charts are useless.
+  - HTML, Mermaid and images: two revisions side by side with synced scroll. "Highlight changes"
+    runs a pixel diff with region boxes; there is also onion skin and a Source tab for the line
+    diff.
+  - Markdown: rendered side by side, changed blocks tinted, section summary on top.
+  - Options: compares two options of the current revision.
+  - Verified only by headless tests.
 
-## In flight
+## Known gaps
 
-- Visual compare (branch `artifacts-visual-compare`): kind-aware compare. Visual kinds render side
-  by side with synced scroll, "Highlight changes" pixel diff, onion skin, and a Source tab.
-  Markdown renders side by side with changed blocks and a section summary. Options compare one
-  option at a time.
+- Visual compare: markdown panes don't scroll in sync; highlight and onion skin cover only the
+  first 520×1400 px; options can't compare one option across revisions (`ArtifactContent` serves
+  companion files for the current copy only); the per-kind mode memory doesn't survive a restart.
+- Linear GraphQL (projects, attachments) unverified against the real API.
 
 ## Next, agreed but not started
 
