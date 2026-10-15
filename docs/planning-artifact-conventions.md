@@ -1,10 +1,12 @@
-# Planning artifact conventions — v1
+# Planning artifact conventions — v1.1
 
 The contract between agents (the planning skill) and Zeron for planning artifacts: plan documents,
 diagrams, state machines, and option comparisons. Zeron parses exactly what is described here;
 anything else is shown as plain content. Design background: `plans/planning-artifacts-design.md`.
 
-Version: **v1** (2026-10-14). Breaking changes bump the version; Zeron keeps reading older versions.
+Version: **v1.1** (2026-10-14). v1.1 is additive over v1: `artifact_render_check` gained
+`viewports`, `themes`, and layout warnings (section 3). Breaking changes bump the major version;
+Zeron keeps reading older versions.
 
 ## 1. Publishing an artifact
 
@@ -55,16 +57,35 @@ After creating or changing any visual artifact (HTML, Mermaid, image, options):
 ```
 artifact_render_check {
   artifactId | path,
-  viewport?: { width, height },     // default 1280×800
-  theme?:    "light" | "dark"        // default: the user's current theme
+  viewports?: [{ width, height, label? }],  // default: [{800,800,"narrow"}, {1440,900,"wide"}]
+  viewport?:  { width, height },             // one viewport; replaces the default list
+  themes?:    ["light" | "dark", ...],       // default: the user's current theme only
+  theme?:     "light" | "dark"               // one theme
 }
-→ { screenshot (image), errors: [...], warnings: [...] }
+→ { screenshots: [{ viewport, width, height, theme, png }],   // one image per viewport x theme
+    screenshot,                                               // the first image (v1 field)
+    errors: [...], warnings: [...], layoutWarnings: [...] }
 ```
 
+- Every viewport is rendered in every theme, at most **4 images per call**. If you ask for more,
+  the extra ones are dropped and `warnings` says so. Over MCP each image arrives as an image item
+  preceded by a text label (viewport, size, theme).
+- For visuals, check **both themes at both default widths**: call
+  `artifact_render_check { artifactId, themes: ["light", "dark"] }` (that is exactly four images).
 - `errors`: JavaScript console errors, blocked resources, Mermaid parse errors, empty render.
 - `warnings`: horizontal overflow, content outside the viewport, low-contrast text.
-- Fix every error and warning, call the check again, and look at the screenshot before you say the
-  artifact is done.
+- `layoutWarnings` (v1.1): each is `{ kind, selector, textSample (at most 80 chars), viewport,
+  theme }`, at most 50 per call:
+  - `clippedText`: text in an element with hidden overflow or an ellipsis that is cut off.
+  - `overlappingSiblings`: visible siblings whose boxes overlap by more than 20% of the smaller
+    one (positioned overlays such as badges are skipped unless text overlaps text).
+  - `narrowTextColumn`: a block of 3 or more lines averaging fewer than 2 words per line.
+  - `widerThanParent`: a child wider than a parent that does not scroll.
+  - `fixedWidth`: an authored fixed pixel width wider than the viewport.
+- **Warnings are heuristics.** They miss real problems and flag fine layouts. Always look at every
+  screenshot, whatever the warnings say.
+- Fix every error and every warning that is a real problem, call the check again, and look at the
+  screenshots before you say the artifact is done.
 - If it returns `renderUnavailable` (no Zeron window on that device), say so instead of claiming
   the artifact was checked.
 
