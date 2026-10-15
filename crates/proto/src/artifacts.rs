@@ -834,6 +834,9 @@ pub enum ArtifactErrorCode {
     Invalid,
     /// The caller may not touch this artifact (agent scope).
     Forbidden,
+    /// The source file is on the deny-list (credentials, `.env`, oversize,
+    /// not a regular file).
+    Denied,
     TooLarge,
     /// The Space lives on another device (call it there).
     WrongDevice,
@@ -857,6 +860,7 @@ impl ArtifactErrorCode {
             Self::NotFound => "notFound",
             Self::Invalid => "invalid",
             Self::Forbidden => "forbidden",
+            Self::Denied => "denied",
             Self::TooLarge => "tooLarge",
             Self::WrongDevice => "wrongDevice",
             Self::RenderUnavailable => "renderUnavailable",

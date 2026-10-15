@@ -55,13 +55,13 @@ Wire contract commit: `8e3bd0f1` (branch `artifacts-engine`). Code:
   yet). Text kinds come back `encoding: "utf8"`, images `"base64"`. `companion` names an entry of
   `companions` or the preview file name (current copy only). `wrapperHtml` is reserved and `null`
   in phase 1: the UI wraps fragments with its own visualize wrapper.
-- `ArtifactRegister`: `path` absolute or relative to the Space folder; it must be inside the Space
-  folder or the canonical checkout. Imported as revision 1 by the local user, `originPath` kept.
+- `ArtifactRegister`: `path` absolute or relative to the Space folder; any regular file on the
+  owning device's filesystem outside the source deny-list (below). Imported as revision 1 by the local user, `originPath` kept.
   The same (scope, title, role) again adds a revision when the content changed.
 - `ArtifactPromote`: copies the current revision to `<canonical>/docs/plans/<file name>` (creates the
   directory). The same content already there is reused; a different file is never overwritten
   (`<stem>-2<ext>`, `-3`, …). Left uncommitted; `promotedPath` recorded on the artifact.
-- Errors are `artifact/<code>: <message>`: `notFound`, `invalid`, `forbidden`, `tooLarge` (10 MiB),
+- Errors are `artifact/<code>: <message>`: `notFound`, `invalid`, `forbidden`, `denied` (source deny-list), `tooLarge` (10 MiB),
   `wrongDevice` (call the owning device), `renderUnavailable`, `renderTimeout`, `renderFailed`,
   `rateLimited`, `io`, unknown → `internal`.
 
@@ -102,9 +102,13 @@ scoped to the token's Chat (and its work item).
 
 - `artifact_publish {path, title, kind?, role?, note, pinAsPlan?, idempotencyKey}` →
   `{artifactId, revision, url, storedPath, changed}`.
-  - `path`: absolute, or relative to the Chat's cwd. Allowed sources: the Chat's cwd, the Space
-    folder, the canonical checkout, and the temp directories (`$TMPDIR`, `/tmp`, `/private/tmp`,
-    `/var/folders`). Max 10 MiB.
+  - `path`: absolute, or relative to the Chat's cwd. Source: any regular file on the owning
+    device's local filesystem (it is copied into the artifact store). Symlinks are resolved first
+    and the deny-list applies to the real path; refused with `artifact/denied`: anything under
+    `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.aws`, `~/.config/gh`, `~/.netrc`,
+    `~/.docker/config.json`, files named `.env` / `.env.*`, files over 10 MiB, and non-regular
+    files (directories, fifos, devices). The same rule covers `ArtifactRegister`, the fragment's
+    preview sibling, and options companions. Remote-device paths are never read (`wrongDevice`).
   - Scope: the Chat's work item, else the Chat itself (`_chats/<chatId>`).
   - `foo.fragment.html`: a sibling `foo.preview.html` is copied too (`previewPath`). Publishing a
     `foo.preview.html` whose fragment sibling exists publishes the fragment.

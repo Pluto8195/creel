@@ -67,6 +67,7 @@ mod files_panel;
 mod github_ui;
 mod instructions_ui;
 mod linear_ui;
+mod outside_file_ui;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
@@ -1740,6 +1741,8 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
+    /// Inline "outside the project" strip for a clicked local file path.
+    outside_file_prompt: Option<outside_file_ui::OutsideFilePrompt>,
     /// Chat whose header copy-identity button is showing its transient
     /// "copied" check; cleared by `copied_chat_identity_clear` after ~1.2s.
     copied_chat_identity: Option<String>,
@@ -2160,6 +2163,7 @@ impl Shell {
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            outside_file_prompt: None,
             copied_chat_identity: None,
             copied_chat_identity_clear: None,
             chat_header_links: Default::default(),
@@ -3072,11 +3076,19 @@ impl Shell {
                 }
                 return outcome;
             }
-            return if matches!(
+            if !matches!(
                 activation.action,
                 LinkAction::Primary | LinkAction::Internal
-            ) && self.open_workspace_file_link(&activation.target.original, window, cx)
-            {
+            ) {
+                return LinkOutcome::Rejected;
+            }
+            if self.open_workspace_file_link(&activation.target.original, window, cx) {
+                self.leave_overview_for_chat(cx);
+                return LinkOutcome::Internal;
+            }
+            // A local path outside the chat's project: the file viewer refuses
+            // it, so offer the artifact import (owner) or explain (remote).
+            return if self.show_outside_file_prompt(&activation.target.original, cx) {
                 self.leave_overview_for_chat(cx);
                 LinkOutcome::Internal
             } else {
@@ -10048,6 +10060,7 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
+                    .children(self.render_outside_file_prompt(&theme, cx))
                     .when(has_spaces || no_project || has_appshots, |el| {
                         let composer_opacity = self.composer_dock.borrow().opacity();
                         el.child(crate::composer_dock::docked_composer(
@@ -14885,7 +14898,9 @@ mod exit_regressions {
                 activate(shell, "work/page.html", LinkAction::Primary, window, cx);
                 assert_eq!(fragments(shell, cx).len(), tabs);
 
-                // Outside the checkout nothing opens.
+                // Outside the checkout nothing opens as a file: the owning
+                // device is offered the artifact import instead.
+                let tabs = fragments(shell, cx).len();
                 assert_eq!(
                     activate(
                         shell,
@@ -14894,8 +14909,11 @@ mod exit_regressions {
                         window,
                         cx
                     ),
-                    LinkOutcome::Rejected
+                    LinkOutcome::Internal
                 );
+                assert_eq!(fragments(shell, cx).len(), tabs);
+                assert!(shell.outside_file_prompt.is_some());
+                shell.outside_file_prompt = None;
 
                 // Without an export, the preview action explains what to do.
                 std::fs::remove_file(root.join("work/mock.preview.html")).unwrap();

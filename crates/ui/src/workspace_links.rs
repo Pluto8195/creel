@@ -73,6 +73,51 @@ pub(crate) fn resolve_workspace_file_link(
     Some(WorkspaceFileLink { path, line, column })
 }
 
+/// An absolute local file path that links OUTSIDE `workspace_root` (the
+/// workspace file viewer refuses it). Same target syntax as
+/// [`resolve_workspace_file_link`]; line/column suffixes are dropped. `None`
+/// for relative, in-workspace, URL, and unsafe (`..`, `.`, empty-part)
+/// targets.
+pub(crate) fn resolve_outside_file_link(target: &str, workspace_root: &str) -> Option<String> {
+    let target = target.trim();
+    if target.is_empty() || target.contains(['?', '\0', '\\', '\n', '\r']) {
+        return None;
+    }
+    let decoded;
+    let is_file_mention = target.starts_with(FILE_MENTION_SCHEME);
+    let path = if let Some(encoded) = target.strip_prefix(FILE_MENTION_SCHEME) {
+        decoded = percent_decode_path(encoded)?;
+        decoded.as_str()
+    } else if let Some(path) = target.strip_prefix("file://") {
+        decoded = percent_decode_path(path)?;
+        decoded.as_str()
+    } else if target.contains("://") || target.starts_with("mailto:") {
+        return None;
+    } else {
+        target
+    };
+    let path = if is_file_mention {
+        path
+    } else {
+        let (path, _) = split_line_fragment(path);
+        split_line_suffix(path).0
+    };
+    if !path.starts_with('/')
+        || path.contains(':')
+        || path.ends_with('/')
+        || path
+            .split('/')
+            .enumerate()
+            .any(|(index, part)| (part.is_empty() && index != 0) || matches!(part, "." | ".."))
+    {
+        return None;
+    }
+    if Path::new(path).strip_prefix(workspace_root).is_ok() {
+        return None;
+    }
+    Some(path.to_owned())
+}
+
 fn safe_relative_path(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -216,6 +261,36 @@ mod tests {
         ] {
             assert!(
                 resolve_workspace_file_link(target, root).is_none(),
+                "accepted {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn outside_links_are_absolute_paths_beyond_the_workspace() {
+        let root = "/work/comet";
+        assert_eq!(
+            resolve_outside_file_link("/Users/me/notes/plan.md:12", root).as_deref(),
+            Some("/Users/me/notes/plan.md")
+        );
+        assert_eq!(
+            resolve_outside_file_link("file:///tmp/a%20b.md", root).as_deref(),
+            Some("/tmp/a b.md")
+        );
+        assert_eq!(
+            resolve_outside_file_link("zeron-file:/tmp/a%20b.md", root).as_deref(),
+            Some("/tmp/a b.md")
+        );
+        for target in [
+            "/work/comet/src/lib.rs",
+            "src/lib.rs",
+            "https://example.com/x.md",
+            "/tmp/../etc/passwd",
+            "/tmp/dir/",
+            "mailto:a@b.c",
+        ] {
+            assert!(
+                resolve_outside_file_link(target, root).is_none(),
                 "accepted {target}"
             );
         }

@@ -572,4 +572,138 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(open_artifact_ids(&shell, vcx), [id(1)]);
     }
+
+    fn path_activation(path: &str) -> crate::markdown::render::LinkActivation {
+        crate::markdown::render::LinkActivation {
+            target: crate::markdown::render::LinkTarget::new("doc", path),
+            action: crate::markdown::render::LinkAction::Primary,
+            source_session: Some("c1".into()),
+        }
+    }
+
+    fn register_calls(calls: &Calls) -> Vec<serde_json::Value> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_REGISTER)
+            .map(|(_, params)| params.clone())
+            .collect()
+    }
+
+    #[gpui::test]
+    fn outside_file_click_on_the_owning_device_offers_open_as_artifact(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = init_ui(cx);
+        let reply: Reply = Arc::new(|method, _| {
+            Ok(match method {
+                zeron_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
+                    "artifactId": id(2), "revision": 1,
+                    "url": format!("zeron-artifact:{}", id(2)),
+                    "storedPath": "/work/alpha/.zeron/artifacts/_chats/c1/doc.md",
+                    "changed": true
+                }),
+                _ => content_reply(
+                    ArtifactKind::Markdown,
+                    1,
+                    "x",
+                    ArtifactContentEncoding::Utf8,
+                ),
+            })
+        });
+        let (shell, calls, _, vcx) = artifact_shell(cx, dir.path(), vec![], reply);
+        shell.update_in(vcx, |shell, window, cx| {
+            let outcome = shell.activate_session_link(
+                &path_activation("/Users/me/notes/doc.md:3"),
+                window,
+                cx,
+            );
+            assert_eq!(outcome, crate::markdown::render::LinkOutcome::Internal);
+            let prompt = shell.outside_file_prompt.clone().expect("prompt");
+            assert_eq!(
+                prompt.state,
+                super::super::outside_file_ui::OutsideFileState::Offer
+            );
+            assert_eq!(prompt.path, "/Users/me/notes/doc.md");
+            assert_eq!(prompt.message(), "This file is outside the project");
+        });
+        vcx.run_until_parked();
+        // Nothing is read or registered until the user chooses.
+        assert!(register_calls(&calls).is_empty());
+        assert!(open_artifact_ids(&shell, vcx).is_empty());
+
+        shell.update_in(vcx, |shell, window, cx| {
+            shell.confirm_outside_file_prompt(window, cx)
+        });
+        vcx.run_until_parked();
+        let registers = register_calls(&calls);
+        assert_eq!(registers.len(), 1);
+        assert_eq!(registers[0]["path"], "/Users/me/notes/doc.md");
+        assert_eq!(registers[0]["title"], "doc.md");
+        assert_eq!(registers[0]["chatId"], "c1");
+        assert_eq!(registers[0]["spaceId"], "s1");
+        assert_eq!(open_artifact_ids(&shell, vcx), [id(2)]);
+        shell.read_with(vcx, |shell, _| assert!(shell.outside_file_prompt.is_none()));
+    }
+
+    #[gpui::test]
+    fn outside_file_denial_shows_the_reason(cx: &mut gpui::TestAppContext) {
+        let dir = init_ui(cx);
+        let reply: Reply = Arc::new(|method, _| {
+            Err(zeron_rpc::RpcError::Failed(format!(
+                "artifact/denied: /Users/me/.ssh/id cannot be published ({method})"
+            )))
+        });
+        let (shell, calls, _, vcx) = artifact_shell(cx, dir.path(), vec![], reply);
+        shell.update_in(vcx, |shell, window, cx| {
+            shell.activate_session_link(&path_activation("/Users/me/.ssh/id"), window, cx);
+            shell.confirm_outside_file_prompt(window, cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(register_calls(&calls).len(), 1);
+        shell.read_with(vcx, |shell, _| {
+            let prompt = shell.outside_file_prompt.as_ref().expect("prompt stays");
+            assert!(matches!(
+                &prompt.state,
+                super::super::outside_file_ui::OutsideFileState::Refused(reason)
+                    if reason.contains("cannot be published")
+            ));
+        });
+        assert!(open_artifact_ids(&shell, vcx).is_empty());
+    }
+
+    #[gpui::test]
+    fn outside_file_click_from_a_remote_viewer_only_explains(cx: &mut gpui::TestAppContext) {
+        let dir = init_ui(cx);
+        let reply: Reply = Arc::new(|_, _| {
+            Ok(content_reply(
+                ArtifactKind::Markdown,
+                1,
+                "x",
+                ArtifactContentEncoding::Utf8,
+            ))
+        });
+        let (shell, calls, _, vcx) = artifact_shell(cx, dir.path(), vec![], reply);
+        shell.update_in(vcx, |shell, window, cx| {
+            shell.state.update(cx, |state, cx| {
+                state.local_device_id = Some("viewer".into());
+                cx.notify();
+            });
+            let outcome =
+                shell.activate_session_link(&path_activation("/Users/me/notes/doc.md"), window, cx);
+            assert_eq!(outcome, crate::markdown::render::LinkOutcome::Internal);
+            let prompt = shell.outside_file_prompt.clone().expect("prompt");
+            assert!(
+                prompt
+                    .message()
+                    .starts_with("This file is outside the project on ")
+            );
+            // Confirming does nothing for a remote viewer.
+            shell.confirm_outside_file_prompt(window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(register_calls(&calls).is_empty());
+        assert!(open_artifact_ids(&shell, vcx).is_empty());
+    }
 }

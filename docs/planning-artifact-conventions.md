@@ -13,6 +13,10 @@ Zeron keeps reading older versions.
 Everything the user should see is published; Zeron never discovers artifacts by scanning folders.
 
 - **Write the file anywhere you can write** (your worktree, a temp folder).
+  - Any regular file on this device can be published (it is copied), except credential
+    locations (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`, `~/Library/Keychains`, `~/.netrc`,
+    `~/.docker/config.json`), `.env` / `.env.*` files, and files over 10 MB: refused with
+    `artifact/denied`.
 - **Publish it with the `zeron-agent` tool:**
 
   ```

@@ -242,20 +242,78 @@ fn canonical_of_stored(stored: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn temp_roots() -> Vec<PathBuf> {
-    let mut roots = vec![
-        std::env::temp_dir(),
-        PathBuf::from("/tmp"),
-        PathBuf::from("/private/tmp"),
-        PathBuf::from("/var/folders"),
-        PathBuf::from("/private/var/folders"),
-    ];
-    roots.iter_mut().for_each(|r| *r = canonical(r));
-    roots
+/// Home-relative locations whose contents are never copied into the artifact
+/// store (directories match everything below them).
+const DENIED_HOME_PATHS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    "Library/Keychains",
+    ".aws",
+    ".config/gh",
+    ".netrc",
+    ".docker/config.json",
+];
+
+fn is_env_file_name(name: &str) -> bool {
+    name == ".env" || name.starts_with(".env.")
 }
 
-fn within(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+fn denied(path: &Path, why: &str) -> ArtifactError {
+    ArtifactError::new(
+        ArtifactErrorCode::Denied,
+        format!("{} cannot be published: {why}", path.display()),
+    )
+}
+
+/// Authorize a local file as an artifact SOURCE: any regular file on this
+/// device's filesystem, except the deny-list (credential stores, `.env`
+/// files, files over the size limit). Symlinks are resolved first and the
+/// deny-list applies to the real path. Returns the real path.
+fn check_source(path: &Path, home: Option<&Path>) -> Outcome<PathBuf> {
+    let real = std::fs::canonicalize(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ArtifactError::not_found(format!("{} does not exist", path.display()))
+        } else {
+            io_error("resolve", path, e)
+        }
+    })?;
+    let meta = std::fs::metadata(&real).map_err(|e| io_error("stat", &real, e))?;
+    if !meta.is_file() {
+        return Err(denied(&real, "it is not a regular file"));
+    }
+    let named_env = |p: &Path| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_env_file_name)
+    };
+    if named_env(&real) || named_env(path) {
+        return Err(denied(&real, "`.env` files may hold secrets"));
+    }
+    if let Some(home) = home {
+        let homes = [home.to_path_buf(), canonical(home)];
+        for rel in DENIED_HOME_PATHS {
+            for home in &homes {
+                let entry = home.join(rel);
+                if real.starts_with(&entry) || real.starts_with(canonical(&entry)) {
+                    return Err(denied(
+                        &real,
+                        &format!("~/{rel} holds credentials and is never published"),
+                    ));
+                }
+            }
+        }
+    }
+    if meta.len() > artifact_limits::MAX_FILE_BYTES {
+        return Err(denied(
+            &real,
+            &format!(
+                "it is {} bytes; artifacts are limited to {} bytes",
+                meta.len(),
+                artifact_limits::MAX_FILE_BYTES
+            ),
+        ));
+    }
+    Ok(real)
 }
 
 // ── publish requests ────────────────────────────────────────────────────────
@@ -562,6 +620,8 @@ struct Inner {
     /// cache keyed by stored path.
     gate: Mutex<HashMap<String, SeenFile>>,
     render: Arc<RenderBroker>,
+    /// The user's home directory (deny-list anchor); `$HOME` by default.
+    home: Mutex<Option<PathBuf>>,
 }
 
 /// The engine's planning artifact service (one per engine; cheap to clone).
@@ -579,8 +639,20 @@ impl ArtifactsService {
                 snapshots,
                 gate: Mutex::new(HashMap::new()),
                 render: Arc::new(RenderBroker::default()),
+                home: Mutex::new(std::env::var_os("HOME").map(PathBuf::from)),
             }),
         }
+    }
+
+    /// Override the home directory the source deny-list is anchored to.
+    pub fn set_home(&self, home: Option<PathBuf>) {
+        *lock(&self.inner.home) = home;
+    }
+
+    /// Authorize `path` as an artifact source (see [`check_source`]).
+    fn authorize_source(&self, path: &Path) -> Outcome<PathBuf> {
+        let home = lock(&self.inner.home).clone();
+        check_source(path, home.as_deref())
     }
 
     pub fn render(&self) -> &Arc<RenderBroker> {
@@ -875,7 +947,7 @@ impl ArtifactsService {
                 zeron_proto::visualize::preview_sibling(&view.stored_path).map(PathBuf::from);
             if let Some(stored_preview) = stored_preview {
                 if Path::new(&preview) != stored_preview {
-                    let preview_bytes = read_file(Path::new(&preview))?;
+                    let preview_bytes = read_file(&self.authorize_source(Path::new(&preview))?)?;
                     write_atomic(&stored_preview, &preview_bytes)?;
                 }
                 view.preview_path = Some(stored_preview.to_string_lossy().into_owned());
@@ -891,7 +963,7 @@ impl ArtifactsService {
                 }
                 let from = source_dir.join(&option.path);
                 let to = dir.join(&option.path);
-                let companion = read_file(&from)?;
+                let companion = read_file(&self.authorize_source(&from)?)?;
                 if from != to {
                     write_atomic(&to, &companion)?;
                 }
@@ -1178,8 +1250,8 @@ impl ArtifactsService {
 
     // ── user-side RPCs ──────────────────────────────────────────────────────
 
-    /// `ArtifactRegister`: import an existing file in the Space (or its
-    /// canonical checkout) as revision 1, keeping its origin.
+    /// `ArtifactRegister`: import an existing local file (any regular file
+    /// outside the source deny-list) as revision 1, keeping its origin.
     pub fn register(&self, params: &ArtifactRegisterParams) -> Outcome<ArtifactPublishReply> {
         let space = self.local_space(&params.space_id)?;
         let work_item_id = params
@@ -1216,17 +1288,7 @@ impl ArtifactsService {
         } else {
             Path::new(&space.path).join(raw)
         };
-        let path = canonical(&path);
-        let roots = vec![
-            canonical(Path::new(&space.path)),
-            self.canonical_root(&space, work_item_id.as_deref()),
-        ];
-        if !within(&path, &roots) {
-            return Err(ArtifactError::forbidden(format!(
-                "{} is outside the Space folder",
-                path.display()
-            )));
-        }
+        let path = self.authorize_source(&path)?;
         let title = params
             .title
             .clone()
@@ -1319,8 +1381,8 @@ impl ArtifactsService {
     // ── agent tools ─────────────────────────────────────────────────────────
 
     /// Resolve an agent-supplied path (absolute, or relative to the Chat's
-    /// cwd) and require it inside the Chat's cwd, the Space folder, the
-    /// scope's canonical checkout, or a temp directory.
+    /// cwd) and authorize it as a source: any regular local file outside the
+    /// deny-list.
     fn agent_path(&self, caller: &AgentCaller, raw: &str) -> Outcome<PathBuf> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -1340,22 +1402,7 @@ impl ArtifactsService {
         } else {
             Path::new(&chat_cwd).join(raw)
         };
-        let path = canonical(&path);
-        let mut roots = temp_roots();
-        roots.push(canonical(Path::new(&chat_cwd)));
-        roots.push(canonical(Path::new(&space.path)));
-        if within(&path, &roots) {
-            return Ok(path);
-        }
-        let canonical_root = self.canonical_root(&space, caller.work_item_id.as_deref());
-        if path.starts_with(&canonical_root) {
-            return Ok(path);
-        }
-        Err(ArtifactError::forbidden(format!(
-            "{} is outside this chat's folders (its cwd, the project folder, the canonical \
-             checkout, or a temp directory)",
-            path.display()
-        )))
+        self.authorize_source(&path)
     }
 
     /// `artifact_publish`.
