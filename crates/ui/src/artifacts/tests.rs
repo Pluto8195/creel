@@ -144,7 +144,7 @@ use zeron_rpc::RpcError;
 
 use super::document::MERMAID_SRC;
 use super::model::WebKind;
-use super::tab::{ArtifactTab, CompareState, FakeWebHost, Presenter};
+use super::tab::{ArtifactTab, FakeWebHost, Presenter};
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::work_outline::WorkOutlineActions;
@@ -202,7 +202,7 @@ pub(crate) fn content_reply(
     .unwrap()
 }
 
-fn open_tab(
+pub(crate) fn open_tab(
     cx: &mut TestAppContext,
     artifact: ArtifactView,
     reply: Reply,
@@ -228,7 +228,7 @@ fn open_tab(
     (tab, calls, shown, vcx)
 }
 
-fn content_calls(calls: &Calls) -> Vec<serde_json::Value> {
+pub(crate) fn content_calls(calls: &Calls) -> Vec<serde_json::Value> {
     calls
         .lock()
         .unwrap()
@@ -238,7 +238,7 @@ fn content_calls(calls: &Calls) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn reply_with(value: serde_json::Value) -> Reply {
+pub(crate) fn reply_with(value: serde_json::Value) -> Reply {
     Arc::new(move |_, _| Ok(value.clone()))
 }
 
@@ -384,7 +384,7 @@ fn revision_picker_loads_that_revision(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn compare_uses_the_revision_text_diff(cx: &mut TestAppContext) {
+fn compare_source_tab_uses_the_revision_text_diff(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
     let reply: Reply = Arc::new(|_, params| {
         let revision = params["revision"].as_u64().unwrap_or(2) as u32;
@@ -400,19 +400,28 @@ fn compare_uses_the_revision_text_diff(cx: &mut TestAppContext) {
         open_tab(cx, artifact(&id(1), "Plan", ArtifactKind::Markdown), reply);
     tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
     vcx.run_until_parked();
-    assert_eq!(content_calls(&calls).last().unwrap()["revision"], 1);
+    let revisions: Vec<_> = content_calls(&calls)
+        .iter()
+        .skip(1)
+        .map(|call| call["revision"].as_u64())
+        .collect();
+    assert_eq!(
+        revisions,
+        [Some(1), Some(2)],
+        "both sides are read by revision"
+    );
+    tab.update_in(vcx, |tab, window, cx| {
+        tab.set_compare_mode(super::compare::CompareMode::Source, window, cx)
+    });
     tab.read_with(vcx, |tab, _| {
         assert_eq!(tab.presenter(), Presenter::Compare);
-        let Some(CompareState::Ready {
-            older,
-            newer,
-            lines,
-        }) = tab.compare_state()
-        else {
-            panic!("compare ready");
-        };
-        assert_eq!((*older, *newer), (1, 2));
-        assert_eq!(lines, &zeron_proto::diff_lines("a\nb\n", "a\nc\n"));
+        let view = tab.compare_view().expect("compare view");
+        assert_eq!((view.left, view.right), (1, 2));
+        let data = view.data().expect("compare ready");
+        assert_eq!(
+            data.lines.as_deref(),
+            Some(zeron_proto::diff_lines("a\nb\n", "a\nc\n").as_slice())
+        );
     });
     vcx.update(|window, cx| {
         window.refresh();

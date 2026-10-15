@@ -19,14 +19,19 @@
 
 pub(crate) mod actions;
 pub(crate) mod cards;
+pub(crate) mod compare;
 pub(crate) mod document;
 pub(crate) mod layout_heuristics;
 pub(crate) mod links;
+pub(crate) mod markdown_diff;
 pub(crate) mod model;
+pub(crate) mod pixel_diff;
 pub(crate) mod render_check;
 pub(crate) mod store;
 pub(crate) mod tab;
 
+#[cfg(test)]
+mod compare_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

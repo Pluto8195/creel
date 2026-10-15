@@ -121,6 +121,9 @@ pub(crate) struct MarkdownPreview {
     tree: BlockTree,
     parsed_source: Arc<str>,
     block_lines: Vec<u32>,
+    /// Background tint per top-level block (the artifact revision compare
+    /// marks added / removed / changed blocks).
+    block_tints: Vec<Option<gpui::Hsla>>,
     comment_owner: Option<gpui::WeakEntity<super::FilesSurface>>,
     comments: Vec<crate::comments::ReviewComment>,
     comment_draft: Option<(u32, gpui::Entity<crate::composer::ComposerInput>, bool)>,
@@ -352,6 +355,7 @@ impl MarkdownPreview {
         Self {
             parsed_source: Arc::from(""),
             block_lines: Vec::new(),
+            block_tints: Vec::new(),
             comment_owner: None,
             comments: Vec::new(),
             comment_draft: None,
@@ -972,6 +976,19 @@ impl MarkdownPreview {
             .unwrap_or_else(|| gpui::Empty.into_any_element())
     }
 
+    /// Tint top-level blocks (index = block index in this preview's parse).
+    pub(crate) fn set_block_tints(
+        &mut self,
+        tints: Vec<Option<gpui::Hsla>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.block_tints != tints {
+            self.block_tints = tints;
+            self.list.remeasure_items(0..self.tree.len());
+            cx.notify();
+        }
+    }
+
     pub(crate) fn set_web_link_handler(&mut self, handler: WebLinkHandler) {
         self.open_web_link = Some(handler);
     }
@@ -1214,9 +1231,11 @@ impl MarkdownPreview {
                 });
                 let comments = self.comment_elements(ix, &theme, cx);
                 let comment_source = self.parsed_source.clone();
+                let tint = self.block_tints.get(ix).copied().flatten();
                 Some(
                     div()
                         .w_full()
+                        .when_some(tint, |el, tint| el.bg(tint))
                         .flex()
                         .flex_col()
                         .pb(px(render::MD_BLOCK_GAP))

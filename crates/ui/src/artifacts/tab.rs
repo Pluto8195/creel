@@ -9,8 +9,9 @@
 //! - htmlFragment / htmlPage / mermaid: the sandboxed web document
 //!   ([`super::document`]) in an embedded Browser surface;
 //! - image: a native image;
-//! - options: the option list; each opens its fragment (side by side is
-//!   phase 5).
+//! - options: the option list; each opens its fragment.
+//!
+//! "Compare" opens the kind-aware compare view ([`compare_view`]).
 //!
 //! Content is read with `ArtifactContent` (forwarded to the owning device).
 //! The web view is behind [`ArtifactWebHost`] so tests use a fake renderer.
@@ -26,9 +27,14 @@ use zeron_proto::{
     ArtifactPromoteParams, ArtifactView, TextDiffLine,
 };
 
+pub(crate) mod compare_view;
+pub(crate) use compare_view::CompareView;
+
 use super::actions::ArtifactUiError;
+use super::compare;
 use super::document;
 use super::model::{self, ArtifactBody, WebKind};
+use super::render_check::ArtifactRenderer;
 use crate::browser::fragment::FragmentTheme;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -166,22 +172,11 @@ pub(crate) enum Picker {
     Compare,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CompareState {
-    Loading,
-    Ready {
-        older: u32,
-        newer: u32,
-        lines: Vec<TextDiffLine>,
-    },
-    Failed(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Rendered,
     Source,
-    Compare { other: u32, state: CompareState },
+    Compare,
 }
 
 pub(crate) struct ArtifactTab {
@@ -205,7 +200,14 @@ pub(crate) struct ArtifactTab {
     option_shown: Option<String>,
     rendered_key: Option<(FragmentTheme, bool)>,
     generation: u64,
+    /// The open compare view (`Mode::Compare`).
+    compare: Option<CompareView>,
+    /// Renders both revisions offscreen for "Highlight changes" and onion
+    /// skin: the platform's web renderer, or a fake in tests.
+    renderer: Option<Rc<dyn ArtifactRenderer>>,
     _load: Option<Task<()>>,
+    _compare: Option<Task<()>>,
+    _compare_render: Option<Task<()>>,
     _side: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -222,7 +224,14 @@ impl ArtifactTab {
         cx: &mut Context<Self>,
     ) -> Self {
         let theme = cx.observe_global_in::<Theme>(window, |this, window, cx| {
-            if matches!(this.body, Some(ArtifactBody::Web { .. })) || this.option_shown.is_some() {
+            if this.compare_shows_web() {
+                if this.rendered_key != Some(render_key(cx)) {
+                    this.refresh_compare_theme(window, cx);
+                }
+            } else if this.mode != Mode::Compare
+                && (matches!(this.body, Some(ArtifactBody::Web { .. }))
+                    || this.option_shown.is_some())
+            {
                 let key = Some(render_key(cx));
                 if this.rendered_key != key {
                     this.present(window, cx);
@@ -249,7 +258,11 @@ impl ArtifactTab {
             option_shown: None,
             rendered_key: None,
             generation: 0,
+            compare: None,
+            renderer: default_renderer(),
             _load: None,
+            _compare: None,
+            _compare_render: None,
             _side: None,
             _subscriptions: vec![theme, observe],
         };
@@ -301,21 +314,14 @@ impl ArtifactTab {
     /// Whether the body shows the web view right now (Source, Compare, and
     /// native kinds hide it).
     pub(crate) fn shows_web(&self) -> bool {
-        matches!(self.presenter(), Presenter::Web(_))
-    }
-
-    pub(crate) fn compare_state(&self) -> Option<&CompareState> {
-        match &self.mode {
-            Mode::Compare { state, .. } => Some(state),
-            _ => None,
-        }
+        matches!(self.presenter(), Presenter::Web(_)) || self.compare_shows_web()
     }
 
     /// The component the body renders with right now.
     pub(crate) fn presenter(&self) -> Presenter {
-        match &self.mode {
+        match self.mode {
             Mode::Source => return Presenter::Source,
-            Mode::Compare { .. } => return Presenter::Compare,
+            Mode::Compare => return Presenter::Compare,
             Mode::Rendered => {}
         }
         if self.option_shown.is_some() {
@@ -369,8 +375,11 @@ impl ArtifactTab {
         self.loading = true;
         self.picker = None;
         self.option_shown = None;
-        if matches!(self.mode, Mode::Compare { .. }) {
+        if self.mode == Mode::Compare {
             self.mode = Mode::Rendered;
+            self.compare = None;
+            self._compare = None;
+            self._compare_render = None;
         }
         let params = self.content_params(revision, None, cx);
         let call = self.state.read(cx).artifact_actions().content(params);
@@ -547,70 +556,6 @@ impl ArtifactTab {
             .as_ref()
             .ok()
             .and_then(model::source_text)
-    }
-
-    /// "Compare with…": line diff between the shown revision and `other`
-    /// (older on the left), reusing the instruction revision diff presenter.
-    pub(crate) fn compare_with(&mut self, other: u32, window: &mut Window, cx: &mut Context<Self>) {
-        self.picker = None;
-        let Some(shown_text) = self.shown_text() else {
-            self.notice = Some("Only text artifacts can be compared.".to_owned());
-            cx.notify();
-            return;
-        };
-        let shown = self
-            .content
-            .as_ref()
-            .and_then(|reply| reply.as_ref().ok())
-            .map(|reply| reply.revision)
-            .or(self.shown)
-            .unwrap_or(0);
-        self.mode = Mode::Compare {
-            other,
-            state: CompareState::Loading,
-        };
-        let params = self.content_params(Some(other), None, cx);
-        let call = self.state.read(cx).artifact_actions().content(params);
-        self._side = Some(cx.spawn_in(window, async move |this, cx| {
-            let reply = call.await;
-            this.update(cx, |this, cx| {
-                let Mode::Compare { other: wanted, .. } = this.mode else {
-                    return;
-                };
-                if wanted != other {
-                    return;
-                }
-                let state = match reply {
-                    Err(error) => CompareState::Failed(error.text()),
-                    Ok(reply) => match model::source_text(&reply) {
-                        None => CompareState::Failed("Only text artifacts can be compared.".into()),
-                        Some(other_text) => {
-                            // `0` is the current file: newest.
-                            let newer_is_shown = shown == 0 || shown > other;
-                            let (older, newer, old_text, new_text) = if newer_is_shown {
-                                (other, shown, other_text, shown_text.clone())
-                            } else {
-                                (shown, other, shown_text.clone(), other_text)
-                            };
-                            CompareState::Ready {
-                                older,
-                                newer,
-                                lines: zeron_proto::diff_lines(&old_text, &new_text),
-                            }
-                        }
-                    },
-                };
-                this.mode = Mode::Compare { other, state };
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    pub(crate) fn close_compare(&mut self, cx: &mut Context<Self>) {
-        self.mode = Mode::Rendered;
-        cx.notify();
     }
 
     fn is_local(&self, artifact: &ArtifactView, cx: &App) -> bool {
@@ -860,6 +805,11 @@ impl ArtifactTab {
         let local = self.is_local(artifact, cx);
         let standalone = self.standalone_path(cx).is_some();
         let text = !artifact.kind.is_binary();
+        let compare_available = if artifact.kind == ArtifactKind::Options {
+            matches!(&self.body, Some(ArtifactBody::Options(manifest)) if manifest.options.len() > 1)
+        } else {
+            artifact.revisions.len() > 1
+        };
         let button = |id: &'static str, label: &'static str, glyph: &'static str, enabled: bool| {
             crate::files::toolbar_button(id, label)
                 .debug_selector(move || id.into())
@@ -911,17 +861,26 @@ impl ArtifactTab {
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_picker(Picker::Revisions, cx))),
             )
-            .when(text && artifact.revisions.len() > 1, |el| {
-                el.child(
-                    picker_button(
-                        "artifact-compare",
-                        "Compare with\u{2026}".into(),
-                        self.picker == Some(Picker::Compare),
+            .when(compare_available, |el| {
+                if artifact.kind == ArtifactKind::Options {
+                    el.child(
+                        picker_button("artifact-compare", "Compare options".into(), false)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.compare_options(window, cx)),
+                            ),
                     )
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.toggle_picker(Picker::Compare, cx)),
-                    ),
-                )
+                } else {
+                    el.child(
+                        picker_button(
+                            "artifact-compare",
+                            "Compare with\u{2026}".into(),
+                            self.picker == Some(Picker::Compare),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.toggle_picker(Picker::Compare, cx)),
+                        ),
+                    )
+                }
             })
             .child(div().flex_1())
             .child(
@@ -985,6 +944,22 @@ impl ArtifactTab {
         let picker = self.picker?;
         let now = model::now_ms();
         let shown = self.shown.unwrap_or(artifact.current_revision);
+        let previous = (picker == Picker::Compare)
+            .then(|| compare::default_pair(artifact, shown))
+            .flatten()
+            .map(|(older, _)| {
+                div()
+                    .id("artifact-compare-previous")
+                    .debug_selector(|| "artifact-compare-previous".into())
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .cursor_pointer()
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text)
+                    .hover(|el| el.bg(theme.element_hover))
+                    .child(SharedString::from(format!("Previous revision (r{older})")))
+                    .on_click(cx.listener(|this, _, window, cx| this.compare_previous(window, cx)))
+            });
         let rows = artifact.revisions.iter().filter_map(|revision| {
             let id = revision.id;
             if picker == Picker::Compare && id == shown {
@@ -1049,6 +1024,7 @@ impl ArtifactTab {
                 .border_b_1()
                 .border_color(theme.border)
                 .bg(theme.surface_raised)
+                .children(previous)
                 .children(rows)
                 .into_any_element(),
         )
@@ -1233,7 +1209,7 @@ impl ArtifactTab {
                             .pt(px(4.0))
                             .text_size(crate::typography::ui_rems(10.5))
                             .text_color(theme.text_faint)
-                            .child("Side-by-side comparison is coming later."),
+                            .child("Compare two options with \u{201c}Compare options\u{201d}."),
                     )
                     .into_any_element()
             }
@@ -1247,64 +1223,7 @@ impl ArtifactTab {
                 Some(text) => Self::render_text(text, theme, "artifact-source-view"),
                 None => message("No text source for this artifact.".into()),
             },
-            Presenter::Compare => {
-                let Some(state) = self.compare_state() else {
-                    return message(String::new());
-                };
-                let close = div()
-                    .id("artifact-compare-close")
-                    .debug_selector(|| "artifact-compare-close".into())
-                    .flex_none()
-                    .cursor_pointer()
-                    .text_color(theme.text_muted)
-                    .hover(|el| el.text_color(theme.text))
-                    .child("Done")
-                    .on_click(cx.listener(|this, _, _, cx| this.close_compare(cx)));
-                let (title, content) = match state {
-                    CompareState::Loading => ("Comparing\u{2026}".to_owned(), None),
-                    CompareState::Failed(error) => (error.clone(), None),
-                    CompareState::Ready {
-                        older,
-                        newer,
-                        lines,
-                    } => (
-                        if *newer == 0 {
-                            format!("r{older} \u{2192} current file")
-                        } else {
-                            format!("r{older} \u{2192} r{newer}")
-                        },
-                        Some(crate::work_outline::revision_diff::render_text_diff(
-                            "artifact-compare-diff",
-                            lines,
-                            theme,
-                        )),
-                    ),
-                };
-                div()
-                    .id("artifact-compare-view")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .p(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(title)),
-                            )
-                            .child(close),
-                    )
-                    .children(content)
-                    .into_any_element()
-            }
+            Presenter::Compare => self.render_compare(theme, cx),
         }
     }
 }
@@ -1376,6 +1295,18 @@ impl gpui::Render for ArtifactTab {
             .children(picker)
             .children(notice)
             .child(div().flex_1().min_h_0().relative().child(body))
+    }
+}
+
+/// The platform's offscreen renderer (none in tests, which inject a fake).
+fn default_renderer() -> Option<Rc<dyn ArtifactRenderer>> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        super::render_check::platform_renderer()
     }
 }
 

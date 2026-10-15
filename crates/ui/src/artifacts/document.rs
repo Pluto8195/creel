@@ -74,6 +74,98 @@ pub(crate) fn web_document(
     }
 }
 
+/// The viewport a compare render uses for each pane (and the offscreen
+/// renders behind "Highlight changes" and onion skin), so both revisions lay
+/// out at the same width and region boxes line up with the panes.
+pub(crate) const COMPARE_VIEWPORT_WIDTH: u32 = 520;
+/// Tall enough to capture most plans in one snapshot.
+pub(crate) const COMPARE_VIEWPORT_HEIGHT: u32 = 1400;
+
+/// One pane's sandboxed frame document for the compare view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompareFrame {
+    pub(crate) html: String,
+    /// The frame's width in the host (what the tab's wrapper gives the
+    /// frame at [`COMPARE_VIEWPORT_WIDTH`]).
+    pub(crate) width: u32,
+    /// Where the frame's top-left sits inside an offscreen render of the same
+    /// document at the compare viewport (the host's padding and centering);
+    /// region boxes are translated by it.
+    pub(crate) origin: (u32, u32),
+}
+
+/// The frame document of `kind` + `source` exactly as [`web_document`] puts
+/// it in its sandbox frame, plus `script` (scroll sync) and `overlay`
+/// (positioned change boxes) inside the frame.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compare_frame(
+    kind: WebKind,
+    source: &str,
+    title: &str,
+    mime_type: &str,
+    theme: &FragmentTheme,
+    reduced_motion: bool,
+    script: &str,
+    overlay: &str,
+) -> CompareFrame {
+    let scripts = format!("{LINK_FRAME_SCRIPT}{script}");
+    let body = |fragment: &str| format!("<script>{scripts}</script>\n{fragment}\n{overlay}");
+    let (html, wide) = match kind {
+        WebKind::Fragment => (
+            fragment::frame_document(&body(source), title, theme, reduced_motion),
+            false,
+        ),
+        WebKind::Mermaid => (
+            fragment::frame_document(
+                &body(&mermaid_fragment(source, theme.dark)),
+                title,
+                theme,
+                reduced_motion,
+            ),
+            true,
+        ),
+        WebKind::Image => (
+            fragment::frame_document(
+                &body(&image_fragment(source, mime_type, title)),
+                title,
+                theme,
+                reduced_motion,
+            ),
+            true,
+        ),
+        WebKind::Page => {
+            let page = inject_head_script(source, &scripts);
+            let lower = page.to_ascii_lowercase();
+            let page = match lower.rfind("</body>") {
+                Some(at) => format!("{}{overlay}{}", &page[..at], &page[at..]),
+                None => format!("{page}{overlay}"),
+            };
+            (page, false)
+        }
+    };
+    let (width, origin) = if kind == WebKind::Page {
+        (COMPARE_VIEWPORT_WIDTH, (0, 0))
+    } else {
+        let max = if wide {
+            fragment::WIDE_WIDTH
+        } else {
+            fragment::NORMAL_WIDTH
+        };
+        (
+            (COMPARE_VIEWPORT_WIDTH - 32).min(max),
+            (
+                16 + (COMPARE_VIEWPORT_WIDTH - 32).saturating_sub(max) / 2,
+                16,
+            ),
+        )
+    };
+    CompareFrame {
+        html,
+        width,
+        origin,
+    }
+}
+
 /// In the frame: clicks on links (other than same-document `#id`) post the
 /// link's raw `href` to the outer document instead of navigating. The frame
 /// is `sandbox="allow-scripts"` (no popups, no top navigation) and its
