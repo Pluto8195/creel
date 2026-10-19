@@ -1164,7 +1164,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = zeron_harness::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

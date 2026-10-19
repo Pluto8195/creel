@@ -981,7 +981,7 @@ fn fetch_github_pr_by_url(url: &str) -> Option<PrStatus> {
 /// genuinely clean worktree instead reads as `Some(DiffStat::default())`,
 /// since `git diff --shortstat` succeeds with empty stdout in that case).
 fn git_diff_shortstat(cwd: &Path) -> Option<DiffStat> {
-    let output = Command::new("git")
+    let output = zeron_harness::git_command()
         .args(["diff", "--shortstat", "HEAD"])
         .current_dir(cwd)
         .output()

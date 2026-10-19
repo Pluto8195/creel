@@ -885,7 +885,7 @@ fn capture_git<'a>(
     max_bytes: usize,
 ) -> BoxFuture<'a, Result<Capture, EngineError>> {
     Box::pin(async move {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = zeron_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -2117,7 +2117,7 @@ pub async fn snapshot_tree(root: &Path) -> Result<String, EngineError> {
         chrono::Utc::now().timestamp_micros()
     ));
     let run = |args: &[&str]| {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = zeron_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

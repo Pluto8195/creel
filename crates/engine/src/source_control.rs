@@ -791,6 +791,8 @@ impl ProcessRunner for SystemProcessRunner {
             let mut command = tokio::process::Command::new(executable);
             zeron_harness::compose_login_shell_path(&mut command);
             command
+        } else if request.program == "git" {
+            zeron_harness::git_command_async()
         } else {
             tokio::process::Command::new(&request.program)
         };
