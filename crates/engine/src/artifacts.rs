@@ -67,7 +67,7 @@ const MARKER_LEDGER_PREFIX: &str = "artifact-marker:";
 // ── git helpers (synchronous; callers run on blocking threads) ──────────────
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let output = zeron_harness::git_command()
         .arg("-C")
         .arg(cwd)
         .args(args)

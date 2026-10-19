@@ -304,20 +304,52 @@ fn compose_path<'a>(
     cmd: &mut std::process::Command,
     executable_dir: impl IntoIterator<Item = &'a std::path::Path>,
 ) {
+    compose_path_from(
+        cmd,
+        executable_dir,
+        std::env::var_os("PATH").as_deref(),
+        shell_env::login_shell_path(),
+    );
+}
+
+/// [`compose_path`] with the process and login-shell PATH snapshots supplied,
+/// so the composition is testable without the real environment or shell.
+fn compose_path_from<'a>(
+    cmd: &mut std::process::Command,
+    executable_dir: impl IntoIterator<Item = &'a std::path::Path>,
+    process_path: Option<&std::ffi::OsStr>,
+    login_shell_path: Option<&std::ffi::OsStr>,
+) {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     for dir in executable_dir {
         paths.push(dir.to_path_buf());
     }
-    if let Some(path) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&path));
+    if let Some(path) = process_path {
+        paths.extend(std::env::split_paths(path));
     }
-    if let Some(shell_path) = shell_env::login_shell_path() {
+    if let Some(shell_path) = login_shell_path {
         paths.extend(std::env::split_paths(shell_path));
     }
     retain_absolute_deduped(&mut paths);
     if let Ok(joined) = std::env::join_paths(paths) {
         cmd.env("PATH", joined);
     }
+}
+
+/// A `git` command with the login-shell PATH composed in.
+///
+/// A GUI launch's own PATH lacks `/opt/homebrew/bin`, so git filters such as
+/// Git LFS's `git-lfs filter-process` (run during checkout and `worktree add`)
+/// would fail with "command not found". Every engine `git` spawn starts here.
+pub fn git_command() -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    compose_login_shell_path_std(&mut command);
+    command
+}
+
+/// Async counterpart to [`git_command`].
+pub fn git_command_async() -> tokio::process::Command {
+    tokio::process::Command::from(git_command())
 }
 
 fn retain_absolute_deduped(paths: &mut Vec<std::path::PathBuf>) {
@@ -591,5 +623,68 @@ mod stderr_tests {
         let snapshot = tail.snapshot().unwrap();
         assert!(snapshot.len() <= 1400);
         assert!(snapshot.ends_with("last stderr line"));
+    }
+}
+
+#[cfg(test)]
+mod git_command_tests {
+    use super::*;
+
+    fn composed_path(cmd: &std::process::Command) -> Vec<std::path::PathBuf> {
+        let value = cmd
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("PATH is set on the command");
+        std::env::split_paths(value).collect()
+    }
+
+    #[test]
+    fn composed_path_appends_login_shell_entries_after_process_path() {
+        let process = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let login = std::env::join_paths(["/opt/homebrew/bin", "/usr/bin"]).unwrap();
+        let mut cmd = std::process::Command::new("git");
+
+        compose_path_from(&mut cmd, [], Some(&process), Some(&login));
+
+        assert_eq!(
+            composed_path(&cmd),
+            ["/usr/bin", "/bin", "/opt/homebrew/bin"].map(std::path::PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn git_command_carries_a_composed_path_for_sync_and_async() {
+        let sync = git_command();
+        assert_eq!(sync.get_program(), "git");
+        assert!(sync.get_envs().any(|(key, _)| key == "PATH"));
+
+        let async_command = git_command_async();
+        assert_eq!(async_command.as_std().get_program(), "git");
+        assert!(
+            async_command
+                .as_std()
+                .get_envs()
+                .any(|(key, _)| key == "PATH")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_subprocess_finds_a_filter_only_present_in_the_composed_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("fake-git-lfs");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let process = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let login = std::env::join_paths([dir.path()]).unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        compose_path_from(&mut cmd, [], Some(&process), Some(&login));
+        let status = cmd.args(["-c", "fake-git-lfs"]).status().unwrap();
+
+        assert!(status.success(), "tool in login-shell PATH must resolve");
     }
 }

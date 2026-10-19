@@ -119,7 +119,7 @@ impl PrReviewTools {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = zeron_harness::git_command()
         .arg("-C")
         .arg(dir)
         .args(args)

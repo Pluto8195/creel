@@ -254,7 +254,7 @@ impl Repos {
         args: &[&str],
         cwd: Option<&Path>,
     ) -> Result<String, EngineError> {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = zeron_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
