@@ -299,7 +299,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Err(notice) = self.open_start_chat(space_id, item_id, cx) {
-            self.sidebar_notice = Some(notice.into());
+            self.set_sidebar_error(notice);
             cx.notify();
         }
     }
@@ -611,6 +611,21 @@ fn note(selector: &'static str, text: impl Into<SharedString>, color: gpui::Hsla
         .child(text.into())
 }
 
+/// The shared persistent, copyable error card, tagged for tests.
+fn error_card(
+    selector: &'static str,
+    theme: &Theme,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+) -> gpui::Div {
+    div()
+        .debug_selector(move || selector.into())
+        .w_full()
+        .child(crate::error_notice::ErrorNotice::new(
+            selector, theme, title, detail,
+        ))
+}
+
 fn section_label(text: &'static str, theme: &Theme) -> gpui::Div {
     div()
         .mt(px(10.0))
@@ -684,10 +699,11 @@ pub(super) fn start_chat_card(
             ));
         }
         ValidationState::Failed(message) => {
-            execution = execution.child(note(
+            execution = execution.child(error_card(
                 "start-chat-validation-failed",
+                theme,
+                "Couldn't validate this Chat's setup",
                 message.clone(),
-                theme.warning,
             ));
         }
         ValidationState::Done(reply) => {
@@ -819,10 +835,11 @@ pub(super) fn start_chat_card(
                     ));
                 }
                 Some(Err(message)) => {
-                    list = list.child(note(
+                    list = list.child(error_card(
                         "start-chat-worktree-error",
+                        theme,
+                        "Couldn't list worktrees",
                         message.clone(),
-                        theme.warning,
                     ));
                 }
                 Some(Ok(worktrees)) => {
@@ -956,18 +973,12 @@ pub(super) fn start_chat_card(
             .mt(px(8.0))
             .flex()
             .flex_col()
-            .child(note(
+            .child(error_card(
                 "start-chat-failure-message",
+                theme,
                 failure.message,
-                theme.warning,
+                failure.remediation.unwrap_or_default(),
             ))
-            .when_some(failure.remediation, |el, remediation| {
-                el.child(note(
-                    "start-chat-failure-remediation",
-                    remediation,
-                    theme.text_muted,
-                ))
-            })
     });
     let rejected = dialog.rejected.clone().map(|(_, detail)| {
         div()
@@ -976,10 +987,11 @@ pub(super) fn start_chat_card(
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .child(note(
+            .child(error_card(
                 "start-chat-rejected-detail",
-                format!("The Chat was created but its first Turn was rejected: {detail}"),
-                theme.warning,
+                theme,
+                "The Chat was created but its first Turn was rejected",
+                detail,
             ))
             .child(
                 div().child(
@@ -1334,7 +1346,7 @@ mod tests {
         click(cx, "start-chat-worktree-existing-0");
         click(cx, "start-chat-start");
         assert!(
-            cx.debug_bounds("start-chat-failure-remediation").is_some(),
+            cx.debug_bounds("start-chat-failure-message").is_some(),
             "unknown outcome"
         );
         shell.read_with(cx, |shell, _| {
@@ -1501,7 +1513,7 @@ mod tests {
             assert!(failure.message.contains("/work/alpha/.worktrees/gone"));
             assert_eq!(failure.remediation.as_deref(), Some(error.remediation()));
         });
-        assert!(cx.debug_bounds("start-chat-failure-remediation").is_some());
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
     }
 
     /// Effective Instructions open expanded when they changed since the

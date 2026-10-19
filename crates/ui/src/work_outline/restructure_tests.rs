@@ -305,7 +305,7 @@ fn retrying_a_failed_move_reuses_its_operation_id(cx: &mut gpui::TestAppContext)
     );
     select_item(&outline, vcx, UI);
     press(vcx, "shift-up");
-    assert!(outline.read_with(vcx, |outline, _| outline.notice().is_some()));
+    assert!(outline.read_with(vcx, |outline, _| outline.error_notice().is_some()));
     press(vcx, "shift-up");
     let ids: Vec<String> = calls
         .lock()
@@ -1240,7 +1240,7 @@ fn a_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppConte
         "rolled back"
     );
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
-    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert!(outline.read_with(vcx, |o, _| o.error_notice().is_some()));
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
     assert!(
         !crate::overview_positions::path(dir.path()).exists(),
@@ -1335,7 +1335,7 @@ fn a_reply_that_never_lands_does_not_wedge_restructuring(cx: &mut gpui::TestAppC
         [LAUNCH, HOUSEKEEPING],
         "rolled back"
     );
-    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert!(outline.read_with(vcx, |o, _| o.error_notice().is_some()));
     assert_eq!(
         calls.lock().unwrap().len(),
         1,
@@ -1463,7 +1463,7 @@ fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestA
 
     release_reply(&gate, vcx);
     assert_eq!(parent(vcx), 0, "rolled back to the top level");
-    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert!(outline.read_with(vcx, |o, _| o.error_notice().is_some()));
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
 }
 
@@ -1671,7 +1671,7 @@ fn a_failed_chat_move_rolls_back_and_retries_with_its_operation_id(cx: &mut gpui
         Some(row_key::item("s1", UI)),
         "rolled back"
     );
-    assert!(outline.read_with(vcx, |o, _| o.notice().is_some()));
+    assert!(outline.read_with(vcx, |o, _| o.error_notice().is_some()));
     press(vcx, "shift-down");
     release_reply(&gate, vcx);
     let ids: Vec<String> = calls
@@ -2054,5 +2054,65 @@ fn a_failed_move_dismisses_its_toast(cx: &mut gpui::TestAppContext) {
     select_item(&outline, vcx, API);
     press(vcx, "shift-tab");
     assert_eq!(toast(&outline, vcx), None);
-    assert!(outline.read_with(vcx, |outline, _| outline.notice().is_some()));
+    assert!(outline.read_with(vcx, |outline, _| outline.error_notice().is_some()));
+}
+
+/// Error toasts never auto-dismiss and carry Copy; info toasts still fade.
+#[gpui::test]
+fn error_toasts_persist_with_copy_while_info_toasts_still_dismiss(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = crate::work_outline::store::fixture_snapshot;
+    let (_overview, outline, _calls, vcx) =
+        restructure_overview(cx, dir.path(), fixture("s1"), reply_ok);
+    let detail =
+        "git worktree add failed\nPreparing worktree\nfatal: the remote end hung up unexpectedly";
+    outline.update(vcx, |outline, cx| {
+        outline.show_notice("Path copied", cx);
+        outline.show_error(detail, cx);
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear());
+    assert!(vcx.debug_bounds("outline-notice").is_some());
+    assert!(vcx.debug_bounds("outline-error").is_some());
+
+    // Well past the info toast's window.
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(60));
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear());
+    assert_eq!(
+        outline.read_with(vcx, |o, _| o.notice().map(str::to_owned)),
+        None
+    );
+    assert!(
+        vcx.debug_bounds("outline-notice").is_none(),
+        "info toast faded"
+    );
+    assert!(vcx.debug_bounds("outline-error").is_some(), "error stays");
+    let (title, body) = outline.read_with(vcx, |o, _| {
+        let (t, b) = o.error_notice().expect("error persists");
+        (t.to_owned(), b.to_owned())
+    });
+    assert_eq!(title, "git worktree add failed");
+    assert!(body.ends_with("hung up unexpectedly"));
+
+    // Copy writes the whole text; Dismiss is the only way out.
+    let at = vcx
+        .debug_bounds("outline-error-notice-copy")
+        .expect("Copy")
+        .center();
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    assert_eq!(
+        vcx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(detail)
+    );
+    let at = vcx
+        .debug_bounds("outline-error-notice-dismiss")
+        .expect("Dismiss")
+        .center();
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(outline.read_with(vcx, |o, _| o.error_notice().is_none()));
 }

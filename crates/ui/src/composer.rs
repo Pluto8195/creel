@@ -8096,27 +8096,46 @@ impl Render for Composer {
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
             .when_some(failure, |el, message| {
-                // Amber with "Warning" for the offline-ish case (engine not
-                // connected), red with "Error" for send/run failures. Click
-                // dismisses.
+                // Amber "Warning" chip for the offline-ish case (engine not
+                // connected); everything else is a send/run/worktree failure
+                // and gets the persistent, copyable error card (full detail,
+                // Copy button) that stays until dismissed.
                 let offline = message.as_ref() == "Engine not connected";
+                if offline {
+                    return el.child(
+                        notice_chip(&theme, true, "Warning", message, NoticeChipIcon::Plain)
+                            .id("composer-failure")
+                            .mx(px(4.0))
+                            .mt(px(6.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.failure = None;
+                                this.failure_key = None;
+                                cx.notify();
+                            })),
+                    );
+                }
+                let composer = cx.entity();
                 el.child(
-                    notice_chip(
-                        &theme,
-                        offline,
-                        if offline { "Warning" } else { "Error" },
-                        message,
-                        NoticeChipIcon::Plain,
-                    )
-                    .id("composer-failure")
-                    .mx(px(4.0))
-                    .mt(px(6.0))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.failure = None;
-                        this.failure_key = None;
-                        cx.notify();
-                    })),
+                    div()
+                        .id("composer-failure")
+                        .debug_selector(|| "composer-failure".into())
+                        .mx(px(4.0))
+                        .mt(px(6.0))
+                        .child(
+                            crate::error_notice::ErrorNotice::from_text(
+                                "composer-failure-card",
+                                &theme,
+                                &message,
+                            )
+                            .on_dismiss(move |_, cx| {
+                                composer.update(cx, |this, cx| {
+                                    this.failure = None;
+                                    this.failure_key = None;
+                                    cx.notify();
+                                })
+                            }),
+                        ),
                 )
             })
             .children(context_reset)

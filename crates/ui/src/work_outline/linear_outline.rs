@@ -177,7 +177,7 @@ impl OutlineView {
             let result = task.await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => this.show_notice(format!("Fixed the link to {}", project.name), cx),
-                Err(error) => this.show_notice(
+                Err(error) => this.show_error(
                     format!("Couldn\u{2019}t fix the link: {}", error.user_text()),
                     cx,
                 ),

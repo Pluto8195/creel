@@ -319,6 +319,56 @@ mod tests {
         assert!(cx.debug_bounds("pr-review-requested-status-1").is_some());
     }
 
+    /// The git worktree failure Mikey hit, verbatim: multi-line stderr.
+    const WORKTREE_FAILURE: &str = "pr-review/worktree: git worktree add /work/ws/.wt/pr-8 failed\nPreparing worktree (new branch 'pr-8')\ngit-lfs filter-process: git-lfs: command not found\nfatal: the remote end hung up unexpectedly";
+
+    #[gpui::test]
+    fn a_failed_launch_shows_a_copyable_error_notice_with_the_full_detail(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
+        click(cx, "pr-review-requested-review-1");
+        let text = match page.read_with(cx, |page, _| {
+            page.review_status("https://github.com/acme/flagship/pull/8")
+        }) {
+            Some(ReviewStatus::Failed(text)) => text,
+            other => panic!("expected a failure, got {other:?}"),
+        };
+        // Nothing is truncated in the model: every stderr line is there.
+        for line in [
+            "git worktree add /work/ws/.wt/pr-8 failed",
+            "Preparing worktree (new branch 'pr-8')",
+            "git-lfs: command not found",
+            "fatal: the remote end hung up unexpectedly",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        // Rendered as the shared error card, with its Copy button.
+        assert!(cx.debug_bounds("pr-review-requested-status-1").is_some());
+        assert!(
+            cx.debug_bounds("pr-review-requested-status-1-error")
+                .is_some()
+        );
+        click(cx, "pr-review-requested-status-1-error-copy");
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert_eq!(
+            copied,
+            format!("{}\n\n{text}", crate::chat_type_view::REVIEW_FAILURE_TITLE)
+        );
+        assert!(copied.contains("hung up unexpectedly"));
+        // It stays: a later frame does not clear it.
+        draw(cx);
+        assert!(
+            cx.debug_bounds("pr-review-requested-status-1-error")
+                .is_some()
+        );
+    }
+
     #[gpui::test]
     fn the_url_box_parses_urls_and_short_references(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

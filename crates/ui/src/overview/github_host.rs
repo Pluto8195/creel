@@ -73,7 +73,13 @@ impl Overview {
             cx.spawn(async move |cx| {
                 if let Err(error) = task.await {
                     let text = crate::pr_review_launch::failure_text(&error);
-                    outline.update(cx, |outline, cx| outline.show_notice(text, cx));
+                    outline.update(cx, |outline, cx| {
+                        outline.show_error_titled(
+                            crate::chat_type_view::REVIEW_FAILURE_TITLE,
+                            text,
+                            cx,
+                        )
+                    });
                 }
             })
             .detach();

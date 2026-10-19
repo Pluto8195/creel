@@ -179,8 +179,10 @@ pub fn resolve_create(result: Result<Value, String>, plan: Option<PlanReply>) ->
         },
         Err(err) => CreateResolution {
             cwd: None,
+            // First line = the card title; the rest = the full, untruncated
+            // git output (the composer's copyable error card shows it all).
             failure: Some(format!(
-                "Couldn't create a worktree ({err}) — sent in the main checkout instead."
+                "Couldn't create a worktree — sent in the main checkout instead.\n{err}"
             )),
             outcome: WorkspaceOutcome::Main {
                 plan,
