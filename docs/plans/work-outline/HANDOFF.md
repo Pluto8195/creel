@@ -65,6 +65,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Options: compares two options of the current revision.
   - Verified only by headless tests.
 
+- **Git uses the login-shell PATH** (2026-10-19): every engine `git` spawn goes through
+  `zeron_harness::git_command()` / `git_command_async()`. Before this, worktrees in LFS repos
+  (flagship) failed with "git-lfs: command not found" because the GUI app's PATH lacks
+  `/opt/homebrew/bin`. New `git` spawns must use these helpers.
+- **Error notices** (`crates/ui/src/error_notice.rs`): errors are a red card with full wrapped
+  detail and a Copy button, and stay until dismissed. Used by the PR review launcher, Start Chat,
+  composer send/worktree failures, and error toasts.
+
 ## Known gaps
 
 - Visual compare: markdown panes don't scroll in sync; highlight and onion skin cover only the
