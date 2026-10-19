@@ -83,6 +83,8 @@ pub(crate) struct ErrorNotice {
     theme: Theme,
     title: SharedString,
     detail: SharedString,
+    /// What Copy writes; the exact source text when built from one string.
+    copy: Option<SharedString>,
     on_dismiss: Option<Dismiss>,
 }
 
@@ -98,6 +100,7 @@ impl ErrorNotice {
             theme: theme.clone(),
             title: title.into(),
             detail: detail.into(),
+            copy: None,
             on_dismiss: None,
         }
     }
@@ -106,7 +109,15 @@ impl ErrorNotice {
     /// detail (the whole text is what Copy writes either way).
     pub(crate) fn from_text(id: impl Into<ElementId>, theme: &Theme, text: &str) -> Self {
         let (title, detail) = split_error(text);
-        Self::new(id, theme, title, detail)
+        let mut notice = Self::new(id, theme, title, detail);
+        notice.copy = Some(text.trim().to_owned().into());
+        notice
+    }
+
+    /// Override what Copy writes (the exact source text of the error).
+    pub(crate) fn with_copy(mut self, copy: impl Into<SharedString>) -> Self {
+        self.copy = Some(copy.into());
+        self
     }
 
     pub(crate) fn on_dismiss(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -122,21 +133,24 @@ impl RenderOnce for ErrorNotice {
             theme,
             title,
             detail,
+            copy,
             on_dismiss,
         } = self;
         let accent = theme.danger;
         let muted = theme.danger_muted;
         let copied = window.use_keyed_state(
-            SharedString::from(format!("error-notice-copied-{id:?}")),
+            SharedString::from(format!("error-notice-copied-{id}")),
             cx,
             |_, _| false,
         );
         let is_copied = *copied.read(cx);
-        let text = copy_text(&title, &detail);
+        let text = copy.map_or_else(|| copy_text(&title, &detail), |text| text.to_string());
 
         let button = |button_id: SharedString, label: &'static str| {
+            let selector = button_id.to_string();
             div()
                 .id(button_id)
+                .debug_selector(move || selector.clone())
                 .flex_none()
                 .px(px(8.0))
                 .py(px(2.0))
@@ -153,8 +167,10 @@ impl RenderOnce for ErrorNotice {
                 .child(label)
         };
 
+        // The selector flips with the label so tests can see the feedback.
+        let copy_selector = if is_copied { "copied" } else { "copy" };
         let copy_button = button(
-            format!("{id:?}-copy").into(),
+            format!("{id}-{copy_selector}").into(),
             if is_copied { "Copied" } else { "Copy" },
         )
         .on_click(move |_, _, cx| {
@@ -176,14 +192,16 @@ impl RenderOnce for ErrorNotice {
         });
 
         let dismiss_button = on_dismiss.map(|dismiss| {
-            button(format!("{id:?}-dismiss").into(), "Dismiss").on_click(move |_, window, cx| {
+            button(format!("{id}-dismiss").into(), "Dismiss").on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 dismiss(window, cx);
             })
         });
 
+        let card_selector = id.to_string();
         div()
             .id(id.clone())
+            .debug_selector(move || card_selector.clone())
             .w_full()
             .min_w_0()
             .flex()
@@ -238,5 +256,111 @@ impl RenderOnce for ErrorNotice {
                         .child(detail),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext};
+
+    const GIT_ERROR: &str = "git worktree add /tmp/wt failed\nPreparing worktree (new branch 'x')\n\
+        git-lfs filter-process: git-lfs: command not found\n\
+        fatal: the remote end hung up unexpectedly";
+
+    struct Host {
+        text: SharedString,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::of(cx).clone();
+            div()
+                .w(px(420.0))
+                .child(ErrorNotice::from_text("err", &theme, &self.text))
+        }
+    }
+
+    fn host<'a>(cx: &'a mut TestAppContext, text: &str) -> &'a mut VisualTestContext {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+        let text = text.to_owned();
+        let (_, vcx) = cx.add_window_view(move |_, _| Host { text: text.into() });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear());
+        vcx
+    }
+
+    #[test]
+    fn copy_text_is_title_then_the_full_detail() {
+        assert_eq!(copy_text("Boom", ""), "Boom");
+        assert_eq!(copy_text("Boom", "a\nb\n"), "Boom\n\na\nb");
+        assert_eq!(copy_text("", "only detail"), "only detail");
+        // Long detail is never truncated in the model.
+        let long = "x".repeat(50_000);
+        assert_eq!(copy_text("T", &long).len(), 50_000 + 3);
+    }
+
+    #[test]
+    fn multi_line_errors_split_into_title_and_full_detail() {
+        let (title, detail) = split_error(GIT_ERROR);
+        assert_eq!(title, "git worktree add /tmp/wt failed");
+        assert!(detail.contains("git-lfs: command not found"));
+        assert!(detail.ends_with("hung up unexpectedly"));
+        let (title, detail) = split_error("  one line  ");
+        assert_eq!((title.as_ref(), detail.as_ref()), ("one line", ""));
+    }
+
+    #[test]
+    fn failure_wording_is_told_apart_from_status_text() {
+        assert!(text_reports_failure("Couldn\u{2019}t rename chat: boom"));
+        assert!(text_reports_failure("Sign in failed: nope"));
+        assert!(text_reports_failure("Engine not connected"));
+        assert!(!text_reports_failure("Path copied"));
+        assert!(!text_reports_failure("Syncing\u{2026}"));
+    }
+
+    #[gpui::test]
+    fn copy_writes_the_exact_full_text_and_shows_copied(cx: &mut TestAppContext) {
+        let vcx = host(cx, GIT_ERROR);
+        assert!(vcx.debug_bounds("err-copied").is_none());
+        let at = vcx.debug_bounds("err-copy").expect("Copy button").center();
+        vcx.simulate_click(at, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear());
+        let copied = vcx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some(GIT_ERROR));
+        assert!(vcx.debug_bounds("err-copied").is_some(), "Copied feedback");
+        // The feedback is transient; the card itself is not.
+        vcx.executor().advance_clock(COPIED_FEEDBACK * 2);
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("err-copy").is_some());
+    }
+
+    #[gpui::test]
+    fn long_detail_renders_in_a_bounded_scrollable_block(cx: &mut TestAppContext) {
+        let detail = (0..400)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let vcx = host(cx, &format!("Boom\n{detail}"));
+        let bounds = vcx.debug_bounds("err").expect("card drawn");
+        assert!(
+            bounds.size.height < px(DETAIL_MAX_HEIGHT + 120.0),
+            "the card caps its height and scrolls instead of growing: {:?}",
+            bounds.size
+        );
+        // Copy still carries every line.
+        let at = vcx.debug_bounds("err-copy").unwrap().center();
+        vcx.simulate_click(at, gpui::Modifiers::default());
+        let copied = vcx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert!(copied.ends_with("line 399"));
+        assert_eq!(copied.lines().count(), 401);
     }
 }

@@ -430,7 +430,7 @@ pub(crate) struct OutlineView {
     notice: Option<String>,
     notice_seq: u64,
     /// The persistent error card (title, full detail): never auto-hides.
-    error_notice: Option<(SharedString, SharedString)>,
+    error_notice: Option<(SharedString, SharedString, SharedString)>,
     /// The non-blocking "Moved X · instructions changed" toast with Undo.
     move_toast: Option<move_toast::MoveToast>,
     move_toast_seq: u64,
@@ -1003,7 +1003,9 @@ impl OutlineView {
     /// the next error replaces it). The first line of `text` is the title and
     /// the rest the detail.
     pub(crate) fn show_error(&mut self, text: impl AsRef<str>, cx: &mut Context<Self>) {
-        self.error_notice = Some(crate::error_notice::split_error(text.as_ref()));
+        let text = text.as_ref().trim();
+        let (title, detail) = crate::error_notice::split_error(text);
+        self.error_notice = Some((title, detail, text.to_owned().into()));
         cx.notify();
     }
 
@@ -1014,7 +1016,9 @@ impl OutlineView {
         detail: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        self.error_notice = Some((title.into(), detail.into()));
+        let (title, detail) = (title.into(), detail.into());
+        let copy = crate::error_notice::copy_text(&title, &detail).into();
+        self.error_notice = Some((title, detail, copy));
         cx.notify();
     }
 
@@ -1028,7 +1032,7 @@ impl OutlineView {
     pub(crate) fn error_notice(&self) -> Option<(&str, &str)> {
         self.error_notice
             .as_ref()
-            .map(|(title, detail)| (title.as_ref(), detail.as_ref()))
+            .map(|(title, detail, _)| (title.as_ref(), detail.as_ref()))
     }
 
     // ----------------------------------------------------------------------
@@ -3672,7 +3676,7 @@ impl Render for OutlineView {
                 }
             }))
             .when_some(move_toast, |el, toast| el.child(toast))
-            .when_some(self.error_notice.clone(), |el, (title, detail)| {
+            .when_some(self.error_notice.clone(), |el, (title, detail, copy)| {
                 let outline = cx.entity();
                 el.child(
                     div()
@@ -3687,6 +3691,7 @@ impl Render for OutlineView {
                                 title,
                                 detail,
                             )
+                            .with_copy(copy)
                             .on_dismiss(move |_, cx| {
                                 outline.update(cx, |this, cx| this.dismiss_error(cx))
                             }),

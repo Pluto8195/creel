@@ -1513,7 +1513,7 @@ mod tests {
             assert!(failure.message.contains("/work/alpha/.worktrees/gone"));
             assert_eq!(failure.remediation.as_deref(), Some(error.remediation()));
         });
-        assert!(cx.debug_bounds("start-chat-failure-remediation").is_some());
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
     }
 
     /// Effective Instructions open expanded when they changed since the
