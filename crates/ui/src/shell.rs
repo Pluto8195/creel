@@ -1741,6 +1741,9 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
+    /// A `sidebar_notice` text that was raised as an explicit failure (so it
+    /// renders as the copyable error card even when its wording is unusual).
+    sidebar_error_text: Option<SharedString>,
     /// Inline "outside the project" strip for a clicked local file path.
     outside_file_prompt: Option<outside_file_ui::OutsideFilePrompt>,
     /// Chat whose header copy-identity button is showing its transient
@@ -2163,6 +2166,7 @@ impl Shell {
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            sidebar_error_text: None,
             outside_file_prompt: None,
             copied_chat_identity: None,
             copied_chat_identity_clear: None,
@@ -2290,6 +2294,20 @@ impl Shell {
             .update(cx, |composer, cx| composer.show_appshot_error(message, cx));
         window.focus(&self.composer.focus_handle(cx), cx);
         cx.notify();
+    }
+
+    /// Raise `message` as a failure: the sidebar shows it as the persistent,
+    /// copyable error card until dismissed.
+    pub(crate) fn set_sidebar_error(&mut self, message: impl Into<SharedString>) {
+        let message = message.into();
+        self.sidebar_error_text = Some(message.clone());
+        self.sidebar_notice = Some(message);
+    }
+
+    /// Whether the sidebar notice is a failure (explicit, or worded like one).
+    pub(crate) fn sidebar_notice_is_error(&self, notice: &SharedString) -> bool {
+        self.sidebar_error_text.as_ref() == Some(notice)
+            || crate::error_notice::text_reports_failure(notice)
     }
 
     // ---- splash ----
@@ -8290,27 +8308,63 @@ impl Shell {
                 el.child(strip)
             })
             // Inline mutation-failure notice.
-            .when_some(self.sidebar_notice.clone(), |el, notice| {
-                el.child(
-                    div()
-                        .id("sidebar-notice")
-                        .mx(px(Theme::SPACE_SM))
-                        .mb(px(Theme::SPACE_SM))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.danger)
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.danger)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sidebar_notice = None;
-                            cx.notify();
-                        }))
-                        .child(notice),
-                )
-            })
+            .when_some(
+                self.sidebar_notice
+                    .clone()
+                    .filter(|notice| self.sidebar_notice_is_error(notice)),
+                |el, notice| {
+                    // Failures get the persistent, copyable error card.
+                    el.child(
+                        div()
+                            .id("sidebar-notice")
+                            .debug_selector(|| "sidebar-error-notice".into())
+                            .mx(px(Theme::SPACE_SM))
+                            .mb(px(Theme::SPACE_SM))
+                            .child(
+                                crate::error_notice::ErrorNotice::from_text(
+                                    "sidebar-error-card",
+                                    theme,
+                                    &notice,
+                                )
+                                .on_dismiss({
+                                    let shell = cx.entity();
+                                    move |_, cx| {
+                                        shell.update(cx, |this, cx| {
+                                            this.sidebar_notice = None;
+                                            cx.notify();
+                                        })
+                                    }
+                                }),
+                            ),
+                    )
+                },
+            )
+            .when_some(
+                self.sidebar_notice
+                    .clone()
+                    .filter(|notice| !self.sidebar_notice_is_error(notice)),
+                |el, notice| {
+                    el.child(
+                        div()
+                            .id("sidebar-notice")
+                            .mx(px(Theme::SPACE_SM))
+                            .mb(px(Theme::SPACE_SM))
+                            .px(px(Theme::SPACE_SM))
+                            .py(px(4.0))
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.danger)
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.danger)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_notice = None;
+                                cx.notify();
+                            }))
+                            .child(notice),
+                    )
+                },
+            )
             .child(div().p(px(Theme::SPACE_SM)).flex_none().child(user_menu))
             .into_any_element()
     }

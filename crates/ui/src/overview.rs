@@ -2841,7 +2841,7 @@ impl Overview {
                 if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
                 {
                     this.outline
-                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                        .update(cx, |outline, cx| outline.show_error(notice, cx));
                 }
             }
             OutlineEvent::OpenProposals { space_id, item_id } => {
@@ -9331,9 +9331,13 @@ impl Overview {
                     row = row.child(
                         div()
                             .debug_selector(move || format!("overview-pr-item-review-status-{ix}"))
-                            .text_size(crate::typography::ui_rems(10.0))
-                            .text_color(theme.danger)
-                            .child(SharedString::from(text)),
+                            .w_full()
+                            .child(crate::error_notice::ErrorNotice::new(
+                                SharedString::from(format!("overview-pr-item-review-error-{ix}")),
+                                theme,
+                                crate::chat_type_view::REVIEW_FAILURE_TITLE,
+                                text,
+                            )),
                     );
                 }
             }
@@ -9950,7 +9954,7 @@ impl Overview {
                 if let Err(notice) = this.start_chat_for_item(space_id.clone(), item_id.clone(), cx)
                 {
                     this.outline
-                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                        .update(cx, |outline, cx| outline.show_error(notice, cx));
                 }
             }
             DetailsEvent::StartPrReview {
@@ -9962,7 +9966,7 @@ impl Overview {
                     this.start_pr_review_for_item(space_id.clone(), item_id.clone(), *action, cx)
                 {
                     this.outline
-                        .update(cx, |outline, cx| outline.show_notice(notice, cx));
+                        .update(cx, |outline, cx| outline.show_error(notice, cx));
                 }
             }
             DetailsEvent::AddLinearIssues { space_id, item_id } => {
@@ -14517,7 +14521,10 @@ mod logic_tests {
         );
         // Undo sends the inverse (the chat was unassociated).
         click(vcx, "outline-move-toast-undo");
-        assert_eq!(ops(&calls), ["assignChatToWorkItem", "removeChatFromWorkItem"]);
+        assert_eq!(
+            ops(&calls),
+            ["assignChatToWorkItem", "removeChatFromWorkItem"]
+        );
         assert_eq!(toast(vcx), None);
 
         // Disassociating chat-ui from Launch loses its instructions: toast
@@ -14525,7 +14532,10 @@ mod logic_tests {
         let details = open_details(&overview, vcx, UI);
         click(vcx, "work-item-chat-remove-0");
         assert!(details.read_with(vcx, |d, _| d.captured_drift.is_none()));
-        assert_eq!(ops(&calls).last().map(String::as_str), Some("removeChatFromWorkItem"));
+        assert_eq!(
+            ops(&calls).last().map(String::as_str),
+            Some("removeChatFromWorkItem")
+        );
         assert!(toast(vcx).is_some());
         click(vcx, "outline-move-toast-undo");
         let last = calls.lock().unwrap().last().cloned().unwrap();

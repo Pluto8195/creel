@@ -769,6 +769,9 @@ fn review_button(
         .child(label)
 }
 
+/// Title of the failure card a refused or failed review start shows.
+pub(crate) const REVIEW_FAILURE_TITLE: &str = "Couldn't start the PR review";
+
 fn status_line(selector: String, status: &ReviewStatus, theme: &Theme) -> gpui::Div {
     let (text, color) = match status {
         ReviewStatus::Starting(PrReviewAction::CodeReview) => (
@@ -779,7 +782,20 @@ fn status_line(selector: String, status: &ReviewStatus, theme: &Theme) -> gpui::
             "Checking out the PR and starting /fix-ci…".to_owned(),
             theme.text_muted,
         ),
-        ReviewStatus::Failed(text) => (text.clone(), theme.danger),
+        // Failures (git stderr and all) get the shared persistent, copyable
+        // error card instead of a one-line red caption.
+        ReviewStatus::Failed(text) => {
+            let card_id = SharedString::from(format!("{selector}-error"));
+            return div()
+                .debug_selector(move || selector.clone())
+                .w_full()
+                .child(crate::error_notice::ErrorNotice::new(
+                    card_id,
+                    theme,
+                    REVIEW_FAILURE_TITLE,
+                    text.clone(),
+                ));
+        }
     };
     div()
         .debug_selector(move || selector.clone())

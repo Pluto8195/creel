@@ -429,6 +429,8 @@ pub(crate) struct OutlineView {
     picker: Option<OutlinePicker>,
     notice: Option<String>,
     notice_seq: u64,
+    /// The persistent error card (title, full detail): never auto-hides.
+    error_notice: Option<(SharedString, SharedString)>,
     /// The non-blocking "Moved X · instructions changed" toast with Undo.
     move_toast: Option<move_toast::MoveToast>,
     move_toast_seq: u64,
@@ -506,6 +508,7 @@ impl OutlineView {
             editor,
             picker: None,
             notice: None,
+            error_notice: None,
             notice_seq: 0,
             move_toast: None,
             move_toast_seq: 0,
@@ -995,6 +998,39 @@ impl OutlineView {
         self.notice.as_deref()
     }
 
+    /// Show a failure as a persistent, copyable error card. Unlike
+    /// [`Self::show_notice`] it never auto-hides: the user dismisses it (or
+    /// the next error replaces it). The first line of `text` is the title and
+    /// the rest the detail.
+    pub(crate) fn show_error(&mut self, text: impl AsRef<str>, cx: &mut Context<Self>) {
+        self.error_notice = Some(crate::error_notice::split_error(text.as_ref()));
+        cx.notify();
+    }
+
+    /// [`Self::show_error`] with an explicit title; `detail` is the full text.
+    pub(crate) fn show_error_titled(
+        &mut self,
+        title: impl Into<SharedString>,
+        detail: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.error_notice = Some((title.into(), detail.into()));
+        cx.notify();
+    }
+
+    pub(crate) fn dismiss_error(&mut self, cx: &mut Context<Self>) {
+        if self.error_notice.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The persistent error card's `(title, detail)`.
+    pub(crate) fn error_notice(&self) -> Option<(&str, &str)> {
+        self.error_notice
+            .as_ref()
+            .map(|(title, detail)| (title.as_ref(), detail.as_ref()))
+    }
+
     // ----------------------------------------------------------------------
     // Inline create / rename
     // ----------------------------------------------------------------------
@@ -1221,7 +1257,7 @@ impl OutlineView {
                         this.pending_select = None;
                     }
                     this.drop_optimistic(&operation_id, cx);
-                    this.show_notice(error.message.clone(), cx);
+                    this.show_error(error.message.clone(), cx);
                 }
             })
             .ok();
@@ -1576,7 +1612,7 @@ impl OutlineView {
                 Err(error) => {
                     this.drop_optimistic(&operation_id, cx);
                     this.dismiss_move_toast_for(&operation_id, cx);
-                    this.show_notice(error.message.clone(), cx);
+                    this.show_error(error.message.clone(), cx);
                 }
             })
             .ok();
@@ -1787,7 +1823,10 @@ impl OutlineView {
         cx: &mut Context<Self>,
     ) {
         if self.restructuring_busy() {
-            self.show_notice("Still applying the previous move. Try again in a moment", cx);
+            self.show_notice(
+                "Still applying the previous move. Try again in a moment",
+                cx,
+            );
             return;
         }
         let chat_id = chat_id.to_owned();
@@ -1981,7 +2020,7 @@ impl OutlineView {
                         }
                         this.drop_optimistic(&operation_id, cx);
                         this.dismiss_move_toast_for(&operation_id, cx);
-                        this.show_notice(error.message.clone(), cx);
+                        this.show_error(error.message.clone(), cx);
                     }
                 }
             })
@@ -2013,7 +2052,7 @@ impl OutlineView {
         self.follow = None;
         self.drop_optimistic(operation_id, cx);
         self.dismiss_move_toast_for(operation_id, cx);
-        self.show_notice("The engine did not answer in time. Try the move again", cx);
+        self.show_error("The engine did not answer in time. Try the move again", cx);
     }
 
     // ----------------------------------------------------------------------
@@ -3633,6 +3672,27 @@ impl Render for OutlineView {
                 }
             }))
             .when_some(move_toast, |el, toast| el.child(toast))
+            .when_some(self.error_notice.clone(), |el, (title, detail)| {
+                let outline = cx.entity();
+                el.child(
+                    div()
+                        .debug_selector(|| "outline-error".into())
+                        .flex_none()
+                        .mx(px(14.0))
+                        .mb(px(6.0))
+                        .child(
+                            crate::error_notice::ErrorNotice::new(
+                                "outline-error-notice",
+                                &theme,
+                                title,
+                                detail,
+                            )
+                            .on_dismiss(move |_, cx| {
+                                outline.update(cx, |this, cx| this.dismiss_error(cx))
+                            }),
+                        ),
+                )
+            })
             .when_some(notice, |el, notice| {
                 el.child(
                     div()

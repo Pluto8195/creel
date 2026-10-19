@@ -50,6 +50,30 @@ pub(crate) fn split_error(text: &str) -> (SharedString, SharedString) {
     }
 }
 
+/// Whether a free-text sidebar notice reports a failure (so it gets the
+/// persistent, copyable card) rather than a status like "Path copied".
+pub(crate) fn text_reports_failure(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "fail",
+        "couldn",
+        "could not",
+        "can't",
+        "cannot",
+        "can\u{2019}t",
+        "error",
+        "unable",
+        "not connected",
+        "rejected",
+        "refused",
+        "fatal",
+        "hung up",
+        "denied",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 type Dismiss = Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// A persistent, copyable error card (see the module docs).
