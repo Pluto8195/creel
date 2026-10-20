@@ -73,6 +73,8 @@ pub enum Block {
     BlockQuote {
         children: Vec<Block>,
     },
+    /// A `> [!question] Q-n · …` plan question (see [`super::question`]).
+    Question(super::question::QuestionCard),
     List {
         ordered_start: Option<u64>,
         items: Vec<Vec<Block>>,
@@ -158,7 +160,7 @@ fn parse_at(source: &str, offset: usize) -> BlockTree {
                 for block in parse_started_block(&mut cur) {
                     blocks.push(Arc::new(TopBlock {
                         range: range.clone(),
-                        block,
+                        block: question_block(block, source, &range, offset),
                     }));
                 }
             }
@@ -167,6 +169,19 @@ fn parse_at(source: &str, offset: usize) -> BlockTree {
         }
     }
     BlockTree { blocks }
+}
+
+/// A top-level block quote that opens with `[!question]` becomes a question
+/// card; every other block is returned as is.
+fn question_block(block: Block, source: &str, range: &Range<usize>, offset: usize) -> Block {
+    if !matches!(block, Block::BlockQuote { .. }) {
+        return block;
+    }
+    let quote = source.get(range.start - offset..range.end - offset);
+    match quote.and_then(super::question::parse_question) {
+        Some(card) => Block::Question(card),
+        None => block,
+    }
 }
 
 struct Cursor<'a, 'e> {

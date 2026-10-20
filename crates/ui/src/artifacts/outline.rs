@@ -396,6 +396,20 @@ mod tests {
     }
 
     #[test]
+    fn question_cards_are_single_blocks_between_sections() {
+        let source = "# Plan\n\n> [!question] Q-1 · Why?\n> status: open\n\n## Next\n\n\
+                      > [!question] Q-2 · How?\n> status: resolved\n> decision: so\n\n### Last\n";
+        let tree = parse_full(source);
+        let index = SectionIndex::from_headings(&markdown_headings(&tree));
+        assert_eq!(titles(&index), vec![(1, "Plan"), (2, "Next"), (3, "Last")]);
+        // heading, question, heading, question, heading.
+        assert_eq!(
+            index.sections.iter().map(|s| s.target).collect::<Vec<_>>(),
+            vec![0, 2, 4]
+        );
+    }
+
+    #[test]
     fn markdown_heading_text_flattens_inline_styles() {
         let tree = parse_full("## The `plan` is **bold**\n");
         let headings = markdown_headings(&tree);

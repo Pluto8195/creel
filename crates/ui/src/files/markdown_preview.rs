@@ -166,6 +166,8 @@ pub(crate) struct MarkdownPreview {
     diagram_task: Option<Task<()>>,
     diagram_style: u32,
     source_visible: HashSet<String>,
+    /// Resolved question cards the reader expanded (by question id).
+    questions_expanded: Rc<HashSet<String>>,
     preview_image: Option<crate::attachments::PreviewImage>,
     zoom_source: Option<crate::image_media::MediaImage>,
     zoom_render: Option<crate::image_media::MediaImage>,
@@ -399,6 +401,7 @@ impl MarkdownPreview {
             diagram_task: None,
             diagram_style: 0,
             source_visible: HashSet::new(),
+            questions_expanded: Rc::default(),
             preview_image: None,
             zoom_source: None,
             zoom_render: None,
@@ -640,6 +643,16 @@ impl MarkdownPreview {
         }));
     }
 
+    /// Expand or collapse a resolved question card.
+    fn toggle_question(&mut self, key: String, cx: &mut Context<Self>) {
+        let expanded = Rc::make_mut(&mut self.questions_expanded);
+        if !expanded.remove(&key) {
+            expanded.insert(key);
+        }
+        self.list.remeasure_items(0..self.tree.len());
+        cx.notify();
+    }
+
     fn load_diagrams(&mut self, cx: &mut Context<Self>) {
         self.media_dirty = true;
         let sources = super::markdown_media::diagram_sources(&self.tree);
@@ -767,6 +780,7 @@ impl MarkdownPreview {
         self.diagram_snapshot = Rc::default();
         self.image_allowed = Rc::default();
         self.diagram_allowed = Rc::default();
+        self.questions_expanded = Rc::default();
         self.version = None;
         self.tree = BlockTree::default();
         self.parsed_source = Arc::from("");
@@ -1227,6 +1241,13 @@ impl MarkdownPreview {
                 let diagram_owner = cx.weak_entity();
                 let diagrams = self.diagram_snapshot.clone();
                 let source_visible = self.source_visible.clone();
+                let question_owner = cx.weak_entity();
+                opts.question = Some(render::QuestionUi {
+                    expanded: self.questions_expanded.clone(),
+                    toggle: Rc::new(move |key, _, cx| {
+                        let _ = question_owner.update(cx, |view, cx| view.toggle_question(key, cx));
+                    }),
+                });
                 let image_allowed = self.image_allowed.clone();
                 let diagram_allowed = self.diagram_allowed.clone();
                 opts.media = Some(render::MediaUi {
@@ -2321,6 +2342,121 @@ mod async_tests {
         preview.update(cx, |view, cx| view.clear_find(cx));
         assert!(draw(cx).is_empty());
         assert_eq!(render::find_painted_in_row(&format!("{scope}1")), 0);
+    }
+
+    const QUESTIONS: &str = "# Plan\n\n\
+> [!question] Q-1 · Merge by MPN or by part number?\n\
+> blocking: true\n\
+> example: LM358 from two suppliers\n\
+> status: open\n\n\
+> [!question] Q-2 · Where is the SLA report?\n\
+> blocks: D-7 thresholds\n\
+> owner: Dana\n\
+> status: resolved\n\
+> decision: use the `retro` report\n\n\
+> a plain quote with the word report\n";
+
+    fn draw_questions(cx: &mut gpui::VisualTestContext) -> Vec<(String, bool, bool, usize)> {
+        render::take_question_log();
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        render::take_question_log()
+    }
+
+    #[gpui::test]
+    fn resolved_question_cards_start_collapsed_and_expand_on_toggle(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark())
+        });
+        let preview = cx.new(|cx| MarkdownPreview::new("PLAN.md".into(), Rc::new(|_, _| {}), cx));
+        preview.update(cx, |view, cx| view.set_source(QUESTIONS.into(), false, cx));
+        settle(cx);
+        let kinds = preview.read_with(cx, |view, _| {
+            view.test_tree()
+                .blocks
+                .iter()
+                .map(|top| matches!(top.block, Block::Question(_)))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(kinds, [false, true, true, false]);
+        let (_root, cx) = cx.add_window_view({
+            let preview = preview.clone();
+            |_, _| Single(preview)
+        });
+        let log = draw_questions(cx);
+        // Q-1 is open: not collapsible, both rows. Q-2 is resolved: collapsed
+        // to the decision row.
+        assert_eq!(
+            log,
+            vec![
+                ("Q-1".to_owned(), false, true, 1),
+                ("Q-2".to_owned(), true, false, 1),
+            ]
+        );
+        preview.update(cx, |view, cx| view.toggle_question("Q-2".into(), cx));
+        let log = draw_questions(cx);
+        // Expanded: blocks, owner (unknown field) and decision.
+        assert_eq!(log[1], ("Q-2".to_owned(), true, true, 3));
+        assert_eq!(log[0].3, 1, "other cards are unaffected");
+        preview.update(cx, |view, cx| view.toggle_question("Q-2".into(), cx));
+        assert_eq!(draw_questions(cx)[1], ("Q-2".to_owned(), true, false, 1));
+        // Another file does not inherit the expanded state.
+        preview.update(cx, |view, cx| view.toggle_question("Q-2".into(), cx));
+        preview.update(cx, |view, cx| view.set_source(QUESTIONS.into(), false, cx));
+        settle(cx);
+        assert_eq!(draw_questions(cx)[1], ("Q-2".to_owned(), true, true, 3));
+    }
+
+    #[gpui::test]
+    fn find_counts_and_paints_matches_inside_question_cards(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark())
+        });
+        let preview = cx.new(|cx| MarkdownPreview::new("PLAN.md".into(), Rc::new(|_, _| {}), cx));
+        preview.update(cx, |view, cx| view.set_source(QUESTIONS.into(), false, cx));
+        settle(cx);
+        let (_root, cx) = cx.add_window_view({
+            let preview = preview.clone();
+            |_, _| Single(preview)
+        });
+        // "report" appears in Q-2's question and decision and in the plain
+        // quote; Q-2's other rows ("D-7 thresholds", "Dana") don't match.
+        let count = preview.update(cx, |view, cx| view.set_find_query("report", cx));
+        assert_eq!(count, 3);
+        let counts = preview.read_with(cx, |view, _| view.find_counts.clone());
+        assert_eq!(counts, vec![0, 0, 2, 1]);
+        let log = draw_questions(cx);
+        // Find expands resolved cards so every counted match is painted.
+        assert_eq!(log[1], ("Q-2".to_owned(), false, true, 3));
+        let scope = preview.read_with(cx, |view, _| view.scope.clone());
+        for (ix, expected) in counts.iter().enumerate() {
+            assert_eq!(
+                render::find_painted_in_row(&format!("{scope}{ix}")),
+                *expected,
+                "block {ix}: painted washes must equal the counted matches"
+            );
+        }
+        // A match in a field value of an open card (collapsing never applies).
+        let count = preview.update(cx, |view, cx| view.set_find_query("lm358", cx));
+        assert_eq!(count, 1);
+        draw_questions(cx);
+        assert_eq!(render::find_painted_in_row(&format!("{scope}1")), 1);
+        // Chrome is not searched: the id, labels and status pill.
+        assert_eq!(
+            preview.update(cx, |view, cx| view.set_find_query("blocking", cx)),
+            0
+        );
+        assert_eq!(
+            preview.update(cx, |view, cx| view.set_find_query("Q-1", cx)),
+            0
+        );
+        // Clearing find collapses the resolved card again.
+        preview.update(cx, |view, cx| view.clear_find(cx));
+        assert_eq!(draw_questions(cx)[1], ("Q-2".to_owned(), true, false, 1));
     }
 
     #[gpui::test]
