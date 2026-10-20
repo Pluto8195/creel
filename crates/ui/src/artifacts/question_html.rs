@@ -125,7 +125,11 @@ mod tests {
             assert!(CSS.contains(&format!(".zq-pill[data-zq-status=\"{status}\"]")));
         }
         assert!(CSS.contains(".zq-row[data-zq-key=\"decision\"]"));
-        assert!(CSS.contains("[data-zq-collapsed] .zq-row:not([data-zq-key=\"decision\"]){display:none}"));
+        assert!(
+            CSS.contains(
+                "[data-zq-collapsed] .zq-row:not([data-zq-key=\"decision\"]){display:none}"
+            )
+        );
         assert!(CSS.contains("html[data-zq-finding]"));
     }
 
@@ -141,7 +145,8 @@ mod tests {
         ] {
             let name = attribute.trim_start_matches("data-");
             assert!(
-                SCRIPT.contains(&format!("\"{attribute}\"")) || SCRIPT.contains(&format!("\"{name}\"")),
+                SCRIPT.contains(&format!("\"{attribute}\""))
+                    || SCRIPT.contains(&format!("\"{name}\"")),
                 "{attribute}"
             );
         }
@@ -184,12 +189,18 @@ data-example=\"two LM358 lines\" data-blocks=\"ENG-2690\">Merge by <b>MPN</b>?</
         let page = format!(
             "<!doctype html><html><head><title>p</title></head><body>{FRAGMENT}</body></html>"
         );
-        for (kind, source) in [(WebKind::Fragment, FRAGMENT.to_owned()), (WebKind::Page, page)] {
+        for (kind, source) in [
+            (WebKind::Fragment, FRAGMENT.to_owned()),
+            (WebKind::Page, page),
+        ] {
             for probe in [false, true] {
                 let html = web_document(kind, &source, "t", "", &theme(), false, probe);
                 // The frame is the escaped srcdoc attribute.
                 assert!(html.contains(&escape_attr(CSS.trim())), "{kind:?} style");
-                assert!(html.contains("__zeronQuestionsInstalled"), "{kind:?} script");
+                assert!(
+                    html.contains("__zeronQuestionsInstalled"),
+                    "{kind:?} script"
+                );
                 assert!(
                     html.contains(&escape_attr("<div data-zeron-question=\"Q-3\"")),
                     "{kind:?} author markup kept"
@@ -200,7 +211,9 @@ data-example=\"two LM358 lines\" data-blocks=\"ENG-2690\">Merge by <b>MPN</b>?</
         }
         // A page without <head> still gets the style, ahead of its content.
         let bare = web_document(WebKind::Page, FRAGMENT, "t", "", &theme(), false, false);
-        let style_at = bare.find(&escape_attr("<style>\n[data-zeron-question]")).unwrap();
+        let style_at = bare
+            .find(&escape_attr("<style>\n[data-zeron-question]"))
+            .unwrap();
         let card_at = bare.find(&escape_attr("<div data-zeron-question")).unwrap();
         assert!(style_at < card_at);
     }
@@ -211,12 +224,27 @@ data-example=\"two LM358 lines\" data-blocks=\"ENG-2690\">Merge by <b>MPN</b>?</
         use crate::artifacts::model::WebKind;
         for kind in [WebKind::Fragment, WebKind::Page] {
             let frame = compare_frame(kind, FRAGMENT, "t", "", &theme(), false, "", "");
-            assert!(frame.html.contains("<style>\n[data-zeron-question]"), "{kind:?}");
+            assert!(
+                frame.html.contains("<style>\n[data-zeron-question]"),
+                "{kind:?}"
+            );
             assert!(frame.html.contains("__zeronQuestionsInstalled"), "{kind:?}");
-            assert!(frame.html.contains("data-zeron-question=\"Q-3\""), "{kind:?}");
+            assert!(
+                frame.html.contains("data-zeron-question=\"Q-3\""),
+                "{kind:?}"
+            );
         }
         // Mermaid and image kinds carry no question style.
-        let frame = compare_frame(WebKind::Mermaid, "graph TD; A-->B", "t", "", &theme(), false, "", "");
+        let frame = compare_frame(
+            WebKind::Mermaid,
+            "graph TD; A-->B",
+            "t",
+            "",
+            &theme(),
+            false,
+            "",
+            "",
+        );
         assert!(!frame.html.contains("<style>\n[data-zeron-question]"));
     }
 }

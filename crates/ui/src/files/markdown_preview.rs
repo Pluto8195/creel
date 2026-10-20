@@ -2356,9 +2356,7 @@ mod async_tests {
 > decision: use the `retro` report\n\n\
 > a plain quote with the word report\n";
 
-    fn draw_questions(
-        cx: &mut gpui::VisualTestContext,
-    ) -> Vec<(String, bool, bool, usize)> {
+    fn draw_questions(cx: &mut gpui::VisualTestContext) -> Vec<(String, bool, bool, usize)> {
         render::take_question_log();
         cx.update(|window, cx| {
             window.refresh();
@@ -2448,8 +2446,14 @@ mod async_tests {
         draw_questions(cx);
         assert_eq!(render::find_painted_in_row(&format!("{scope}1")), 1);
         // Chrome is not searched: the id, labels and status pill.
-        assert_eq!(preview.update(cx, |view, cx| view.set_find_query("blocking", cx)), 0);
-        assert_eq!(preview.update(cx, |view, cx| view.set_find_query("Q-1", cx)), 0);
+        assert_eq!(
+            preview.update(cx, |view, cx| view.set_find_query("blocking", cx)),
+            0
+        );
+        assert_eq!(
+            preview.update(cx, |view, cx| view.set_find_query("Q-1", cx)),
+            0
+        );
         // Clearing find collapses the resolved card again.
         preview.update(cx, |view, cx| view.clear_find(cx));
         assert_eq!(draw_questions(cx)[1], ("Q-2".to_owned(), true, false, 1));

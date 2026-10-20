@@ -336,7 +336,10 @@ mod tests {
         assert!(card.text.iter().any(|r| r.style.code && r.text == "MPN"));
         assert!(card.text.iter().any(|r| r.style.bold && r.text == "unique"));
         let runs = &card.fields[0].runs;
-        assert!(runs.iter().any(|r| r.style.link.as_deref() == Some("https://example.com/s")));
+        assert!(
+            runs.iter()
+                .any(|r| r.style.link.as_deref() == Some("https://example.com/s"))
+        );
         assert!(runs.iter().any(|r| r.style.code && r.text == "LM358"));
     }
 
@@ -359,7 +362,12 @@ mod tests {
         // Id only; multi-byte text next to an id-shaped word.
         let card = parse_question("> [!question] Q-9\n").unwrap();
         assert_eq!(card.id.as_deref(), Some("Q-9"));
-        assert!(parse_question("> [!question] éé Q-1 · ok").unwrap().id.is_some());
+        assert!(
+            parse_question("> [!question] éé Q-1 · ok")
+                .unwrap()
+                .id
+                .is_some()
+        );
         assert_eq!(parse_question("> [!question] é\n").unwrap().id, None);
         // Empty values are dropped; stray lines continue the previous field.
         let card = parse_question(
@@ -390,7 +398,10 @@ mod tests {
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, ["heading", "question", "quote", "quote", "quote", "list"]);
+        assert_eq!(
+            kinds,
+            ["heading", "question", "quote", "quote", "quote", "list"]
+        );
         // The question block keeps its source range.
         let Block::Question(card) = &tree.blocks[1].block else {
             unreachable!()

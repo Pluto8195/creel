@@ -16,8 +16,8 @@
 use crate::browser::fragment::{self, FragmentTheme, escape_attr, escape_text};
 
 use super::find::{FRAME_SCRIPT as FIND_FRAME_SCRIPT, HOST_SCRIPT as FIND_HOST_SCRIPT};
-use super::question_html::{CSS as QUESTION_CSS, SCRIPT as QUESTION_FRAME_SCRIPT};
 use super::model::WebKind;
+use super::question_html::{CSS as QUESTION_CSS, SCRIPT as QUESTION_FRAME_SCRIPT};
 
 /// Mermaid build the diagram wrapper loads (on the visualize allowlist).
 pub(crate) const MERMAID_SRC: &str = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
@@ -175,10 +175,7 @@ pub(crate) fn compare_frame(
             true,
         ),
         WebKind::Page => {
-            let page = inject_head_script(
-                &inject_head_markup(source, &question_style()),
-                &scripts,
-            );
+            let page = inject_head_script(&inject_head_markup(source, &question_style()), &scripts);
             let lower = page.to_ascii_lowercase();
             let page = match lower.rfind("</body>") {
                 Some(at) => format!("{}{overlay}{}", &page[..at], &page[at..]),

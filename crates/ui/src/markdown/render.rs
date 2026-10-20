@@ -554,7 +554,12 @@ fn render_question(
         QuestionStatus::Answered => theme.accent,
         QuestionStatus::Resolved => theme.success,
     };
-    let mut header = div().flex().flex_row().items_center().gap(px(6.0)).flex_wrap();
+    let mut header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .flex_wrap();
     if let Some(id) = &card.id {
         header = header.child(
             div()
@@ -580,7 +585,10 @@ fn render_question(
         let toggle_key = key.clone();
         header = header.child(div().flex_1()).child(
             div()
-                .id(SharedString::from(format!("{}-question-toggle", opts.row_key)))
+                .id(SharedString::from(format!(
+                    "{}-question-toggle",
+                    opts.row_key
+                )))
                 .px(px(6.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
@@ -588,7 +596,11 @@ fn render_question(
                 .line_height(px(18.0))
                 .text_color(theme.text_muted)
                 .hover(|style| style.bg(theme.text.opacity(0.08)))
-                .child(if expanded { "Hide details" } else { "Show details" })
+                .child(if expanded {
+                    "Hide details"
+                } else {
+                    "Show details"
+                })
                 .on_click(move |_, window, cx| (ui.toggle)(toggle_key.clone(), window, cx)),
         );
     }
@@ -602,26 +614,18 @@ fn render_question(
             visible_question_fields(card, expanded).count(),
         ))
     });
-    let mut body = div()
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .child(header);
+    let mut body = div().flex().flex_col().gap(px(6.0)).child(header);
     if !card.text.is_empty() {
-        body = body.child(
-            div()
-                .text_color(theme.text)
-                .child(text_element(
-                    &card.text,
-                    MD_TEXT_SIZE,
-                    MD_LINE_HEIGHT,
-                    true,
-                    top_ix,
-                    question_child_ix(ix, 0),
-                    opts,
-                    theme,
-                )),
-        );
+        body = body.child(div().text_color(theme.text).child(text_element(
+            &card.text,
+            MD_TEXT_SIZE,
+            MD_LINE_HEIGHT,
+            true,
+            top_ix,
+            question_child_ix(ix, 0),
+            opts,
+            theme,
+        )));
     }
     for (n, field) in visible_question_fields(card, expanded) {
         let row = div()
@@ -679,9 +683,10 @@ fn render_question(
         .pr(px(10.0))
         .py(px(8.0))
         .text_color(theme.text_muted)
-        .when(card.status == QuestionStatus::Resolved && !expanded, |card| {
-            card.opacity(0.75)
-        })
+        .when(
+            card.status == QuestionStatus::Resolved && !expanded,
+            |card| card.opacity(0.75),
+        )
         .child(body)
         .into_any_element()
 }
