@@ -16,6 +16,7 @@
 use crate::browser::fragment::{self, FragmentTheme, escape_attr, escape_text};
 
 use super::find::{FRAME_SCRIPT as FIND_FRAME_SCRIPT, HOST_SCRIPT as FIND_HOST_SCRIPT};
+use super::question_html::{CSS as QUESTION_CSS, SCRIPT as QUESTION_FRAME_SCRIPT};
 use super::model::WebKind;
 
 /// Mermaid build the diagram wrapper loads (on the visualize allowlist).
@@ -42,14 +43,17 @@ pub(crate) fn web_document(
     // Every frame carries the link and find bridges; render checks add the
     // probe.
     let frame_scripts = if probe {
-        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{}", probe_script())
+        format!(
+            "{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{QUESTION_FRAME_SCRIPT}{}",
+            probe_script()
+        )
     } else {
-        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}")
+        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{QUESTION_FRAME_SCRIPT}")
     };
     let probe_script = Some(frame_scripts);
     let document = match kind {
         WebKind::Fragment => {
-            let body = with_probe_prefix(source, probe_script.as_deref());
+            let body = with_probe_prefix(&with_question_style(source), probe_script.as_deref());
             fragment::host_document(&body, title, false, theme, reduced_motion)
         }
         WebKind::Mermaid => {
@@ -66,7 +70,12 @@ pub(crate) fn web_document(
             );
             fragment::host_document(&body, title, true, theme, reduced_motion)
         }
-        WebKind::Page => page_host_document(source, title, theme, probe_script.as_deref()),
+        WebKind::Page => page_host_document(
+            &inject_head_markup(source, &question_style()),
+            title,
+            theme,
+            probe_script.as_deref(),
+        ),
     };
     let document = with_link_host(&document);
     if probe {
@@ -135,11 +144,16 @@ pub(crate) fn compare_frame(
     script: &str,
     overlay: &str,
 ) -> CompareFrame {
-    let scripts = format!("{LINK_FRAME_SCRIPT}{script}");
+    let scripts = format!("{LINK_FRAME_SCRIPT}{QUESTION_FRAME_SCRIPT}{script}");
     let body = |fragment: &str| format!("<script>{scripts}</script>\n{fragment}\n{overlay}");
     let (html, wide) = match kind {
         WebKind::Fragment => (
-            fragment::frame_document(&body(source), title, theme, reduced_motion),
+            fragment::frame_document(
+                &body(&with_question_style(source)),
+                title,
+                theme,
+                reduced_motion,
+            ),
             false,
         ),
         WebKind::Mermaid => (
@@ -161,7 +175,10 @@ pub(crate) fn compare_frame(
             true,
         ),
         WebKind::Page => {
-            let page = inject_head_script(source, &scripts);
+            let page = inject_head_script(
+                &inject_head_markup(source, &question_style()),
+                &scripts,
+            );
             let lower = page.to_ascii_lowercase();
             let page = match lower.rfind("</body>") {
                 Some(at) => format!("{}{overlay}{}", &page[..at], &page[at..]),
@@ -323,7 +340,22 @@ title=\"{title_attr}\" srcdoc=\"{srcdoc}\"></iframe>\n</body>\n</html>\n",
 /// `script` as the first thing a page runs: after `<head …>` when there is
 /// one, else after `<html …>`, else at the very start.
 pub(crate) fn inject_head_script(page: &str, script: &str) -> String {
-    let tag = format!("<script>{script}</script>");
+    inject_head_markup(page, &format!("<script>{script}</script>"))
+}
+
+/// The stylesheet for `data-zeron-question` cards, as a `<style>` element.
+fn question_style() -> String {
+    format!("<style>{QUESTION_CSS}</style>")
+}
+
+/// A fragment with the question card styles in front of it.
+fn with_question_style(fragment: &str) -> String {
+    format!("{}\n{fragment}", question_style())
+}
+
+/// `tag` (markup) as the first thing in a page: after `<head …>` when there
+/// is one, else after `<html …>`, else at the very start.
+fn inject_head_markup(page: &str, tag: &str) -> String {
     let lower = page.to_ascii_lowercase();
     for open in ["<head", "<html"] {
         if let Some(start) = lower.find(open)
