@@ -16,7 +16,9 @@
 //!   "missing chat" row under its item.
 //! - Archived items are excluded unless `show_archived`; completed items are
 //!   excluded while `hide_completed`. An excluded item still shows when its
-//!   subtree has something visible, so nothing below it vanishes.
+//!   child item has something visible, so nothing below it vanishes. An
+//!   archived item's Chats alone do not keep it in view: they move to
+//!   Unassociated Chats.
 //! - A Space the user hid from the Outline (`OutlineSpace::hidden`, multi-
 //!   Space only) renders nothing, and its Chats are skipped rather than
 //!   moved to the projectless group. With `show_hidden_spaces` it shows as a
@@ -572,10 +574,24 @@ fn item_node<'s>(
         }
     }
     // Associated Chats (newest first), then dangling assignments.
-    let homed = ctx
+    let mut homed = ctx
         .by_home
         .remove(&row_key::item(space_id, &item.id))
         .unwrap_or_default();
+    // An archived item with no visible child item stays hidden like any other
+    // archived item: its Chats move to Unassociated Chats instead of pinning
+    // the item in view (dimmed, and immovable since archived items cannot
+    // move). The assignment itself is untouched.
+    let archived_hidden =
+        item.archived_at.is_some() && !options.show_archived && children.is_empty();
+    if archived_hidden && !homed.is_empty() {
+        let unassociated = ctx
+            .by_home
+            .entry(row_key::unassociated(Some(space_id)))
+            .or_default();
+        unassociated.extend(std::mem::take(&mut homed));
+        unassociated.sort_by(|a, b| b.activity.cmp(&a.activity).then_with(|| a.id.cmp(&b.id)));
+    }
     let mut chat_nodes: Vec<Node> = homed
         .into_iter()
         .filter_map(|chat| {
@@ -588,7 +604,10 @@ fn item_node<'s>(
         })
         .collect();
     for chat_id in &item.chat_ids {
-        if !ctx.chats.contains_key(chat_id.as_str()) && options.query.is_empty() {
+        if !archived_hidden
+            && !ctx.chats.contains_key(chat_id.as_str())
+            && options.query.is_empty()
+        {
             chat_nodes.push(Node {
                 key: row_key::chat(chat_id),
                 kind: OutlineRowKind::Chat(ChatRow {
@@ -1176,6 +1195,114 @@ pub(crate) mod tests {
         );
         let retired = archived.row(&row_key::item("s1", RETIRED)).unwrap();
         assert!(retired.item().unwrap().archived);
+    }
+
+    /// The fixture with `RETIRED` (archived) acting as a synced PR item that
+    /// the sync archived, with `CHAT_PR` assigned to it.
+    fn archived_synced_pr_spaces() -> ([OutlineSpace; 1], Vec<OutlineChat>) {
+        let mut snapshot = fixture_snapshot("s1");
+        let retired = snapshot
+            .items
+            .iter_mut()
+            .find(|item| item.id == RETIRED)
+            .unwrap();
+        retired.chat_ids = vec![CHAT_PR.into()];
+        retired.external_sync_state = Some(zeron_proto::WorkItemExternalSyncState {
+            provider: "github".into(),
+            external_id: "acme/launch#42".into(),
+            round: 1,
+            request_state: zeron_proto::PrReviewRequestState::Merged,
+            archived_by_sync: Some(zeron_proto::PrReviewRequestState::Merged),
+            ..Default::default()
+        });
+        let mut chats = fixture_chats("s1");
+        chats.push(chat(CHAT_PR, Some("s1")));
+        ([ready("s1", "Repo", snapshot)], chats)
+    }
+
+    const CHAT_PR: &str = "chat-pr";
+
+    #[test]
+    fn an_archived_synced_pr_item_with_a_live_chat_is_hidden_and_its_chat_stays_reachable() {
+        let (spaces, chats) = archived_synced_pr_spaces();
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        assert!(
+            model.row(&row_key::item("s1", RETIRED)).is_none(),
+            "the live chat no longer pins the archived item in view"
+        );
+        let chat_row = model.row(&row_key::chat(CHAT_PR)).expect("chat not lost");
+        assert!(!chat_row.chat().unwrap().dangling);
+        let parent = &model.rows[chat_row.parent.unwrap()];
+        assert_eq!(parent.key, row_key::unassociated(Some("s1")));
+        assert!(chat_row.chat().unwrap().work_item.is_none());
+    }
+
+    #[test]
+    fn showing_archived_items_brings_the_synced_pr_item_back_with_its_chat() {
+        let (spaces, chats) = archived_synced_pr_spaces();
+        let model = flatten(
+            &spaces,
+            &chats,
+            &HashSet::new(),
+            &OutlineOptions {
+                show_archived: true,
+                ..opts()
+            },
+        );
+        let item = model.row(&row_key::item("s1", RETIRED)).unwrap();
+        assert!(item.item().unwrap().archived);
+        let chat_row = model.row(&row_key::chat(CHAT_PR)).unwrap();
+        assert_eq!(model.rows[chat_row.parent.unwrap()].key, item.key);
+    }
+
+    #[test]
+    fn a_hidden_archived_item_drops_its_missing_chat_rows_and_keeps_search_working() {
+        let (spaces, mut chats) = archived_synced_pr_spaces();
+        chats.retain(|c| c.id != CHAT_PR);
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        assert!(model.row(&row_key::item("s1", RETIRED)).is_none());
+        assert!(model.row(&row_key::chat(CHAT_PR)).is_none());
+        // A search that matches the chat finds it under Unassociated Chats.
+        let (spaces, chats) = archived_synced_pr_spaces();
+        let model = flatten(
+            &spaces,
+            &chats,
+            &HashSet::new(),
+            &OutlineOptions {
+                query: "chat chat-pr".into(),
+                ..opts()
+            },
+        );
+        assert!(model.row(&row_key::chat(CHAT_PR)).is_some());
+        assert!(model.row(&row_key::item("s1", RETIRED)).is_none());
+    }
+
+    #[test]
+    fn an_archived_item_with_a_visible_child_item_stays_with_its_chats() {
+        let (spaces, chats) = archived_synced_pr_spaces();
+        let WorkOutlineLoad::Ready(snapshot) = &spaces[0].load else {
+            unreachable!()
+        };
+        let mut snapshot = (**snapshot).clone();
+        let retired = snapshot
+            .items
+            .iter_mut()
+            .find(|item| item.id == RETIRED)
+            .unwrap();
+        retired.child_ids = vec![HOUSEKEEPING.into()];
+        snapshot
+            .items
+            .iter_mut()
+            .find(|item| item.id == HOUSEKEEPING)
+            .unwrap()
+            .parent_work_item_id = Some(RETIRED.into());
+        snapshot.root_work_item_ids.retain(|id| id != HOUSEKEEPING);
+        let spaces = [ready("s1", "Repo", snapshot)];
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        let retired = model.row(&row_key::item("s1", RETIRED)).unwrap();
+        assert!(retired.item().unwrap().kept_for_descendants);
+        let chat_row = model.row(&row_key::chat(CHAT_PR)).unwrap();
+        assert_eq!(model.rows[chat_row.parent.unwrap()].key, retired.key);
     }
 
     #[test]
