@@ -432,9 +432,19 @@ fn chat_home(
     {
         return None;
     }
+    let item_of = |c: &OutlineChat| {
+        c.space_id
+            .as_deref()
+            .and_then(|space_id| associated.get(space_id))
+            .and_then(|map| map.get(c.id.as_str()).copied())
+    };
     if let Some(parent) = chat.parent_chat_id.as_deref() {
         // Nest under the parent only when the parent itself is shown; a
-        // parent cycle (bad data) falls back to the Chat's own home.
+        // parent cycle (bad data) falls back to the Chat's own home. A child
+        // started on a different item than its parent (a coordinator's child)
+        // lives under that item instead.
+        let elsewhere = item_of(chat)
+            .is_some_and(|own| chats.get(parent).and_then(|p| item_of(p)) != Some(own));
         let parent_shown = chats.get(parent).is_some_and(|p| {
             p.visible
                 && match p.space_id.as_deref() {
@@ -443,7 +453,7 @@ fn chat_home(
                     None => options.all_spaces,
                 }
         });
-        if parent != chat.id && parent_shown && !parent_chain_cycles(chat, chats) {
+        if parent != chat.id && parent_shown && !elsewhere && !parent_chain_cycles(chat, chats) {
             return Some(row_key::chat(parent));
         }
     }
@@ -1041,7 +1051,10 @@ pub(crate) mod tests {
         let model = flatten(&spaces, &chats, &HashSet::new(), &revealed);
         let row = model.row("space:s1").unwrap();
         assert!(!row.has_children);
-        assert!(matches!(row.kind, OutlineRowKind::Space { hidden: true, .. }));
+        assert!(matches!(
+            row.kind,
+            OutlineRowKind::Space { hidden: true, .. }
+        ));
         assert!(model.row(&row_key::chat(CHAT_API)).is_none());
 
         // One Space: hiding does not apply (there is no root row).
@@ -1069,6 +1082,32 @@ pub(crate) mod tests {
                 (0, PROJECTLESS_GROUP_KEY.to_string()),
                 (1, row_key::chat("loose"))
             ]
+        );
+    }
+
+    #[test]
+    fn a_child_started_on_another_item_lives_under_that_item() {
+        let mut chats = fixture_chats("s1");
+        // A coordinator's child: parent on w-api, the child itself on w-ui.
+        chats
+            .iter_mut()
+            .find(|c| c.id == CHAT_UI)
+            .unwrap()
+            .parent_chat_id = Some(CHAT_API.into());
+        // A subagent on its parent's own item still nests under the parent.
+        let mut same_item = chat(CHAT_GHOST, Some("s1"));
+        same_item.parent_chat_id = Some(CHAT_API.into());
+        chats.push(same_item);
+        let spaces = [ready("s1", "Repo", fixture_snapshot("s1"))];
+        let model = flatten(&spaces, &chats, &HashSet::new(), &opts());
+        let parent_of = |key: String| {
+            let ix = model.position(&key).unwrap();
+            model.rows[model.rows[ix].parent.unwrap()].key.clone()
+        };
+        assert_eq!(parent_of(row_key::chat(CHAT_UI)), row_key::item("s1", UI));
+        assert_eq!(
+            parent_of(row_key::chat(CHAT_GHOST)),
+            row_key::chat(CHAT_API)
         );
     }
 
