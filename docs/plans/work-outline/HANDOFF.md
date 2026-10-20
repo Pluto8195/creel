@@ -136,6 +136,16 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     login (only the engine does, via `gh api user`). Adding it needs an RPC.
   - Items with several PRs show icons only for the first one.
   - Linear rows get a state dot plus a status icon, but keep their totals text and don't drop slots.
+- **Question cards** (2026-10-20; first slice of Artifacts phase 3 D, rendering only):
+  - `markdown/question.rs` `parse_question` turns a top-level `> [!question] Q-n · …` quote into
+    `Block::Question`. `markdown_diff` reads ids from it, and its old private parser is removed.
+  - Each card shows an id badge, a status pill, a Blocking flag, the question in bold, and Example /
+    Blocks / unknown fields / Decision rows. Decision is tinted. Resolved cards are dimmed and
+    collapsed, with a Show/Hide toggle, and expand while find is active.
+  - Transcripts render question cards too.
+  - The HTML `data-zeron-question` form gets CSS plus a frame script (`artifacts/question_html.rs`).
+    It's only been checked headlessly, never in a real WKWebView.
+  - Still to do for D: the Questions panel, Required Actions for questions, and answering from Zeron.
 
 ## Working model (since 2026-10-20)
 
