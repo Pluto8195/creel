@@ -917,3 +917,129 @@ fn a_ticket_item_with_linked_prs_shows_each_and_starts_a_chat(cx: &mut gpui::Tes
     assert!(vcx.debug_bounds("work-item-pr-chip").is_some());
     assert!(vcx.debug_bounds("work-item-pr-chip-1").is_some());
 }
+
+/// The PR chip text of `pr` as the Outline would render it right now
+/// (`#n` alone while there is nothing cached).
+fn shown_pr_text(state: &Entity<AppState>, vcx: &mut gpui::VisualTestContext, number: u64) -> String {
+    let pr = zeron_proto::PullRequestRef::new("acme", "launch", number);
+    state.read_with(vcx, |state, _| match state.github.status(&pr) {
+        Some(crate::github::store::PrEntry::Ready { status, .. }) => {
+            crate::github::chip::chip_text(status)
+        }
+        _ => format!("#{number}"),
+    })
+}
+
+/// Scripted `PrStatus` whose answer a test swaps between pulls; `None` = the
+/// pull fails.
+type PrAnswer = std::sync::Arc<std::sync::Mutex<Option<zeron_proto::PullRequestStatusSummary>>>;
+
+fn pr_status_reply(answer: &PrAnswer) -> impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> + Send + Sync + 'static {
+    let answer = answer.clone();
+    move |method, params| match method {
+        "PrStatus" => match answer.lock().unwrap().clone() {
+            Some(status) => Ok(serde_json::to_value(status).unwrap()),
+            None => Err(zeron_rpc::RpcError::Failed("gh unavailable".into())),
+        },
+        _ => default_reply(method, params),
+    }
+}
+
+/// A refresh that returns the same data leaves the chip text identical at
+/// every step (no loading text while the pull is in flight), a failed pull
+/// keeps the last good text, and a real change still shows.
+#[gpui::test]
+fn pr_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let answer: PrAnswer = std::sync::Arc::new(std::sync::Mutex::new(Some(gf::summary(
+        "launch",
+        42,
+        "Add auth endpoints",
+    ))));
+    let (overview, _calls, vcx) = pr_overview(
+        cx,
+        dir.path(),
+        sync_snapshot(Some(LAUNCH)),
+        pr_status_reply(&answer),
+    );
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    vcx.run_until_parked();
+    let pr = zeron_proto::PullRequestRef::new("acme", "launch", 42);
+    let before = shown_pr_text(&state, vcx, 42);
+    assert_eq!(
+        before,
+        "#42 \u{00b7} Open \u{00b7} \u{2713} \u{00b7} Review requested"
+    );
+
+    // The same data pulled twice: identical while in flight and after.
+    for _ in 0..2 {
+        vcx.update(|_, cx| crate::github::store::request_status(&state, &pr, true, cx));
+        assert!(state.read_with(vcx, |s, _| s.github.is_loading(&pr)));
+        assert_eq!(shown_pr_text(&state, vcx, 42), before, "in flight");
+        vcx.run_until_parked();
+        assert!(!state.read_with(vcx, |s, _| s.github.is_loading(&pr)));
+        assert_eq!(shown_pr_text(&state, vcx, 42), before, "after the pull");
+    }
+
+    // A failed pull keeps the last good text.
+    *answer.lock().unwrap() = None;
+    vcx.update(|_, cx| crate::github::store::request_status(&state, &pr, true, cx));
+    assert_eq!(shown_pr_text(&state, vcx, 42), before, "failing, in flight");
+    vcx.run_until_parked();
+    assert_eq!(shown_pr_text(&state, vcx, 42), before, "after a failed pull");
+
+    // Real changes show.
+    let mut changed = gf::summary("launch", 42, "Add auth endpoints");
+    changed.ci_status = zeron_proto::PullRequestCiStatus::Failing;
+    changed.state = zeron_proto::PullRequestState::Draft;
+    *answer.lock().unwrap() = Some(changed);
+    vcx.update(|_, cx| crate::github::store::request_status(&state, &pr, true, cx));
+    vcx.run_until_parked();
+    let after = shown_pr_text(&state, vcx, 42);
+    assert_ne!(after, before);
+    assert!(after.contains("Draft") && after.contains('\u{2715}'), "{after}");
+}
+
+/// A list row (search hit: no CI or review detail) never replaces a fully
+/// fetched status, but does fill a gap, and the chip then fetches the full
+/// status once.
+#[gpui::test]
+fn partial_list_rows_do_not_overwrite_a_full_pr_status(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let answer: PrAnswer = std::sync::Arc::new(std::sync::Mutex::new(Some(gf::summary(
+        "launch",
+        42,
+        "Add auth endpoints",
+    ))));
+    let (overview, calls, vcx) = pr_overview(
+        cx,
+        dir.path(),
+        sync_snapshot(Some(LAUNCH)),
+        pr_status_reply(&answer),
+    );
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    vcx.run_until_parked();
+    let full = shown_pr_text(&state, vcx, 42);
+
+    let mut hit = gf::summary("launch", 42, "Add auth endpoints");
+    hit.ci_status = zeron_proto::PullRequestCiStatus::None;
+    hit.my_review_state = zeron_proto::PullRequestMyReviewState::None;
+    state.update(vcx, |state, _| state.github.remember([&hit]));
+    assert_eq!(shown_pr_text(&state, vcx, 42), full, "full status wins");
+
+    // A PR with nothing cached takes the row, then the chip fetches it.
+    state.update(vcx, |state, _| {
+        state.github.remember([&gf::summary("launch", 7, "Fix login")])
+    });
+    let fetches = |calls: &PrCalls| calls_to(calls, "PrStatus").len();
+    let before = fetches(&calls);
+    let pr7 = zeron_proto::PullRequestRef::new("acme", "launch", 7);
+    vcx.update(|_, cx| crate::github::store::request_status(&state, &pr7, false, cx));
+    vcx.run_until_parked();
+    assert_eq!(fetches(&calls), before + 1, "a partial row is fetched in full");
+    vcx.update(|_, cx| crate::github::store::request_status(&state, &pr7, false, cx));
+    vcx.run_until_parked();
+    assert_eq!(fetches(&calls), before + 1, "and then cached");
+}

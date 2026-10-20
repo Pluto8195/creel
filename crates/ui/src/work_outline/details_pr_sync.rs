@@ -396,7 +396,7 @@ impl WorkItemDetails {
                 )
             })
             .collect();
-        let loading = matches!(entry, Some(store::PrEntry::Loading));
+        let loading = self.state.read(cx).github.is_loading(&pr);
         let synced = item
             .external_sync_state
             .as_ref()

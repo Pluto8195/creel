@@ -3,7 +3,7 @@
 //! panel rows). Fetches go through `AppState::work_outline_actions()`, so
 //! tests answer them with scripted replies. Updates notify `AppState`, which
 //! redraws the observers. Callers only fetch for Linear-enabled Spaces.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity};
@@ -18,6 +18,10 @@ pub(crate) const ISSUE_TTL: Duration = Duration::from_secs(5 * 60);
 /// How long a failed issue fetch waits before the next automatic try.
 pub(crate) const ISSUE_RETRY: Duration = Duration::from_secs(60);
 
+/// What an issue chip shows. `Loading` only stands for "nothing to show
+/// yet": a refresh of an entry that already has data keeps showing that data
+/// (`LinearStore::in_flight` tracks the fetch), so a pull that returns the
+/// same data never changes the rendered text.
 #[derive(Debug, Clone)]
 pub(crate) enum IssueEntry {
     Loading,
@@ -37,6 +41,8 @@ pub(crate) struct LinearStore {
     pub status: Option<Result<LinearConnectionStatus, LinearUiError>>,
     pub status_loading: bool,
     issues: HashMap<String, IssueEntry>,
+    /// Identifiers with a fetch under way.
+    in_flight: HashSet<String>,
     /// The last "My projects" list (matches pasted project URLs).
     pub projects: Option<Vec<LinearProjectSummary>>,
 }
@@ -133,7 +139,9 @@ pub(crate) fn set_status(
 }
 
 /// Fetch issue `identifier` when it is not cached (or `force`). Marks it
-/// loading without notifying, so it is safe to call while rendering.
+/// loading without notifying, so it is safe to call while rendering. An
+/// entry that already has data keeps it during the fetch, and keeps it
+/// (retrying after `ISSUE_RETRY`) when the fetch fails.
 pub(crate) fn request_issue(state: &Entity<AppState>, identifier: &str, force: bool, cx: &mut App) {
     let key = identifier.trim().to_uppercase();
     if key.is_empty() {
@@ -142,11 +150,16 @@ pub(crate) fn request_issue(state: &Entity<AppState>, identifier: &str, force: b
     let now = Instant::now();
     let Some(task) = state.update(cx, |state, _| {
         let store = &state.linear;
-        let loading = matches!(store.issue(&key), Some(IssueEntry::Loading));
+        let loading = store.in_flight.contains(&key)
+            || matches!(store.issue(&key), Some(IssueEntry::Loading));
         if loading || (!force && !store.needs_fetch(&key, now)) {
             return None;
         }
-        state.linear.issues.insert(key.clone(), IssueEntry::Loading);
+        let store = &mut state.linear;
+        store.in_flight.insert(key.clone());
+        if store.issue(&key).is_none() {
+            store.issues.insert(key.clone(), IssueEntry::Loading);
+        }
         Some(state.work_outline_actions().linear_issue(&key, force))
     }) else {
         return;
@@ -156,11 +169,21 @@ pub(crate) fn request_issue(state: &Entity<AppState>, identifier: &str, force: b
         let result = task.await;
         state.update(cx, |state, cx| {
             let at = Instant::now();
+            let store = &mut state.linear;
+            store.in_flight.remove(&key);
             let entry = match result {
                 Ok(issue) => IssueEntry::Ready { issue, at },
-                Err(error) => IssueEntry::Failed { error, at },
+                Err(error) => match store.issues.remove(&key) {
+                    // Keep showing the last good issue; the next try waits
+                    // `ISSUE_RETRY`.
+                    Some(IssueEntry::Ready { issue, .. }) => IssueEntry::Ready {
+                        issue,
+                        at: at.checked_sub(ISSUE_TTL - ISSUE_RETRY).unwrap_or(at),
+                    },
+                    _ => IssueEntry::Failed { error, at },
+                },
             };
-            state.linear.issues.insert(key, entry);
+            store.issues.insert(key, entry);
             cx.notify();
         });
     })

@@ -1271,3 +1271,68 @@ fn project_chip_opens_a_menu_instead_of_cycling(cx: &mut gpui::TestAppContext) {
     panel.read_with(vcx, |panel, _| assert!(!panel.space_menu_open()));
     overview.read_with(vcx, |o, _| assert!(o.column_shown(), "Esc only closed the menu"));
 }
+
+/// The Linear issue chip text of `identifier` as the Outline would render it
+/// right now (the bare identifier while there is nothing cached).
+fn shown_issue_text(state: &Entity<AppState>, vcx: &mut gpui::VisualTestContext) -> String {
+    state.read_with(vcx, |state, _| match state.linear.issue("ENG-1") {
+        Some(crate::linear::store::IssueEntry::Ready { issue, .. }) => {
+            crate::work_outline::outline_view::linear_outline::issue_chip_text(issue)
+        }
+        _ => "ENG-1".to_string(),
+    })
+}
+
+/// A refresh that returns the same issue leaves the chip text identical at
+/// every step (nothing shown while the pull is in flight), a failed pull
+/// keeps the last good text, and a real change still shows.
+#[gpui::test]
+fn issue_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let answer: std::sync::Arc<std::sync::Mutex<Option<zeron_proto::linear::LinearIssueSummary>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Some(lf::issue("ENG-1", "Fix login"))));
+    let script = answer.clone();
+    let (overview, _calls, vcx) = linear_overview(
+        cx,
+        dir.path(),
+        linear_snapshot(true),
+        move |method, params| match method {
+            "LinearIssue" => match script.lock().unwrap().clone() {
+                Some(issue) => Ok(serde_json::to_value(issue).unwrap()),
+                None => Err(zeron_rpc::RpcError::Failed("linear unavailable".into())),
+            },
+            _ => default_reply(method, params),
+        },
+    );
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    vcx.run_until_parked();
+    let before = shown_issue_text(&state, vcx);
+    assert_ne!(before, "ENG-1", "the issue loaded");
+
+    let pull = |vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|_, cx| crate::linear::store::request_issue(&state, "ENG-1", true, cx))
+    };
+    for _ in 0..2 {
+        pull(vcx);
+        assert_eq!(shown_issue_text(&state, vcx), before, "in flight");
+        vcx.run_until_parked();
+        assert_eq!(shown_issue_text(&state, vcx), before, "after the pull");
+    }
+
+    *answer.lock().unwrap() = None;
+    pull(vcx);
+    assert_eq!(shown_issue_text(&state, vcx), before, "failing, in flight");
+    vcx.run_until_parked();
+    assert_eq!(shown_issue_text(&state, vcx), before, "after a failed pull");
+
+    let mut changed = lf::issue("ENG-1", "Fix login");
+    changed.state.name = "Done".into();
+    *answer.lock().unwrap() = Some(changed);
+    pull(vcx);
+    vcx.run_until_parked();
+    let after = shown_issue_text(&state, vcx);
+    assert_ne!(after, before);
+    assert!(after.starts_with("Done"), "{after}");
+}
