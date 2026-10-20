@@ -660,8 +660,8 @@ impl ArtifactTab {
             height: COMPARE_VIEWPORT_HEIGHT,
         };
         self._compare_render = Some(cx.spawn_in(window, async move |this, cx| {
-            let left_render = renderer.render(left_doc, viewport, cx);
-            let right_render = renderer.render(right_doc, viewport, cx);
+            let left_render = renderer.render_full_height(left_doc, viewport, cx);
+            let right_render = renderer.render_full_height(right_doc, viewport, cx);
             let (left, right) = futures::future::join(left_render, right_render).await;
             let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff), String> = match (left, right) {
                 (Err(error), _) | (_, Err(error)) => Err(error),
@@ -1274,7 +1274,10 @@ impl ArtifactTab {
                         div()
                             .relative()
                             .w(px(COMPARE_VIEWPORT_WIDTH as f32))
-                            .h(px(COMPARE_VIEWPORT_HEIGHT as f32))
+                            .h(px(compare::onion_height(
+                                rendered.diff.width,
+                                rendered.diff.height,
+                            )))
                             .child(layer(&rendered.left, 1.0))
                             .child(layer(&rendered.right, opacity)),
                     ),

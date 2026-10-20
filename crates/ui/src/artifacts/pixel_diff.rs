@@ -381,4 +381,35 @@ mod tests {
         assert_eq!(result.regions.len(), 1);
         assert!(diff_png(b"nope", b"nope", DiffConfig::default()).is_err());
     }
+
+    #[test]
+    fn changes_far_below_the_old_viewport_are_found() {
+        // 520 px wide, 6000 tall (3x the old 1400 cap), changed at y = 5000.
+        let a = solid(520, 6000, [255, 255, 255, 255]);
+        let mut b = a.clone();
+        paint(&mut b, 520, (10, 5000, 40, 20), [0, 0, 0, 255]);
+        let diff = diff_rgba(
+            &Rgba {
+                width: 520,
+                height: 6000,
+                data: &a,
+            },
+            &Rgba {
+                width: 520,
+                height: 6000,
+                data: &b,
+            },
+            DiffConfig::default(),
+        );
+        assert_eq!(diff.height, 6000);
+        assert_eq!(
+            diff.regions,
+            [Region {
+                x: 10,
+                y: 5000,
+                width: 40,
+                height: 20
+            }]
+        );
+    }
 }

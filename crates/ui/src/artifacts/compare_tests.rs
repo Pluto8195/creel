@@ -25,10 +25,19 @@ struct PngRenderer {
 
 const CHANGED_RECT: (u32, u32, u32, u32) = (40, 60, 100, 30);
 
-fn synthetic_png(changed: bool) -> Vec<u8> {
-    let mut image = image::RgbaImage::from_pixel(520, 200, image::Rgba([255, 255, 255, 255]));
+/// The change in a "TALL" render, far below the base 1400 px viewport.
+const TALL_HEIGHT: u32 = 3000;
+const TALL_CHANGED_RECT: (u32, u32, u32, u32) = (40, 2500, 100, 30);
+
+fn synthetic_png(changed: bool, tall: bool) -> Vec<u8> {
+    let height = if tall { TALL_HEIGHT } else { 200 };
+    let mut image = image::RgbaImage::from_pixel(520, height, image::Rgba([255, 255, 255, 255]));
     if changed {
-        let (x0, y0, w, h) = CHANGED_RECT;
+        let (x0, y0, w, h) = if tall {
+            TALL_CHANGED_RECT
+        } else {
+            CHANGED_RECT
+        };
         for y in y0..y0 + h {
             for x in x0..x0 + w {
                 image.put_pixel(x, y, image::Rgba([200, 0, 0, 255]));
@@ -48,10 +57,11 @@ impl ArtifactRenderer for Rc<PngRenderer> {
         _: &mut gpui::AsyncApp,
     ) -> RenderFuture {
         let changed = document.contains("CHANGED");
+        let tall = document.contains("TALL");
         self.documents.borrow_mut().push((document, viewport));
         Box::pin(async move {
             Ok(RenderOutput {
-                png: Some(synthetic_png(changed)),
+                png: Some(synthetic_png(changed, tall)),
                 report: None,
             })
         })
@@ -323,6 +333,108 @@ fn highlight_changes_diffs_two_offscreen_renders(cx: &mut TestAppContext) {
     let doc = shown.borrow().last().unwrap().1.clone();
     assert_eq!(doc.matches("data-zeron-changes").count(), 1);
     assert!(vcx.debug_bounds("artifact-compare-result").is_some());
+}
+
+#[gpui::test]
+fn highlight_covers_changes_below_the_base_viewport(cx: &mut TestAppContext) {
+    let kind = ArtifactKind::HtmlFragment;
+    let _dir = init_ui(cx);
+    let tall: Reply = Arc::new(move |_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        let text = if revision == 1 {
+            "<p>TALL old</p>"
+        } else {
+            "<p>TALL CHANGED</p>"
+        };
+        Ok(content_reply(
+            kind,
+            revision,
+            text,
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, shown, _, vcx) = open(cx, kind, tall);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    tab.update_in(vcx, |tab, window, cx| tab.toggle_highlight(window, cx));
+    settle(vcx);
+    let (x, y, w, h) = TALL_CHANGED_RECT;
+    tab.read_with(vcx, |tab, _| {
+        let view = tab.compare_view().unwrap();
+        assert_eq!(
+            view.regions(),
+            [Region {
+                x,
+                y,
+                width: w,
+                height: h
+            }]
+        );
+        assert!(y > super::document::COMPARE_VIEWPORT_HEIGHT);
+        let rendered = view.rendered().unwrap();
+        assert_eq!(rendered.diff.height, TALL_HEIGHT);
+    });
+    // The box is in the frame document at its real depth.
+    let doc = shown.borrow().last().unwrap().1.clone();
+    assert!(
+        doc.contains(&format!("top:{}px", y - 16)),
+        "overlay at depth"
+    );
+    // Onion skin stacks the whole render.
+    tab.update_in(vcx, |tab, window, cx| {
+        tab.set_compare_mode(CompareMode::Onion, window, cx)
+    });
+    settle(vcx);
+    let onion = vcx.debug_bounds("artifact-compare-onion").expect("onion");
+    assert!(onion.size.height > gpui::px(0.0));
+}
+
+#[test]
+fn tall_render_region_math() {
+    use super::compare::{onion_height, overlay_html};
+    use super::document::{
+        COMPARE_MAX_HEIGHT, COMPARE_MAX_PIXELS, COMPARE_VIEWPORT_HEIGHT, COMPARE_VIEWPORT_WIDTH,
+        compare_render_plan,
+    };
+    // Short documents keep the base viewport at native scale.
+    assert_eq!(
+        compare_render_plan(300, 2.0),
+        (COMPARE_VIEWPORT_HEIGHT, None)
+    );
+    // Tall ones grow to their content at Retina scale while it fits.
+    assert_eq!(compare_render_plan(6000, 2.0), (6000, None));
+    // Past the cap the height stops, and the snapshot downsizes to fit.
+    let (height, width) = compare_render_plan(50_000, 2.0);
+    assert_eq!(height, COMPARE_MAX_HEIGHT);
+    assert!(width.is_none() || width.unwrap() >= COMPARE_VIEWPORT_WIDTH);
+    for scale in [1.0, 2.0, 3.0] {
+        let (height, width) = compare_render_plan(50_000, scale);
+        let pixel_width = width.unwrap_or((COMPARE_VIEWPORT_WIDTH as f32 * scale) as u32);
+        let pixel_height =
+            (height as f32 * pixel_width as f32 / COMPARE_VIEWPORT_WIDTH as f32) as u64;
+        assert!(
+            u64::from(pixel_width) * pixel_height <= COMPARE_MAX_PIXELS + 100_000,
+            "{scale}x fits: {pixel_width}x{pixel_height}"
+        );
+        assert!(pixel_width >= COMPARE_VIEWPORT_WIDTH, "never below 1x");
+    }
+    // A very high scale is downscaled before the cap would be exceeded.
+    assert!(compare_render_plan(8000, 6.0).1.is_some());
+    // Onion height follows the render, at 1x and at Retina.
+    assert_eq!(onion_height(520, 3000), 3000.0);
+    assert_eq!(onion_height(1040, 6000), 3000.0);
+    // Regions deep in a Retina render land at CSS depth, inside the frame.
+    let deep = Region {
+        x: 80,
+        y: 9000,
+        width: 200,
+        height: 60,
+    };
+    let html = overlay_html(&[deep], 2.0, (16, 16), 488);
+    assert!(
+        html.contains("top:4484px") && html.contains("height:30px"),
+        "{html}"
+    );
 }
 
 #[gpui::test]

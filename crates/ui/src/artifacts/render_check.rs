@@ -56,6 +56,18 @@ pub(crate) trait ArtifactRenderer {
         viewport: ArtifactViewport,
         cx: &mut AsyncApp,
     ) -> RenderFuture;
+
+    /// Like [`Self::render`], but the snapshot grows past `viewport` to the
+    /// document's full height (see [`document::compare_render_plan`]).
+    /// Renderers that cannot grow just render the viewport.
+    fn render_full_height(
+        &self,
+        document: String,
+        viewport: ArtifactViewport,
+        cx: &mut AsyncApp,
+    ) -> RenderFuture {
+        self.render(document, viewport, cx)
+    }
 }
 
 /// Executor limits.
@@ -532,11 +544,13 @@ pub(crate) mod webkit {
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, MainThreadOnly, class, msg_send};
     use objc2_app_kit::NSImage;
-    use objc2_foundation::{NSData, NSError, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{NSData, NSError, NSNumber, NSPoint, NSRect, NSSize, NSString};
     use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
 
     use super::{ArtifactRenderer, ProbeReport, RenderFuture, RenderOutput};
-    use crate::artifacts::document::{MERMAID_WAIT_MS, READ_PROBE_SCRIPT, SETTLE_MS};
+    use crate::artifacts::document::{
+        MERMAID_WAIT_MS, READ_PROBE_SCRIPT, SETTLE_MS, compare_render_plan,
+    };
     use zeron_proto::ArtifactViewport;
 
     pub(crate) struct WebKitRenderer;
@@ -622,7 +636,11 @@ pub(crate) mod webkit {
         rx.await.ok().flatten()
     }
 
-    async fn snapshot(mtm: MainThreadMarker, view: &WKWebView) -> Result<Vec<u8>, String> {
+    async fn snapshot(
+        mtm: MainThreadMarker,
+        view: &WKWebView,
+        width: Option<u32>,
+    ) -> Result<Vec<u8>, String> {
         let (tx, rx) = futures::channel::oneshot::channel::<Result<Vec<u8>, String>>();
         let tx = std::cell::RefCell::new(Some(tx));
         let block = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
@@ -643,6 +661,11 @@ pub(crate) mod webkit {
         unsafe {
             let configuration = WKSnapshotConfiguration::new(mtm);
             let _: () = msg_send![&*configuration, setAfterScreenUpdates: true];
+            if let Some(width) = width {
+                // Points of output width: fewer pixels than the native scale.
+                let width = NSNumber::numberWithDouble(f64::from(width));
+                let _: () = msg_send![&*configuration, setSnapshotWidth: &*width];
+            }
             view.takeSnapshotWithConfiguration_completionHandler(Some(&configuration), &block);
         }
         rx.await
@@ -664,6 +687,72 @@ pub(crate) mod webkit {
         }
     }
 
+    /// Grow the offscreen window and view to `height` CSS pixels, keeping the
+    /// width and the far-off-screen origin.
+    fn resize(offscreen: &Offscreen, width: u32, height: u32) {
+        let size = NSSize::new(f64::from(width), f64::from(height));
+        unsafe {
+            let frame = NSRect::new(NSPoint::new(-32_000.0, -32_000.0), size);
+            let _: () = msg_send![&*offscreen.window, setFrame: frame, display: true];
+            offscreen
+                .view
+                .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), size));
+        }
+    }
+
+    fn backing_scale(offscreen: &Offscreen) -> f32 {
+        let scale: f64 = unsafe { msg_send![&*offscreen.window, backingScaleFactor] };
+        scale as f32
+    }
+
+    async fn render_document(
+        document: String,
+        viewport: ArtifactViewport,
+        full_height: bool,
+        executor: gpui::BackgroundExecutor,
+    ) -> Result<RenderOutput, String> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "offscreen rendering must run on the main thread".to_owned())?;
+        let offscreen = open(mtm, &document, viewport);
+        let deadline = Instant::now() + probe_budget();
+        let mut report: Option<ProbeReport> = None;
+        while Instant::now() < deadline {
+            executor.timer(Duration::from_millis(100)).await;
+            if let Some(json) = evaluate(&offscreen.view, READ_PROBE_SCRIPT).await {
+                report = serde_json::from_str(&json).ok();
+                if report.is_some() {
+                    break;
+                }
+            }
+        }
+        let mut snapshot_width = None;
+        if full_height
+            && let Some(content) = report.as_ref().and_then(|report| report.content_height)
+            && content > viewport.height
+        {
+            let (height, width) = compare_render_plan(content, backing_scale(&offscreen));
+            if height > viewport.height {
+                resize(&offscreen, viewport.width, height);
+                // Let the frame reflow and repaint at the new size.
+                executor.timer(Duration::from_millis(300)).await;
+            }
+            snapshot_width = width;
+        }
+        let png = snapshot(mtm, &offscreen.view, snapshot_width).await;
+        drop(offscreen);
+        match png {
+            Ok(png) => Ok(RenderOutput {
+                png: Some(png),
+                report,
+            }),
+            Err(error) if report.is_some() => {
+                tracing::warn!(%error, "artifact snapshot failed");
+                Ok(RenderOutput { png: None, report })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     impl ArtifactRenderer for WebKitRenderer {
         fn render(
             &self,
@@ -672,35 +761,17 @@ pub(crate) mod webkit {
             cx: &mut gpui::AsyncApp,
         ) -> RenderFuture {
             let executor = cx.background_executor().clone();
-            Box::pin(async move {
-                let mtm = MainThreadMarker::new()
-                    .ok_or_else(|| "offscreen rendering must run on the main thread".to_owned())?;
-                let offscreen = open(mtm, &document, viewport);
-                let deadline = Instant::now() + probe_budget();
-                let mut report: Option<ProbeReport> = None;
-                while Instant::now() < deadline {
-                    executor.timer(Duration::from_millis(100)).await;
-                    if let Some(json) = evaluate(&offscreen.view, READ_PROBE_SCRIPT).await {
-                        report = serde_json::from_str(&json).ok();
-                        if report.is_some() {
-                            break;
-                        }
-                    }
-                }
-                let png = snapshot(mtm, &offscreen.view).await;
-                drop(offscreen);
-                match png {
-                    Ok(png) => Ok(RenderOutput {
-                        png: Some(png),
-                        report,
-                    }),
-                    Err(error) if report.is_some() => {
-                        tracing::warn!(%error, "artifact snapshot failed");
-                        Ok(RenderOutput { png: None, report })
-                    }
-                    Err(error) => Err(error),
-                }
-            })
+            Box::pin(render_document(document, viewport, false, executor))
+        }
+
+        fn render_full_height(
+            &self,
+            document: String,
+            viewport: ArtifactViewport,
+            cx: &mut gpui::AsyncApp,
+        ) -> RenderFuture {
+            let executor = cx.background_executor().clone();
+            Box::pin(render_document(document, viewport, true, executor))
         }
     }
 

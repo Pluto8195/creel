@@ -269,6 +269,18 @@ pub(crate) const SYNC_HOST_SCRIPT: &str = r##"addEventListener("message", (event
   if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*");
 });"##;
 
+/// The CSS height of an onion-skin stack for renders `width` x `height`
+/// pixels (the snapshot scale is `width` over the viewport width): the whole
+/// render, however tall, not just the base viewport.
+pub(crate) fn onion_height(width: u32, height: u32) -> f32 {
+    let scale = width as f32 / super::document::COMPARE_VIEWPORT_WIDTH as f32;
+    if scale.is_finite() && scale >= 1.0 {
+        (height as f32 / scale).ceil().max(1.0)
+    } else {
+        (height as f32).max(1.0)
+    }
+}
+
 /// Translucent boxes at `regions` (render pixels; `scale` is render pixels
 /// per CSS pixel, 2 on a Retina snapshot) inside a frame whose top-left sits
 /// at `origin` (CSS pixels) in the render. Boxes outside the frame are
