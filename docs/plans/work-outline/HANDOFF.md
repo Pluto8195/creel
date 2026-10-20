@@ -106,6 +106,19 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     per revision, and `ArtifactContent` serves them by revision. Revisions recorded before this
     show "not found" until the artifact is republished.
   - The tall-snapshot path has only run in headless tests, never against a real WKWebView.
+- **Plan reading: ⌘F find and section index** (2026-10-20; `artifacts/{find,outline}.rs`,
+  `artifacts/tab/find_view.rs`, `files/markdown_find.rs`):
+  - ⌘F opens a find bar while focus is in an Artifact tab. It shows a match count and highlights
+    every match. Enter / ⇧Enter and ⌘G / ⇧⌘G step through matches with wraparound, and Esc closes
+    the bar. Outside an Artifact tab, the shell's ⌘F and ⇧⌘G handlers `propagate()` when their own
+    route doesn't apply. ⌘F is still outline search everywhere else.
+  - A collapsible section rail lists h1–h3 headings: click to jump, and the section in view is
+    highlighted. It's hidden under 3 headings and for options, source, compare, images and Mermaid.
+  - HTML find runs over postMessage into the sandboxed frame, and WKWebView forwards ⌘F, ⌘G, ⇧⌘G
+    and Esc to the app. Highlights need macOS 14.2+. Matches that span inline tags aren't found.
+    Find and the index are off for HTML on Linux.
+  - Only headless tests have run. Key forwarding, the frame script under the CSP, and active-section
+    tracking haven't been seen in a real WKWebView.
 
 ## Working model (since 2026-10-20)
 
