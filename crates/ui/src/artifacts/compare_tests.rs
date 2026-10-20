@@ -197,6 +197,34 @@ fn the_last_mode_chosen_is_remembered_per_kind(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_compare_mode_survives_a_restart(cx: &mut TestAppContext) {
+    let dir = init_ui(cx);
+    let settings_dir = dir.path().join("settings");
+    cx.update(|cx| {
+        super::compare::ComparePrefs::remember(ArtifactKind::Mermaid, CompareMode::Source, cx);
+    });
+    // A fresh process reads the file back.
+    let loaded = crate::settings::UiSettings::load(&settings_dir);
+    cx.update(|cx| {
+        crate::settings::init(loaded, &settings_dir, cx);
+        assert_eq!(
+            super::compare::ComparePrefs::mode_for(ArtifactKind::Mermaid, cx),
+            CompareMode::Source
+        );
+        // Another kind is untouched; an unoffered stored mode falls back.
+        assert_eq!(
+            super::compare::ComparePrefs::mode_for(ArtifactKind::Image, cx),
+            CompareMode::SideBySide
+        );
+        super::compare::ComparePrefs::remember(ArtifactKind::Markdown, CompareMode::Onion, cx);
+        assert_eq!(
+            super::compare::ComparePrefs::mode_for(ArtifactKind::Markdown, cx),
+            Flavor::Markdown.default_mode()
+        );
+    });
+}
+
+#[gpui::test]
 fn revision_pickers_load_the_chosen_revisions(cx: &mut TestAppContext) {
     let kind = ArtifactKind::HtmlFragment;
     let _dir = init_ui(cx);

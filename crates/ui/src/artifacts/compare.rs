@@ -11,9 +11,7 @@
 //!
 //! The view itself (loading, rendering, offscreen diffs) is
 //! [`super::tab`]'s `compare_view`.
-use std::collections::HashMap;
-
-use gpui::{App, Global};
+use gpui::App;
 use zeron_proto::{ArtifactKind, ArtifactView};
 
 use super::document::CompareFrame;
@@ -100,27 +98,46 @@ impl Flavor {
     }
 }
 
-/// The last mode chosen per kind, for the process (compare views open in the
-/// mode the user last used for that kind).
-#[derive(Default)]
-pub(crate) struct ComparePrefs {
-    modes: HashMap<ArtifactKind, CompareMode>,
+impl CompareMode {
+    /// Stable key written to the UI settings file.
+    fn key(self) -> &'static str {
+        match self {
+            Self::SideBySide => "sideBySide",
+            Self::Onion => "onion",
+            Self::Source => "source",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        [Self::SideBySide, Self::Onion, Self::Source]
+            .into_iter()
+            .find(|mode| mode.key() == key)
+    }
 }
 
-impl Global for ComparePrefs {}
+/// The last mode chosen per kind (compare views open in the mode the user
+/// last used for that kind). Persisted in the UI settings file
+/// (`artifactCompareModes`), so it survives restarts.
+pub(crate) struct ComparePrefs;
 
 impl ComparePrefs {
     /// The mode a new compare view of `kind` opens in.
     pub(crate) fn mode_for(kind: ArtifactKind, cx: &App) -> CompareMode {
         let flavor = flavor(kind);
-        cx.try_global::<Self>()
-            .and_then(|prefs| prefs.modes.get(&kind).copied())
+        crate::settings::current(cx)
+            .artifact_compare_modes
+            .get(kind.as_str())
+            .and_then(|key| CompareMode::from_key(key))
             .filter(|mode| flavor.modes().contains(mode))
             .unwrap_or_else(|| flavor.default_mode())
     }
 
     pub(crate) fn remember(kind: ArtifactKind, mode: CompareMode, cx: &mut App) {
-        cx.default_global::<Self>().modes.insert(kind, mode);
+        crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+            settings
+                .artifact_compare_modes
+                .insert(kind.as_str().to_owned(), mode.key().to_owned());
+        });
     }
 }
 

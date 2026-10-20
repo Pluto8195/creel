@@ -751,6 +751,10 @@ pub struct UiSettings {
     pub new_thread_composer_background: Option<NewThreadComposerBackground>,
     /// Non-destructive treatment composited inside the artwork's fade mask.
     pub new_thread_background_effect: NewThreadBackgroundEffect,
+    /// Last revision-compare mode per artifact kind (`ArtifactKind::as_str`
+    /// to mode key). Unknown values are ignored on read.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub artifact_compare_modes: HashMap<String, String>,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
     /// [`Self::accent`], and never write it again.
     #[serde(default, rename = "accentColor", skip_serializing)]
@@ -777,6 +781,7 @@ impl Default for UiSettings {
             open_tabs: None,
             space_filter: None,
             sidebar_pinned_session_ids_by_profile: HashMap::new(),
+            artifact_compare_modes: HashMap::new(),
             sidebar_sections_by_profile: HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
@@ -2349,6 +2354,7 @@ mod tests {
                 name: "background.png".into(),
             }),
             new_thread_background_effect: NewThreadBackgroundEffect::Ascii,
+            artifact_compare_modes: HashMap::from([("mermaid".to_string(), "source".to_string())]),
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();
