@@ -1438,3 +1438,30 @@ request: **moves use an Undo toast instead of a blocking modal.**
 - Unchanged: the focused confirmation still gates toggling inheritance, editing or
   archiving an ancestor or Space instruction, changing execution configuration, approving a
   proposed instruction, Apply on Codex, and associating a Chat from Work Item Details.
+
+## Amendment: coordinator agent tools
+
+Found by a live test of one "coordinator" Chat on a Space-root item running work across its
+subtree. Amends Milestone 4 agent tool discoveries 5 and 7; the section 8 policy and the
+re-association rule are unchanged.
+
+1. **`create_chat` takes `workItemId`.** A child created without it inherits the caller's item
+   exactly as before, and then cannot re-associate (a Chat started for an item keeps it). With
+   `workItemId` (the caller's item or a descendant, else `work-outline/unauthorized`; `prompt`
+   required; `cwd` and `branch` refused) the MCP server claims the key against inputs that
+   include the item, then calls the engine-internal `chat_launch_child_for_item`. The engine
+   checks the subtree, caps the sandbox at the caller's, forces approval off, and runs the UI's
+   `CreateChatForWorkItem` launch (`parentChatId` = caller), so the child gets the target's
+   effective instructions, execution binding, and assignment. Ids derive from `(caller, key)`
+   as before; `CreateChatForWorkItemParams.parentChatId` is new (omitted from the inputs hash
+   when absent). Only inside a Zeron chat: a terminal cannot prove the item is its own.
+2. **`work_outline_read_subtree {workItemId?, maxDepth?, includeArchived?}`.** Read-only; the
+   target defaults to the caller's item and must be it or a descendant (else `unauthorized`).
+   One snapshot yields a nested tree: per item id, title, status, effectiveStatus, attached
+   chats (id, title, working / awaitingInput / errored / idle from the live session,
+   lastMessageAt) and unresolved user action requests (id, text, detail, originChatId,
+   createdAt). `maxDepth` counts levels below the target (default 4, at most 8); at most 300
+   items, with `truncated` and per-item `childrenOmitted`. Children cannot message their parent,
+   so a coordinator collects results with `wait_for_turn` / `read_chat` and polls this tool for
+   open requests such as "Ready to merge". Tests: `crates/engine/tests/agent_tools.rs`,
+   `crates/mcp/src/tools.rs`.
