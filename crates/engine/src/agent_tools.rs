@@ -25,7 +25,8 @@
 //! associate only the calling Chat; set status `active` / `completed` on the
 //! Chat's item or a descendant (completing an item with open requests is
 //! `openUserActionRequests`, never auto-resolved); create requests on the
-//! Chat's item with the Chat as origin; resolve requests the Chat raised;
+//! Chat's item with the Chat as origin; resolve requests the Chat or its own
+//! child Chats raised;
 //! propose instructions for the item, its parent, or the Space root.
 //! Everything else is `unauthorized`.
 
@@ -891,8 +892,8 @@ impl AgentToolsService {
             "openUserActionRequests": agent.open_user_action_requests,
             "note": "You may create children under this item or its descendants, set their \
                      status to active or completed, ask the user for an action on this item, \
-                     resolve requests you raised, and propose instructions for it, its parent, \
-                     or the Space root.",
+                     resolve requests you or chats you created raised, and propose \
+                     instructions for it, its parent, or the Space root.",
         });
         if let (Some(Value::Object(linear)), Some(object)) = (linear, reply.as_object_mut()) {
             object.extend(linear);

@@ -295,7 +295,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
-            description: "Resolve a user action request your chat created once the user has answered, in chat or via a chat message starting `Re: \"…\"` from Required Actions' Reply & resolve, if it is still open (see `work_outline_read_current`). Do not leave answered requests open.",
+            description: "Resolve a user action request your chat, or a chat it created (a child started with `create_chat`), raised once the user has answered, in chat or via a chat message starting `Re: \"…\"` from Required Actions' Reply & resolve, if it is still open (see `work_outline_read_current`). Do not leave answered requests open.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

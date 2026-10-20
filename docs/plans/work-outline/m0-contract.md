@@ -1465,3 +1465,7 @@ re-association rule are unchanged.
    so a coordinator collects results with `wait_for_turn` / `read_chat` and polls this tool for
    open requests such as "Ready to merge". Tests: `crates/engine/tests/agent_tools.rs`,
    `crates/mcp/src/tools.rs`.
+3. **A coordinator resolves its children's requests.** `resolveUserActionRequest` is allowed
+   when the request's origin Chat is the caller or a Chat whose `parentChatId` is the caller
+   (so a coordinator closes "Ready to merge" after merging). Requests from Chats a person
+   started, or that another agent created, stay unauthorized.

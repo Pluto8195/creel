@@ -939,7 +939,8 @@ impl RegistryDoc {
     /// - `updateWorkItem` that only sets status `active` / `completed` on the
     ///   assigned item or a descendant (never `resolveOpenRequests`);
     /// - `createUserActionRequest` on the assigned item with origin Chat =
-    ///   this Chat, `resolveUserActionRequest` of requests this Chat raised;
+    ///   this Chat, `resolveUserActionRequest` of requests this Chat or a Chat
+    ///   it created (`parentChatId` = this Chat) raised;
     /// - `proposeWorkItemInstruction` targeting the assigned item, its
     ///   parent, or the Space root, with no other origin Chat.
     ///
@@ -1066,10 +1067,21 @@ impl RegistryDoc {
                 let origin = self
                     .overlay_row(KIND_USER_ACTION_REQUESTS, &p.user_action_request_id)
                     .and_then(|row| str_field(&row, "chatId"));
+                // A coordinator also closes what its own child Chats raised
+                // (e.g. "Ready to merge"); never requests from Chats a person
+                // started or another agent created.
+                let raised_by_own_child = |origin: &str| {
+                    self.chat(origin)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|c| c.parent_chat_id.as_deref() == Some(chat_id))
+                };
                 match origin {
                     Some(origin) if origin == chat_id => Ok(()),
+                    Some(origin) if raised_by_own_child(&origin) => Ok(()),
                     Some(_) => Err(unauthorized(
-                        "Agents may only resolve requests their own Chat raised",
+                        "Agents may only resolve requests their own Chat or a Chat it created \
+                         raised",
                     )),
                     None => Err(not_found("Request not found")),
                 }
