@@ -10,11 +10,11 @@
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use zeron_proto::PullRequestStatusSummary;
 
-use super::super::chips::TextTooltip;
+use super::super::chips::{self, TextTooltip};
 use super::super::model::ItemRow;
 use super::linear_outline::join_chips;
 use super::{OutlineEvent, OutlineView};
-use crate::github::store;
+use crate::github::{row_icons, store};
 use crate::theme::Theme;
 
 /// The drag payload of a GitHub panel PR row (`OutlineDrag::PullRequest`).
@@ -25,6 +25,16 @@ pub(crate) struct PrDrag {
     pub pr: Box<PullRequestStatusSummary>,
 }
 
+/// What an item row gets from the external integrations.
+pub(super) struct ExternalRow {
+    /// Linear chips, the destination marker and further PR chips.
+    pub chips: Option<AnyElement>,
+    /// The first PR's icon cluster; the row then drops its own attention
+    /// indicator, totals text, chat count and references icon (the cluster
+    /// carries them).
+    pub pr_slots: Option<AnyElement>,
+}
+
 impl OutlineView {
     /// Whether the GitHub surfaces apply to `space_id` here.
     fn github_available(&self, space_id: &str, cx: &gpui::App) -> bool {
@@ -33,32 +43,83 @@ impl OutlineView {
         })
     }
 
-    /// Linear chips, then the PR chip and the destination marker.
+    /// An invisible element that records the Outline's width while it paints
+    /// (and repaints the rows when it changes), so the PR icon cluster can
+    /// drop slots on a narrow Outline.
+    pub(super) fn width_probe(&self, cx: &mut Context<Self>) -> AnyElement {
+        let measured = self.row_width.clone();
+        let view = cx.entity_id();
+        gpui::canvas(
+            move |bounds, _, cx| {
+                let width = f32::from(bounds.size.width);
+                if (measured.get() - width).abs() >= 1.0 {
+                    measured.set(width);
+                    cx.notify(view);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// The width the rows lay out in; unlimited until it is measured.
+    fn outline_width(&self) -> f32 {
+        let width = self.row_width_override.unwrap_or_else(|| self.row_width.get());
+        if width > 0.0 { width } else { f32::INFINITY }
+    }
+
+    /// Pin the measured width (headless tests).
+    #[cfg(test)]
+    pub(crate) fn set_row_width_for_test(&mut self, width: Option<f32>, cx: &mut Context<Self>) {
+        self.row_width_override = width;
+        cx.notify();
+    }
+
+    /// The external chips of an item row: Linear's, the destination marker
+    /// and any PR beyond the first as chips, and the first PR as the icon
+    /// cluster (`pr_slots`). `depth` and `other_width` (an estimate of the
+    /// row's other chips) decide which cluster slots fit.
     pub(super) fn external_chips(
         &self,
         key: &str,
         item: &ItemRow,
+        depth: u16,
+        other_width: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> ExternalRow {
         let linear = self.linear_chips(key, item, theme, cx);
-        join_chips(linear, self.pr_sync_chips(key, item, theme, cx))
+        let linear_width = if linear.is_some() { 30.0 } else { 0.0 };
+        let (pr_chips, pr_slots) =
+            self.pr_sync_chips(key, item, depth, other_width + linear_width, theme, cx);
+        ExternalRow {
+            chips: join_chips(linear, pr_chips),
+            pr_slots,
+        }
     }
 
+    /// `(destination marker + chips of further PRs, the first PR's cluster)`.
     fn pr_sync_chips(
         &self,
         key: &str,
         item: &ItemRow,
+        depth: u16,
+        other_width: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> (Option<AnyElement>, Option<AnyElement>) {
         if !self.github_available(&item.space_id, cx) {
-            return None;
+            return (None, None);
         }
-        let snapshot = self.snapshot(&item.space_id)?;
+        let Some(snapshot) = self.snapshot(&item.space_id) else {
+            return (None, None);
+        };
         let destination = (snapshot.pr_review_sync_destination() == Some(item.item_id.as_str()))
             .then(|| destination_marker(format!("outline-pr-destination-{key}"), theme));
-        // One chip per linked PR (the first keeps the plain id).
+        let mut other_width = other_width + if destination.is_some() { 28.0 } else { 0.0 };
+        let mut slots = None;
         let mut chips = None;
         for (index, pr) in crate::github::item_pull_requests(snapshot, &item.item_id)
             .into_iter()
@@ -66,15 +127,53 @@ impl OutlineView {
         {
             store::request_status(&self.state, &pr, false, cx);
             let entry = self.state.read(cx).github.status(&pr).cloned();
-            let id = match index {
-                0 => format!("outline-pr-{key}"),
-                n => format!("outline-pr-{key}-{n}"),
-            };
+            if index == 0 {
+                // The first PR is the compact cluster; further PRs of a
+                // ticket keep their chip (and take room from the slots).
+                slots = Some((pr, entry));
+                continue;
+            }
+            let id = format!("outline-pr-{key}-{index}");
             let chip =
                 crate::github::chip::pr_chip(id, &pr, entry.as_ref(), self.shell.clone(), theme);
+            other_width += 90.0;
             chips = join_chips(chips, Some(chip));
         }
-        join_chips(chips, destination)
+        let slots = slots.map(|(pr, entry)| {
+            let totals = (!item.archived)
+                .then(|| super::super::required_actions::status_totals(&item.rollup))
+                .flatten();
+            let room = row_icons::slot_room(
+                self.outline_width(),
+                super::OutlineView::indent(depth),
+                other_width,
+            );
+            row_icons::pr_row_slots(
+                row_icons::PrRowArgs {
+                    key,
+                    pr: &pr,
+                    entry: entry.as_ref(),
+                    shell: self.shell.clone(),
+                    // The viewer's GitHub login isn't exposed to the UI (only
+                    // the engine's `gh api user` knows it), so the author
+                    // always shows as the plain login for now.
+                    viewer: None,
+                    attention: chips::attention_indicator(
+                        format!("outline-attention-{key}"),
+                        item.needs_user_action(),
+                        item.unresolved_actions,
+                        theme,
+                        1.0,
+                    ),
+                    chat_count: item.chat_count,
+                    totals_line: totals
+                        .map(|totals| format!("Including descendants: {}", totals.label())),
+                    visible: row_icons::visible_slots(room),
+                },
+                theme,
+            )
+        });
+        (join_chips(chips, destination), slots)
     }
 
     /// Whether dropping `drag` on item `item_id` of `space_id` creates a
