@@ -190,6 +190,16 @@ impl ArtifactTab {
         self.markdown.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn nav_input_for_tests(&self) -> &Entity<ComposerInput> {
+        &self.nav.input
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rail_focused_for_tests(&self, window: &Window) -> bool {
+        self.nav.rail_focus.is_focused(window)
+    }
+
     pub(crate) fn find_focus_handle(&self) -> &FocusHandle {
         &self.focus
     }
@@ -473,31 +483,37 @@ impl ArtifactTab {
     }
 
     /// The section in view: the Markdown list's top block, or the heading
-    /// the page last reported. A section just jumped to stays highlighted
-    /// while the view sits at the end of the page, where it can't scroll
-    /// the heading to the top.
+    /// the page last reported.
     pub(crate) fn current_section(&self, cx: &App) -> Option<usize> {
+        let computed = self.section_at_position(cx)?;
+        Some(self.held_pin(computed, cx).unwrap_or(computed))
+    }
+
+    fn section_at_position(&self, cx: &App) -> Option<usize> {
         let surface = self.index_surface()?;
-        let position = match surface {
-            Surface::Markdown => self.markdown.as_ref()?.read(cx).top_block(),
-            Surface::Web => self.nav.web_active.or(Some(0))?,
-        };
         let index = self.section_index();
-        let computed = match surface {
-            Surface::Markdown => index.active_at(position),
-            Surface::Web => index.section_for_target(position),
-        }?;
-        let at_end = match surface {
+        match surface {
+            Surface::Markdown => {
+                let top = self.markdown.as_ref()?.read(cx).top_block();
+                index.active_at(top)
+            }
+            Surface::Web => index.section_for_target(self.nav.web_active.unwrap_or(0)),
+        }
+    }
+
+    /// The section last jumped to, while it still stands for the view: the
+    /// view is at the end of the page (where short sections can't reach the
+    /// top, or nothing scrolls at all) and hasn't been scrolled past it.
+    fn held_pin(&self, computed: usize, cx: &App) -> Option<usize> {
+        let pin = self.nav.pin?;
+        let at_end = match self.index_surface()? {
             Surface::Markdown => self
                 .markdown
                 .as_ref()
                 .is_some_and(|preview| preview.read(cx).is_scrolled_to_end()),
             Surface::Web => self.nav.web_at_bottom,
         };
-        match self.nav.pin {
-            Some(pin) if pin > computed && pin < index.sections.len() && at_end => Some(pin),
-            _ => Some(computed),
-        }
+        (at_end && pin >= computed && pin < self.section_index().sections.len()).then_some(pin)
     }
 
     /// Whether the view is above the first heading (a step forward then
@@ -506,6 +522,12 @@ impl ArtifactTab {
         let Some(first) = self.section_index().sections.first() else {
             return false;
         };
+        let Some(computed) = self.section_at_position(cx) else {
+            return false;
+        };
+        if self.held_pin(computed, cx).is_some() {
+            return false;
+        }
         match self.index_surface() {
             Some(Surface::Markdown) => self
                 .markdown

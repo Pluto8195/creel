@@ -604,9 +604,7 @@ fn item_node<'s>(
         })
         .collect();
     for chat_id in &item.chat_ids {
-        if !archived_hidden
-            && !ctx.chats.contains_key(chat_id.as_str())
-            && options.query.is_empty()
+        if !archived_hidden && !ctx.chats.contains_key(chat_id.as_str()) && options.query.is_empty()
         {
             chat_nodes.push(Node {
                 key: row_key::chat(chat_id),

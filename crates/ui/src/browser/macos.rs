@@ -1004,8 +1004,16 @@ mod forwarded_key_tests {
         assert_eq!(key_name("\u{f701}"), "down");
         assert_eq!(key_name("\u{1b}"), "escape");
         assert_eq!(key_name("g"), "g");
-        assert!(forwarded(&format!("alt-{}", key_name("\u{f700}")), &[], &["alt-up"]));
-        assert!(forwarded(&format!("alt-{}", key_name("\u{f701}")), &[], &["alt-down"]));
+        assert!(forwarded(
+            &format!("alt-{}", key_name("\u{f700}")),
+            &[],
+            &["alt-up"]
+        ));
+        assert!(forwarded(
+            &format!("alt-{}", key_name("\u{f701}")),
+            &[],
+            &["alt-down"]
+        ));
         // Plain arrows are never in the extra list: they scroll the page.
         assert!(!forwarded("up", &[], &["alt-up", "alt-down", "escape"]));
     }
