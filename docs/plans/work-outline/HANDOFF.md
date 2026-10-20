@@ -82,7 +82,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
 
 ## Working model (since 2026-10-20)
 
-Zeron development is organised in the Work Outline under the root item "Zeron Zod combine"
+Zeron development is organised in the Work Outline under the root item "Zeron Dev"
 (`48ef4b86c9967626ba1b6372e4cdfa66`, Space agent-mode-tools) with children Release, Bugs, Features,
 Parked. A coordinator chat on that root starts child chats on the right items with
 `create_chat { workItemId }`, polls `work_outline_read_subtree` for "Ready to merge" actions, and is
