@@ -559,10 +559,10 @@ impl NativePage {
         });
         // WebKit copies the block, so it outlives this frame.
         unsafe {
-            self.0
-                .borrow()
-                .view
-                .evaluateJavaScript_completionHandler(&NSString::from_str(script), Some(&completion));
+            self.0.borrow().view.evaluateJavaScript_completionHandler(
+                &NSString::from_str(script),
+                Some(&completion),
+            );
         }
     }
     pub fn discover_favicon(&self, page: String) {

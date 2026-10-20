@@ -185,7 +185,9 @@ pub(crate) struct FrameState {
 
 impl FrameState {
     pub(crate) fn parse(json: &str) -> Option<FrameState> {
-        serde_json::from_str::<Option<FrameState>>(json).ok().flatten()
+        serde_json::from_str::<Option<FrameState>>(json)
+            .ok()
+            .flatten()
     }
 
     /// The match count when the report answers `query`.
@@ -277,7 +279,10 @@ mod tests {
 
     #[test]
     fn ranges_are_case_insensitive_and_byte_accurate() {
-        assert_eq!(find_ranges("Plan plan PLAN", "plan"), vec![0..4, 5..9, 10..14]);
+        assert_eq!(
+            find_ranges("Plan plan PLAN", "plan"),
+            vec![0..4, 5..9, 10..14]
+        );
         // Multi-byte text before the match keeps byte offsets.
         let text = "café Plan";
         let ranges = find_ranges(text, "PLAN");
@@ -410,7 +415,10 @@ mod tests {
         assert_eq!(state.count_for("plan"), Some(4));
         assert_eq!(state.count_for("other"), None);
         assert_eq!(state.active, Some(2));
-        assert_eq!(state.heads, vec![(1, "Plan".to_owned()), (2, "Steps".to_owned())]);
+        assert_eq!(
+            state.heads,
+            vec![(1, "Plan".to_owned()), (2, "Steps".to_owned())]
+        );
         // The page cannot highlight: no count.
         let unsupported = FrameState::parse(r#"{"q":"x","count":-1}"#).unwrap();
         assert_eq!(unsupported.count_for("x"), None);
@@ -425,7 +433,10 @@ mod tests {
         for script in [FRAME_SCRIPT, HOST_SCRIPT] {
             assert!(!script.contains("</script"));
         }
-        assert!(FRAME_SCRIPT.lines().count() < 60, "keep the injected JS small");
+        assert!(
+            FRAME_SCRIPT.lines().count() < 60,
+            "keep the injected JS small"
+        );
         assert!(HOST_SCRIPT.lines().count() < 15);
     }
 }

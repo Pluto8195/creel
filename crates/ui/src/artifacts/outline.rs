@@ -125,13 +125,11 @@ pub(crate) fn markdown_headings(tree: &BlockTree) -> Vec<RawHeading> {
         .iter()
         .enumerate()
         .filter_map(|(ix, top)| match &top.block {
-            Block::Heading { level, runs } if (1..=MAX_LEVEL).contains(level) => {
-                Some(RawHeading {
-                    level: *level,
-                    text: collapse(&runs.iter().map(|run| run.text.as_str()).collect::<String>()),
-                    target: ix,
-                })
-            }
+            Block::Heading { level, runs } if (1..=MAX_LEVEL).contains(level) => Some(RawHeading {
+                level: *level,
+                text: collapse(&runs.iter().map(|run| run.text.as_str()).collect::<String>()),
+                target: ix,
+            }),
             _ => None,
         })
         .collect()
@@ -276,10 +274,7 @@ fn collapse(text: &str) -> String {
 /// The headings to index for an HTML artifact: the source's, unless the live
 /// page disagrees on how many there are (script-built headings), in which
 /// case the page's own list is the truth.
-pub(crate) fn reconcile_html(
-    source: Vec<RawHeading>,
-    live: &[(u8, String)],
-) -> Vec<RawHeading> {
+pub(crate) fn reconcile_html(source: Vec<RawHeading>, live: &[(u8, String)]) -> Vec<RawHeading> {
     if live.is_empty() || live.len() == source.len() {
         return source;
     }
@@ -384,7 +379,8 @@ mod tests {
 
     #[test]
     fn duplicate_titles_get_unique_ids_and_both_rows() {
-        let headings = html_headings("<h2>Risks</h2><h2>Risks</h2><h3>Risks</h3><h2>Next steps</h2>");
+        let headings =
+            html_headings("<h2>Risks</h2><h2>Risks</h2><h3>Risks</h3><h2>Next steps</h2>");
         let index = SectionIndex::from_headings(&headings);
         assert_eq!(index.sections.len(), 4);
         let ids: Vec<_> = index.sections.iter().map(|s| s.id.as_str()).collect();
@@ -410,9 +406,8 @@ mod tests {
         let three = SectionIndex::from_headings(&html_headings("<h1>A</h1><h2>B</h2><h2>C</h2>"));
         assert!(three.is_shown());
         // Empty and h4+ headings do not count toward the three.
-        let padded = SectionIndex::from_headings(&html_headings(
-            "<h1>A</h1><h2></h2><h4>x</h4><h2>B</h2>",
-        ));
+        let padded =
+            SectionIndex::from_headings(&html_headings("<h1>A</h1><h2></h2><h4>x</h4><h2>B</h2>"));
         assert!(!padded.is_shown());
         assert!(!SectionIndex::default().is_shown());
         let md = SectionIndex::from_headings(&markdown_headings(&parse_full("# A\n\n## B\n")));
@@ -463,7 +458,11 @@ mod tests {
         let live = vec![(1u8, "A".to_owned()), (2, "B".to_owned())];
         assert_eq!(reconcile_html(source.clone(), &live), source);
         // The page built a third heading with script.
-        let live = vec![(1, "A".to_owned()), (2, "B".to_owned()), (2, " C ".to_owned())];
+        let live = vec![
+            (1, "A".to_owned()),
+            (2, "B".to_owned()),
+            (2, " C ".to_owned()),
+        ];
         let reconciled = reconcile_html(source.clone(), &live);
         assert_eq!(reconciled.len(), 3);
         assert_eq!(reconciled[2].text, "C");

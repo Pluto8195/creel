@@ -803,9 +803,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn script_and_focus_bridges_are_harmless_without_a_native_page(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn script_and_focus_bridges_are_harmless_without_a_native_page(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_base::init(cx);
             crate::composer::init(cx, Default::default());
