@@ -187,7 +187,10 @@ pub(crate) async fn repository_paths(
 ) -> Result<Vec<PathBuf>, EngineError> {
     let mut candidates = discover_candidates(repos, workspace_root).await?;
     candidates.sort_by_key(|candidate| candidate.path.components().count());
-    Ok(candidates.into_iter().map(|candidate| candidate.path).collect())
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| candidate.path)
+        .collect())
 }
 
 async fn discover_candidates(

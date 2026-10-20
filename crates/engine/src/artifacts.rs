@@ -715,6 +715,49 @@ impl ArtifactsService {
         write_atomic(&path, bytes)
     }
 
+    fn companion_snapshot_path(&self, artifact_id: &str, hash: &str) -> PathBuf {
+        self.inner
+            .snapshots
+            .join(artifact_id)
+            .join(format!("companion-{hash}"))
+    }
+
+    fn companion_index_path(&self, artifact_id: &str, revision: u32) -> PathBuf {
+        self.inner
+            .snapshots
+            .join(artifact_id)
+            .join(format!("revision-{revision}.companions.json"))
+    }
+
+    fn store_companion_snapshot(&self, artifact_id: &str, hash: &str, bytes: &[u8]) -> Outcome<()> {
+        let path = self.companion_snapshot_path(artifact_id, hash);
+        if path.is_file() {
+            return Ok(());
+        }
+        write_atomic(&path, bytes)
+    }
+
+    /// Relative path → content hash of one revision's option files; `None`
+    /// for revisions recorded before they were snapshotted.
+    fn read_companion_index(
+        &self,
+        artifact_id: &str,
+        revision: u32,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        let bytes = std::fs::read(self.companion_index_path(artifact_id, revision)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    fn write_companion_index(
+        &self,
+        artifact_id: &str,
+        revision: u32,
+        index: &std::collections::BTreeMap<String, String>,
+    ) -> Outcome<()> {
+        let bytes = serde_json::to_vec(index).map_err(|e| ArtifactError::io(e.to_string()))?;
+        write_atomic(&self.companion_index_path(artifact_id, revision), &bytes)
+    }
+
     // ── location ────────────────────────────────────────────────────────────
 
     /// The canonical checkout for a scope: the main checkout of the work
@@ -954,6 +997,8 @@ impl ArtifactsService {
             }
         }
         // An options manifest's fragments are copied next to it.
+        let mut companion_hashes = std::collections::BTreeMap::<String, String>::new();
+        let mut companion_bytes: Vec<(String, Vec<u8>)> = Vec::new();
         if let Some(manifest) = &manifest {
             let source_dir = source.parent().unwrap_or(Path::new("/"));
             let mut companions = Vec::new();
@@ -967,12 +1012,36 @@ impl ArtifactsService {
                 if from != to {
                     write_atomic(&to, &companion)?;
                 }
+                companion_hashes.insert(option.path.clone(), content_hash(&companion));
+                companion_bytes.push((content_hash(&companion), companion));
                 companions.push(option.path.clone());
             }
             view.companions = companions;
         }
 
-        let changed = view.current().map(|r| r.hash.as_str()) != Some(hash.as_str());
+        // An options revision is its manifest plus its fragments: a fragment
+        // edit under an unchanged manifest is a new revision too. Revisions
+        // recorded before fragments were snapshotted have no index; they are
+        // backfilled, never treated as changed.
+        let current_index = view
+            .current()
+            .and_then(|r| self.read_companion_index(&id, r.id));
+        let companions_changed = manifest.is_some()
+            && current_index
+                .as_ref()
+                .is_some_and(|index| *index != companion_hashes);
+        let changed =
+            view.current().map(|r| r.hash.as_str()) != Some(hash.as_str()) || companions_changed;
+        if manifest.is_some()
+            && !changed
+            && current_index.is_none()
+            && let Some(current) = view.current()
+        {
+            for (companion_hash, companion) in &companion_bytes {
+                self.store_companion_snapshot(&id, companion_hash, companion)?;
+            }
+            self.write_companion_index(&id, current.id, &companion_hashes)?;
+        }
         if changed {
             self.store_snapshot(&id, &hash, &bytes)?;
             let next = view
@@ -995,6 +1064,12 @@ impl ArtifactsService {
                     op: request.operation_id.clone(),
                 },
             );
+            if manifest.is_some() {
+                for (companion_hash, companion) in &companion_bytes {
+                    self.store_companion_snapshot(&id, companion_hash, companion)?;
+                }
+                self.write_companion_index(&id, next, &companion_hashes)?;
+            }
             view.current_revision = next;
         }
         view.kind = kind;
@@ -1134,9 +1209,40 @@ impl ArtifactsService {
                 )));
             }
             let path = dir.join(companion);
-            let bytes = read_file(&path)?;
             let kind = ArtifactKind::from_path(companion);
-            return Ok(encode_reply(&artifact, kind, 0, &path, bytes));
+            if let Some(number) = params.revision
+                && artifact.revision(number).is_none()
+            {
+                return Err(ArtifactError::not_found(format!(
+                    "revision {number} of artifact {} is not kept",
+                    artifact.id
+                )));
+            }
+            if let Some(number) = params.revision
+                && number != artifact.current_revision
+                && preview_name != Some(companion)
+            {
+                // A past revision's option file comes from its snapshot index.
+                let hash = self
+                    .read_companion_index(&artifact.id, number)
+                    .and_then(|index| index.get(companion).cloned())
+                    .ok_or_else(|| {
+                        ArtifactError::not_found(format!(
+                            "option file {companion:?} was not saved with revision {number} \
+                             (it predates per-revision option files)"
+                        ))
+                    })?;
+                let bytes = std::fs::read(self.companion_snapshot_path(&artifact.id, &hash))
+                    .map_err(|_| {
+                        ArtifactError::not_found(format!(
+                            "the snapshot of {companion:?} at revision {number} is missing on this device"
+                        ))
+                    })?;
+                return Ok(encode_reply(&artifact, kind, number, &path, bytes));
+            }
+            let bytes = read_file(&path)?;
+            let revision = params.revision.unwrap_or(0);
+            return Ok(encode_reply(&artifact, kind, revision, &path, bytes));
         }
         let (revision, bytes) = match params.revision {
             Some(number) => {

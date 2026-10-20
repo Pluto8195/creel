@@ -295,7 +295,12 @@ struct Inner {
     /// Spaces have Linear on). Tickets asked for by chats in such Spaces are
     /// fetched through the API when a key is set; the `linear` CLI stays
     /// the fallback.
-    linear: Mutex<Option<(crate::linear::LinearService, crate::workspace_host::WorkspaceHost)>>,
+    linear: Mutex<
+        Option<(
+            crate::linear::LinearService,
+            crate::workspace_host::WorkspaceHost,
+        )>,
+    >,
     linear_tickets: Mutex<HashSet<String>>,
 }
 
@@ -374,12 +379,16 @@ impl PrTicketCache {
             && let Some(linear) = linear
             && linear.has_key().await
         {
-            return linear.issue(&id, false).await.ok().map(|issue| TicketStatus {
-                identifier: issue.identifier,
-                title: Some(issue.title),
-                url: Some(issue.url),
-                status: Some(issue.state.name),
-            });
+            return linear
+                .issue(&id, false)
+                .await
+                .ok()
+                .map(|issue| TicketStatus {
+                    identifier: issue.identifier,
+                    title: Some(issue.title),
+                    url: Some(issue.url),
+                    status: Some(issue.state.name),
+                });
         }
         tokio::task::spawn_blocking(move || fetch_linear_ticket(&id))
             .await

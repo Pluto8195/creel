@@ -149,7 +149,10 @@ pub(super) enum NativeEvent {
     /// A link activated inside a static document, as the page wrote it.
     Link(String),
     Key(gpui::Keystroke),
-    Favicon { page: String, url: String },
+    Favicon {
+        page: String,
+        url: String,
+    },
 }
 
 struct ObserverState {

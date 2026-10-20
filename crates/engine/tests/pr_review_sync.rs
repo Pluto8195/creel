@@ -1209,11 +1209,13 @@ async fn a_ticket_item_linking_a_requested_pr_is_not_adopted() {
         .as_str()
         .unwrap()
         .to_owned();
-    rig.mutate(json!({ "op": "createWorkItemExternalReference", "workItemId": ticket,
+    rig.mutate(
+        json!({ "op": "createWorkItemExternalReference", "workItemId": ticket,
         "provider": "github", "referenceType": "pullRequest", "externalId": "acme/ui#9",
-        "url": "https://github.com/acme/ui/pull/9", "operationId": "ticket-pr" }))
-        .await
-        .unwrap();
+        "url": "https://github.com/acme/ui/pull/9", "operationId": "ticket-pr" }),
+    )
+    .await
+    .unwrap();
     rig.requested(&[("acme/ui", 9, "Fix the button", "ada")]);
     rig.open_requested("acme/ui", 9, "Fix the button");
 

@@ -645,8 +645,13 @@ impl AgentToolsService {
     fn artifact_call(
         &self,
         context: &CallContext,
-    ) -> Result<(crate::artifacts::ArtifactsService, crate::artifacts::AgentCaller), AgentToolError>
-    {
+    ) -> Result<
+        (
+            crate::artifacts::ArtifactsService,
+            crate::artifacts::AgentCaller,
+        ),
+        AgentToolError,
+    > {
         let service = lock(&self.artifacts).clone().ok_or_else(|| {
             AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
@@ -702,13 +707,15 @@ impl AgentToolsService {
     /// Linear on.
     fn linear_context(
         &self,
-        snapshot: &zeron_proto::WorkOutlineSnapshot, item_id: &str) -> Option<Value> {
+        snapshot: &zeron_proto::WorkOutlineSnapshot,
+        item_id: &str,
+    ) -> Option<Value> {
         if !snapshot.space_settings.linear_enabled {
             return None;
         }
         let mut out = serde_json::Map::new();
-        if let Some(reference) = snapshot
-            .nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_ISSUE_REFERENCE)
+        if let Some(reference) =
+            snapshot.nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_ISSUE_REFERENCE)
         {
             match self.linear_issue_for_agent(&reference.external_id) {
                 Ok(issue) => {
