@@ -13,6 +13,9 @@
 //! - list item: its blocks recursively; a task item's first paragraph omits
 //!   the leading `[ ] ` / `[x] ` marker run (a checkbox is drawn instead);
 //! - block quote: children recursively;
+//! - question card: the question text, then each field's value (display
+//!   order); resolved cards are counted in full even while collapsed, and
+//!   the renderer expands them while find is active;
 //! - table: header cells, then body cells, row by row, each cell separately
 //!   (image runs split a cell like a paragraph);
 //! - code block: one element per line; mermaid fences are diagrams and have
@@ -65,6 +68,14 @@ fn push_block(block: &Block, out: &mut Vec<String>) {
         Block::BlockQuote { children } => {
             for child in children {
                 push_block(child, out);
+            }
+        }
+        Block::Question(card) => {
+            // The question, then the field values in display order; the id,
+            // status pill and field labels are chrome, not searched.
+            push_runs(&card.text, out);
+            for field in &card.fields {
+                push_runs(&field.runs, out);
             }
         }
         Block::List { items, .. } => {

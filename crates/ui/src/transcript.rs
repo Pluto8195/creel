@@ -635,6 +635,15 @@ fn thought_block_lines(block: &Block, indent: usize, out: &mut Vec<Vec<InlineRun
                 }
             }
         }
+        Block::Question(card) => {
+            // A thought shows the question as one line: "Q-3 question text".
+            let mut line = Vec::new();
+            if let Some(id) = &card.id {
+                push_styled(&mut line, &format!("{id} "), &InlineStyle::default());
+            }
+            line.extend(card.text.iter().cloned());
+            wrap_styled_runs(&line, indent, out);
+        }
         Block::BlockQuote { children } => {
             let mark = out.len();
             for (ix, child) in children.iter().enumerate() {
@@ -6297,6 +6306,7 @@ impl Transcript {
                     workspace_root: workspace_root.clone(),
                     code,
                     find: None,
+                    question: None,
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 render::render_block(
@@ -6348,6 +6358,7 @@ impl Transcript {
                     workspace_root: workspace_root.clone(),
                     code,
                     find: None,
+                    question: None,
                 };
                 if seed_history && let Some(veil) = &veil {
                     let historical = &self.historical_markdown[&row.id];

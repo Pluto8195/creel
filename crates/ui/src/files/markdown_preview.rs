@@ -166,6 +166,8 @@ pub(crate) struct MarkdownPreview {
     diagram_task: Option<Task<()>>,
     diagram_style: u32,
     source_visible: HashSet<String>,
+    /// Resolved question cards the reader expanded (by question id).
+    questions_expanded: Rc<HashSet<String>>,
     preview_image: Option<crate::attachments::PreviewImage>,
     zoom_source: Option<crate::image_media::MediaImage>,
     zoom_render: Option<crate::image_media::MediaImage>,
@@ -399,6 +401,7 @@ impl MarkdownPreview {
             diagram_task: None,
             diagram_style: 0,
             source_visible: HashSet::new(),
+            questions_expanded: Rc::default(),
             preview_image: None,
             zoom_source: None,
             zoom_render: None,
@@ -767,6 +770,7 @@ impl MarkdownPreview {
         self.diagram_snapshot = Rc::default();
         self.image_allowed = Rc::default();
         self.diagram_allowed = Rc::default();
+        self.questions_expanded = Rc::default();
         self.version = None;
         self.tree = BlockTree::default();
         self.parsed_source = Arc::from("");
@@ -1227,6 +1231,20 @@ impl MarkdownPreview {
                 let diagram_owner = cx.weak_entity();
                 let diagrams = self.diagram_snapshot.clone();
                 let source_visible = self.source_visible.clone();
+                let question_owner = cx.weak_entity();
+                opts.question = Some(render::QuestionUi {
+                    expanded: self.questions_expanded.clone(),
+                    toggle: Rc::new(move |key, _, cx| {
+                        let _ = question_owner.update(cx, |view, cx| {
+                            let expanded = Rc::make_mut(&mut view.questions_expanded);
+                            if !expanded.remove(&key) {
+                                expanded.insert(key);
+                            }
+                            view.list.remeasure_items(0..view.tree.len());
+                            cx.notify();
+                        });
+                    }),
+                });
                 let image_allowed = self.image_allowed.clone();
                 let diagram_allowed = self.diagram_allowed.clone();
                 opts.media = Some(render::MediaUi {

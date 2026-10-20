@@ -24,6 +24,7 @@ use zeron_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 use crate::theme::Theme;
 
 use super::parser::{Block, BlockTree, InlineRun, TableAlign};
+use super::question::{QuestionCard, QuestionStatus};
 use super::veil::{RowVeil, apply_veil, slice_spans};
 
 /// Gap between markdown blocks inside one message (zeron mdBlockGap).
@@ -102,6 +103,22 @@ pub struct RenderOptions {
     /// Find-in-document highlights (paint-only washes; never affects layout).
     /// `None` paints nothing.
     pub find: Option<Rc<FindHighlight>>,
+    /// Expanded/collapsed state of resolved question cards. `None` (no owner
+    /// to keep the state) renders every card expanded, without a toggle.
+    pub question: Option<QuestionUi>,
+}
+
+/// Owner-held state for collapsible question cards, keyed by
+/// [`question_key`].
+#[derive(Clone)]
+pub struct QuestionUi {
+    pub expanded: Rc<std::collections::HashSet<String>>,
+    pub toggle: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
+}
+
+/// The state key of a question card: its id, else its block index.
+pub fn question_key(card: &QuestionCard, ix: usize) -> String {
+    card.id.clone().unwrap_or_else(|| format!("#{ix}"))
 }
 
 /// What to highlight for find: every case-insensitive match of `query`, with
@@ -363,6 +380,7 @@ impl RenderOptions {
             workspace_root: None,
             code: None,
             find: None,
+            question: None,
         }
     }
 }
@@ -465,6 +483,179 @@ pub fn render_tree(
         .into_any_element()
 }
 
+/// Element discriminator for text element `n` of a question card (0 is the
+/// question, then one per field).
+fn question_child_ix(ix: usize, n: usize) -> usize {
+    ix * 100 + n.min(98) + 1
+}
+
+fn question_pill(label: &str, color: Hsla, filled: bool) -> gpui::Div {
+    div()
+        .px(px(7.0))
+        .h(px(18.0))
+        .flex()
+        .items_center()
+        .rounded(px(9.0))
+        .border_1()
+        .border_color(color.opacity(0.55))
+        .when(filled, |pill| pill.bg(color.opacity(0.14)))
+        .text_size(px(11.0))
+        .line_height(px(16.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(label.to_owned())
+}
+
+/// A plan question as a card: id badge, status pill and a Blocking flag in
+/// the header, the question in bold, then labelled field rows (the decision
+/// tinted). Resolved cards are dimmed and collapsed to the question and the
+/// decision until toggled; while find is active they render expanded so every
+/// counted match is painted.
+fn render_question(
+    card: &QuestionCard,
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> AnyElement {
+    let key = question_key(card, top_ix);
+    let collapsible = card.collapsible() && opts.question.is_some() && opts.find.is_none();
+    let expanded = !collapsible
+        || opts
+            .question
+            .as_ref()
+            .is_some_and(|ui| ui.expanded.contains(&key));
+    let status_color = match card.status {
+        QuestionStatus::Open => theme.warning,
+        QuestionStatus::Answered => theme.accent,
+        QuestionStatus::Resolved => theme.success,
+    };
+    let mut header = div().flex().flex_row().items_center().gap(px(6.0)).flex_wrap();
+    if let Some(id) = &card.id {
+        header = header.child(
+            div()
+                .px(px(7.0))
+                .h(px(18.0))
+                .flex()
+                .items_center()
+                .rounded(px(5.0))
+                .bg(theme.text.opacity(0.10))
+                .text_size(px(11.0))
+                .line_height(px(16.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(id.clone()),
+        );
+    }
+    header = header.child(question_pill(card.status.label(), status_color, true));
+    if card.blocking {
+        header = header.child(question_pill("Blocking", theme.danger, false));
+    }
+    if collapsible {
+        let ui = opts.question.clone().expect("collapsible implies an owner");
+        let toggle_key = key.clone();
+        header = header.child(div().flex_1()).child(
+            div()
+                .id(SharedString::from(format!("{}-question-toggle", opts.row_key)))
+                .px(px(6.0))
+                .rounded(px(5.0))
+                .cursor_pointer()
+                .text_size(px(11.0))
+                .line_height(px(18.0))
+                .text_color(theme.text_muted)
+                .hover(|style| style.bg(theme.text.opacity(0.08)))
+                .child(if expanded { "Hide details" } else { "Show details" })
+                .on_click(move |_, window, cx| (ui.toggle)(toggle_key.clone(), window, cx)),
+        );
+    }
+
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(header);
+    if !card.text.is_empty() {
+        body = body.child(
+            div()
+                .text_color(theme.text)
+                .child(text_element(
+                    &card.text,
+                    MD_TEXT_SIZE,
+                    MD_LINE_HEIGHT,
+                    true,
+                    top_ix,
+                    question_child_ix(ix, 0),
+                    opts,
+                    theme,
+                )),
+        );
+    }
+    for (n, field) in card.fields.iter().enumerate() {
+        if !expanded && !field.is_decision() {
+            continue;
+        }
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(68.0))
+                    .text_size(px(11.0))
+                    .line_height(px(MD_LINE_HEIGHT))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(field.label.clone()),
+            )
+            .child(div().flex_1().min_w(px(0.0)).child(text_element(
+                &field.runs,
+                MD_TEXT_SIZE,
+                MD_LINE_HEIGHT,
+                false,
+                top_ix,
+                question_child_ix(ix, n + 1),
+                opts,
+                theme,
+            )));
+        body = body.child(if field.is_decision() {
+            row.border_l_2()
+                .border_color(theme.success)
+                .bg(theme.success.opacity(0.08))
+                .rounded_tr(px(5.0))
+                .rounded_br(px(5.0))
+                .pl(px(8.0))
+                .pr(px(8.0))
+                .py(px(3.0))
+        } else {
+            row
+        });
+    }
+
+    let accent = if collapsible || card.status == QuestionStatus::Resolved {
+        theme.text_muted
+    } else {
+        status_color
+    };
+    div()
+        .id(SharedString::from(format!("{}-question", opts.row_key)))
+        .border_l_2()
+        .border_color(accent.opacity(0.7))
+        .bg(theme.text.opacity(0.04))
+        .rounded_tr(px(6.0))
+        .rounded_br(px(6.0))
+        .pl(px(12.0))
+        .pr(px(10.0))
+        .py(px(8.0))
+        .text_color(theme.text_muted)
+        .when(card.status == QuestionStatus::Resolved && !expanded, |card| {
+            card.opacity(0.75)
+        })
+        .child(body)
+        .into_any_element()
+}
+
 fn quote_child_ix(ix: usize, child_ix: usize) -> usize {
     ix * 100 + child_ix
 }
@@ -492,8 +683,11 @@ pub(crate) fn code_block_indices(block: &Block, ix: usize) -> Vec<usize> {
                     }
                 }
             }
-            Block::Paragraph { .. } | Block::Heading { .. } | Block::Table { .. } | Block::Rule => {
-            }
+            Block::Paragraph { .. }
+            | Block::Heading { .. }
+            | Block::Question(_)
+            | Block::Table { .. }
+            | Block::Rule => {}
         }
     }
 
@@ -538,6 +732,7 @@ pub fn render_block(
             theme,
             highlight,
         ),
+        Block::Question(card) => render_question(card, top_ix, ix, opts, theme),
         Block::BlockQuote { children } => div()
             // Accent-tinted quote: indigo rail + a whisper of the same hue
             // behind it (the inline-code treatment, dialed down).

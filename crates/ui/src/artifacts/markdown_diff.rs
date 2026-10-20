@@ -3,7 +3,7 @@
 //! Both sources are split into the Markdown preview's own top-level blocks
 //! (`markdown::parser::parse_full`: headings, paragraphs, lists, code blocks,
 //! block quotes, tables, rules). Question blocks (`> [!question] Q-3 · …`) are
-//! block quotes the planning conventions give an id. Blocks are aligned with an
+//! `Block::Question`, read by `markdown::question::parse_question`. Blocks are aligned with an
 //! LCS over their parsed content (so whitespace-only edits are not changes),
 //! and a gap between two matches pairs up like-kinded blocks as *changed*; the
 //! rest are *added* / *removed*.
@@ -44,16 +44,12 @@ fn split(source: &str) -> Vec<Item> {
         .blocks
         .iter()
         .map(|top| {
-            let text = source.get(top.range.clone()).unwrap_or("");
             let (tag, heading) = match &top.block {
                 Block::Heading { runs, .. } => (
                     Tag::Heading,
                     Some(runs.iter().map(|run| run.text.as_str()).collect::<String>()),
                 ),
-                Block::BlockQuote { .. } => match question_id(text) {
-                    Some(id) => (Tag::Question(id), None),
-                    None => (Tag::Other, None),
-                },
+                Block::Question(card) => (Tag::Question(card.id.clone()), None),
                 Block::CodeBlock { .. } => (Tag::Code, None),
                 Block::List { .. } => (Tag::List, None),
                 Block::Paragraph { .. } => (Tag::Paragraph, None),
@@ -66,22 +62,6 @@ fn split(source: &str) -> Vec<Item> {
             }
         })
         .collect()
-}
-
-/// `Some(id)` for a `[!question]` block quote (`id` is `None` when the first
-/// line carries no `Q-…` id).
-fn question_id(quote: &str) -> Option<Option<String>> {
-    let first = quote.lines().next()?;
-    let rest = first.trim_start().trim_start_matches('>').trim_start();
-    let rest = rest.strip_prefix("[!question]")?;
-    let id = rest
-        .split(|c: char| c.is_whitespace() || c == '\u{b7}')
-        .find(|word| word.len() > 2 && word[..2].eq_ignore_ascii_case("q-"))
-        .map(|word| {
-            word.trim_end_matches(|c: char| !c.is_alphanumeric())
-                .to_ascii_uppercase()
-        });
-    Some(id)
 }
 
 /// A row of the aligned diff: `old` / `new` are block indices.

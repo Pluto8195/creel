@@ -20,6 +20,7 @@ mod link_presentation;
 pub mod links;
 pub mod mend;
 pub mod parser;
+pub mod question;
 pub mod render;
 pub mod selection;
 pub mod veil;
