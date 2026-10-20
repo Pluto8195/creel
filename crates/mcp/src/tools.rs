@@ -127,11 +127,12 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item or one of its descendants (see `work_outline_read_subtree`; create descendants with `work_outline_create_child`). A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "idempotency_key": { "type": "string", "description": "Stable key for this request (required inside a Zeron chat). The same key returns the same chat; a new chat needs a new key." },
+                    "workItemId": { "type": "string", "description": "Start the child for this work item: your chat's item or one of its descendants. Requires prompt; incompatible with cwd and branch." },
                     "project": { "type": "string", "description": "Project id, path, or name. Required unless device is given." },
                     "device": { "type": "string", "description": "Host device (id or name) for a project-less chat; defaults to this device." },
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
@@ -224,6 +225,18 @@ fn work_outline_catalog() -> Vec<ToolDef> {
             name: agent_tool_names::READ_CURRENT,
             description: "Your chat's Work Outline item: title, status, path, children, the effective instructions it inherits, and its open user action requests. Null when your chat is not associated with an item. In Spaces with Linear turned on, also `linearIssue` (the linked Linear ticket of the item or its nearest ancestor, including its description) and `linearProject` (the nearest linked Linear project).",
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: agent_tool_names::READ_SUBTREE,
+            description: "Read-only view of your chat's work item (or a descendant) and everything below it as a nested tree: per item its id, title, status and effectiveStatus, the chats attached to it (id, title, status working/awaitingInput/errored/idle, lastMessageAt), and its open user action requests (id, text, detail, originChatId, createdAt). Use it as a coordinator to see what your children are doing and to poll for requests such as \"Ready to merge\". Limited to your item's subtree; at most 300 items (`truncated` says when more exist; `childrenOmitted` marks items whose children were cut by `maxDepth` or the cap).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workItemId": { "type": "string", "description": "Your chat's item or a descendant. Defaults to your chat's item." },
+                    "maxDepth": { "type": "integer", "minimum": 0, "maximum": 8, "default": 4, "description": "Levels of descendants below the item to include." },
+                    "includeArchived": { "type": "boolean", "default": false, "description": "Also list archived items and chats." }
+                }
+            }),
         },
         ToolDef {
             name: agent_tool_names::CREATE_CHILD,
@@ -467,6 +480,8 @@ struct ListChatsArgs {
 struct CreateChatArgs {
     #[serde(alias = "idempotencyKey")]
     idempotency_key: Option<String>,
+    #[serde(alias = "workItemId")]
+    work_item_id: Option<String>,
     project: Option<String>,
     device: Option<String>,
     parent: Option<String>,
@@ -1011,6 +1026,27 @@ impl Tools {
             }
         }
 
+        let work_item_id = args
+            .work_item_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        if work_item_id.is_some() {
+            if origin.is_none() {
+                anyhow::bail!("workItemId is only available inside a Zeron chat");
+            }
+            if args.prompt.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                anyhow::bail!("workItemId needs a prompt: the child is started with it");
+            }
+            if cwd.is_some() || args.branch.as_deref().is_some_and(|b| !b.trim().is_empty()) {
+                anyhow::bail!(
+                    "cwd and branch cannot be set with workItemId: the child runs where the \
+                     work item's execution setup says"
+                );
+            }
+        }
+
         // Parent: the explicit `parent` argument, else the chat this server
         // speaks for. Resolved so a prefix/title works and a typo fails loud.
         // An agent may only record its own Chat (a child inherits the
@@ -1047,6 +1083,12 @@ impl Tools {
                     "cwd": cwd,
                     "prompt": args.prompt,
                 });
+                let mut inputs = inputs;
+                if let Some(item) = &work_item_id {
+                    // Only when set, so keys claimed before `workItemId`
+                    // existed still replay.
+                    inputs["workItemId"] = json!(item);
+                }
                 let inputs_hash =
                     zeron_proto::derive_id(&inputs.to_string(), "mcp-create-chat-inputs");
                 self.zeron
@@ -1072,31 +1114,67 @@ impl Tools {
             }
             _ => (uuid::Uuid::new_v4().to_string(), false),
         };
-        let mut mutate = json!({
-            "op": "createChat",
-            "chatId": chat_id,
-            "deviceId": device_id,
-            "config": config,
-        });
-        if let Some(space) = &space {
-            mutate["spaceId"] = json!(space.id);
-        }
-        if let Some(parent) = &parent_chat_id {
-            mutate["parentChatId"] = json!(parent);
-        }
-        if let Some(branch) = args
-            .branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
+        // For a work item the engine starts the child through the launch
+        // workflow (Chat, assignment, execution binding, effective
+        // instructions, first Turn), after checking the item is the
+        // caller's or a descendant; ids derive from the same
+        // (caller, key) operation, so retries replay.
+        let launched = match (&work_item_id, agent_key.as_deref(), &args.prompt) {
+            (Some(item), Some(key), Some(prompt)) => {
+                let reply = self
+                    .zeron
+                    .agent_tool(
+                        agent_tool_names::LAUNCH_CHILD_CHAT,
+                        json!({
+                            "idempotencyKey": key,
+                            "workItemId": item,
+                            "prompt": prompt,
+                            "config": config,
+                        }),
+                    )
+                    .await?;
+                if reply.get("chatId").and_then(Value::as_str) != Some(chat_id.as_str()) {
+                    anyhow::bail!("the engine started an unexpected chat for this request");
+                }
+                Some(reply)
+            }
+            _ => None,
+        };
+        let cwd = match launched
+            .as_ref()
+            .and_then(|r| r.get("executionRoot"))
+            .and_then(Value::as_str)
         {
-            mutate["branch"] = json!(branch);
+            Some(root) => Some(root.to_owned()),
+            None => cwd,
+        };
+        if launched.is_none() {
+            let mut mutate = json!({
+                "op": "createChat",
+                "chatId": chat_id,
+                "deviceId": device_id,
+                "config": config,
+            });
+            if let Some(space) = &space {
+                mutate["spaceId"] = json!(space.id);
+            }
+            if let Some(parent) = &parent_chat_id {
+                mutate["parentChatId"] = json!(parent);
+            }
+            if let Some(branch) = args
+                .branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+            {
+                mutate["branch"] = json!(branch);
+            }
+            if let Some(cwd) = &cwd {
+                mutate["cwd"] = json!(cwd);
+            }
+            // `createChat` is a no-op for an existing row (never a retarget).
+            self.zeron.mutate(mutate).await?;
         }
-        if let Some(cwd) = &cwd {
-            mutate["cwd"] = json!(cwd);
-        }
-        // `createChat` is a no-op for an existing row (never a retarget).
-        self.zeron.mutate(mutate).await?;
         // A replay leaves the title alone (the user may have renamed it).
         if let Some(title) = args
             .title
@@ -1120,6 +1198,10 @@ impl Tools {
             "parentChatId": parent_chat_id,
             "replayed": replayed,
         });
+        if let Some(item) = &work_item_id {
+            result["workItemId"] = json!(item);
+            result["executionRoot"] = json!(cwd);
+        }
         if let Some(prompt) = args.prompt.filter(|p| !p.trim().is_empty()) {
             // The row may not have folded into WatchChats yet; build the
             // chat locally from what we just wrote rather than re-reading.
@@ -1148,6 +1230,17 @@ impl Tools {
                 linked_ticket_source: None,
             };
             let sent = match agent_key.as_deref() {
+                // The launch already queued the first Turn.
+                Some(_) if launched.is_some() => {
+                    let launch = launched.as_ref();
+                    json!({
+                        "delivery": "run",
+                        "id": launch.and_then(|r| r.get("commandId")).cloned().unwrap_or(Value::Null),
+                        "state": launch.and_then(|r| r.get("state")).cloned().unwrap_or(Value::Null),
+                        "detail": launch.and_then(|r| r.get("detail")).cloned().unwrap_or(Value::Null),
+                        "chatStatusAtSend": "idle",
+                    })
+                }
                 // The engine derives the message and command ids from the
                 // key, queues at most one first Turn per key, and builds the
                 // Run from the child's stored config (only the prompt is ours).
