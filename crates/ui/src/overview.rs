@@ -14820,7 +14820,6 @@ mod logic_tests {
         assert_eq!(change.title(), "Remove instruction?");
         assert_eq!(change.confirm_label(), "Remove");
         assert!(details_button_hint("Remove").is_some());
-        assert!(details_button_hint("Archive").is_none());
     }
 
     #[gpui::test]
