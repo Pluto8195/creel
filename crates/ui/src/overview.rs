@@ -14739,6 +14739,91 @@ mod logic_tests {
     }
 
     #[gpui::test]
+    fn long_instructions_collapse_and_controls_sit_in_the_header(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = instruction_fixture::snapshot("s1");
+        let long = "Keep every change small and reviewable. ".repeat(20);
+        for instruction in snapshot.instructions.iter_mut() {
+            if instruction.id == instruction_fixture::I_ROOT {
+                instruction.text = long.clone();
+            }
+        }
+        snapshot.instructions.push(instruction_fixture::instruction(
+            "i-root-short",
+            "s1",
+            None,
+            "zz",
+            "Be brief.",
+        ));
+        let (overview, calls, vcx) = instruction_overview(cx, dir.path(), snapshot, reply_ok);
+        overview.update(vcx, |o, cx| {
+            o.open_work_item_details(
+                "s1".into(),
+                crate::work_outline::details_panel::SPACE_ROOT_ITEM_ID.into(),
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+
+        // Only the long entry gets a toggle.
+        assert!(vcx.debug_bounds("work-item-instruction-fold-0").is_some());
+        assert!(vcx.debug_bounds("work-item-instruction-fold-1").is_none());
+        let collapsed = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
+        let short = vcx.debug_bounds("work-item-instruction-text-1").unwrap();
+        let line = f32::from(short.size.height);
+
+        // The controls live in the header row, above the text, and the
+        // short entry's controls are at the top of its entry too.
+        for ix in 0..2 {
+            let mut named = |name: String| vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap();
+            let header = named(format!("work-item-instruction-header-{ix}"));
+            let text = named(format!("work-item-instruction-text-{ix}"));
+            for control in ["edit", "archive"] {
+                let b = named(format!("work-item-instruction-{control}-{ix}"));
+                assert!(b.top() >= header.top() && b.bottom() <= header.bottom());
+                assert!(b.bottom() <= text.top() + px(1.0));
+            }
+        }
+        // Collapsed to four lines: well short of the full text, and the
+        // controls did not move down with the text.
+        assert!(f32::from(collapsed.size.height) <= line * 4.0 + 1.0);
+        let edit_top = vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top();
+
+        // Show more expands, Show less collapses again.
+        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
+        vcx.simulate_click(fold, gpui::Modifiers::default());
+        draw(vcx);
+        let expanded = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
+        assert!(f32::from(expanded.size.height) > f32::from(collapsed.size.height) * 1.5);
+        assert_eq!(
+            vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top(),
+            edit_top
+        );
+        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
+        vcx.simulate_click(fold, gpui::Modifiers::default());
+        draw(vcx);
+        let again = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
+        assert_eq!(again.size.height, collapsed.size.height);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// Instruction "Archive" is now "Remove" (confirmation and tooltip); the
+    /// archive operation itself is covered by the drift-confirmation test.
+    #[test]
+    fn removing_an_instruction_is_labelled_remove() {
+        use crate::work_outline::hints::details_button_hint;
+        use crate::work_outline::instructions::OutlineChange;
+        let change = OutlineChange::ArchiveInstruction {
+            instruction_id: "i".into(),
+        };
+        assert_eq!(change.title(), "Remove instruction?");
+        assert_eq!(change.confirm_label(), "Remove");
+        assert!(details_button_hint("Remove").is_some());
+        assert!(details_button_hint("Archive").is_none());
+    }
+
+    #[gpui::test]
     fn unsupported_engine_shows_a_calm_instruction_error(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (overview, calls, vcx) =
