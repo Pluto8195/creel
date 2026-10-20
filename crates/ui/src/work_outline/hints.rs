@@ -429,7 +429,6 @@ pub(crate) fn details_button_hint(label: &str) -> Option<(&'static str, HintKey)
             "Start a Chat in this work item",
             HintKey::Command(WorkOutlineCommand::StartChatForWorkItem),
         ),
-        "Archive" => ("Archive", HintKey::None),
         "Restore" => ("Restore this work item", HintKey::None),
         "Approve" | "Approving" => ("Approve the proposed instruction", HintKey::None),
         "Reject" => ("Reject the proposed instruction", HintKey::None),

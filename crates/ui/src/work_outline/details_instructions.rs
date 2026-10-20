@@ -1,5 +1,5 @@
 //! Work Item Details → **Instructions** (local list, add/edit with explicit
-//! Save/Cancel, reorder, archive, provenance badge with the Chat excerpt on
+//! Save/Cancel, reorder, remove (archive), provenance badge with the Chat excerpt on
 //! demand, the inheritance toggle) and **Effective instructions** (ordered
 //! entries with source, local/inherited markers, the precedence rule, and
 //! budget usage). Also the Space-root variant of the details surface.
@@ -11,6 +11,24 @@
 //! Edits and archives that change an assigned Chat's effective instructions,
 //! and the inheritance toggle, go through the drift confirmation first.
 use super::*;
+
+/// Instructions longer than this many lines are clipped until "Show more".
+pub(crate) const COLLAPSED_LINES: usize = 4;
+/// Line height (rems) of the instruction text; the clip is an exact multiple.
+const LINE_HEIGHT_REMS: f32 = 16.0;
+/// Rough characters per wrapped line in the details panel, used to decide
+/// whether an instruction would exceed [`COLLAPSED_LINES`].
+const CHARS_PER_LINE: usize = 56;
+
+/// Whether `text` probably wraps past [`COLLAPSED_LINES`]: explicit lines plus
+/// an estimate of soft wrapping. Short instructions get no toggle.
+pub(crate) fn needs_collapse(text: &str) -> bool {
+    let lines: usize = text
+        .lines()
+        .map(|line| line.chars().count().div_ceil(CHARS_PER_LINE).max(1))
+        .sum();
+    lines > COLLAPSED_LINES
+}
 
 use zeron_proto::{
     ArchiveWorkItemInstructionParams, CreateWorkItemInstructionParams, InstructionPlacement,
@@ -268,7 +286,8 @@ impl WorkItemDetails {
         });
     }
 
-    /// Archive (drift-confirmed when it changes an assigned Chat).
+    /// Remove = archive the instruction (drift-confirmed when it changes an
+    /// assigned Chat).
     pub(crate) fn archive_instruction(&mut self, id: String, cx: &mut Context<Self>) {
         let change = OutlineChange::ArchiveInstruction {
             instruction_id: id.clone(),
@@ -471,12 +490,16 @@ impl WorkItemDetails {
                 .and_then(|source| source.excerpt.clone())
                 .filter(|_| self.excerpts_open.contains(&instruction.id));
             let toggle_id = instruction.id.clone();
-            let (up_id, down_id, edit_id, archive_id) = (
+            let (up_id, down_id, edit_id, archive_id, fold_id) = (
+                instruction.id.clone(),
                 instruction.id.clone(),
                 instruction.id.clone(),
                 instruction.id.clone(),
                 instruction.id.clone(),
             );
+            let collapsible = needs_collapse(&instruction.text);
+            let expanded = self.instructions_expanded.contains(&instruction.id);
+            let line_height = crate::typography::ui_rems(LINE_HEIGHT_REMS);
             section = section.child(
                 div()
                     .debug_selector(move || format!("work-item-instruction-{ix}"))
@@ -487,10 +510,13 @@ impl WorkItemDetails {
                     .py(px(3.0))
                     .rounded(px(4.0))
                     .hover(|el| el.bg(theme.element_hover.opacity(0.5)))
+                    // Header: the number, the controls, and the provenance
+                    // badge stay at the top whatever the text length.
                     .child(
                         div()
+                            .debug_selector(move || format!("work-item-instruction-header-{ix}"))
                             .flex()
-                            .items_start()
+                            .items_center()
                             .gap(px(6.0))
                             .text_size(crate::typography::ui_rems(12.0))
                             .child(
@@ -501,10 +527,70 @@ impl WorkItemDetails {
                             )
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(instruction.text.clone())),
+                                    .flex()
+                                    .gap(px(4.0))
+                                    .when(ix > 0, |el| {
+                                        el.child(
+                                            Self::small_button(
+                                                ("work-item-instruction-up", ix),
+                                                "\u{2191}",
+                                                theme,
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, _, _, cx| {
+                                                    this.move_instruction(up_id.clone(), true, cx)
+                                                },
+                                            )),
+                                        )
+                                    })
+                                    .when(ix < last, |el| {
+                                        el.child(
+                                            Self::small_button(
+                                                ("work-item-instruction-down", ix),
+                                                "\u{2193}",
+                                                theme,
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, _, _, cx| {
+                                                    this.move_instruction(down_id.clone(), false, cx)
+                                                },
+                                            )),
+                                        )
+                                    })
+                                    .child(
+                                        Self::small_button(
+                                            ("work-item-instruction-edit", ix),
+                                            "Edit",
+                                            theme,
+                                        )
+                                        .debug_selector(move || {
+                                            format!("work-item-instruction-edit-{ix}")
+                                        })
+                                        .on_click(cx.listener(
+                                            move |this, _, window, cx| {
+                                                this.begin_instruction_draft(
+                                                    Some(edit_id.clone()),
+                                                    window,
+                                                    cx,
+                                                )
+                                            },
+                                        )),
+                                    )
+                                    .child(
+                                        Self::small_button(
+                                            ("work-item-instruction-archive", ix),
+                                            "Remove",
+                                            theme,
+                                        )
+                                        .debug_selector(move || {
+                                            format!("work-item-instruction-archive-{ix}")
+                                        })
+                                        .on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                this.archive_instruction(archive_id.clone(), cx)
+                                            },
+                                        )),
+                                    ),
                             )
                             .when_some(badge, |el, badge| {
                                 el.child(
@@ -530,6 +616,44 @@ impl WorkItemDetails {
                                 )
                             }),
                     )
+                    .child(
+                        div()
+                            .debug_selector(move || format!("work-item-instruction-text-{ix}"))
+                            .ml(px(14.0))
+                            .min_w_0()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .line_height(line_height)
+                            .text_color(theme.text)
+                            .when(collapsible && !expanded, |el| {
+                                el.max_h(crate::typography::ui_rems(
+                                    LINE_HEIGHT_REMS * COLLAPSED_LINES as f32,
+                                ))
+                                .overflow_hidden()
+                            })
+                            .child(SharedString::from(instruction.text.clone())),
+                    )
+                    .when(collapsible, |el| {
+                        el.child(
+                            div().ml(px(14.0)).flex().child(
+                                div()
+                                    .id(("work-item-instruction-fold", ix))
+                                    .debug_selector(move || {
+                                        format!("work-item-instruction-fold-{ix}")
+                                    })
+                                    .cursor_pointer()
+                                    .text_size(crate::typography::ui_rems(10.5))
+                                    .text_color(theme.text_muted)
+                                    .hover(|el| el.text_color(theme.text))
+                                    .child(if expanded { "Show less" } else { "Show more" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !this.instructions_expanded.remove(&fold_id) {
+                                            this.instructions_expanded.insert(fold_id.clone());
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                    })
                     .when_some(excerpt, |el, excerpt| {
                         el.child(
                             div()
@@ -545,73 +669,7 @@ impl WorkItemDetails {
                                 .italic()
                                 .child(SharedString::from(excerpt)),
                         )
-                    })
-                    .child(
-                        div()
-                            .ml(px(14.0))
-                            .flex()
-                            .gap(px(4.0))
-                            .when(ix > 0, |el| {
-                                el.child(
-                                    Self::small_button(
-                                        ("work-item-instruction-up", ix),
-                                        "\u{2191}",
-                                        theme,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.move_instruction(up_id.clone(), true, cx)
-                                        },
-                                    )),
-                                )
-                            })
-                            .when(ix < last, |el| {
-                                el.child(
-                                    Self::small_button(
-                                        ("work-item-instruction-down", ix),
-                                        "\u{2193}",
-                                        theme,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.move_instruction(down_id.clone(), false, cx)
-                                        },
-                                    )),
-                                )
-                            })
-                            .child(
-                                Self::small_button(
-                                    ("work-item-instruction-edit", ix),
-                                    "Edit",
-                                    theme,
-                                )
-                                .debug_selector(move || format!("work-item-instruction-edit-{ix}"))
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.begin_instruction_draft(
-                                            Some(edit_id.clone()),
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                )),
-                            )
-                            .child(
-                                Self::small_button(
-                                    ("work-item-instruction-archive", ix),
-                                    "Archive",
-                                    theme,
-                                )
-                                .debug_selector(move || {
-                                    format!("work-item-instruction-archive-{ix}")
-                                })
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.archive_instruction(archive_id.clone(), cx)
-                                    },
-                                )),
-                            ),
-                    ),
+                    }),
             );
         }
         if editing_id == Some(None) {
