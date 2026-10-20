@@ -1,4 +1,5 @@
 //! Native, virtualized preview of a file's current Markdown buffer.
+use super::markdown_find;
 use crate::image_media::release_media;
 use crate::{
     markdown::{
@@ -134,6 +135,13 @@ pub(crate) struct MarkdownPreview {
     anchors: HashMap<String, usize>,
     parse_task: Option<Task<()>>,
     epoch: u64,
+    /// Bumps every time a parse result is applied.
+    parse_generation: u64,
+    /// Find: the active query, its per-block match counts for the applied
+    /// tree, and the emphasized match (document order).
+    find_query: String,
+    find_counts: Vec<usize>,
+    find_current: Option<usize>,
     loading: bool,
     truncated: bool,
     pub media_client: Option<(super::client::WorkspaceFilesClient, String)>,
@@ -168,6 +176,18 @@ pub(crate) struct MarkdownPreview {
     /// `true` return means the owner handled it.
     open_file_link: Option<FileLinkHandler>,
 }
+
+/// What a host can observe about a preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkdownPreviewEvent {
+    /// A parse result was applied (the tree, headings and block indices may
+    /// have changed).
+    Parsed,
+    /// Find's match count was recomputed after a re-parse.
+    FindRecounted(usize),
+}
+
+impl gpui::EventEmitter<MarkdownPreviewEvent> for MarkdownPreview {}
 
 pub(crate) type FileLinkHandler = Rc<dyn Fn(&render::LinkActivation, &mut gpui::App) -> bool>;
 
@@ -398,6 +418,10 @@ impl MarkdownPreview {
             anchors: HashMap::new(),
             parse_task: None,
             epoch: 0,
+            parse_generation: 0,
+            find_query: String::new(),
+            find_counts: Vec::new(),
+            find_current: None,
             loading: false,
             truncated: false,
             open_file,
@@ -506,6 +530,12 @@ impl MarkdownPreview {
                 view.loading = false;
                 view.load_images(cx);
                 view.load_diagrams(cx);
+                view.parse_generation = view.parse_generation.wrapping_add(1);
+                view.recount_find();
+                cx.emit(MarkdownPreviewEvent::Parsed);
+                if !view.find_query.is_empty() {
+                    cx.emit(MarkdownPreviewEvent::FindRecounted(view.find_count()));
+                }
                 cx.notify();
             });
         }));
@@ -983,6 +1013,87 @@ impl MarkdownPreview {
         self.list.clone()
     }
 
+    /// Highlight every case-insensitive match of `query` (empty clears).
+    /// Returns the match count — 0 while the tree is still empty; the count
+    /// is recomputed after every applied parse (then `FindRecounted` is
+    /// emitted). Resets the current match.
+    pub(crate) fn set_find_query(&mut self, query: &str, cx: &mut Context<Self>) -> usize {
+        self.find_query = query.to_owned();
+        self.find_current = None;
+        self.recount_find();
+        cx.notify();
+        self.find_count()
+    }
+
+    /// Emphasize match `current` (0-based, document order) and bring its
+    /// block into view; a block already visible does not move.
+    pub(crate) fn set_find_current(&mut self, current: Option<usize>, cx: &mut Context<Self>) {
+        self.find_current = current.filter(|n| *n < self.find_count());
+        if let Some((block, _)) = self
+            .find_current
+            .and_then(|n| markdown_find::locate(&self.find_counts, n))
+        {
+            self.reveal_block(block);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn clear_find(&mut self, cx: &mut Context<Self>) {
+        self.find_query.clear();
+        self.find_counts.clear();
+        self.find_current = None;
+        cx.notify();
+    }
+
+    pub(crate) fn find_count(&self) -> usize {
+        self.find_counts.iter().sum()
+    }
+
+    /// Recount matches for the applied tree; keeps the current match when it
+    /// still exists.
+    fn recount_find(&mut self) {
+        self.find_counts = markdown_find::block_match_counts(&self.tree, &self.find_query);
+        let count = self.find_count();
+        self.find_current = self.find_current.filter(|n| *n < count);
+    }
+
+    /// Scroll so `ix` is visible: untouched when any part of the block is
+    /// already on screen, else top-aligned.
+    fn reveal_block(&mut self, ix: usize) {
+        let visible = self.list.item_is_above_viewport(ix) == Some(false)
+            && self.list.item_is_below_viewport(ix) == Some(false);
+        if !visible {
+            self.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.0),
+            });
+        }
+    }
+
+    /// `h1`-`h3` headings of the applied parse, targeted by block index.
+    pub(crate) fn section_headings(&self) -> Vec<crate::artifacts::outline::RawHeading> {
+        crate::artifacts::outline::markdown_headings(&self.tree)
+    }
+
+    /// Scroll block `ix` to the top of the preview.
+    pub(crate) fn scroll_to_block(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.list.scroll_to(ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    }
+
+    /// The block at the top of the viewport.
+    pub(crate) fn top_block(&self) -> usize {
+        self.list.logical_scroll_top().item_ix
+    }
+
+    /// Bumps every time a parse result is applied.
+    pub(crate) fn parse_generation(&self) -> u64 {
+        self.parse_generation
+    }
+
     pub(crate) fn set_block_tints(
         &mut self,
         tints: Vec<Option<gpui::Hsla>>,
@@ -1059,10 +1170,20 @@ impl MarkdownPreview {
     ) -> Vec<AnyElement> {
         let theme = Theme::of(cx).clone();
         let link = self.link_ui(cx);
+        let find = (!self.find_query.is_empty()).then(|| {
+            Rc::new(render::FindHighlight {
+                query: self.find_query.clone(),
+                current: self
+                    .find_current
+                    .and_then(|n| markdown_find::locate(&self.find_counts, n))
+                    .map(|(block, nth)| (format!("{}{block}", self.scope).into(), nth)),
+            })
+        });
         range
             .filter_map(|ix| {
                 let top = self.tree.blocks.get(ix)?.clone();
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
+                opts.find = find.clone();
                 opts.code = self.code_uis_for(&opts.row_key, &top.block, ix, cx);
                 let editor = self.editor.as_ref().and_then(|editor| editor.upgrade());
                 let source = self.parsed_source.clone();
