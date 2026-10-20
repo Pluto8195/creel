@@ -119,6 +119,23 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     Find and the index are off for HTML on Linux.
   - Only headless tests have run. Key forwarding, the frame script under the CSP, and active-section
     tracking haven't been seen in a real WKWebView.
+- **Plan section keys** (2026-10-20):
+  - With the section rail focused (click it, or press ⌥⌘S), ↑ / ↓ / Home / End move through
+    sections and scroll the document. Enter or Esc returns focus to the document.
+  - ⌥↑ / ⌥↓ anywhere in the plan jump to the previous / next section, with no wraparound. These keys
+    are bound only in the ArtifactTab key context.
+  - `browser/macos.rs` now maps AppKit's special-key characters (arrows, Home / End, Esc) to
+    combos. Before this, Esc forwarding from WKWebView probably never worked.
+  - The `?` reference doesn't list these keys yet.
+- **Compact icon PR / Linear rows** (2026-10-20, `github/row_icons.rs`):
+  - PR rows end in fixed slots, in this order: author, needs (attention dot + count), your review
+    (eye / refresh / check / close-circle), CI dot, and the PR icon colored by state. Hovering the
+    group shows the full line, the details panel keeps the full text, and `?` has a legend.
+  - On narrow screens the slots drop CI, then review, then author. The title keeps about 120 px.
+  - "You" for the viewer's own PRs isn't shown, because the UI doesn't know the viewer's GitHub
+    login (only the engine does, via `gh api user`). Adding it needs an RPC.
+  - Items with several PRs show icons only for the first one.
+  - Linear rows get a state dot plus a status icon, but keep their totals text and don't drop slots.
 
 ## Working model (since 2026-10-20)
 
