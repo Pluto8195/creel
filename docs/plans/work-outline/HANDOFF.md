@@ -79,6 +79,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   lists the items, chats, and open Required Actions under the caller's item. Children cannot message
   their parent; coordinators collect results with `wait_for_turn` / `read_chat` / Required
   Actions.
+  In the outline a child chat nests under its parent chat only when it has no item of its own or
+  shares the parent's item; a coordinator's child shows under the item it was started on.
 
 ## Working model (since 2026-10-20)
 
