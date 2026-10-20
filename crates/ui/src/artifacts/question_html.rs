@@ -161,4 +161,62 @@ mod tests {
         assert!(markup.ends_with("</script>"));
         assert!(!SCRIPT.contains("</script"), "would end the script early");
     }
+
+    fn theme() -> crate::browser::fragment::FragmentTheme {
+        crate::browser::fragment::FragmentTheme {
+            dark: false,
+            vars: Vec::new(),
+            font_sans: "sans-serif".into(),
+            font_mono: "monospace".into(),
+        }
+    }
+
+    const FRAGMENT: &str = "<h2>Open questions</h2>\n\
+<div data-zeron-question=\"Q-3\" data-status=\"open\" data-blocking=\"true\" \
+data-example=\"two LM358 lines\" data-blocks=\"ENG-2690\">Merge by <b>MPN</b>?</div>\n\
+<div data-zeron-question=\"Q-4\" data-status=\"resolved\" data-decision=\"by MPN\">Done?</div>";
+
+    #[test]
+    fn web_documents_carry_the_card_style_and_script_around_the_authors_markup() {
+        use crate::artifacts::document::web_document;
+        use crate::artifacts::model::WebKind;
+        use crate::browser::fragment::escape_attr;
+        let page = format!(
+            "<!doctype html><html><head><title>p</title></head><body>{FRAGMENT}</body></html>"
+        );
+        for (kind, source) in [(WebKind::Fragment, FRAGMENT.to_owned()), (WebKind::Page, page)] {
+            for probe in [false, true] {
+                let html = web_document(kind, &source, "t", "", &theme(), false, probe);
+                // The frame is the escaped srcdoc attribute.
+                assert!(html.contains(&escape_attr(CSS.trim())), "{kind:?} style");
+                assert!(html.contains("__zeronQuestionsInstalled"), "{kind:?} script");
+                assert!(
+                    html.contains(&escape_attr("<div data-zeron-question=\"Q-3\"")),
+                    "{kind:?} author markup kept"
+                );
+                assert!(html.contains(&escape_attr("data-decision=\"by MPN\"")));
+                assert_eq!(html.matches("<iframe").count(), 1);
+            }
+        }
+        // A page without <head> still gets the style, ahead of its content.
+        let bare = web_document(WebKind::Page, FRAGMENT, "t", "", &theme(), false, false);
+        let style_at = bare.find(&escape_attr("<style>\n[data-zeron-question]")).unwrap();
+        let card_at = bare.find(&escape_attr("<div data-zeron-question")).unwrap();
+        assert!(style_at < card_at);
+    }
+
+    #[test]
+    fn compare_frames_render_cards_the_same_way() {
+        use crate::artifacts::document::compare_frame;
+        use crate::artifacts::model::WebKind;
+        for kind in [WebKind::Fragment, WebKind::Page] {
+            let frame = compare_frame(kind, FRAGMENT, "t", "", &theme(), false, "", "");
+            assert!(frame.html.contains("<style>\n[data-zeron-question]"), "{kind:?}");
+            assert!(frame.html.contains("__zeronQuestionsInstalled"), "{kind:?}");
+            assert!(frame.html.contains("data-zeron-question=\"Q-3\""), "{kind:?}");
+        }
+        // Mermaid and image kinds carry no question style.
+        let frame = compare_frame(WebKind::Mermaid, "graph TD; A-->B", "t", "", &theme(), false, "", "");
+        assert!(!frame.html.contains("<style>\n[data-zeron-question]"));
+    }
 }

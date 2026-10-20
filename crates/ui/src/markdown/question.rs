@@ -371,4 +371,50 @@ mod tests {
         assert_eq!(card.fields.len(), 1);
         assert_eq!(plain(&card.fields[0].runs), "A; B");
     }
+
+    #[test]
+    fn parse_full_turns_question_quotes_into_cards_and_leaves_other_quotes() {
+        let source = format!(
+            "# Plan\n\n{EXAMPLE}\n> [!note] heads up\n> blocking: true\n\n> plain quote\n\n\
+             > [!warning] careful\n\n- > [!question] Q-8 · nested stays a quote\n"
+        );
+        let tree = parser::parse_full(&source);
+        let kinds: Vec<&str> = tree
+            .blocks
+            .iter()
+            .map(|top| match &top.block {
+                Block::Heading { .. } => "heading",
+                Block::Question(_) => "question",
+                Block::BlockQuote { .. } => "quote",
+                Block::List { .. } => "list",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["heading", "question", "quote", "quote", "quote", "list"]);
+        // The question block keeps its source range.
+        let Block::Question(card) = &tree.blocks[1].block else {
+            unreachable!()
+        };
+        assert_eq!(card.id.as_deref(), Some("Q-1"));
+        assert!(source[tree.blocks[1].range.clone()].starts_with("> [!question] Q-1"));
+    }
+
+    #[test]
+    fn streaming_parse_matches_the_full_parse_with_question_cards() {
+        let source = format!("intro\n\n{EXAMPLE}\n> [!question] Q-2 · Next?\n> status: open\n");
+        let mut stream = parser::IncrementalParser::new();
+        for ch in source.chars() {
+            stream.append(&ch.to_string());
+            assert_eq!(stream.tree(), &parser::parse_full(stream.source()));
+        }
+        assert!(
+            stream
+                .tree()
+                .blocks
+                .iter()
+                .filter(|top| matches!(top.block, Block::Question(_)))
+                .count()
+                >= 1
+        );
+    }
 }

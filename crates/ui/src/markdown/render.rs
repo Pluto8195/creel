@@ -489,6 +489,30 @@ fn question_child_ix(ix: usize, n: usize) -> usize {
     ix * 100 + n.min(98) + 1
 }
 
+/// The rows a card shows, with their position in `card.fields` (the text
+/// element discriminator): all of them expanded, only the decision collapsed.
+fn visible_question_fields(
+    card: &QuestionCard,
+    expanded: bool,
+) -> impl Iterator<Item = (usize, &super::question::QuestionField)> {
+    card.fields
+        .iter()
+        .enumerate()
+        .filter(move |(_, field)| expanded || field.is_decision())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `(key, collapsible, expanded, rows shown)` of every question card drawn.
+    static QUESTION_LOG: RefCell<Vec<(String, bool, bool, usize)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the question cards drawn since the last call (tests).
+#[cfg(test)]
+pub(crate) fn take_question_log() -> Vec<(String, bool, bool, usize)> {
+    QUESTION_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
 fn question_pill(label: &str, color: Hsla, filled: bool) -> gpui::Div {
     div()
         .px(px(7.0))
@@ -569,6 +593,15 @@ fn render_question(
         );
     }
 
+    #[cfg(test)]
+    QUESTION_LOG.with(|log| {
+        log.borrow_mut().push((
+            key.clone(),
+            collapsible,
+            expanded,
+            visible_question_fields(card, expanded).count(),
+        ))
+    });
     let mut body = div()
         .flex()
         .flex_col()
@@ -590,10 +623,7 @@ fn render_question(
                 )),
         );
     }
-    for (n, field) in card.fields.iter().enumerate() {
-        if !expanded && !field.is_decision() {
-            continue;
-        }
+    for (n, field) in visible_question_fields(card, expanded) {
         let row = div()
             .flex()
             .flex_row()
