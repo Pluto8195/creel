@@ -92,6 +92,8 @@ pub(crate) struct CompareView {
         Entity<crate::files::markdown_preview::MarkdownPreview>,
         Entity<crate::files::markdown_preview::MarkdownPreview>,
     )>,
+    /// Scroll ratio (0..=1) last applied to the follower pane.
+    synced_scroll: f32,
     generation: u64,
 }
 
@@ -282,6 +284,7 @@ impl ArtifactTab {
             load: CompareLoad::Loading,
             renders: RenderState::Idle,
             markdown: None,
+            synced_scroll: 0.0,
             generation: 0,
         });
         self.load_compare(window, cx);
@@ -472,17 +475,30 @@ impl ArtifactTab {
             .unwrap_or_default();
         let existing = view.markdown.clone();
         let (left, right) = existing.unwrap_or_else(|| {
-            let make = |cx: &mut Context<Self>| {
+            let make = |side: Side, cx: &mut Context<Self>| {
                 let path = path.clone();
-                cx.new(|cx| {
+                let preview = cx.new(|cx| {
                     crate::files::markdown_preview::MarkdownPreview::new(
                         path,
                         Rc::new(|_, _| {}),
                         cx,
                     )
-                })
+                });
+                // The list is mid-update while its scroll handler runs, so
+                // the other pane follows from a deferred call.
+                let tab = cx.weak_entity();
+                preview
+                    .read(cx)
+                    .list_state()
+                    .set_scroll_handler(move |_, _, cx| {
+                        let tab = tab.clone();
+                        cx.defer(move |cx| {
+                            let _ = tab.update(cx, |tab, cx| tab.sync_markdown_scroll(side, cx));
+                        });
+                    });
+                preview
             };
-            (make(cx), make(cx))
+            (make(Side::Left, cx), make(Side::Right, cx))
         });
         let theme = Theme::of(cx).clone();
         let tints = |statuses: &[BlockStatus]| -> Vec<Option<gpui::Hsla>> {
@@ -508,6 +524,42 @@ impl ArtifactTab {
         if let Some(view) = self.compare.as_mut() {
             view.markdown = Some((left, right));
         }
+    }
+
+    /// Move the pane opposite `from` to the same scroll position (as a
+    /// fraction of its blocks). The ratio last applied is remembered so a
+    /// scroll that moved nothing does not bounce back.
+    pub(crate) fn sync_markdown_scroll(&mut self, from: Side, cx: &App) {
+        let Some(view) = self.compare.as_mut() else {
+            return;
+        };
+        let Some((left, right)) = view.markdown.as_ref() else {
+            return;
+        };
+        let (left, right) = (left.read(cx).list_state(), right.read(cx).list_state());
+        let (source, follower) = match from {
+            Side::Left => (left, right),
+            Side::Right => (right, left),
+        };
+        let top = source.logical_scroll_top();
+        let frac = source
+            .bounds_for_item(top.item_ix)
+            .map(|bounds| f32::from(top.offset_in_item) / f32::from(bounds.size.height).max(1.0))
+            .unwrap_or(0.0);
+        let ratio = compare::scroll_ratio(top.item_ix, frac, source.item_count());
+        if (ratio - view.synced_scroll).abs() < 1e-5 {
+            return;
+        }
+        view.synced_scroll = ratio;
+        let (item_ix, frac) = compare::scroll_target(ratio, follower.item_count());
+        let height = follower
+            .bounds_for_item(item_ix)
+            .map(|bounds| f32::from(bounds.size.height))
+            .unwrap_or(0.0);
+        follower.scroll_to(gpui::ListOffset {
+            item_ix,
+            offset_in_item: px(frac * height),
+        });
     }
 
     /// The compare document (both frames, the change overlay when

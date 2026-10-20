@@ -141,6 +141,28 @@ impl ComparePrefs {
     }
 }
 
+/// A list scroll position as a 0..=1 fraction of its `count` items: the
+/// item at the top plus how far into it (`frac`). Item based, not pixel
+/// based: the list only measures items near the viewport, so its pixel
+/// range grows as it is scrolled.
+pub(crate) fn scroll_ratio(item_ix: usize, frac: f32, count: usize) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    ((item_ix as f32 + frac.clamp(0.0, 1.0)) / count as f32).clamp(0.0, 1.0)
+}
+
+/// The inverse of [`scroll_ratio`] for a list of `count` items: the item at
+/// the top and the fraction into it.
+pub(crate) fn scroll_target(ratio: f32, count: usize) -> (usize, f32) {
+    if count == 0 {
+        return (0, 0.0);
+    }
+    let position = ratio.clamp(0.0, 1.0) * count as f32;
+    let ix = (position.floor() as usize).min(count - 1);
+    (ix, (position - ix as f32).clamp(0.0, 1.0))
+}
+
 /// Which side of the compare a picker or pane belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Side {

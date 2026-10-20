@@ -460,6 +460,90 @@ fn markdown_compare_highlights_blocks_and_summarises_sections(cx: &mut TestAppCo
     assert!(vcx.debug_bounds("artifact-compare-diff").is_some());
 }
 
+fn tall_markdown(revision: u32) -> String {
+    (0..80)
+        .map(|n| format!("## Section {n}\n\nParagraph {n} r{revision}.\n"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[gpui::test]
+fn markdown_compare_panes_scroll_together(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &tall_markdown(revision),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, ArtifactKind::Markdown, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    // The preview parses after a short debounce.
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    settle(vcx);
+    settle(vcx);
+    let lists = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        tab.read_with(vcx, |tab, cx| {
+            let (l, r) = tab.compare_view().unwrap().markdown.clone().unwrap();
+            (l.read(cx).list_state(), r.read(cx).list_state())
+        })
+    };
+    let (left, right) = lists(&tab, vcx);
+    let ratio = |list: &gpui::ListState| {
+        let top = list.logical_scroll_top();
+        super::compare::scroll_ratio(top.item_ix, 0.0, list.item_count())
+    };
+    assert!(f32::from(left.max_offset_for_scrollbar().y) > 0.0, "tall");
+    let wheel = |vcx: &mut VisualTestContext, selector: &'static str, dy: f32| {
+        let bounds = vcx.debug_bounds(selector).expect("pane");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(dy))),
+            ..Default::default()
+        });
+        settle(vcx);
+    };
+    wheel(vcx, "artifact-compare-markdown-left", -400.0);
+    assert!(ratio(&left) > 0.02, "left scrolled: {}", ratio(&left));
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.01,
+        "right follows: {} vs {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    // The right pane drives back without ping-ponging past its own move.
+    let before = ratio(&right);
+    wheel(vcx, "artifact-compare-markdown-right", -400.0);
+    assert!(ratio(&right) > before);
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.01,
+        "{before} {} {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    wheel(vcx, "artifact-compare-markdown-right", 5000.0);
+    assert!(ratio(&left) < 0.01 && ratio(&right) < 0.01, "back at top");
+}
+
+#[test]
+fn scroll_ratio_math_maps_item_positions_between_lists() {
+    use super::compare::{scroll_ratio, scroll_target};
+    assert_eq!(scroll_ratio(5, 0.5, 10), 0.55);
+    assert_eq!(scroll_ratio(0, 0.0, 0), 0.0);
+    assert_eq!(scroll_ratio(12, 0.0, 10), 1.0);
+    assert_eq!(scroll_target(0.5, 20), (10, 0.0));
+    assert_eq!(scroll_target(1.0, 20), (19, 1.0));
+    assert_eq!(scroll_target(0.0, 0), (0, 0.0));
+    // Half way through a 10-block list is half way through a 40-block one.
+    let (ix, frac) = scroll_target(scroll_ratio(5, 0.0, 10), 40);
+    assert_eq!((ix, frac), (20, 0.0));
+}
+
 const OPTIONS: &str = r#"{"title":"Layouts","options":[
   {"id":"a","label":"Grid","path":"a.fragment.html"},
   {"id":"b","label":"List","path":"b.fragment.html"},
