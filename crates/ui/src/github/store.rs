@@ -270,7 +270,8 @@ mod tests {
                 .ready(&PullRequestRef::new("ACME", "app", 3))
                 .is_some()
         );
-        assert!(!store.needs_fetch(&PullRequestRef::new("acme", "app", 3), Instant::now()));
+        // A list row is shown, but due for a full fetch.
+        assert!(store.needs_fetch(&PullRequestRef::new("acme", "app", 3), Instant::now()));
         assert!(store.needs_fetch(&PullRequestRef::new("acme", "app", 4), Instant::now()));
     }
 }

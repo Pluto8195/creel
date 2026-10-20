@@ -236,6 +236,17 @@ fn open_link(
     }
 }
 
+/// The issue chip's text: `In Progress · High · Ada`.
+pub(crate) fn issue_chip_text(issue: &zeron_proto::linear::LinearIssueSummary) -> String {
+    let mut parts = vec![issue.state.name.clone()];
+    parts.extend(crate::linear::priority_text(
+        issue.priority,
+        &issue.priority_label,
+    ));
+    parts.extend(issue.assignee.as_ref().map(crate::linear::user_name));
+    parts.join(" \u{00b7} ")
+}
+
 /// The live issue chip: state dot + name, priority, assignee.
 pub(crate) fn issue_chip(
     id: String,
@@ -248,15 +259,9 @@ pub(crate) fn issue_chip(
     let selector = id.clone();
     let (dot, text, tip): (gpui::Hsla, String, String) = match entry {
         Some(IssueEntry::Ready { issue, .. }) => {
-            let mut parts = vec![issue.state.name.clone()];
-            parts.extend(crate::linear::priority_text(
-                issue.priority,
-                &issue.priority_label,
-            ));
-            parts.extend(issue.assignee.as_ref().map(crate::linear::user_name));
             (
                 crate::linear::hex_color(&issue.state.color, theme.text_muted),
-                parts.join(" \u{00b7} "),
+                issue_chip_text(issue),
                 format!("{} \u{00b7} {}", issue.identifier, issue.title),
             )
         }
