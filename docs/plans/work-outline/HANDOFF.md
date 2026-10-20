@@ -73,6 +73,22 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   detail and a Copy button, and stay until dismissed. Used by the PR review launcher, Start Chat,
   composer send/worktree failures, and error toasts.
 
+- **Coordinator agent tools** (2026-10-20): `create_chat { workItemId, prompt, … }` starts a
+  child on the caller's item or a descendant (same launch path as Start Chat, so the target's
+  instructions and execution binding apply; `cwd`/`branch` refused). `work_outline_read_subtree`
+  lists the items, chats, and open Required Actions under the caller's item. Children cannot message
+  their parent; coordinators collect results with `wait_for_turn` / `read_chat` / Required
+  Actions.
+
+## Working model (since 2026-10-20)
+
+Zeron development is organised in the Work Outline under the root item "Zeron Zod combine"
+(`48ef4b86c9967626ba1b6372e4cdfa66`, Space agent-mode-tools) with children Release, Bugs, Features,
+Parked. A coordinator chat on that root starts child chats on the right items with
+`create_chat { workItemId }`, polls `work_outline_read_subtree` for "Ready to merge" actions, and is
+the only chat that merges, installs, edits this file, and pushes. Feature and bug chats push their
+branch and raise "Ready to merge: <branch>".
+
 ## Known gaps
 
 - Visual compare: markdown panes don't scroll in sync; highlight and onion skin cover only the
