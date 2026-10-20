@@ -99,6 +99,13 @@ impl Harness for GatedHarness {
     fn supports_agent_tools(&self) -> bool {
         true
     }
+    fn instruction_support(&self) -> zeron_harness::InstructionSupport {
+        zeron_harness::InstructionSupport::Supported {
+            channel: zeron_harness::InstructionChannel::Test,
+            replace_strategy: zeron_harness::InstructionReplaceStrategy::RespawnResume,
+            max_bytes: 64 * 1024,
+        }
+    }
     async fn run(
         &self,
         request: RunRequest,
@@ -816,4 +823,400 @@ async fn a_child_first_turn_runs_with_the_child_chat_config_not_the_callers() {
     .unwrap_err();
     assert!(err.contains("agent-tools/invalid"), "{err}");
     rig.harness.release.notify_one();
+}
+
+async fn add_instruction(rig: &Rig, op: &str, scope: Value, text: &str) {
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "createWorkItemInstruction", "spaceId": SPACE, "scope": scope,
+                    "text": text, "operationId": op }),
+        )
+        .await
+        .unwrap();
+}
+
+async fn assign_chat(rig: &Rig, op: &str, chat: &str, item: &str) {
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "assignChatToWorkItem", "chatId": chat, "workItemId": item,
+                    "operationId": op }),
+        )
+        .await
+        .unwrap();
+}
+
+fn launch_args(key: &str, item: &str, sandbox: &str) -> Value {
+    json!({
+        "idempotencyKey": key, "workItemId": item, "prompt": "go",
+        "config": { "harness": "mock", "model": null, "reasoning": null,
+                    "modelOptions": {}, "sandbox": sandbox, "autoApprove": true },
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_child_started_for_a_descendant_item_gets_that_items_instructions() {
+    let rig = rig().await;
+    let root_a = create_item(&rig, "op-a", "Coordinator", None).await;
+    let root_b = create_item(&rig, "op-b", "Elsewhere", None).await;
+    let a_child = create_item(&rig, "op-a1", "Step", Some(&root_a)).await;
+    let a_grand = create_item(&rig, "op-a11", "Leaf", Some(&a_child)).await;
+    let b_child = create_item(&rig, "op-b1", "Other step", Some(&root_b)).await;
+    add_instruction(
+        &rig,
+        "ins-root",
+        json!({ "type": "workItem", "workItemId": root_a }),
+        "Coordinator rule.",
+    )
+    .await;
+    add_instruction(
+        &rig,
+        "ins-leaf",
+        json!({ "type": "workItem", "workItemId": a_grand }),
+        "Leaf rule.",
+    )
+    .await;
+    add_instruction(
+        &rig,
+        "ins-other",
+        json!({ "type": "workItem", "workItemId": b_child }),
+        "Other subtree rule.",
+    )
+    .await;
+    assign_chat(&rig, "assign-caller", CHAT, &root_a).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    // The child is started FOR the descendant: attached to it, parented to
+    // the caller, with the leaf's effective instructions (its own plus the
+    // inherited ones), never the caller's item's alone.
+    let key = "leaf-worker";
+    let reply = tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args(key, &a_grand, "workspace-write"),
+    )
+    .await
+    .unwrap();
+    let child = derive_id(
+        &zeron_proto::agent_tools::operation_id(CHAT, key),
+        roles::CHAT,
+    );
+    assert_eq!(reply["chatId"], child);
+    let snap = snapshot(&rig);
+    let assignment = snap
+        .assignments
+        .iter()
+        .find(|a| a.chat_id == child)
+        .unwrap();
+    assert_eq!(assignment.work_item_id.as_deref(), Some(a_grand.as_str()));
+    let row = rig.core.workspace.chat(&child).unwrap().unwrap();
+    assert_eq!(row.parent_chat_id.as_deref(), Some(CHAT));
+    // Approval is never automatic for an agent-started child.
+    assert!(!row.config.unwrap().auto_approve);
+    let pin = rig
+        .core
+        .workspace
+        .selected_instruction_revision(&child)
+        .expect("the launch selected an instruction revision");
+    let revision = rig
+        .core
+        .workspace
+        .instruction_revision(&pin.revision_id)
+        .unwrap();
+    assert_eq!(revision.work_item_id, a_grand);
+    let texts: Vec<&str> = revision
+        .body
+        .entries
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(texts, ["Coordinator rule.", "Leaf rule."]);
+    wait_for(
+        || !rig.harness.requests.lock().unwrap().is_empty(),
+        "child run",
+    )
+    .await;
+    let request = rig.harness.requests.lock().unwrap()[0].clone();
+    assert_eq!(request.prompt, "go");
+    let rendered = request.instructions.unwrap().envelope.rendered;
+    assert!(rendered.contains("Leaf rule."), "{rendered}");
+    assert!(!rendered.contains("Other subtree rule."), "{rendered}");
+
+    // A retry with the same key and inputs is the same Chat, started once.
+    let again = tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args(key, &a_grand, "workspace-write"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["chatId"], child);
+    assert_eq!(again["commandId"], reply["commandId"]);
+    assert_eq!(
+        snapshot(&rig)
+            .assignments
+            .iter()
+            .filter(|a| a.chat_id == child)
+            .count(),
+        1
+    );
+    // The caller's own item is a valid target too.
+    let own = tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args("own-item", &root_a, "read-only"),
+    )
+    .await
+    .unwrap();
+    let own_chat = own["chatId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        snapshot(&rig)
+            .assignments
+            .iter()
+            .find(|a| a.chat_id == own_chat)
+            .and_then(|a| a.work_item_id.clone()),
+        Some(root_a.clone())
+    );
+
+    // Outside the caller's subtree (another root, a sibling subtree's
+    // descendant, an unknown id): unauthorized, nothing created.
+    let chats_before = rig.core.workspace.read_chats().unwrap().len();
+    for target in [root_b.as_str(), b_child.as_str(), "no-such-item"] {
+        let err = tool(
+            &rig,
+            &token,
+            "chat_launch_child_for_item",
+            launch_args(&format!("out-{target}"), target, "workspace-write"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("work-outline/unauthorized"), "{target}: {err}");
+    }
+    // Never a wider sandbox than the caller's, and a prompt is required.
+    let err = tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args("wide", &a_grand, "danger-full-access"),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent-tools/forbidden"), "{err}");
+    let mut empty = launch_args("empty", &a_grand, "workspace-write");
+    empty["prompt"] = json!("  ");
+    let err = tool(&rig, &token, "chat_launch_child_for_item", empty)
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent-tools/invalid"), "{err}");
+    assert_eq!(rig.core.workspace.read_chats().unwrap().len(), chats_before);
+
+    // The re-association rule is NOT relaxed: the started child keeps the
+    // item it was started for.
+    let child_lease = tokens.mint(&child, "run-2", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        child_lease.token(),
+        "work_outline_associate_current_chat",
+        json!({ "workItemId": root_a, "idempotencyKey": "reassoc" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    assert!(err.contains("re-associate"), "{err}");
+
+    // An unassociated caller has no subtree to start chats in.
+    let other = tokens.mint(OTHER_CHAT, "run-3", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        other.token(),
+        "chat_launch_child_for_item",
+        launch_args("nobody", &a_grand, "workspace-write"),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    rig.harness.release.notify_waiters();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_subtree_lists_descendants_chats_and_requests_within_the_callers_subtree() {
+    let rig = rig().await;
+    let root_a = create_item(&rig, "op-a", "Coordinator", None).await;
+    let root_b = create_item(&rig, "op-b", "Elsewhere", None).await;
+    let a_child = create_item(&rig, "op-a1", "Step", Some(&root_a)).await;
+    let a_grand = create_item(&rig, "op-a11", "Leaf", Some(&a_child)).await;
+    let a_deep = create_item(&rig, "op-a111", "Deep", Some(&a_grand)).await;
+    let a_archived = create_item(&rig, "op-a2", "Old", Some(&root_a)).await;
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "archiveWorkItem", "workItemId": a_archived,
+                    "descendantArchivePolicy": { "type": "archiveDescendants" },
+                    "operationId": "arch" }),
+        )
+        .await
+        .unwrap();
+    assign_chat(&rig, "assign-caller", CHAT, &root_a).await;
+    assign_chat(&rig, "assign-worker", OTHER_CHAT, &a_grand).await;
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "createUserActionRequest", "workItemId": a_grand,
+                    "origin": { "chatId": OTHER_CHAT }, "text": "Ready to merge",
+                    "info": "branch leaf-1", "operationId": "req-1" }),
+        )
+        .await
+        .unwrap();
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    // Default: the caller's item, depth 4 (so the grandchild is in), archived
+    // items left out.
+    let read = tool(&rig, &token, "work_outline_read_subtree", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["rootWorkItemId"], root_a);
+    assert_eq!(read["truncated"], false);
+    assert_eq!(read["itemCount"], 4);
+    let tree = &read["tree"];
+    assert_eq!(tree["id"], root_a);
+    assert_eq!(tree["children"].as_array().unwrap().len(), 1);
+    let step = &tree["children"][0];
+    assert_eq!(step["id"], a_child);
+    assert_eq!(
+        step["effectiveStatus"],
+        snapshot(&rig)
+            .item(&a_child)
+            .map(|i| json!(i.effective_status))
+            .unwrap()
+    );
+    let leaf = &step["children"][0];
+    assert_eq!(leaf["id"], a_grand);
+    assert_eq!(leaf["chats"][0]["id"], OTHER_CHAT);
+    assert_eq!(leaf["chats"][0]["status"], "idle");
+    assert!(leaf["chats"][0].get("lastMessageAt").is_some());
+    let request = &leaf["openUserActionRequests"][0];
+    assert_eq!(request["text"], "Ready to merge");
+    assert_eq!(request["detail"], "branch leaf-1");
+    assert_eq!(request["originChatId"], OTHER_CHAT);
+    assert!(request["id"].as_str().is_some() && request["createdAt"].is_number());
+    assert_eq!(leaf["children"][0]["id"], a_deep);
+    // The caller's own chat is listed on its own item.
+    assert_eq!(tree["chats"][0]["id"], CHAT);
+
+    // maxDepth limits how far down it goes and says what it left out.
+    let shallow = tool(
+        &rig,
+        &token,
+        "work_outline_read_subtree",
+        json!({ "maxDepth": 1 }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shallow["itemCount"], 2);
+    assert_eq!(shallow["tree"]["children"][0]["id"], a_child);
+    assert_eq!(shallow["tree"]["children"][0]["children"], json!([]));
+    assert_eq!(shallow["tree"]["children"][0]["childrenOmitted"], 1);
+    // A descendant as the root of the read; maxDepth is capped at 8.
+    let from_leaf = tool(
+        &rig,
+        &token,
+        "work_outline_read_subtree",
+        json!({ "workItemId": a_grand, "maxDepth": 99 }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(from_leaf["maxDepth"], 8);
+    assert_eq!(from_leaf["tree"]["id"], a_grand);
+    assert_eq!(from_leaf["itemCount"], 2);
+    // includeArchived adds the archived item.
+    let with_archived = tool(
+        &rig,
+        &token,
+        "work_outline_read_subtree",
+        json!({ "includeArchived": true }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(with_archived["itemCount"], 5);
+    let archived = with_archived["tree"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == a_archived)
+        .unwrap();
+    assert_eq!(archived["archived"], true);
+
+    // Outside the subtree (another root, an ancestor-side item, unknown) and
+    // unassociated callers are refused.
+    for target in [root_b.as_str(), "no-such-item"] {
+        let err = tool(
+            &rig,
+            &token,
+            "work_outline_read_subtree",
+            json!({ "workItemId": target }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("work-outline/unauthorized"), "{target}: {err}");
+    }
+    let worker = tokens.mint(OTHER_CHAT, "run-2", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        worker.token(),
+        "work_outline_read_subtree",
+        json!({ "workItemId": root_a }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    // A leaf's chat reads its own subtree only, never upward.
+    let err = tool(
+        &rig,
+        worker.token(),
+        "work_outline_read_subtree",
+        json!({ "workItemId": a_child }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    let own = tool(&rig, worker.token(), "work_outline_read_subtree", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(own["tree"]["id"], a_grand);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_subtree_caps_its_output_and_says_so() {
+    let rig = rig().await;
+    let root = create_item(&rig, "op-root", "Big", None).await;
+    for i in 0..310 {
+        create_item(
+            &rig,
+            &format!("op-leaf-{i}"),
+            &format!("Leaf {i}"),
+            Some(&root),
+        )
+        .await;
+    }
+    assign_chat(&rig, "assign-caller", CHAT, &root).await;
+    let lease = rig
+        .core
+        .sessions
+        .agent_tokens()
+        .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let read = tool(&rig, lease.token(), "work_outline_read_subtree", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["truncated"], true);
+    assert_eq!(read["itemCount"], 300);
+    assert_eq!(read["tree"]["children"].as_array().unwrap().len(), 299);
+    assert_eq!(read["tree"]["childrenOmitted"], 11);
 }
