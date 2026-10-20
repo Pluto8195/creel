@@ -474,10 +474,12 @@ automatically: items and links come only from the actions below.
   link**, which relinks it by the project's id (link anew, then remove the old
   link).
 - Retrying a create or link never duplicates it.
-- **Linked items.** Items linked to an issue show a live chip (state, priority,
-  assignee). Click the chip to open the issue. Items linked to a project show a
-  project chip. In Work Item Details, the **Linear** section has ↻ (refresh
-  every linked item in the project from Linear) and **Unlink**.
+- **Linked items.** Items linked to an issue show a small state dot and status
+  icon (done, canceled, started, backlog). Hover for the identifier, state,
+  priority, assignee and title; click to open the issue. Items linked to a
+  project show a project chip. In Work Item Details, the **Linear** section has
+  the full chip, ↻ (refresh every linked item in the project from Linear) and
+  **Unlink**.
 - **Synced fields.** An issue item's title and description follow Linear
   (Zeron syncs about every 15 minutes, and on ↻) until you edit them in Zeron.
   A field that still follows Linear shows **Synced from Linear**. When you link
@@ -523,15 +525,31 @@ that owns the project, through that device's `gh` login.
   no longer asks for you, the round's request resolves and the item becomes
   Completed. A status you set yourself stands until GitHub's state changes
   again. Moved items keep syncing; archived ones are left alone.
-- **PR chips.** Every item linked to a GitHub PR (synced or not) shows a live
-  chip in projects with the sync: state (Open, Draft, Merged, Closed), CI
-  (✓ passing, ✕ failing, ● pending), and your review state (Review requested,
-  Re-review requested, Approved by you, …) or GitHub's review decision. Click
-  it to open the PR (in Zeron or your browser, per **Open web links in
-  Zeron**). In Work Item Details, the **Pull request** section shows the chip
-  and title with **↻ Refresh**, **Review**, **Fix CI**, and **Open on
-  GitHub**; it refreshes when Details open. A synced item also shows
-  **Synced from GitHub · round N**.
+- **PR icons.** Every item linked to a GitHub PR (synced or not) shows a row of
+  fixed-width icons on the right, in projects with the sync, so they line up
+  as columns: **author · needs you · your review · CI · PR**.
+  - *Author:* the PR author's GitHub login, shortened to 10 characters (full
+    login on hover). It always shows the plain login: Zeron doesn't know your
+    own GitHub login yet, so it can't say "you".
+  - *Needs you:* the usual attention dot (and count). It replaces the "N active
+    · N user action required" text on these rows; the chat count moves to the
+    hover.
+  - *Your review:* eye = review requested, refresh = re-review requested
+    (both in the attention color), green check = you approved, orange circle-x
+    = you requested changes; empty when there is nothing for you.
+  - *CI:* a dot (green passing, red failing, amber running; none without
+    checks).
+  - *PR:* the pull-request icon, colored by state (green open, grey draft,
+    purple merged, red closed). Click it to open the PR (in Zeron or your
+    browser, per **Open web links in Zeron**).
+  Each icon has its own hover; hovering the group shows the whole line (`#42 ·
+  Open · CI failing · Re-review requested · by alex · 2 chats`). On a narrow
+  Outline the title keeps at least about 120 px and the icons drop in this
+  order: CI, review, author; the attention dot and the PR icon always stay.
+  The **?** reference has an icon legend. In Work Item Details, the **Pull
+  request** section shows the full text chip and title with **↻ Refresh**,
+  **Review**, **Fix CI**, and **Open on GitHub**; it refreshes when Details
+  open. A synced item also shows **Synced from GitHub · round N**.
 - **PRs on your items.** Items also get their own PRs linked automatically:
   an item linked to a Linear issue gets the GitHub PRs Linear attached to the
   issue (on the Linear sync), and any item gets a PR its Chat created
@@ -539,7 +557,8 @@ that owns the project, through that device's `gh` login.
   Only PRs of the project's repositories; links are added, never removed or
   moved (a Chat moved to another item leaves its PR where it was), and a link
   you remove stays removed. The item's status is not changed when a PR
-  merges. An item with several PRs shows a chip for each. Details:
+  merges. An item with several PRs shows the icons for the first and a chip for each
+  further one. Details:
   [PRs on work items](pr-review.md#prs-on-work-items).
 - **Review.** `⌘↩` (`Ctrl+Enter`) on a PR review item (a synced item, a child
   of the destination, or an item created from the GitHub section) starts a

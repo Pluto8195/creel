@@ -28,6 +28,7 @@ pub(crate) mod client;
 pub(crate) mod menu;
 pub(crate) mod panel;
 pub(crate) mod prefs;
+pub(crate) mod row_icons;
 pub(crate) mod store;
 
 use std::collections::HashMap;

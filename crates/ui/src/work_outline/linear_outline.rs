@@ -8,7 +8,7 @@
 //! A child module of `outline_view` so it reads the Outline's snapshots
 //! without widening that view's API.
 use gpui::{AnyElement, Context, SharedString, WeakEntity, div, prelude::*, px};
-use zeron_proto::linear::LinearIssueSummary;
+use zeron_proto::linear::{LinearIssueSummary, LinearStateType};
 
 use super::super::chips::TextTooltip;
 use super::super::model::{ItemRow, row_key};
@@ -135,7 +135,7 @@ impl OutlineView {
         let issue_chip = issue.map(|(identifier, url)| {
             store::request_issue(&self.state, &identifier, false, cx);
             let entry = self.state.read(cx).linear.issue(&identifier).cloned();
-            issue_chip(
+            issue_row_icons(
                 format!("outline-linear-{key}"),
                 &identifier,
                 entry.as_ref(),
@@ -247,6 +247,102 @@ pub(crate) fn issue_chip_text(issue: &zeron_proto::linear::LinearIssueSummary) -
     parts.join(" \u{00b7} ")
 }
 
+/// The status icon of a Linear workflow state type (drawn next to the state
+/// dot on an Outline row).
+pub(crate) fn linear_status_icon(state_type: LinearStateType) -> &'static str {
+    match state_type {
+        LinearStateType::Completed => crate::icons::CHECK,
+        LinearStateType::Canceled => crate::icons::CLOSE_CIRCLE,
+        LinearStateType::Started => crate::icons::CLOCK_CIRCLE,
+        LinearStateType::Triage
+        | LinearStateType::Backlog
+        | LinearStateType::Unstarted
+        | LinearStateType::Unknown => crate::icons::CHECKLIST,
+    }
+}
+
+/// An Outline row's Linear tooltip: identifier, state, priority and the
+/// assignee, then the title.
+pub(crate) fn issue_row_tooltip(issue: &LinearIssueSummary) -> String {
+    let mut parts = vec![issue.identifier.clone(), issue.state.name.clone()];
+    parts.extend(crate::linear::priority_text(
+        issue.priority,
+        &issue.priority_label,
+    ));
+    parts.push(match &issue.assignee {
+        Some(user) => format!("Assigned to {}", crate::linear::user_name(user)),
+        None => "Unassigned".to_string(),
+    });
+    format!("{}\n{}", parts.join(" \u{00b7} "), issue.title)
+}
+
+/// The Linear slots of an Outline row: the state's dot and status icon in
+/// one fixed-width cluster (identifier, assignee and the rest in the
+/// tooltip). Click opens the issue per the web-link preference. The details
+/// panel keeps the full text chip ([`issue_chip`]).
+pub(crate) fn issue_row_icons(
+    id: String,
+    identifier: &str,
+    entry: Option<&IssueEntry>,
+    url: String,
+    shell: Option<WeakEntity<crate::shell::Shell>>,
+    theme: &Theme,
+) -> AnyElement {
+    let selector = id.clone();
+    let (color, icon, tip): (gpui::Hsla, Option<&'static str>, String) = match entry {
+        Some(IssueEntry::Ready { issue, .. }) => (
+            crate::linear::hex_color(&issue.state.color, theme.text_muted),
+            Some(linear_status_icon(issue.state.state_type)),
+            issue_row_tooltip(issue),
+        ),
+        Some(IssueEntry::Failed { error, .. }) => (
+            theme.warning,
+            None,
+            format!("{identifier}: {}", error.user_text()),
+        ),
+        _ => (
+            theme.text_faint,
+            None,
+            format!("{identifier} (loading from Linear)"),
+        ),
+    };
+    let tip: SharedString = format!("{tip}\nClick to open in Linear").into();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .w(px(LINEAR_SLOTS_WIDTH))
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(px(3.0))
+        .rounded(px(3.0))
+        .cursor_pointer()
+        .hover(|el| el.bg(theme.element_hover))
+        .child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
+        .child(
+            div()
+                .flex_none()
+                .size(px(11.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(icon.map(|path| {
+                    crate::icons::icon(path)
+                        .size(px(11.0))
+                        .text_color(color)
+                })),
+        )
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(open_link(shell, url))
+        .into_any_element()
+}
+
+/// Fixed width of the Linear cluster (dot, gap, icon, padding) so the
+/// slots line up across rows.
+const LINEAR_SLOTS_WIDTH: f32 = 28.0;
+
 /// The live issue chip: state dot + name, priority, assignee.
 pub(crate) fn issue_chip(
     id: String,
@@ -338,4 +434,49 @@ pub(crate) fn project_chip(
 /// Row key of item `item_id` in `space_id` (re-exported for the panel host).
 pub(crate) fn item_key(space_id: &str, item_id: &str) -> String {
     row_key::item(space_id, item_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linear::fixture::issue;
+
+    #[test]
+    fn status_icon_follows_the_state_type() {
+        assert_eq!(
+            linear_status_icon(LinearStateType::Completed),
+            crate::icons::CHECK
+        );
+        assert_eq!(
+            linear_status_icon(LinearStateType::Canceled),
+            crate::icons::CLOSE_CIRCLE
+        );
+        assert_eq!(
+            linear_status_icon(LinearStateType::Started),
+            crate::icons::CLOCK_CIRCLE
+        );
+        for open in [
+            LinearStateType::Triage,
+            LinearStateType::Backlog,
+            LinearStateType::Unstarted,
+            LinearStateType::Unknown,
+        ] {
+            assert_eq!(linear_status_icon(open), crate::icons::CHECKLIST);
+        }
+    }
+
+    #[test]
+    fn tooltip_names_identifier_state_priority_and_assignee() {
+        let mut ticket = issue("ENG-1", "Fix login");
+        assert_eq!(
+            issue_row_tooltip(&ticket),
+            "ENG-1 \u{00b7} In Progress \u{00b7} High \u{00b7} Assigned to Mikey\nFix login"
+        );
+        ticket.assignee = None;
+        ticket.priority = 0;
+        assert_eq!(
+            issue_row_tooltip(&ticket),
+            "ENG-1 \u{00b7} In Progress \u{00b7} Unassigned\nFix login"
+        );
+    }
 }

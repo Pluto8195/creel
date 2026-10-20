@@ -458,6 +458,7 @@ fn shortcuts_card(theme: &Theme, cx: &mut Context<Shell>) -> AnyElement {
                         .children(command_groups.iter().map(group_el)),
                 ),
         )
+        .child(icon_legend(theme))
         .child(
             div()
                 .mt(px(14.0))
@@ -479,6 +480,80 @@ fn shortcuts_card(theme: &Theme, cx: &mut Context<Shell>) -> AnyElement {
                             this.resolve_work_outline_modal(false, window, cx);
                         })),
                 ),
+        )
+        .into_any_element()
+}
+
+/// The icon legend of PR and Linear rows (two columns under the shortcuts).
+fn icon_legend(theme: &Theme) -> AnyElement {
+    use crate::github::row_icons::{self, Mark};
+    let rows: Vec<_> = row_icons::legend_rows();
+    let half = rows.len().div_ceil(2);
+    let row_el = |row: &row_icons::LegendRow| {
+        let color = row_icons::tone_color(row.tone, theme);
+        let mark = match row.mark {
+            Mark::Icon(path) => crate::icons::icon(path)
+                .size(px(11.0))
+                .text_color(color)
+                .into_any_element(),
+            Mark::Dot => div()
+                .flex_none()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(color)
+                .into_any_element(),
+            Mark::Text(sample) => div()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(color)
+                .child(sample)
+                .into_any_element(),
+        };
+        div()
+            .h(px(20.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text)
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(mark),
+            )
+            .child(div().min_w_0().truncate().child(row.label))
+    };
+    let column = |rows: &[row_icons::LegendRow]| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .children(rows.iter().map(row_el))
+    };
+    div()
+        .debug_selector(|| "work-outline-shortcuts-icons".into())
+        .mt(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .child(
+            div()
+                .pb(px(2.0))
+                .text_size(crate::typography::ui_rems(10.5))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.text_muted)
+                .child("Row icons (pull requests and Linear issues)"),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(24.0))
+                .child(column(&rows[..half]))
+                .child(column(&rows[half..])),
         )
         .into_any_element()
 }
@@ -1661,6 +1736,11 @@ mod tests {
                 Box::leak(format!("work-outline-shortcuts-{group}").into_boxed_str());
             assert!(cx.debug_bounds(selector).is_some(), "{group}");
         }
+        // The PR / Linear row icon legend sits under the shortcuts.
+        assert!(
+            cx.debug_bounds("work-outline-shortcuts-icons").is_some(),
+            "icon legend"
+        );
         shell.update_in(cx, |shell, window, cx| {
             shell.on_key_down_capture(&escape(), window, cx)
         });

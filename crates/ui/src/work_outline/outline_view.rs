@@ -466,6 +466,11 @@ pub(crate) struct OutlineView {
     /// Focus gained / lost diagnostics (registered on first render, which
     /// has the window).
     focus_logs: Option<[Subscription; 2]>,
+    /// The Outline's measured width (set while painting), for the PR icon
+    /// cluster's narrow-width slot dropping; 0 until the first paint.
+    row_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Tests pin the width instead of reading the paint measurement.
+    row_width_override: Option<f32>,
 }
 
 impl EventEmitter<OutlineEvent> for OutlineView {}
@@ -527,6 +532,8 @@ impl OutlineView {
             show_hidden_spaces: false,
             _editor_events: editor_events,
             focus_logs: None,
+            row_width: Default::default(),
+            row_width_override: None,
         }
     }
 
@@ -2723,15 +2730,22 @@ impl OutlineView {
                             cx,
                         )
                     });
-                    let linear = self.external_chips(&key, item, theme, cx);
                     let artifacts = self.artifact_count_chip(&key, item, theme, cx);
+                    // Rough widths of the chips that share the row with the
+                    // PR icon cluster (they size to their content).
+                    let other_width = if item.pending_proposals > 0 { 56.0 } else { 0.0 }
+                        + if artifacts.is_some() { 34.0 } else { 0.0 }
+                        + if item.execution_exceptions > 0 { 28.0 } else { 0.0 };
+                    let external =
+                        self.external_chips(&key, item, row.depth, other_width, theme, cx);
                     item_body(
                         &key,
                         item,
                         linear_outline::join_chips(
                             linear_outline::join_chips(proposals, artifacts),
-                            linear,
+                            external.chips,
                         ),
+                        external.pr_slots,
                         theme,
                     )
                 }
@@ -3217,13 +3231,18 @@ fn status_totals_element(
         .into_any_element()
 }
 
+/// `pr_slots` is the PR icon cluster of a PR row: it carries the attention
+/// indicator, the descendant totals and the chat count in its slots and
+/// tooltips, so the row leaves those (and the redundant references icon) out.
 fn item_body(
     key: &str,
     item: &ItemRow,
     proposals: Option<AnyElement>,
+    pr_slots: Option<AnyElement>,
     theme: &Theme,
 ) -> AnyElement {
-    let totals = (!item.archived)
+    let compact_pr = pr_slots.is_some();
+    let totals = (!item.archived && !compact_pr)
         .then(|| super::required_actions::status_totals(&item.rollup))
         .flatten();
     let (glyph, label, color) = chips::status_style(item.effective_status, theme);
@@ -3265,7 +3284,8 @@ fn item_body(
                 item.unresolved_actions,
                 theme,
                 1.0,
-            ),
+            )
+            .filter(|_| !compact_pr),
             |el, indicator| el.child(indicator),
         )
         .when_some(totals, |el, totals| {
@@ -3276,10 +3296,14 @@ fn item_body(
             ))
         })
         .children(proposals)
-        .when(item.chat_count > 0, |el| {
+        .when(item.chat_count > 0 && !compact_pr, |el| {
             el.child(
                 div()
                     .id(SharedString::from(format!("outline-chats-{key}")))
+                    .debug_selector({
+                        let selector = format!("outline-chats-{key}");
+                        move || selector.clone()
+                    })
                     .flex_none()
                     .flex()
                     .items_center()
@@ -3321,10 +3345,14 @@ fn item_body(
                     .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
             )
         })
-        .when(item.has_references, |el| {
+        .when(item.has_references && !compact_pr, |el| {
             el.child(
                 div()
                     .id(SharedString::from(format!("outline-refs-{key}")))
+                    .debug_selector({
+                        let selector = format!("outline-refs-{key}");
+                        move || selector.clone()
+                    })
                     .flex_none()
                     .child(
                         crate::icons::icon(crate::icons::GLOBAL)
@@ -3337,6 +3365,7 @@ fn item_body(
                     }),
             )
         })
+        .children(pr_slots)
         .into_any_element()
 }
 
@@ -3576,6 +3605,7 @@ impl Render for OutlineView {
         };
         div()
             .id("work-outline")
+            .relative()
             .debug_selector(|| "work-outline".into())
             .track_focus(&self.focus)
             .when(!editing, |el| el.key_context(KEY_CONTEXT))
@@ -3715,6 +3745,7 @@ impl Render for OutlineView {
             // With only Chats in the tree, the first-use line sits above them.
             .children(first_use)
             .child(list)
+            .child(self.width_probe(cx))
     }
 }
 

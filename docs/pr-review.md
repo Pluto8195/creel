@@ -152,7 +152,8 @@ being retired).
 ## PRs on work items
 
 Besides the review sync, the engine links a work item to the PRs that belong
-to it, so the item shows the PR chip (state, CI, review decision) and the
+to it, so the item shows the PR icons (state, CI, your review; the Details chip has the
+full text) and the
 Details **Pull request** section. Code: `crates/engine/src/work_outline_pr_links.rs`.
 Each link is a `github` / `pullRequest` reference (`externalId`
 `<owner>/<repo>#<n>`) added by the system actor. Status comes from `PrStatus`
@@ -182,8 +183,8 @@ Rules for both sources:
 - Links are only added: never removed, never moved, never duplicated (one
   reference per item and PR; the operation id is a hash of item and PR). A
   reference you remove is not added back. An item can link several PRs (a
-  ticket's UI and Flagship PRs); the Outline shows a chip for each and
-  Details lists the others under the first.
+  ticket's UI and Flagship PRs); the Outline shows the icons for the first and a chip for each
+  further PR, and Details lists the others under the first.
 - A Chat's PR is linked once, to the item the Chat belongs to when the PR is
   first seen, and only if no item of the project links that PR yet. Moving
   the Chat to another item later keeps the existing link where it is (the

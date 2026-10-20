@@ -505,6 +505,39 @@ fn chips_details_sync_markers_and_menu(cx: &mut gpui::TestAppContext) {
     });
 }
 
+/// A Linear row shows the state dot and status icon in one fixed-width slot
+/// (no chip text); the identifier and assignee live in the tooltip. The
+/// Linear row keeps its other row elements, and the full chip stays in
+/// Details.
+#[gpui::test]
+fn linear_rows_show_a_compact_state_slot(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) =
+        linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    let slot = row_bounds(vcx, format!("outline-linear-{key}")).expect("the Linear slot renders");
+    assert_eq!(f32::from(slot.size.width), 28.0, "fixed width");
+    // No PR cluster on a Linear-only row; chats and references stay.
+    assert!(row_bounds(vcx, format!("outline-pr-slots-{key}")).is_none());
+    assert!(row_bounds(vcx, format!("outline-chats-{key}")).is_some());
+    assert!(row_bounds(vcx, format!("outline-refs-{key}")).is_some());
+    // The row's state: loaded issue is In Progress (started).
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.read_with(vcx, |state, _| {
+        let issue = state.linear.ready_issue("ENG-1").expect("cached");
+        assert_eq!(
+            crate::work_outline::outline_view::linear_outline::linear_status_icon(
+                issue.state.state_type
+            ),
+            crate::icons::CLOCK_CIRCLE
+        );
+    });
+    open_details(&overview, vcx, API);
+    assert!(vcx.debug_bounds("work-item-linear-chip").is_some());
+}
+
 /// A host without the Linear RPCs shows a calm "not available" state; a
 /// missing key offers Connect Linear.
 #[gpui::test]
