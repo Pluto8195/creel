@@ -1373,6 +1373,13 @@ fn paint_find(
         .map(|(_, nth)| *nth);
     for (offset, range) in ranges.into_iter().enumerate() {
         let range = offsets.map_or_else(|| range.clone(), |map| map.displayed_range(range.clone()));
+        #[cfg(test)]
+        if current == Some(first + offset) {
+            FIND_CURRENT_LOG.with(|log| {
+                log.borrow_mut()
+                    .push((paint.row_key.to_string(), first + offset, text.to_owned()))
+            });
+        }
         let wash = if current == Some(first + offset) {
             find_current_wash()
         } else {
@@ -1391,8 +1398,19 @@ fn paint_find(
     }
 }
 
-/// The match number each element of a row gets in the current frame, for
-/// tests: how many matches the row has painted so far.
+#[cfg(test)]
+thread_local! {
+    /// `(row key, nth match in row, element text)` of every current-match wash painted.
+    static FIND_CURRENT_LOG: RefCell<Vec<(String, usize, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the current-match washes painted since the last call (tests).
+#[cfg(test)]
+pub(crate) fn take_find_current_log() -> Vec<(String, usize, String)> {
+    FIND_CURRENT_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+/// How many matches the row has painted so far this frame (tests).
 #[cfg(test)]
 pub(crate) fn find_painted_in_row(row_key: &str) -> usize {
     FIND_SEQ.with(|seq| seq.borrow().get(row_key).copied().unwrap_or(0))

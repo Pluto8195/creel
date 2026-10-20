@@ -2105,6 +2105,214 @@ mod async_tests {
         assert!(weak.upgrade().is_none());
     }
 
+    fn settle(cx: &mut TestAppContext) {
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+    }
+
+    fn collect_events(
+        view: &gpui::Entity<MarkdownPreview>,
+        cx: &mut TestAppContext,
+    ) -> Rc<RefCell<Vec<MarkdownPreviewEvent>>> {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        cx.update(|cx| {
+            cx.subscribe(view, move |_, event: &MarkdownPreviewEvent, _| {
+                sink.borrow_mut().push(*event)
+            })
+            .detach()
+        });
+        events
+    }
+
+    fn needle_doc(needles: &[usize]) -> String {
+        (0..40)
+            .map(|ix| {
+                if needles.contains(&ix) {
+                    format!("paragraph {ix} has a NeedLe inside\n")
+                } else if ix % 10 == 0 {
+                    format!("## Section {ix}\n")
+                } else {
+                    format!("paragraph {ix}\n")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[gpui::test]
+    fn find_counts_scrolls_clears_and_recounts_after_reparse(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let view = cx.new(|cx| MarkdownPreview::new("PLAN.md".into(), Rc::new(|_, _| {}), cx));
+        let events = collect_events(&view, cx);
+        view.update(cx, |view, cx| {
+            view.set_source(needle_doc(&[3, 35]), false, cx);
+            // The tree is still empty: nothing to count yet.
+            assert_eq!(view.set_find_query("needle", cx), 0);
+        });
+        assert!(events.borrow().is_empty());
+        settle(cx);
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                MarkdownPreviewEvent::Parsed,
+                MarkdownPreviewEvent::FindRecounted(2)
+            ]
+        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.find_count(), 2);
+            assert_eq!(view.parse_generation(), 1);
+        });
+        view.update(cx, |view, cx| {
+            view.set_find_current(Some(1), cx);
+            assert_eq!(view.top_block(), 35);
+            view.set_find_current(Some(0), cx);
+            assert_eq!(view.top_block(), 3);
+            // Out of range clears the current match instead of scrolling.
+            view.set_find_current(Some(2), cx);
+            assert_eq!(view.find_current, None);
+            assert_eq!(view.top_block(), 3);
+            view.set_find_current(Some(1), cx);
+            // A new query resets the current match.
+            assert_eq!(view.set_find_query("paragraph", cx), 36);
+            assert_eq!(view.find_current, None);
+            assert_eq!(view.set_find_query("", cx), 0);
+            view.set_find_query("needle", cx);
+            view.set_find_current(Some(0), cx);
+            view.clear_find(cx);
+            assert_eq!(view.find_count(), 0);
+            assert_eq!(view.find_current, None);
+            assert!(view.find_query.is_empty());
+        });
+        // Re-parse with a third match: recounted and announced.
+        events.borrow_mut().clear();
+        view.update(cx, |view, cx| {
+            view.set_find_query("needle", cx);
+            view.set_find_current(Some(1), cx);
+            view.set_source(needle_doc(&[3, 20, 35]), false, cx);
+        });
+        settle(cx);
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                MarkdownPreviewEvent::Parsed,
+                MarkdownPreviewEvent::FindRecounted(3)
+            ]
+        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.find_count(), 3);
+            assert_eq!(view.parse_generation(), 2);
+            assert_eq!(view.find_current, Some(1), "current survives a recount");
+        });
+        // Without a query a re-parse only reports the parse.
+        events.borrow_mut().clear();
+        view.update(cx, |view, cx| {
+            view.clear_find(cx);
+            view.set_source(needle_doc(&[]), false, cx);
+        });
+        settle(cx);
+        assert_eq!(*events.borrow(), vec![MarkdownPreviewEvent::Parsed]);
+    }
+
+    #[gpui::test]
+    fn sections_top_block_and_scroll_to_block(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let view = cx.new(|cx| MarkdownPreview::new("PLAN.md".into(), Rc::new(|_, _| {}), cx));
+        assert!(view.read_with(cx, |view, _| view.section_headings().is_empty()));
+        view.update(cx, |view, cx| {
+            view.set_source(needle_doc(&[]), false, cx);
+        });
+        settle(cx);
+        view.update(cx, |view, cx| {
+            let headings = view.section_headings();
+            assert_eq!(
+                headings
+                    .iter()
+                    .map(|h| (h.level, h.text.as_str(), h.target))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (2, "Section 0", 0),
+                    (2, "Section 10", 10),
+                    (2, "Section 20", 20),
+                    (2, "Section 30", 30)
+                ]
+            );
+            assert_eq!(view.top_block(), 0);
+            view.scroll_to_block(20, cx);
+            assert_eq!(view.top_block(), 20);
+            view.scroll_to_block(1, cx);
+            assert_eq!(view.top_block(), 1);
+        });
+    }
+
+    struct Single(gpui::Entity<MarkdownPreview>);
+    impl Render for Single {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn find_paints_every_counted_match_and_marks_the_current_one(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark())
+        });
+        let source = "# Alpha heading\n\npara alpha ALPHA\n\n- [ ] task alpha\n- item\n\n\
+            | h | alpha one |\n| - | - |\n| two alpha | x |\n\n> quote alpha\n\n\
+            ```\ncode alpha\nxx ALPHA yy\n```\n";
+        let preview = cx.new(|cx| MarkdownPreview::new("PLAN.md".into(), Rc::new(|_, _| {}), cx));
+        preview.update(cx, |view, cx| view.set_source(source.into(), false, cx));
+        settle(cx);
+        let (_root, cx) = cx.add_window_view({
+            let preview = preview.clone();
+            |_, _| Single(preview)
+        });
+        let count = preview.update(cx, |view, cx| view.set_find_query("alpha", cx));
+        // heading 1, paragraph 2, list 1, table 2, quote 1, code 2.
+        assert_eq!(count, 9);
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            render::take_find_current_log();
+            cx.update(|window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            });
+            render::take_find_current_log()
+        };
+        let scope = preview.read_with(cx, |view, _| view.scope.clone());
+        let counts = preview.read_with(cx, |view, _| view.find_counts.clone());
+        assert_eq!(counts, vec![1, 2, 1, 2, 1, 2]);
+        assert!(draw(cx).is_empty(), "no current match until chosen");
+        for (ix, expected) in counts.iter().enumerate() {
+            assert_eq!(
+                render::find_painted_in_row(&format!("{scope}{ix}")),
+                *expected,
+                "block {ix}: painted washes must equal the counted matches"
+            );
+        }
+        // Match 5 is the table's body cell, the second match in its row.
+        preview.update(cx, |view, cx| view.set_find_current(Some(5), cx));
+        assert_eq!(
+            draw(cx),
+            vec![(format!("{scope}3"), 1, "two alpha".to_string())]
+        );
+        // The last match is the second code line.
+        preview.update(cx, |view, cx| view.set_find_current(Some(8), cx));
+        assert_eq!(
+            draw(cx),
+            vec![(format!("{scope}5"), 1, "xx ALPHA yy".to_string())]
+        );
+        preview.update(cx, |view, cx| view.set_find_current(Some(2), cx));
+        assert_eq!(
+            draw(cx),
+            vec![(format!("{scope}1"), 1, "para alpha ALPHA".to_string())]
+        );
+        preview.update(cx, |view, cx| view.clear_find(cx));
+        assert!(draw(cx).is_empty());
+        assert_eq!(render::find_painted_in_row(&format!("{scope}1")), 0);
+    }
+
     #[gpui::test]
     fn raster_admission_accounts_for_cpu_pixels_and_gpu_texture(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::dark()));
