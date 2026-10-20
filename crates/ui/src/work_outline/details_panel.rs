@@ -193,6 +193,9 @@ pub(crate) struct WorkItemDetails {
     instruction_skills: Entity<SkillCompletion>,
     /// Instructions whose Chat excerpt is expanded.
     excerpts_open: HashSet<String>,
+    /// Long instructions shown in full ("Show less" visible); the rest are
+    /// clipped to [`details_instructions::COLLAPSED_LINES`].
+    instructions_expanded: HashSet<String>,
     instructions_error: Option<String>,
     /// Effective Instructions: collapsed until opened.
     pub(crate) effective_open: bool,
@@ -383,6 +386,7 @@ impl WorkItemDetails {
             instruction_input,
             instruction_skills,
             excerpts_open: HashSet::new(),
+            instructions_expanded: HashSet::new(),
             instructions_error: None,
             effective_open: false,
             execution_open: false,

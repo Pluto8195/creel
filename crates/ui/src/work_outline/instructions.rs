@@ -192,7 +192,7 @@ impl OutlineChange {
             Self::MoveItem { .. } => "Move and change instructions?",
             Self::SetInheritance { .. } => "Change inherited instructions?",
             Self::EditInstruction { .. } => "Save instruction change?",
-            Self::ArchiveInstruction { .. } => "Archive instruction?",
+            Self::ArchiveInstruction { .. } => "Remove instruction?",
             Self::AddInstruction { .. } => "Approve proposed instruction?",
         }
     }
@@ -204,7 +204,7 @@ impl OutlineChange {
             Self::MoveItem { .. } => "Move",
             Self::SetInheritance { .. } => "Change",
             Self::EditInstruction { .. } => "Save",
-            Self::ArchiveInstruction { .. } => "Archive",
+            Self::ArchiveInstruction { .. } => "Remove",
             Self::AddInstruction { .. } => "Approve",
         }
     }
