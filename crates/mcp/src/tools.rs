@@ -1887,6 +1887,27 @@ mod tests {
                             }
                         };
                     }
+                    if params["tool"] == agent_tool_names::LAUNCH_CHILD_CHAT {
+                        // The engine's launch: derives the same Chat id as the
+                        // MCP server and starts it parented to the caller.
+                        let key = params["arguments"]["idempotencyKey"].as_str().unwrap();
+                        let operation = agent_tools::operation_id("chat-beta-2", key);
+                        let chat_id = zeron_proto::derive_id(&operation, zeron_proto::roles::CHAT);
+                        let mut created = self.created.lock().unwrap();
+                        if !created.iter().any(|c| c["id"] == chat_id) {
+                            created.push(json!({
+                                "id": chat_id, "deviceId": "dev-local", "archived": false,
+                                "spaceId": "space-1", "parentChatId": "chat-beta-2",
+                                "config": params["arguments"]["config"],
+                                "cwd": "/repo/comet/.worktrees/item",
+                                "createdAt": "2026-09-03T00:00:00Z"
+                            }));
+                        }
+                        return Ok(RpcReply::Value(json!({
+                            "chatId": chat_id, "messageId": "m-1", "commandId": "cmd-launch",
+                            "executionRoot": "/repo/comet/.worktrees/item", "state": "queued"
+                        })));
+                    }
                     RpcReply::Value(json!({ "commandId": "cmd-agent", "queued": true }))
                 }
                 methods::MUTATE | methods::QUEUE_COMMAND | methods::QUEUE_MESSAGE => {
@@ -1939,7 +1960,9 @@ mod tests {
         }
         // Every mutating Work Outline tool demands an idempotency key.
         for def in work_outline_catalog() {
-            if def.name != agent_tool_names::READ_CURRENT {
+            if def.name != agent_tool_names::READ_CURRENT
+                && def.name != agent_tool_names::READ_SUBTREE
+            {
                 let required = def.input_schema["required"].as_array().unwrap();
                 assert!(required.contains(&json!("idempotencyKey")), "{}", def.name);
             }
@@ -2383,6 +2406,104 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("own chat"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn agent_create_chat_with_a_work_item_launches_through_the_engine() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let created = tools
+            .call(
+                "create_chat",
+                json!({
+                    "idempotencyKey": "leaf-1", "workItemId": "item-leaf",
+                    "prompt": "do the leaf", "title": "Leaf worker",
+                }),
+            )
+            .await
+            .unwrap();
+        let chat_id = created["chatId"].as_str().unwrap().to_owned();
+        assert_eq!(created["workItemId"], "item-leaf");
+        assert_eq!(created["parentChatId"], "chat-beta-2");
+        assert_eq!(created["executionRoot"], "/repo/comet/.worktrees/item");
+        assert_eq!(created["sent"]["id"], "cmd-launch");
+        assert_eq!(created["replayed"], false);
+
+        // One launch call (token, item, prompt, config), and none of the
+        // plain-chat writes: no createChat row, no separate first turn.
+        let launches = world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0]["token"], BETA_TOKEN);
+        let arguments = &launches[0]["arguments"];
+        assert_eq!(arguments["workItemId"], "item-leaf");
+        assert_eq!(arguments["prompt"], "do the leaf");
+        assert_eq!(arguments["idempotencyKey"], "leaf-1");
+        assert_eq!(arguments["config"]["autoApprove"], false);
+        assert_eq!(arguments["config"]["sandbox"], "workspace-write");
+        assert!(
+            world
+                .writes_of(methods::MUTATE)
+                .iter()
+                .all(|m| m["op"] != "createChat")
+        );
+        assert!(
+            world
+                .agent_calls(agent_tool_names::QUEUE_CHILD_CHAT_TURN)
+                .is_empty()
+        );
+        // The key was claimed against inputs that include the item.
+        assert_eq!(world.agent_calls(agent_tool_names::CLAIM_CHILD_CHAT).len(), 1);
+
+        // A retry replays the same chat and does not rename it again.
+        let again = tools
+            .call(
+                "create_chat",
+                json!({
+                    "idempotencyKey": "leaf-1", "workItemId": "item-leaf",
+                    "prompt": "do the leaf", "title": "Leaf worker",
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["chatId"], chat_id);
+        assert_eq!(again["replayed"], true);
+        // Another item under the same key is a conflict, never the old chat.
+        let err = tools
+            .call(
+                "create_chat",
+                json!({
+                    "idempotencyKey": "leaf-1", "workItemId": "item-other",
+                    "prompt": "do the leaf", "title": "Leaf worker",
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("operationConflict"), "{err}");
+
+        // workItemId needs a prompt and takes its folder from the item.
+        for (extra, expect) in [
+            (json!({}), "needs a prompt"),
+            (json!({ "prompt": "x", "cwd": "/repo/comet" }), "cwd and branch"),
+            (json!({ "prompt": "x", "branch": "b" }), "cwd and branch"),
+        ] {
+            let mut args = json!({ "idempotencyKey": "bad", "workItemId": "item-leaf" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let err = tools.call("create_chat", args).await.unwrap_err();
+            assert!(err.contains(expect), "{err}");
+        }
+
+        // A terminal (no token) cannot verify the item is its own.
+        let terminal = super::tests::tools(world, None);
+        let err = terminal
+            .call(
+                "create_chat",
+                json!({ "project": "/repo/comet", "workItemId": "item-leaf", "prompt": "x" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("only available inside a Zeron chat"), "{err}");
     }
 
     #[tokio::test]
