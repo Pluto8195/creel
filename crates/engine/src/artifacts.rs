@@ -729,12 +729,7 @@ impl ArtifactsService {
             .join(format!("revision-{revision}.companions.json"))
     }
 
-    fn store_companion_snapshot(
-        &self,
-        artifact_id: &str,
-        hash: &str,
-        bytes: &[u8],
-    ) -> Outcome<()> {
+    fn store_companion_snapshot(&self, artifact_id: &str, hash: &str, bytes: &[u8]) -> Outcome<()> {
         let path = self.companion_snapshot_path(artifact_id, hash);
         if path.is_file() {
             return Ok(());

@@ -336,8 +336,13 @@ async fn rig_with(store: Arc<MemoryKeyStore>, ttl: Duration) -> Rig {
     let dir = tmp.path().join("data");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("device-id"), "dev-a").unwrap();
-    let core = EngineCore::assemble(&dir, Arc::new(HarnessRegistry::new()), HarnessId::Mock, None)
-        .expect("engine core assembles");
+    let core = EngineCore::assemble(
+        &dir,
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core assembles");
     let mock = MockLinear::start().await;
     let sleeps: Arc<Mutex<Vec<Duration>>> = Arc::default();
     let recorder = sleeps.clone();
@@ -441,7 +446,12 @@ impl Rig {
 async fn set_key_validates_with_viewer_and_sends_a_bare_authorization_header() {
     let rig = rig_with(MemoryKeyStore::new(), Duration::from_secs(300)).await;
     let info = rig.call(methods::ENGINE_INFO, json!({})).await.unwrap();
-    assert!(info["capabilities"].as_array().unwrap().contains(&json!("linear-v1")));
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("linear-v1"))
+    );
 
     let status = rig.call(methods::LINEAR_STATUS, json!({})).await.unwrap();
     assert_eq!(status, json!({ "configured": false, "source": "none" }));
@@ -459,7 +469,10 @@ async fn set_key_validates_with_viewer_and_sends_a_bare_authorization_header() {
     assert_eq!(rig.store.stored(), None);
 
     let status = rig
-        .call(methods::LINEAR_SET_API_KEY, json!({ "apiKey": format!("  {KEY}\n") }))
+        .call(
+            methods::LINEAR_SET_API_KEY,
+            json!({ "apiKey": format!("  {KEY}\n") }),
+        )
         .await
         .unwrap();
     assert_eq!(status["configured"], json!(true));
@@ -473,16 +486,22 @@ async fn set_key_validates_with_viewer_and_sends_a_bare_authorization_header() {
     let last = recorded.last().unwrap();
     assert_eq!(last.operation, "ZeronLinearViewer");
     assert_eq!(last.authorization.as_deref(), Some(KEY));
-    assert!(recorded
-        .iter()
-        .all(|r| !r.authorization.clone().unwrap_or_default().starts_with("Bearer")));
+    assert!(recorded.iter().all(|r| {
+        !r.authorization
+            .clone()
+            .unwrap_or_default()
+            .starts_with("Bearer")
+    }));
 
     // Status is served from the verified cache; clear removes the key.
     let before = rig.mock.recorded().len();
     let again = rig.call(methods::LINEAR_STATUS, json!({})).await.unwrap();
     assert_eq!(again, status);
     assert_eq!(rig.mock.recorded().len(), before);
-    let cleared = rig.call(methods::LINEAR_CLEAR_API_KEY, json!({})).await.unwrap();
+    let cleared = rig
+        .call(methods::LINEAR_CLEAR_API_KEY, json!({}))
+        .await
+        .unwrap();
     assert_eq!(cleared, json!({ "configured": false, "source": "none" }));
     assert_eq!(rig.store.stored(), None);
 }
@@ -502,16 +521,15 @@ async fn a_401_deletes_the_stored_key() {
     assert_eq!(rig.store.stored(), None, "rejected key deleted");
     let status = rig.call(methods::LINEAR_STATUS, json!({})).await.unwrap();
     assert_eq!(status["configured"], json!(false));
-    let err = rig
-        .linear_err(methods::LINEAR_MY_ISSUES, json!({}))
-        .await;
+    let err = rig.linear_err(methods::LINEAR_MY_ISSUES, json!({})).await;
     assert_eq!(err.code, LinearErrorCode::MissingKey);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rate_limits_retry_with_a_capped_wait_then_give_up() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One", None, "started"));
     let limited = |retry_after: &str| Reply {
         status: 429,
         headers: vec![("Retry-After".into(), retry_after.into())],
@@ -580,7 +598,10 @@ async fn list_queries_paginate_and_parse() {
             ],
         );
     }
-    let issues = rig.call(methods::LINEAR_MY_ISSUES, json!({})).await.unwrap();
+    let issues = rig
+        .call(methods::LINEAR_MY_ISSUES, json!({}))
+        .await
+        .unwrap();
     let ids: Vec<&str> = issues
         .as_array()
         .unwrap()
@@ -592,7 +613,10 @@ async fn list_queries_paginate_and_parse() {
     let first = &issues[0];
     assert_eq!(first["state"]["type"], json!("started"));
     assert_eq!(first["assignee"]["displayName"], json!("ada"));
-    assert_eq!(first["labels"], json!([{ "name": "bug", "color": "#eb5757" }]));
+    assert_eq!(
+        first["labels"],
+        json!([{ "name": "bug", "color": "#eb5757" }])
+    );
     assert_eq!(first["priority"], json!(2));
     assert_eq!(first["team"]["key"], json!("ENG"));
     assert_eq!(first["description"], json!("Body"));
@@ -600,19 +624,32 @@ async fn list_queries_paginate_and_parse() {
     assert_eq!(page_vars["after"], json!("c1"));
     assert_eq!(page_vars["first"], json!(50));
 
-    let projects = rig.call(methods::LINEAR_MY_PROJECTS, json!({})).await.unwrap();
-    assert_eq!(projects.as_array().unwrap().len(), 1, "completed project hidden");
+    let projects = rig
+        .call(methods::LINEAR_MY_PROJECTS, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        projects.as_array().unwrap().len(),
+        1,
+        "completed project hidden"
+    );
     assert_eq!(projects[0]["name"], json!("Auth"));
     assert_eq!(projects[0]["lead"]["name"], json!("Ada"));
 
     let open = rig
-        .call(methods::LINEAR_PROJECT_ISSUES, json!({ "projectId": "p-1" }))
+        .call(
+            methods::LINEAR_PROJECT_ISSUES,
+            json!({ "projectId": "p-1" }),
+        )
         .await
         .unwrap();
     assert_eq!(open.as_array().unwrap().len(), 1);
     assert_eq!(open[0]["identifier"], json!("ENG-5"));
     let err = rig
-        .linear_err(methods::LINEAR_PROJECT_ISSUES, json!({ "projectId": "nope" }))
+        .linear_err(
+            methods::LINEAR_PROJECT_ISSUES,
+            json!({ "projectId": "nope" }),
+        )
         .await;
     assert_eq!(err.code, LinearErrorCode::NotFound);
     let err = rig
@@ -628,21 +665,26 @@ async fn list_queries_paginate_and_parse() {
 #[tokio::test(flavor = "multi_thread")]
 async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One", None, "started"));
     for _ in 0..3 {
         rig.call(methods::LINEAR_ISSUE, json!({ "identifier": "ENG-1" }))
             .await
             .unwrap();
     }
     assert_eq!(rig.mock.count("ZeronLinearIssue"), 1);
-    rig.mock.set_issue(issue_node("ENG-1", "One v2", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One v2", None, "started"));
     let cached = rig
         .call(methods::LINEAR_ISSUE, json!({ "identifier": "ENG-1" }))
         .await
         .unwrap();
     assert_eq!(cached["title"], json!("One"));
     let fresh = rig
-        .call(methods::LINEAR_ISSUE, json!({ "identifier": "ENG-1", "forceRefresh": true }))
+        .call(
+            methods::LINEAR_ISSUE,
+            json!({ "identifier": "ENG-1", "forceRefresh": true }),
+        )
         .await
         .unwrap();
     assert_eq!(fresh["title"], json!("One v2"));
@@ -650,7 +692,9 @@ async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
 
     // A zero TTL refetches every time.
     let short = rig_with(MemoryKeyStore::with_key(KEY), Duration::ZERO).await;
-    short.mock.set_issue(issue_node("ENG-1", "One", None, "started"));
+    short
+        .mock
+        .set_issue(issue_node("ENG-1", "One", None, "started"));
     for _ in 0..2 {
         short
             .call(methods::LINEAR_ISSUE, json!({ "identifier": "ENG-1" }))
@@ -675,7 +719,8 @@ async fn identical_in_flight_requests_are_coalesced() {
 #[tokio::test(flavor = "multi_thread")]
 async fn space_scoped_linear_operations_need_linear_on() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
     let snapshot = rig.snapshot(SPACE);
     assert!(!snapshot.space_settings.linear_enabled, "off by default");
 
@@ -688,12 +733,17 @@ async fn space_scoped_linear_operations_need_linear_on() {
     let text = rig.mutate(create(SPACE, "op-off")).await.unwrap_err();
     assert!(text.contains("linear/disabledForSpace"), "{text}");
     let err = rig
-        .linear_err(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": SPACE }))
+        .linear_err(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": SPACE }),
+        )
         .await;
     assert_eq!(err.code, LinearErrorCode::DisabledForSpace);
     let item = rig
-        .mutate(json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Plain",
-            "placement": { "type": "last" }, "operationId": "plain" }))
+        .mutate(
+            json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Plain",
+            "placement": { "type": "last" }, "operationId": "plain" }),
+        )
         .await
         .unwrap()["workItemId"]
         .as_str()
@@ -714,7 +764,11 @@ async fn space_scoped_linear_operations_need_linear_on() {
     let id = derive_id("op-on", roles::ITEM);
     assert_eq!(reply["workItemId"], json!(id));
     assert!(reply["referenceId"].is_string());
-    assert_eq!(rig.mutate(create(SPACE, "op-on")).await.unwrap(), reply, "idempotent");
+    assert_eq!(
+        rig.mutate(create(SPACE, "op-on")).await.unwrap(),
+        reply,
+        "idempotent"
+    );
     let snapshot = rig.snapshot(SPACE);
     assert_eq!(snapshot.items.len(), 2);
     assert_eq!(snapshot.item(&id).unwrap().title, "ENG-1 · One");
@@ -723,7 +777,11 @@ async fn space_scoped_linear_operations_need_linear_on() {
         "ENG-1"
     );
     rig.mutate(link).await.unwrap();
-    assert!(rig.snapshot(SPACE).linear_project_reference(&item).is_some());
+    assert!(
+        rig.snapshot(SPACE)
+            .linear_project_reference(&item)
+            .is_some()
+    );
     // Still off in the other Space.
     let text = rig.mutate(create(OFF_SPACE, "op-other")).await.unwrap_err();
     assert!(text.contains("linear/disabledForSpace"), "{text}");
@@ -732,14 +790,18 @@ async fn space_scoped_linear_operations_need_linear_on() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sync_follows_linear_for_unmodified_fields_only() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
-    rig.mock.set_issue(issue_node("ENG-2", "Two", Some("Second"), "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-2", "Two", Some("Second"), "started"));
     rig.enable(SPACE, true).await;
     let parent = rig.from_linear("op-1", None, "ENG-1").await;
     let child = rig.from_linear("op-2", Some(&parent), "ENG-2").await;
     let plain = rig
-        .mutate(json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Plain",
-            "parentWorkItemId": parent, "placement": { "type": "last" }, "operationId": "plain" }))
+        .mutate(
+            json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Plain",
+            "parentWorkItemId": parent, "placement": { "type": "last" }, "operationId": "plain" }),
+        )
         .await
         .unwrap()["workItemId"]
         .as_str()
@@ -752,10 +814,15 @@ async fn sync_follows_linear_for_unmodified_fields_only() {
     let before = rig.snapshot(SPACE);
 
     // Linear changes title and description of both issues.
-    rig.mock.set_issue(issue_node("ENG-1", "One v2", Some("Body v2"), "completed"));
-    rig.mock.set_issue(issue_node("ENG-2", "Two v2", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One v2", Some("Body v2"), "completed"));
+    rig.mock
+        .set_issue(issue_node("ENG-2", "Two v2", None, "started"));
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 2 }));
@@ -763,7 +830,11 @@ async fn sync_follows_linear_for_unmodified_fields_only() {
     let p = after.item(&parent).unwrap();
     assert_eq!(p.title, "ENG-1 · One v2");
     assert_eq!(p.description.as_deref(), Some("Body v2"));
-    assert_eq!(p.status, WorkItemStatus::Active, "status never follows Linear");
+    assert_eq!(
+        p.status,
+        WorkItemStatus::Active,
+        "status never follows Linear"
+    );
     let c = after.item(&child).unwrap();
     assert_eq!(c.title, "ENG-2 · Two v2");
     assert_eq!(c.description, None);
@@ -781,12 +852,19 @@ async fn sync_follows_linear_for_unmodified_fields_only() {
         .await
         .unwrap();
     assert_eq!(
-        rig.snapshot(SPACE).item(&parent).unwrap().external_sync_modified_fields,
+        rig.snapshot(SPACE)
+            .item(&parent)
+            .unwrap()
+            .external_sync_modified_fields,
         vec!["title".to_owned()]
     );
-    rig.mock.set_issue(issue_node("ENG-1", "One v3", Some("Body v3"), "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One v3", Some("Body v3"), "started"));
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 1 }));
@@ -795,7 +873,10 @@ async fn sync_follows_linear_for_unmodified_fields_only() {
     assert_eq!(p.description.as_deref(), Some("Body v3"));
     // Nothing left to do.
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 0 }));
@@ -804,12 +885,19 @@ async fn sync_follows_linear_for_unmodified_fields_only() {
 #[tokio::test(flavor = "multi_thread")]
 async fn agents_get_the_ticket_only_in_linear_enabled_spaces_and_never_the_key() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", Some("Full description"), "started"));
+    rig.mock.set_issue(issue_node(
+        "ENG-1",
+        "One",
+        Some("Full description"),
+        "started",
+    ));
     rig.enable(SPACE, true).await;
     let parent = rig.from_linear("op-1", None, "ENG-1").await;
     let child = rig
-        .mutate(json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Child",
-            "parentWorkItemId": parent, "placement": { "type": "last" }, "operationId": "child" }))
+        .mutate(
+            json!({ "op": "createWorkItem", "spaceId": SPACE, "title": "Child",
+            "parentWorkItemId": parent, "placement": { "type": "last" }, "operationId": "child" }),
+        )
         .await
         .unwrap()["workItemId"]
         .as_str()
@@ -819,10 +907,12 @@ async fn agents_get_the_ticket_only_in_linear_enabled_spaces_and_never_the_key()
         "project": { "id": "p-1", "name": "Auth", "url": "https://linear.app/acme/project/auth" } }))
         .await
         .unwrap();
-    rig.mutate(json!({ "op": "assignChatToWorkItem", "chatId": CHAT, "workItemId": child,
-        "operationId": "assign" }))
-        .await
-        .unwrap();
+    rig.mutate(
+        json!({ "op": "assignChatToWorkItem", "chatId": CHAT, "workItemId": child,
+        "operationId": "assign" }),
+    )
+    .await
+    .unwrap();
     let lease = rig
         .core
         .sessions
@@ -839,8 +929,14 @@ async fn agents_get_the_ticket_only_in_linear_enabled_spaces_and_never_the_key()
     let current = read().await;
     assert_eq!(current["workItem"]["id"], json!(child));
     assert_eq!(current["linearIssue"]["identifier"], json!("ENG-1"));
-    assert_eq!(current["linearIssue"]["description"], json!("Full description"));
-    assert_eq!(current["linearIssue"]["state"]["name"], json!("In Progress"));
+    assert_eq!(
+        current["linearIssue"]["description"],
+        json!("Full description")
+    );
+    assert_eq!(
+        current["linearIssue"]["state"]["name"],
+        json!("In Progress")
+    );
     assert_eq!(current["linearProject"]["id"], json!("p-1"));
     assert_eq!(current["linearProject"]["name"], json!("Auth"));
 
@@ -853,13 +949,16 @@ async fn agents_get_the_ticket_only_in_linear_enabled_spaces_and_never_the_key()
 #[tokio::test(flavor = "multi_thread")]
 async fn the_key_never_appears_in_replies_agent_payloads_or_logs() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-1", "One", Some("Body"), "started"));
     rig.enable(SPACE, true).await;
     let item = rig.from_linear("op-1", None, "ENG-1").await;
-    rig.mutate(json!({ "op": "assignChatToWorkItem", "chatId": CHAT, "workItemId": item,
-        "operationId": "assign" }))
-        .await
-        .unwrap();
+    rig.mutate(
+        json!({ "op": "assignChatToWorkItem", "chatId": CHAT, "workItemId": item,
+        "operationId": "assign" }),
+    )
+    .await
+    .unwrap();
     let lease = rig
         .core
         .sessions
@@ -874,10 +973,15 @@ async fn the_key_never_appears_in_replies_agent_payloads_or_logs() {
     rig.call(methods::LINEAR_STATUS, json!({ "forceRefresh": true }))
         .await
         .unwrap();
-    rig.call(methods::LINEAR_MY_ISSUES, json!({})).await.unwrap();
-    rig.call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": SPACE }))
+    rig.call(methods::LINEAR_MY_ISSUES, json!({}))
         .await
         .unwrap();
+    rig.call(
+        methods::LINEAR_REFRESH_LINKED_ITEMS,
+        json!({ "spaceId": SPACE }),
+    )
+    .await
+    .unwrap();
     rig.call(methods::LINEAR_SET_API_KEY, json!({ "apiKey": KEY }))
         .await
         .unwrap();
@@ -890,7 +994,10 @@ async fn the_key_never_appears_in_replies_agent_payloads_or_logs() {
         body: json!({ "errors": [{ "message": "Authentication required" }] }),
     });
     let _ = rig
-        .call(methods::LINEAR_ISSUE, json!({ "identifier": "ENG-1", "forceRefresh": true }))
+        .call(
+            methods::LINEAR_ISSUE,
+            json!({ "identifier": "ENG-1", "forceRefresh": true }),
+        )
         .await;
     let snapshot = serde_json::to_string(&rig.snapshot(SPACE)).unwrap();
     let seen = rig.seen.lock().unwrap().join("\n");
@@ -969,7 +1076,8 @@ fn item_prs(rig: &Rig, item: &str) -> Vec<(String, String, Option<String>, bool)
 #[tokio::test(flavor = "multi_thread")]
 async fn github_pr_attachments_become_references_on_the_linked_item() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-2690", "Receive flow", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-2690", "Receive flow", None, "started"));
     rig.mock.set_attachments(
         "ENG-2690",
         vec![
@@ -983,9 +1091,12 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         ],
     );
     let (_dir, item) = git_space_item(&rig, "ENG-2690").await;
-    rig.call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
-        .await
-        .unwrap();
+    rig.call(
+        methods::LINEAR_REFRESH_LINKED_ITEMS,
+        json!({ "spaceId": GIT_SPACE }),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         item_prs(&rig, &item),
         vec![(
@@ -997,12 +1108,18 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         "only the GitHub PR of a repository in the Space"
     );
     let snapshot = rig.snapshot(GIT_SPACE);
-    assert_eq!(snapshot.item(&item).unwrap().status, WorkItemStatus::Pending);
+    assert_eq!(
+        snapshot.item(&item).unwrap().status,
+        WorkItemStatus::Pending
+    );
     assert!(snapshot.linear_issue_reference(&item).is_some());
 
     // Idempotent; a second PR attached later is added next to the first.
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": GIT_SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 0 }));
@@ -1014,7 +1131,10 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         ],
     );
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": GIT_SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 1 }));
@@ -1029,12 +1149,17 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         .unwrap()
         .id
         .clone();
-    rig.mutate(json!({ "op": "removeWorkItemExternalReference", "referenceId": reference,
-        "operationId": "rm-10" }))
-        .await
-        .unwrap();
+    rig.mutate(
+        json!({ "op": "removeWorkItemExternalReference", "referenceId": reference,
+        "operationId": "rm-10" }),
+    )
+    .await
+    .unwrap();
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": GIT_SPACE }),
+        )
         .await
         .unwrap();
     assert_eq!(reply, json!({ "updated": 0 }));
@@ -1048,7 +1173,10 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
     );
     let asked = rig.mock.count("ZeronLinearIssueAttachments");
     let error = rig
-        .linear_err(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .linear_err(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": GIT_SPACE }),
+        )
         .await;
     assert_eq!(error.code, LinearErrorCode::DisabledForSpace);
     assert_eq!(rig.mock.count("ZeronLinearIssueAttachments"), asked);
@@ -1058,16 +1186,28 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
 #[tokio::test(flavor = "multi_thread")]
 async fn unreadable_attachments_are_logged_and_the_title_sync_still_runs() {
     let rig = rig().await;
-    rig.mock.set_issue(issue_node("ENG-5", "Five", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-5", "Five", None, "started"));
     let (_dir, item) = git_space_item(&rig, "ENG-5").await;
     rig.mock.state.lock().unwrap().attachments_error = true;
-    rig.mock.set_issue(issue_node("ENG-5", "Five v2", None, "started"));
+    rig.mock
+        .set_issue(issue_node("ENG-5", "Five v2", None, "started"));
     let reply = rig
-        .call(methods::LINEAR_REFRESH_LINKED_ITEMS, json!({ "spaceId": GIT_SPACE }))
+        .call(
+            methods::LINEAR_REFRESH_LINKED_ITEMS,
+            json!({ "spaceId": GIT_SPACE }),
+        )
         .await
         .unwrap();
-    assert_eq!(reply, json!({ "updated": 1 }), "the title still follows Linear");
-    assert_eq!(rig.snapshot(GIT_SPACE).item(&item).unwrap().title, "ENG-5 · Five v2");
+    assert_eq!(
+        reply,
+        json!({ "updated": 1 }),
+        "the title still follows Linear"
+    );
+    assert_eq!(
+        rig.snapshot(GIT_SPACE).item(&item).unwrap().title,
+        "ENG-5 · Five v2"
+    );
     assert!(item_prs(&rig, &item).is_empty());
     let text = String::from_utf8_lossy(&logs().0.lock().unwrap()).into_owned();
     assert!(

@@ -586,8 +586,12 @@ async fn fragments_bring_their_preview_and_options_bring_their_fragments() {
     assert_eq!(same["revision"], 2);
     assert_eq!(same["changed"], false);
     // A revision that predates per-revision files degrades to a clear error.
-    let index = find_snapshot(&rig.root.join("data"), &row.id, "revision-1.companions.json")
-        .expect("revision 1 option index");
+    let index = find_snapshot(
+        &rig.root.join("data"),
+        &row.id,
+        "revision-1.companions.json",
+    )
+    .expect("revision 1 option index");
     std::fs::remove_file(&index).unwrap();
     let err = option_at(Some(1)).await.unwrap_err().to_string();
     assert!(err.contains("predates"), "{err}");
@@ -864,12 +868,22 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
         // Second check: the defaults (narrow + wide) and both themes.
         let item = requests.recv().await.unwrap();
         let request: zeron_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
-        let labels: Vec<_> = request.viewports.iter().map(|v| v.label.clone().unwrap()).collect();
+        let labels: Vec<_> = request
+            .viewports
+            .iter()
+            .map(|v| v.label.clone().unwrap())
+            .collect();
         assert_eq!(labels, ["narrow", "wide"]);
-        assert_eq!((request.viewports[0].width, request.viewports[1].width), (800, 1440));
+        assert_eq!(
+            (request.viewports[0].width, request.viewports[1].width),
+            (800, 1440)
+        );
         assert_eq!(
             request.themes,
-            [zeron_proto::ArtifactRenderTheme::Light, zeron_proto::ArtifactRenderTheme::Dark]
+            [
+                zeron_proto::ArtifactRenderTheme::Light,
+                zeron_proto::ArtifactRenderTheme::Dark
+            ]
         );
         assert_eq!(request.viewport.width, 800);
         ui.call(

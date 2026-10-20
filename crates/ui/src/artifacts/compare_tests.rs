@@ -513,6 +513,97 @@ fn options_compare_picks_which_options_to_compare(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn options_compare_one_option_across_revisions(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params.get("revision").and_then(|r| r.as_u64()).unwrap_or(2);
+        Ok(match params.get("companion").and_then(|c| c.as_str()) {
+            Some(path) => content_reply(
+                ArtifactKind::HtmlFragment,
+                revision as u32,
+                &format!("<p>{path}@r{revision}</p>"),
+                ArtifactContentEncoding::Utf8,
+            ),
+            None => content_reply(
+                ArtifactKind::Options,
+                2,
+                OPTIONS,
+                ArtifactContentEncoding::Utf8,
+            ),
+        })
+    });
+    let (tab, calls, shown, _, vcx) = open(cx, ArtifactKind::Options, reply);
+    let compare = vcx
+        .debug_bounds("artifact-compare")
+        .expect("compare options");
+    vcx.simulate_click(compare.center(), gpui::Modifiers::default());
+    settle(vcx);
+    let across = vcx
+        .debug_bounds("artifact-compare-options-across")
+        .expect("across toggle");
+    vcx.simulate_click(across.center(), gpui::Modifiers::default());
+    settle(vcx);
+    tab.read_with(vcx, |tab, _| {
+        let view = tab.compare_view().unwrap();
+        assert_eq!(view.across, Some(0));
+        assert_eq!((view.left, view.right), (1, 2));
+        let data = view.data().unwrap();
+        assert_eq!(data.left.text.as_deref(), Some("<p>a.fragment.html@r1</p>"));
+        assert_eq!(
+            data.right.text.as_deref(),
+            Some("<p>a.fragment.html@r2</p>")
+        );
+        assert!(tab.shows_web());
+    });
+    let last_two: Vec<(Option<u64>, Option<String>)> = {
+        let all = content_calls(&calls);
+        all[all.len() - 2..]
+            .iter()
+            .map(|call| {
+                (
+                    call["revision"].as_u64(),
+                    call["companion"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        last_two,
+        [
+            (Some(1), Some("a.fragment.html".to_owned())),
+            (Some(2), Some("a.fragment.html".to_owned()))
+        ]
+    );
+    assert_eq!(
+        shown.borrow().last().unwrap().1.matches("<iframe").count(),
+        2
+    );
+    // Cycle to the next option.
+    let cycle = vcx
+        .debug_bounds("artifact-compare-option-cycle")
+        .expect("option cycler");
+    vcx.simulate_click(cycle.center(), gpui::Modifiers::default());
+    settle(vcx);
+    tab.read_with(vcx, |tab, _| {
+        let view = tab.compare_view().unwrap();
+        assert_eq!(view.across, Some(1));
+        let data = view.data().unwrap();
+        assert_eq!(data.left.text.as_deref(), Some("<p>b.fragment.html@r1</p>"));
+    });
+    // Back to two options.
+    let two = vcx
+        .debug_bounds("artifact-compare-options-two")
+        .expect("two toggle");
+    vcx.simulate_click(two.center(), gpui::Modifiers::default());
+    settle(vcx);
+    tab.read_with(vcx, |tab, _| {
+        let view = tab.compare_view().unwrap();
+        assert_eq!(view.across, None);
+        assert_eq!(view.data().unwrap().left.label, "Grid");
+    });
+}
+
+#[gpui::test]
 fn image_compare_has_no_text_source(cx: &mut TestAppContext) {
     let kind = ArtifactKind::Image;
     let _dir = init_ui(cx);
