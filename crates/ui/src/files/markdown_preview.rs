@@ -1089,6 +1089,16 @@ impl MarkdownPreview {
         self.list.logical_scroll_top().item_ix
     }
 
+    /// Whether the last block is fully in view (the list can't show more).
+    pub(crate) fn is_scrolled_to_end(&self) -> bool {
+        let Some(last) = self.tree.len().checked_sub(1) else {
+            return false;
+        };
+        self.list
+            .bounds_for_item(last)
+            .is_some_and(|bounds| bounds.bottom() <= self.list.viewport_bounds().bottom() + px(1.0))
+    }
+
     /// Bumps every time a parse result is applied.
     pub(crate) fn parse_generation(&self) -> u64 {
         self.parse_generation

@@ -484,3 +484,422 @@ fn images_and_diagrams_have_no_index(cx: &mut TestAppContext) {
     let (tab, _probe, vcx) = open(cx, ArtifactKind::Mermaid, "graph TD; A-->B");
     assert!(!tab.read_with(vcx, |tab, _| tab.index_shown()));
 }
+
+// --------------------------------------------------------------------------
+// Section keys
+// --------------------------------------------------------------------------
+
+/// Four sections of filler, the last one too short to reach the top of the
+/// view.
+fn long_plan() -> String {
+    let long: String = (0..60)
+        .map(|n| format!("Filler paragraph {n}.\n\n"))
+        .collect();
+    format!("# Plan\n\n{long}## Steps\n\n{long}## Risks\n\n{long}### Detail\n\nEnd.\n")
+}
+
+fn section(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext) -> Option<usize> {
+    tab.read_with(vcx, |tab, cx| tab.current_section(cx))
+}
+
+fn top_block(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext) -> usize {
+    tab.read_with(vcx, |tab, cx| {
+        tab.markdown_for_tests().unwrap().read(cx).top_block()
+    })
+}
+
+fn target(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext, ix: usize) -> usize {
+    tab.read_with(vcx, |tab, _| tab.section_index().sections[ix].target)
+}
+
+fn focus_preview(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext) {
+    vcx.update(|window, cx| {
+        let preview = tab.read(cx).markdown_for_tests().expect("preview");
+        let handle = preview.read(cx).focus.clone();
+        window.focus(&handle, cx);
+    });
+}
+
+fn rail_focused(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext) -> bool {
+    vcx.update(|window, cx| tab.read(cx).rail_focused_for_tests(window))
+}
+
+/// The page reports where it is, as it does after loading and on scroll.
+fn page_reports(probe: &WebProbe, vcx: &mut VisualTestContext, json: &str) {
+    *probe.state.borrow_mut() = Some(json.into());
+    vcx.executor().advance_clock(Duration::from_millis(500));
+    settle(vcx);
+}
+
+fn press(vcx: &mut VisualTestContext, keys: &str) {
+    vcx.simulate_keystrokes(keys);
+    settle(vcx);
+}
+
+/// Count the keystrokes nothing handled (those that reach the document).
+fn count_unhandled_keys(vcx: &mut VisualTestContext) -> std::rc::Rc<std::cell::Cell<u32>> {
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let counter = seen.clone();
+    vcx.update(|_, cx| {
+        cx.observe_keystrokes(move |_, _, _| counter.set(counter.get() + 1))
+            .detach();
+    });
+    seen
+}
+
+#[gpui::test]
+fn rail_arrows_move_the_highlight_and_scroll_without_wrapping(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    focus_tab(&tab, vcx);
+    assert!(!rail_focused(&tab, vcx));
+    press(vcx, &key("mod-alt-s"));
+    assert!(rail_focused(&tab, vcx), "⌥⌘S focuses the rail");
+    assert_eq!(section(&tab, vcx), Some(0));
+    let reached = count_unhandled_keys(vcx);
+
+    press(vcx, "down");
+    assert_eq!(reached.get(), 0, "the rail consumes its keys");
+    assert_eq!(section(&tab, vcx), Some(1));
+    assert_eq!(
+        top_block(&tab, vcx),
+        target(&tab, vcx, 1),
+        "the page scrolled"
+    );
+    press(vcx, "down");
+    assert_eq!(section(&tab, vcx), Some(2));
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 2));
+    press(vcx, "up");
+    assert_eq!(section(&tab, vcx), Some(1));
+
+    // End: the last section is too short to scroll to the top, but it is
+    // the highlighted one, and ↑ steps from it.
+    press(vcx, "end");
+    assert_eq!(section(&tab, vcx), Some(3));
+    press(vcx, "down");
+    assert_eq!(section(&tab, vcx), Some(3), "no wraparound at the end");
+    press(vcx, "up");
+    assert_eq!(section(&tab, vcx), Some(2));
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 2));
+
+    press(vcx, "home");
+    assert_eq!(section(&tab, vcx), Some(0));
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 0));
+    press(vcx, "up");
+    assert_eq!(section(&tab, vcx), Some(0), "no wraparound at the start");
+    assert!(rail_focused(&tab, vcx), "the rail keeps focus");
+}
+
+#[gpui::test]
+fn clicking_a_rail_row_focuses_the_rail_and_enter_or_escape_leave_it(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    let row = vcx.debug_bounds("artifact-index-row-1").expect("row");
+    vcx.simulate_click(row.center(), gpui::Modifiers::default());
+    settle(vcx);
+    assert!(rail_focused(&tab, vcx), "a click in the rail focuses it");
+    assert_eq!(section(&tab, vcx), Some(1));
+    press(vcx, "down");
+    assert_eq!(section(&tab, vcx), Some(2));
+
+    for leave in ["enter", "escape"] {
+        press(vcx, &key("mod-alt-s"));
+        assert!(rail_focused(&tab, vcx));
+        press(vcx, leave);
+        assert!(!rail_focused(&tab, vcx), "{leave} leaves the rail");
+        let in_preview = vcx.update(|window, cx| {
+            let preview = tab.read(cx).markdown_for_tests().expect("preview");
+            preview.read(cx).focus.is_focused(window)
+        });
+        assert!(in_preview, "{leave} returns focus to the document");
+    }
+    assert_eq!(section(&tab, vcx), Some(2), "leaving does not move");
+}
+
+#[gpui::test]
+fn alt_arrows_jump_sections_from_the_markdown_document(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    focus_preview(&tab, vcx);
+    assert_eq!(section(&tab, vcx), Some(0));
+
+    press(vcx, "alt-up");
+    assert_eq!(section(&tab, vcx), Some(0), "nothing before the first");
+    press(vcx, "alt-down");
+    assert_eq!(section(&tab, vcx), Some(1));
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 1));
+    press(vcx, "alt-down alt-down");
+    assert_eq!(section(&tab, vcx), Some(3), "the rail highlight follows");
+    press(vcx, "alt-down");
+    assert_eq!(section(&tab, vcx), Some(3), "no wraparound");
+    press(vcx, "alt-up");
+    assert_eq!(section(&tab, vcx), Some(2));
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 2));
+    assert!(!rail_focused(&tab, vcx), "the document keeps focus");
+}
+
+#[gpui::test]
+fn alt_arrows_start_from_the_top_when_the_page_opens_above_the_first_heading(
+    cx: &mut TestAppContext,
+) {
+    let _dir = init_ui(cx);
+    let filler: String = (0..60).map(|n| format!("Filler {n}.\n\n")).collect();
+    let source =
+        format!("Intro text.\n\n{filler}## One\n\n{filler}## Two\n\n{filler}## Three\n\n{filler}");
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &source);
+    focus_preview(&tab, vcx);
+    press(vcx, "alt-up");
+    assert_eq!(top_block(&tab, vcx), 0, "nothing above the first section");
+    press(vcx, "alt-down");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 0), "lands on One");
+    press(vcx, "alt-down");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 1));
+    assert_eq!(section(&tab, vcx), Some(1));
+}
+
+#[gpui::test]
+fn plain_arrows_still_reach_the_document(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    focus_preview(&tab, vcx);
+    let reached = count_unhandled_keys(vcx);
+    press(vcx, "down up home end");
+    assert_eq!(reached.get(), 4, "nothing in the tab consumed them");
+    assert_eq!(section(&tab, vcx), Some(0), "and no section moved");
+    press(vcx, "alt-down");
+    assert_eq!(section(&tab, vcx), Some(1), "⌥↓ is the tab's");
+}
+
+#[gpui::test]
+fn html_alt_arrows_scroll_the_page_by_heading_and_the_rail_follows(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    for kind in [ArtifactKind::HtmlPage, ArtifactKind::HtmlFragment] {
+        let (tab, probe, vcx) = open(cx, kind, PLAN_HTML);
+        focus_tab(&tab, vcx);
+        page_reports(&probe, vcx, r#"{"active":0}"#);
+        let before = scripts(&probe).len();
+        press(vcx, "alt-up");
+        assert_eq!(
+            scripts(&probe).len(),
+            before,
+            "{kind:?}: nothing before the first"
+        );
+
+        press(vcx, "alt-down");
+        assert_eq!(
+            scripts(&probe).last().unwrap(),
+            &command_script(&FrameCommand::Scroll(1)),
+            "{kind:?}"
+        );
+        assert_eq!(section(&tab, vcx), Some(1));
+        press(vcx, "alt-down alt-down");
+        assert_eq!(
+            scripts(&probe).last().unwrap(),
+            &command_script(&FrameCommand::Scroll(3))
+        );
+        assert_eq!(section(&tab, vcx), Some(3));
+        let sent = scripts(&probe).len();
+        press(vcx, "alt-down");
+        assert_eq!(scripts(&probe).len(), sent, "{kind:?}: no wraparound");
+        press(vcx, "alt-up");
+        assert_eq!(
+            scripts(&probe).last().unwrap(),
+            &command_script(&FrameCommand::Scroll(2))
+        );
+        assert_eq!(section(&tab, vcx), Some(2));
+    }
+}
+
+#[gpui::test]
+fn html_rail_keys_step_and_hand_focus_back_to_the_page(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, probe, vcx) = open(cx, ArtifactKind::HtmlPage, PLAN_HTML);
+    focus_tab(&tab, vcx);
+    page_reports(&probe, vcx, r#"{"active":0}"#);
+    press(vcx, &key("mod-alt-s"));
+    assert!(rail_focused(&tab, vcx));
+    assert_eq!(
+        probe.chrome_focused.get(),
+        1,
+        "the page lets go of the keys"
+    );
+    press(vcx, "down");
+    assert_eq!(
+        scripts(&probe).last().unwrap(),
+        &command_script(&FrameCommand::Scroll(1))
+    );
+    press(vcx, "end");
+    assert_eq!(
+        scripts(&probe).last().unwrap(),
+        &command_script(&FrameCommand::Scroll(3))
+    );
+    assert_eq!(section(&tab, vcx), Some(3));
+    press(vcx, "home");
+    assert_eq!(
+        scripts(&probe).last().unwrap(),
+        &command_script(&FrameCommand::Scroll(0))
+    );
+    assert_eq!(probe.page_focused.get(), 0);
+    press(vcx, "escape");
+    assert!(!rail_focused(&tab, vcx));
+    assert_eq!(probe.page_focused.get(), 1, "the page gets focus back");
+}
+
+#[gpui::test]
+fn the_last_short_section_of_an_html_page_stays_highlighted(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, probe, vcx) = open(cx, ArtifactKind::HtmlPage, PLAN_HTML);
+    focus_tab(&tab, vcx);
+    page_reports(&probe, vcx, r#"{"active":0}"#);
+    press(vcx, "alt-down alt-down alt-down");
+    assert_eq!(section(&tab, vcx), Some(3));
+    // The page can't scroll "Detail" to the top: it reports "Risks" at the
+    // bottom of the page.
+    page_reports(&probe, vcx, r#"{"active":2,"atBottom":true}"#);
+    assert_eq!(section(&tab, vcx), Some(3));
+    press(vcx, "alt-up");
+    assert_eq!(
+        scripts(&probe).last().unwrap(),
+        &command_script(&FrameCommand::Scroll(2))
+    );
+    // Scrolled away by hand: the page's own report wins.
+    page_reports(&probe, vcx, r#"{"active":1,"atBottom":false}"#);
+    assert_eq!(section(&tab, vcx), Some(1));
+}
+
+#[gpui::test]
+fn alt_arrows_with_fewer_than_three_headings_use_what_exists(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let filler: String = (0..60).map(|n| format!("Filler {n}.\n\n")).collect();
+    let (tab, _probe, vcx) = open(
+        cx,
+        ArtifactKind::Markdown,
+        &format!("# Plan\n\n{filler}## One\n\n{filler}"),
+    );
+    assert!(!tab.read_with(vcx, |tab, _| tab.index_shown()), "no rail");
+    focus_preview(&tab, vcx);
+    press(vcx, "alt-down");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 1));
+    press(vcx, "alt-down");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 1), "no wraparound");
+    press(vcx, "alt-up");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 0));
+    press(vcx, "alt-up");
+    assert_eq!(top_block(&tab, vcx), target(&tab, vcx, 0), "no wraparound");
+    // ⌥⌘S has no rail to focus.
+    press(vcx, &key("mod-alt-s"));
+    assert!(!rail_focused(&tab, vcx));
+
+    // No headings at all, or an HTML fragment with one: nothing happens.
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, "Just prose.\n");
+    focus_preview(&tab, vcx);
+    press(vcx, "alt-down alt-up");
+    assert_eq!(top_block(&tab, vcx), 0);
+    assert_eq!(section(&tab, vcx), None);
+    let (tab, probe, vcx) = open(cx, ArtifactKind::HtmlFragment, "<h2>Only</h2><p>x</p>");
+    focus_tab(&tab, vcx);
+    let before = scripts(&probe).len();
+    press(vcx, "alt-down");
+    assert_eq!(scripts(&probe).len(), before + 1, "the lone heading");
+    page_reports(&probe, vcx, r#"{"active":0}"#);
+    press(vcx, "alt-down alt-up");
+    assert_eq!(scripts(&probe).len(), before + 1, "and nothing past it");
+}
+
+#[gpui::test]
+fn section_keys_do_nothing_outside_a_plan_view_and_outside_the_tab(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, probe, vcx) = open(cx, ArtifactKind::Mermaid, "graph TD; A-->B");
+    focus_tab(&tab, vcx);
+    let reached = count_unhandled_keys(vcx);
+    press(vcx, "alt-down");
+    assert!(scripts(&probe).is_empty());
+    assert_eq!(reached.get(), 1, "falls through to the next handler");
+
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    vcx.update(|window, _| window.blur());
+    press(vcx, "alt-down");
+    assert_eq!(
+        section(&tab, vcx),
+        Some(0),
+        "not the tab's key without focus"
+    );
+}
+
+#[gpui::test]
+fn find_keys_still_work_with_the_section_keys_around(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, &long_plan());
+    focus_preview(&tab, vcx);
+    press(vcx, &key("mod-f"));
+    assert!(find_open(&tab, vcx));
+    type_query(vcx, "filler");
+    let total = tab.read_with(vcx, |tab, _| tab.find_state().count());
+    assert!(total > 100, "{total} matches");
+    // In the find field ⌥↓ belongs to the field: no section moves.
+    press(vcx, "alt-down");
+    assert_eq!(section(&tab, vcx), Some(0));
+    // Enter, ⌘G and ⇧⌘G still step through matches.
+    press(vcx, "enter");
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.find_state().current()),
+        Some(1)
+    );
+    press(vcx, &key("mod-g"));
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.find_state().current()),
+        Some(2)
+    );
+    press(vcx, &key("mod-shift-g"));
+    assert_eq!(
+        tab.read_with(vcx, |tab, _| tab.find_state().current()),
+        Some(1)
+    );
+
+    // With the document focused and the bar open, ⌥↓ jumps sections and
+    // the bar stays.
+    focus_preview(&tab, vcx);
+    press(vcx, "alt-down");
+    assert_eq!(section(&tab, vcx), Some(1));
+    assert!(find_open(&tab, vcx));
+
+    // Escape in the rail leaves the rail only; Escape in the field closes.
+    press(vcx, &key("mod-alt-s"));
+    press(vcx, "escape");
+    assert!(find_open(&tab, vcx), "the rail's Esc does not close find");
+    vcx.update(|window, cx| {
+        let handle = gpui::Focusable::focus_handle(tab.read(cx).nav_input_for_tests(), cx);
+        window.focus(&handle, cx);
+    });
+    press(vcx, "escape");
+    assert!(!find_open(&tab, vcx));
+}
+
+#[test]
+fn the_page_hands_over_the_section_keys_and_escape_only_with_find_open() {
+    use super::tab::page_forwarded_keys;
+    assert_eq!(page_forwarded_keys(false), ["alt-up", "alt-down"]);
+    assert_eq!(page_forwarded_keys(true), ["alt-up", "alt-down", "escape"]);
+    // Plain arrows are never handed over: they scroll the page.
+    assert!(
+        !page_forwarded_keys(true)
+            .iter()
+            .any(|key| matches!(*key, "up" | "down"))
+    );
+}
+
+#[gpui::test]
+fn alt_arrows_step_through_a_plan_short_enough_to_need_no_scrolling(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _probe, vcx) = open(cx, ArtifactKind::Markdown, PLAN_MD);
+    focus_preview(&tab, vcx);
+    // Nothing scrolls, so the highlight is what moves.
+    for want in [1, 2, 3, 3] {
+        press(vcx, "alt-down");
+        assert_eq!(section(&tab, vcx), Some(want));
+    }
+    press(vcx, "alt-up");
+    assert_eq!(section(&tab, vcx), Some(2));
+    press(vcx, "alt-up alt-up alt-up");
+    assert_eq!(section(&tab, vcx), Some(0));
+}
