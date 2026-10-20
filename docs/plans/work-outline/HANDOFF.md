@@ -92,6 +92,20 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - An archived item with no visible child item is hidden even when it still has live chats; those
     chats show under Unassociated Chats. This used to leave archived synced PR items on screen,
     dimmed and immovable, because they keep their review chat (`work_outline/model.rs`).
+- **Coordinator resolves its children's requests** (2026-10-20): `resolveUserActionRequest` is
+  allowed when the request's origin Chat is the caller or a Chat whose `parentChatId` is the
+  caller. This covers direct children only, not grandchildren or chats a person started
+  (`m0-contract.md` § coordinator amendments, item 3).
+- **Visual compare follow-ups** (2026-10-20):
+  - The per-kind compare mode persists in `UiSettings` (`artifactCompareModes`).
+  - Markdown panes scroll together by block position. Wheel and trackpad sync; dragging the
+    scrollbar does not.
+  - Highlight changes and onion skin cover the full render, up to 8000 CSS px and 20 M px per
+    snapshot. Taller content is cut off silently. The agent render check is unchanged.
+  - Options compare can follow one option across two revisions. The engine snapshots option files
+    per revision, and `ArtifactContent` serves them by revision. Revisions recorded before this
+    show "not found" until the artifact is republished.
+  - The tall-snapshot path has only run in headless tests, never against a real WKWebView.
 
 ## Working model (since 2026-10-20)
 
@@ -116,9 +130,10 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 
 ## Known gaps
 
-- Visual compare: markdown panes don't scroll in sync; highlight and onion skin cover only the
-  first 520×1400 px; options can't compare one option across revisions (`ArtifactContent` serves
-  companion files for the current copy only); the per-kind mode memory doesn't survive a restart.
+- Visual compare:
+  - Dragging the Markdown scrollbar doesn't sync the panes.
+  - Diffs of renders taller than 8000 CSS px are cut off without a notice.
+  - Option revisions recorded before 2026-10-20 can't be compared across revisions.
 - Linear GraphQL (projects, attachments) unverified against the real API.
 
 ## Next, agreed but not started
