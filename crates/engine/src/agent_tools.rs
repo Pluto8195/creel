@@ -1389,6 +1389,7 @@ impl SubtreeWalk<'_> {
                     "id": r.id,
                     "text": r.text,
                     "detail": r.info.as_deref().map(|d| d.chars().take(MAX_SUBTREE_DETAIL_CHARS).collect::<String>()),
+                    "detailTruncated": r.info.as_deref().is_some_and(|d| d.chars().count() > MAX_SUBTREE_DETAIL_CHARS),
                     "originChatId": r.chat_id,
                     "createdAt": r.created_at,
                 }))
