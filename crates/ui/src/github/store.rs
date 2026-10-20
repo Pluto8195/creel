@@ -3,7 +3,7 @@
 //! "Sync now" result per Space. Fetches go through
 //! `AppState::work_outline_actions()`, so tests answer them with scripted
 //! replies. Updates notify `AppState`, which redraws the observers.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity};
@@ -18,12 +18,19 @@ pub(crate) const STATUS_TTL: Duration = Duration::from_secs(2 * 60);
 /// How long a failed fetch waits before the next automatic try.
 pub(crate) const STATUS_RETRY: Duration = Duration::from_secs(60);
 
+/// What a PR chip shows. `Loading` only stands for "nothing to show yet":
+/// a refresh of an entry that already has data keeps showing that data
+/// (`GithubStore::in_flight` tracks the fetch), so a pull that returns the
+/// same data never changes the rendered text.
 #[derive(Debug, Clone)]
 pub(crate) enum PrEntry {
     Loading,
     Ready {
         status: Box<PullRequestStatusSummary>,
         at: Instant,
+        /// From a list's search hit (no CI or review detail): shown until
+        /// the real status arrives, never written over a full one.
+        partial: bool,
     },
     Failed {
         error: GithubUiError,
@@ -71,6 +78,8 @@ impl SyncResult {
 #[derive(Debug, Default)]
 pub(crate) struct GithubStore {
     statuses: HashMap<String, PrEntry>,
+    /// Keys with a fetch under way.
+    in_flight: HashSet<String>,
     /// The last Sync now per Space.
     pub sync_results: HashMap<String, SyncResult>,
 }
@@ -85,18 +94,36 @@ impl GithubStore {
         self.status(pr).and_then(PrEntry::ready)
     }
 
-    /// Remember statuses another call already fetched (panel lists).
+    /// Whether a fetch of `pr` is under way (the Details "Refreshing…").
+    pub(crate) fn is_loading(&self, pr: &PullRequestRef) -> bool {
+        self.in_flight.contains(&pr.key()) || matches!(self.status(pr), Some(PrEntry::Loading))
+    }
+
+    /// Remember statuses another call already fetched (panel lists). A list
+    /// row can lack what a full fetch has (CI, review state), so it only
+    /// fills a gap or replaces another partial row; the chip then fetches
+    /// the full status once.
     pub(crate) fn remember<'a>(
         &mut self,
         statuses: impl IntoIterator<Item = &'a PullRequestStatusSummary>,
     ) {
+        // Due for a full fetch right away (`needs_fetch`).
         let now = Instant::now();
+        let due = now.checked_sub(STATUS_RETRY).unwrap_or(now);
         for status in statuses {
+            let key = status.pr_ref.key();
+            if matches!(
+                self.statuses.get(&key),
+                Some(PrEntry::Ready { partial: false, .. })
+            ) {
+                continue;
+            }
             self.statuses.insert(
-                status.pr_ref.key(),
+                key,
                 PrEntry::Ready {
                     status: Box::new(status.clone()),
-                    at: now,
+                    at: due,
+                    partial: true,
                 },
             );
         }
@@ -106,6 +133,9 @@ impl GithubStore {
         match self.status(pr) {
             None => true,
             Some(PrEntry::Loading) => false,
+            Some(PrEntry::Ready {
+                at, partial: true, ..
+            }) => now.duration_since(*at) >= STATUS_RETRY,
             Some(PrEntry::Ready { at, .. }) => now.duration_since(*at) >= STATUS_TTL,
             Some(PrEntry::Failed { at, .. }) => now.duration_since(*at) >= STATUS_RETRY,
         }
@@ -114,7 +144,8 @@ impl GithubStore {
 
 /// Fetch `pr`'s status when it is not cached (or `force`: `forceRefresh`).
 /// Marks it loading without notifying, so it is safe to call while
-/// rendering.
+/// rendering. An entry that already has data keeps it during the fetch, and
+/// keeps it (retrying after `STATUS_RETRY`) when the fetch fails.
 pub(crate) fn request_status(
     state: &Entity<AppState>,
     pr: &PullRequestRef,
@@ -125,11 +156,14 @@ pub(crate) fn request_status(
     let now = Instant::now();
     let Some(task) = state.update(cx, |state, _| {
         let store = &state.github;
-        let loading = matches!(store.status(pr), Some(PrEntry::Loading));
-        if loading || (!force && !store.needs_fetch(pr, now)) {
+        if store.is_loading(pr) || (!force && !store.needs_fetch(pr, now)) {
             return None;
         }
-        state.github.statuses.insert(key.clone(), PrEntry::Loading);
+        let store = &mut state.github;
+        store.in_flight.insert(key.clone());
+        if store.status(pr).is_none() {
+            store.statuses.insert(key.clone(), PrEntry::Loading);
+        }
         Some(state.work_outline_actions().pr_status(pr, force))
     }) else {
         return;
@@ -139,14 +173,32 @@ pub(crate) fn request_status(
         let result = task.await;
         state.update(cx, |state, cx| {
             let at = Instant::now();
+            let store = &mut state.github;
+            store.in_flight.remove(&key);
             let entry = match result {
                 Ok(status) => PrEntry::Ready {
                     status: Box::new(status),
                     at,
+                    partial: false,
                 },
-                Err(error) => PrEntry::Failed { error, at },
+                Err(error) => match store.statuses.remove(&key) {
+                    // Keep showing the last good status; the next try waits
+                    // `STATUS_RETRY`.
+                    Some(PrEntry::Ready {
+                        status, partial, ..
+                    }) => PrEntry::Ready {
+                        status,
+                        at: if partial {
+                            at
+                        } else {
+                            at.checked_sub(STATUS_TTL - STATUS_RETRY).unwrap_or(at)
+                        },
+                        partial,
+                    },
+                    _ => PrEntry::Failed { error, at },
+                },
             };
-            state.github.statuses.insert(key, entry);
+            store.statuses.insert(key, entry);
             cx.notify();
         });
     })
