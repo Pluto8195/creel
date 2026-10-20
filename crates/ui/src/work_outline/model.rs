@@ -16,7 +16,9 @@
 //!   "missing chat" row under its item.
 //! - Archived items are excluded unless `show_archived`; completed items are
 //!   excluded while `hide_completed`. An excluded item still shows when its
-//!   subtree has something visible, so nothing below it vanishes.
+//!   child item has something visible, so nothing below it vanishes. An
+//!   archived item's Chats alone do not keep it in view: they move to
+//!   Unassociated Chats.
 //! - A Space the user hid from the Outline (`OutlineSpace::hidden`, multi-
 //!   Space only) renders nothing, and its Chats are skipped rather than
 //!   moved to the projectless group. With `show_hidden_spaces` it shows as a
@@ -572,10 +574,24 @@ fn item_node<'s>(
         }
     }
     // Associated Chats (newest first), then dangling assignments.
-    let homed = ctx
+    let mut homed = ctx
         .by_home
         .remove(&row_key::item(space_id, &item.id))
         .unwrap_or_default();
+    // An archived item with no visible child item stays hidden like any other
+    // archived item: its Chats move to Unassociated Chats instead of pinning
+    // the item in view (dimmed, and immovable since archived items cannot
+    // move). The assignment itself is untouched.
+    let archived_hidden =
+        item.archived_at.is_some() && !options.show_archived && children.is_empty();
+    if archived_hidden && !homed.is_empty() {
+        let unassociated = ctx
+            .by_home
+            .entry(row_key::unassociated(Some(space_id)))
+            .or_default();
+        unassociated.extend(std::mem::take(&mut homed));
+        unassociated.sort_by(|a, b| b.activity.cmp(&a.activity).then_with(|| a.id.cmp(&b.id)));
+    }
     let mut chat_nodes: Vec<Node> = homed
         .into_iter()
         .filter_map(|chat| {
@@ -588,7 +604,10 @@ fn item_node<'s>(
         })
         .collect();
     for chat_id in &item.chat_ids {
-        if !ctx.chats.contains_key(chat_id.as_str()) && options.query.is_empty() {
+        if !archived_hidden
+            && !ctx.chats.contains_key(chat_id.as_str())
+            && options.query.is_empty()
+        {
             chat_nodes.push(Node {
                 key: row_key::chat(chat_id),
                 kind: OutlineRowKind::Chat(ChatRow {
