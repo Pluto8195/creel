@@ -471,21 +471,31 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+/// What a legend row draws before its label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mark {
+    Icon(&'static str),
+    /// A small filled dot (CI, needs-you).
+    Dot,
+    /// Muted sample text (the author).
+    Text(&'static str),
+}
+
 /// One entry of the `?` icon legend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LegendRow {
-    /// An icon asset, or `None` for the small CI dot.
-    pub icon: Option<&'static str>,
+    pub mark: Mark,
     pub tone: Tone,
     pub label: &'static str,
 }
 
-/// The icon legend of the `?` reference, from the same tables the row uses.
+/// The icon legend of the `?` reference, from the same tables the row uses
+/// (PR and Linear rows; plain items and chats have none).
 pub(crate) fn legend_rows() -> Vec<LegendRow> {
     let review = |state, label| {
         let (icon, tone) = review_icon(state).expect("a review icon");
         LegendRow {
-            icon: Some(icon),
+            mark: Mark::Icon(icon),
             tone,
             label,
         }
@@ -493,14 +503,19 @@ pub(crate) fn legend_rows() -> Vec<LegendRow> {
     let pr = |state, label| {
         let (icon, tone) = pr_icon(state);
         LegendRow {
-            icon: Some(icon),
+            mark: Mark::Icon(icon),
             tone,
             label,
         }
     };
     let ci = |status, label| LegendRow {
-        icon: None,
+        mark: Mark::Dot,
         tone: ci_dot(status).expect("a CI dot"),
+        label,
+    };
+    let linear = |icon, label| LegendRow {
+        mark: Mark::Icon(icon),
+        tone: Tone::Muted,
         label,
     };
     vec![
@@ -508,9 +523,16 @@ pub(crate) fn legend_rows() -> Vec<LegendRow> {
         pr(PullRequestState::Draft, "Pull request: draft"),
         pr(PullRequestState::Merged, "Pull request: merged"),
         pr(PullRequestState::Closed, "Pull request: closed"),
-        ci(PullRequestCiStatus::Passing, "CI passing"),
-        ci(PullRequestCiStatus::Failing, "CI failing"),
-        ci(PullRequestCiStatus::Pending, "CI running"),
+        LegendRow {
+            mark: Mark::Text("alex"),
+            tone: Tone::Faint,
+            label: "PR author (\u{201c}you\u{201d} when it is yours)",
+        },
+        LegendRow {
+            mark: Mark::Dot,
+            tone: Tone::Attention,
+            label: "Needs your action (count when several)",
+        },
         review(PullRequestMyReviewState::Requested, "Review requested"),
         review(
             PullRequestMyReviewState::ReRequested,
@@ -521,6 +543,13 @@ pub(crate) fn legend_rows() -> Vec<LegendRow> {
             PullRequestMyReviewState::ChangesRequested,
             "You requested changes",
         ),
+        ci(PullRequestCiStatus::Passing, "CI passing"),
+        ci(PullRequestCiStatus::Failing, "CI failing"),
+        ci(PullRequestCiStatus::Pending, "CI running"),
+        linear(crate::icons::CHECKLIST, "Linear: backlog / unstarted"),
+        linear(crate::icons::CLOCK_CIRCLE, "Linear: started"),
+        linear(crate::icons::CHECK, "Linear: completed"),
+        linear(crate::icons::CLOSE_CIRCLE, "Linear: canceled"),
     ]
 }
 
@@ -686,27 +715,37 @@ mod tests {
     fn legend_covers_every_icon_with_the_rows_own_icons() {
         let rows = legend_rows();
         let labels: Vec<_> = rows.iter().map(|row| row.label).collect();
+        for expected in [
+            "Pull request: open",
+            "Pull request: draft",
+            "Pull request: merged",
+            "Pull request: closed",
+            "Review requested",
+            "Re-review requested",
+            "You approved",
+            "You requested changes",
+            "CI passing",
+            "CI failing",
+            "CI running",
+            "Linear: started",
+        ] {
+            assert!(labels.contains(&expected), "{expected}");
+        }
+        let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();
+        assert_eq!(row("Review requested").mark, Mark::Icon(crate::icons::EYE));
         assert_eq!(
-            labels,
-            [
-                "Pull request: open",
-                "Pull request: draft",
-                "Pull request: merged",
-                "Pull request: closed",
-                "CI passing",
-                "CI failing",
-                "CI running",
-                "Review requested",
-                "Re-review requested",
-                "You approved",
-                "You requested changes",
-            ]
+            row("Re-review requested").mark,
+            Mark::Icon(crate::icons::REFRESH)
         );
-        assert!(rows
-            .iter()
-            .filter(|row| row.label.starts_with("CI"))
-            .all(|row| row.icon.is_none()));
-        assert_eq!(rows[7].icon, Some(crate::icons::EYE));
-        assert_eq!(rows[8].icon, Some(crate::icons::REFRESH));
+        assert_eq!(row("CI failing").mark, Mark::Dot);
+        assert_eq!(row("CI failing").tone, Tone::Danger);
+        assert_eq!(row("You approved").tone, Tone::Success);
+        assert_eq!(row("You requested changes").tone, Tone::Orange);
+        // Every row has a mark the row itself can draw: a known icon asset.
+        for row in &rows {
+            if let Mark::Icon(path) = row.mark {
+                assert!(path.starts_with("icons/"), "{path}");
+            }
+        }
     }
 }

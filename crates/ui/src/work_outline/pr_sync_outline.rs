@@ -70,6 +70,20 @@ impl OutlineView {
         if width > 0.0 { width } else { f32::INFINITY }
     }
 
+    /// The model row of `key` (headless tests).
+    #[cfg(test)]
+    pub(crate) fn row_for_test(&self, key: &str) -> Option<&super::super::model::OutlineRow> {
+        self.model
+            .position(key)
+            .and_then(|index| self.model.rows.get(index))
+    }
+
+    /// The width measured while painting (headless tests).
+    #[cfg(test)]
+    pub(crate) fn measured_row_width_for_test(&self) -> f32 {
+        self.row_width.get()
+    }
+
     /// Pin the measured width (headless tests).
     #[cfg(test)]
     pub(crate) fn set_row_width_for_test(&mut self, width: Option<f32>, cx: &mut Context<Self>) {

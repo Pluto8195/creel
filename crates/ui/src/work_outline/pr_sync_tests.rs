@@ -1043,3 +1043,198 @@ fn partial_list_rows_do_not_overwrite_a_full_pr_status(cx: &mut gpui::TestAppCon
     vcx.run_until_parked();
     assert_eq!(fetches(&calls), before + 1, "and then cached");
 }
+
+
+// ---- Compact icon slots on PR rows ----------------------------------------
+
+/// `sync_snapshot` plus a second PR (`launch#7`) on Housekeeping, and the
+/// API item needing the user (two open requests).
+fn icon_snapshot() -> WorkOutlineSnapshot {
+    let mut snapshot = sync_snapshot(Some(LAUNCH));
+    snapshot
+        .external_references
+        .push(gf::reference("r-7", "s1", HOUSEKEEPING, "launch", 7));
+    for item in snapshot.items.iter_mut() {
+        if item.id == HOUSEKEEPING {
+            item.external_reference_ids = vec!["r-7".into()];
+        }
+        if item.id == API {
+            item.effective_status = zeron_proto::WorkItemEffectiveStatus::UserActionRequired;
+            item.rollup.unresolved_user_action_count = 2;
+        }
+    }
+    snapshot
+}
+
+/// launch#42 is the fixture default (passing CI, my review requested, by
+/// octo); launch#7 is a bare draft by a long login (no CI, nothing for me).
+fn icon_reply(
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    if method == "PrStatus" && params["number"] == 7 {
+        let mut bare = gf::summary("launch", 7, "Fix login");
+        bare.author = "alexander-the-great".into();
+        bare.state = zeron_proto::PullRequestState::Draft;
+        bare.ci_status = zeron_proto::PullRequestCiStatus::None;
+        bare.review_decision = None;
+        bare.my_review_state = zeron_proto::PullRequestMyReviewState::None;
+        return Ok(serde_json::to_value(bare).unwrap());
+    }
+    default_reply(method, params)
+}
+
+fn slot_selector(slot: &str, item: &str) -> String {
+    format!("outline-pr-slot-{slot}-{}", row_key::item("s1", item))
+}
+
+fn present(vcx: &mut gpui::VisualTestContext, selector: String) -> bool {
+    row_bounds(vcx, selector).is_some()
+}
+
+/// A PR row shows the icon slots (author, needs, review, CI, PR) and none of
+/// the old chip text or counts; plain items keep their totals; the details
+/// panel keeps the full chip.
+#[gpui::test]
+fn pr_rows_show_icon_slots_instead_of_chip_text(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) =
+        pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    for selector in [
+        format!("outline-pr-slots-{key}"),
+        format!("outline-pr-author-{key}"),
+        format!("outline-attention-{key}"),
+        format!("outline-pr-review-{key}"),
+        format!("outline-pr-ci-{key}"),
+        format!("outline-pr-{key}"),
+    ] {
+        assert!(present(vcx, selector.clone()), "{selector} renders");
+    }
+    // The N active · N user action required text, the chat count and the
+    // references icon are folded into the cluster and its tooltip.
+    for gone in ["outline-totals", "outline-chats", "outline-refs"] {
+        assert!(!present(vcx, format!("{gone}-{key}")), "{gone} is gone on PR rows");
+    }
+    // ...although this row has them to show.
+    overview.read_with(vcx, |o, cx| {
+        let outline = o.outline.read(cx);
+        let item = outline.row_for_test(&key).unwrap().item().unwrap();
+        assert!(crate::work_outline::required_actions::status_totals(&item.rollup).is_some());
+        assert!(item.chat_count > 0 && item.has_references);
+    });
+    // The attention indicator sits inside the needs slot.
+    let needs = row_bounds(vcx, slot_selector("needs", API)).unwrap();
+    let attention = row_bounds(vcx, format!("outline-attention-{key}")).unwrap();
+    assert!(needs.contains(&attention.center()));
+    // A plain item keeps its totals and gets no cluster.
+    let plain = row_key::item("s1", LAUNCH);
+    assert!(present(vcx, format!("outline-totals-{plain}")));
+    assert!(!present(vcx, format!("outline-pr-slots-{plain}")));
+    // The details panel keeps the full text chip.
+    open_details(&overview, vcx, API);
+    assert!(present(vcx, "work-item-pr-chip".into()));
+}
+
+/// The cluster's slots are fixed-width: rows with full and empty slots put
+/// each slot at the same x, so they read as columns.
+#[gpui::test]
+fn pr_slots_line_up_across_rows(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let hk = row_key::item("s1", HOUSEKEEPING);
+    // The bare PR: no CI, no review, a long author (truncated in the slot).
+    assert!(present(vcx, format!("outline-pr-author-{hk}")));
+    assert!(!present(vcx, format!("outline-pr-ci-{hk}")));
+    assert!(!present(vcx, format!("outline-pr-review-{hk}")));
+    assert!(!present(vcx, format!("outline-attention-{hk}")));
+    for slot in ["author", "needs", "review", "ci", "pr"] {
+        let api = row_bounds(vcx, slot_selector(slot, API)).unwrap();
+        let other = row_bounds(vcx, slot_selector(slot, HOUSEKEEPING)).unwrap();
+        assert_eq!(api.size, other.size, "{slot} width");
+        assert_eq!(api.origin.x, other.origin.x, "{slot} column");
+    }
+    let order: Vec<_> = ["author", "needs", "review", "ci", "pr"]
+        .iter()
+        .map(|slot| f32::from(row_bounds(vcx, slot_selector(slot, API)).unwrap().origin.x))
+        .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
+}
+
+/// Narrow Outline: CI drops first, then review, then author; the attention
+/// slot and the PR icon never drop. The Outline's width is measured while
+/// painting.
+#[gpui::test]
+fn narrow_widths_drop_ci_then_review_then_author(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    overview.read_with(vcx, |o, cx| {
+        assert!(
+            o.outline.read(cx).measured_row_width_for_test() > 0.0,
+            "the width is measured"
+        );
+    });
+    let seen = |vcx: &mut gpui::VisualTestContext| {
+        (
+            present(vcx, slot_selector("author", API)),
+            present(vcx, slot_selector("review", API)),
+            present(vcx, slot_selector("ci", API)),
+            present(vcx, slot_selector("needs", API)),
+            present(vcx, slot_selector("pr", API)),
+        )
+    };
+    let mut states = Vec::new();
+    let mut width = 700.0;
+    while width >= 120.0 {
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.set_row_width_for_test(Some(width), cx))
+        });
+        draw(vcx);
+        let state = seen(vcx);
+        assert!(state.3 && state.4, "needs and PR stay at {width}");
+        if states.last() != Some(&state) {
+            states.push(state);
+        }
+        width -= 4.0;
+    }
+    // (author, review, ci, needs, pr)
+    assert_eq!(
+        states,
+        [
+            (true, true, true, true, true),
+            (true, true, false, true, true),
+            (true, false, false, true, true),
+            (false, false, false, true, true),
+        ]
+    );
+}
+
+/// The PR chip and attention for a PR that hasn't loaded or failed: the PR
+/// icon alone carries the row (other slots empty), and a click target remains.
+#[gpui::test]
+fn unloaded_pr_shows_only_the_pr_icon(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), |method, params| {
+        if method == "PrStatus" {
+            return Err(zeron_rpc::RpcError::Failed("gh unavailable".into()));
+        }
+        default_reply(method, params)
+    });
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    assert!(present(vcx, format!("outline-pr-{key}")));
+    for slot in ["author", "review", "ci"] {
+        assert!(present(vcx, slot_selector(slot, API)), "{slot} keeps its column");
+    }
+    assert!(!present(vcx, format!("outline-pr-author-{key}")));
+    assert!(!present(vcx, format!("outline-pr-review-{key}")));
+    assert!(!present(vcx, format!("outline-pr-ci-{key}")));
+}
