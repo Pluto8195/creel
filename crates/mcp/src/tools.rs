@@ -2452,7 +2452,10 @@ mod tests {
                 .is_empty()
         );
         // The key was claimed against inputs that include the item.
-        assert_eq!(world.agent_calls(agent_tool_names::CLAIM_CHILD_CHAT).len(), 1);
+        assert_eq!(
+            world.agent_calls(agent_tool_names::CLAIM_CHILD_CHAT).len(),
+            1
+        );
 
         // A retry replays the same chat and does not rename it again.
         let again = tools
@@ -2483,7 +2486,10 @@ mod tests {
         // workItemId needs a prompt and takes its folder from the item.
         for (extra, expect) in [
             (json!({}), "needs a prompt"),
-            (json!({ "prompt": "x", "cwd": "/repo/comet" }), "cwd and branch"),
+            (
+                json!({ "prompt": "x", "cwd": "/repo/comet" }),
+                "cwd and branch",
+            ),
             (json!({ "prompt": "x", "branch": "b" }), "cwd and branch"),
         ] {
             let mut args = json!({ "idempotencyKey": "bad", "workItemId": "item-leaf" });
