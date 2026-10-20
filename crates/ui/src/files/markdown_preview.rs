@@ -977,6 +977,12 @@ impl MarkdownPreview {
     }
 
     /// Tint top-level blocks (index = block index in this preview's parse).
+    /// The block list's scroll state (a shared handle), for hosts that keep
+    /// two previews scrolled together.
+    pub(crate) fn list_state(&self) -> ListState {
+        self.list.clone()
+    }
+
     pub(crate) fn set_block_tints(
         &mut self,
         tints: Vec<Option<gpui::Hsla>>,

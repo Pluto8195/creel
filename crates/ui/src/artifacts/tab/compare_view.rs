@@ -8,9 +8,10 @@
 //!   skin** stacks the two snapshots under an opacity slider;
 //! - Markdown: both previews with changed blocks tinted and a section summary
 //!   ([`markdown_diff`]);
-//! - Options: companions are stored for the current copy only, so the compare
-//!   is option against option (left and right option pickers), then as the
-//!   visual kinds;
+//! - Options: either option against option of one revision (left and right
+//!   option pickers), or ONE option across two revisions (revision pickers
+//!   plus an option cycler; each revision keeps its own option files), then
+//!   as the visual kinds;
 //! - every kind: a Source tab with the text line diff.
 //!
 //! The last mode chosen per kind is remembered ([`ComparePrefs`]).
@@ -81,6 +82,9 @@ pub(crate) struct CompareView {
     /// Options compare: the indices of the options on the left and right.
     pub(crate) option_pair: (usize, usize),
     pub(crate) options: Vec<CompareOption>,
+    /// Options compare: `Some(ix)` compares option `ix` across the two
+    /// revisions (`left`/`right`) instead of two options.
+    pub(crate) across: Option<usize>,
     pub(crate) mode: CompareMode,
     pub(crate) highlight: bool,
     pub(crate) onion: OnionState,
@@ -92,10 +96,17 @@ pub(crate) struct CompareView {
         Entity<crate::files::markdown_preview::MarkdownPreview>,
         Entity<crate::files::markdown_preview::MarkdownPreview>,
     )>,
+    /// Scroll ratio (0..=1) last applied to the follower pane.
+    synced_scroll: f32,
     generation: u64,
 }
 
 impl CompareView {
+    /// Options flavor comparing two options (not one option across revisions).
+    pub(crate) fn picks_options(&self) -> bool {
+        self.flavor == Flavor::Options && self.across.is_none()
+    }
+
     pub(crate) fn data(&self) -> Option<&CompareData> {
         match &self.load {
             CompareLoad::Ready(data) => Some(data),
@@ -275,6 +286,7 @@ impl ArtifactTab {
             right: revisions.1,
             option_pair: (0, 1),
             options,
+            across: None,
             mode: ComparePrefs::mode_for(kind, cx),
             highlight: false,
             onion: OnionState::default(),
@@ -282,6 +294,7 @@ impl ArtifactTab {
             load: CompareLoad::Loading,
             renders: RenderState::Idle,
             markdown: None,
+            synced_scroll: 0.0,
             generation: 0,
         });
         self.load_compare(window, cx);
@@ -315,8 +328,11 @@ impl ArtifactTab {
         self._compare_render = None;
         let (left, right, pair) = (view.left, view.right, view.option_pair);
         let options = view.options.clone();
-        let flavor = view.flavor;
-        let (params_left, params_right) = if flavor == Flavor::Options {
+        let across = view
+            .across
+            .and_then(|ix| options.get(ix).map(|o| o.path.clone()));
+        let picks = view.picks_options();
+        let (params_left, params_right) = if picks {
             let path = |ix: usize| options.get(ix).map(|option| option.path.clone());
             (
                 self.content_params(None, path(pair.0), cx),
@@ -324,11 +340,11 @@ impl ArtifactTab {
             )
         } else {
             (
-                self.content_params(compare::revision_param(left), None, cx),
-                self.content_params(compare::revision_param(right), None, cx),
+                self.content_params(compare::revision_param(left), across.clone(), cx),
+                self.content_params(compare::revision_param(right), across, cx),
             )
         };
-        let labels = if flavor == Flavor::Options {
+        let labels = if picks {
             let label = |ix: usize| {
                 options
                     .get(ix)
@@ -472,17 +488,30 @@ impl ArtifactTab {
             .unwrap_or_default();
         let existing = view.markdown.clone();
         let (left, right) = existing.unwrap_or_else(|| {
-            let make = |cx: &mut Context<Self>| {
+            let make = |side: Side, cx: &mut Context<Self>| {
                 let path = path.clone();
-                cx.new(|cx| {
+                let preview = cx.new(|cx| {
                     crate::files::markdown_preview::MarkdownPreview::new(
                         path,
                         Rc::new(|_, _| {}),
                         cx,
                     )
-                })
+                });
+                // The list is mid-update while its scroll handler runs, so
+                // the other pane follows from a deferred call.
+                let tab = cx.weak_entity();
+                preview
+                    .read(cx)
+                    .list_state()
+                    .set_scroll_handler(move |_, _, cx| {
+                        let tab = tab.clone();
+                        cx.defer(move |cx| {
+                            let _ = tab.update(cx, |tab, cx| tab.sync_markdown_scroll(side, cx));
+                        });
+                    });
+                preview
             };
-            (make(cx), make(cx))
+            (make(Side::Left, cx), make(Side::Right, cx))
         });
         let theme = Theme::of(cx).clone();
         let tints = |statuses: &[BlockStatus]| -> Vec<Option<gpui::Hsla>> {
@@ -508,6 +537,42 @@ impl ArtifactTab {
         if let Some(view) = self.compare.as_mut() {
             view.markdown = Some((left, right));
         }
+    }
+
+    /// Move the pane opposite `from` to the same scroll position (as a
+    /// fraction of its blocks). The ratio last applied is remembered so a
+    /// scroll that moved nothing does not bounce back.
+    pub(crate) fn sync_markdown_scroll(&mut self, from: Side, cx: &App) {
+        let Some(view) = self.compare.as_mut() else {
+            return;
+        };
+        let Some((left, right)) = view.markdown.as_ref() else {
+            return;
+        };
+        let (left, right) = (left.read(cx).list_state(), right.read(cx).list_state());
+        let (source, follower) = match from {
+            Side::Left => (left, right),
+            Side::Right => (right, left),
+        };
+        let top = source.logical_scroll_top();
+        let frac = source
+            .bounds_for_item(top.item_ix)
+            .map(|bounds| f32::from(top.offset_in_item) / f32::from(bounds.size.height).max(1.0))
+            .unwrap_or(0.0);
+        let ratio = compare::scroll_ratio(top.item_ix, frac, source.item_count());
+        if (ratio - view.synced_scroll).abs() < 1e-5 {
+            return;
+        }
+        view.synced_scroll = ratio;
+        let (item_ix, frac) = compare::scroll_target(ratio, follower.item_count());
+        let height = follower
+            .bounds_for_item(item_ix)
+            .map(|bounds| f32::from(bounds.size.height))
+            .unwrap_or(0.0);
+        follower.scroll_to(gpui::ListOffset {
+            item_ix,
+            offset_in_item: px(frac * height),
+        });
     }
 
     /// The compare document (both frames, the change overlay when
@@ -608,8 +673,8 @@ impl ArtifactTab {
             height: COMPARE_VIEWPORT_HEIGHT,
         };
         self._compare_render = Some(cx.spawn_in(window, async move |this, cx| {
-            let left_render = renderer.render(left_doc, viewport, cx);
-            let right_render = renderer.render(right_doc, viewport, cx);
+            let left_render = renderer.render_full_height(left_doc, viewport, cx);
+            let right_render = renderer.render_full_height(right_doc, viewport, cx);
             let (left, right) = futures::future::join(left_render, right_render).await;
             let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff), String> = match (left, right) {
                 (Err(error), _) | (_, Err(error)) => Err(error),
@@ -732,7 +797,7 @@ impl ArtifactTab {
             return;
         };
         view.picking = None;
-        let slot = match (view.flavor == Flavor::Options, side) {
+        let slot = match (view.picks_options(), side) {
             (false, Side::Left) => &mut view.left,
             (false, Side::Right) => &mut view.right,
             (true, _) => {
@@ -802,7 +867,7 @@ impl ArtifactTab {
             Side::Left => (view.left, view.option_pair.0),
             Side::Right => (view.right, view.option_pair.1),
         };
-        if view.flavor == Flavor::Options {
+        if view.picks_options() {
             view.options
                 .get(option)
                 .map(|option| option.label.clone())
@@ -822,7 +887,7 @@ impl ArtifactTab {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let short = |side: Side| -> String {
-            match (view.flavor == Flavor::Options, side) {
+            match (view.picks_options(), side) {
                 (true, Side::Left) => view
                     .options
                     .get(view.option_pair.0)
@@ -886,6 +951,9 @@ impl ArtifactTab {
             .child(picker_button(Side::Right, "artifact-compare-right"))
             .child(div().w(px(8.0)))
             .children(modes)
+            .when(view.flavor == Flavor::Options, |el| {
+                self.options_compare_controls(el, view, theme, cx)
+            })
             .when(visual, |el| {
                 el.child(div().w(px(8.0))).child(
                     compare_button(
@@ -913,6 +981,101 @@ impl ArtifactTab {
             .into_any_element()
     }
 
+    /// Options only: switch between two options of this revision and one
+    /// option across revisions, and cycle which option the latter follows.
+    fn options_compare_controls(
+        &self,
+        el: gpui::Div,
+        view: &CompareView,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let across = view.across;
+        let label = across
+            .and_then(|ix| view.options.get(ix))
+            .map(|option| format!("Option {} \u{21bb}", option.id));
+        el.child(div().w(px(8.0)))
+            .child(
+                compare_button(
+                    "artifact-compare-options-two",
+                    "Two options",
+                    across.is_none(),
+                    theme,
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.set_options_compare(None, window, cx)),
+                ),
+            )
+            .child(
+                compare_button(
+                    "artifact-compare-options-across",
+                    "One option across revisions",
+                    across.is_some(),
+                    theme,
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.set_options_compare(Some(0), window, cx)
+                    }),
+                ),
+            )
+            .when_some(label, |el, label| {
+                el.child(
+                    compare_button("artifact-compare-option-cycle", label, false, theme).on_click(
+                        cx.listener(|this, _, window, cx| this.cycle_compare_option(window, cx)),
+                    ),
+                )
+            })
+    }
+
+    /// Options: `None` = two options of this revision; `Some(ix)` = option
+    /// `ix` across the latest two revisions.
+    pub(crate) fn set_options_compare(
+        &mut self,
+        across: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(artifact) = self.artifact(cx) else {
+            return;
+        };
+        let Some(view) = self.compare.as_ref() else {
+            return;
+        };
+        if view.flavor != Flavor::Options || view.across == across {
+            return;
+        }
+        let shown = self.shown_or_current(&artifact);
+        let pair = across.and_then(|_| compare::default_pair(&artifact, shown));
+        if across.is_some() && pair.is_none() {
+            self.notice = Some("There is no earlier revision to compare with.".to_owned());
+            cx.notify();
+            return;
+        }
+        if let Some(view) = self.compare.as_mut() {
+            view.across = across;
+            if let Some((older, newer)) = pair {
+                view.left = older;
+                view.right = newer;
+            }
+        }
+        self.load_compare(window, cx);
+    }
+
+    fn cycle_compare_option(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.compare.as_mut() else {
+            return;
+        };
+        let (Some(ix), count) = (view.across, view.options.len()) else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        view.across = Some((ix + 1) % count);
+        self.load_compare(window, cx);
+    }
+
     fn render_compare_picker(
         &self,
         view: &CompareView,
@@ -926,7 +1089,7 @@ impl ArtifactTab {
             Side::Right => ("right", (view.right, view.option_pair.1)),
         };
         let now = model::now_ms();
-        let entries: Vec<(u32, String, String, String, bool)> = if view.flavor == Flavor::Options {
+        let entries: Vec<(u32, String, String, String, bool)> = if view.picks_options() {
             view.options
                 .iter()
                 .enumerate()
@@ -1222,7 +1385,10 @@ impl ArtifactTab {
                         div()
                             .relative()
                             .w(px(COMPARE_VIEWPORT_WIDTH as f32))
-                            .h(px(COMPARE_VIEWPORT_HEIGHT as f32))
+                            .h(px(compare::onion_height(
+                                rendered.diff.width,
+                                rendered.diff.height,
+                            )))
                             .child(layer(&rendered.left, 1.0))
                             .child(layer(&rendered.right, opacity)),
                     ),

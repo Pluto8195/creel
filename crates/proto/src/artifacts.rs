@@ -414,7 +414,9 @@ pub struct ArtifactContentParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u32>,
     /// A companion (`companions` entry, or the preview file name) instead of
-    /// the main file. Current copy only.
+    /// the main file. With `revision`, that revision's copy of the option
+    /// file (revisions recorded before option files were snapshotted answer
+    /// not-found).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -2909,7 +2909,8 @@ impl RpcService for EngineRpc {
             }
             methods::ARTIFACT_CONTENT => {
                 let p: zeron_proto::ArtifactContentParams = parse_params(params)?;
-                self.artifact_reply(move |service| service.content(&p)).await
+                self.artifact_reply(move |service| service.content(&p))
+                    .await
             }
             methods::ARTIFACT_REGISTER => {
                 let p: zeron_proto::ArtifactRegisterParams = parse_params(params)?;

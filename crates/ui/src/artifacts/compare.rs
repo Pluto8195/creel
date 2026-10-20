@@ -11,9 +11,7 @@
 //!
 //! The view itself (loading, rendering, offscreen diffs) is
 //! [`super::tab`]'s `compare_view`.
-use std::collections::HashMap;
-
-use gpui::{App, Global};
+use gpui::App;
 use zeron_proto::{ArtifactKind, ArtifactView};
 
 use super::document::CompareFrame;
@@ -100,28 +98,69 @@ impl Flavor {
     }
 }
 
-/// The last mode chosen per kind, for the process (compare views open in the
-/// mode the user last used for that kind).
-#[derive(Default)]
-pub(crate) struct ComparePrefs {
-    modes: HashMap<ArtifactKind, CompareMode>,
+impl CompareMode {
+    /// Stable key written to the UI settings file.
+    fn key(self) -> &'static str {
+        match self {
+            Self::SideBySide => "sideBySide",
+            Self::Onion => "onion",
+            Self::Source => "source",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        [Self::SideBySide, Self::Onion, Self::Source]
+            .into_iter()
+            .find(|mode| mode.key() == key)
+    }
 }
 
-impl Global for ComparePrefs {}
+/// The last mode chosen per kind (compare views open in the mode the user
+/// last used for that kind). Persisted in the UI settings file
+/// (`artifactCompareModes`), so it survives restarts.
+pub(crate) struct ComparePrefs;
 
 impl ComparePrefs {
     /// The mode a new compare view of `kind` opens in.
     pub(crate) fn mode_for(kind: ArtifactKind, cx: &App) -> CompareMode {
         let flavor = flavor(kind);
-        cx.try_global::<Self>()
-            .and_then(|prefs| prefs.modes.get(&kind).copied())
+        crate::settings::current(cx)
+            .artifact_compare_modes
+            .get(kind.as_str())
+            .and_then(|key| CompareMode::from_key(key))
             .filter(|mode| flavor.modes().contains(mode))
             .unwrap_or_else(|| flavor.default_mode())
     }
 
     pub(crate) fn remember(kind: ArtifactKind, mode: CompareMode, cx: &mut App) {
-        cx.default_global::<Self>().modes.insert(kind, mode);
+        crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+            settings
+                .artifact_compare_modes
+                .insert(kind.as_str().to_owned(), mode.key().to_owned());
+        });
     }
+}
+
+/// A list scroll position as a 0..=1 fraction of its `count` items: the
+/// item at the top plus how far into it (`frac`). Item based, not pixel
+/// based: the list only measures items near the viewport, so its pixel
+/// range grows as it is scrolled.
+pub(crate) fn scroll_ratio(item_ix: usize, frac: f32, count: usize) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    ((item_ix as f32 + frac.clamp(0.0, 1.0)) / count as f32).clamp(0.0, 1.0)
+}
+
+/// The inverse of [`scroll_ratio`] for a list of `count` items: the item at
+/// the top and the fraction into it.
+pub(crate) fn scroll_target(ratio: f32, count: usize) -> (usize, f32) {
+    if count == 0 {
+        return (0, 0.0);
+    }
+    let position = ratio.clamp(0.0, 1.0) * count as f32;
+    let ix = (position.floor() as usize).min(count - 1);
+    (ix, (position - ix as f32).clamp(0.0, 1.0))
 }
 
 /// Which side of the compare a picker or pane belongs to.
@@ -229,6 +268,18 @@ pub(crate) const SYNC_HOST_SCRIPT: &str = r##"addEventListener("message", (event
   const other = frames[1 - from];
   if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*");
 });"##;
+
+/// The CSS height of an onion-skin stack for renders `width` x `height`
+/// pixels (the snapshot scale is `width` over the viewport width): the whole
+/// render, however tall, not just the base viewport.
+pub(crate) fn onion_height(width: u32, height: u32) -> f32 {
+    let scale = width as f32 / super::document::COMPARE_VIEWPORT_WIDTH as f32;
+    if scale.is_finite() && scale >= 1.0 {
+        (height as f32 / scale).ceil().max(1.0)
+    } else {
+        (height as f32).max(1.0)
+    }
+}
 
 /// Translucent boxes at `regions` (render pixels; `scale` is render pixels
 /// per CSS pixel, 2 on a Retina snapshot) inside a frame whose top-left sits

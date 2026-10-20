@@ -547,6 +547,54 @@ async fn fragments_bring_their_preview_and_options_bring_their_fragments() {
         std::fs::read_to_string(folder.join("b.fragment.html")).unwrap(),
         "<p>B</p>"
     );
+    // Editing a fragment under an unchanged manifest is a new revision, and
+    // each revision keeps its own copy of the option files.
+    assert_eq!(reply["revision"], 1);
+    std::fs::write(dir.join("opts/a.fragment.html"), "<p>A2</p>").unwrap();
+    let again = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": dir.join("layouts.json").to_string_lossy(), "title": "Layouts",
+                "kind": "options", "role": "comparison", "note": "tweak A",
+                "idempotencyKey": "opts-2" }),
+    )
+    .await;
+    assert_eq!(again["revision"], 2);
+    assert_eq!(again["changed"], true);
+    let option_at = |revision: Option<u32>| {
+        let mut params = json!({ "artifactId": row.id, "companion": "opts/a.fragment.html" });
+        if let Some(revision) = revision {
+            params["revision"] = json!(revision);
+        }
+        let client = &rig.client;
+        async move { client.call(methods::ARTIFACT_CONTENT, params).await }
+    };
+    assert_eq!(option_at(None).await.unwrap()["content"], "<p>A2</p>");
+    assert_eq!(option_at(Some(2)).await.unwrap()["content"], "<p>A2</p>");
+    let old = option_at(Some(1)).await.unwrap();
+    assert_eq!(old["content"], "<p>A</p>");
+    assert_eq!(old["revision"], 1);
+    // Republishing identical content records nothing new.
+    let same = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": dir.join("layouts.json").to_string_lossy(), "title": "Layouts",
+                "kind": "options", "role": "comparison", "note": "again",
+                "idempotencyKey": "opts-3" }),
+    )
+    .await;
+    assert_eq!(same["revision"], 2);
+    assert_eq!(same["changed"], false);
+    // A revision that predates per-revision files degrades to a clear error.
+    let index = find_snapshot(
+        &rig.root.join("data"),
+        &row.id,
+        "revision-1.companions.json",
+    )
+    .expect("revision 1 option index");
+    std::fs::remove_file(&index).unwrap();
+    let err = option_at(Some(1)).await.unwrap_err().to_string();
+    assert!(err.contains("predates"), "{err}");
     // A manifest escaping its folder is refused.
     std::fs::write(
         dir.join("bad.json"),
@@ -820,12 +868,22 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
         // Second check: the defaults (narrow + wide) and both themes.
         let item = requests.recv().await.unwrap();
         let request: zeron_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
-        let labels: Vec<_> = request.viewports.iter().map(|v| v.label.clone().unwrap()).collect();
+        let labels: Vec<_> = request
+            .viewports
+            .iter()
+            .map(|v| v.label.clone().unwrap())
+            .collect();
         assert_eq!(labels, ["narrow", "wide"]);
-        assert_eq!((request.viewports[0].width, request.viewports[1].width), (800, 1440));
+        assert_eq!(
+            (request.viewports[0].width, request.viewports[1].width),
+            (800, 1440)
+        );
         assert_eq!(
             request.themes,
-            [zeron_proto::ArtifactRenderTheme::Light, zeron_proto::ArtifactRenderTheme::Dark]
+            [
+                zeron_proto::ArtifactRenderTheme::Light,
+                zeron_proto::ArtifactRenderTheme::Dark
+            ]
         );
         assert_eq!(request.viewport.width, 800);
         ui.call(

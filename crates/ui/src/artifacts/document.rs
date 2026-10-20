@@ -81,6 +81,31 @@ pub(crate) const COMPARE_VIEWPORT_WIDTH: u32 = 520;
 /// Tall enough to capture most plans in one snapshot.
 pub(crate) const COMPARE_VIEWPORT_HEIGHT: u32 = 1400;
 
+/// The most CSS pixels tall a compare render grows to.
+pub(crate) const COMPARE_MAX_HEIGHT: u32 = 8000;
+/// The most pixels in one compare snapshot (RGBA8: 4 bytes each, and the
+/// diff keeps a few masks of the same size), so 20 M is 80 MB per image.
+pub(crate) const COMPARE_MAX_PIXELS: u64 = 20_000_000;
+
+/// How a compare render is taken for a document `content_height` CSS pixels
+/// tall: the view height (CSS px, between the base viewport and
+/// [`COMPARE_MAX_HEIGHT`]) and the snapshot width in pixels, `None` for the
+/// native scale (`scale` is 2 on Retina). The snapshot is downscaled, never
+/// below 1x, when height x scale would exceed [`COMPARE_MAX_PIXELS`].
+pub(crate) fn compare_render_plan(content_height: u32, scale: f32) -> (u32, Option<u32>) {
+    let scale = if scale.is_finite() && scale >= 1.0 {
+        scale
+    } else {
+        1.0
+    };
+    let height = content_height.clamp(COMPARE_VIEWPORT_HEIGHT, COMPARE_MAX_HEIGHT);
+    let area = f64::from(COMPARE_VIEWPORT_WIDTH) * f64::from(height);
+    let affordable = (COMPARE_MAX_PIXELS as f64 / area).sqrt() as f32;
+    let effective = affordable.clamp(1.0, scale);
+    let width = (effective < scale).then(|| (COMPARE_VIEWPORT_WIDTH as f32 * effective) as u32);
+    (height, width)
+}
+
 /// One pane's sandboxed frame document for the compare view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompareFrame {
@@ -437,7 +462,10 @@ const PROBE_TEMPLATE: &str = r##"(() => {
     }
     if (outside) push(warnings, outside + " element(s) extend outside the viewport horizontally (" + examples.join(", ") + ")");
     if (lowContrast) push(warnings, lowContrast + " text element(s) have contrast below 3:1 (" + contrastExamples.join(", ") + ")");
-    try { parent.postMessage({ zeronRenderProbe: { errors, warnings, metrics } }, "*"); } catch (_) {}
+    const contentHeight = Math.ceil(Math.max(
+      document.documentElement ? document.documentElement.scrollHeight : 0,
+      document.body ? document.body.scrollHeight : 0));
+    try { parent.postMessage({ zeronRenderProbe: { errors, warnings, metrics, contentHeight } }, "*"); } catch (_) {}
   };
   const waitMermaid = (deadline) => {
     const pending = Array.from(document.querySelectorAll("pre.mermaid, div.mermaid")).some((el) =>
@@ -460,4 +488,7 @@ pub(crate) struct ProbeReport {
     /// Per-element measurements for [`super::layout_heuristics::classify`].
     #[serde(default)]
     pub(crate) metrics: Vec<super::layout_heuristics::ElementMetrics>,
+    /// The frame document's full scroll height in CSS pixels.
+    #[serde(default, rename = "contentHeight")]
+    pub(crate) content_height: Option<u32>,
 }
