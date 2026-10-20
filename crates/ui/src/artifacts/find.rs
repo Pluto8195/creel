@@ -178,6 +178,10 @@ pub(crate) struct FrameState {
     /// Index (document order among `h1`–`h3`) of the section in view.
     #[serde(default)]
     pub(crate) active: Option<usize>,
+    /// The page is scrolled as far down as it goes (the last sections may
+    /// be too short to reach the top of the view).
+    #[serde(default, rename = "atBottom")]
+    pub(crate) at_bottom: bool,
     /// The page's live headings, `(level, text)`.
     #[serde(default)]
     pub(crate) heads: Vec<(u8, String)>,
@@ -237,7 +241,8 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
   const report = () => {
     const hs = heads(); let active = null;
     hs.forEach((h, i) => { if (h.getBoundingClientRect().top <= 24) active = i; });
-    send({ active, heads: hs.map((h) => [Number(h.tagName[1]), (h.textContent || "").trim().slice(0, 160)]) });
+    const se = document.scrollingElement || document.documentElement;
+    send({ active, atBottom: se.scrollTop + se.clientHeight >= se.scrollHeight - 2, heads: hs.map((h) => [Number(h.tagName[1]), (h.textContent || "").trim().slice(0, 160)]) });
   };
   window.addEventListener("message", (e) => {
     const d = e.data || {};
@@ -415,6 +420,8 @@ mod tests {
         assert_eq!(state.count_for("plan"), Some(4));
         assert_eq!(state.count_for("other"), None);
         assert_eq!(state.active, Some(2));
+        assert!(!state.at_bottom);
+        assert!(FrameState::parse(r#"{"atBottom":true}"#).unwrap().at_bottom);
         assert_eq!(
             state.heads,
             vec![(1, "Plan".to_owned()), (2, "Steps".to_owned())]

@@ -5,9 +5,12 @@
 //! renderers: the Markdown preview (a native block list) and the web view
 //! (the sandboxed frame, driven through `ArtifactWebHost`).
 //!
-//! Keys: ⌘F / ⌘G / ⇧⌘G are bound in the `ArtifactTab` key context, so they
-//! apply only while focus is inside the tab (the web view forwards them when
-//! it has focus); everywhere else ⌘F still focuses the outline search.
+//! Keys: ⌘F / ⌘G / ⇧⌘G and ⌥↑ / ⌥↓ (previous / next section) are bound in the
+//! `ArtifactTab` key context, so they apply only while focus is inside the
+//! tab (the web view forwards them when it has focus); everywhere else ⌘F
+//! still focuses the outline search. ⌥⌘S focuses the section rail, where
+//! ↑ / ↓ / Home / End move through the sections and Enter / Esc hand focus
+//! back to the document.
 //! Enter / ⇧Enter step and Esc closes while the tab has focus.
 use std::time::Duration;
 
@@ -18,13 +21,23 @@ use gpui::{
 
 use super::{ArtifactBody, ArtifactTab, Mode, Presenter, WebKind};
 use crate::artifacts::find::{FindState, FrameCommand, FrameState, command_script};
-use crate::artifacts::outline::{self, RawHeading, SectionIndex};
+use crate::artifacts::outline::{self, RawHeading, SectionIndex, SectionStep};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::files::markdown_preview::{MarkdownPreview, MarkdownPreviewEvent};
 use crate::theme::Theme;
 use crate::{icons, surface_chrome};
 
-gpui::actions!(artifact_find, [FindOpen, FindNext, FindPrevious]);
+gpui::actions!(
+    artifact_find,
+    [
+        FindOpen,
+        FindNext,
+        FindPrevious,
+        SectionPrevious,
+        SectionNext,
+        FocusIndex
+    ]
+);
 
 /// The key context of the Artifact tab; find keys bind inside it.
 pub(crate) const KEY_CONTEXT: &str = "ArtifactTab";
@@ -48,6 +61,9 @@ pub(crate) fn bind_keys(cx: &mut App) {
             FindPrevious,
             Some(KEY_CONTEXT),
         ),
+        KeyBinding::new("alt-up", SectionPrevious, Some(KEY_CONTEXT)),
+        KeyBinding::new("alt-down", SectionNext, Some(KEY_CONTEXT)),
+        KeyBinding::new(&platform_combo("mod-alt-s"), FocusIndex, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -66,6 +82,14 @@ pub(crate) struct FindNav {
     markdown_index: SectionIndex,
     web_index: SectionIndex,
     pub(crate) index_open: bool,
+    /// Focus of the section rail (↑ / ↓ / Home / End step through it).
+    rail_focus: FocusHandle,
+    /// The section last jumped to. Short sections at the end of a page can't
+    /// reach the top of the view, so the position alone would put the
+    /// highlight (and the next step) on an earlier section.
+    pin: Option<usize>,
+    /// The page is scrolled to its end (reported by the frame).
+    web_at_bottom: bool,
     /// Headings in the HTML source (`h1`–`h3`, document order).
     html_headings: Vec<RawHeading>,
     /// Headings the live page reported.
@@ -98,6 +122,9 @@ impl FindNav {
             markdown_index: SectionIndex::default(),
             web_index: SectionIndex::default(),
             index_open: true,
+            rail_focus: cx.focus_handle(),
+            pin: None,
+            web_at_bottom: false,
             html_headings: Vec::new(),
             live_heads: Vec::new(),
             web_active: None,
@@ -361,6 +388,10 @@ impl ArtifactTab {
             self.nav.web_active = state.active;
             changed = true;
         }
+        if state.at_bottom != self.nav.web_at_bottom {
+            self.nav.web_at_bottom = state.at_bottom;
+            changed = true;
+        }
         if self.nav.find.open
             && self.nav.find.is_searching()
             && let Some(count) = state.count_for(&self.nav.find.query)
@@ -388,6 +419,8 @@ impl ArtifactTab {
     pub(super) fn document_changed(&mut self, cx: &mut Context<Self>) {
         self.nav.live_heads.clear();
         self.nav.web_active = None;
+        self.nav.web_at_bottom = false;
+        self.nav.pin = None;
         self.nav.web_count = None;
         self.nav.html_headings = match &self.body {
             Some(ArtifactBody::Web {
@@ -440,15 +473,101 @@ impl ArtifactTab {
     }
 
     /// The section in view: the Markdown list's top block, or the heading
-    /// the page last reported.
+    /// the page last reported. A section just jumped to stays highlighted
+    /// while the view sits at the end of the page, where it can't scroll
+    /// the heading to the top.
     pub(crate) fn current_section(&self, cx: &App) -> Option<usize> {
-        let position = match self.index_surface()? {
+        let surface = self.index_surface()?;
+        let position = match surface {
             Surface::Markdown => self.markdown.as_ref()?.read(cx).top_block(),
             Surface::Web => self.nav.web_active.or(Some(0))?,
         };
-        match self.index_surface()? {
-            Surface::Markdown => self.section_index().active_at(position),
-            Surface::Web => self.section_index().section_for_target(position),
+        let index = self.section_index();
+        let computed = match surface {
+            Surface::Markdown => index.active_at(position),
+            Surface::Web => index.section_for_target(position),
+        }?;
+        let at_end = match surface {
+            Surface::Markdown => self
+                .markdown
+                .as_ref()
+                .is_some_and(|preview| preview.read(cx).is_scrolled_to_end()),
+            Surface::Web => self.nav.web_at_bottom,
+        };
+        match self.nav.pin {
+            Some(pin) if pin > computed && pin < index.sections.len() && at_end => Some(pin),
+            _ => Some(computed),
+        }
+    }
+
+    /// Whether the view is above the first heading (a step forward then
+    /// lands on the first section rather than the second).
+    fn before_first_section(&self, cx: &App) -> bool {
+        let Some(first) = self.section_index().sections.first() else {
+            return false;
+        };
+        match self.index_surface() {
+            Some(Surface::Markdown) => self
+                .markdown
+                .as_ref()
+                .is_some_and(|preview| preview.read(cx).top_block() < first.target),
+            Some(Surface::Web) => self.nav.web_active.is_none(),
+            None => false,
+        }
+    }
+
+    /// Move to the previous / next / first / last section. `false` when this
+    /// view has no sections to move through; at either end the key is
+    /// consumed and nothing happens (no wraparound). Works with the rail
+    /// hidden, over whatever headings the plan has.
+    pub(crate) fn step_section(&mut self, step: SectionStep, cx: &mut Context<Self>) -> bool {
+        if self.index_surface().is_none() || self.section_index().sections.is_empty() {
+            return false;
+        }
+        let from = if self.before_first_section(cx) {
+            None
+        } else {
+            self.current_section(cx)
+        };
+        if let Some(target) = self.section_index().step_target(from, step) {
+            self.goto_section(target, cx);
+        }
+        true
+    }
+
+    /// Put focus on the section rail, opening it first when it is collapsed.
+    /// `false` when there is no rail to focus.
+    pub(crate) fn focus_index(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.index_shown() {
+            return false;
+        }
+        self.nav.index_open = true;
+        if let Some(web) = &mut self.web {
+            web.focus_chrome(cx);
+        }
+        window.focus(&self.nav.rail_focus, cx);
+        cx.notify();
+        true
+    }
+
+    /// Hand focus from the rail back to the document.
+    pub(crate) fn focus_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.find_surface() {
+            Some(Surface::Markdown) => {
+                if let Some(preview) = self.markdown.clone() {
+                    let focus = preview.read(cx).focus.clone();
+                    window.focus(&focus, cx);
+                    return;
+                }
+                window.focus(&self.focus, cx);
+            }
+            Some(Surface::Web) => {
+                window.focus(&self.focus, cx);
+                if let Some(web) = &mut self.web {
+                    web.focus_page(cx);
+                }
+            }
+            None => window.focus(&self.focus, cx),
         }
     }
 
@@ -479,8 +598,9 @@ impl ArtifactTab {
                 self.web_command(&FrameCommand::Scroll(section.target), cx);
                 self.nav.web_active = Some(section.target);
             }
-            None => {}
+            None => return,
         }
+        self.nav.pin = Some(ix);
         cx.notify();
     }
 
@@ -528,6 +648,21 @@ impl ArtifactTab {
                     cx.propagate();
                 }
             }))
+            .on_action(cx.listener(|this, _: &SectionPrevious, window, cx| {
+                if !this.section_key(SectionStep::Previous, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SectionNext, window, cx| {
+                if !this.section_key(SectionStep::Next, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusIndex, window, cx| {
+                if !this.focus_index(window, cx) {
+                    cx.propagate();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if !this.nav.find.open {
                     return;
@@ -548,6 +683,17 @@ impl ArtifactTab {
                 }
                 cx.stop_propagation();
             }))
+    }
+
+    /// ⌥↑ / ⌥↓: step through the sections unless the caret is in the find
+    /// field (where the key belongs to the field).
+    fn section_key(&mut self, step: SectionStep, window: &Window, cx: &mut Context<Self>) -> bool {
+        if self.nav.find.open
+            && gpui::Focusable::focus_handle(self.nav.input.read(cx), cx).is_focused(window)
+        {
+            return false;
+        }
+        self.step_section(step, cx)
     }
 
     pub(super) fn render_find_bar(
@@ -639,12 +785,13 @@ impl ArtifactTab {
         &self,
         body: AnyElement,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if !self.index_shown() {
             return body;
         }
-        let rail = self.render_index(theme, cx);
+        let rail = self.render_index(theme, window, cx);
         div()
             .size_full()
             .flex()
@@ -654,7 +801,7 @@ impl ArtifactTab {
             .into_any_element()
     }
 
-    fn render_index(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_index(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let index = self.section_index();
         if !self.nav.index_open {
             return div()
@@ -690,6 +837,7 @@ impl ArtifactTab {
                 .into_any_element();
         }
         let active = self.current_section(cx);
+        let rail_focused = self.nav.rail_focus.is_focused(window);
         let base = index.base_level();
         let rows = index.sections.iter().enumerate().map(|(ix, section)| {
             let selector = format!("artifact-index-row-{ix}");
@@ -716,7 +864,9 @@ impl ArtifactTab {
                 .when(section.level == base, |el| {
                     el.font_weight(gpui::FontWeight::MEDIUM)
                 })
-                .when(is_active, |el| el.bg(crate::theme::wash(0.10)))
+                .when(is_active, |el| {
+                    el.bg(crate::theme::wash(if rail_focused { 0.20 } else { 0.10 }))
+                })
                 .hover(|el| el.bg(crate::theme::wash(0.14)))
                 .child(gpui::SharedString::from(section.title.clone()))
                 .on_click(cx.listener(move |this, _, _, cx| this.goto_section(ix, cx)))
@@ -724,6 +874,34 @@ impl ArtifactTab {
         div()
             .id("artifact-index")
             .debug_selector(|| "artifact-index".into())
+            .track_focus(&self.nav.rail_focus)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if let Some(web) = &mut this.web {
+                        web.focus_chrome(cx);
+                    }
+                    window.focus(&this.nav.rail_focus, cx);
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let mods = event.keystroke.modifiers;
+                if mods.platform || mods.control || mods.alt || mods.shift {
+                    return;
+                }
+                match event.keystroke.key.as_str() {
+                    "up" => this.step_section(SectionStep::Previous, cx),
+                    "down" => this.step_section(SectionStep::Next, cx),
+                    "home" => this.step_section(SectionStep::First, cx),
+                    "end" => this.step_section(SectionStep::Last, cx),
+                    "enter" | "escape" => {
+                        this.focus_document(window, cx);
+                        true
+                    }
+                    _ => false,
+                };
+                cx.stop_propagation();
+            }))
             .flex_none()
             .w(px(RAIL_WIDTH))
             .h_full()

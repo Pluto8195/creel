@@ -276,6 +276,14 @@ impl BrowserSurface {
         cx.spawn(async move |_, _| None)
     }
 
+    /// Give keyboard focus to the web view so the page gets plain keys.
+    pub(crate) fn focus_page(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.focus_page();
+        }
+    }
+
     /// Move keyboard focus out of the web view so GPUI inputs receive keys.
     pub(crate) fn focus_host_chrome(&self) {
         #[cfg(target_os = "macos")]

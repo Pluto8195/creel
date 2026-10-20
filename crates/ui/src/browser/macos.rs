@@ -399,7 +399,7 @@ impl NativePage {
             let mods = e.modifierFlags();
             let key = e
                 .charactersIgnoringModifiers()
-                .map(|s| s.to_string().to_lowercase())
+                .map(|s| key_name(&s.to_string().to_lowercase()))
                 .unwrap_or_default();
             let mut combo = String::new();
             if mods.contains(NSEventModifierFlags::Command) {
@@ -462,6 +462,10 @@ impl NativePage {
     }
     pub fn focus_chrome(&self) {
         let _ = self.0.borrow().web.focus_parent();
+    }
+    /// Give the page keyboard focus (so plain arrow keys scroll it).
+    pub fn focus_page(&self) {
+        let _ = self.0.borrow().web.focus();
     }
     pub fn set_shortcuts(&self, shortcuts: Vec<String>) {
         *self.0.borrow().shortcuts.borrow_mut() = shortcuts;
@@ -606,6 +610,23 @@ const BROWSER_KEYS: &[&str] = &[
     "cmd-g",
     "cmd-shift-g",
 ];
+
+/// The GPUI key name for what AppKit reports as the character of a
+/// non-printing key: arrows and Home / End arrive as private-use function-key
+/// characters and Escape as a control character.
+fn key_name(chars: &str) -> String {
+    match chars {
+        "\u{f700}" => "up",
+        "\u{f701}" => "down",
+        "\u{f702}" => "left",
+        "\u{f703}" => "right",
+        "\u{f729}" => "home",
+        "\u{f72b}" => "end",
+        "\u{1b}" => "escape",
+        other => other,
+    }
+    .to_owned()
+}
 
 /// Whether a keystroke typed into the web view is forwarded to GPUI: a fixed
 /// browser combo, an app shortcut, or an owner-requested extra key.
@@ -954,7 +975,7 @@ mod document_policy_tests {
 
 #[cfg(test)]
 mod forwarded_key_tests {
-    use super::is_forwarded_key;
+    use super::{is_forwarded_key, key_name};
 
     fn forwarded(combo: &str, shortcuts: &[&str], extra: &[&str]) -> bool {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -975,5 +996,17 @@ mod forwarded_key_tests {
         assert!(forwarded("escape", &[], &["escape"]));
         assert!(forwarded("cmd-shift-p", &["cmd-shift-p"], &[]));
         assert!(!forwarded("cmd-j", &["cmd-shift-p"], &["escape"]));
+    }
+
+    #[test]
+    fn function_keys_get_gpui_names_so_arrow_combos_parse() {
+        assert_eq!(key_name("\u{f700}"), "up");
+        assert_eq!(key_name("\u{f701}"), "down");
+        assert_eq!(key_name("\u{1b}"), "escape");
+        assert_eq!(key_name("g"), "g");
+        assert!(forwarded(&format!("alt-{}", key_name("\u{f700}")), &[], &["alt-up"]));
+        assert!(forwarded(&format!("alt-{}", key_name("\u{f701}")), &[], &["alt-down"]));
+        // Plain arrows are never in the extra list: they scroll the page.
+        assert!(!forwarded("up", &[], &["alt-up", "alt-down", "escape"]));
     }
 }

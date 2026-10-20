@@ -34,6 +34,15 @@ pub(crate) struct Section {
     pub(crate) target: usize,
 }
 
+/// A keyboard move through the sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionStep {
+    Previous,
+    Next,
+    First,
+    Last,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SectionIndex {
     pub(crate) sections: Vec<Section>,
@@ -92,6 +101,22 @@ impl SectionIndex {
                 .rposition(|section| section.target <= position)
                 .unwrap_or(0),
         )
+    }
+
+    /// Where a keyboard step lands. `from` is the section in view, `None`
+    /// before the first heading. `None` out when there is nowhere to go
+    /// (the ends do not wrap).
+    pub(crate) fn step_target(&self, from: Option<usize>, step: SectionStep) -> Option<usize> {
+        let last = self.sections.len().checked_sub(1)?;
+        match step {
+            SectionStep::First => Some(0),
+            SectionStep::Last => Some(last),
+            SectionStep::Next => match from {
+                None => Some(0),
+                Some(at) => (at < last).then_some(at + 1),
+            },
+            SectionStep::Previous => from?.checked_sub(1),
+        }
     }
 
     /// The section whose target is exactly `target` (the page reports the
@@ -469,5 +494,22 @@ mod tests {
         assert_eq!(reconciled[2].target, 2);
         // Nothing reported yet: the source stands.
         assert_eq!(reconcile_html(source.clone(), &[]), source);
+    }
+
+    #[test]
+    fn steps_stop_at_both_ends_and_start_from_before_the_first_heading() {
+        let index = SectionIndex::from_headings(&html_headings("<h1>A</h1><h2>B</h2><h2>C</h2>"));
+        use SectionStep::*;
+        assert_eq!(index.step_target(Some(1), Previous), Some(0));
+        assert_eq!(index.step_target(Some(1), Next), Some(2));
+        assert_eq!(index.step_target(Some(0), Previous), None);
+        assert_eq!(index.step_target(Some(2), Next), None);
+        assert_eq!(index.step_target(None, Next), Some(0));
+        assert_eq!(index.step_target(None, Previous), None);
+        assert_eq!(index.step_target(Some(1), First), Some(0));
+        assert_eq!(index.step_target(Some(1), Last), Some(2));
+        let empty = SectionIndex::default();
+        assert_eq!(empty.step_target(None, Next), None);
+        assert_eq!(empty.step_target(None, Last), None);
     }
 }

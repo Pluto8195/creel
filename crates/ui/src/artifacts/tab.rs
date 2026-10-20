@@ -78,6 +78,8 @@ pub(crate) trait ArtifactWebHost {
     }
     /// Take keyboard focus out of the page so a GPUI field can have it.
     fn focus_chrome(&mut self, _cx: &mut App) {}
+    /// Give keyboard focus back to the page (plain arrows scroll it again).
+    fn focus_page(&mut self, _cx: &mut App) {}
     /// Forward Escape from the page to GPUI (while the find bar is open).
     fn forward_escape(&mut self, _on: bool, _cx: &mut App) {}
     /// Whether scripts reach the page (find and the section index need it).
@@ -96,6 +98,16 @@ pub(crate) struct BrowserWebHost {
     _subscription: Subscription,
 }
 
+/// The keys the page hands to GPUI besides the browser combos: ⌥↑ / ⌥↓ always
+/// (section jumps), Escape while the find bar is open.
+pub(crate) fn page_forwarded_keys(escape: bool) -> &'static [&'static str] {
+    if escape {
+        &["alt-up", "alt-down", "escape"]
+    } else {
+        &["alt-up", "alt-down"]
+    }
+}
+
 impl BrowserWebHost {
     pub(crate) fn factory() -> WebHostFactory {
         Rc::new(|tab, window, cx| {
@@ -107,6 +119,7 @@ impl BrowserWebHost {
                     cx,
                 );
                 browser.set_embedded(true, cx);
+                browser.set_extra_forwarded_keys(page_forwarded_keys(false));
                 browser
             });
             let subscription = window.subscribe(&browser, cx, move |_, event, _, cx| match event {
@@ -170,8 +183,12 @@ impl ArtifactWebHost for BrowserWebHost {
 
     fn forward_escape(&mut self, on: bool, cx: &mut App) {
         self.browser.update(cx, |browser, _| {
-            browser.set_extra_forwarded_keys(if on { &["escape"] } else { &[] })
+            browser.set_extra_forwarded_keys(page_forwarded_keys(on))
         });
+    }
+
+    fn focus_page(&mut self, cx: &mut App) {
+        self.browser.read(cx).focus_page();
     }
 
     fn supports_scripts(&self) -> bool {
@@ -1277,7 +1294,7 @@ impl ArtifactTab {
 }
 
 impl gpui::Render for ArtifactTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let artifact = self.artifact(cx);
         let root = div()
@@ -1339,7 +1356,7 @@ impl gpui::Render for ArtifactTab {
         });
         let body = self.render_body(&theme, cx);
         let find_bar = self.render_find_bar(&theme, cx);
-        let body = self.with_section_index(body, &theme, cx);
+        let body = self.with_section_index(body, &theme, window, cx);
         self.with_find_keys(root, cx)
             .child(header)
             .child(toolbar)
@@ -1402,6 +1419,7 @@ pub(crate) struct WebProbe {
     pub(crate) scripts: Rc<std::cell::RefCell<Vec<String>>>,
     pub(crate) state: Rc<std::cell::RefCell<Option<String>>>,
     pub(crate) chrome_focused: Rc<std::cell::Cell<u32>>,
+    pub(crate) page_focused: Rc<std::cell::Cell<u32>>,
     pub(crate) escape_forwarded: Rc<std::cell::Cell<bool>>,
 }
 
@@ -1457,6 +1475,12 @@ impl ArtifactWebHost for FakeWebHost {
         self.probe
             .chrome_focused
             .set(self.probe.chrome_focused.get() + 1);
+    }
+
+    fn focus_page(&mut self, _: &mut App) {
+        self.probe
+            .page_focused
+            .set(self.probe.page_focused.get() + 1);
     }
 
     fn forward_escape(&mut self, on: bool, _: &mut App) {
