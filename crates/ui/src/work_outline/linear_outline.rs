@@ -435,3 +435,48 @@ pub(crate) fn project_chip(
 pub(crate) fn item_key(space_id: &str, item_id: &str) -> String {
     row_key::item(space_id, item_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linear::fixture::issue;
+
+    #[test]
+    fn status_icon_follows_the_state_type() {
+        assert_eq!(
+            linear_status_icon(LinearStateType::Completed),
+            crate::icons::CHECK
+        );
+        assert_eq!(
+            linear_status_icon(LinearStateType::Canceled),
+            crate::icons::CLOSE_CIRCLE
+        );
+        assert_eq!(
+            linear_status_icon(LinearStateType::Started),
+            crate::icons::CLOCK_CIRCLE
+        );
+        for open in [
+            LinearStateType::Triage,
+            LinearStateType::Backlog,
+            LinearStateType::Unstarted,
+            LinearStateType::Unknown,
+        ] {
+            assert_eq!(linear_status_icon(open), crate::icons::CHECKLIST);
+        }
+    }
+
+    #[test]
+    fn tooltip_names_identifier_state_priority_and_assignee() {
+        let mut ticket = issue("ENG-1", "Fix login");
+        assert_eq!(
+            issue_row_tooltip(&ticket),
+            "ENG-1 \u{00b7} In Progress \u{00b7} High \u{00b7} Assigned to Mikey\nFix login"
+        );
+        ticket.assignee = None;
+        ticket.priority = 0;
+        assert_eq!(
+            issue_row_tooltip(&ticket),
+            "ENG-1 \u{00b7} In Progress \u{00b7} Unassigned\nFix login"
+        );
+    }
+}

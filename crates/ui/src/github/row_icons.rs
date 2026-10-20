@@ -37,6 +37,7 @@ pub(crate) const TITLE_MIN_WIDTH: f32 = 120.0;
 pub(crate) const AUTHOR_MAX_CHARS: usize = 10;
 
 const SLOT_GAP: f32 = 4.0;
+const SLOT_HEIGHT: f32 = 16.0;
 const AUTHOR_WIDTH: f32 = 58.0;
 const NEEDS_WIDTH: f32 = 16.0;
 const REVIEW_WIDTH: f32 = 12.0;
@@ -245,6 +246,7 @@ fn slot(
         .debug_selector(move || selector.clone())
         .flex_none()
         .w(px(width))
+        .h(px(SLOT_HEIGHT))
         .flex()
         .items_center()
         .when(right_aligned, |el| el.justify_end())
@@ -443,7 +445,14 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
             format!("outline-pr-slot-needs-{key}"),
             NEEDS_WIDTH,
             false,
-            attention,
+            attention.map(|indicator| {
+                let selector = format!("outline-pr-needs-{key}");
+                div()
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .child(indicator)
+                    .into_any_element()
+            }),
         ))
         .when(visible.review, |el| {
             el.child(slot(

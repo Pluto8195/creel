@@ -3300,6 +3300,10 @@ fn item_body(
             el.child(
                 div()
                     .id(SharedString::from(format!("outline-chats-{key}")))
+                    .debug_selector({
+                        let selector = format!("outline-chats-{key}");
+                        move || selector.clone()
+                    })
                     .flex_none()
                     .flex()
                     .items_center()
@@ -3345,6 +3349,10 @@ fn item_body(
             el.child(
                 div()
                     .id(SharedString::from(format!("outline-refs-{key}")))
+                    .debug_selector({
+                        let selector = format!("outline-refs-{key}");
+                        move || selector.clone()
+                    })
                     .flex_none()
                     .child(
                         crate::icons::icon(crate::icons::GLOBAL)

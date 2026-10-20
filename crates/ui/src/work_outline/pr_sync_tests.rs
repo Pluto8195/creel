@@ -1062,6 +1062,11 @@ fn icon_snapshot() -> WorkOutlineSnapshot {
             item.effective_status = zeron_proto::WorkItemEffectiveStatus::UserActionRequired;
             item.rollup.unresolved_user_action_count = 2;
         }
+        // Only the API row needs the user (its child's request is moved up).
+        if item.id == API_AUTH {
+            item.effective_status = zeron_proto::WorkItemEffectiveStatus::Pending;
+            item.rollup.unresolved_user_action_count = 0;
+        }
     }
     snapshot
 }
@@ -1106,7 +1111,7 @@ fn pr_rows_show_icon_slots_instead_of_chip_text(cx: &mut gpui::TestAppContext) {
     for selector in [
         format!("outline-pr-slots-{key}"),
         format!("outline-pr-author-{key}"),
-        format!("outline-attention-{key}"),
+        format!("outline-pr-needs-{key}"),
         format!("outline-pr-review-{key}"),
         format!("outline-pr-ci-{key}"),
         format!("outline-pr-{key}"),
@@ -1127,8 +1132,9 @@ fn pr_rows_show_icon_slots_instead_of_chip_text(cx: &mut gpui::TestAppContext) {
     });
     // The attention indicator sits inside the needs slot.
     let needs = row_bounds(vcx, slot_selector("needs", API)).unwrap();
-    let attention = row_bounds(vcx, format!("outline-attention-{key}")).unwrap();
-    assert!(needs.contains(&attention.center()));
+    let attention = row_bounds(vcx, format!("outline-pr-needs-{key}")).unwrap();
+    assert!(needs.contains(&attention.center()), "{needs:?} vs {attention:?}");
+    assert!(!present(vcx, format!("outline-pr-needs-{}", row_key::item("s1", HOUSEKEEPING))));
     // A plain item keeps its totals and gets no cluster.
     let plain = row_key::item("s1", LAUNCH);
     assert!(present(vcx, format!("outline-totals-{plain}")));
@@ -1151,7 +1157,10 @@ fn pr_slots_line_up_across_rows(cx: &mut gpui::TestAppContext) {
     assert!(present(vcx, format!("outline-pr-author-{hk}")));
     assert!(!present(vcx, format!("outline-pr-ci-{hk}")));
     assert!(!present(vcx, format!("outline-pr-review-{hk}")));
-    assert!(!present(vcx, format!("outline-attention-{hk}")));
+    assert!(
+        row_bounds(vcx, slot_selector("needs", HOUSEKEEPING)).is_some(),
+        "an empty needs slot keeps its column"
+    );
     for slot in ["author", "needs", "review", "ci", "pr"] {
         let api = row_bounds(vcx, slot_selector(slot, API)).unwrap();
         let other = row_bounds(vcx, slot_selector(slot, HOUSEKEEPING)).unwrap();
@@ -1237,4 +1246,24 @@ fn unloaded_pr_shows_only_the_pr_icon(cx: &mut gpui::TestAppContext) {
     assert!(!present(vcx, format!("outline-pr-author-{key}")));
     assert!(!present(vcx, format!("outline-pr-review-{key}")));
     assert!(!present(vcx, format!("outline-pr-ci-{key}")));
+}
+
+/// Where the PR sync doesn't apply a row that links a PR is a plain item:
+/// the attention indicator, descendant totals, chat count and references
+/// icon are all still there, and no icon cluster.
+#[gpui::test]
+fn plain_item_rows_are_unchanged(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, calls, vcx) = pr_overview(cx, dir.path(), sync_snapshot(None), default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert!(calls_to(&calls, "PrStatus").is_empty());
+    let api = row_key::item("s1", API);
+    for element in ["outline-totals", "outline-chats", "outline-refs"] {
+        assert!(present(vcx, format!("{element}-{api}")), "{element}");
+    }
+    for plain in [LAUNCH, HOUSEKEEPING] {
+        assert!(!present(vcx, format!("outline-pr-slots-{}", row_key::item("s1", plain))));
+    }
+    assert!(!present(vcx, format!("outline-pr-slots-{api}")));
 }
