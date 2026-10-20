@@ -1030,8 +1030,46 @@ async fn a_child_started_for_a_descendant_item_gets_that_items_instructions() {
     assert!(err.contains("work-outline/unauthorized"), "{err}");
     assert!(err.contains("re-associate"), "{err}");
 
-    // An unassociated caller has no subtree to start chats in.
+    // The coordinator closes what its own child raised; an unrelated Chat
+    // still cannot.
+    let ready = tool(
+        &rig,
+        child_lease.token(),
+        "work_outline_create_user_action_request",
+        json!({ "request": "Ready to merge: leaf-1", "idempotencyKey": "ready" }),
+    )
+    .await
+    .unwrap();
+    let ready_id = ready["userActionRequestId"].as_str().unwrap().to_owned();
     let other = tokens.mint(OTHER_CHAT, "run-3", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        other.token(),
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": ready_id, "idempotencyKey": "close-other" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    tool(
+        &rig,
+        &token,
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": ready_id, "resolution": "Merged",
+                "idempotencyKey": "close-parent" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        snapshot(&rig)
+            .user_action_requests
+            .iter()
+            .find(|r| r.id == ready_id)
+            .is_some_and(|r| r.state == zeron_proto::UserActionRequestState::Resolved),
+        "the coordinator resolved its child's request"
+    );
+
+    // An unassociated caller has no subtree to start chats in.
     let err = tool(
         &rig,
         other.token(),
