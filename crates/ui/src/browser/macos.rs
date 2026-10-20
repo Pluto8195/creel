@@ -306,6 +306,7 @@ pub(super) struct Host {
     background_color: Option<Retained<NSColor>>,
     monitor: Option<Retained<AnyObject>>,
     shortcuts: Rc<RefCell<Vec<String>>>,
+    extra_keys: Rc<RefCell<Vec<String>>>,
     bounds: Option<Bounds<Pixels>>,
     presentation: Presentation,
     tx: Sender,
@@ -385,6 +386,8 @@ impl NativePage {
         let monitor_view = view.clone();
         let monitor_tx = tx.clone();
         let monitor_shortcuts = shortcuts.clone();
+        let extra_keys = Rc::new(RefCell::new(Vec::<String>::new()));
+        let monitor_extra_keys = extra_keys.clone();
         let callback = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| {
             let e = unsafe { event.as_ref() };
             if monitor_view.isHidden()
@@ -415,15 +418,13 @@ impl NativePage {
             let Ok(keystroke) = gpui::Keystroke::parse(&combo) else {
                 return event.as_ptr();
             };
-            let browser_key = matches!(
-                combo.as_str(),
-                "cmd-l" | "cmd-t" | "cmd-w" | "cmd-[" | "cmd-]" | "cmd-shift-r" | "cmd-k" | "cmd-,"
+            let forwarded = is_forwarded_key(
+                &combo,
+                &keystroke,
+                &monitor_shortcuts.borrow(),
+                &monitor_extra_keys.borrow(),
             );
-            let app_key = monitor_shortcuts
-                .borrow()
-                .iter()
-                .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == keystroke));
-            if browser_key || app_key {
+            if forwarded {
                 if monitor_tx.try_send(NativeEvent::Key(keystroke)).is_ok() {
                     std::ptr::null_mut()
                 } else {
@@ -448,6 +449,7 @@ impl NativePage {
             background_color: None,
             monitor,
             shortcuts,
+            extra_keys,
             bounds: None,
             presentation: Presentation::Hidden,
             #[cfg(feature = "browser-fixture")]
@@ -463,6 +465,9 @@ impl NativePage {
     }
     pub fn set_shortcuts(&self, shortcuts: Vec<String>) {
         *self.0.borrow().shortcuts.borrow_mut() = shortcuts;
+    }
+    pub fn set_extra_forwarded_keys(&self, keys: Vec<String>) {
+        *self.0.borrow().extra_keys.borrow_mut() = keys;
     }
     pub fn present(&mut self, presentation: Presentation) {
         self.0.borrow_mut().present(presentation);
@@ -528,6 +533,38 @@ impl NativePage {
             }
         }
     }
+    /// Fire-and-forget script evaluation in the page.
+    pub fn run_script(&self, script: &str) {
+        unsafe {
+            self.0
+                .borrow()
+                .view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(script), None);
+        }
+    }
+    /// Evaluate `script`; `done` receives the result when it is a JS string.
+    pub fn evaluate_string(&self, script: &str, done: impl FnOnce(Option<String>) + 'static) {
+        let done = RefCell::new(Some(done));
+        let completion = block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            let text = if error.is_null() {
+                unsafe { value.as_ref() }
+                    .and_then(|value| value.downcast_ref::<NSString>())
+                    .map(|value| value.to_string())
+            } else {
+                None
+            };
+            if let Some(done) = done.borrow_mut().take() {
+                done(text);
+            }
+        });
+        // WebKit copies the block, so it outlives this frame.
+        unsafe {
+            self.0.borrow().view.evaluateJavaScript_completionHandler(
+                &NSString::from_str(script),
+                Some(&completion),
+            );
+        }
+    }
     pub fn discover_favicon(&self, page: String) {
         let host = self.0.borrow();
         let tx = host.tx.clone();
@@ -553,6 +590,36 @@ impl NativePage {
             );
         }
     }
+}
+
+/// Browser chrome combos that always reach GPUI while the web view has focus.
+const BROWSER_KEYS: &[&str] = &[
+    "cmd-l",
+    "cmd-t",
+    "cmd-w",
+    "cmd-[",
+    "cmd-]",
+    "cmd-shift-r",
+    "cmd-k",
+    "cmd-,",
+    "cmd-f",
+    "cmd-g",
+    "cmd-shift-g",
+];
+
+/// Whether a keystroke typed into the web view is forwarded to GPUI: a fixed
+/// browser combo, an app shortcut, or an owner-requested extra key.
+fn is_forwarded_key(
+    combo: &str,
+    keystroke: &gpui::Keystroke,
+    shortcuts: &[String],
+    extra: &[String],
+) -> bool {
+    BROWSER_KEYS.contains(&combo)
+        || shortcuts
+            .iter()
+            .chain(extra)
+            .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == *keystroke))
 }
 
 fn has_focus(view: &NSView) -> bool {
@@ -882,5 +949,31 @@ mod document_policy_tests {
         ] {
             assert!(!document_navigation(denied), "{denied}");
         }
+    }
+}
+
+#[cfg(test)]
+mod forwarded_key_tests {
+    use super::is_forwarded_key;
+
+    fn forwarded(combo: &str, shortcuts: &[&str], extra: &[&str]) -> bool {
+        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let keystroke = gpui::Keystroke::parse(combo).unwrap();
+        is_forwarded_key(combo, &keystroke, &owned(shortcuts), &owned(extra))
+    }
+
+    #[test]
+    fn find_combos_are_always_forwarded() {
+        for combo in ["cmd-f", "cmd-g", "cmd-shift-g", "cmd-l"] {
+            assert!(forwarded(combo, &[], &[]), "{combo}");
+        }
+    }
+
+    #[test]
+    fn extra_and_app_keys_are_forwarded_only_when_listed() {
+        assert!(!forwarded("escape", &[], &[]));
+        assert!(forwarded("escape", &[], &["escape"]));
+        assert!(forwarded("cmd-shift-p", &["cmd-shift-p"], &[]));
+        assert!(!forwarded("cmd-j", &["cmd-shift-p"], &["escape"]));
     }
 }

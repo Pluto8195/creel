@@ -15,6 +15,7 @@
 //! `window.__zeronProbe` once the probe has posted its report.
 use crate::browser::fragment::{self, FragmentTheme, escape_attr, escape_text};
 
+use super::find::{FRAME_SCRIPT as FIND_FRAME_SCRIPT, HOST_SCRIPT as FIND_HOST_SCRIPT};
 use super::model::WebKind;
 
 /// Mermaid build the diagram wrapper loads (on the visualize allowlist).
@@ -38,11 +39,12 @@ pub(crate) fn web_document(
     reduced_motion: bool,
     probe: bool,
 ) -> String {
-    // Every frame carries the link bridge; render checks add the probe.
+    // Every frame carries the link and find bridges; render checks add the
+    // probe.
     let frame_scripts = if probe {
-        format!("{LINK_FRAME_SCRIPT}{}", probe_script())
+        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{}", probe_script())
     } else {
-        LINK_FRAME_SCRIPT.to_owned()
+        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}")
     };
     let probe_script = Some(frame_scripts);
     let document = match kind {
@@ -236,7 +238,7 @@ pub(crate) const LINK_HOST_SCRIPT: &str = r##"window.addEventListener("message",
 fn with_link_host(document: &str) -> String {
     document.replacen(
         "</head>",
-        &format!("<script>{LINK_HOST_SCRIPT}</script>\n</head>"),
+        &format!("<script>{LINK_HOST_SCRIPT}{FIND_HOST_SCRIPT}</script>\n</head>"),
         1,
     )
 }

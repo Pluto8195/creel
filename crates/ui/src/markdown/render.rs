@@ -99,6 +99,18 @@ pub struct RenderOptions {
     /// scroll state, keyed by the same element discriminator passed to
     /// [`render_block`]. `None` keeps non-chat Markdown surfaces unchanged.
     pub code: Option<HashMap<usize, CodeUi>>,
+    /// Find-in-document highlights (paint-only washes; never affects layout).
+    /// `None` paints nothing.
+    pub find: Option<Rc<FindHighlight>>,
+}
+
+/// What to highlight for find: every case-insensitive match of `query`, with
+/// the current match singled out as the `nth` match (document order, counting
+/// only within the row) of the row keyed `row_key`.
+#[derive(Debug, Clone, Default)]
+pub struct FindHighlight {
+    pub query: String,
+    pub current: Option<(SharedString, usize)>,
 }
 
 #[derive(Clone)]
@@ -350,6 +362,7 @@ impl RenderOptions {
             link: None,
             workspace_root: None,
             code: None,
+            find: None,
         }
     }
 }
@@ -1130,6 +1143,10 @@ pub(super) fn flat_text_presented_element(
         .map(|original| original.offsets.clone());
     let wash = inline_code_wash(theme);
     let sel_wash = selection_wash(theme);
+    let find = opts.find.clone().map(|find| FindPaint {
+        find,
+        row_key: opts.row_key.clone(),
+    });
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
@@ -1144,6 +1161,9 @@ pub(super) fn flat_text_presented_element(
                         BorderStyle::default(),
                     ));
                 }
+            }
+            if let Some(find) = &find {
+                paint_find(window, &layout, &flat_text, offsets.as_ref(), find);
             }
             if let Some(range) = super::selection::wash_range(&sel_key) {
                 let range = offsets
@@ -1236,7 +1256,7 @@ pub(crate) fn paint_text_selection(
     layout: &gpui::TextLayout,
     theme: &Theme,
 ) {
-    paint_text_selection_with_wash(window, key, text, layout, selection_wash(theme));
+    paint_text_selection_with_wash(window, key, text, layout, selection_wash(theme), None);
 }
 
 fn paint_text_selection_with_wash(
@@ -1245,7 +1265,11 @@ fn paint_text_selection_with_wash(
     text: &SharedString,
     layout: &gpui::TextLayout,
     wash: Hsla,
+    find: Option<&FindPaint>,
 ) {
+    if let Some(find) = find {
+        paint_find(window, layout, text, None, find);
+    }
     if let Some(range) = super::selection::wash_range(key) {
         for rect in range_rects(layout, &range, 0.0, 0.0) {
             window.paint_quad(quad(
@@ -1274,13 +1298,14 @@ fn selectable_text_element(
     text: SharedString,
     runs: Vec<TextRun>,
     wash: Hsla,
+    find: Option<FindPaint>,
 ) -> AnyElement {
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
-            paint_text_selection_with_wash(window, &key, &text, &layout, wash);
+            paint_text_selection_with_wash(window, &key, &text, &layout, wash, find.as_ref());
         },
     )
     .absolute()
@@ -1290,6 +1315,105 @@ fn selectable_text_element(
         .child(underlay)
         .child(styled)
         .into_any_element()
+}
+
+/// Mermaid fences render as diagrams; find skips them.
+pub(crate) fn is_mermaid(language: Option<&str>) -> bool {
+    language.is_some_and(|l| l.eq_ignore_ascii_case("mermaid"))
+}
+
+/// Find state plus the row an element paints in.
+#[derive(Clone)]
+struct FindPaint {
+    find: Rc<FindHighlight>,
+    row_key: SharedString,
+}
+
+thread_local! {
+    /// Matches painted so far in each row this frame (find's "nth match in
+    /// the row"). Paint order is document order, so a running count per row
+    /// numbers every match; [`selection_surface_reset`] clears it each frame.
+    static FIND_SEQ: RefCell<HashMap<SharedString, usize>> = RefCell::new(HashMap::new());
+}
+
+fn find_wash() -> Hsla {
+    gpui::hsla(0.14, 0.95, 0.55, 0.38)
+}
+
+fn find_current_wash() -> Hsla {
+    gpui::hsla(0.07, 0.95, 0.55, 0.62)
+}
+
+/// Paint find washes for one text element. `text` is the element's original
+/// text (what selection and counting use); `offsets` maps it onto the
+/// displayed text when link presentation rewrote it.
+fn paint_find(
+    window: &mut Window,
+    layout: &gpui::TextLayout,
+    text: &str,
+    offsets: Option<&super::link_presentation::OffsetMap>,
+    paint: &FindPaint,
+) {
+    let ranges = crate::artifacts::find::find_ranges(text, &paint.find.query);
+    if ranges.is_empty() {
+        return;
+    }
+    let first = FIND_SEQ.with(|seq| {
+        let mut seq = seq.borrow_mut();
+        let count = seq.entry(paint.row_key.clone()).or_insert(0);
+        let first = *count;
+        *count += ranges.len();
+        first
+    });
+    let current = paint
+        .find
+        .current
+        .as_ref()
+        .filter(|(row, _)| *row == paint.row_key)
+        .map(|(_, nth)| *nth);
+    for (offset, range) in ranges.into_iter().enumerate() {
+        let range = offsets.map_or_else(|| range.clone(), |map| map.displayed_range(range.clone()));
+        #[cfg(test)]
+        if current == Some(first + offset) {
+            FIND_CURRENT_LOG.with(|log| {
+                log.borrow_mut()
+                    .push((paint.row_key.to_string(), first + offset, text.to_owned()))
+            });
+        }
+        let wash = if current == Some(first + offset) {
+            find_current_wash()
+        } else {
+            find_wash()
+        };
+        for rect in range_rects(layout, &range, 0.0, 0.0) {
+            window.paint_quad(quad(
+                rect,
+                px(2.0),
+                wash,
+                px(0.0),
+                gpui::transparent_black(),
+                BorderStyle::default(),
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `(row key, nth match in row, element text)` of every current-match wash painted.
+    static FIND_CURRENT_LOG: RefCell<Vec<(String, usize, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the current-match washes painted since the last call (tests).
+#[cfg(test)]
+pub(crate) fn take_find_current_log() -> Vec<(String, usize, String)> {
+    FIND_CURRENT_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+/// How many matches the row has painted so far this frame (tests).
+#[cfg(test)]
+pub(crate) fn find_painted_in_row(row_key: &str) -> usize {
+    FIND_SEQ.with(|seq| seq.borrow().get(row_key).copied().unwrap_or(0))
 }
 
 fn code_line_selection_key(row_key: &str, code_ix: usize, line_ix: usize) -> std::sync::Arc<str> {
@@ -1383,7 +1507,10 @@ pub(crate) fn clear_selection_surface(prefix: &str) {
 pub fn selection_surface_reset(prefix: String) -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        move |_, _, _, _| REGISTRY.with(|r| r.borrow_mut().retain(|e| !e.key.starts_with(&prefix))),
+        move |_, _, _, _| {
+            REGISTRY.with(|r| r.borrow_mut().retain(|e| !e.key.starts_with(&prefix)));
+            FIND_SEQ.with(|seq| seq.borrow_mut().retain(|row, _| !row.starts_with(&prefix)));
+        },
     )
     .absolute()
     .w(px(0.0))
@@ -1876,7 +2003,7 @@ fn render_code_block(
     theme: &Theme,
     highlight: CodeHighlight,
 ) -> AnyElement {
-    if language.is_some_and(|l| l.eq_ignore_ascii_case("mermaid")) {
+    if is_mermaid(language) {
         if let Some(handler) = opts.media.as_ref().and_then(|media| media.diagram.as_ref()) {
             let frame_id: SharedString = format!("{}-mermaid-{ix}", opts.row_key).into();
             let diagram = handler(code, frame_id.clone(), theme);
@@ -2144,6 +2271,16 @@ fn render_code_block_source_with_actions(
     };
     let scroll_id: SharedString = format!("{}-code{ix}", opts.row_key).into();
     let sel_wash = selection_wash(theme);
+    // Mermaid source is not searchable (its diagram view has no text), so
+    // find never highlights it — the count side skips it too.
+    let find = opts
+        .find
+        .clone()
+        .filter(|_| !is_mermaid(language))
+        .map(|find| FindPaint {
+            find,
+            row_key: opts.row_key.clone(),
+        });
     let code_ui = opts.code.as_ref().and_then(|code| code.get(&ix)).cloned();
     let fit_content = code_ui.as_ref().is_some_and(|ui| ui.fit_content);
 
@@ -2232,7 +2369,13 @@ fn render_code_block_source_with_actions(
                                 .flex_none()
                         }
                     })
-                    .child(selectable_text_element(key, line.clone(), runs, sel_wash)),
+                    .child(selectable_text_element(
+                        key,
+                        line.clone(),
+                        runs,
+                        sel_wash,
+                        find.clone(),
+                    )),
             )
         }));
 

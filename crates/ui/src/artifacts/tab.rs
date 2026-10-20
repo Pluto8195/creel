@@ -19,8 +19,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, SharedString, Subscription, Task, WeakEntity,
-    Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Task,
+    WeakEntity, Window, div, prelude::*, px,
 };
 use zeron_proto::{
     ArtifactContentParams, ArtifactContentReply, ArtifactKind, ArtifactPinParams,
@@ -28,7 +28,9 @@ use zeron_proto::{
 };
 
 pub(crate) mod compare_view;
+pub(crate) mod find_view;
 pub(crate) use compare_view::CompareView;
+pub(crate) use find_view::bind_keys;
 
 use super::actions::ArtifactUiError;
 use super::compare;
@@ -67,6 +69,20 @@ pub(crate) trait ArtifactWebHost {
     /// presentation like a Browser tab's).
     fn browser(&self) -> Option<Entity<crate::browser::BrowserSurface>> {
         None
+    }
+    /// Run a script in the page's outer document (find commands).
+    fn run_script(&mut self, _script: &str, _cx: &mut App) {}
+    /// Read the page's last report ([`super::find::READ_STATE_SCRIPT`]).
+    fn read_state(&mut self, _cx: &mut App) -> Task<Option<String>> {
+        Task::ready(None)
+    }
+    /// Take keyboard focus out of the page so a GPUI field can have it.
+    fn focus_chrome(&mut self, _cx: &mut App) {}
+    /// Forward Escape from the page to GPUI (while the find bar is open).
+    fn forward_escape(&mut self, _on: bool, _cx: &mut App) {}
+    /// Whether scripts reach the page (find and the section index need it).
+    fn supports_scripts(&self) -> bool {
+        true
     }
 }
 
@@ -137,6 +153,31 @@ impl ArtifactWebHost for BrowserWebHost {
     fn browser(&self) -> Option<Entity<crate::browser::BrowserSurface>> {
         Some(self.browser.clone())
     }
+
+    fn run_script(&mut self, script: &str, cx: &mut App) {
+        self.browser.read(cx).run_script(script);
+    }
+
+    fn read_state(&mut self, cx: &mut App) -> Task<Option<String>> {
+        self.browser.update(cx, |browser, cx| {
+            browser.read_script(super::find::READ_STATE_SCRIPT, cx)
+        })
+    }
+
+    fn focus_chrome(&mut self, cx: &mut App) {
+        self.browser.read(cx).focus_host_chrome();
+    }
+
+    fn forward_escape(&mut self, on: bool, cx: &mut App) {
+        self.browser.update(cx, |browser, _| {
+            browser.set_extra_forwarded_keys(if on { &["escape"] } else { &[] })
+        });
+    }
+
+    fn supports_scripts(&self) -> bool {
+        // The script bridge is macOS-only for now.
+        cfg!(target_os = "macos")
+    }
 }
 
 /// Whether the Markdown preview hands `url` (a non-web link) to the artifact
@@ -205,6 +246,9 @@ pub(crate) struct ArtifactTab {
     /// Renders both revisions offscreen for "Highlight changes" and onion
     /// skin: the platform's web renderer, or a fake in tests.
     renderer: Option<Rc<dyn ArtifactRenderer>>,
+    /// ⌘F find and the section index (`tab/find_view.rs`).
+    focus: FocusHandle,
+    nav: find_view::FindNav,
     _load: Option<Task<()>>,
     _compare: Option<Task<()>>,
     _compare_render: Option<Task<()>>,
@@ -260,6 +304,8 @@ impl ArtifactTab {
             generation: 0,
             compare: None,
             renderer: default_renderer(),
+            focus: cx.focus_handle(),
+            nav: find_view::FindNav::new(cx),
             _load: None,
             _compare: None,
             _compare_render: None,
@@ -448,6 +494,7 @@ impl ArtifactTab {
             }
             ArtifactBody::Options(_) | ArtifactBody::Text(_) | ArtifactBody::Invalid(_) => {}
         }
+        self.document_changed(cx);
         cx.notify();
     }
 
@@ -524,6 +571,7 @@ impl ArtifactTab {
             preview
         });
         self.markdown = Some(preview.clone());
+        self.watch_markdown(&preview, cx);
         preview
     }
 
@@ -1290,10 +1338,14 @@ impl gpui::Render for ArtifactTab {
                 )
         });
         let body = self.render_body(&theme, cx);
-        root.child(header)
+        let find_bar = self.render_find_bar(&theme, cx);
+        let body = self.with_section_index(body, &theme, cx);
+        self.with_find_keys(root, cx)
+            .child(header)
             .child(toolbar)
             .children(picker)
             .children(notice)
+            .children(find_bar)
             .child(div().flex_1().min_h_0().relative().child(body))
     }
 }
@@ -1341,19 +1393,40 @@ pub(crate) fn image_format(mime: &str) -> gpui::ImageFormat {
     }
 }
 
+/// What a [`FakeWebHost`] saw and answers: the scripts run in the page, the
+/// state it reports back, how often chrome took focus, and whether Escape is
+/// forwarded.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct WebProbe {
+    pub(crate) scripts: Rc<std::cell::RefCell<Vec<String>>>,
+    pub(crate) state: Rc<std::cell::RefCell<Option<String>>>,
+    pub(crate) chrome_focused: Rc<std::cell::Cell<u32>>,
+    pub(crate) escape_forwarded: Rc<std::cell::Cell<bool>>,
+}
+
 /// A fake web renderer for tests: records every document it is asked to
 /// show.
 #[cfg(test)]
 pub(crate) struct FakeWebHost {
     pub(crate) shown: Rc<std::cell::RefCell<Vec<(String, String)>>>,
+    pub(crate) probe: WebProbe,
 }
 
 #[cfg(test)]
 impl FakeWebHost {
     pub(crate) fn factory(shown: Rc<std::cell::RefCell<Vec<(String, String)>>>) -> WebHostFactory {
+        Self::probed_factory(shown, WebProbe::default())
+    }
+
+    pub(crate) fn probed_factory(
+        shown: Rc<std::cell::RefCell<Vec<(String, String)>>>,
+        probe: WebProbe,
+    ) -> WebHostFactory {
         Rc::new(move |_, _, _| {
             Box::new(FakeWebHost {
                 shown: shown.clone(),
+                probe: probe.clone(),
             }) as Box<dyn ArtifactWebHost>
         })
     }
@@ -1370,5 +1443,23 @@ impl ArtifactWebHost for FakeWebHost {
             .debug_selector(|| "artifact-fake-web".into())
             .size_full()
             .into_any_element()
+    }
+
+    fn run_script(&mut self, script: &str, _: &mut App) {
+        self.probe.scripts.borrow_mut().push(script.to_owned());
+    }
+
+    fn read_state(&mut self, _: &mut App) -> Task<Option<String>> {
+        Task::ready(self.probe.state.borrow().clone())
+    }
+
+    fn focus_chrome(&mut self, _: &mut App) {
+        self.probe
+            .chrome_focused
+            .set(self.probe.chrome_focused.get() + 1);
+    }
+
+    fn forward_escape(&mut self, on: bool, _: &mut App) {
+        self.probe.escape_forwarded.set(on);
     }
 }

@@ -6296,6 +6296,7 @@ impl Transcript {
                     link: self.link_ui(),
                     workspace_root: workspace_root.clone(),
                     code,
+                    find: None,
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 render::render_block(
@@ -6346,6 +6347,7 @@ impl Transcript {
                     link: self.link_ui(),
                     workspace_root: workspace_root.clone(),
                     code,
+                    find: None,
                 };
                 if seed_history && let Some(veil) = &veil {
                     let historical = &self.historical_markdown[&row.id];

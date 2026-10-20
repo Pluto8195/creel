@@ -134,6 +134,7 @@ impl BrowserSurface {
                 super::native::NativePage::new(window, &self.context.data, self.native_tx.clone())
                     .map(|mut native| {
                         native.present(self.presentation);
+                        native.set_extra_forwarded_keys(self.extra_forwarded_keys.clone());
                         self.native = Some(native);
                     })
                     .and_then(|_| self.native.as_ref().unwrap().load_document(&document))

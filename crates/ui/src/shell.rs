@@ -466,6 +466,8 @@ pub fn apply_keymap(
         ),
     ]);
     crate::browser::bind_keys(cx, keymap);
+    // ⌘F / ⌘G / ⇧⌘G inside an Artifact tab (after the global ⌘F above).
+    crate::artifacts::tab::bind_keys(cx);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
     // the user cleared it on purpose.
@@ -12340,13 +12342,20 @@ impl Render for Shell {
                             let page = this.ensure_pr_review_chats_page(cx);
                             page.update(cx, |page, cx| page.focus_search(window, cx));
                         }
-                        _ => {}
+                        // Not a search surface: let a deeper owner of ⌘F (an
+                        // Artifact tab's find bar) have the key.
+                        _ => cx.propagate(),
                     }
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenRepositoryTopology, _, cx| {
-                if matches!(this.route, Route::Overview) && !this.overlay_owns_keyboard(cx) {
-                    this.open_repository_topology(cx);
+                if matches!(this.route, Route::Overview) {
+                    if !this.overlay_owns_keyboard(cx) {
+                        this.open_repository_topology(cx);
+                    }
+                } else {
+                    // ⇧⌘G is also "find previous" inside an Artifact tab.
+                    cx.propagate();
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenPrReviewChats, window, cx| {

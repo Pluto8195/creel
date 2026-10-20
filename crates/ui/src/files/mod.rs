@@ -23,6 +23,7 @@ pub mod editor;
 pub mod editor_adapter;
 mod git_status;
 mod image_preview;
+pub(crate) mod markdown_find;
 pub(crate) mod markdown_media;
 pub(crate) mod markdown_preview;
 pub mod model;

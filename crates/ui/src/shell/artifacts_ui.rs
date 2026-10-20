@@ -186,6 +186,7 @@ impl Shell {
         });
         if let Some(id) = existing {
             self.set_right_active(RightSurface::Artifact(id), cx);
+            self.focus_artifact_tab(id, window, cx);
             return;
         }
         self.artifact_tabs.seq += 1;
@@ -218,6 +219,15 @@ impl Shell {
             .or_default()
             .push(RightSurface::Artifact(id));
         self.set_right_active(RightSurface::Artifact(id), cx);
+        self.focus_artifact_tab(id, window, cx);
+    }
+
+    /// Put keyboard focus in an Artifact tab, so ⌘F finds in it.
+    fn focus_artifact_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.artifact_tabs.tabs.get(&id) {
+            let handle = tab.read(cx).find_focus_handle().clone();
+            window.focus(&handle, cx);
+        }
     }
 
     /// A web link in an artifact follows the web-link preference.
@@ -539,6 +549,120 @@ mod tests {
         });
         vcx.run_until_parked();
         assert_eq!(registers(&calls), 1);
+    }
+
+    /// ⌘F belongs to the Artifact tab only while the tab has focus; on the
+    /// Overview (and from the composer) it keeps its old meaning.
+    #[gpui::test]
+    fn cmd_f_is_find_in_a_focused_artifact_tab_and_outline_search_elsewhere(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = init_ui(cx);
+        let mut plan = artifact(&id(1), "Plan", ArtifactKind::Markdown);
+        plan.space_id = "s1".into();
+        plan.chat_id = Some("c1".into());
+        let reply: Reply = Arc::new(|_, _| {
+            Ok(content_reply(
+                ArtifactKind::Markdown,
+                1,
+                "# Plan\n\nA plan.\n\n## One\n\ntext\n\n## Two\n\ntext\n",
+                ArtifactContentEncoding::Utf8,
+            ))
+        });
+        let (shell, _, _, vcx) = artifact_shell(cx, dir.path(), vec![plan], reply);
+        vcx.update(|_, cx| {
+            crate::shell::apply_keymap(
+                cx,
+                &crate::settings::KeymapConfig::default(),
+                crate::settings::ComposerSendBehavior::default(),
+            )
+        });
+        shell.update_in(vcx, |shell, window, cx| {
+            assert!(shell.open_artifact_link(&format!("zeron-artifact:{}", id(1)), window, cx));
+        });
+        vcx.run_until_parked();
+        // The Markdown preview parses after a short debounce.
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        let tab = shell
+            .read_with(vcx, |shell, _| {
+                shell.artifact_tabs.tabs.values().next().cloned()
+            })
+            .expect("artifact tab");
+        let find_open =
+            |vcx: &mut gpui::VisualTestContext| tab.read_with(vcx, |tab, _| tab.find_state().open);
+        let combo = crate::settings::platform_combo(FOCUS_OVERVIEW_SEARCH_COMBO);
+
+        // From the composer: ⌘F is not the tab's.
+        vcx.update(|window, cx| {
+            let composer = shell.read(cx).composer.focus_handle(cx);
+            window.focus(&composer, cx)
+        });
+        vcx.simulate_keystrokes(&combo);
+        assert!(!find_open(vcx), "⌘F from the composer");
+
+        // With focus deeper inside the tab (the Markdown preview), too.
+        vcx.update(|window, cx| {
+            let preview = tab.read(cx).markdown_for_tests().expect("preview");
+            let handle = preview.read(cx).focus.clone();
+            window.focus(&handle, cx)
+        });
+        vcx.simulate_keystrokes(&combo);
+        vcx.run_until_parked();
+        assert!(find_open(vcx), "⌘F from inside the preview opens find");
+        vcx.simulate_keystrokes("escape");
+        assert!(!find_open(vcx));
+
+        // With focus in the tab: find opens, and the outline search is untouched.
+        vcx.update(|window, cx| {
+            let handle = tab.read(cx).find_focus_handle().clone();
+            window.focus(&handle, cx)
+        });
+        vcx.simulate_keystrokes(&combo);
+        vcx.run_until_parked();
+        assert!(find_open(vcx), "⌘F in the tab opens find");
+        // Typing in the field (a deeper key context than the tab) and
+        // stepping with the app's global ⇧⌘G still reaches find.
+        vcx.simulate_keystrokes("p l a n");
+        vcx.run_until_parked();
+        let label = |vcx: &mut gpui::VisualTestContext| {
+            tab.read_with(vcx, |tab, _| tab.find_state().label())
+        };
+        assert_eq!(label(vcx), "1 of 2");
+        vcx.simulate_keystrokes(&crate::settings::platform_combo("mod-g"));
+        assert_eq!(label(vcx), "2 of 2");
+        vcx.simulate_keystrokes(&crate::settings::platform_combo("mod-shift-g"));
+        assert_eq!(
+            label(vcx),
+            "1 of 2",
+            "⇧⌘G steps back, not Repository Topology"
+        );
+        // ⌘F again from the field selects its text: typing replaces it.
+        vcx.simulate_keystrokes(&combo);
+        vcx.simulate_keystrokes("o n e");
+        assert_eq!(
+            tab.read_with(vcx, |tab, _| tab.find_state().query.clone()),
+            "one"
+        );
+        vcx.simulate_keystrokes("escape");
+        assert!(!find_open(vcx), "Esc closes it");
+
+        // On the Overview the key is still the outline search.
+        shell.update(vcx, |shell, cx| shell.open_overview(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.blur());
+        vcx.simulate_keystrokes(&combo);
+        vcx.run_until_parked();
+        let overview = shell
+            .read_with(vcx, |shell, _| shell.overview_page.clone())
+            .expect("overview page");
+        assert!(
+            vcx.update(|window, cx| overview.read(cx).search_focused(window, cx)),
+            "⌘F on the Overview focuses its search"
+        );
+        assert!(!find_open(vcx));
     }
 
     #[gpui::test]

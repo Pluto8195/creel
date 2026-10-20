@@ -121,6 +121,9 @@ pub struct BrowserSurface {
     favicon_task: Option<gpui::Task<()>>,
     #[cfg(target_os = "macos")]
     favicon_generation: u64,
+    /// Extra keystrokes forwarded from the native page to GPUI; applied to
+    /// every native page this surface creates.
+    extra_forwarded_keys: Vec<String>,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserSurface {}
@@ -202,6 +205,7 @@ impl BrowserSurface {
             favicon_task: None,
             #[cfg(target_os = "macos")]
             favicon_generation: 0,
+            extra_forwarded_keys: Vec::new(),
         }
     }
 
@@ -228,6 +232,56 @@ impl BrowserSurface {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = keymap;
+    }
+
+    /// Forward these keystrokes (e.g. `["escape"]`, `gpui::Keystroke::parse`
+    /// format) from the native page to GPUI while the page has focus.
+    pub(crate) fn set_extra_forwarded_keys(&mut self, keys: &[&str]) {
+        self.extra_forwarded_keys = keys.iter().map(|key| (*key).to_owned()).collect();
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.set_extra_forwarded_keys(self.extra_forwarded_keys.clone());
+        }
+    }
+
+    /// Run a script in the page without waiting for a result. No-op until the
+    /// native page exists.
+    pub(crate) fn run_script(&self, script: &str) {
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.run_script(script);
+        }
+        // TODO: the linux helper only exposes a fixture-gated evaluate.
+        #[cfg(not(target_os = "macos"))]
+        let _ = script;
+    }
+
+    /// Evaluate a script and resolve to its result when that is a JS string.
+    /// Resolves `None` on error or when the native page does not exist.
+    pub(crate) fn read_script(
+        &self,
+        script: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Task<Option<String>> {
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            let (tx, rx) = futures::channel::oneshot::channel::<Option<String>>();
+            native.evaluate_string(script, move |text| {
+                let _ = tx.send(text);
+            });
+            return cx.spawn(async move |_, _| rx.await.ok().flatten());
+        }
+        // TODO: linux has no result-returning evaluate yet.
+        let _ = script;
+        cx.spawn(async move |_, _| None)
+    }
+
+    /// Move keyboard focus out of the web view so GPUI inputs receive keys.
+    pub(crate) fn focus_host_chrome(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.focus_chrome();
+        }
     }
 
     pub fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -368,6 +422,8 @@ impl BrowserSurface {
                 native::NativePage::new(window, &self.context.data, self.native_tx.clone())
                     .map(|mut native| {
                         native.present(self.presentation);
+                        #[cfg(target_os = "macos")]
+                        native.set_extra_forwarded_keys(self.extra_forwarded_keys.clone());
                         self.native = Some(native);
                     })
                     .and_then(|_| self.native.as_ref().unwrap().load(&url))
@@ -742,6 +798,32 @@ mod tests {
                 assert_eq!(browser.address.read(cx).text(), "https://example.com/");
                 assert!(browser.focus.is_focused(window));
                 window.blur();
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn script_and_focus_bridges_are_harmless_without_a_native_page(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            crate::composer::init(cx, Default::default());
+            cx.set_global(crate::theme::Theme::default());
+        });
+        let window = cx.add_window(|window, cx| {
+            BrowserSurface::new(BrowserContext::default(), false, window, cx)
+        });
+        let task = window
+            .update(cx, |browser, _, cx| {
+                browser.set_extra_forwarded_keys(&["escape", "cmd-shift-g"]);
+                browser.run_script("document.title");
+                browser.focus_host_chrome();
+                browser.read_script("document.title", cx)
+            })
+            .unwrap();
+        assert_eq!(cx.foreground_executor().block_test(task), None);
+        window
+            .update(cx, |browser, _, _| {
+                assert_eq!(browser.extra_forwarded_keys, ["escape", "cmd-shift-g"]);
             })
             .unwrap();
     }
