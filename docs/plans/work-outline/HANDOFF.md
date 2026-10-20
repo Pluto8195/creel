@@ -82,14 +82,37 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   In the outline a child chat nests under its parent chat only when it has no item of its own or
   shares the parent's item; a coordinator's child shows under the item it was started on.
 
+- **Outline fixes** (2026-10-20, first release by the coordinator):
+  - Instructions longer than 4 lines collapse behind Show more / Show less. ↑ ↓ Edit Remove sit in
+    the entry's header row. The instruction action "Archive" is now "Remove" and still has undo.
+  - Synced PR and Linear chips keep their last data during a refresh or after a failed pull. They
+    used to drop to "#42" / "ENG-1" on every 2-minute (PR) or 5-minute (Linear) refresh. A
+    search-list row no longer overwrites a fully fetched PR status (`github/store.rs`,
+    `linear/store.rs`).
+  - An archived item with no visible child item is hidden even when it still has live chats; those
+    chats show under Unassociated Chats. This used to leave archived synced PR items on screen,
+    dimmed and immovable, because they keep their review chat (`work_outline/model.rs`).
+
 ## Working model (since 2026-10-20)
 
 Zeron development is organised in the Work Outline under the root item "Zeron Dev"
 (`48ef4b86c9967626ba1b6372e4cdfa66`, Space agent-mode-tools) with children Release, Bugs, Features,
 Parked. A coordinator chat on that root starts child chats on the right items with
 `create_chat { workItemId }`, polls `work_outline_read_subtree` for "Ready to merge" actions, and is
-the only chat that merges, installs, edits this file, and pushes. Feature and bug chats push their
+the only chat that merges, installs, edits this file, and pushes. The coordinator does the release
+itself; there is no separate Release chat (Mikey, 2026-10-20). Feature and bug chats push their
 branch and raise "Ready to merge: <branch>".
+
+Coordinator tips:
+- Never block on a child with a foreground `wait_for_turn`, because Mikey keeps giving new work
+  while children run. A child that runs its tests in the background goes idle before it is done,
+  so idle doesn't mean finished. The reliable "done" signal is its branch appearing on origin: in
+  a background shell, run `until git ls-remote origin <branch> | grep -q .; do sleep 60; done`,
+  then read the subtree for the Ready to merge action.
+- `work_outline_read_subtree` cuts long action `detail`s short (`detailTruncated`). For the full
+  text, `read_chat` the `originChatId`.
+
+The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners and chimes replace it.
 
 ## Known gaps
 
