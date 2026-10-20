@@ -168,6 +168,9 @@ struct LaunchInputs<'a> {
     config: &'a Option<ChatConfig>,
     execution_override: &'a Option<ExecutionOverride>,
     worktree_choice: &'a Option<WorktreeChoice>,
+    /// Omitted when absent, so a user launch's hash never changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_chat_id: &'a Option<String>,
 }
 
 /// The launch workflow and Turn continuation. Cheap to clone.
@@ -290,6 +293,7 @@ impl WorkItemLaunchService {
             config: &p.config,
             execution_override: &p.execution_override,
             worktree_choice: &p.worktree_choice,
+            parent_chat_id: &p.parent_chat_id,
         });
 
         // Ownership: the Space must live on this device (the RPC layer
@@ -394,6 +398,7 @@ impl WorkItemLaunchService {
             &space_id,
             &validated.execution_root,
             p.config.clone(),
+            p.parent_chat_id.as_deref(),
         )?;
         self.checkpoint(LaunchStep::ChatCreated)?;
 
@@ -786,11 +791,15 @@ impl WorkItemLaunchService {
         space_id: &str,
         execution_root: &str,
         config: Option<ChatConfig>,
+        parent_chat_id: Option<&str>,
     ) -> Result<(), WorkOutlineError> {
         match self.workspace.chat(chat_id).map_err(engine_error)? {
             Some(chat) => {
                 if chat.space_id.as_deref() != Some(space_id) {
                     return Err(conflict("The launch's Chat belongs to another Space"));
+                }
+                if parent_chat_id.is_some() && chat.parent_chat_id.as_deref() != parent_chat_id {
+                    return Err(conflict("The launch's Chat has another parent Chat"));
                 }
                 if !same_path(chat.cwd.as_deref().unwrap_or(""), execution_root) {
                     return Err(conflict("The launch's Chat was created in another folder"));
@@ -805,7 +814,7 @@ impl WorkItemLaunchService {
                     None,
                     config,
                     Some(execution_root.to_owned()),
-                    None,
+                    parent_chat_id.map(str::to_owned),
                 )
                 .map_err(engine_error),
         }

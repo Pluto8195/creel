@@ -823,6 +823,7 @@ impl EngineRpc {
             work_outline.clone(),
             Some(doc_host.clone()),
         ));
+        agent_tools.set_sessions(sessions.clone());
         let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
             workspace.clone(),
             doc_host.clone(),
@@ -3018,6 +3019,22 @@ impl RpcService for EngineRpc {
             zeron_proto::agent_tools::TOOL_CALL_METHOD => {
                 let p: zeron_proto::agent_tools::AgentToolCallParams = parse_params(params)?;
                 let service = self.agent_tools.clone();
+                if p.tool == zeron_proto::agent_tools::tools::LAUNCH_CHILD_CHAT {
+                    // A child Chat started for a work item: authorize and
+                    // shape it as the caller's token, then run the UI's
+                    // Start Chat workflow (async, so not in `call`).
+                    let launch =
+                        tokio::task::spawn_blocking(move || service.prepare_child_launch(&p))
+                            .await
+                            .map_err(|e| RpcError::Failed(e.to_string()))?
+                            .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                    let reply = self
+                        .launch
+                        .create_chat_for_work_item(&launch)
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_wire_message()))?;
+                    return RpcReply::value(&reply);
+                }
                 let reply = tokio::task::spawn_blocking(move || service.call(&p))
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?

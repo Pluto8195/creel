@@ -51,6 +51,7 @@ use zeron_proto::{
 };
 
 use crate::doc_host::DocHost;
+use crate::sessions::SessionsEngine;
 use crate::work_outline::WorkOutlineService;
 use crate::workspace_host::WorkspaceHost;
 
@@ -463,6 +464,70 @@ struct QueueChildTurnArgs {
     attachments: Vec<String>,
 }
 
+/// `work_outline_read_subtree` arguments.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadSubtreeArgs {
+    /// Default: the Chat's own item.
+    #[serde(default)]
+    work_item_id: Option<String>,
+    /// Levels of descendants below the item (default 4, at most 8).
+    #[serde(default)]
+    max_depth: Option<u32>,
+    #[serde(default)]
+    include_archived: bool,
+}
+
+/// The engine-internal `chat_launch_child_for_item` arguments: the work item
+/// the child is started for, its first prompt, and its config. The MCP
+/// server fills the config in from the caller's (sandbox capped); the engine
+/// re-checks the caps.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchChildArgs {
+    work_item_id: String,
+    prompt: String,
+    #[serde(default)]
+    config: Option<zeron_proto::ChatConfig>,
+}
+
+/// Most items one `work_outline_read_subtree` call returns.
+const MAX_SUBTREE_ITEMS: usize = 300;
+/// Deepest `maxDepth` of `work_outline_read_subtree` (default 4).
+const MAX_SUBTREE_DEPTH: u32 = 8;
+const DEFAULT_SUBTREE_DEPTH: u32 = 4;
+/// Most Chats / open requests listed per item in a subtree read.
+const MAX_SUBTREE_ITEM_ROWS: usize = 25;
+/// Longest `detail` a subtree read returns per request.
+const MAX_SUBTREE_DETAIL_CHARS: usize = 1000;
+
+fn sandbox_rank(level: SandboxLevel) -> u8 {
+    match level {
+        SandboxLevel::ReadOnly => 0,
+        SandboxLevel::WorkspaceWrite => 1,
+        SandboxLevel::DangerFullAccess => 2,
+    }
+}
+
+/// Whether `target` is `root` or one of its effective descendants.
+fn in_subtree(snapshot: &zeron_proto::WorkOutlineSnapshot, root: &str, target: &str) -> bool {
+    let mut cursor = Some(target.to_owned());
+    let mut steps = 0usize;
+    while let Some(id) = cursor {
+        if id == root {
+            return true;
+        }
+        steps += 1;
+        if steps > snapshot.items.len() {
+            return false;
+        }
+        cursor = snapshot
+            .item(&id)
+            .and_then(|item| item.parent_work_item_id.clone());
+    }
+    false
+}
+
 /// Most attachments a child's first Turn may carry.
 const MAX_CHILD_ATTACHMENTS: usize = 16;
 /// Longest `read_current` waits for a Linear issue that is not cached.
@@ -536,6 +601,8 @@ pub struct AgentToolsService {
     workspace: WorkspaceHost,
     work_outline: Arc<WorkOutlineService>,
     doc_host: Option<DocHost>,
+    /// Live Chat status for `work_outline_read_subtree` (engine assembly).
+    sessions: Mutex<Option<SessionsEngine>>,
     /// Serializes `create_chat` input claims (check-then-mark).
     child_claims: Mutex<()>,
     /// Linear integration: `read_current` adds the linked ticket in Spaces
@@ -557,10 +624,16 @@ impl AgentToolsService {
             workspace,
             work_outline,
             doc_host,
+            sessions: Mutex::new(None),
             child_claims: Mutex::new(()),
             linear: Mutex::new(None),
             artifacts: Mutex::new(None),
         }
+    }
+
+    /// Attach the sessions engine (live Chat status in subtree reads).
+    pub fn set_sessions(&self, sessions: SessionsEngine) {
+        *lock(&self.sessions) = Some(sessions);
     }
 
     /// Attach the engine's artifact service (engine assembly).
@@ -703,6 +776,7 @@ impl AgentToolsService {
         let arguments = &params.arguments;
         match params.tool.as_str() {
             tools::READ_CURRENT => Ok(self.read_current(&context)),
+            tools::READ_SUBTREE => self.read_subtree(&context, arguments),
             tools::CREATE_CHILD => self.create_child(&context, arguments),
             tools::ASSOCIATE_CURRENT_CHAT => self.associate_current_chat(&context, arguments),
             tools::SET_STATUS => self.set_status(&context, arguments),
@@ -1126,6 +1200,253 @@ impl AgentToolsService {
             "commandId": command_id,
             "queued": queued,
         }))
+    }
+}
+
+impl AgentToolsService {
+    /// `work_outline_read_subtree`: the caller's item (or a descendant) with
+    /// its descendants, each with its attached Chats and open user action
+    /// requests, from ONE snapshot. Read-only; the target must be the
+    /// caller's item or inside its subtree.
+    fn read_subtree(
+        &self,
+        context: &CallContext,
+        arguments: &Value,
+    ) -> Result<Value, AgentToolError> {
+        let args: ReadSubtreeArgs = parse_args(arguments)?;
+        let root = context.require_item("reading its subtree")?;
+        let target = non_empty(args.work_item_id).unwrap_or_else(|| root.clone());
+        let max_depth = args
+            .max_depth
+            .unwrap_or(DEFAULT_SUBTREE_DEPTH)
+            .min(MAX_SUBTREE_DEPTH);
+        let snapshot = self.work_outline.snapshot(&context.grant.space_id);
+        if snapshot.item(&target).is_none() || !in_subtree(&snapshot, &root, &target) {
+            return Err(WorkOutlineError::unauthorized(
+                "Agents may only read their own work item and its descendants",
+            )
+            .into());
+        }
+        let sessions = lock(&self.sessions).clone();
+        let mut requests: HashMap<&str, Vec<&zeron_proto::UserActionRequestView>> = HashMap::new();
+        for request in snapshot
+            .user_action_requests
+            .iter()
+            .filter(|r| r.is_unresolved())
+        {
+            requests
+                .entry(request.work_item_id.as_str())
+                .or_default()
+                .push(request);
+        }
+        let walk = SubtreeWalk {
+            snapshot: &snapshot,
+            workspace: &self.workspace,
+            sessions: sessions.as_ref(),
+            requests: &requests,
+            include_archived: args.include_archived,
+            max_depth,
+        };
+        let mut count = 0usize;
+        let mut truncated = false;
+        let tree = walk
+            .node(&target, 0, &mut count, &mut truncated)
+            .unwrap_or(Value::Null);
+        Ok(json!({
+            "chatId": context.grant.chat_id,
+            "rootWorkItemId": root,
+            "workItemId": target,
+            "maxDepth": max_depth,
+            "includeArchived": args.include_archived,
+            "itemCount": count,
+            "truncated": truncated,
+            "tree": tree,
+        }))
+    }
+
+    /// `chat_launch_child_for_item` (engine-internal): authorize and shape
+    /// the launch of a child Chat for a work item. `agent_tools` has no async
+    /// launch service, so the RPC layer runs the returned params through the
+    /// same `CreateChatForWorkItem` workflow the UI's Start Chat uses.
+    ///
+    /// The target must be the caller's item or a descendant (else
+    /// `work-outline/unauthorized`), the child's sandbox may not exceed the
+    /// caller's, approval is never automatic, and the new Chat records the
+    /// caller as its parent. Ids derive from `(token Chat, idempotencyKey)`.
+    pub fn prepare_child_launch(
+        &self,
+        params: &AgentToolCallParams,
+    ) -> Result<zeron_proto::CreateChatForWorkItemParams, AgentToolError> {
+        let context = self.context(&params.token)?;
+        let operation_id = context.operation_id(&params.arguments)?;
+        let args: LaunchChildArgs = parse_args(&params.arguments)?;
+        if args.prompt.trim().is_empty() {
+            return Err(AgentToolError::invalid(
+                "a prompt is required to start a chat for a work item",
+            ));
+        }
+        let root = context.require_item("starting a chat for a work item")?;
+        let snapshot = self.work_outline.snapshot(&context.grant.space_id);
+        if snapshot.item(&args.work_item_id).is_none()
+            || !in_subtree(&snapshot, &root, &args.work_item_id)
+        {
+            return Err(WorkOutlineError::unauthorized(
+                "Agents may only start chats for their own work item and its descendants",
+            )
+            .into());
+        }
+        let caller = self
+            .workspace
+            .chat(&context.grant.chat_id)
+            .ok()
+            .flatten()
+            .ok_or_else(AgentToolError::unauthenticated)?;
+        let cap = caller
+            .config
+            .as_ref()
+            .map(|c| c.sandbox)
+            .unwrap_or(SandboxLevel::WorkspaceWrite);
+        let config = args.config.map(|mut config| {
+            config.auto_approve = false;
+            config
+        });
+        if let Some(config) = &config
+            && sandbox_rank(config.sandbox) > sandbox_rank(cap)
+        {
+            return Err(AgentToolError::refused(
+                AgentToolErrorCode::Forbidden,
+                "a child chat can never have a wider sandbox than its parent",
+            ));
+        }
+        Ok(zeron_proto::CreateChatForWorkItemParams {
+            work_item_id: args.work_item_id,
+            initial_prompt: zeron_proto::WorkItemPrompt {
+                text: args.prompt,
+                attachments: Vec::new(),
+            },
+            config,
+            execution_override: None,
+            worktree_choice: None,
+            operation_id,
+            parent_chat_id: Some(context.grant.chat_id.clone()),
+            target_device_id: None,
+        })
+    }
+}
+
+/// One `work_outline_read_subtree` walk.
+struct SubtreeWalk<'a> {
+    snapshot: &'a zeron_proto::WorkOutlineSnapshot,
+    workspace: &'a WorkspaceHost,
+    sessions: Option<&'a SessionsEngine>,
+    requests: &'a HashMap<&'a str, Vec<&'a zeron_proto::UserActionRequestView>>,
+    include_archived: bool,
+    max_depth: u32,
+}
+
+impl SubtreeWalk<'_> {
+    /// The nested node for `id` (depth 0 = the read's root), depth-first in
+    /// outline order; `None` once [`MAX_SUBTREE_ITEMS`] is reached (which
+    /// also sets `truncated`).
+    fn node(&self, id: &str, depth: u32, count: &mut usize, truncated: &mut bool) -> Option<Value> {
+        let item = self.snapshot.item(id)?;
+        if *count >= MAX_SUBTREE_ITEMS {
+            *truncated = true;
+            return None;
+        }
+        *count += 1;
+        let visible_children: Vec<&str> = item
+            .child_ids
+            .iter()
+            .filter_map(|child| self.snapshot.item(child))
+            .filter(|child| self.include_archived || child.archived_at.is_none())
+            .map(|child| child.id.as_str())
+            .collect();
+        let mut children = Vec::new();
+        let mut omitted = 0usize;
+        if depth < self.max_depth {
+            for child in &visible_children {
+                match self.node(child, depth + 1, count, truncated) {
+                    Some(node) => children.push(node),
+                    None => omitted += 1,
+                }
+            }
+        } else {
+            omitted = visible_children.len();
+        }
+        let chats = self.chats_of(item);
+        let open = self.requests.get(id).map(Vec::as_slice).unwrap_or_default();
+        let mut node = json!({
+            "id": item.id,
+            "title": item.title,
+            "status": item.status,
+            "effectiveStatus": item.effective_status,
+            "chats": chats.0,
+            "openUserActionRequests": open
+                .iter()
+                .take(MAX_SUBTREE_ITEM_ROWS)
+                .map(|r| json!({
+                    "id": r.id,
+                    "text": r.text,
+                    "detail": r.info.as_deref().map(|d| d.chars().take(MAX_SUBTREE_DETAIL_CHARS).collect::<String>()),
+                    "originChatId": r.chat_id,
+                    "createdAt": r.created_at,
+                }))
+                .collect::<Vec<_>>(),
+            "children": children,
+        });
+        if item.archived_at.is_some() {
+            node["archived"] = json!(true);
+        }
+        if chats.1 > 0 {
+            node["chatsOmitted"] = json!(chats.1);
+        }
+        if open.len() > MAX_SUBTREE_ITEM_ROWS {
+            node["openUserActionRequestsOmitted"] = json!(open.len() - MAX_SUBTREE_ITEM_ROWS);
+        }
+        if omitted > 0 {
+            node["childrenOmitted"] = json!(omitted);
+        }
+        Some(node)
+    }
+
+    /// The item's attached Chats (id, title, status, lastMessageAt) and how
+    /// many were left out.
+    fn chats_of(&self, item: &zeron_proto::WorkItemView) -> (Vec<Value>, usize) {
+        let mut chats = Vec::new();
+        let mut omitted = 0usize;
+        for chat_id in &item.chat_ids {
+            let Some(chat) = self.workspace.chat(chat_id).ok().flatten() else {
+                continue;
+            };
+            if chat.archived && !self.include_archived {
+                continue;
+            }
+            if chats.len() >= MAX_SUBTREE_ITEM_ROWS {
+                omitted += 1;
+                continue;
+            }
+            let status = match self.sessions.and_then(|s| s.session_status(chat_id)) {
+                Some(session) => match session.status {
+                    zeron_proto::SessionStatus::Working => "working",
+                    zeron_proto::SessionStatus::AwaitingInput => "awaitingInput",
+                    zeron_proto::SessionStatus::Errored => "errored",
+                    zeron_proto::SessionStatus::Idle => "idle",
+                },
+                None => "idle",
+            };
+            let mut value = json!({
+                "id": chat.id,
+                "title": chat.title,
+                "status": status,
+                "lastMessageAt": chat.last_message_at,
+            });
+            if chat.archived {
+                value["archived"] = json!(true);
+            }
+            chats.push(value);
+        }
+        (chats, omitted)
     }
 }
 

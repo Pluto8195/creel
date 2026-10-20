@@ -172,6 +172,7 @@ fn params(rig: &Rig, op: &str, prompt: &str) -> CreateChatForWorkItemParams {
         execution_override: None,
         worktree_choice: None,
         operation_id: op.into(),
+        parent_chat_id: None,
         target_device_id: None,
     }
 }
