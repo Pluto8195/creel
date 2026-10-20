@@ -14776,8 +14776,7 @@ mod logic_tests {
         // The controls live in the header row, above the text, and the
         // short entry's controls are at the top of its entry too.
         for ix in 0..2 {
-            let mut named =
-                |name: String| vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap();
+            let mut named = |name: String| vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap();
             let header = named(format!("work-item-instruction-header-{ix}"));
             let text = named(format!("work-item-instruction-text-{ix}"));
             for control in ["edit", "archive"] {
@@ -14789,30 +14788,19 @@ mod logic_tests {
         // Collapsed to four lines: well short of the full text, and the
         // controls did not move down with the text.
         assert!(f32::from(collapsed.size.height) <= line * 4.0 + 1.0);
-        let edit_top = vcx
-            .debug_bounds("work-item-instruction-edit-0")
-            .unwrap()
-            .top();
+        let edit_top = vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top();
 
         // Show more expands, Show less collapses again.
-        let fold = vcx
-            .debug_bounds("work-item-instruction-fold-0")
-            .unwrap()
-            .center();
+        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
         vcx.simulate_click(fold, gpui::Modifiers::default());
         draw(vcx);
         let expanded = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
         assert!(f32::from(expanded.size.height) > f32::from(collapsed.size.height) * 1.5);
         assert_eq!(
-            vcx.debug_bounds("work-item-instruction-edit-0")
-                .unwrap()
-                .top(),
+            vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top(),
             edit_top
         );
-        let fold = vcx
-            .debug_bounds("work-item-instruction-fold-0")
-            .unwrap()
-            .center();
+        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
         vcx.simulate_click(fold, gpui::Modifiers::default());
         draw(vcx);
         let again = vcx.debug_bounds("work-item-instruction-text-0").unwrap();

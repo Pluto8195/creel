@@ -258,11 +258,13 @@ pub(crate) fn issue_chip(
 ) -> AnyElement {
     let selector = id.clone();
     let (dot, text, tip): (gpui::Hsla, String, String) = match entry {
-        Some(IssueEntry::Ready { issue, .. }) => (
-            crate::linear::hex_color(&issue.state.color, theme.text_muted),
-            issue_chip_text(issue),
-            format!("{} \u{00b7} {}", issue.identifier, issue.title),
-        ),
+        Some(IssueEntry::Ready { issue, .. }) => {
+            (
+                crate::linear::hex_color(&issue.state.color, theme.text_muted),
+                issue_chip_text(issue),
+                format!("{} \u{00b7} {}", issue.identifier, issue.title),
+            )
+        }
         Some(IssueEntry::Failed { error, .. }) => (
             theme.warning,
             identifier.to_string(),
