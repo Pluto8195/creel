@@ -683,6 +683,9 @@ pub mod agent_tools {
     pub mod tools {
         /// The Chat's work item, its effective instructions, and the Space.
         pub const READ_CURRENT: &str = "work_outline_read_current";
+        /// The Chat's item (or a descendant) with its descendants, their
+        /// attached Chats, and open user action requests; read-only.
+        pub const READ_SUBTREE: &str = "work_outline_read_subtree";
         /// Create a child under the Chat's item or one of its descendants.
         pub const CREATE_CHILD: &str = "work_outline_create_child";
         /// Associate the calling Chat (only) with an item of its Space.
@@ -699,6 +702,13 @@ pub mod agent_tools {
         /// Chat the MCP `create_chat` tool created, with ids derived from the
         /// calling Chat and its idempotency key so retries never duplicate it.
         pub const QUEUE_CHILD_CHAT_TURN: &str = "chat_queue_child_turn";
+        /// Engine-internal (not an MCP tool): start the child Chat the MCP
+        /// `create_chat` tool was asked to create for a work item
+        /// (`workItemId`: the caller's item or a descendant), through the
+        /// same launch workflow as the UI's Start Chat on an item. The Chat
+        /// records the caller as its parent; ids derive from the calling
+        /// Chat and its idempotency key.
+        pub const LAUNCH_CHILD_CHAT: &str = "chat_launch_child_for_item";
         /// Engine-internal (not an MCP tool): bind an MCP `create_chat`
         /// idempotency key to the hash of its inputs (durably, in the
         /// processed-command ledger). The same key with other inputs is
@@ -718,8 +728,9 @@ pub mod agent_tools {
         pub const ARTIFACTS: [&str; 3] = [ARTIFACT_PUBLISH, ARTIFACT_GET_PLAN, ARTIFACT_RENDER_CHECK];
 
         /// The Work Outline tools, in catalog order.
-        pub const WORK_OUTLINE: [&str; 7] = [
+        pub const WORK_OUTLINE: [&str; 8] = [
             READ_CURRENT,
+            READ_SUBTREE,
             CREATE_CHILD,
             ASSOCIATE_CURRENT_CHAT,
             SET_STATUS,

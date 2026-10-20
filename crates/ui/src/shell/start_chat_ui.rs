@@ -531,6 +531,7 @@ impl Shell {
             execution_override: None,
             worktree_choice,
             operation_id: String::new(),
+            parent_chat_id: None,
             target_device_id: None,
         };
         // Same inputs → same operation id (a retry completes the same start).

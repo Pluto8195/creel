@@ -87,6 +87,11 @@ pub struct CreateChatForWorkItemParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_choice: Option<WorktreeChoice>,
     pub operation_id: String,
+    /// The Chat that started this one (agent `create_chat` for a work item):
+    /// recorded as the new Chat's `parentChatId`. Absent for a launch the
+    /// user started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_chat_id: Option<String>,
     /// Device routing (the Space's owner). Optional: the receiving engine
     /// forwards to the owner on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,6 +186,7 @@ mod tests {
                 name: "fix it".into(),
             }),
             operation_id: "op".into(),
+            parent_chat_id: None,
             target_device_id: None,
         };
         let value = serde_json::to_value(&params).unwrap();

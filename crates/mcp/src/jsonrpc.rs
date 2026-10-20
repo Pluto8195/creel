@@ -35,10 +35,18 @@ If a chat is `awaitingInput`, answer it with `respond_to_input`.\n\
 \n\
 Inside a Zeron chat that belongs to a project you also get Work Outline \
 tools (`work_outline_*`): read your chat's work item and its instructions, \
-create child items, mark items active or completed, associate your chat, \
-ask the user for an action, and propose instructions. Each mutating call \
-(and `create_chat`) needs an idempotency key: reuse the key when retrying \
-the same change, use a new key for a new change.\n\
+read your item's whole subtree (`work_outline_read_subtree`: descendant \
+items, their chats and open requests), create child items, mark items active \
+or completed, associate your chat, ask the user for an action, and propose \
+instructions. Each mutating call (and `create_chat`) needs an idempotency \
+key: reuse the key when retrying the same change, use a new key for a new \
+change.\n\
+\n\
+Coordinating: to run work on a descendant item, `create_chat` with \
+`workItemId` (your item or a descendant) and a `prompt`. A child cannot \
+message its parent: collect results with `wait_for_turn` / `read_chat` or \
+the Required Actions it raises, and poll `work_outline_read_subtree` for \
+open requests such as \"Ready to merge\".\n\
 \n\
 Blocked decisions: if your chat has a work item (check with \
 `work_outline_read_current`) and it is blocked on a decision, approval, or \
