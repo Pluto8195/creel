@@ -146,6 +146,20 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - The HTML `data-zeron-question` form gets CSS plus a frame script (`artifacts/question_html.rs`).
     It's only been checked headlessly, never in a real WKWebView.
   - Still to do for D: the Questions panel, Required Actions for questions, and answering from Zeron.
+- **Diff the agent's worktree** (2026-10-21; `m0-contract.md` "Amendment: chat diff targets"):
+  - Cofactr chats start at the workspace root, and agents then `git worktree add` into a gitignored
+    `.worktrees/<submodule>/<slug>`, so the Changes pane used to show the root's unrelated diff.
+  - A new mutable registry row, `chatDiffTargets`, is written by two things: the agent tool
+    `bind_chat_worktree {path}` (validated against the chat repository's worktree family), and the
+    Changes pane's "Diff checkout…" picker, which suggests ticket matches first.
+  - The selected target drives the Working tree, Branch and Latest turn scopes, as well as the member
+    pills and the composer branch label. It is display-only and never blocks a turn; execution
+    bindings were deliberately not reused.
+  - Not done: remote-device chats, PR lookup from a target, and automatic binding without the agent.
+    Today agents only learn about the tool from its description.
+- **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
+  `capture_source_context_reads_the_dispatch_checkout`,
+  `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
 
 ## Working model (since 2026-10-20)
 
