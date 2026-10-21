@@ -164,6 +164,9 @@ pub struct EngineCore {
     pub previews: zeron_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
     pub diff_sync: CheckoutDiffSync,
+    /// Per-chat diff targets (`bind_chat_worktree`, the Changes pane picker);
+    /// the same instance diff-sync and `EngineRpc` use.
+    pub diff_targets: diff_targets::DiffTargets,
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
@@ -575,6 +578,15 @@ impl EngineCore {
             repos.clone(),
         ));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
+        // One chat diff targets service: diff-sync reads its rows and follows
+        // its changes; `EngineRpc` (via the shared `diff_sync`) serves the
+        // picker RPCs through the same instance.
+        let diff_targets =
+            diff_targets::DiffTargets::new(repos.clone(), workspace.clone(), device_id.clone());
+        diff_sync.set_diff_targets(diff_targets.clone());
+        // TODO(diff-targets): agent_tools.set_diff_targets(diff_targets.clone());
+        // (the agent-tools service is built inside `EngineRpc::new`; wire it
+        // there from `diff_sync.diff_targets()`, see the matching TODO.)
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
         let turn_diff = diff_sync.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
@@ -601,6 +613,7 @@ impl EngineCore {
             previews,
             change_requests,
             diff_sync,
+            diff_targets,
             spaces_sync,
             uploads,
             agent_accounts,

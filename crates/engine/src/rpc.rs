@@ -720,6 +720,10 @@ pub struct EngineRpc {
     previews: Option<zeron_preview::PreviewService>,
     change_requests: CheckoutChangeRequests,
     diff_sync: CheckoutDiffSync,
+    /// Chat diff targets (`ListChatDiffCheckouts` / `SetChatDiffTarget`);
+    /// the instance diff-sync reads (engine assembly attaches one, a bare
+    /// surface attaches its own on first use).
+    diff_targets: crate::diff_targets::DiffTargets,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
     auth: Option<Auth>,
@@ -817,6 +821,13 @@ impl EngineRpc {
                 .cloned()
                 .unwrap_or_else(|| execution_scope.clone()),
         );
+        let diff_targets = diff_sync.ensure_diff_targets(|| {
+            crate::diff_targets::DiffTargets::new(
+                repos.clone(),
+                workspace.clone(),
+                doc_host.device_id(),
+            )
+        });
         let agent_tools = std::sync::Arc::new(crate::agent_tools::AgentToolsService::new(
             sessions.agent_tokens(),
             workspace.clone(),
@@ -824,6 +835,7 @@ impl EngineRpc {
             Some(doc_host.clone()),
         ));
         agent_tools.set_sessions(sessions.clone());
+        // TODO(diff-targets): agent_tools.set_diff_targets(diff_targets.clone());
         let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
             workspace.clone(),
             doc_host.clone(),
@@ -853,6 +865,7 @@ impl EngineRpc {
             previews: None,
             change_requests,
             diff_sync,
+            diff_targets,
             uploads,
             agent_accounts,
             auth: None,
@@ -3684,6 +3697,59 @@ impl RpcService for EngineRpc {
                     ))),
                 }
             }
+            methods::WATCH_CHAT_DIFF_TARGETS => Ok(RpcReply::Stream(watch_stream(
+                self.diff_sync.watch_chat_diff_targets(),
+            ))),
+            methods::LIST_CHAT_DIFF_CHECKOUTS => {
+                let p: zeron_proto::ListChatDiffCheckoutsParams = parse_params(params)?;
+                let targets = self.diff_targets.clone();
+                let reply = tokio::task::spawn_blocking(move || targets.list_checkouts(&p.chat_id))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&reply)
+            }
+            methods::SET_CHAT_DIFF_TARGET => {
+                let p: zeron_proto::SetChatDiffTargetParams = parse_params(params)?;
+                let targets = self.diff_targets.clone();
+                let chat_id = p.chat_id.clone();
+                let action = p.action;
+                let path = p.path.clone();
+                let reply = tokio::task::spawn_blocking(move || {
+                    let need_path = |path: Option<String>| {
+                        path.filter(|path| !path.trim().is_empty()).ok_or_else(|| {
+                            crate::diff_targets::DiffTargetError::Invalid(
+                                "path is required for select and unbind.".into(),
+                            )
+                        })
+                    };
+                    match action {
+                        zeron_proto::SetChatDiffTargetAction::Select => targets
+                            .bind(
+                                &chat_id,
+                                &need_path(path)?,
+                                zeron_proto::ChatDiffTargetSource::Manual,
+                                None,
+                            )
+                            .map(|outcome| (outcome.reply, Some(outcome.path))),
+                        zeron_proto::SetChatDiffTargetAction::Unbind => targets
+                            .unbind(&chat_id, &need_path(path)?)
+                            .map(|reply| (reply, None)),
+                        zeron_proto::SetChatDiffTargetAction::ClearSelection => targets
+                            .clear_selection(&chat_id)
+                            .map(|reply| (reply, None)),
+                    }
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let (reply, bound) = reply;
+                if let Some(bound) = bound {
+                    // A first turn after `git worktree add` needs a base.
+                    self.diff_sync.snapshot_target_now(&p.chat_id, &bound).await;
+                }
+                RpcReply::value(&reply)
+            }
             methods::WATCH_WORKSPACE_GIT_STATUS => {
                 let request: zeron_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
                 let workspace = self.workspace_files.resolve_target(&request.target).await?;
@@ -3790,8 +3856,7 @@ impl RpcService for EngineRpc {
                                 .ok_or_else(|| RpcError::Failed("chatId required".into()))?;
                             let snapshot = self
                                 .diff_sync
-                                .turn_snapshot(chat_id)
-                                .filter(|s| s.root == identity.root)
+                                .turn_snapshot(chat_id, &identity.root)
                                 .ok_or_else(|| RpcError::Failed("no turn recorded".into()))?;
                             crate::diff_sync::capture_turn_diff(&self.repos, root, &snapshot.tree)
                                 .await
@@ -3870,8 +3935,7 @@ impl RpcService for EngineRpc {
                                 .ok_or_else(|| RpcError::Failed("chatId required".into()))?;
                             let turn = self
                                 .diff_sync
-                                .turn_snapshot(chat_id)
-                                .filter(|snapshot| snapshot.root == identity.root)
+                                .turn_snapshot(chat_id, &identity.root)
                                 .ok_or_else(|| RpcError::Failed("no turn recorded".into()))?;
                             let snapshot = Box::pin(crate::diff_sync::capture_turn_diff(
                                 &self.repos,
@@ -4763,6 +4827,20 @@ mod tests {
         assert!(forwardable(methods::VALIDATE_EXECUTION_CONFIGURATION));
         assert!(forwardable(methods::DESCRIBE_EXECUTION_REPOSITORY));
         assert!(!is_stream_method(methods::VALIDATE_EXECUTION_CONFIGURATION));
+    }
+
+    /// Chat diff targets belong to the device hosting the chat: a call for
+    /// another device's chat fails with `NotLocal` instead of being relayed.
+    #[test]
+    fn chat_diff_target_methods_are_local_not_forwardable() {
+        for method in [
+            methods::LIST_CHAT_DIFF_CHECKOUTS,
+            methods::SET_CHAT_DIFF_TARGET,
+            methods::WATCH_CHAT_DIFF_TARGETS,
+        ] {
+            assert!(!forwardable(method), "{method} is device-local");
+            assert!(!is_stream_method(method));
+        }
     }
 
     /// `RECLASSIFY_OTHER_CHATS` rewrites this device's import cursors and
