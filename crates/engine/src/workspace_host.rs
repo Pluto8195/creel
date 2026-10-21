@@ -716,6 +716,52 @@ impl WorkspaceHost {
         Ok(self.read(|doc| effective_chat_pr_links(doc, chat_id))?)
     }
 
+    /// The chat's diff-target row, `None` when it never bound one.
+    pub fn chat_diff_targets(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<zeron_proto::ChatDiffTargetsRow>, EngineError> {
+        Ok(self.read(|doc| doc.chat_diff_targets(chat_id)))
+    }
+
+    /// Every decodable diff-target row (diff-sync reads this each pass).
+    pub fn all_chat_diff_targets(
+        &self,
+    ) -> Result<Vec<zeron_proto::ChatDiffTargetsRow>, EngineError> {
+        Ok(self.read(|doc| doc.all_chat_diff_targets()))
+    }
+
+    /// Read-modify-write of one chat's diff-target row inside a single
+    /// registry mutation. `f` sees the stored row (or an empty one); the row
+    /// is written, with a fresh `updatedAt`, only when `f` changed it.
+    /// Returns whether a write happened (`false` too when the chat row is
+    /// gone).
+    pub fn update_chat_diff_targets(
+        &self,
+        chat_id: &str,
+        f: impl FnOnce(&mut zeron_proto::ChatDiffTargetsRow),
+    ) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| -> Result<bool, zeron_doc::DocError> {
+            if doc.chat(chat_id)?.is_none() {
+                return Ok(false);
+            }
+            let before = doc.chat_diff_targets(chat_id).unwrap_or_else(|| {
+                zeron_proto::ChatDiffTargetsRow {
+                    chat_id: chat_id.to_owned(),
+                    ..Default::default()
+                }
+            });
+            let mut after = before.clone();
+            f(&mut after);
+            after.chat_id = chat_id.to_owned();
+            if after == before {
+                return Ok(false);
+            }
+            after.updated_at = now_ms();
+            doc.put_chat_diff_targets(&after)
+        })?)
+    }
+
     pub fn read_devices(&self) -> Result<Vec<Device>, EngineError> {
         Ok(self.read(|doc| doc.read_devices())?)
     }
