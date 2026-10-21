@@ -1579,17 +1579,14 @@ async fn bind_chat_worktree_validates_arguments_and_authentication() {
     assert!(rig.targets.stored(CHAT).targets.is_empty());
 }
 
+/// Engine assembly attaches the shared `DiffTargets` itself: a bind works
+/// without any test-side `set_diff_targets`.
 #[tokio::test(flavor = "multi_thread")]
-async fn bind_chat_worktree_without_diff_targets_is_unsupported() {
+async fn bind_chat_worktree_is_wired_on_the_assembled_engine() {
     let rig = bind_rig(false);
-    let err = bind_call(
-        &rig,
-        &rig.token,
-        json!({ "path": text(&rig.sub_wt), "idempotencyKey": "k" }),
-    )
-    .unwrap_err();
-    assert_eq!(err.code(), "unsupported");
-    assert!(err.to_string().contains("diff targets are not available"));
+    let reply = bind_ok(&rig, &rig.sub_wt, "k");
+    assert_eq!(reply["selected"], true);
+    assert_eq!(reply["path"], text(&rig.sub_wt));
 }
 
 #[tokio::test(flavor = "multi_thread")]
