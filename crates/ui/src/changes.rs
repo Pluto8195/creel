@@ -104,6 +104,12 @@ impl ChangesTarget {
     fn for_chat_in(chat: &Chat, state: &AppState) -> Self {
         let mut target = Self::from_chat(chat);
         if let Some(member) = state.selected_execution_member(&chat.id) {
+            // The chat's own checkout (listed beside diff targets) is the
+            // plain chat target: cwd fallback included, exactly as before
+            // the chat had any target.
+            if member.kind == crate::work_outline::execution::MemberKind::Own {
+                return target;
+            }
             match member.unconfirmed {
                 Some(reason) => {
                     target.cwd = None;
@@ -154,7 +160,18 @@ impl ChangesTarget {
             .parent()
             .and_then(Path::file_name)
             .and_then(|part| part.to_str());
-        let repo = if matches!(parent, Some(".worktrees" | "worktrees")) {
+        let grandparent = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|part| part.to_str());
+        let repo = if matches!(grandparent, Some(".worktrees" | "worktrees"))
+            && let Some(repo) = parent
+        {
+            // `<workspace>/.worktrees/<repo>/<name>`: the layout agents use
+            // for a submodule's linked worktrees.
+            repo.to_string()
+        } else if matches!(parent, Some(".worktrees" | "worktrees")) {
             path.parent()
                 .and_then(Path::parent)
                 .and_then(Path::file_name)
@@ -2162,6 +2179,20 @@ struct RefMenu {
     _search_events: Subscription,
 }
 
+/// The "Diff checkout..." picker: a filter input over the engine's
+/// checkout candidates (own checkout, submodules, worktrees), ticket matches
+/// ranked first. Same keyboard shape as [`RefMenu`].
+struct CheckoutMenu {
+    search: Entity<ComposerInput>,
+    /// Keyboard highlight within the filtered rows.
+    active: usize,
+    focus: FocusHandle,
+    list_scroll: gpui::ScrollHandle,
+    candidates: popover::Loadable<Vec<crate::diff_targets::RankedCandidate>>,
+    _search_events: Subscription,
+    _load: Task<()>,
+}
+
 /// The line the pointer is on. Only one element per anchor ever takes the
 /// hover — the unified row, or a split row's right column — so the anchor
 /// alone identifies it.
@@ -2244,6 +2275,8 @@ pub struct Changes {
     scoped_task: Option<Task<()>>,
     scope_menu: Popup<()>,
     ref_menu: Popup<RefMenu>,
+    /// The "Diff checkout..." picker (chat diff targets).
+    checkout_menu: Popup<CheckoutMenu>,
     /// Only ever one: a second `+` moves the card rather than stacking two
     /// half-written notes.
     draft: Option<CommentDraft>,
@@ -2375,6 +2408,7 @@ impl Changes {
             scoped_task: None,
             scope_menu: Popup::default(),
             ref_menu: Popup::default(),
+            checkout_menu: Popup::default(),
             draft: None,
             hover: None,
             comment_key: 0,
@@ -3844,9 +3878,19 @@ impl Changes {
         }
     }
 
+    fn close_checkout_menu(&mut self, cx: &mut Context<Self>) {
+        if self.checkout_menu.begin_close() {
+            popover::reap_popup(cx, |changes: &mut Self| &mut changes.checkout_menu);
+        }
+    }
+
     /// Handle Escape before focused descendants such as a terminal receive it.
     /// A popup in its exit animation remains a blocker until it unmounts.
     pub(crate) fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.checkout_menu.is_open() {
+            self.close_checkout_menu(cx);
+            return true;
+        }
         if self.ref_menu.is_open() {
             self.close_ref_menu(cx);
             return true;
@@ -3855,7 +3899,9 @@ impl Changes {
             self.close_scope_menu(cx);
             return true;
         }
-        self.scope_menu.get().is_some() || self.ref_menu.get().is_some()
+        self.scope_menu.get().is_some()
+            || self.ref_menu.get().is_some()
+            || self.checkout_menu.get().is_some()
     }
 
     fn open_ref_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3941,6 +3987,180 @@ impl Changes {
             }
             _ => {}
         }
+    }
+
+    /// Whether the "Diff checkout..." button shows: a chat hosted on this
+    /// device with a working directory. Never for a commit view or a pinned
+    /// checkout (no chat target to change).
+    fn checkout_picker_available(&self, cx: &App) -> bool {
+        if self.pinned_cwd.is_some() || self.commit.is_some() {
+            return false;
+        }
+        let Some(owner) = self.owner.as_ref() else {
+            return false;
+        };
+        let state = self.state.read(cx);
+        state.local_device_id.as_deref() == Some(owner.device_id.as_str())
+            && state
+                .chats
+                .iter()
+                .find(|chat| chat.id == owner.chat_id)
+                .is_some_and(|chat| chat.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty()))
+    }
+
+    fn open_checkout_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chat_id) = self.owner_chat_id_owned() else {
+            return;
+        };
+        let ticket = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .and_then(crate::diff_targets::chat_ticket_id);
+        let search = cx
+            .new(|cx| ComposerInput::with_context("Search checkouts\u{2026}", "PaletteSearch", cx));
+        let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Edited) {
+                if let Some(menu) = this.checkout_menu.open_mut() {
+                    menu.active = 0;
+                }
+                cx.notify();
+            }
+        });
+        let handle = search.read(cx).focus_handle(cx);
+        let list = self
+            .state
+            .update(cx, |state, cx| state.list_chat_diff_checkouts(&chat_id, cx));
+        let load = cx.spawn(async move |this, cx| {
+            let result = list.await;
+            this.update(cx, |this, cx| {
+                if let Some(menu) = this.checkout_menu.open_mut() {
+                    menu.candidates = match result {
+                        Ok(candidates) => popover::Loadable::Ready(
+                            crate::diff_targets::rank_candidates(candidates, ticket.as_deref()),
+                        ),
+                        Err(message) => popover::Loadable::Error(message),
+                    };
+                    menu.active = 0;
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self.checkout_menu.open(CheckoutMenu {
+            search,
+            active: 0,
+            focus: cx.focus_handle(),
+            list_scroll: gpui::ScrollHandle::new(),
+            candidates: popover::Loadable::Loading,
+            _search_events: search_events,
+            _load: load,
+        });
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// Filtered candidate indices for the open picker (ranked substring match
+    /// over the label, kind, and path; ticket matches stay ahead when the
+    /// query is empty).
+    fn checkout_menu_rows(&self, cx: &App) -> Vec<usize> {
+        let Some(menu) = self.checkout_menu.get() else {
+            return Vec::new();
+        };
+        let Some(rows) = menu.candidates.ready() else {
+            return Vec::new();
+        };
+        let query = menu.search.read(cx).text().to_string();
+        let haystacks: Vec<String> = rows
+            .iter()
+            .map(|row| format!("{} {} {}", row.label(), row.kind_tag(), row.candidate.path))
+            .collect();
+        popover::filter_indices(&query, &haystacks)
+    }
+
+    fn checkout_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        if !self.checkout_menu.is_open() {
+            return;
+        }
+        let key = popover::classify_key(
+            event.keystroke.key.as_str(),
+            event.keystroke.modifiers.platform,
+            event.keystroke.modifiers.control,
+        );
+        match key {
+            popover::MenuKey::Escape => {
+                self.close_checkout_menu(cx);
+                cx.stop_propagation();
+            }
+            popover::MenuKey::Up | popover::MenuKey::Down => {
+                let count = self.checkout_menu_rows(cx).len();
+                let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
+                if let Some(menu) = self.checkout_menu.open_mut() {
+                    menu.active = popover::menu_step(Some(menu.active), count, delta).unwrap_or(0);
+                    menu.list_scroll.scroll_to_item(menu.active);
+                    cx.notify();
+                }
+            }
+            popover::MenuKey::Enter | popover::MenuKey::ModEnter => {
+                let active = self.checkout_menu.get().map(|m| m.active).unwrap_or(0);
+                let pick = self.checkout_menu_rows(cx).get(active).and_then(|ix| {
+                    self.checkout_menu
+                        .get()?
+                        .candidates
+                        .ready()?
+                        .get(*ix)
+                        .map(|row| row.candidate.clone())
+                });
+                if let Some(candidate) = pick {
+                    self.choose_checkout(candidate, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Persist the picked candidate as the chat's diff target: the own
+    /// checkout clears the selection, anything else selects its path. The
+    /// session's pill pick is dropped first so the persisted selection (the
+    /// next `WatchChatDiffTargets` frame) is what shows; a failed write
+    /// surfaces as the pane's error notice (`AppState::chat_diff_target_error`).
+    fn choose_checkout(
+        &mut self,
+        candidate: zeron_proto::DiffCheckoutCandidate,
+        cx: &mut Context<Self>,
+    ) {
+        use zeron_proto::{DiffCheckoutKind, SetChatDiffTargetAction};
+        if let Some(chat_id) = self.owner_chat_id_owned() {
+            self.state.update(cx, |state, cx| {
+                state.clear_chat_diff_member_pick(&chat_id);
+                let (action, path) = match candidate.kind {
+                    DiffCheckoutKind::Own => {
+                        // Beside targets the own checkout is a pill: keep it
+                        // picked so a bound Chat does not fall back to its
+                        // primary member.
+                        let own = crate::work_outline::execution::own_member_id(&chat_id);
+                        if state
+                            .chat_execution_members(&chat_id)
+                            .iter()
+                            .any(|member| member.repo_id == own)
+                        {
+                            state.pick_chat_execution_member_locally(&chat_id, &own);
+                        }
+                        (SetChatDiffTargetAction::ClearSelection, None)
+                    }
+                    DiffCheckoutKind::Submodule | DiffCheckoutKind::Worktree => {
+                        (SetChatDiffTargetAction::Select, Some(candidate.path))
+                    }
+                };
+                state
+                    .set_chat_diff_target(&chat_id, action, path, cx)
+                    .detach();
+                cx.notify();
+            });
+        }
+        self.close_checkout_menu(cx);
     }
 
     /// Start excerpt parsing and a lazy full-source fetch for an expanded file.
@@ -5289,6 +5509,267 @@ impl Changes {
             .into_any_element()
     }
 
+    /// The "Diff checkout..." button of the context chrome and, while open,
+    /// its picker (`None` when the chat cannot pick a checkout).
+    fn render_checkout_picker(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.checkout_picker_available(cx) {
+            return None;
+        }
+        let trigger = div()
+            .id("changes-checkout-trigger")
+            .debug_selector(|| "changes-checkout-trigger".into())
+            .flex_none()
+            .h(px(20.0))
+            .px(px(6.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(theme.text_muted)
+            .bg(motion::hover_blend(
+                "changes-checkout-trigger",
+                crate::theme::wash(0.0),
+                crate::theme::wash(0.12),
+            ))
+            .on_hover(motion::hover_listener("changes-checkout-trigger"))
+            .occlude()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    window.prevent_default();
+                    this.checkout_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                if this.checkout_menu.take_press_was_open() {
+                    this.close_checkout_menu(cx);
+                    cx.notify();
+                } else {
+                    this.open_checkout_menu(window, cx);
+                }
+            }))
+            .child(
+                crate::icons::icon(crate::icons::GIT_BRANCH)
+                    .size(px(11.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .child(SharedString::from("Diff checkout\u{2026}"));
+        let trigger = if self.checkout_menu.get().is_some() {
+            let closing = self.checkout_menu.closing_since();
+            let menu = self.render_checkout_menu(theme, cx);
+            trigger.relative().child(popover::anchored_menu_below_end(
+                "changes-checkout-menu",
+                menu,
+                closing,
+            ))
+        } else {
+            trigger
+        };
+        Some(trigger.into_any_element())
+    }
+
+    fn render_checkout_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &theme.for_popup();
+        let (search, active, focus, list_scroll, state) = {
+            let Some(menu) = self.checkout_menu.get() else {
+                return div().into_any_element();
+            };
+            (
+                menu.search.clone(),
+                menu.active,
+                menu.focus.clone(),
+                menu.list_scroll.clone(),
+                menu.candidates.clone(),
+            )
+        };
+        let rows = self.checkout_menu_rows(cx);
+        let note = |text: &'static str| {
+            div()
+                .px(px(8.0))
+                .py(px(6.0))
+                .text_size(px(12.0))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(text))
+                .into_any_element()
+        };
+        let list: AnyElement = match &state {
+            popover::Loadable::Idle | popover::Loadable::Loading => {
+                note("Looking for checkouts\u{2026}")
+            }
+            popover::Loadable::Error(message) => div()
+                .p(px(4.0))
+                .child(crate::error_notice::ErrorNotice::from_text(
+                    "changes-checkout-list-error",
+                    theme,
+                    message,
+                ))
+                .into_any_element(),
+            popover::Loadable::Ready(ranked) if rows.is_empty() => note(if ranked.is_empty() {
+                "No checkouts found"
+            } else {
+                "No matching checkouts"
+            }),
+            popover::Loadable::Ready(ranked) => div()
+                .id("changes-checkout-list")
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .max_h(px(280.0))
+                .overflow_y_scroll()
+                .track_scroll(&list_scroll)
+                .children(rows.into_iter().enumerate().map(|(row_ix, ranked_ix)| {
+                    let row = ranked[ranked_ix].clone();
+                    let tip: SharedString = row.candidate.path.clone().into();
+                    let candidate = row.candidate.clone();
+                    let selected = row.candidate.selected;
+                    popover::menu_row_nav(
+                        theme,
+                        selected,
+                        row_ix == active,
+                        format!("changes-checkout-row-{row_ix}"),
+                    )
+                    .id(("changes-checkout-row", row_ix))
+                    .debug_selector(move || format!("changes-checkout-row-{row_ix}"))
+                    .tooltip(move |_, cx| cx.new(|_| DiffHeaderTooltip(tip.clone())).into())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.choose_checkout(candidate.clone(), cx);
+                    }))
+                    .child(
+                        // Check mark = the selected checkout; dot = bound.
+                        div()
+                            .flex_none()
+                            .w(px(12.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected, |el| {
+                                el.child(
+                                    crate::icons::icon(crate::icons::CHECK)
+                                        .size(px(12.0))
+                                        .text_color(theme.accent),
+                                )
+                            })
+                            .when(!selected && row.candidate.bound, |el| {
+                                el.child(
+                                    div()
+                                        .size(px(5.0))
+                                        .rounded_full()
+                                        .bg(theme.text_muted.opacity(0.7)),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(12.0))
+                                            .child(SharedString::from(row.label())),
+                                    )
+                                    .when(row.suggested, |el| {
+                                        el.child(
+                                            div()
+                                                .flex_none()
+                                                .px(px(5.0))
+                                                .rounded(px(4.0))
+                                                .bg(theme.accent.opacity(0.14))
+                                                .text_size(px(9.5))
+                                                .text_color(theme.accent)
+                                                .child("suggested"),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(9.5))
+                                            .text_color(theme.text_faint)
+                                            .child(row.kind_tag()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from(crate::diff_targets::short_path(
+                                        &row.candidate.path,
+                                    ))),
+                            ),
+                    )
+                }))
+                .into_any_element(),
+        };
+
+        popover::popover_card(theme)
+            .w(px(340.0))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                this.checkout_menu_key(event, cx)
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_checkout_menu(cx)))
+            .flex()
+            .flex_col()
+            .child(popover::search_input_frame(
+                theme,
+                search.into_any_element(),
+            ))
+            .child(list)
+            .into_any_element()
+    }
+
+    /// The last failed `SetChatDiffTarget` write as a copyable error notice.
+    fn render_diff_target_error(&self, theme: &Theme, cx: &App) -> Option<AnyElement> {
+        if self.pinned_cwd.is_some() || self.commit.is_some() {
+            return None;
+        }
+        let chat_id = self.owner_chat_id_owned()?;
+        let message = self.state.read(cx).chat_diff_target_error(&chat_id)?;
+        let state = self.state.clone();
+        Some(
+            div()
+                .debug_selector(|| "changes-diff-target-error".into())
+                .flex_none()
+                .px(px(Theme::SPACE_LG))
+                .py(px(4.0))
+                .child(
+                    crate::error_notice::ErrorNotice::from_text(
+                        "changes-diff-target-error",
+                        theme,
+                        message,
+                    )
+                    .on_dismiss(move |_, cx| {
+                        let chat_id = chat_id.clone();
+                        state.update(cx, |state, cx| {
+                            state.dismiss_chat_diff_target_error(&chat_id, cx)
+                        });
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_header_strip(&self, theme: &Theme) -> Option<AnyElement> {
         let parsed = self.parsed.as_ref()?;
         Some(
@@ -5494,8 +5975,13 @@ impl Changes {
         )
     }
 
-    fn render_context_chrome(&self, theme: &Theme, cx: &App) -> Option<AnyElement> {
+    fn render_context_chrome(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (repo, worktree, branch, tooltip) = self.context_details(cx)?;
+        let picker = self.render_checkout_picker(theme, cx);
         let freshness = tooltip
             .rsplit_once('\n')
             .map(|(_, freshness)| freshness)
@@ -5538,6 +6024,7 @@ impl Changes {
                         .text_color(theme.text_faint)
                         .child(SharedString::from(freshness)),
                 )
+                .children(picker)
                 .into_any_element(),
         )
     }
@@ -6182,6 +6669,7 @@ impl Render for Changes {
                 .flex_col()
                 .children(self.render_context_chrome(&theme, cx))
                 .children(self.render_execution_selector(&theme, cx))
+                .children(self.render_diff_target_error(&theme, cx))
                 .child(history)
                 .into_any_element();
         }
@@ -6351,6 +6839,7 @@ impl Render for Changes {
             .font_family(theme.font_sans_fixed.clone())
             .children(self.render_context_chrome(&theme, cx))
             .children(self.render_execution_selector(&theme, cx))
+            .children(self.render_diff_target_error(&theme, cx))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -8202,5 +8691,703 @@ index 1111111..2222222 160000
         };
         assert!(!sources_match_patch(&file, &response));
         assert!(full_highlights(&file, Lang::Rust, &response).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat diff targets (agent worktree)
+    // -----------------------------------------------------------------------
+
+    const WS: &str = "/work/ws";
+    const WT_TICKET: &str = "/work/ws/.worktrees/flagship/eng-3012-kit";
+    const WT_OTHER: &str = "/work/ws/.worktrees/flagship/spike";
+    type RpcCalls = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
+    fn wt_chat() -> Chat {
+        let mut chat = chat(Some("checkout:root"), "d", Some(WS));
+        chat.id = "chat-wt".into();
+        chat.branch = Some("main".into());
+        chat.linked_ticket_id = Some("ENG-3012".into());
+        chat
+    }
+
+    fn target_view(
+        path: &str,
+        checkout_id: &str,
+        branch: Option<&str>,
+        selected: bool,
+    ) -> zeron_proto::ChatDiffTargetView {
+        zeron_proto::ChatDiffTargetView {
+            path: path.into(),
+            checkout_id: checkout_id.into(),
+            source: zeron_proto::ChatDiffTargetSource::Agent,
+            selected,
+            repo_name: "flagship".into(),
+            branch: branch.map(Into::into),
+            head_sha: Some("0123456789abcdef".into()),
+        }
+    }
+
+    fn frame(
+        targets: Vec<zeron_proto::ChatDiffTargetView>,
+    ) -> Vec<zeron_proto::ChatDiffTargetsView> {
+        vec![zeron_proto::ChatDiffTargetsView {
+            chat_id: "chat-wt".into(),
+            targets,
+        }]
+    }
+
+    fn candidate(
+        path: &str,
+        kind: zeron_proto::DiffCheckoutKind,
+        branch: Option<&str>,
+        selected: bool,
+    ) -> zeron_proto::DiffCheckoutCandidate {
+        zeron_proto::DiffCheckoutCandidate {
+            path: path.into(),
+            kind,
+            repo_name: "flagship".into(),
+            branch: branch.map(Into::into),
+            head_sha: Some("0123456789abcdef".into()),
+            bound: false,
+            selected,
+        }
+    }
+
+    /// The engine's answer to "Diff checkout...": own + submodule + 2 worktrees.
+    fn picker_candidates() -> Vec<zeron_proto::DiffCheckoutCandidate> {
+        use zeron_proto::DiffCheckoutKind::*;
+        vec![
+            candidate(WS, Own, Some("main"), true),
+            candidate("/work/ws/flagship", Submodule, Some("main"), false),
+            candidate(WT_OTHER, Worktree, Some("michael/spike"), false),
+            candidate(
+                WT_TICKET,
+                Worktree,
+                Some("michael/eng-3012-kit-line-ship-estimates"),
+                false,
+            ),
+        ]
+    }
+
+    /// A state with one local chat and a fake diff-target engine. `set_error`
+    /// makes `SetChatDiffTarget` fail with that message.
+    fn target_state(
+        targets: Vec<zeron_proto::ChatDiffTargetView>,
+        set_error: Option<&'static str>,
+    ) -> (AppState, RpcCalls) {
+        let calls: RpcCalls = Default::default();
+        let sink = calls.clone();
+        let mut state = AppState::new();
+        state.local_device_id = Some("d".into());
+        state.chats = vec![wt_chat()];
+        if !targets.is_empty() {
+            state.set_chat_diff_targets_for_test(frame(targets));
+        }
+        state.chat_diff_rpc_override = Some(std::sync::Arc::new(move |method, params| {
+            sink.lock().unwrap().push((method.to_owned(), params));
+            match method {
+                zeron_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS => Ok(serde_json::to_value(
+                    zeron_proto::ListChatDiffCheckoutsReply {
+                        candidates: picker_candidates(),
+                    },
+                )
+                .unwrap()),
+                zeron_rpc::methods::SET_CHAT_DIFF_TARGET => match set_error {
+                    Some(message) => Err(message.to_owned()),
+                    None => Ok(
+                        serde_json::to_value(zeron_proto::ChatDiffTargetsReply::default()).unwrap(),
+                    ),
+                },
+                other => Err(format!("unexpected {other}")),
+            }
+        }));
+        (state, calls)
+    }
+
+    fn open_target_changes<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        targets: Vec<zeron_proto::ChatDiffTargetView>,
+        set_error: Option<&'static str>,
+    ) -> (Entity<Changes>, RpcCalls, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let calls: std::sync::Arc<std::sync::Mutex<Option<RpcCalls>>> = Default::default();
+        let sink = calls.clone();
+        let (changes, vcx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| {
+                let (state, calls) = target_state(targets, set_error);
+                *sink.lock().unwrap() = Some(calls);
+                state
+            });
+            Changes::for_chat(state, "chat-wt".into(), cx)
+        });
+        vcx.run_until_parked();
+        let calls = calls.lock().unwrap().clone().unwrap();
+        (changes, calls, vcx)
+    }
+
+    fn rpc_calls(calls: &RpcCalls, method: &str) -> Vec<serde_json::Value> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == method)
+            .map(|(_, params)| params.clone())
+            .collect()
+    }
+
+    fn open_picker(changes: &Entity<Changes>, vcx: &mut gpui::VisualTestContext) {
+        vcx.update(|window, cx| {
+            changes.update(cx, |changes, cx| changes.open_checkout_menu(window, cx))
+        });
+        vcx.run_until_parked();
+    }
+
+    fn picker_rows(
+        changes: &Entity<Changes>,
+        vcx: &mut gpui::VisualTestContext,
+    ) -> Vec<(String, bool)> {
+        changes.read_with(vcx, |changes, _| {
+            changes
+                .checkout_menu
+                .get()
+                .and_then(|menu| menu.candidates.ready())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| (row.candidate.path.clone(), row.suggested))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// (a) The picker lists the engine's candidates with the chat's ticket
+    /// match first and flagged suggested; the rest keep engine order.
+    #[gpui::test]
+    fn diff_checkout_picker_ranks_the_ticket_worktree_first(cx: &mut gpui::TestAppContext) {
+        let (changes, calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-checkout-trigger").is_some());
+
+        changes.read_with(vcx, |changes, _| {
+            assert!(changes.checkout_menu.get().is_none());
+        });
+        vcx.update(|window, cx| {
+            changes.update(cx, |changes, cx| changes.open_checkout_menu(window, cx))
+        });
+        // Loading until the engine answers.
+        changes.read_with(vcx, |changes, _| {
+            let menu = changes.checkout_menu.get().unwrap();
+            assert!(menu.candidates.is_loading() || menu.candidates.ready().is_some());
+        });
+        vcx.run_until_parked();
+
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS),
+            vec![serde_json::json!({"chatId": "chat-wt"})]
+        );
+        assert_eq!(
+            picker_rows(&changes, vcx),
+            vec![
+                (WT_TICKET.to_owned(), true),
+                (WS.to_owned(), false),
+                ("/work/ws/flagship".to_owned(), false),
+                (WT_OTHER.to_owned(), false),
+            ]
+        );
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-checkout-row-0").is_some());
+        assert!(vcx.debug_bounds("changes-checkout-row-3").is_some());
+    }
+
+    /// The ticket also comes from the chat's branch when no link is stored.
+    #[gpui::test]
+    fn diff_checkout_picker_infers_the_ticket_from_the_chat_branch(cx: &mut gpui::TestAppContext) {
+        let (changes, _calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        changes.update(vcx, |changes, cx| {
+            changes.state.update(cx, |state, _| {
+                state.chats[0].linked_ticket_id = None;
+                state.chats[0].branch = Some("michael/eng-3012-something".into());
+            });
+        });
+        open_picker(&changes, vcx);
+        assert_eq!(picker_rows(&changes, vcx)[0], (WT_TICKET.to_owned(), true));
+    }
+
+    /// (b) Choosing a row writes `SetChatDiffTarget`: select {path} for a
+    /// checkout, clearSelection for the own checkout.
+    #[gpui::test]
+    fn choosing_a_checkout_persists_the_diff_target(cx: &mut gpui::TestAppContext) {
+        let (changes, calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        open_picker(&changes, vcx);
+        vcx.update(|window, cx| window.draw(cx).clear());
+        // Row 0 is the ticket worktree: a real click on it.
+        let row = vcx.debug_bounds("changes-checkout-row-0").unwrap().center();
+        vcx.simulate_click(row, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            vec![serde_json::json!({
+                "chatId": "chat-wt", "action": "select", "path": WT_TICKET,
+            })]
+        );
+        changes.read_with(vcx, |changes, cx| {
+            assert!(!changes.checkout_menu.is_open(), "the picker closes");
+            assert_eq!(
+                changes.state.read(cx).chat_diff_target_error("chat-wt"),
+                None
+            );
+        });
+
+        // The own checkout row clears the selection (no path).
+        open_picker(&changes, vcx);
+        let own = changes.read_with(vcx, |changes, cx| {
+            changes
+                .checkout_menu_rows(cx)
+                .iter()
+                .position(|ix| {
+                    changes
+                        .checkout_menu
+                        .get()
+                        .unwrap()
+                        .candidates
+                        .ready()
+                        .unwrap()[*ix]
+                        .candidate
+                        .path
+                        == WS
+                })
+                .unwrap()
+        });
+        let rows = changes.read_with(vcx, |changes, cx| changes.checkout_menu_rows(cx));
+        let candidate = changes.read_with(vcx, |changes, _| {
+            changes
+                .checkout_menu
+                .get()
+                .unwrap()
+                .candidates
+                .ready()
+                .unwrap()[rows[own]]
+                .candidate
+                .clone()
+        });
+        changes.update(vcx, |changes, cx| changes.choose_checkout(candidate, cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
+            serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})
+        );
+    }
+
+    /// Keyboard: arrows move the highlight, Enter chooses it.
+    #[gpui::test]
+    fn diff_checkout_picker_is_keyboard_driven(cx: &mut gpui::TestAppContext) {
+        let (changes, calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        open_picker(&changes, vcx);
+        let key = |key: &str| gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        changes.update(vcx, |changes, cx| {
+            changes.checkout_menu_key(&key("down"), cx);
+            changes.checkout_menu_key(&key("enter"), cx);
+        });
+        vcx.run_until_parked();
+        // Row 1 of the ranked list is the own checkout.
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            vec![serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})]
+        );
+    }
+
+    /// (b) A failed write shows the engine's message as a copyable error
+    /// notice in the pane.
+    #[gpui::test]
+    fn a_failed_diff_target_write_surfaces_an_error_notice(cx: &mut gpui::TestAppContext) {
+        let message = "diff-targets/invalid: path is not a worktree of this repository";
+        let (changes, _calls, vcx) = open_target_changes(cx, Vec::new(), Some(message));
+        open_picker(&changes, vcx);
+        let candidate = changes.read_with(vcx, |changes, _| {
+            changes
+                .checkout_menu
+                .get()
+                .unwrap()
+                .candidates
+                .ready()
+                .unwrap()[0]
+                .candidate
+                .clone()
+        });
+        changes.update(vcx, |changes, cx| changes.choose_checkout(candidate, cx));
+        vcx.run_until_parked();
+        changes.read_with(vcx, |changes, cx| {
+            assert_eq!(
+                changes.state.read(cx).chat_diff_target_error("chat-wt"),
+                Some(message)
+            );
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-diff-target-error").is_some());
+        // Dismissing clears it.
+        changes.update(vcx, |changes, cx| {
+            changes.state.update(cx, |state, cx| {
+                state.dismiss_chat_diff_target_error("chat-wt", cx)
+            })
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-diff-target-error").is_none());
+    }
+
+    /// A failed list shows an error in the picker instead of rows.
+    #[gpui::test]
+    fn a_failed_checkout_list_shows_an_error_in_the_picker(cx: &mut gpui::TestAppContext) {
+        let (changes, _calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        changes.update(vcx, |changes, cx| {
+            changes.state.update(cx, |state, _| {
+                state.chat_diff_rpc_override =
+                    Some(std::sync::Arc::new(|_, _| Err("no such chat".to_owned())));
+            })
+        });
+        open_picker(&changes, vcx);
+        changes.read_with(vcx, |changes, _| {
+            let menu = changes.checkout_menu.get().unwrap();
+            assert_eq!(menu.candidates.error(), Some("no such chat"));
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-checkout-row-0").is_none());
+    }
+
+    /// (c) A selected target in the engine frame is what the pane diffs:
+    /// worktree cwd, checkout id, branch, matched by checkout id only. With
+    /// nothing selected the chat's own checkout shows.
+    #[gpui::test]
+    fn the_engine_selected_target_is_the_default_diff(cx: &mut gpui::TestAppContext) {
+        let targets = vec![target_view(
+            WT_TICKET,
+            "checkout:wt",
+            Some("michael/eng-3012-kit-line-ship-estimates"),
+            true,
+        )];
+        let (changes, calls, vcx) = open_target_changes(cx, targets.clone(), None);
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some(WT_TICKET));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:wt"));
+            assert_eq!(
+                owner.branch.as_deref(),
+                Some("michael/eng-3012-kit-line-ship-estimates")
+            );
+            assert!(owner.exact_checkout);
+            assert_eq!(owner.unconfirmed, None);
+            // The working tree diff is the one with that checkout id, never
+            // the root's (same device, different cwd).
+            let diffs = vec![
+                diff("checkout:root", "d", WS, "root-dirty-docs"),
+                diff("checkout:wt", "d", WT_TICKET, "worktree-change"),
+            ];
+            assert_eq!(owner.resolve(&diffs).unwrap().patch, "worktree-change");
+            assert_eq!(
+                watch_checkout_params(None, owner.checkout_id.as_deref(), owner.cwd.as_deref()),
+                serde_json::json!({"checkoutId": "checkout:wt", "cwd": WT_TICKET})
+            );
+        });
+        // Header shows the target's branch, not the root's `main`.
+        changes.read_with(vcx, |changes, cx| {
+            let (repo, worktree, branch, _) = changes.context_details(cx).unwrap();
+            assert_eq!(worktree, "eng-3012-kit");
+            assert_eq!(repo, "flagship");
+            assert_eq!(branch, "michael/eng-3012-kit-line-ship-estimates");
+        });
+        // The composer's branch indicator reads the same member.
+        changes.read_with(vcx, |changes, cx| {
+            let member = changes
+                .state
+                .read(cx)
+                .selected_execution_member("chat-wt")
+                .unwrap();
+            assert_eq!(
+                member.label(),
+                "flagship \u{b7} michael/eng-3012-kit-line-ship-estimates"
+            );
+        });
+        // Own checkout + the target: two pills, the target active.
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_some());
+        assert!(vcx.debug_bounds("changes-execution-repo-0").is_some());
+        assert!(vcx.debug_bounds("changes-execution-repo-1").is_some());
+        assert!(vcx.debug_bounds("changes-execution-repo-2").is_none());
+        // Nothing was written by merely showing it.
+        assert!(rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty());
+
+        // No selected target: the chat's own checkout, as before targets.
+        let (changes, _calls, vcx) = open_target_changes(
+            cx,
+            vec![target_view(WT_TICKET, "checkout:wt", Some("b"), false)],
+            None,
+        );
+        changes.read_with(vcx, |changes, cx| {
+            let owner = changes.owner.as_ref().unwrap();
+            let chat = changes.state.read(cx).chats[0].clone();
+            assert_eq!(owner, &ChangesTarget::from_chat(&chat));
+            assert_eq!(owner.cwd.as_deref(), Some(WS));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:root"));
+            assert!(!owner.exact_checkout);
+            let diffs = vec![diff("checkout:wt", "d", WT_TICKET, "wt")];
+            assert!(owner.resolve(&diffs).is_none());
+        });
+    }
+
+    /// Picking pills persists: a target pill selects its path, the own pill
+    /// clears the selection; the pane re-targets at once.
+    #[gpui::test]
+    fn picking_pills_persists_through_set_chat_diff_target(cx: &mut gpui::TestAppContext) {
+        let targets = vec![
+            target_view(WT_OTHER, "checkout:other", Some("michael/spike"), false),
+            target_view(WT_TICKET, "checkout:wt", Some("michael/eng-3012-kit"), true),
+        ];
+        let (changes, calls, vcx) = open_target_changes(cx, targets, None);
+        vcx.update(|window, cx| window.draw(cx).clear());
+        // Pills: own, spike, eng-3012. Click the spike pill.
+        let spike = vcx
+            .debug_bounds("changes-execution-repo-1")
+            .unwrap()
+            .center();
+        vcx.simulate_click(spike, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        changes.read_with(vcx, |changes, _| {
+            assert_eq!(
+                changes.owner.as_ref().unwrap().checkout_id.as_deref(),
+                Some("checkout:other")
+            );
+        });
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            vec![serde_json::json!({"chatId": "chat-wt", "action": "select", "path": WT_OTHER})]
+        );
+        // Back to the own checkout: clearSelection, exact cwd fallback again.
+        vcx.update(|window, cx| window.draw(cx).clear());
+        let own = vcx
+            .debug_bounds("changes-execution-repo-0")
+            .unwrap()
+            .center();
+        vcx.simulate_click(own, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
+            serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})
+        );
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some(WS));
+            assert!(!owner.exact_checkout);
+        });
+    }
+
+    /// A stale in-memory pick cannot fight the persisted selection: a frame
+    /// that selects another target wins; a failed write reverts the pick.
+    #[gpui::test]
+    fn a_stale_pick_does_not_fight_the_engine_selection(cx: &mut gpui::TestAppContext) {
+        let targets = |selected_other: bool| {
+            vec![
+                target_view(WT_OTHER, "checkout:other", Some("spike"), selected_other),
+                target_view(WT_TICKET, "checkout:wt", Some("eng"), !selected_other),
+            ]
+        };
+        let (changes, _calls, vcx) = open_target_changes(cx, targets(false), None);
+        let state = changes.read_with(vcx, |changes, _| changes.state.clone());
+        let selected = |vcx: &mut gpui::VisualTestContext| {
+            state.read_with(vcx, |state, _| {
+                state
+                    .selected_execution_member("chat-wt")
+                    .unwrap()
+                    .checkout_path
+            })
+        };
+        assert_eq!(selected(vcx), WT_TICKET);
+        // The user picks spike; the write is in flight, the pick shows.
+        state.update(vcx, |state, cx| {
+            state.select_chat_execution_member("chat-wt", "target:checkout:other", cx)
+        });
+        assert_eq!(selected(vcx), WT_OTHER);
+        // The agent then binds another worktree: the frame's selection wins.
+        state.update(vcx, |state, cx| {
+            state.apply_chat_diff_targets(vec![zeron_proto::ChatDiffTargetsView {
+                chat_id: "chat-wt".into(),
+                targets: vec![
+                    target_view(WT_OTHER, "checkout:other", Some("spike"), false),
+                    target_view(WT_TICKET, "checkout:wt", Some("eng"), false),
+                    target_view(
+                        "/work/ws/.worktrees/flagship/new",
+                        "checkout:new",
+                        None,
+                        true,
+                    ),
+                ],
+            }]);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(selected(vcx), "/work/ws/.worktrees/flagship/new");
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:new"));
+            assert_eq!(owner.branch, None);
+        });
+        // A frame that only clears the selection keeps the user's own pick.
+        state.update(vcx, |state, cx| {
+            state.select_chat_execution_member("chat-wt", "target:checkout:wt", cx);
+            state.apply_chat_diff_targets(frame(targets_all_unselected()));
+            cx.notify();
+        });
+        assert_eq!(selected(vcx), WT_TICKET);
+        // A pick of a target that vanished is dropped.
+        state.update(vcx, |state, cx| {
+            state.apply_chat_diff_targets(frame(vec![target_view(
+                WT_OTHER,
+                "checkout:other",
+                Some("spike"),
+                false,
+            )]));
+            cx.notify();
+        });
+        assert_eq!(selected(vcx), WS, "falls back to the own checkout");
+    }
+
+    fn targets_all_unselected() -> Vec<zeron_proto::ChatDiffTargetView> {
+        vec![
+            target_view(WT_OTHER, "checkout:other", Some("spike"), false),
+            target_view(WT_TICKET, "checkout:wt", Some("eng"), false),
+            target_view(
+                "/work/ws/.worktrees/flagship/new",
+                "checkout:new",
+                None,
+                false,
+            ),
+        ]
+    }
+
+    #[gpui::test]
+    fn a_failed_pill_write_reverts_to_the_engine_selection(cx: &mut gpui::TestAppContext) {
+        let targets = vec![
+            target_view(WT_OTHER, "checkout:other", Some("spike"), false),
+            target_view(WT_TICKET, "checkout:wt", Some("eng"), true),
+        ];
+        let (changes, _calls, vcx) = open_target_changes(cx, targets, Some("write refused"));
+        let state = changes.read_with(vcx, |changes, _| changes.state.clone());
+        state.update(vcx, |state, cx| {
+            state.select_chat_execution_member("chat-wt", "target:checkout:other", cx)
+        });
+        vcx.run_until_parked();
+        state.read_with(vcx, |state, _| {
+            assert_eq!(
+                state
+                    .selected_execution_member("chat-wt")
+                    .unwrap()
+                    .checkout_path,
+                WT_TICKET
+            );
+            assert_eq!(
+                state.chat_diff_target_error("chat-wt"),
+                Some("write refused")
+            );
+        });
+    }
+
+    /// (d) A chat with no targets and no binding is unchanged: no pill row,
+    /// the plain chat target, no members; the picker is offered only for a
+    /// chat on this device with a cwd, never for a commit or pinned view.
+    #[gpui::test]
+    fn chats_without_targets_are_unchanged(cx: &mut gpui::TestAppContext) {
+        let (changes, calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        changes.read_with(vcx, |changes, cx| {
+            let state = changes.state.read(cx);
+            assert!(state.chat_execution_members("chat-wt").is_empty());
+            assert!(state.selected_execution_member("chat-wt").is_none());
+            let chat = state.chats[0].clone();
+            assert_eq!(
+                changes.owner.as_ref().unwrap(),
+                &ChangesTarget::from_chat(&chat)
+            );
+            assert!(changes.checkout_picker_available(cx));
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_none());
+        assert!(vcx.debug_bounds("changes-checkout-trigger").is_some());
+        assert!(calls.lock().unwrap().is_empty(), "no engine traffic");
+
+        // Remote chat or no cwd: no picker.
+        changes.update(vcx, |changes, cx| {
+            changes
+                .state
+                .update(cx, |state, _| state.chats[0].device_id = "other".into());
+            changes.sync(cx);
+        });
+        changes.read_with(vcx, |changes, cx| {
+            assert!(!changes.checkout_picker_available(cx))
+        });
+        changes.update(vcx, |changes, cx| {
+            changes.state.update(cx, |state, _| {
+                state.chats[0].device_id = "d".into();
+                state.chats[0].cwd = None;
+            });
+            changes.sync(cx);
+        });
+        changes.read_with(vcx, |changes, cx| {
+            assert!(!changes.checkout_picker_available(cx))
+        });
+        // A pinned checkout view never offers it.
+        changes.update(vcx, |changes, cx| {
+            changes
+                .state
+                .update(cx, |state, _| state.chats[0].cwd = Some(WS.into()));
+            changes.pinned_cwd = Some(WS.into());
+        });
+        changes.read_with(vcx, |changes, cx| {
+            assert!(!changes.checkout_picker_available(cx))
+        });
+    }
+
+    /// (f) A frame arriving after the pane opened (the agent bound a worktree
+    /// mid-turn) re-targets the open surface; removing it falls back.
+    #[gpui::test]
+    fn a_frame_after_a_bind_retargets_the_open_surface(cx: &mut gpui::TestAppContext) {
+        let (changes, _calls, vcx) = open_target_changes(cx, Vec::new(), None);
+        changes.read_with(vcx, |changes, _| {
+            assert_eq!(changes.owner.as_ref().unwrap().cwd.as_deref(), Some(WS));
+        });
+        let state = changes.read_with(vcx, |changes, _| changes.state.clone());
+        state.update(vcx, |state, cx| {
+            state.apply_chat_diff_targets(frame(vec![target_view(
+                WT_TICKET,
+                "checkout:wt",
+                Some("michael/eng-3012-kit"),
+                true,
+            )]));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some(WT_TICKET));
+            assert_eq!(owner.checkout_id.as_deref(), Some("checkout:wt"));
+            assert!(owner.exact_checkout);
+            assert!(changes.diffs.is_empty());
+        });
+        vcx.update(|window, cx| window.draw(cx).clear());
+        assert!(vcx.debug_bounds("changes-execution-repositories").is_some());
+        // The worktree is removed: its target disappears from the frame.
+        state.update(vcx, |state, cx| {
+            state.apply_chat_diff_targets(Vec::new());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        changes.read_with(vcx, |changes, _| {
+            let owner = changes.owner.as_ref().unwrap();
+            assert_eq!(owner.cwd.as_deref(), Some(WS));
+            assert!(!owner.exact_checkout);
+        });
     }
 }

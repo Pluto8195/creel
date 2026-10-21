@@ -4159,7 +4159,16 @@ impl Pickers {
             let Some(space) = space.as_ref().filter(|s| s.git_detected || bound) else {
                 return None;
             };
-            let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
+            // A selected diff target (the worktree the agent works in) is a
+            // worktree even though the chat's own cwd is the workspace root.
+            let shown_cwd = self
+                .state
+                .read(cx)
+                .selected_execution_member(&chat.id)
+                .filter(|member| member.kind == crate::work_outline::execution::MemberKind::Target)
+                .map(|member| member.checkout_path)
+                .or_else(|| chat.cwd.clone());
+            let is_worktree = shown_cwd.as_deref().is_some_and(|cwd| cwd != space.path);
             let (icon_path, label) = if is_worktree {
                 (crate::icons::FOLDER_WITH_FILES, "Worktree")
             } else {
