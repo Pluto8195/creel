@@ -156,7 +156,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     pills and the composer branch label. It is display-only and never blocks a turn; execution
     bindings were deliberately not reused.
   - Not done: remote-device chats, PR lookup from a target, and automatic binding without the agent.
-    Today agents only learn about the tool from its description.
+    If it is added later, tag auto binds `source: detected` and never take the selection away from
+    a manual pick.
+- **zeron-agent MCP instructions fit the truncation limit** (2026-10-21):
+  - Claude Code cuts MCP server instructions at about 2000 characters. `INSTRUCTIONS` in
+    `crates/mcp/src/jsonrpc.rs` was about 2500, so Claude agents never saw the Planning artifacts
+    paragraph.
+  - It is now 1886 characters, with a test enforcing ≤ 1900 and checking the key phrases. It tells
+    agents to call `bind_chat_worktree` right after `git worktree add`.
+  - Keep new guidance short and near the top, or put it in the tool descriptions.
 - **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
   `capture_source_context_reads_the_dispatch_checkout`,
   `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
