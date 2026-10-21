@@ -391,9 +391,30 @@ fn artifact_catalog() -> Vec<ToolDef> {
     ]
 }
 
+/// Chat diff target tools (agent mode only; `m0-contract.md`, "Amendment:
+/// chat diff targets"). The engine binds for the calling Chat only.
+const DIFF_TARGET_TOOLS: [&str; 1] = [agent_tool_names::BIND_CHAT_WORKTREE];
+
+fn diff_target_catalog() -> Vec<ToolDef> {
+    vec![ToolDef {
+        name: agent_tool_names::BIND_CHAT_WORKTREE,
+        description: "Tell Zeron which git worktree this chat is working in, so the Changes pane shows that worktree instead of the folder the chat started in. Call it right after `git worktree add` (including worktrees of a submodule such as flagship, created under `.worktrees/`), and again when you resume an existing worktree for this chat's work. Call it once per worktree: a chat that works in several submodules binds each one. It only records the path; it does not create, switch, or modify anything. Pass the worktree's absolute top-level path (the output of `git rev-parse --show-toplevel` inside it); it must be a worktree of this chat's repository or of one of its submodules. Safe to retry with the same idempotencyKey; use a fresh key for a new worktree.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute path of the worktree's top-level folder." },
+                "idempotencyKey": idempotency_key_schema()
+            },
+            "required": ["path", "idempotencyKey"]
+        }),
+    }]
+}
+
 /// Whether `name` is an engine-side agent tool (`AgentToolCall`).
 fn is_engine_agent_tool(name: &str) -> bool {
-    agent_tool_names::WORK_OUTLINE.contains(&name) || agent_tool_names::ARTIFACTS.contains(&name)
+    agent_tool_names::WORK_OUTLINE.contains(&name)
+        || agent_tool_names::ARTIFACTS.contains(&name)
+        || DIFF_TARGET_TOOLS.contains(&name)
 }
 
 /// Split a render-check result into MCP content: every screenshot as an
@@ -635,6 +656,7 @@ impl Tools {
         if self.zeron.has_token() {
             defs.extend(work_outline_catalog());
             defs.extend(artifact_catalog());
+            defs.extend(diff_target_catalog());
         }
         defs
     }
@@ -1974,6 +1996,45 @@ mod tests {
         let publish = &artifact_catalog()[0];
         let required = publish.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("idempotencyKey")));
+    }
+
+    #[tokio::test]
+    async fn bind_chat_worktree_is_an_in_chat_engine_tool() {
+        let def = diff_target_catalog().remove(0);
+        assert_eq!(def.name, "bind_chat_worktree");
+        assert_eq!(def.input_schema["type"], "object");
+        let required = def.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("path")));
+        assert!(required.contains(&json!("idempotencyKey")));
+        assert!(def.input_schema["properties"].get("chatId").is_none());
+        assert!(def.description.contains("git worktree add"));
+        assert!(def.description.contains("resume"));
+        assert!(def.description.contains("submodule"));
+        assert!(def.description.len() < 1000, "{}", def.description.len());
+
+        let world = Arc::new(World::default());
+        let anonymous = tools(world.clone(), None);
+        assert!(!anonymous.has(agent_tool_names::BIND_CHAT_WORKTREE));
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        assert!(agent.has(agent_tool_names::BIND_CHAT_WORKTREE));
+        let mut names: Vec<&str> = agent.list().iter().map(|d| d.name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "tool names must be unique");
+
+        // Forwarded to the engine as an engine tool with the token.
+        agent
+            .call(
+                agent_tool_names::BIND_CHAT_WORKTREE,
+                json!({ "path": "/tmp/wt", "idempotencyKey": "k" }),
+            )
+            .await
+            .unwrap();
+        let calls = world.agent_calls(agent_tool_names::BIND_CHAT_WORKTREE);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["token"], BETA_TOKEN);
+        assert_eq!(calls[0]["arguments"]["path"], "/tmp/wt");
     }
 
     #[tokio::test]

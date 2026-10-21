@@ -44,13 +44,14 @@ use zeron_harness::AgentToolsInjection;
 use zeron_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolErrorCode, tools};
 use zeron_proto::work_outline::{derive_id, roles};
 use zeron_proto::{
-    AssignChatToWorkItemParams, CreateUserActionRequestParams, CreateWorkItemParams,
-    InstructionProposalOrigin, InstructionProposalTarget, ProposeWorkItemInstructionParams,
-    ResolveUserActionRequestParams, RunRequest, SandboxLevel, UpdateWorkItemParams,
-    UserActionRequestOrigin, WorkItemChanges, WorkItemStatus, WorkOutlineError,
-    WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
+    AssignChatToWorkItemParams, ChatDiffTargetSource, CreateUserActionRequestParams,
+    CreateWorkItemParams, InstructionProposalOrigin, InstructionProposalTarget,
+    ProposeWorkItemInstructionParams, ResolveUserActionRequestParams, RunRequest, SandboxLevel,
+    UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges, WorkItemStatus,
+    WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
 };
 
+use crate::diff_targets::DiffTargetError;
 use crate::doc_host::DocHost;
 use crate::sessions::SessionsEngine;
 use crate::work_outline::WorkOutlineService;
@@ -390,6 +391,13 @@ struct KeyArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BindWorktreeArgs {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateChildArgs {
     title: String,
     #[serde(default)]
@@ -611,6 +619,8 @@ pub struct AgentToolsService {
     linear: Mutex<Option<crate::linear::LinearService>>,
     /// Planning artifacts (`artifact_*` tools).
     artifacts: Mutex<Option<crate::artifacts::ArtifactsService>>,
+    /// Chat diff targets (`bind_chat_worktree`).
+    diff_targets: Mutex<Option<crate::diff_targets::DiffTargets>>,
 }
 
 impl AgentToolsService {
@@ -629,6 +639,7 @@ impl AgentToolsService {
             child_claims: Mutex::new(()),
             linear: Mutex::new(None),
             artifacts: Mutex::new(None),
+            diff_targets: Mutex::new(None),
         }
     }
 
@@ -640,6 +651,11 @@ impl AgentToolsService {
     /// Attach the engine's artifact service (engine assembly).
     pub fn set_artifacts(&self, artifacts: crate::artifacts::ArtifactsService) {
         *lock(&self.artifacts) = Some(artifacts);
+    }
+
+    /// Attach the engine's diff targets service (engine assembly).
+    pub fn set_diff_targets(&self, diff_targets: crate::diff_targets::DiffTargets) {
+        *lock(&self.diff_targets) = Some(diff_targets);
     }
 
     /// The artifact service and the caller it acts for.
@@ -809,6 +825,7 @@ impl AgentToolsService {
                 let (service, caller) = self.artifact_call(&context)?;
                 Ok(service.agent_render_check(&caller, arguments)?)
             }
+            tools::BIND_CHAT_WORKTREE => self.bind_chat_worktree(&context, arguments),
             other => Err(AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
                 format!("unknown agent tool: {other}"),
@@ -829,6 +846,53 @@ impl AgentToolsService {
     }
 
     // ---- tools ---------------------------------------------------------------
+
+    /// `bind_chat_worktree`: record a worktree as the calling Chat's diff
+    /// target. Blocking git runs inline (this is already on a blocking thread).
+    fn bind_chat_worktree(
+        &self,
+        context: &CallContext,
+        arguments: &Value,
+    ) -> Result<Value, AgentToolError> {
+        let args: BindWorktreeArgs = parse_args(arguments)?;
+        let operation_id = context.operation_id(arguments)?;
+        let path = args.path.as_deref().map(str::trim).unwrap_or_default();
+        if path.is_empty() {
+            return Err(AgentToolError::invalid(
+                "path is required: the absolute top-level folder of the worktree",
+            ));
+        }
+        let diff_targets = lock(&self.diff_targets).clone().ok_or_else(|| {
+            AgentToolError::refused(
+                AgentToolErrorCode::Unsupported,
+                "diff targets are not available",
+            )
+        })?;
+        let chat_id = &context.grant.chat_id;
+        let outcome = diff_targets
+            .bind(
+                chat_id,
+                path,
+                ChatDiffTargetSource::Agent,
+                Some(&operation_id),
+            )
+            .map_err(|e| match e {
+                DiffTargetError::NotLocal { .. } => {
+                    AgentToolError::refused(AgentToolErrorCode::Forbidden, e.to_string())
+                }
+                other => AgentToolError::invalid(other.to_string()),
+            })?;
+        Ok(json!({
+            "chatId": chat_id,
+            "path": outcome.path,
+            "branch": outcome.branch,
+            "headSha": outcome.head_sha,
+            "repoName": outcome.repo_name,
+            "selected": outcome.selected,
+            "replayed": outcome.replayed,
+            "targets": outcome.reply.targets,
+        }))
+    }
 
     fn read_current(&self, context: &CallContext) -> Value {
         let unassociated = json!({
