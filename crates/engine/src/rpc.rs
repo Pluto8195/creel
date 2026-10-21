@@ -835,7 +835,7 @@ impl EngineRpc {
             Some(doc_host.clone()),
         ));
         agent_tools.set_sessions(sessions.clone());
-        // TODO(diff-targets): agent_tools.set_diff_targets(diff_targets.clone());
+        agent_tools.set_diff_targets(diff_targets.clone());
         let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
             workspace.clone(),
             doc_host.clone(),

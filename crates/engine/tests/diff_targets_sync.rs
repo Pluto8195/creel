@@ -549,3 +549,55 @@ async fn set_chat_diff_target_rpc_round_trip_and_refusals() {
     assert!(error.to_string().contains("another device"), "{error}");
     f.core.shutdown().await;
 }
+
+/// The assembled engine wires the agent tool to the same `DiffTargets` that
+/// diff-sync reads: a bind through the tool (no manual `set_diff_targets`)
+/// reaches the watch frame and the worktree-only scoped diff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_tool_bind_on_the_assembled_engine_reaches_the_watch_and_the_diff() {
+    let f = fixture();
+    f.core
+        .workspace
+        .create_space("space-1", "dev-a", &text(&f.ws), None, true)
+        .unwrap();
+    f.core
+        .workspace
+        .create_chat(
+            "chat-2",
+            Some("space-1"),
+            Some("dev-a"),
+            None,
+            Some(text(&f.ws)),
+        )
+        .unwrap();
+    let lease = f
+        .core
+        .sessions
+        .agent_tokens()
+        .mint("chat-2", "run-1", "space-1", "dev-a");
+    let rpc = f.core.rpc_service();
+    let client = zeron_rpc::memory_client(rpc.clone());
+    let mut stream = client
+        .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
+        .await
+        .expect("targets stream");
+    next_frame(&mut stream, |_| true).await;
+
+    std::fs::write(f.sub_wt.join("feature.txt"), "work\n").unwrap();
+    let reply = rpc
+        .agent_tools()
+        .call(&zeron_proto::agent_tools::AgentToolCallParams {
+            token: lease.token().to_owned(),
+            tool: zeron_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
+            arguments: json!({"path": text(&f.sub_wt), "idempotencyKey": "k-1"}),
+        })
+        .expect("bind through the assembled agent tool");
+    assert_eq!(reply["selected"], true);
+    let frame = next_frame(&mut stream, |frame| {
+        frame.as_array().is_some_and(|views| views.len() == 1)
+    })
+    .await;
+    assert_eq!(frame[0]["chatId"], "chat-2");
+    assert_eq!(frame[0]["targets"][0]["path"], text(&f.sub_wt));
+    assert_eq!(frame[0]["targets"][0]["source"], "agent");
+}

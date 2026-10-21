@@ -584,9 +584,8 @@ impl EngineCore {
         let diff_targets =
             diff_targets::DiffTargets::new(repos.clone(), workspace.clone(), device_id.clone());
         diff_sync.set_diff_targets(diff_targets.clone());
-        // TODO(diff-targets): agent_tools.set_diff_targets(diff_targets.clone());
-        // (the agent-tools service is built inside `EngineRpc::new`; wire it
-        // there from `diff_sync.diff_targets()`, see the matching TODO.)
+        // The agent-tools service is built inside `EngineRpc::new`, which wires
+        // it to this same instance from `diff_sync.diff_targets()`.
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
         let turn_diff = diff_sync.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
