@@ -7,6 +7,8 @@
 //! - mutations run as `Actor { kind: agent, chatId }` and dedupe by
 //!   `(token Chat, idempotencyKey)` across Runs.
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +20,7 @@ use tokio::sync::Notify;
 
 use zeron_doc::SessionCommandPayload;
 use zeron_engine::agent_tools::AgentToolsLaunch;
+use zeron_engine::diff_targets::DiffTargets;
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{AgentToolsInjection, Harness, HarnessError, RunControls};
 use zeron_proto::{
@@ -1257,4 +1260,363 @@ async fn read_subtree_caps_its_output_and_says_so() {
     assert_eq!(read["itemCount"], 300);
     assert_eq!(read["tree"]["children"].as_array().unwrap().len(), 299);
     assert_eq!(read["tree"]["childrenOmitted"], 11);
+}
+
+// ---- bind_chat_worktree -----------------------------------------------------
+//
+// Real temp git repositories: a superproject with a `flagship` submodule, a
+// linked worktree of the SUBMODULE in the superproject's gitignored
+// `.worktrees/` folder (the cb4e2158 layout), and one of the root repository.
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Zeron Test",
+            "-c",
+            "user.email=test@zeron.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn init_repo(path: &Path, file: &str) {
+    std::fs::create_dir_all(path).unwrap();
+    git(path, &["init", "-q"]);
+    std::fs::write(path.join(file), "x\n").unwrap();
+    git(path, &["add", "."]);
+    git(path, &["commit", "-q", "-m", "init"]);
+}
+
+struct BindRig {
+    _tmp: tempfile::TempDir,
+    ws: PathBuf,
+    sub_wt: PathBuf,
+    root_wt: PathBuf,
+    other: PathBuf,
+    core: EngineCore,
+    rpc: Arc<zeron_engine::rpc::EngineRpc>,
+    targets: DiffTargets,
+    token: String,
+    /// Keeps the token's Run alive.
+    _lease: zeron_engine::agent_tools::AgentTokenLease,
+}
+
+fn text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn bind_rig(attach: bool) -> BindRig {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    init_repo(&root.join("sources/flagship"), "flagship.txt");
+    let ws = root.join("ws");
+    init_repo(&ws, "README");
+    let source = root.join("sources/flagship");
+    git(&ws, &["submodule", "add", "-q", &text(&source), "flagship"]);
+    std::fs::write(ws.join(".gitignore"), ".worktrees/\n").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-q", "-m", "members"]);
+    let sub_wt = ws.join(".worktrees/flagship/eng-3012");
+    std::fs::create_dir_all(sub_wt.parent().unwrap()).unwrap();
+    git(
+        &ws.join("flagship"),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "../.worktrees/flagship/eng-3012",
+            "-b",
+            "feat-eng-3012",
+        ],
+    );
+    let root_wt = ws.join(".worktrees/ws/root-feature");
+    std::fs::create_dir_all(root_wt.parent().unwrap()).unwrap();
+    git(
+        &ws,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "root-feature",
+            &text(&root_wt),
+        ],
+    );
+    let other = root.join("other");
+    init_repo(&other, "other.txt");
+
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("device-id"), "dev-a").unwrap();
+    let core = EngineCore::assemble(
+        &data,
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core assembles");
+    core.workspace
+        .create_space(SPACE, "dev-a", &text(&ws), None, true)
+        .unwrap();
+    core.workspace
+        .create_chat(CHAT, Some(SPACE), Some("dev-a"), None, Some(text(&ws)))
+        .unwrap();
+    let rpc = core.rpc_service();
+    let targets = DiffTargets::new(core.repos.clone(), core.workspace.clone(), "dev-a");
+    if attach {
+        rpc.agent_tools().set_diff_targets(targets.clone());
+    }
+    let lease = core
+        .sessions
+        .agent_tokens()
+        .mint(CHAT, "run-1", SPACE, "dev-a");
+    BindRig {
+        token: lease.token().to_owned(),
+        _lease: lease,
+        sub_wt: std::fs::canonicalize(&sub_wt).unwrap(),
+        root_wt: std::fs::canonicalize(&root_wt).unwrap(),
+        _tmp: tmp,
+        ws,
+        other,
+        core,
+        rpc,
+        targets,
+    }
+}
+
+fn bind_call(
+    rig: &BindRig,
+    token: &str,
+    arguments: Value,
+) -> Result<Value, zeron_engine::agent_tools::AgentToolError> {
+    rig.rpc
+        .agent_tools()
+        .call(&zeron_proto::agent_tools::AgentToolCallParams {
+            token: token.to_owned(),
+            tool: zeron_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
+            arguments,
+        })
+}
+
+fn bind_ok(rig: &BindRig, path: &Path, key: &str) -> Value {
+    bind_call(
+        rig,
+        &rig.token,
+        json!({ "path": text(path), "idempotencyKey": key }),
+    )
+    .unwrap_or_else(|e| panic!("bind {}: {e}", path.display()))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_records_and_selects_a_submodule_worktree() {
+    let rig = bind_rig(true);
+    let reply = bind_ok(&rig, &rig.sub_wt, "bind-flagship");
+    assert_eq!(reply["chatId"], CHAT);
+    assert_eq!(reply["path"], text(&rig.sub_wt));
+    assert_eq!(reply["branch"], "feat-eng-3012");
+    assert_eq!(
+        reply["headSha"],
+        git(&rig.sub_wt, &["rev-parse", "HEAD"]).as_str()
+    );
+    assert_eq!(reply["repoName"], "flagship");
+    assert_eq!(reply["selected"], true);
+    assert_eq!(reply["replayed"], false);
+    assert_eq!(
+        reply["targets"],
+        json!([{ "path": text(&rig.sub_wt), "source": "agent", "selected": true }])
+    );
+    // The row is persisted, agent-sourced, with the derived operation id.
+    let stored = rig.targets.stored(CHAT);
+    assert_eq!(stored.targets.len(), 1);
+    assert!(stored.targets[0].selected);
+    let row = rig.targets.rows().into_iter().next().unwrap();
+    assert_eq!(row.chat_id, CHAT);
+    assert_eq!(
+        row.ops,
+        vec![zeron_proto::agent_tools::operation_id(
+            CHAT,
+            "bind-flagship"
+        )]
+    );
+    assert!(row.ops[0].len() <= 64);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_retries_replay_and_new_keys_do_not_duplicate() {
+    let rig = bind_rig(true);
+    bind_ok(&rig, &rig.sub_wt, "k1");
+    let before = *rig.targets.changes().borrow();
+    let retry = bind_ok(&rig, &rig.sub_wt, "k1");
+    assert_eq!(retry["replayed"], true);
+    assert_eq!(retry["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(*rig.targets.changes().borrow(), before, "no second write");
+
+    // Same key, different path: the key is already spent.
+    let err = bind_call(
+        &rig,
+        &rig.token,
+        json!({ "path": text(&rig.root_wt), "idempotencyKey": "k1" }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "invalid");
+    assert_eq!(rig.targets.stored(CHAT).targets.len(), 1);
+
+    // A new key for the same path refreshes the selection, no duplicate.
+    let again = bind_ok(&rig, &rig.sub_wt, "k2");
+    assert_eq!(again["replayed"], false);
+    assert_eq!(again["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(rig.targets.stored(CHAT).targets.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_binds_each_repository_family_and_selects_the_last() {
+    let rig = bind_rig(true);
+    bind_ok(&rig, &rig.sub_wt, "a");
+    let reply = bind_ok(&rig, &rig.root_wt, "b");
+    assert_eq!(reply["repoName"], "ws");
+    assert_eq!(reply["branch"], "root-feature");
+    assert_eq!(
+        reply["targets"],
+        json!([
+            { "path": text(&rig.sub_wt), "source": "agent", "selected": false },
+            { "path": text(&rig.root_wt), "source": "agent", "selected": true },
+        ])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_refuses_paths_outside_the_chats_repositories() {
+    let rig = bind_rig(true);
+    for (key, path) in [
+        ("outside", text(rig.ws.parent().unwrap())),
+        ("other", text(&rig.other)),
+        ("relative", "flagship".to_owned()),
+        ("missing", text(&rig.ws.join("nope"))),
+    ] {
+        let err = bind_call(
+            &rig,
+            &rig.token,
+            json!({ "path": path, "idempotencyKey": key }),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "invalid", "{key}: {err}");
+    }
+    let subdir = rig.sub_wt.join("src");
+    std::fs::create_dir_all(&subdir).unwrap();
+    let err = bind_call(
+        &rig,
+        &rig.token,
+        json!({ "path": text(&subdir), "idempotencyKey": "subdir" }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "invalid", "{err}");
+    // A chatId argument is ignored: the token's chat is the only one bound.
+    core_chat_other(&rig);
+    let reply = bind_call(
+        &rig,
+        &rig.token,
+        json!({ "path": text(&rig.sub_wt), "idempotencyKey": "forge", "chatId": OTHER_CHAT }),
+    )
+    .unwrap();
+    assert_eq!(reply["chatId"], CHAT);
+    assert!(rig.targets.stored(OTHER_CHAT).targets.is_empty());
+    assert_eq!(rig.targets.stored(CHAT).targets.len(), 1);
+}
+
+fn core_chat_other(rig: &BindRig) {
+    rig.core
+        .workspace
+        .create_chat(
+            OTHER_CHAT,
+            Some(SPACE),
+            Some("dev-a"),
+            None,
+            Some(text(&rig.ws)),
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_validates_arguments_and_authentication() {
+    let rig = bind_rig(true);
+    let path = text(&rig.sub_wt);
+    for (arguments, what) in [
+        (json!({ "path": path }), "missing key"),
+        (json!({ "path": path, "idempotencyKey": "" }), "empty key"),
+        (json!({ "path": path, "idempotencyKey": "  " }), "blank key"),
+        (json!({ "idempotencyKey": "k" }), "missing path"),
+        (json!({ "path": "", "idempotencyKey": "k" }), "empty path"),
+        (json!({ "path": 7, "idempotencyKey": "k" }), "bad path type"),
+        (json!(null), "no arguments"),
+    ] {
+        let err = bind_call(&rig, &rig.token, arguments).unwrap_err();
+        assert_eq!(err.code(), "invalid", "{what}: {err}");
+    }
+    assert!(rig.targets.stored(CHAT).targets.is_empty());
+
+    let good = json!({ "path": path, "idempotencyKey": "k" });
+    for token in ["", "zat_forged", &format!("{}0", rig.token)] {
+        let err = bind_call(&rig, token, good.clone()).unwrap_err();
+        assert_eq!(err.code(), "unauthenticated", "{token:?}");
+    }
+    assert!(rig.targets.stored(CHAT).targets.is_empty());
+}
+
+/// Engine assembly attaches the shared `DiffTargets` itself: a bind works
+/// without any test-side `set_diff_targets`.
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_is_wired_on_the_assembled_engine() {
+    let rig = bind_rig(false);
+    let reply = bind_ok(&rig, &rig.sub_wt, "k");
+    assert_eq!(reply["selected"], true);
+    assert_eq!(reply["path"], text(&rig.sub_wt));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_refuses_a_chat_hosted_on_another_device() {
+    let rig = bind_rig(true);
+    // A Space on another device: its chats are hosted there.
+    rig.core
+        .workspace
+        .create_space("space-b", "dev-b", &text(&rig.ws), None, true)
+        .unwrap();
+    rig.core
+        .workspace
+        .create_chat(
+            "chat-remote",
+            Some("space-b"),
+            Some("dev-b"),
+            None,
+            Some(text(&rig.ws)),
+        )
+        .unwrap();
+    let lease = rig
+        .core
+        .sessions
+        .agent_tokens()
+        .mint("chat-remote", "run-2", "space-b", "dev-b");
+    let err = bind_call(
+        &rig,
+        lease.token(),
+        json!({ "path": text(&rig.sub_wt), "idempotencyKey": "k" }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "forbidden", "{err}");
 }

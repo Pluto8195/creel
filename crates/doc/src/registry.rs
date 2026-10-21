@@ -33,6 +33,7 @@ pub const KIND_DEVICES: &str = "devices";
 pub const KIND_SPACES: &str = "spaces";
 pub const KIND_CHATS: &str = "chats";
 pub const KIND_CHAT_PR_LINKS: &str = "chatPrLinks";
+pub const KIND_CHAT_DIFF_TARGETS: &str = "chatDiffTargets";
 pub const KIND_SESSIONS: &str = "sessions";
 pub const KIND_PREFERENCES: &str = "preferences";
 
@@ -40,6 +41,7 @@ pub const KIND_PREFERENCES: &str = "preferences";
 pub const SIDEBAR_PINS_STATE_ID: &str = "sidebarPins";
 pub const KIND_SIDEBAR_PINS: &str = "sidebarPins";
 pub mod artifacts;
+mod chat_diff_targets;
 mod sidebar_pins;
 mod sidebar_sections;
 pub mod work_outline;
@@ -1135,19 +1137,32 @@ impl RegistryDoc {
             })
             .map(|row| row.id)
             .collect();
+        let diff_target_ids = {
+            let ids: Vec<&str> = chat_ids.iter().map(String::as_str).collect();
+            self.chat_diff_target_row_ids(&ids)
+        };
         // Work Outline rows owned by the Space go in the same cascade
         // (contract section 3.5); readers suppress them anyway once the Space
         // row is not live, and `sweep_work_outline_orphans` catches rows
         // created concurrently elsewhere.
         let outline_keys = self.work_outline_rows_of_space(space_id);
         let mut keys: Vec<(&str, &str)> =
-            Vec::with_capacity(chat_ids.len() * 2 + pr_link_ids.len() + outline_keys.len() + 1);
+            Vec::with_capacity(
+                chat_ids.len() * 2
+                    + pr_link_ids.len()
+                    + diff_target_ids.len()
+                    + outline_keys.len()
+                    + 1,
+            );
         for chat_id in &chat_ids {
             keys.push((KIND_CHATS, chat_id));
             keys.push((KIND_SESSIONS, chat_id));
         }
         for link_id in &pr_link_ids {
             keys.push((KIND_CHAT_PR_LINKS, link_id));
+        }
+        for id in &diff_target_ids {
+            keys.push((KIND_CHAT_DIFF_TARGETS, id));
         }
         for (kind, id) in &outline_keys {
             keys.push((kind, id));
@@ -1607,8 +1622,14 @@ impl RegistryDoc {
             .filter(|row| row.fields.get("chatId").and_then(Value::as_str) == Some(chat_id))
             .map(|row| row.id)
             .collect();
+        let diff_target_ids = self.chat_diff_target_row_ids(&[chat_id]);
         let mut keys = vec![(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)];
         keys.extend(link_ids.iter().map(|id| (KIND_CHAT_PR_LINKS, id.as_str())));
+        keys.extend(
+            diff_target_ids
+                .iter()
+                .map(|id| (KIND_CHAT_DIFF_TARGETS, id.as_str())),
+        );
         self.delete_row_ops(&keys);
         Ok(existed)
     }

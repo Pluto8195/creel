@@ -1469,3 +1469,85 @@ re-association rule are unchanged.
    when the request's origin Chat is the caller or a Chat whose `parentChatId` is the caller
    (so a coordinator closes "Ready to merge" after merging). Requests from Chats a person
    started, or that another agent created, stay unauthorized.
+
+## Amendment: chat diff targets (agent worktree)
+
+Found in chat cb4e2158 (ENG-3012): the Cofactr workspace chat's `cwd` is the workspace root
+(`bindings: []`), but the agent ran `git worktree add ../.worktrees/flagship/<slug>` from the
+flagship submodule and worked there. The Changes pane diffs `chat.cwd`, so it showed the root's
+unrelated dirty docs. `.worktrees/` is gitignored and the worktree is a linked worktree of the
+flagship submodule, so neither submodule expansion nor per-member diffs (decision 10, which need
+a binding) reached it. This amendment adds a per-chat **diff target** that the `bind_chat_worktree`
+agent tool and the Changes pane's "Diff checkout…" picker both write.
+
+1. **Decision: a new mutable row, not `chatExecutionBindings`.** Reusing the execution binding was
+   the first idea (its members already drive per-member diffs and the member picker), and it is
+   rejected:
+   - The binding is write-once ("later edits never retarget it", `operationConflict` on a second
+     write). A chat binds one worktree per submodule over its life and the user re-picks, so the
+     target must be mutable.
+   - A binding is a gate. Dispatch validates it on every turn, overwrites `request.cwd` with the
+     execution root, and fails closed: a worktree removed after the ticket merged would make a
+     bound chat unable to send. A diff target is display-only and must never block a turn or move
+     `chat.cwd`.
+   - Binding an existing unbound chat (cb4e2158) would retroactively subject it to launch
+     validation, resume checks, retarget refusal and the `exception` marker.
+   - Bindings need a Space-scoped Work Outline snapshot; a diff target is only a repository path.
+   The existing per-member diff machinery is reused instead: a target resolves to the same
+   `CheckoutIdentity`, gets a diff-sync checkout entry like a member entry (decision 10), and the
+   UI shows it through the existing member pill row.
+2. **Row.** Registry kind `chatDiffTargets` (like `chatPrLinks`, not a Work Outline kind): id =
+   chat id; fields `chatId`, `targets` (JSON, ≤ 16 `StoredChatDiffTarget {path, source:
+   agent|manual, repoId, worktreeId, boundAt}`), `selected` (target path or null), `ops` (the 16
+   most recent operation ids, for replay), `updatedAt`, `v`. Types are in
+   `crates/proto/src/chat_diff_target.rs`. Compare-before-write; deleted with the chat. Binding a
+   path already stored only refreshes `selected`. A replayed operation id writes nothing.
+3. **Selection.** Binding (agent or manual) selects the bound target (latest wins; the other
+   targets stay in the member pills). `selected: null` means the chat's own checkout, so "Diff
+   checkout… → this chat's checkout" is `ClearSelection`. A selected target that no longer
+   resolves is simply absent from the view and the pane falls back to the chat's own checkout.
+4. **Validation (`crates/engine/src/diff_targets.rs`).** Only for a chat on this device with a
+   `cwd` inside a git checkout (HOME and automatic-access-blocked folders refused). The allowed
+   set is every registered worktree (`git worktree list --porcelain`, skipping prunable and bare
+   entries) of the chat's execution-root repository and of each submodule under it (recursive,
+   capped), plus those repositories' own checkouts. The given path must be absolute, exist,
+   canonicalize (symlinks and `..` resolved) to exactly one allowed top-level path. A symlink
+   into another worktree of the same family is accepted (it names an allowed worktree); a
+   symlink out, a subfolder of a worktree, another repository, or the family's bare git dir is
+   refused. Nothing outside the family is probed. All git spawns use
+   `zeron_harness::git_command()`.
+5. **Live view.** Diff-sync reads the rows each reconcile pass, resolves every target through
+   the identity memo (a target whose checkout is missing, whose checkout id differs, or whose
+   repository id differs from the stored one is dropped from the view), creates a checkout entry
+   per target (no Chats attached, same as member entries), and publishes
+   `Vec<ChatDiffTargetsView>` on the new `WatchChatDiffTargets` stream. Rows are re-read on every
+   write through the same reconcile kick as the chat watch.
+6. **Latest turn.** `turn_trees` is keyed by `(chat id, checkout root)`: a turn start snapshots
+   the chat's `cwd` checkout and every resolvable target. Binding a target also snapshots it
+   immediately when the chat has none for that root, so the first turn after `git worktree add`
+   has a base; a target bound after edits began in it uses the bind-time tree as base (edits made
+   before the bind are not part of "Latest turn"). The `GetCheckoutDiff` / `GetCheckoutFileDiffText`
+   `turn` mode looks up `(chatId, identity.root)`. Working tree and Branch scopes need nothing:
+   they already take the target's `cwd` and `checkoutId`.
+7. **Agent tool `bind_chat_worktree {path, idempotencyKey}`.** A normal engine agent tool (token
+   authenticates the calling chat; no `chatId` argument, so a chat can only bind for itself).
+   Operation id = `agent_tools::operation_id(chat, key)` (≤ 64 chars, derived). Reply
+   `{chatId, path, branch, headSha, repoName, selected, replayed, targets:[{path, source,
+   selected}]}`. Failures are `agent-tools/invalid` (bad path, outside the family, not a
+   worktree) or `agent-tools/forbidden` (chat not on this device). Agents may call it once per
+   worktree. Its description tells them to call it right after `git worktree add`, or when
+   resuming an existing worktree for this chat's work.
+8. **RPCs.** `ListChatDiffCheckouts {chatId}` (own checkout, submodule checkouts, worktrees of
+   the root repository and of each submodule, each with branch and bound/selected flags),
+   `SetChatDiffTarget {chatId, action: select|unbind|clearSelection, path?}`, and
+   `WatchChatDiffTargets`. All local-device only (a chat hosted on another device shows no
+   picker). The UI ranks ticket matches: a candidate whose branch or path contains the chat's
+   linked ticket id (case-insensitive, e.g. `eng-3012`) sorts first and is flagged "suggested".
+9. **UI.** The Changes pane's member pill row now lists the chat's own checkout plus every
+   resolvable target (unbound execution members unchanged). A bound chat defaults to its selected
+   target. Picking a pill persists through `SetChatDiffTarget`. "Diff checkout…" opens the
+   candidate list. The composer's branch indicator and the Changes header show the selected
+   target's branch. Chats with no target and no binding are unchanged.
+10. **Not done.** Per-target edge sidecars and PR lookup from a target's path; remote-device
+    chats; automatic suggestion without the agent (a worktree found only by the picker). The
+    implement-ticket skill needs one line after `git worktree add` (outside this repository).

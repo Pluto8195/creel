@@ -45,9 +45,13 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use zeron_proto::{Chat, CheckoutDiff, DiffFileSummary, SubmoduleDiffSummary};
+use zeron_proto::{
+    Chat, ChatDiffTargetSource, ChatDiffTargetView, ChatDiffTargetsRow, ChatDiffTargetsView,
+    CheckoutDiff, DiffFileSummary, StoredChatDiffTarget, SubmoduleDiffSummary,
+};
 
 use crate::EngineError;
+use crate::diff_targets::DiffTargets;
 use crate::doc_host::EdgeConfig;
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::workspace_host::WorkspaceHost;
@@ -159,6 +163,22 @@ pub struct TurnSnapshot {
     pub at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One stored chat diff target that currently resolves to a live checkout of
+/// the repository it was bound in.
+#[derive(Debug, Clone)]
+struct ResolvedTarget {
+    identity: CheckoutIdentity,
+    source: ChatDiffTargetSource,
+    selected: bool,
+    repo_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedChatTargets {
+    chat_id: String,
+    targets: Vec<ResolvedTarget>,
+}
+
 struct DiffSyncInner {
     repos: Repos,
     workspace: WorkspaceHost,
@@ -177,8 +197,15 @@ struct DiffSyncInner {
     orphan_grace: Duration,
     diffs_tx: watch::Sender<Vec<CheckoutDiff>>,
     statuses_tx: watch::Sender<Vec<zeron_proto::CheckoutGitStatus>>,
-    /// chat_id → turn-start tree (see [`TurnSnapshot`]).
-    turn_trees: Mutex<HashMap<String, TurnSnapshot>>,
+    /// (chat id, checkout root) → turn-start tree (see [`TurnSnapshot`]): the
+    /// chat's `cwd` checkout plus every resolvable diff target.
+    turn_trees: Mutex<HashMap<(String, PathBuf), TurnSnapshot>>,
+    /// Chat diff targets (`chatDiffTargets` rows); attached once by engine
+    /// assembly via [`CheckoutDiffSync::set_diff_targets`].
+    diff_targets: Mutex<Option<DiffTargets>>,
+    /// Every chat's resolved targets as of the last reconcile pass.
+    resolved_targets: Mutex<Vec<ResolvedChatTargets>>,
+    targets_tx: watch::Sender<Vec<ChatDiffTargetsView>>,
     /// The tasks hold `Weak` refs, but an in-flight iteration holds an
     /// upgraded Arc — the token cuts it so no sidecar HTTP outlives shutdown.
     cancel: CancellationToken,
@@ -233,6 +260,9 @@ impl CheckoutDiffSync {
                 diffs_tx,
                 statuses_tx: watch::channel(Vec::new()).0,
                 turn_trees: Mutex::new(HashMap::new()),
+                diff_targets: Mutex::new(None),
+                resolved_targets: Mutex::new(Vec::new()),
+                targets_tx: watch::channel(Vec::new()).0,
                 cancel: CancellationToken::new(),
                 supervisor: Mutex::new(None),
             }),
@@ -268,6 +298,46 @@ impl CheckoutDiffSync {
         self.inner.statuses_tx.subscribe()
     }
 
+    /// Attach the chat diff targets service: every reconcile pass then reads
+    /// its rows, and a bind/select/unbind triggers a prompt reconcile (and a
+    /// turn-snapshot base for a newly appeared target). Idempotent per
+    /// service; the first call wins.
+    pub fn set_diff_targets(&self, targets: DiffTargets) {
+        {
+            let mut slot = lock(&self.inner.diff_targets);
+            if slot.is_some() {
+                return;
+            }
+            *slot = Some(targets.clone());
+        }
+        tokio::spawn(diff_targets_task(
+            Arc::downgrade(&self.inner),
+            targets.changes(),
+            self.inner.cancel.clone(),
+        ));
+    }
+
+    /// The attached chat diff targets service, if any.
+    pub fn diff_targets(&self) -> Option<DiffTargets> {
+        lock(&self.inner.diff_targets).clone()
+    }
+
+    /// The attached service, attaching `make()` first when none is.
+    pub fn ensure_diff_targets(&self, make: impl FnOnce() -> DiffTargets) -> DiffTargets {
+        if let Some(existing) = self.diff_targets() {
+            return existing;
+        }
+        self.set_diff_targets(make());
+        self.diff_targets()
+            .expect("diff targets were attached just above")
+    }
+
+    /// `WatchChatDiffTargets` source: one view per chat with at least one
+    /// resolved target (current value first, republished only on change).
+    pub fn watch_chat_diff_targets(&self) -> watch::Receiver<Vec<ChatDiffTargetsView>> {
+        self.inner.targets_tx.subscribe()
+    }
+
     /// Regroup this device's chats by checkout identity, then (re)build watchers.
     /// Public for tests (the background task calls it on every chat change).
     pub async fn reconcile_now(&self) {
@@ -292,41 +362,87 @@ impl CheckoutDiffSync {
     }
 
     /// A turn is starting for `chat_id` in `cwd`: snapshot the checkout's tree
-    /// in the background so "Latest turn" has a base. Best-effort — failures
-    /// only log; a chat outside a checkout simply records nothing.
+    /// (and every currently resolvable diff target of the chat) in the
+    /// background so "Latest turn" has a base. Best-effort — failures only
+    /// log; a chat outside a checkout simply records nothing for its cwd.
     pub fn note_turn_start(&self, chat_id: &str, cwd: &str) {
         let inner = Arc::downgrade(&self.inner);
         let chat_id = chat_id.to_string();
         let cwd = PathBuf::from(cwd);
         tokio::spawn(async move {
             let Some(inner) = inner.upgrade() else { return };
-            let identity = match inner.repos.checkout_identity(&cwd).await {
-                Ok(identity) => identity,
-                Err(_) => return, // not a checkout
-            };
-            match snapshot_tree(&identity.root).await {
-                Ok(tree) => {
-                    lock(&inner.turn_trees).insert(
-                        chat_id,
-                        TurnSnapshot {
-                            root: identity.root,
-                            tree,
-                            at: chrono::Utc::now(),
-                        },
-                    );
+            let mut roots: Vec<PathBuf> = Vec::new();
+            if let Ok(identity) = inner.repos.checkout_identity(&cwd).await {
+                roots.push(identity.root);
+            }
+            for target in resolve_chat_targets(&inner, &chat_id).await {
+                if !roots.contains(&target.identity.root) {
+                    roots.push(target.identity.root);
                 }
-                Err(err) => {
-                    tracing::debug!(chat = %chat_id, error = %err,
-                        "diff-sync: turn snapshot failed");
+            }
+            if roots.is_empty() {
+                return; // not a checkout, no targets
+            }
+            let trees = futures::future::join_all(roots.iter().map(|root| snapshot_tree(root))).await;
+            let at = chrono::Utc::now();
+            let mut turn_trees = lock(&inner.turn_trees);
+            // Roots this chat no longer works in (an unbound target) drop out.
+            turn_trees.retain(|(chat, root), _| *chat != chat_id || roots.contains(root));
+            for (root, tree) in roots.into_iter().zip(trees) {
+                match tree {
+                    Ok(tree) => {
+                        turn_trees.insert(
+                            (chat_id.clone(), root.clone()),
+                            TurnSnapshot { root, tree, at },
+                        );
+                    }
+                    Err(err) => {
+                        tracing::debug!(chat = %chat_id, error = %err,
+                            "diff-sync: turn snapshot failed");
+                    }
                 }
             }
         });
     }
 
-    /// The recorded turn-start snapshot for a chat, if any turn dispatched
-    /// since boot.
-    pub fn turn_snapshot(&self, chat_id: &str) -> Option<TurnSnapshot> {
-        lock(&self.inner.turn_trees).get(chat_id).cloned()
+    /// The recorded turn-start snapshot of `chat_id` in the checkout rooted at
+    /// `root`, if any turn dispatched (or the target was bound) since boot.
+    pub fn turn_snapshot(&self, chat_id: &str, root: &Path) -> Option<TurnSnapshot> {
+        lock(&self.inner.turn_trees)
+            .get(&(chat_id.to_string(), root.to_path_buf()))
+            .cloned()
+    }
+
+    /// Record a snapshot for (`chat_id`, the checkout at `path`) only when none
+    /// exists yet — a freshly bound worktree gets a "Latest turn" base even
+    /// though no turn has started in it. Best-effort.
+    pub async fn snapshot_target_now(&self, chat_id: &str, path: &str) {
+        let Some(identity) = resolve_identity(&self.inner, path, false).await else {
+            return;
+        };
+        snapshot_root_if_missing(&self.inner, chat_id, &identity.root).await;
+    }
+}
+
+async fn snapshot_root_if_missing(inner: &Arc<DiffSyncInner>, chat_id: &str, root: &Path) {
+    let key = (chat_id.to_string(), root.to_path_buf());
+    if lock(&inner.turn_trees).contains_key(&key) {
+        return;
+    }
+    match snapshot_tree(root).await {
+        Ok(tree) => {
+            lock(&inner.turn_trees)
+                .entry(key)
+                .or_insert_with(|| TurnSnapshot {
+                    root: root.to_path_buf(),
+                    tree,
+                    at: chrono::Utc::now(),
+                });
+        }
+        Err(err) => {
+            tracing::debug!(chat = %chat_id, error = %err,
+                "diff-sync: target snapshot failed");
+        }
     }
 }
 
@@ -400,16 +516,180 @@ pub(crate) fn member_identity_matches(
     if let Some(worktree_id) = &binding.worktree_id {
         return identity.id == *worktree_id;
     }
-    let common_dir = match std::fs::read_to_string(identity.git_dir.join("commondir")) {
-        Ok(text) => {
-            let joined = identity.git_dir.join(text.trim());
-            std::fs::canonicalize(&joined).unwrap_or(joined)
-        }
-        Err(_) => identity.git_dir.clone(),
-    };
+    let common_dir = common_dir_of(&identity.git_dir);
     crate::execution_scope::repository_id(device_id, &common_dir) == binding.repo_id
         && crate::execution_scope::canonical_lenient(&identity.root)
             == crate::execution_scope::canonical_lenient(Path::new(binding.checkout_path()))
+}
+
+/// The canonical common dir of a git dir: the `commondir` file of a linked
+/// worktree's git dir, else the git dir itself. No `git` spawn.
+fn common_dir_of(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => {
+            let joined = git_dir.join(text.trim());
+            std::fs::canonicalize(&joined).unwrap_or(joined)
+        }
+        Err(_) => git_dir.to_path_buf(),
+    }
+}
+
+/// Whether the checkout found at a stored diff target's path is the bound
+/// one: same checkout id, same repository (topology id of the common dir),
+/// same canonical top level, and still on disk (the identity memo outlives a
+/// removed worktree until the next repair pass).
+fn target_identity_matches(
+    target: &StoredChatDiffTarget,
+    identity: &CheckoutIdentity,
+    device_id: &str,
+) -> bool {
+    identity.id == target.worktree_id
+        && identity.git_dir.is_dir()
+        && crate::execution_scope::repository_id(device_id, &common_dir_of(&identity.git_dir))
+            == target.repo_id
+        && crate::execution_scope::canonical_lenient(&identity.root)
+            == crate::execution_scope::canonical_lenient(Path::new(&target.path))
+}
+
+/// Display name of a repository: the basename of its main checkout
+/// (`<main>/.git` common dir, or a submodule's `core.worktree`), else of the
+/// checkout itself. Reads the config file; no `git` spawn.
+fn repo_display_name(common_dir: &Path, fallback_root: &Path) -> String {
+    let main = if common_dir.file_name().is_some_and(|name| name == ".git") {
+        common_dir.parent().map(Path::to_path_buf)
+    } else {
+        std::fs::read_to_string(common_dir.join("config"))
+            .ok()
+            .and_then(|config| {
+                config.lines().find_map(|line| {
+                    let (key, value) = line.trim().split_once('=')?;
+                    (key.trim() == "worktree").then(|| value.trim().to_owned())
+                })
+            })
+            .filter(|worktree| !worktree.is_empty())
+            .map(|worktree| {
+                crate::execution_scope::canonical_lenient(&common_dir.join(worktree))
+            })
+    };
+    main.as_deref()
+        .unwrap_or(fallback_root)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Resolve one chat row's stored targets through the identity memo, keeping
+/// only those whose checkout still is the bound one. Stored order.
+async fn resolve_row_targets(
+    inner: &Arc<DiffSyncInner>,
+    row: &ChatDiffTargetsRow,
+    resolved: &mut HashMap<String, Option<CheckoutIdentity>>,
+    fresh: bool,
+) -> Vec<ResolvedTarget> {
+    let mut out = Vec::new();
+    for target in &row.targets {
+        let identity = match resolved.get(&target.path) {
+            Some(identity) => identity.clone(),
+            None => {
+                let identity = resolve_identity(inner, &target.path, fresh).await;
+                resolved.insert(target.path.clone(), identity.clone());
+                identity
+            }
+        };
+        let Some(identity) = identity else { continue };
+        if !target_identity_matches(target, &identity, &inner.device_id) {
+            tracing::debug!(path = %target.path,
+                "diff-sync: diff target checkout differs from its binding");
+            continue;
+        }
+        let repo_name =
+            repo_display_name(&common_dir_of(&identity.git_dir), &identity.root);
+        out.push(ResolvedTarget {
+            selected: row.selected.as_deref() == Some(target.path.as_str()),
+            source: target.source,
+            repo_name,
+            identity,
+        });
+    }
+    out
+}
+
+/// The chat's currently resolvable targets (memoized identities; no fresh
+/// revalidation).
+async fn resolve_chat_targets(inner: &Arc<DiffSyncInner>, chat_id: &str) -> Vec<ResolvedTarget> {
+    let Some(targets) = lock(&inner.diff_targets).clone() else {
+        return Vec::new();
+    };
+    let Some(row) = targets.rows().into_iter().find(|row| row.chat_id == chat_id) else {
+        return Vec::new();
+    };
+    resolve_row_targets(inner, &row, &mut HashMap::new(), false).await
+}
+
+/// Branch (`None` when detached or unreadable) and HEAD sha of a checkout,
+/// read from the git dir's files (HEAD, loose ref, `packed-refs`) — no spawn.
+fn read_head(identity: &CheckoutIdentity) -> (Option<String>, Option<String>) {
+    let Ok(head) = std::fs::read_to_string(identity.git_dir.join("HEAD")) else {
+        return (None, None);
+    };
+    let head = head.trim();
+    let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
+        return (None, valid_object_id(head).then(|| head.to_owned()));
+    };
+    let branch = reference.strip_prefix("refs/heads/").map(str::to_owned);
+    let common_dir = common_dir_of(&identity.git_dir);
+    let loose = [&common_dir, &identity.git_dir].into_iter().find_map(|dir| {
+        let text = std::fs::read_to_string(dir.join(reference)).ok()?;
+        let sha = text.trim();
+        valid_object_id(sha).then(|| sha.to_owned())
+    });
+    let sha = loose.or_else(|| {
+        let packed = std::fs::read_to_string(common_dir.join("packed-refs")).ok()?;
+        packed.lines().find_map(|line| {
+            let (sha, name) = line.split_once(' ')?;
+            (name.trim() == reference && valid_object_id(sha)).then(|| sha.to_owned())
+        })
+    });
+    (branch, sha)
+}
+
+/// Rebuild and publish the `WatchChatDiffTargets` list from the last
+/// reconcile's resolved targets plus the checkouts' current HEADs. Publishes
+/// only when the list changed.
+fn publish_targets(inner: &Arc<DiffSyncInner>) {
+    let resolved = lock(&inner.resolved_targets).clone();
+    let mut views: Vec<ChatDiffTargetsView> = resolved
+        .iter()
+        .filter(|chat| !chat.targets.is_empty())
+        .map(|chat| ChatDiffTargetsView {
+            chat_id: chat.chat_id.clone(),
+            targets: chat
+                .targets
+                .iter()
+                .map(|target| {
+                    let (branch, head_sha) = read_head(&target.identity);
+                    ChatDiffTargetView {
+                        path: target.identity.root.to_string_lossy().into_owned(),
+                        checkout_id: target.identity.id.clone(),
+                        source: target.source,
+                        selected: target.selected,
+                        repo_name: target.repo_name.clone(),
+                        branch,
+                        head_sha,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    views.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+    inner.targets_tx.send_if_modified(|current| {
+        if *current == views {
+            false
+        } else {
+            *current = views;
+            true
+        }
+    });
 }
 
 async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
@@ -426,6 +706,11 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     // edge sidecar stay keyed to its execution root (`chat.cwd`).
     let bindings = inner.workspace.chat_execution_bindings();
     let mut member_paths: Vec<(String, zeron_proto::RepositoryBinding)> = Vec::new();
+    let local_chat_ids: HashSet<String> = chats
+        .iter()
+        .filter(|chat| chat.device_id == inner.device_id)
+        .map(|chat| chat.id.clone())
+        .collect();
     for chat in chats {
         if chat.device_id != inner.device_id {
             continue;
@@ -495,6 +780,33 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
                 .or_insert_with(|| (identity, Vec::new()));
         }
     }
+
+    // Chat diff targets: each resolvable target of a local chat gets a
+    // checkout entry like a member entry (no Chats attached) and a place in
+    // the `WatchChatDiffTargets` list.
+    let diff_targets = lock(&inner.diff_targets).clone();
+    let mut resolved_chats: Vec<ResolvedChatTargets> = Vec::new();
+    if let Some(diff_targets) = diff_targets {
+        for row in diff_targets.rows() {
+            if row.targets.is_empty() || !local_chat_ids.contains(&row.chat_id) {
+                continue;
+            }
+            let targets = resolve_row_targets(inner, &row, &mut resolved, fresh).await;
+            for target in &targets {
+                groups
+                    .entry(target.identity.id.clone())
+                    .or_insert_with(|| (target.identity.clone(), Vec::new()));
+            }
+            if !targets.is_empty() {
+                resolved_chats.push(ResolvedChatTargets {
+                    chat_id: row.chat_id,
+                    targets,
+                });
+            }
+        }
+    }
+    *lock(&inner.resolved_targets) = resolved_chats;
+    publish_targets(inner);
 
     // Close entries whose checkout has had no chats for a full grace period;
     // drop their published diff. A single pass that misses a checkout only
@@ -732,6 +1044,8 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
     if let Some((files, complete)) = &snapshot.git_status {
         git_status::publish(inner, entry, files.clone(), *complete);
     }
+    // A branch switch or commit in a target checkout republishes its view.
+    publish_targets(inner);
     if lock(&entry.checksum).as_deref() == Some(snapshot.checksum.as_str()) {
         return; // unchanged — publish nothing
     }
@@ -830,6 +1144,49 @@ fn publish_watch(inner: &Arc<DiffSyncInner>) {
         statuses.retain(|status| live.contains(&status.checkout_id));
         before != statuses.len()
     });
+}
+
+/// Follows `DiffTargets::changes()`: a bind, selection or unbind reconciles
+/// promptly, and a target that newly resolved gets a "Latest turn" base when
+/// the chat has none for that checkout (covers binds from the agent tool).
+async fn diff_targets_task(
+    inner: Weak<DiffSyncInner>,
+    mut changes: watch::Receiver<u64>,
+    cancel: CancellationToken,
+) {
+    if let Some(inner) = inner.upgrade() {
+        let chats = inner.workspace.watch_chats().borrow().clone();
+        reconcile(&inner, chats, false).await;
+    }
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            changed = changes.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                changes.borrow_and_update();
+                let Some(inner) = inner.upgrade() else { break };
+                let known = resolved_target_keys(&inner);
+                let chats = inner.workspace.watch_chats().borrow().clone();
+                reconcile(&inner, chats, false).await;
+                for (chat_id, root) in resolved_target_keys(&inner).difference(&known) {
+                    snapshot_root_if_missing(&inner, chat_id, root).await;
+                }
+            }
+        }
+    }
+}
+
+fn resolved_target_keys(inner: &Arc<DiffSyncInner>) -> HashSet<(String, PathBuf)> {
+    lock(&inner.resolved_targets)
+        .iter()
+        .flat_map(|chat| {
+            chat.targets
+                .iter()
+                .map(|target| (chat.chat_id.clone(), target.identity.root.clone()))
+        })
+        .collect()
 }
 
 /// Chat-watch follower + repair tick. Holds only weak handles so dropping the

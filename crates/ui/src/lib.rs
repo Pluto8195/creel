@@ -29,6 +29,7 @@ pub mod comments;
 pub mod composer;
 mod composer_dock;
 mod context_usage;
+mod diff_targets;
 pub mod edge_fade;
 mod error_notice;
 pub mod file_icons;

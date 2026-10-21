@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod artifacts;
+pub mod chat_diff_target;
 pub mod entities;
 pub mod linear;
 pub mod motion;
@@ -33,6 +34,7 @@ pub use artifacts::{
     ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
     ArtifactsSnapshot, WatchArtifactRenderRequestsParams, WatchArtifactsParams,
 };
+pub use chat_diff_target::*;
 pub use entities::*;
 pub use linear::*;
 pub use pr_review::*;
