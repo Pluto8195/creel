@@ -563,21 +563,36 @@ impl Family {
         }
         for (repo_dir, common_dir, repo_name) in repositories {
             for entry in list_worktrees(&repo_dir) {
-                if entry.bare || entry.prunable {
+                if entry.prunable {
                     continue;
                 }
-                let Ok(path) = std::fs::canonicalize(&entry.path) else {
+                let Ok(listed) = std::fs::canonicalize(&entry.path) else {
                     continue;
                 };
-                if !path.is_dir() || path == common_dir || !seen.insert(path.clone()) {
+                let (path, branch, head_sha) = if listed == common_dir {
+                    // A submodule's main entry is its module git dir: the
+                    // checkout is the module's `core.worktree`.
+                    match main_checkout_of(&common_dir) {
+                        Some(main) if main.is_dir() => {
+                            let (branch, head_sha) = head_of(&main);
+                            (main, branch, head_sha)
+                        }
+                        _ => continue,
+                    }
+                } else if entry.bare {
+                    continue;
+                } else {
+                    (listed, entry.branch, entry.head_sha)
+                };
+                if !path.is_dir() || !seen.insert(path.clone()) {
                     continue;
                 }
                 checkouts.push(Checkout {
                     path,
                     kind: DiffCheckoutKind::Worktree,
                     repo_name: repo_name.clone(),
-                    branch: entry.branch,
-                    head_sha: entry.head_sha,
+                    branch,
+                    head_sha,
                 });
             }
         }
