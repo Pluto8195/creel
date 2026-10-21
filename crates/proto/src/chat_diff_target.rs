@@ -155,3 +155,44 @@ pub struct ChatDiffTargetEntry {
     #[serde(default)]
     pub selected: bool,
 }
+
+/// Most targets one chat can hold (one worktree per submodule, plus slack).
+pub const MAX_CHAT_DIFF_TARGETS: usize = 16;
+/// Most recent operation ids a `chatDiffTargets` row remembers for replay.
+pub const MAX_CHAT_DIFF_TARGET_OPS: usize = 16;
+
+/// A target as stored in the `chatDiffTargets` row: validated at write time,
+/// re-checked against `repo_id` / `worktree_id` whenever it is resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredChatDiffTarget {
+    /// Canonical checkout top-level path.
+    pub path: String,
+    pub source: ChatDiffTargetSource,
+    /// Topology repository id (`repo:` + sha256(device NUL canonical git
+    /// common dir)) the checkout belonged to when bound.
+    pub repo_id: String,
+    /// `CheckoutIdentity.id` of the checkout when bound.
+    pub worktree_id: String,
+    /// Unix milliseconds.
+    #[serde(default)]
+    pub bound_at: i64,
+}
+
+/// The decoded `chatDiffTargets` row of one chat (row id = chat id).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDiffTargetsRow {
+    pub chat_id: String,
+    #[serde(default)]
+    pub targets: Vec<StoredChatDiffTarget>,
+    /// Path of the selected target; `None` = the chat's own checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    /// Operation ids already applied (newest last, at most
+    /// [`MAX_CHAT_DIFF_TARGET_OPS`]): a retry with a known id writes nothing.
+    #[serde(default)]
+    pub ops: Vec<String>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
