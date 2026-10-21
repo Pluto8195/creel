@@ -724,6 +724,12 @@ pub mod agent_tools {
         /// screenshot plus errors and warnings.
         pub const ARTIFACT_RENDER_CHECK: &str = "artifact_render_check";
 
+        /// Record the git worktree the calling Chat works in as its diff
+        /// target (`chatDiffTargets`): the Changes pane then shows that
+        /// checkout. Call right after `git worktree add`, or when resuming an
+        /// existing worktree for the Chat's work.
+        pub const BIND_CHAT_WORKTREE: &str = "bind_chat_worktree";
+
         /// The planning artifact tools, in catalog order.
         pub const ARTIFACTS: [&str; 3] = [ARTIFACT_PUBLISH, ARTIFACT_GET_PLAN, ARTIFACT_RENDER_CHECK];
 

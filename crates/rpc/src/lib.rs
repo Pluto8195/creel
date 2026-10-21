@@ -143,6 +143,21 @@ pub mod methods {
     /// `work-outline-multi-repo-v1`, else replies `hostUnsupported` /
     /// `deviceOffline`. Read-only: never creates or switches anything.
     pub const VALIDATE_EXECUTION_CONFIGURATION: &str = "ValidateExecutionConfiguration";
+    /// Checkouts a chat's Changes pane can diff: `zeron_proto::
+    /// ListChatDiffCheckoutsParams` → `zeron_proto::ListChatDiffCheckoutsReply`
+    /// (the chat's own checkout, its submodules, and every linked worktree of
+    /// the root repository and of each submodule). Read-only, local device.
+    pub const LIST_CHAT_DIFF_CHECKOUTS: &str = "ListChatDiffCheckouts";
+    /// Write a chat's diff target (the manual "Diff checkout…" picker):
+    /// `zeron_proto::SetChatDiffTargetParams` → `zeron_proto::
+    /// ChatDiffTargetsReply`. Validates the path like the `bind_chat_worktree`
+    /// agent tool and writes the same `chatDiffTargets` row. Local device.
+    pub const SET_CHAT_DIFF_TARGET: &str = "SetChatDiffTarget";
+    /// Stream of every chat's resolved diff targets on this device:
+    /// `Vec<zeron_proto::ChatDiffTargetsView>`, current value first, then each
+    /// change (a bind, a selection, a worktree appearing or vanishing, a
+    /// branch switch). Chats without a resolvable target are omitted.
+    pub const WATCH_CHAT_DIFF_TARGETS: &str = "WatchChatDiffTargets";
     /// The identity a repository binding records for the checkout at
     /// `{path}` on the target device (`zeron_proto::
     /// DescribeExecutionRepositoryParams` → `zeron_proto::
