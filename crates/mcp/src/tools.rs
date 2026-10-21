@@ -161,7 +161,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "send_message",
-            description: "Send a message to a chat. Messages are attributed to your chat. mode 'auto' starts a turn when the chat is idle, steers a running turn when the harness supports it, and otherwise queues for the end of the turn. With wait=true, blocks until the turn finishes and returns the assistant's reply.",
+            description: "Send a message to a chat. Messages are attributed to your chat, and a chat cannot message itself. mode 'auto' starts a turn when the chat is idle, steers a running turn when the harness supports it, and otherwise queues for the end of the turn. With wait=true, blocks until the turn finishes and returns the assistant's reply (the request/response pattern); if you did not wait, collect it later with `wait_for_turn`.",
             input_schema: chat_key_schema(json!({
                 "text": { "type": "string" },
                 "mode": { "type": "string", "enum": ["auto", "run", "steer", "queue"], "default": "auto" },
@@ -280,7 +280,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::CREATE_USER_ACTION_REQUEST,
-            description: "Use this, alongside asking in chat and instead of relying only on your built-in ask-user prompt, whenever your chat's work item is blocked on a decision, approval, or missing information from the user; it stays open in Required Actions until resolved. Put a one-line question in `request`, context in `detail`, and a `dedupeKey` per topic. The user may answer via Required Actions' Reply & resolve, which arrives as a chat message starting `Re: \"…\"`; resolve the matching request when it does.",
+            description: "Use this, alongside asking in chat and instead of relying only on your built-in ask-user prompt, whenever your chat's work item is blocked on a decision, approval, or missing information from the user; it stays open in Required Actions until resolved. Put a one-line question in `request`, context in `detail`, and a `dedupeKey` per topic. The user may answer via Required Actions' Reply & resolve, which arrives as a chat message starting `Re: \"…\"`; resolve the matching request when it does. Check that your chat has a work item with `work_outline_read_current`. Use your built-in quick question prompt only for small clarifications that do not block the work item.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -330,7 +330,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: agent_tool_names::ARTIFACT_PUBLISH,
-            description: "Publish a file you wrote (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Zeron copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
+            description: "Publish every file you wrote that the user should see (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Zeron copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

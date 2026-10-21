@@ -37,7 +37,12 @@ blocking decisions, approvals, or missing information with
 resolve the request once the user answers (including a `Re: "…"` chat message
 from Required Actions' Reply & resolve), and use the built-in quick question
 prompt only for non-blocking clarifications; `work_outline_read_current` also
-returns the item's open requests. A token also scopes
+returns the item's open requests. The server instructions (`INSTRUCTIONS`
+in `crates/mcp/src/jsonrpc.rs`) also tell agents to call `bind_chat_worktree`
+right after `git worktree add`. Claude Code truncates server instructions at
+about 2000 characters, so `INSTRUCTIONS` is held to 1900 (a test enforces it),
+most important guidance first; detail that does not fit lives in the tool
+descriptions. A token also scopes
 the original tools to the token's Chat, project, and device:
 
 | Tool | With a token |

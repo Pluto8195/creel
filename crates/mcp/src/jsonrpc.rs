@@ -20,49 +20,48 @@ use crate::tools::Tools;
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const LATEST_PROTOCOL: &str = "2025-11-25";
 
+/// Claude Code truncates MCP server instructions at about 2000 characters, so
+/// this text must stay under 1900 characters (checked by a test) with the
+/// guidance every agent needs first. Detail that does not fit belongs in the
+/// tool descriptions (`tools.rs`).
 const INSTRUCTIONS: &str = "\
-Zeron runs coding agents in chats, each hosted on a device inside a project \
-(a folder on that device). These tools operate the local Zeron engine: \
-discover devices/projects/chats, create chats with a chosen harness and \
-model, read transcripts, and send messages between chats.\n\
+Zeron runs coding agents in chats, each in a project (a folder on a device). \
+These tools operate the local Zeron engine.\n\
 \n\
-Chats are referenced by full id, a unique id prefix, or an exact title. Use \
-`whoami` to learn which chat you are speaking from; messages you send are \
-attributed to it and a chat cannot message itself. For request/response \
-with another chat, call `send_message` with `wait: true` (or `wait_for_turn` \
-later) — it returns the assistant's reply once that chat's turn finishes. \
-If a chat is `awaitingInput`, answer it with `respond_to_input`.\n\
+Worktrees: right after `git worktree add`, or when resuming a worktree for \
+this chat's work, call `bind_chat_worktree` with its absolute top-level \
+path.\n\
 \n\
-Inside a Zeron chat that belongs to a project you also get Work Outline \
-tools (`work_outline_*`): read your chat's work item and its instructions, \
-read your item's whole subtree (`work_outline_read_subtree`: descendant \
-items, their chats and open requests), create child items, mark items active \
-or completed, associate your chat, ask the user for an action, and propose \
-instructions. Each mutating call (and `create_chat`) needs an idempotency \
-key: reuse the key when retrying the same change, use a new key for a new \
-change.\n\
-\n\
-Coordinating: to run work on a descendant item, `create_chat` with \
-`workItemId` (your item or a descendant) and a `prompt`. A child cannot \
-message its parent: collect results with `wait_for_turn` / `read_chat` or \
-the Required Actions it raises, and poll `work_outline_read_subtree` for \
-open requests such as \"Ready to merge\".\n\
-\n\
-Blocked decisions: if your chat has a work item (check with \
-`work_outline_read_current`) and it is blocked on a decision, approval, or \
-missing information from the user, raise it with \
+Blocked decisions: if your chat has a work item \
+(`work_outline_read_current`) and is blocked on a decision, approval, or \
+missing information from the user, call \
 `work_outline_create_user_action_request` (one-line question, context in \
-`detail`, a `dedupeKey` per topic) in addition to asking in chat. After the \
-user answers, resolve it with `work_outline_resolve_user_action_request`. Use \
-your built-in quick question prompt only for small clarifications that do not \
-block the work item.\n\
+`detail`, a `dedupeKey` per topic) as well as asking in chat; resolve it \
+with `work_outline_resolve_user_action_request` once answered. Use the \
+built-in question prompt only for small clarifications that don't block the \
+item.\n\
 \n\
-Planning artifacts (plans, diagrams, state machines, option comparisons): \
-publish every file the user should see with `artifact_publish` and link the \
-returned `zeron-artifact:<id>` URL, never a bare path. At the start of a chat \
-under a work item call `artifact_get_plan`. After creating or changing a \
-visual artifact run `artifact_render_check`, fix what it reports, and look at \
-the screenshot before calling it done.";
+Planning artifacts (plans, diagrams, option comparisons): publish every file \
+the user should see with `artifact_publish` and link the returned \
+`zeron-artifact:<id>` URL, never a bare path. Under a work item, call \
+`artifact_get_plan` at chat start. After changing a visual artifact run \
+`artifact_render_check`, fix what it reports, and look at the screenshot \
+before calling it done.\n\
+\n\
+Chats: reference by id, unique id prefix, or exact title; `whoami` gives \
+yours. `send_message` with `wait: true` (or `wait_for_turn` later) returns \
+the reply once that turn finishes; answer an `awaitingInput` chat with \
+`respond_to_input`.\n\
+\n\
+Work Outline tools (`work_outline_*`) manage your item, its subtree, and \
+child items. Each mutating call (and `create_chat`) needs an idempotency \
+key: reuse it when retrying the same change, use a new one for a new change.\n\
+\n\
+Coordinating: `create_chat` with `workItemId` (your item or a descendant) \
+and a `prompt` runs work on a descendant. A child cannot message its parent: \
+collect results with `wait_for_turn` / `read_chat` or its Required Actions, \
+and poll `work_outline_read_subtree` for requests such as \"Ready to \
+merge\".";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -248,4 +247,60 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
         "id": id,
         "error": { "code": code, "message": message },
     })
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::INSTRUCTIONS;
+
+    /// Claude Code cuts MCP instructions at about 2000 characters.
+    const BUDGET: usize = 1900;
+
+    #[test]
+    fn instructions_fit_the_truncation_budget() {
+        let chars = INSTRUCTIONS.chars().count();
+        assert!(
+            chars <= BUDGET,
+            "INSTRUCTIONS is {chars} characters; budget {BUDGET}"
+        );
+    }
+
+    #[test]
+    fn instructions_keep_every_guidance_area() {
+        for phrase in [
+            "bind_chat_worktree",
+            "git worktree add",
+            "work_outline_create_user_action_request",
+            "work_outline_resolve_user_action_request",
+            "create_chat",
+            "send_message",
+            "wait_for_turn",
+            "work_outline_read_subtree",
+            "artifact_publish",
+            "artifact_get_plan",
+            "artifact_render_check",
+            "idempotency",
+        ] {
+            assert!(INSTRUCTIONS.contains(phrase), "missing `{phrase}`");
+        }
+    }
+
+    #[test]
+    fn worktree_guidance_survives_truncation() {
+        let head: String = INSTRUCTIONS.chars().take(BUDGET).collect();
+        let sentence = head
+            .find("`bind_chat_worktree`")
+            .expect("bind_chat_worktree in the first 1900 characters");
+        assert!(head.find("git worktree add").unwrap() < sentence);
+        // Blocked decisions and planning artifacts also come before the cut.
+        for phrase in [
+            "work_outline_create_user_action_request",
+            "artifact_publish",
+        ] {
+            assert!(
+                head.contains(phrase),
+                "`{phrase}` must be inside the first {BUDGET} characters"
+            );
+        }
+    }
 }
