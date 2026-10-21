@@ -745,12 +745,12 @@ impl WorkspaceHost {
             if doc.chat(chat_id)?.is_none() {
                 return Ok(false);
             }
-            let before = doc.chat_diff_targets(chat_id).unwrap_or_else(|| {
-                zeron_proto::ChatDiffTargetsRow {
-                    chat_id: chat_id.to_owned(),
-                    ..Default::default()
-                }
-            });
+            let before =
+                doc.chat_diff_targets(chat_id)
+                    .unwrap_or_else(|| zeron_proto::ChatDiffTargetsRow {
+                        chat_id: chat_id.to_owned(),
+                        ..Default::default()
+                    });
             let mut after = before.clone();
             f(&mut after);
             after.chat_id = chat_id.to_owned();
