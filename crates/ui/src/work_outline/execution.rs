@@ -606,9 +606,23 @@ pub(crate) fn exception_tooltip(count: usize) -> SharedString {
 // Per-member branch/diff (bound Chats)
 // --------------------------------------------------------------------------
 
+/// Where a pill of the Changes pane (and the composer's branch indicator)
+/// comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum MemberKind {
+    /// A Work Outline execution binding's primary/member repository.
+    #[default]
+    Binding,
+    /// A chat diff target (a worktree the agent or the user picked).
+    Target,
+    /// The chat's own checkout (`chat.cwd`), listed beside diff targets.
+    Own,
+}
+
 /// One repository a bound Chat can show branch and diff state for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutionMember {
+    pub kind: MemberKind,
     pub repo_id: String,
     pub name: String,
     /// The diff watch `cwd` (the pinned worktree, else the repository path).
@@ -627,6 +641,7 @@ pub(crate) struct ExecutionMember {
 impl ExecutionMember {
     fn from_validated(repository: &ValidatedRepository) -> Self {
         Self {
+            kind: MemberKind::Binding,
             repo_id: repository.repo_id.clone(),
             name: path_name(&repository.repo_path),
             checkout_path: repository.checkout_path.clone(),
@@ -640,6 +655,7 @@ impl ExecutionMember {
 
     fn from_binding(binding: &RepositoryBinding, unconfirmed: String) -> Self {
         Self {
+            kind: MemberKind::Binding,
             repo_id: binding.repo_id.clone(),
             name: path_name(&binding.repo_path),
             checkout_path: binding.checkout_path().to_owned(),
@@ -651,6 +667,43 @@ impl ExecutionMember {
         }
     }
 
+    /// A resolvable chat diff target. The engine only reports targets whose
+    /// checkout exists and has an identity, so these are always confirmed.
+    pub(crate) fn from_diff_target(target: &zeron_proto::ChatDiffTargetView) -> Self {
+        Self {
+            kind: MemberKind::Target,
+            repo_id: diff_target_member_id(&target.checkout_id),
+            name: if target.repo_name.is_empty() {
+                path_name(&target.path)
+            } else {
+                target.repo_name.clone()
+            },
+            checkout_path: target.path.clone(),
+            checkout_id: Some(target.checkout_id.clone()),
+            branch: target.branch.clone(),
+            head_sha: target.head_sha.clone(),
+            primary: false,
+            unconfirmed: None,
+        }
+    }
+
+    /// The chat's own checkout (`chat.cwd`, `chat.checkout_id`, `chat.branch`),
+    /// shown only beside diff targets so the user can go back to it.
+    pub(crate) fn own_checkout(chat: &zeron_proto::Chat) -> Option<Self> {
+        let cwd = chat.cwd.clone().filter(|cwd| !cwd.is_empty())?;
+        Some(Self {
+            kind: MemberKind::Own,
+            repo_id: own_member_id(&chat.id),
+            name: path_name(&cwd),
+            checkout_path: cwd,
+            checkout_id: chat.checkout_id.clone(),
+            branch: chat.branch.clone(),
+            head_sha: None,
+            primary: false,
+            unconfirmed: None,
+        })
+    }
+
     /// "ui · main" (or "ui · HEAD (abc1234)").
     pub(crate) fn label(&self) -> String {
         format!(
@@ -659,6 +712,16 @@ impl ExecutionMember {
             ref_label(self.branch.as_deref(), self.head_sha.as_deref())
         )
     }
+}
+
+/// Stable member key of a diff target (`target:<checkoutId>`).
+pub(crate) fn diff_target_member_id(checkout_id: &str) -> String {
+    format!("target:{checkout_id}")
+}
+
+/// Stable member key of a chat's own checkout (`own:<chat id>`).
+pub(crate) fn own_member_id(chat_id: &str) -> String {
+    format!("own:{chat_id}")
 }
 
 /// The primary and member repositories of a bound Chat, primary first, then
