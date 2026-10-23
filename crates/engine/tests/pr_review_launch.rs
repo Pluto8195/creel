@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use zeron_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
+use zeron_engine::pr_review_sync::PrReviewSyncConfig;
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::mock::InstructionMockHarness;
 use zeron_proto::{
@@ -140,6 +141,8 @@ echo "$PWD|$*" >> '{log}'
 case "$1 $2" in
   "pr view")
     if [ -f '{dir}'/view-"$3".json ]; then cat '{dir}'/view-"$3".json; else echo "no PR $3" >&2; exit 1; fi ;;
+  "api user")
+    if [ -f '{dir}'/user.json ]; then cat '{dir}'/user.json; else echo "no user" >&2; exit 1; fi ;;
   "pr checkout")
     branch=$(sed -n 's/.*"headRefName": *"\([^"]*\)".*/\1/p' '{dir}'/view-"$3".json)
     git checkout -q -b "$branch" --track "origin/$branch" ;;
@@ -166,6 +169,10 @@ esac
     harnesses.register(Arc::new(mock.clone()));
     let core = EngineCore::assemble(&data, Arc::new(harnesses), HarnessId::Mock, None)
         .expect("engine core assembles");
+    // The viewer login comes from the engine's sync service; keep it on the
+    // fake `gh` too.
+    core.pr_review_sync
+        .reconfigure(PrReviewSyncConfig::for_tests(&gh));
     let rpc = Arc::try_unwrap(core.rpc_service())
         .ok()
         .expect("sole owner")
@@ -257,6 +264,22 @@ fn review_prompt(branch: &str, location: &str) -> String {
     )
 }
 
+fn self_review_prompt(branch: &str, location: &str) -> String {
+    format!(
+        "/code-review https://github.com/acme/flagship/pull/7 — my own PR; review it as its author, before or while I wait for reviewers: look for bugs, missing tests, risky changes and unclear diffs. Its branch `{branch}` is checked out at {location}; review the PR's commits against its base, not local changes. Report findings to me here. Fix clear problems on the PR branch only if I ask, and don't post review comments or approve on GitHub."
+    )
+}
+
+fn write_authored_view(dir: &Path, number: u64, author: &str) {
+    std::fs::write(
+        dir.join(format!("view-{number}.json")),
+        format!(
+            r#"{{"headRefName": "{BRANCH}", "isCrossRepository": false, "title": "Add feature X", "author": {{"login": "{author}"}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
 async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !predicate() {
@@ -293,7 +316,7 @@ async fn clean_main_checks_out_with_gh_and_starts_the_review_at_the_workspace_ro
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(
         calls[0].ends_with(
-            "|pr view 7 --repo acme/flagship --json headRefName,isCrossRepository,title"
+            "|pr view 7 --repo acme/flagship --json headRefName,isCrossRepository,title,author"
         ),
         "{calls:?}"
     );
@@ -699,4 +722,52 @@ async fn a_second_start_for_the_same_pr_and_action_reuses_the_live_review_chat()
         .expect("fresh after archive");
     assert!(!fresh.reused);
     assert_ne!(fresh.chat_id, first.chat_id);
+}
+
+#[tokio::test]
+async fn a_review_of_the_viewers_own_pr_is_seeded_as_a_self_review() {
+    let rig = rig().await;
+    std::fs::write(rig.gh_dir.join("user.json"), r#"{"login":"Octo"}"#).unwrap();
+    write_authored_view(&rig.gh_dir, 7, "octo");
+    write_authored_view(&rig.gh_dir, 8, "someone-else");
+    let location = format!("the canonical checkout `{}`", rig.flagship.display());
+
+    // The viewer's login matches the author's, ignoring case.
+    let own = start(&rig, &params("op-own", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("own PR");
+    assert_eq!(own.prompt, self_review_prompt(BRANCH, &location));
+    assert!(own.prompt.starts_with("/code-review https://"));
+
+    // Someone else's PR keeps launch.sh's wording.
+    let other = start(&rig, &params("op-other", 8, PrReviewAction::CodeReview))
+        .await
+        .expect("other PR");
+    assert_eq!(
+        other.prompt,
+        review_prompt(BRANCH, &location).replace("pull/7", "pull/8")
+    );
+
+    // Fix CI is the same on your own PR.
+    let fix = start(&rig, &params("op-fix-own", 7, PrReviewAction::FixCi))
+        .await
+        .expect("fix ci");
+    assert_eq!(
+        fix.prompt,
+        format!(
+            "/fix-ci https://github.com/acme/flagship/pull/7 — my PR. Its branch `{BRANCH}` is checked out at {location}; do all the work there."
+        )
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_viewer_keeps_the_reviewer_prompt() {
+    // No `user.json`: the fake `gh api user` fails.
+    let rig = rig().await;
+    write_authored_view(&rig.gh_dir, 7, "octo");
+    let location = format!("the canonical checkout `{}`", rig.flagship.display());
+    let reply = start(&rig, &params("op-unknown", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("start");
+    assert_eq!(reply.prompt, review_prompt(BRANCH, &location));
 }

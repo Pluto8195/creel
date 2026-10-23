@@ -831,11 +831,6 @@ impl EngineRpc {
         ));
         agent_tools.set_sessions(sessions.clone());
         agent_tools.set_diff_targets(diff_targets.clone());
-        let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
-            workspace.clone(),
-            doc_host.clone(),
-            crate::pr_review_launch::PrReviewTools::default(),
-        );
         // Engine assembly replaces this with the shared service
         // (`with_pr_review_sync`); a bare RPC surface has no background loop.
         let pr_review_sync = crate::pr_review_sync::PrReviewSyncService::new(
@@ -843,6 +838,12 @@ impl EngineRpc {
             repos.clone(),
             crate::pr_review_sync::PrReviewSyncConfig::default(),
         );
+        let pr_review = crate::pr_review_launch::PrReviewLauncher::new(
+            workspace.clone(),
+            doc_host.clone(),
+            crate::pr_review_launch::PrReviewTools::default(),
+        )
+        .with_viewer(Self::viewer_of(&pr_review_sync));
         // Engine assembly replaces this with the shared service
         // (`with_artifacts`), so the UI's render registration and agent
         // tool calls meet in one broker.
@@ -916,8 +917,23 @@ impl EngineRpc {
         mut self,
         service: crate::pr_review_sync::PrReviewSyncService,
     ) -> Self {
+        self.pr_review = self
+            .pr_review
+            .clone()
+            .with_viewer(Self::viewer_of(&service));
         self.pr_review_sync = service;
         self
+    }
+
+    /// The launcher's view of the sync service's cached viewer login.
+    fn viewer_of(
+        service: &crate::pr_review_sync::PrReviewSyncService,
+    ) -> crate::pr_review_launch::ViewerLogin {
+        let service = service.clone();
+        std::sync::Arc::new(move || {
+            let service = service.clone();
+            Box::pin(async move { service.viewer_login().await.ok() })
+        })
     }
 
     /// Run a GitHub call, mapping its error to the `github/<code>` string.
