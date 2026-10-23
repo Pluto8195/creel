@@ -60,6 +60,8 @@ use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
 use zeron_syntax::LanguageId as Lang;
 
+mod ref_picker;
+
 /// The chat/worktree identity a Changes surface was created for.
 ///
 /// `chat_id` never changes. The remaining fields may be refreshed only from
@@ -2293,6 +2295,8 @@ pub struct Changes {
     ref_menu: Popup<RefMenu>,
     /// The "Diff checkout..." picker (chat diff targets).
     checkout_menu: Popup<CheckoutMenu>,
+    /// The "Diff branch / PR…" picker (branch / PR range targets).
+    ref_target_menu: Popup<ref_picker::RefTargetMenu>,
     /// Only ever one: a second `+` moves the card rather than stacking two
     /// half-written notes.
     draft: Option<CommentDraft>,
@@ -2428,6 +2432,7 @@ impl Changes {
             scope_menu: Popup::default(),
             ref_menu: Popup::default(),
             checkout_menu: Popup::default(),
+            ref_target_menu: Popup::default(),
             draft: None,
             hover: None,
             comment_key: 0,
@@ -3957,6 +3962,10 @@ impl Changes {
     /// Handle Escape before focused descendants such as a terminal receive it.
     /// A popup in its exit animation remains a blocker until it unmounts.
     pub(crate) fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.ref_target_menu.is_open() {
+            self.close_ref_target_menu(cx);
+            return true;
+        }
         if self.checkout_menu.is_open() {
             self.close_checkout_menu(cx);
             return true;
@@ -3972,6 +3981,7 @@ impl Changes {
         self.scope_menu.get().is_some()
             || self.ref_menu.get().is_some()
             || self.checkout_menu.get().is_some()
+            || self.ref_target_menu.get().is_some()
     }
 
     fn open_ref_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6051,7 +6061,14 @@ impl Changes {
                     let active = selected.as_deref() == Some(member.repo_id.as_str());
                     let repo_id = member.repo_id.clone();
                     let chat_id = chat_id.clone();
-                    let tip: SharedString = member.checkout_path.clone().into();
+                    let tip: SharedString = match &member.range {
+                        Some(range) => format!(
+                            "{} \u{2192} {}\nread from {}",
+                            range.head_branch, range.base_branch, member.checkout_path
+                        )
+                        .into(),
+                        None => member.checkout_path.clone().into(),
+                    };
                     div()
                         .id(("changes-execution-repo", ix))
                         .debug_selector(move || format!("changes-execution-repo-{ix}"))
@@ -6118,6 +6135,7 @@ impl Changes {
     ) -> Option<AnyElement> {
         let (repo, worktree, branch, tooltip) = self.context_details(cx)?;
         let picker = self.render_checkout_picker(theme, cx);
+        let ref_picker = self.render_ref_target_picker(theme, cx);
         let freshness = tooltip
             .rsplit_once('\n')
             .map(|(_, freshness)| freshness)
@@ -6160,6 +6178,7 @@ impl Changes {
                         .text_color(theme.text_faint)
                         .child(SharedString::from(freshness)),
                 )
+                .children(ref_picker)
                 .children(picker)
                 .into_any_element(),
         )
