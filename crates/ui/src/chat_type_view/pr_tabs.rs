@@ -132,10 +132,19 @@ impl ChatTypeView {
             return Vec::new();
         };
         let state = self.state.read(cx);
-        let mut facts = review_chats::facts_from_state(state);
-        for chat in &row.chats {
-            if !facts.iter().any(|fact| fact.id == chat.chat_id) {
-                facts.push(ChatFact {
+        let links: Vec<_> = row
+            .chats
+            .iter()
+            .map(|chat| (chat.chat_id.clone(), chat.source))
+            .collect();
+        let snapshot = state
+            .selected_space_row()
+            .and_then(|space| state.work_outline(&space.id).snapshot().cloned());
+        // The row's own list knows chats the app state may not.
+        let fact_of = |chat_id: &str| {
+            review_chats::fact_from_state(state, chat_id).or_else(|| {
+                let chat = row.chats.iter().find(|chat| chat.chat_id == chat_id)?;
+                Some(ChatFact {
                     id: chat.chat_id.clone(),
                     title: chat.title.clone(),
                     archived: chat.archived,
@@ -145,18 +154,10 @@ impl ChatTypeView {
                         .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
                         .map(|at| at.with_timezone(&Utc)),
                     state: ChatIndicator::Idle,
-                });
-            }
-        }
-        let links: Vec<_> = row
-            .chats
-            .iter()
-            .map(|chat| (chat.chat_id.clone(), chat.source))
-            .collect();
-        let snapshot = state
-            .selected_space_row()
-            .and_then(|space| state.work_outline(&space.id).snapshot().cloned());
-        review_chats::for_pr(cx, snapshot.as_deref(), &pr, &links, &facts)
+                })
+            })
+        };
+        review_chats::for_pr(cx, snapshot.as_deref(), &pr, &links, fact_of)
     }
 
     /// Up / Down move the highlighted row, Enter opens its review chat or,

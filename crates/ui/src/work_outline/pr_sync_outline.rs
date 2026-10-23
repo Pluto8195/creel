@@ -15,6 +15,7 @@ use super::super::model::ItemRow;
 use super::linear_outline::{self, LinearParts, join_chips};
 use super::{OutlineEvent, OutlineView};
 use crate::github::{row_icons, store};
+use crate::review_chats;
 use crate::theme::Theme;
 
 /// The drag payload of a GitHub panel PR row (`OutlineDrag::PullRequest`).
@@ -204,6 +205,24 @@ impl OutlineView {
         if prs.is_empty() {
             return (destination, None);
         }
+        // The "being reviewed" marker joins the destination marker, ahead of
+        // the cluster.
+        let review_label = {
+            let state = self.state.read(cx);
+            prs.iter().find_map(|pr| {
+                let chats = review_chats::for_pr(cx, Some(snapshot), pr, &[], |id| {
+                    review_chats::fact_from_state(state, id)
+                });
+                review_chats::marker_label(&chats)
+            })
+        };
+        other_width += if review_label.is_some() { 20.0 } else { 0.0 };
+        let destination = join_chips(
+            review_label.map(|label| {
+                review_marker(format!("outline-pr-reviewing-{key}"), label, theme)
+            }),
+            destination,
+        );
         store::request_viewer(&self.state, cx);
         let entries: Vec<_> = prs
             .iter()
@@ -287,6 +306,27 @@ impl OutlineView {
             pr: drag.pr.clone(),
         });
     }
+}
+
+/// The small accent marker on a PR whose review has a chat (its tooltip names
+/// the chat and its state).
+pub(crate) fn review_marker(id: String, label: String, theme: &Theme) -> AnyElement {
+    let selector = id.clone();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .px(px(3.0))
+        .rounded(px(3.0))
+        .child(
+            crate::icons::icon(crate::icons::EYE)
+                .size(px(11.0))
+                .text_color(theme.accent),
+        )
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(label.clone().into())).into())
+        .into_any_element()
 }
 
 /// The small marker on the Space's PR review sync destination.

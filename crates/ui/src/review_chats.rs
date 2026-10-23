@@ -271,13 +271,13 @@ pub(crate) fn note_pr_links(cx: &mut gpui::App, pr_url: &str, links: &[(String, 
 
 /// The review chats of `pr` from everything the UI knows: `extra_links`
 /// (the caller's own list, e.g. the page row's chats), the link index, the
-/// snapshot's assignments, and the chats' facts.
+/// snapshot's assignments, and `fact_of` for the chats that qualify.
 pub(crate) fn for_pr(
     cx: &gpui::App,
     snapshot: Option<&WorkOutlineSnapshot>,
     pr: &PullRequestRef,
     extra_links: &[(String, ChatLinkSource)],
-    facts: &[ChatFact],
+    fact_of: impl Fn(&str) -> Option<ChatFact>,
 ) -> Vec<ReviewChat> {
     let mut links: Vec<(String, ChatLinkSource)> = extra_links.to_vec();
     if let Some(index) = cx.try_global::<PrChatLinkIndex>() {
@@ -286,23 +286,32 @@ pub(crate) fn for_pr(
     let assigned = snapshot
         .map(|snapshot| assigned_chat_ids(snapshot, pr))
         .unwrap_or_default();
-    resolve(&assigned, &links, facts)
+    let mut candidates: Vec<&str> = assigned.iter().map(String::as_str).collect();
+    candidates.extend(
+        links
+            .iter()
+            .filter(|(_, source)| link_makes_review(*source))
+            .map(|(id, _)| id.as_str()),
+    );
+    candidates.sort_unstable();
+    candidates.dedup();
+    let facts: Vec<ChatFact> = candidates.into_iter().filter_map(fact_of).collect();
+    resolve(&assigned, &links, &facts)
 }
 
-/// Facts for every chat the app state knows.
-pub(crate) fn facts_from_state(state: &crate::state::AppState) -> Vec<ChatFact> {
-    let now = Utc::now();
-    state
-        .chats
-        .iter()
-        .map(|chat| ChatFact {
-            id: chat.id.clone(),
-            title: chat.title.clone().unwrap_or_default(),
-            archived: chat.archived,
-            updated: Some(chat.last_message_at.unwrap_or(chat.created_at)),
-            state: state.display_status_for(chat, now),
-        })
-        .collect()
+/// The fact about `chat_id` from the app state.
+pub(crate) fn fact_from_state(
+    state: &crate::state::AppState,
+    chat_id: &str,
+) -> Option<ChatFact> {
+    let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
+    Some(ChatFact {
+        id: chat.id.clone(),
+        title: chat.title.clone().unwrap_or_default(),
+        archived: chat.archived,
+        updated: Some(chat.last_message_at.unwrap_or(chat.created_at)),
+        state: state.display_status_for(chat, Utc::now()),
+    })
 }
 
 #[cfg(test)]

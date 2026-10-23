@@ -552,6 +552,7 @@ struct Log {
     urls: Vec<String>,
     items: Vec<String>,
     artifacts: Vec<String>,
+    chats: Vec<String>,
 }
 
 struct Host {
@@ -565,7 +566,12 @@ impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::default();
         let host = cx.entity();
-        let (urls, items, artifacts) = (self.log.clone(), self.log.clone(), self.log.clone());
+        let (urls, items, artifacts, chats) = (
+            self.log.clone(),
+            self.log.clone(),
+            self.log.clone(),
+            self.log.clone(),
+        );
         let actions = Actions {
             toggle: Rc::new(move |_, cx| {
                 host.update(cx, |host, cx| {
@@ -576,6 +582,7 @@ impl Render for Host {
             open_url: Rc::new(move |url, _, _| urls.borrow_mut().urls.push(url)),
             open_item: Rc::new(move |item, _, _| items.borrow_mut().items.push(item)),
             open_artifact: Rc::new(move |id, _, _| artifacts.borrow_mut().artifacts.push(id)),
+            open_chat: Rc::new(move |id, _, _| chats.borrow_mut().chats.push(id)),
             shell: None,
         };
         div()
@@ -633,6 +640,7 @@ fn data_for(statuses: &[zeron_proto::PullRequestStatusSummary]) -> StripData {
         issue: None,
         project: None,
         viewer: None,
+        review_chats: Vec::new(),
         now: now(),
     }
 }
