@@ -246,6 +246,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Authored rows get the same Review / Open review actions, with Fix CI kept when CI fails. When
     the viewer authored the PR (the cached `gh api user` login matches the `gh pr view` author),
     the launcher seeds a self-review prompt; otherwise it keeps the reviewer prompt.
+- **Links open in Zeron's side browser** (2026-10-23; Shell `open_web_reference`, pure `reference_open`):
+  - With `openWebLinksInZeron` on, every web and PR link (PR page, outline icons, chat strip, chips,
+    transcript and artifact links) opens in the side browser. A tab already on that page is focused
+    instead of opening a duplicate.
+  - The side pane exists only on the Chat route. From the PR page, Overview or Outline, a link
+    switches to the PR's review chat, else the selected chat, with the browser beside it; with
+    neither, it opens externally.
+  - ⌘-click, or "Open in External Browser" in the outline PR menu, always opens externally.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
