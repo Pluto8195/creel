@@ -24,6 +24,7 @@ use crate::github::row_icons::{self, Tone, tone_color};
 use crate::github::store::PrEntry;
 use crate::icons::{self, icon};
 use crate::linear::store::IssueEntry;
+use crate::review_chats::{self, ReviewChat};
 use crate::theme::Theme;
 use crate::work_outline::chips::TextTooltip;
 
@@ -44,6 +45,8 @@ pub(crate) struct Actions {
     pub open_item: Handler<String>,
     /// Open an artifact in the Artifact tab.
     pub open_artifact: Handler<String>,
+    /// Open a review chat.
+    pub open_chat: Handler<String>,
     /// For the shared Linear chips.
     pub shell: Option<WeakEntity<crate::shell::Shell>>,
 }
@@ -57,6 +60,9 @@ pub(crate) struct StripData {
     pub project: Option<LinearProjectSummary>,
     /// The viewer's GitHub login, when known (the author reads "you").
     pub viewer: Option<String>,
+    /// The review chats of the context's PRs, most recent first; empty when
+    /// nothing is reviewing them.
+    pub review_chats: Vec<ReviewChat>,
     pub now: DateTime<Utc>,
 }
 
@@ -431,6 +437,29 @@ fn more_badge(id: &str, extra: usize, theme: &Theme) -> Option<AnyElement> {
     })
 }
 
+/// "Being reviewed · <chat> · <state>": the most recent review chat of the
+/// PRs, in the accent color; a click opens it.
+fn review_marker(data: &StripData, actions: &Actions, theme: &Theme) -> Option<AnyElement> {
+    let label = review_chats::marker_label(&data.review_chats)?;
+    let chat_id = review_chats::primary(&data.review_chats)?.chat_id.clone();
+    let open = actions.open_chat.clone();
+    let tip = format!("Open the review chat: {}", review_chats::open_review_detail(
+        review_chats::primary(&data.review_chats)?,
+    ));
+    let cell = base("work-context-reviewing")
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .text_color(theme.accent)
+        .child(icon(icons::EYE).size(px(11.0)).text_color(theme.accent))
+        .child(SharedString::from(label));
+    Some(
+        tooltip(link(cell, theme, move |window, cx| open(chat_id.clone(), window, cx)), tip)
+            .into_any_element(),
+    )
+}
+
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
@@ -485,6 +514,7 @@ fn review_line(
         review.prs.len().saturating_sub(1),
         theme,
     ));
+    out.extend(review_marker(data, actions, theme));
     if let Some(ticket) = &review.ticket {
         out.push(ticket_chip(ticket, data, actions, theme));
     }
@@ -535,6 +565,7 @@ fn implementation_line(
             text_cell("work-context-no-pr", "No PR yet", theme.text_faint).into_any_element(),
         ),
     }
+    out.extend(review_marker(data, actions, theme));
     out
 }
 

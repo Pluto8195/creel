@@ -9,8 +9,11 @@ use zeron_proto::{PrDashBucket, PrDashParams, PrDashReply, PrDashRow, PrDashTab,
 use zeron_proto::PrReviewAction;
 use zeron_rpc::methods;
 
+use zeron_proto::ChatIndicator;
+
 use super::{ChatTypeView, ReviewStatus, review_button, status_line};
 use crate::error_notice::ErrorNotice;
+use crate::review_chats::{self, ChatFact, EnterAction, ReviewChat};
 use crate::pr_page::{self, DashItem, Filters, PageTab, Tone, tab_index};
 use crate::popover;
 use crate::theme::Theme;
@@ -24,7 +27,7 @@ const W_PEOPLE: f32 = 148.0;
 const W_CI: f32 = 26.0;
 const W_OPEN: f32 = 40.0;
 const W_UPDATED: f32 = 44.0;
-const W_ACTIONS: f32 = 172.0;
+const W_ACTIONS: f32 = 236.0;
 
 fn tone_color(theme: &Theme, tone: Tone) -> Hsla {
     match tone {
@@ -74,6 +77,7 @@ impl ChatTypeView {
             cx.spawn(async move |this, cx| {
                 this.update(cx, |this, cx| {
                     this.dash[ix].apply(result);
+                    this.note_dash_links(ix, cx);
                     cx.notify();
                 })
                 .ok();
@@ -99,12 +103,110 @@ impl ChatTypeView {
             };
             this.update(cx, |this, cx| {
                 this.dash[ix].apply(result);
+                this.note_dash_links(ix, cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
         cx.notify();
+    }
+
+    /// Tell the shared link index which chats the engine linked to each PR,
+    /// so the Outline rows and the strip can show "being reviewed" too.
+    fn note_dash_links(&self, ix: usize, cx: &mut Context<Self>) {
+        for row in &self.dash[ix].rows {
+            let links: Vec<_> = row
+                .chats
+                .iter()
+                .map(|chat| (chat.chat_id.clone(), chat.source))
+                .collect();
+            review_chats::note_pr_links(cx, &row.url, &links);
+        }
+    }
+
+    /// The review chats of a page row: the row's own chat list, the link
+    /// index and the assignments of the PR's review item.
+    fn review_chats_of(&self, row: &PrDashRow, cx: &gpui::App) -> Vec<ReviewChat> {
+        let Some(pr) = crate::chat_work_context::parse_pr_url(&row.url) else {
+            return Vec::new();
+        };
+        let state = self.state.read(cx);
+        let links: Vec<_> = row
+            .chats
+            .iter()
+            .map(|chat| (chat.chat_id.clone(), chat.source))
+            .collect();
+        let snapshot = state
+            .selected_space_row()
+            .and_then(|space| state.work_outline(&space.id).snapshot().cloned());
+        // The row's own list knows chats the app state may not.
+        let fact_of = |chat_id: &str| {
+            review_chats::fact_from_state(state, chat_id).or_else(|| {
+                let chat = row.chats.iter().find(|chat| chat.chat_id == chat_id)?;
+                Some(ChatFact {
+                    id: chat.chat_id.clone(),
+                    title: chat.title.clone(),
+                    archived: chat.archived,
+                    updated: chat
+                        .updated_at
+                        .as_deref()
+                        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                        .map(|at| at.with_timezone(&Utc)),
+                    state: ChatIndicator::Idle,
+                })
+            })
+        };
+        review_chats::for_pr(cx, snapshot.as_deref(), &pr, &links, fact_of)
+    }
+
+    /// Up / Down move the highlighted row, Enter opens its review chat or,
+    /// when it has none, starts a review.
+    pub(super) fn dash_key_down(
+        &mut self,
+        tab: PrDashTab,
+        event: &gpui::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.dash_visible(tab, cx).0.len();
+        match event.keystroke.key.as_str() {
+            "down" | "up" if count > 0 => {
+                let direction = if event.keystroke.key == "down" { 1 } else { -1 };
+                self.active = super::move_selection(self.active, count, direction);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "enter" if count > 0 => {
+                self.activate_dash_row(cx);
+                cx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter on the highlighted row of the visible tab.
+    pub(super) fn activate_dash_row(&mut self, cx: &mut Context<Self>) {
+        let PageTab::Dash(tab) = self.tab else {
+            return;
+        };
+        let (action, reference) = {
+            let (visible, _) = self.dash_visible(tab, cx);
+            let Some(row) = visible.get(self.active) else {
+                return;
+            };
+            (
+                review_chats::enter_action(&self.review_chats_of(row, cx)),
+                PrReference::parse(&row.url),
+            )
+        };
+        match action {
+            EnterAction::OpenReview(chat_id) => self.open_chat(chat_id, cx),
+            EnterAction::StartReview => {
+                if let Some(reference) = reference {
+                    self.start_review(reference, PrReviewAction::CodeReview, false, cx);
+                }
+            }
+        }
     }
 
     /// The 60 s timer: refetch the visible tab while the page is on screen.
@@ -132,7 +234,7 @@ impl ChatTypeView {
     }
 
     /// The rows the tab shows (display order) and the admitted total.
-    fn dash_visible(&self, tab: PrDashTab, cx: &gpui::App) -> (Vec<&PrDashRow>, usize) {
+    pub(super) fn dash_visible(&self, tab: PrDashTab, cx: &gpui::App) -> (Vec<&PrDashRow>, usize) {
         let ix = tab_index(tab);
         let state = &self.dash[ix];
         let query = self.dash_search[ix].read(cx).text().to_owned();
@@ -654,6 +756,14 @@ impl ChatTypeView {
                 now,
             )));
 
+        let review_chats = self.review_chats_of(row, cx);
+        let primary = review_chats::primary(&review_chats).cloned();
+        let open_review = primary
+            .as_ref()
+            .map(|chat| self.open_review_button(ix, chat, theme, cx));
+        let overflow = primary.is_some().then(|| {
+            self.review_overflow(ix, row, &review_chats, reference.clone(), busy, theme, cx)
+        });
         // Actions: Review / Open chat and Fix CI on review rows, Fix CI on a
         // failing authored PR.
         let start = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
@@ -674,33 +784,21 @@ impl ChatTypeView {
             }))
         };
         let review_side = matches!(tab, PrDashTab::ReviewRequested);
-        let existing = pr_page::review_chat(row).map(|chat| chat.chat_id.clone());
         let actions = div()
             .flex_none()
             .w(px(W_ACTIONS))
             .flex()
             .justify_end()
+            .items_start()
             .gap(px(6.0))
-            .when(review_side, |el| match existing {
-                Some(chat_id) => el.child(
-                    review_button(
-                        format!("pr-dash-open-chat-{ix}").into(),
-                        "Open chat",
-                        true,
-                        false,
-                        theme,
-                    )
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.open_chat(chat_id.clone(), cx)
-                    })),
-                ),
-                None => el.child(start("Review", "review", PrReviewAction::CodeReview, true)),
+            .children(open_review)
+            .when(primary.is_none() && review_side, |el| {
+                el.child(start("Review", "review", PrReviewAction::CodeReview, true))
             })
             .when(review_side || pr_page::ci_failing(row), |el| {
                 el.child(start("Fix CI", "fix-ci", PrReviewAction::FixCi, false))
-            });
+            })
+            .children(overflow);
 
         div()
             .flex()
@@ -718,6 +816,9 @@ impl ChatTypeView {
                     .border_color(theme.border.opacity(0.5))
                     .text_size(crate::typography::ui_rems(12.0))
                     .hover(|el| el.bg(theme.element_hover.opacity(0.5)))
+                    .when(ix == self.active, |el| {
+                        el.bg(theme.element_active.opacity(0.5))
+                    })
                     .child(dot)
                     .child(
                         div()
@@ -744,6 +845,177 @@ impl ChatTypeView {
                 )
             })
             .into_any_element()
+    }
+
+    /// The primary action of a row that is being reviewed: the chat's title
+    /// and live state in the accent color.
+    fn open_review_button(
+        &self,
+        ix: usize,
+        chat: &ReviewChat,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chat_id = chat.chat_id.clone();
+        let selector = format!("pr-dash-open-review-{ix}");
+        let tip: SharedString = format!(
+            "Open the review chat: {}",
+            review_chats::open_review_detail(chat)
+        )
+        .into();
+        div()
+            .id(element_id(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .px(px(9.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.accent.opacity(0.5))
+            .bg(theme.accent.opacity(0.08))
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.accent.opacity(0.16)))
+            .text_color(theme.accent)
+            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.open_chat(chat_id.clone(), cx);
+            }))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .child("Open review"),
+            )
+            .child(
+                div()
+                    .debug_selector({
+                        let selector = format!("pr-dash-open-review-detail-{ix}");
+                        move || selector.clone()
+                    })
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(9.5))
+                    .child(SharedString::from(review_chats::open_review_detail(chat))),
+            )
+            .into_any_element()
+    }
+
+    /// The row's "…" menu: "Start another review", then the other review
+    /// chats of the PR.
+    #[allow(clippy::too_many_arguments)]
+    fn review_overflow(
+        &self,
+        ix: usize,
+        row: &PrDashRow,
+        review_chats: &[ReviewChat],
+        reference: Option<PrReference>,
+        busy: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selector = format!("pr-dash-more-{ix}");
+        let url = row.url.clone();
+        let trigger = div()
+            .id(element_id(selector.clone()))
+            .debug_selector({
+                let selector = selector.clone();
+                move || selector.clone()
+            })
+            .flex_none()
+            .px(px(7.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border)
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.element_hover))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.review_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                if this.review_menu.take_press_was_open() {
+                    this.close_review_menu(cx);
+                } else {
+                    this.review_menu.open(url.clone());
+                    cx.notify();
+                }
+            }))
+            .child("⋯");
+        if self.review_menu.get().is_none_or(|url| *url != row.url) {
+            return trigger.into_any_element();
+        }
+        let theme = &theme.for_popup();
+        let closing = self.review_menu.closing_since();
+        let start_another = {
+            let id = format!("pr-dash-start-another-{ix}");
+            popover::menu_row(theme, false, id.clone())
+                .id(element_id(id.clone()))
+                .debug_selector(move || id.clone())
+                .when(busy || reference.is_none(), |el| el.opacity(0.5))
+                .child("Start another review")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.close_review_menu(cx);
+                    if let Some(reference) = reference.clone() {
+                        this.start_review(reference, PrReviewAction::CodeReview, false, cx);
+                    }
+                }))
+        };
+        let others = review_chats::others(review_chats).iter().enumerate().map(|(j, chat)| {
+            let id = format!("pr-dash-review-other-{ix}-{j}");
+            let chat_id = chat.chat_id.clone();
+            popover::menu_row(theme, false, id.clone())
+                .id(element_id(id.clone()))
+                .debug_selector(move || id.clone())
+                .child(SharedString::from(format!(
+                    "Open {}",
+                    review_chats::open_review_detail(chat)
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.close_review_menu(cx);
+                    this.open_chat(chat_id.clone(), cx);
+                }))
+        });
+        let has_others = review_chats.len() > 1;
+        let card = popover::popover_card(theme)
+            .id(element_id(format!("pr-dash-menu-{ix}")))
+            .debug_selector(move || format!("pr-dash-menu-{ix}"))
+            .flex()
+            .flex_col()
+            .min_w(px(220.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_review_menu(cx)))
+            .child(start_another)
+            .when(has_others, |el| {
+                el.child(popover::menu_heading(theme, "Other review chats"))
+            })
+            .children(others)
+            .into_any_element();
+        trigger
+            .relative()
+            .child(popover::anchored_menu_below_end(
+                format!("pr-dash-menu-layer-{ix}"),
+                card,
+                closing,
+            ))
+            .into_any_element()
+    }
+
+    fn close_review_menu(&mut self, cx: &mut Context<Self>) {
+        if self.review_menu.begin_close() {
+            popover::reap_popup(cx, |this: &mut Self| &mut this.review_menu);
+        }
+        cx.notify();
     }
 
     #[cfg(test)]

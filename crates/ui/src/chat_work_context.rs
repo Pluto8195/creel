@@ -223,7 +223,7 @@ fn lineage<'a>(snapshot: &'a WorkOutlineSnapshot, item_id: &str) -> Vec<&'a Work
 /// Whether `item` is a PR review item. Like `github::pr_review_item`, but an
 /// archived item still counts: merged and closed PRs auto-archive their item
 /// while the review Chat stays open.
-fn is_review_item(snapshot: &WorkOutlineSnapshot, item: &WorkItemView, pr: &PullRequestRef) -> bool {
+pub(crate) fn is_review_item(snapshot: &WorkOutlineSnapshot, item: &WorkItemView, pr: &PullRequestRef) -> bool {
     let synced = item
         .external_sync_state
         .as_ref()

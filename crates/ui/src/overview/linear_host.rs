@@ -1,5 +1,5 @@
 //! The Overview's side of the Linear panel: its own LEFT column (between
-//! the My PRs sidebar and the Outline/List body), independent of the
+//! the window edge and the Outline/List body), independent of the
 //! right slot, so the chat panel / Work Item Details / Required Actions stay
 //! up beside it. Open/close (toggle command + hotkey, Outline toolbar
 //! button, Space row menu), the per-device open flag and width, the edge

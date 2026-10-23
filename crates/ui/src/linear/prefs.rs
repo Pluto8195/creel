@@ -1,5 +1,5 @@
 //! Per-device Linear panel state: the open flag and column width (entries
-//! of the Overview's `UI_FLAGS_FILE`, next to the My PRs sidebar flag), and
+//! of the Overview's `UI_FLAGS_FILE`), and
 //! the panel's own section collapse / expanded projects
 //! (`LINEAR_PANEL_FILE`). Pure string-set transforms plus thin load/save
 //! wrappers over `overview_positions`, so every rule is unit-testable.

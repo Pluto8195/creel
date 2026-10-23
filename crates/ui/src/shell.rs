@@ -4358,6 +4358,13 @@ impl Shell {
                 let status = result
                     .ok()
                     .and_then(|value| serde_json::from_value::<ChatLinkStatus>(value).ok());
+                if let Some(status) = &status {
+                    crate::review_chats::note_chat_links(
+                        cx,
+                        &chat_id,
+                        &crate::review_chats::links_of_status(status),
+                    );
+                }
                 this.chat_header_links.insert(
                     chat_id,
                     ChatHeaderLinkCache {
@@ -4502,25 +4509,6 @@ impl Shell {
         self.close_user_menu(cx);
         self.close_chat_menu(cx);
         cx.notify();
-    }
-
-    /// The retired Overview "My PRs" sidebar (⌘P and the palette now open the
-    /// PR page). Kept, unreachable, until the sidebar is deleted from
-    /// `overview.rs`; delete this with it.
-    #[allow(dead_code)]
-    fn toggle_my_prs(&mut self, cx: &mut Context<Self>) {
-        let already_on_overview = matches!(self.route, Route::Overview);
-        if !already_on_overview {
-            self.open_overview(cx);
-        }
-        let page = self.ensure_overview_page(cx);
-        page.update(cx, |overview, cx| {
-            if already_on_overview {
-                overview.toggle_pr_sidebar(cx);
-            } else {
-                overview.open_pr_sidebar(cx);
-            }
-        });
     }
 
     /// Lazily create the overview entity on first visit, same pattern as
@@ -6486,10 +6474,6 @@ impl Shell {
 
     pub(crate) fn new_session_shortcut_label(&self) -> String {
         self.shortcut_badge(ShortcutId::NewSession)
-    }
-
-    pub(crate) fn my_prs_shortcut_label(&self) -> String {
-        self.shortcut_badge(ShortcutId::OpenMyPrs)
     }
 
     /// Native Windows caption controls integrated into Zeron's unified

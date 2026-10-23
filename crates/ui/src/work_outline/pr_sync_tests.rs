@@ -1490,3 +1490,43 @@ fn a_ticket_with_prs_keeps_one_cluster_and_a_linear_status_slot(cx: &mut gpui::T
         assert!(!present(vcx, format!("{gone}-{key}")), "{gone}");
     }
 }
+
+fn reviewing_id(item: &str) -> String {
+    format!("outline-pr-reviewing-{}", row_key::item("s1", item))
+}
+
+/// A chat assigned to a PR review item marks the PR's row as being reviewed;
+/// a PR row whose item has no chat does not.
+#[gpui::test]
+fn an_assigned_chat_marks_the_review_item_row(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    // `w-api` is a review item (child of the destination) with CHAT_API.
+    assert!(present(vcx, reviewing_id(API)));
+    assert!(!present(vcx, reviewing_id(HOUSEKEEPING)));
+}
+
+/// Only manual and launcher links make a chat the review chat; a mention
+/// does not.
+#[gpui::test]
+fn only_manual_and_launcher_links_mark_a_pr_row(cx: &mut gpui::TestAppContext) {
+    use crate::review_chats::note_chat_links;
+    use zeron_proto::ChatLinkSource;
+    let url = "https://github.com/acme/launch/pull/7".to_owned();
+
+    let dir = tempfile::tempdir().unwrap();
+    cx.update(|cx| note_chat_links(cx, CHAT_UI, &[(url.clone(), ChatLinkSource::Mentioned)]));
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert!(!present(vcx, reviewing_id(HOUSEKEEPING)), "a mention is not a review");
+
+    let dir = tempfile::tempdir().unwrap();
+    cx.update(|cx| note_chat_links(cx, CHAT_UI, &[(url.clone(), ChatLinkSource::ReviewLauncher)]));
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert!(present(vcx, reviewing_id(HOUSEKEEPING)), "a launcher link is");
+}

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::chat_work_context::{self, ResolveInput, Variant, WorkContext, strip};
+use crate::review_chats::ReviewChat;
 
 /// Height the strip's line adds under the chat header metadata; the
 /// transcript's top fade clears it (the expanded panel overlays the
@@ -66,6 +67,7 @@ impl Shell {
         if let Some(ticket) = &ticket {
             crate::linear::store::request_issue(&self.state, &ticket.identifier, false, cx);
         }
+        let review_chats = self.work_context_review_chats(&prs, cx);
         let state = self.state.read(cx);
         let entries: HashMap<String, _> = prs
             .iter()
@@ -86,8 +88,41 @@ impl Shell {
                     .cloned()
             }),
             viewer: state.github.viewer().map(str::to_owned),
+            review_chats,
             now: chrono::Utc::now(),
         }
+    }
+
+    /// The review chats of `prs`, most recent first (one list across all of
+    /// the context's PRs).
+    fn work_context_review_chats(
+        &self,
+        prs: &[zeron_proto::PullRequestRef],
+        cx: &Context<Self>,
+    ) -> Vec<ReviewChat> {
+        let state = self.state.read(cx);
+        let space_id = state
+            .selected_chat
+            .as_deref()
+            .and_then(|id| state.chats.iter().find(|chat| chat.id == id))
+            .and_then(|chat| chat.space_id.as_deref());
+        let snapshot = space_id.and_then(|id| state.work_outline(id).snapshot().cloned());
+        let mut chats: Vec<ReviewChat> = Vec::new();
+        for pr in prs {
+            for chat in crate::review_chats::for_pr(cx, snapshot.as_deref(), pr, &[], |id| {
+                crate::review_chats::fact_from_state(state, id)
+            }) {
+                if !chats.iter().any(|known| known.chat_id == chat.chat_id) {
+                    chats.push(chat);
+                }
+            }
+        }
+        chats.sort_by(|a, b| {
+            b.updated
+                .cmp(&a.updated)
+                .then_with(|| a.chat_id.cmp(&b.chat_id))
+        });
+        chats
     }
 
     /// The work-context strip for the full chat header, with the extra
@@ -118,6 +153,7 @@ impl Shell {
         let url_shell = shell.clone();
         let item_shell = shell.clone();
         let artifact_shell = shell.clone();
+        let chat_shell = shell.clone();
         let actions = strip::Actions {
             toggle: Rc::new(move |_, cx| {
                 toggle_shell.update(cx, |this, cx| {
@@ -140,6 +176,9 @@ impl Shell {
             }),
             open_artifact: Rc::new(move |artifact_id, window, cx| {
                 artifact_shell.update(cx, |this, cx| this.open_artifact(artifact_id, window, cx));
+            }),
+            open_chat: Rc::new(move |chat_id, _, cx| {
+                chat_shell.update(cx, |this, cx| this.open_chat(chat_id, cx));
             }),
             shell: Some(shell.downgrade()),
         };

@@ -10,16 +10,12 @@
 //! into that subagent's transcript (`READ_SUBAGENT_TRANSCRIPT`; no composer
 //! — a subagent can't be continued) — see [`Overview::subagent_peek`].
 //!
-//! Alongside either mode, an optional left "My PRs" sidebar lists the
-//! user's open PRs (toolbar toggle; see [`Overview::pr_sidebar_open`]),
-//! filtered by the same search box.
-//!
 //! Two rendering modes over the SAME `OverviewRow` data:
 //! - List: the plain row list, optionally grouped.
 //! - Outline: the Work Outline tree of work items and their Chats.
 //!
-//! The acknowledged-"done" set, the repo filter's hidden set, the work-item
-//! filter and the My PRs sidebar's open state persist per device
+//! The acknowledged-"done" set, the repo filter's hidden set and the work-item
+//! filter persist per device
 //! (`overview_positions`, JSON under the engine data dir; the view mode, the
 //! toggles and the grouping persist in `UI_FLAGS_FILE`). Ticket 002 puts
 //! cross-device layout sync out of scope for v1.
@@ -39,7 +35,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use zeron_engine::pr_ticket_cache::{ChecksStatus, MyPrItem, PrAction, PrStatus, TicketStatus};
+use zeron_engine::pr_ticket_cache::{ChecksStatus, PrAction, PrStatus, TicketStatus};
 use zeron_proto::{Chat, ChatIndicator, ChatLinkSource, Space};
 use zeron_rpc::methods;
 
@@ -546,79 +542,6 @@ fn matches_search(query_lower: &str, fields: &[Option<&str>]) -> bool {
         .any(|field| field.to_lowercase().contains(query_lower))
 }
 
-/// `updateMyPrsButtonBadge` (`session_canvas.html:2323-2328`): PRs with at
-/// least one action reason, EXCEPT those whose every reason is
-/// `ready_to_merge` (good news alone shouldn't turn the button red).
-fn actionable_pr_count<'a>(reasons: impl IntoIterator<Item = &'a [PrAction]>) -> usize {
-    reasons
-        .into_iter()
-        .filter(|r| !r.is_empty() && !r.iter().all(|a| *a == PrAction::ReadyToMerge))
-        .count()
-}
-
-/// PR-sidebar search: the sidebar box's query (trimmed + lowercased, empty
-/// matches everything) over repo (`owner/name`), title, number — matched as
-/// `#<n>`, so both `123` and `#123` hit — and head branch when the detail
-/// sweep has it.
-fn pr_matches_search(query_lower: &str, item: &MyPrItem) -> bool {
-    let number = format!("#{}", item.summary.number);
-    matches_search(
-        query_lower,
-        &[
-            item.summary.repo.as_deref(),
-            item.summary.title.as_deref(),
-            Some(number.as_str()),
-            item.detail.as_ref().and_then(|d| d.branch.as_deref()),
-            // Review-requested rows carry the requesting PR's author.
-            item.summary.author.as_deref(),
-        ],
-    )
-}
-
-fn pr_sidebar_empty_message(total: usize, query: &str, pending: bool) -> String {
-    if total == 0 {
-        if pending {
-            "Loading…".to_string()
-        } else {
-            "No open PRs found (or `gh` isn't installed/authenticated).".to_string()
-        }
-    } else {
-        format!("No PRs match “{query}”.")
-    }
-}
-
-/// Restore the sidebar's open state from the persisted UI-flag set. Unknown
-/// entries (a future flag, or junk) are ignored rather than failing the load.
-/// `OverviewMode` (formerly with a `MyPrs` variant) is persisted separately
-/// as a `viewMode:` flag ([`OverviewMode::from_flags`]); a stale
-/// `viewMode:myPrs` entry is just an unknown
-/// flag and is ignored.
-fn pr_sidebar_open_from_flags(flags: &BTreeSet<String>) -> bool {
-    flags.contains(PR_SIDEBAR_FLAG)
-}
-
-/// Stable persistence key for a per-repo PR-sidebar section (the full
-/// `owner/name`, so two repos sharing a short name stay independent).
-fn pr_repo_section_key(repo: &str) -> String {
-    format!("repo:{repo}")
-}
-
-/// The UI-flag entry that records `section_key` as collapsed.
-fn pr_section_flag(section_key: &str) -> String {
-    format!("{PR_SECTION_COLLAPSED_PREFIX}{section_key}")
-}
-
-/// Restore the collapsed PR-sidebar section keys from the persisted UI-flag
-/// set; every other entry (the open flag, future flags, junk) is ignored.
-fn pr_collapsed_sections_from_flags(flags: &BTreeSet<String>) -> BTreeSet<String> {
-    flags
-        .iter()
-        .filter_map(|flag| flag.strip_prefix(PR_SECTION_COLLAPSED_PREFIX))
-        .filter(|key| !key.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// Legacy UI-flag entry from when a Canvas view existed. Read-only: a saved
 /// `viewMode:canvas` loads as Outline ([`OverviewMode::from_flags`]) and is
 /// never written back (the writer purges every `viewMode:` flag).
@@ -640,7 +563,7 @@ const SHOW_ARCHIVED_FLAG: &str = "showArchived";
 const GROUP_BY_PREFIX: &str = "groupBy:";
 
 /// The overview's persisted view state other than the repo filter (which has
-/// its own `HIDDEN_REPOS_FILE`) and the PR-sidebar flags.
+/// its own `HIDDEN_REPOS_FILE`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct ViewPrefs {
     mode: OverviewMode,
@@ -676,8 +599,8 @@ fn view_prefs_from_flags(flags: &BTreeSet<String>) -> ViewPrefs {
 }
 
 /// Write [`ViewPrefs`] into the UI-flag set, replacing any previous view-pref
-/// entries and leaving every other flag (sidebar, collapsed sections, future
-/// flags) untouched.
+/// entries and leaving every other flag (including retired ones such as the
+/// old PR-sidebar flags, and future flags) untouched.
 fn apply_view_prefs_to_flags(flags: &mut BTreeSet<String>, prefs: &ViewPrefs) {
     flags.retain(|flag| !flag.starts_with(GROUP_BY_PREFIX) && !flag.starts_with(VIEW_MODE_PREFIX));
     if let Some(flag) = prefs.mode.flag() {
@@ -708,13 +631,6 @@ fn restored_repo_filter_hides_everything(
     known: &BTreeSet<String>,
 ) -> bool {
     !known.is_empty() && known.iter().all(|repo| hidden.contains(repo))
-}
-
-/// Whether a PR-sidebar section renders its rows. An active search query
-/// overrides the persisted collapsed state: matches always show, so a hit
-/// can never hide inside a folded section.
-fn pr_section_expanded(collapsed: &BTreeSet<String>, section_key: &str, searching: bool) -> bool {
-    searching || !collapsed.contains(section_key)
 }
 
 /// Drop hover state when its element is no longer mounted. Hover-leave is
@@ -1045,7 +961,7 @@ const LINK_PARSE_ERROR: &str =
 /// - a `github.com/<owner>/<repo>/pull/<n>` URL (scheme and `www.`
 ///   optional, any trailing `/files`, `?query` or `#fragment` ignored) →
 ///   `pr`, normalized to `https://github.com/<owner>/<repo>/pull/<n>` —
-///   the exact shape `gh` reports, which the PR sidebar matches chats by. A
+///   the exact shape `gh` reports, which PR-link matching relies on. A
 ///   bare `#123` is NOT accepted: it doesn't say which repo.
 /// - an `XX-1234`-shaped id (2-6 letters, `-`, digits — the engine's own
 ///   `extract_ticket_id` shape) → `ticket`, uppercased. A Linear issue URL
@@ -1229,12 +1145,6 @@ fn header_links(status: &OverviewLinkStatus) -> crate::chat_metadata::HeaderLink
     }
 }
 
-fn status_has_pr_url(status: &OverviewLinkStatus, url: &str) -> bool {
-    effective_pr_links(status)
-        .iter()
-        .any(|link| link.url == url)
-}
-
 fn apply_link_reply(status: &mut OverviewLinkStatus, kind: LinkKind, reply: &SetChatLinkReply) {
     match kind {
         LinkKind::Pr => {
@@ -1388,9 +1298,7 @@ fn pr_action_badge(action: PrAction) -> (&'static str, gpui::Hsla) {
     }
 }
 
-/// The main column's rendering mode. "My PRs" used to be a third mode that
-/// replaced the whole body; it is now the independent left sidebar
-/// ([`Overview::pr_sidebar_open`]) shown alongside any of these.
+/// The main column's rendering mode.
 ///
 /// Persisted as at most one `viewMode:` flag in `UI_FLAGS_FILE`: no flag =
 /// List, [`VIEW_OUTLINE_FLAG`] = Outline, any other `viewMode:` value = List.
@@ -1420,11 +1328,6 @@ impl OverviewMode {
         }
     }
 }
-
-/// How long a fetched "my open PRs" list stays good before this view
-/// refetches it — the pane's own poll cadence, independent of the server
-/// cache's own TTL/sweep.
-const MY_PRS_REFRESH: Duration = Duration::from_secs(30);
 
 /// Height of the PR/ticket badge row `badges_for` renders when present.
 const BADGE_ROW_H: f32 = 18.0;
@@ -1502,21 +1405,6 @@ fn context_meter(pct: Option<f32>, theme: &Theme) -> gpui::Div {
 const CHAT_PANEL_W: f32 = 540.0;
 /// Horizontal inset of the composer inside the chat panel.
 const CHAT_PANEL_COMPOSER_PAD: f32 = 10.0;
-/// Width of the left "My PRs" sidebar (see [`Overview::pr_sidebar_open`]).
-/// Fixed, like `CHAT_PANEL_W`; the list/Outline column between the two
-/// panels is the only thing that flexes.
-const PR_SIDEBAR_W: f32 = 340.0;
-/// Entry in `overview_positions::UI_FLAGS_FILE` meaning "the My PRs sidebar
-/// is open".
-const PR_SIDEBAR_FLAG: &str = "prSidebarOpen";
-/// Prefix of the UI-flag entries naming PR-sidebar sections the user
-/// collapsed (`prSectionCollapsed:<section key>`). Same string-set file as
-/// [`PR_SIDEBAR_FLAG`]; see [`pr_section_key`] for the key shapes.
-const PR_SECTION_COLLAPSED_PREFIX: &str = "prSectionCollapsed:";
-/// Section key for the "Needs my review" PR-sidebar section.
-const PR_SECTION_NEEDS_REVIEW: &str = "needs-review";
-/// Section key for the "Needs your action" PR-sidebar section.
-const PR_SECTION_NEEDS_ACTION: &str = "needs-action";
 /// The embedded transcript's top inset (`Transcript::set_top_inset`): the
 /// panel's own header sits ABOVE the transcript rather than overlaying it,
 /// so only a little breathing room replaces the chat route's titlebar inset.
@@ -1616,34 +1504,8 @@ pub struct Overview {
     /// "Show archived" toggle — default off, matches the reference's own
     /// `showArchived` default. Archived rows render heavily dimmed when on.
     show_archived: bool,
-    my_prs: Vec<MyPrItem>,
-    my_prs_pending: bool,
-    my_prs_fetched_at: Option<Instant>,
-    /// PRs where my review is requested (sidebar "Needs my review"). Own
-    /// pending/fetched gate so a slow/failed call can't stall `my_prs`.
-    review_prs: Vec<MyPrItem>,
-    review_prs_pending: bool,
-    /// "Needs my review" → Review: inline start state per PR URL.
-    pr_review_status: HashMap<String, crate::chat_type_view::ReviewStatus>,
-    review_prs_fetched_at: Option<Instant>,
-    /// Left "My PRs" sidebar (toolbar toggle). Rendered as the overview's
-    /// leftmost fixed-width column — `[sidebar | list/Outline | chat panel]`
-    /// — so the body simply measures narrower. The sidebar has its own
-    /// search box ([`Overview::pr_search`]).
-    /// Persisted via `overview_positions::UI_FLAGS_FILE`.
-    pr_sidebar_open: bool,
-    /// The sidebar's own scroll (it is visible alongside the list, which
-    /// owns `scroll`).
-    pr_sidebar_scroll: ScrollHandle,
-    /// The sidebar's own search box. Filters ONLY the PR list
-    /// ([`pr_matches_search`]); the toolbar `search` filters chats only.
-    pr_search: Entity<ComposerInput>,
-    /// Section keys ([`PR_SECTION_NEEDS_REVIEW`], [`PR_SECTION_NEEDS_ACTION`],
-    /// [`pr_repo_section_key`]) the user folded. Persisted as
-    /// [`PR_SECTION_COLLAPSED_PREFIX`] entries in `UI_FLAGS_FILE`.
-    pr_collapsed_sections: BTreeSet<String>,
-    /// The chat the List should scroll into view on the next render (a PR
-    /// sidebar jump, or opening the link editor) — consumed by the List body
+    /// The chat the List should scroll into view on the next render (opening
+    /// the link editor) — consumed by the List body
     /// and cleared after that render either way.
     focus_due: Option<String>,
     /// Set whenever something that could change `rows()`'s OUTPUT happens
@@ -1795,7 +1657,6 @@ pub struct Overview {
     _outline_events: Subscription,
     _observe: Subscription,
     _search_events: Subscription,
-    _pr_search_events: Subscription,
     _link_input_events: Subscription,
 }
 
@@ -1826,16 +1687,6 @@ impl Overview {
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 this.rows_dirty = true;
-                cx.notify();
-            }
-        });
-        let pr_search = cx.new(|cx| {
-            ComposerInput::with_context("Search PRs…", crate::composer::PALETTE_SEARCH_CONTEXT, cx)
-                .with_single_line()
-                .with_accessibility_role(gpui::Role::SearchInput)
-        });
-        let pr_search_events = cx.subscribe(&pr_search, |_: &mut Self, _, event, cx| {
-            if matches!(event, ComposerInputEvent::Edited) {
                 cx.notify();
             }
         });
@@ -1949,17 +1800,6 @@ impl Overview {
             active_groups: Vec::new(),
             hide_stale: false,
             show_archived: false,
-            my_prs: Vec::new(),
-            my_prs_pending: false,
-            my_prs_fetched_at: None,
-            review_prs: Vec::new(),
-            review_prs_pending: false,
-            pr_review_status: HashMap::new(),
-            review_prs_fetched_at: None,
-            pr_sidebar_open: false,
-            pr_sidebar_scroll: ScrollHandle::new(),
-            pr_search,
-            pr_collapsed_sections: BTreeSet::new(),
             focus_due: None,
             rows_dirty: true,
             rows_cache: Vec::new(),
@@ -2011,7 +1851,6 @@ impl Overview {
             _outline_events: outline_events,
             _observe: observe,
             _search_events: search_events,
-            _pr_search_events: pr_search_events,
             _link_input_events: link_input_events,
         }
     }
@@ -2181,13 +2020,6 @@ impl Overview {
         self.prefs_loaded = true;
         let flags =
             overview_positions::load_string_set(&data_dir, overview_positions::UI_FLAGS_FILE);
-        // Only ever turns it ON: a toggle before `data_dir` existed (engine
-        // still bootstrapping) must not be overwritten by the older file.
-        if pr_sidebar_open_from_flags(&flags) && !self.pr_sidebar_open {
-            self.set_pr_sidebar_open(true, false, cx);
-        }
-        self.pr_collapsed_sections
-            .extend(pr_collapsed_sections_from_flags(&flags));
         self.restore_linear_column(&flags);
         self.acknowledged_done
             .extend(overview_positions::load_string_set(
@@ -2255,47 +2087,6 @@ impl Overview {
         }
     }
 
-    /// Open/close the left My PRs sidebar. `persist`: write the UI-flag file
-    /// (false only when applying the value just loaded from it).
-    fn set_pr_sidebar_open(&mut self, open: bool, persist: bool, cx: &mut Context<Self>) {
-        self.pr_sidebar_open = open;
-        if open {
-            // A render during engine startup can read the still-empty PR cache
-            // and mark that response fresh. Opening the sidebar is an explicit
-            // request to see current data, so do not let that earlier empty
-            // read suppress the user-triggered refresh.
-            self.my_prs_fetched_at = None;
-            self.review_prs_fetched_at = None;
-            self.ensure_my_prs(cx);
-        }
-        if persist {
-            self.persist_ui_flag(PR_SIDEBAR_FLAG.to_string(), open, cx);
-        }
-        cx.notify();
-    }
-
-    /// Shortcut entry point used when navigating here from another route.
-    pub(crate) fn open_pr_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.set_pr_sidebar_open(true, true, cx);
-    }
-
-    /// Shortcut/command-palette entry point while already on the overview.
-    pub(crate) fn toggle_pr_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.set_pr_sidebar_open(!self.pr_sidebar_open, true, cx);
-    }
-
-    /// Fold/unfold one PR-sidebar section and persist the collapsed set.
-    fn toggle_pr_section(&mut self, section_key: &str, cx: &mut Context<Self>) {
-        let collapsed = if self.pr_collapsed_sections.remove(section_key) {
-            false
-        } else {
-            self.pr_collapsed_sections.insert(section_key.to_string());
-            true
-        };
-        self.persist_ui_flag(pr_section_flag(section_key), collapsed, cx);
-        cx.notify();
-    }
-
     /// Set/clear one entry of `UI_FLAGS_FILE`. Read-modify-write so every
     /// other flag in the file survives.
     fn persist_ui_flag(&self, flag: String, on: bool, cx: &Context<Self>) {
@@ -2312,68 +2103,6 @@ impl Overview {
         self.save_string_set(overview_positions::UI_FLAGS_FILE, &flags, cx);
     }
 
-    /// A PR row's jump: open the chat in the right-hand panel (which also
-    /// outlines its row via `panel_highlight`) and scroll it into view in
-    /// the List.
-    #[cfg(test)]
-    pub(crate) fn set_review_prs_for_test(&mut self, items: Vec<MyPrItem>, cx: &mut Context<Self>) {
-        self.review_prs = items;
-        self.review_prs_fetched_at = Some(Instant::now());
-        cx.notify();
-    }
-
-    /// "Needs my review" → Review: start a `/code-review` Chat through the
-    /// shell (which opens it); a refusal stays inline under the row.
-    fn start_pr_review_from_sidebar(
-        &mut self,
-        reference: zeron_proto::PrReference,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::chat_type_view::ReviewStatus;
-        let url = reference.url();
-        if matches!(
-            self.pr_review_status.get(&url),
-            Some(ReviewStatus::Starting(_))
-        ) {
-            return;
-        }
-        let action = zeron_proto::PrReviewAction::CodeReview;
-        let Ok(task) = self
-            .shell
-            .update(cx, |shell, cx| shell.start_pr_review(reference, action, cx))
-        else {
-            return;
-        };
-        self.pr_review_status
-            .insert(url.clone(), ReviewStatus::Starting(action));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(_) => {
-                        this.pr_review_status.remove(&url);
-                    }
-                    Err(error) => {
-                        this.pr_review_status.insert(
-                            url,
-                            ReviewStatus::Failed(crate::pr_review_launch::failure_text(&error)),
-                        );
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn jump_to_chat_from_pr(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        self.open_chat_panel(chat_id.clone(), cx);
-        self.focus_due = Some(chat_id);
-        cx.notify();
-    }
-
     /// Any repo-filter change: persist, and re-derive rows.
     fn repo_filter_changed(&mut self, cx: &mut Context<Self>) {
         self.save_string_set(
@@ -2387,9 +2116,8 @@ impl Overview {
 
     /// One idle-refresh tick (see [`IDLE_REFRESH`]). Skipped entirely while
     /// the overview entity is alive but another route is on screen. Re-runs
-    /// every visible row's TTL-gated fetches (no-ops when fresh) and the My
-    /// PRs fetch (the toolbar badge needs it in every view), then repaints
-    /// for relative times. Does NOT mark rows dirty (except the ~60s
+    /// every visible row's TTL-gated fetches (no-ops when fresh), then
+    /// repaints for relative times. Does NOT mark rows dirty (except the ~60s
     /// staleness re-derive) — a fetch that lands with changed data does that
     /// itself.
     fn refresh_tick(&mut self, cx: &mut Context<Self>) {
@@ -2409,7 +2137,6 @@ impl Overview {
         for (chat_id, imported) in targets {
             self.ensure_row_fetches(chat_id, imported, cx);
         }
-        self.ensure_my_prs(cx);
         if self
             .refresh_ticks
             .is_multiple_of(STALENESS_REDERIVE_EVERY_TICKS)
@@ -2946,6 +2673,12 @@ impl Overview {
                 if let Ok(value) = result
                     && let Ok(status) = serde_json::from_value::<OverviewLinkStatus>(value.clone())
                 {
+                    let links: Vec<_> = status
+                        .pr_links
+                        .iter()
+                        .filter_map(|link| Some((link.url.clone(), link.source?)))
+                        .collect();
+                    crate::review_chats::note_chat_links(cx, &chat_id, &links);
                     let diff_stat = value
                         .get("diffStat")
                         .and_then(|v| serde_json::from_value::<DiffStat>(v.clone()).ok());
@@ -3255,102 +2988,6 @@ impl Overview {
             .ok();
         })
         .detach();
-    }
-
-    /// Fetch/refresh the "my open PRs" list on `MY_PRS_REFRESH`. Called from
-    /// every overview render and idle tick, not just while the My PRs
-    /// sidebar is open — the
-    /// toolbar's "My PRs (N)" badge needs it in every view (the web polls
-    /// `/my_prs` every tick regardless of pane state for the same reason).
-    /// The engine side is cache-backed, so this is not a live `gh` call per
-    /// request. Never runs while the overview isn't the visible route.
-    fn ensure_my_prs(&mut self, cx: &mut Context<Self>) {
-        self.ensure_review_prs(cx);
-        let fresh_enough = self
-            .my_prs_fetched_at
-            .is_some_and(|at| at.elapsed() < MY_PRS_REFRESH);
-        if fresh_enough || self.my_prs_pending {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.my_prs_pending = true;
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::MY_OPEN_PRS, serde_json::json!({}))
-                .await;
-            this.update(cx, |this, cx| {
-                this.my_prs_pending = false;
-                this.my_prs_fetched_at = Some(Instant::now());
-                if let Ok(value) = result
-                    && let Ok(items) = serde_json::from_value::<Vec<MyPrItem>>(value)
-                {
-                    this.my_prs = items;
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Same gate as [`Self::ensure_my_prs`] for the "Needs my review" list
-    /// (`REVIEW_REQUESTED_PRS`). Called from `ensure_my_prs`, so it rides the
-    /// same render/idle-tick call sites and the same 30s `MY_PRS_REFRESH`.
-    fn ensure_review_prs(&mut self, cx: &mut Context<Self>) {
-        let fresh_enough = self
-            .review_prs_fetched_at
-            .is_some_and(|at| at.elapsed() < MY_PRS_REFRESH);
-        if fresh_enough || self.review_prs_pending {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.review_prs_pending = true;
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::REVIEW_REQUESTED_PRS, serde_json::json!({}))
-                .await;
-            this.update(cx, |this, cx| {
-                this.review_prs_pending = false;
-                this.review_prs_fetched_at = Some(Instant::now());
-                if let Ok(value) = result
-                    && let Ok(items) = serde_json::from_value::<Vec<MyPrItem>>(value)
-                {
-                    this.review_prs = items;
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// A chat (id, title) whose cached link status carries this exact PR
-    /// (matched by URL — the only field both `MyPrItem` and a chat's linked
-    /// `PrStatus` carry that's actually unique across repos; PR *numbers*
-    /// collide between repos constantly). `None` when no currently-visible
-    /// chat links to it, or its PR data hasn't been fetched/cached yet.
-    fn chat_for_pr_url(&self, rows: &[OverviewRow], url: Option<&str>) -> Option<(String, String)> {
-        let url = url?;
-        let chat_id = self.link_status.iter().find_map(|(chat_id, entry)| {
-            status_has_pr_url(&entry.status, url).then(|| chat_id.clone())
-        })?;
-        let title = rows
-            .iter()
-            .find(|r| r.chat.id == chat_id)
-            .map(|r| {
-                r.chat
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| "New session".to_string())
-            })
-            .unwrap_or_else(|| "chat".to_string());
-        Some((chat_id, title))
     }
 
     /// Compact badge row for one chat: PR action (if any, highest-severity
@@ -4805,8 +4442,6 @@ impl Render for Overview {
         if self.view_mode == OverviewMode::Outline {
             self.sync_outline(cx);
         }
-        // Toolbar badge data — TTL-gated, so this is a no-op most frames.
-        self.ensure_my_prs(cx);
 
         let toggle = |mode: OverviewMode, label: String, current: OverviewMode| {
             let active = mode == current;
@@ -4824,30 +4459,6 @@ impl Render for Overview {
                 .child(SharedString::from(label))
         };
 
-        // `updateMyPrsButtonBadge`: count + critical styling, except when
-        // every actionable PR is only "ready to merge".
-        let pr_action_count = actionable_pr_count(
-            self.my_prs
-                .iter()
-                .filter_map(|item| item.detail.as_ref().map(|d| d.action_reasons()))
-                .collect::<Vec<_>>()
-                .iter()
-                .map(Vec::as_slice),
-        );
-        // Review requests are "needs you" too, so they fold into the same
-        // single count (and the same critical styling) rather than adding a
-        // second number to the toolbar.
-        let pr_badge_count = pr_action_count + self.review_prs.len();
-        let my_prs_label = if pr_badge_count > 0 {
-            format!("My PRs ({pr_badge_count})")
-        } else {
-            "My PRs".to_string()
-        };
-        let my_prs_shortcut = self
-            .shell
-            .upgrade()
-            .map(|shell| shell.read(cx).my_prs_shortcut_label());
-        let critical: gpui::Hsla = gpui::rgb(0xd03b3b).into();
         let new_chat_button = self.render_new_chat_button(&theme, cx);
         let repository_map_shortcut = self
             .shell
@@ -4969,54 +4580,6 @@ impl Render for Overview {
                                                 cx,
                                             );
                                             window.focus(&handle, cx);
-                                        }),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        // A sidebar toggle, not a view mode: its own segment so it
-                        // reads as independent of List/Outline.
-                        div()
-                            .p(px(2.0))
-                            .rounded(px(6.0))
-                            .bg(theme.element_hover.opacity(0.5))
-                            .child(
-                                div()
-                                    .id("overview-my-prs-toggle")
-                                    .px(px(8.0))
-                                    .py(px(3.0))
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .when(self.pr_sidebar_open, |el| {
-                                        el.bg(theme.element_active).text_color(theme.text)
-                                    })
-                                    .when(!self.pr_sidebar_open, |el| {
-                                        el.text_color(theme.text_muted)
-                                    })
-                                    // `#my-prs-btn.has-action`: critical color +
-                                    // border + bold (regardless of open state).
-                                    .when(pr_badge_count > 0, |el| {
-                                        el.text_color(critical)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .border_1()
-                                            .border_color(critical)
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .child(SharedString::from(my_prs_label))
-                                            .when_some(my_prs_shortcut, |row, shortcut| {
-                                                row.child(popover::kbd_hint(&theme, &shortcut))
-                                            }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            let open = !this.pr_sidebar_open;
-                                            this.set_pr_sidebar_open(open, true, cx);
                                         }),
                                     ),
                             ),
@@ -5170,8 +4733,6 @@ impl Render for Overview {
 
         let legend = self.legend_open.then(|| self.render_legend(&theme));
 
-        // Built before the body, which consumes `rows`.
-        let pr_sidebar = self.render_pr_sidebar(&rows, &theme, cx);
         let body = match self.view_mode {
             OverviewMode::List => {
                 let body = self.render_list_body(&rows, &theme, cx);
@@ -5224,19 +4785,14 @@ impl Render for Overview {
             let width = if panel.is_some() { CHAT_PANEL_W } else { 0.0 };
             (panel, width)
         };
-        let pr_w = if pr_sidebar.is_some() {
-            PR_SIDEBAR_W
-        } else {
-            0.0
-        };
-        let linear = self.render_linear_column(pr_w + right_w, window, cx);
+        let linear = self.render_linear_column(right_w, window, cx);
         let (linear_inline, linear_overlay) = match linear {
             Some(linear_host::LinearSlot::Inline(el)) => (Some(el), None),
             Some(linear_host::LinearSlot::Overlay(el)) => (None, Some(el)),
             None => (None, None),
         };
 
-        // `[PR sidebar | Linear | main | right panel]`: the side panels are
+        // `[Linear | main | right panel]`: the side panels are
         // `flex_none` widths and `main` is `flex_1().min_w_0()`, so the
         // list/Outline is what shrinks. The Linear column yields
         // first (down to its minimum, then it overlays `main`) so the body
@@ -5269,19 +4825,11 @@ impl Render for Overview {
                     cx.stop_propagation();
                 }
             }))
-            .when_some(pr_sidebar, |el, sidebar| el.child(sidebar))
             .when_some(linear_inline, |el, linear| el.child(linear))
             .child(main)
             .when_some(panel, |el, panel| el.child(panel))
             .when_some(linear_overlay, |el, linear| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(pr_w))
-                        .child(linear),
-                )
+                el.child(div().absolute().top_0().bottom_0().left_0().child(linear))
             })
             .children(self.render_project_issue_picker(cx))
     }
@@ -5606,7 +5154,6 @@ impl Overview {
             "Small rows under a chat = its subagents (dot: blue running, green done). Rows show three plus a remainder count; hover the row to reveal the full stack. Hover a row for its full name; click one to peek at its transcript in a read-only side panel (a subagent can't be continued). ✕ or Escape closes it.",
             "Archive hides a chat from the default view (same as the sidebar's archive). \"Show archived\" brings archived chats back, dimmed.",
             "\"Repos\" hides whole repos everywhere (list, grouping, search). Search matches title, branch, last message, folder, ticket id and PR title.",
-            "\"My PRs\" opens a left sidebar of every open PR you authored (\u{26a1} actionable first, then by repo) beside the list or Outline, with PRs awaiting your review in a \"Needs my review\" section on top. Its count lights red when something needs you — CI failing, changes requested, a merge conflict, no reviewer ever requested (ready-to-merge alone doesn't count), or a review requested from you. The sidebar has its own search box that filters PRs by repo, title, number (123 or #123), branch and author (the toolbar search only filters chats). Click a section header to fold it; a PR search shows matches even inside folded sections. Clicking a PR with a linked chat opens that chat in the side panel and brings its row into view; otherwise it opens the PR on GitHub.",
         ];
         div()
             .flex_none()
@@ -6131,479 +5678,6 @@ impl Overview {
                 el.child(div().px(px(10.0)).pb(px(8.0)).child(detail))
             })
             .into_any_element()
-    }
-
-    /// Left "My PRs" sidebar — `Some` only while `pr_sidebar_open`. Every
-    /// open PR the signed-in `gh` account authored, across every repo it can
-    /// see, in `renderPrPane`'s two-part shape (`session_canvas.html`): an
-    /// actionable-first rollup ("⚡ Needs your action", anything with a
-    /// non-empty `action_reasons()`, severity-sorted), then every PR grouped
-    /// by repo, repos alphabetical. The sidebar's own search box
-    /// ([`Overview::pr_search`], not the toolbar's) filters every part
-    /// ([`pr_matches_search`]); each section folds on a header click. Header/border treatment mirrors the chat
-    /// panel's (mirrored to the left edge). A PR with no linked chat opens
-    /// on GitHub instead of jumping, matching the reference's "no open chat
-    /// for this PR" case.
-    fn render_pr_sidebar(
-        &mut self,
-        rows: &[OverviewRow],
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !self.pr_sidebar_open {
-            return None;
-        }
-        self.ensure_my_prs(cx);
-        let query = self.pr_search.read(cx).text().trim().to_lowercase();
-        let searching = !query.is_empty();
-
-        // Clone out of `self.my_prs` up front — everything below needs
-        // `&mut self` (badge/jump lookups reuse `self.link_status`), which a
-        // borrow tied to `self.my_prs` would conflict with.
-        let all_items: Vec<MyPrItem> = self
-            .my_prs
-            .iter()
-            .filter(|item| pr_matches_search(&query, item))
-            .cloned()
-            .collect();
-        let review_items: Vec<MyPrItem> = self
-            .review_prs
-            .iter()
-            .filter(|item| pr_matches_search(&query, item))
-            .cloned()
-            .collect();
-        let total = self.my_prs.len() + self.review_prs.len();
-        let shown = all_items.len() + review_items.len();
-
-        let count_label = if query.is_empty() || total == 0 {
-            format!("{total}")
-        } else {
-            format!("{shown} of {total}")
-        };
-        let header = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(8.0))
-            .px(px(12.0))
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .text_color(theme.text)
-                            .child(SharedString::from("My PRs")),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(10.5))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(count_label)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("overview-pr-sidebar-close")
-                    .cursor_pointer()
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from("×"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_pr_sidebar_open(false, true, cx);
-                    })),
-            );
-
-        let search_bar =
-            div()
-                .flex_none()
-                .px(px(8.0))
-                .pt(px(8.0))
-                .child(popover::search_input_frame(
-                    theme,
-                    self.pr_search.clone().into_any_element(),
-                ));
-
-        let body: gpui::AnyElement = if shown == 0 {
-            let message = pr_sidebar_empty_message(
-                total,
-                &query,
-                self.my_prs_pending || self.review_prs_pending,
-            );
-            div()
-                .p(px(12.0))
-                .text_size(crate::typography::ui_rems(11.5))
-                .text_color(theme.text_faint)
-                .child(SharedString::from(message))
-                .into_any_element()
-        } else {
-            let mut actionable: Vec<MyPrItem> = all_items
-                .iter()
-                .filter(|item| {
-                    item.detail
-                        .as_ref()
-                        .is_some_and(|d| !d.action_reasons().is_empty())
-                })
-                .cloned()
-                .collect();
-            actionable.sort_by_key(|item| {
-                item.detail
-                    .as_ref()
-                    .and_then(|d| d.action_reasons().into_iter().next())
-                    .map(pr_action_severity)
-                    .unwrap_or(99)
-            });
-
-            let mut by_repo: std::collections::BTreeMap<String, Vec<MyPrItem>> =
-                std::collections::BTreeMap::new();
-            for item in &all_items {
-                by_repo
-                    .entry(
-                        item.summary
-                            .repo
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                    )
-                    .or_default()
-                    .push(item.clone());
-            }
-
-            // Element ids must be unique across sections (the same PR shows
-            // in the rollup AND its repo group), so a running index.
-            let mut next_ix = 0usize;
-            let mut sections: Vec<gpui::AnyElement> = Vec::new();
-            if !review_items.is_empty() {
-                sections.push(self.render_pr_section(
-                    PR_SECTION_NEEDS_REVIEW.to_string(),
-                    searching,
-                    format!("Needs my review ({})", review_items.len()),
-                    &review_items,
-                    true,
-                    &mut next_ix,
-                    rows,
-                    theme,
-                    cx,
-                ));
-            }
-            if !actionable.is_empty() {
-                sections.push(self.render_pr_section(
-                    PR_SECTION_NEEDS_ACTION.to_string(),
-                    searching,
-                    format!("⚡ Needs your action ({})", actionable.len()),
-                    &actionable,
-                    false,
-                    &mut next_ix,
-                    rows,
-                    theme,
-                    cx,
-                ));
-            }
-            for (repo, items) in &by_repo {
-                let label = format!(
-                    "{} ({})",
-                    repo.rsplit('/').next().unwrap_or(repo),
-                    items.len()
-                );
-                sections.push(self.render_pr_section(
-                    pr_repo_section_key(repo),
-                    searching,
-                    label,
-                    items,
-                    false,
-                    &mut next_ix,
-                    rows,
-                    theme,
-                    cx,
-                ));
-            }
-            div()
-                .id("overview-pr-sidebar-list")
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .px(px(6.0))
-                .pb(px(8.0))
-                .overflow_y_scroll()
-                .track_scroll(&self.pr_sidebar_scroll)
-                .children(sections)
-                .into_any_element()
-        };
-
-        Some(
-            div()
-                .id("overview-pr-sidebar")
-                .flex_none()
-                .w(px(PR_SIDEBAR_W))
-                .h_full()
-                .flex()
-                .flex_col()
-                .border_r_1()
-                .border_color(theme.border)
-                .bg(theme.surface_raised)
-                .child(header)
-                .child(search_bar)
-                .child(body)
-                .into_any_element(),
-        )
-    }
-
-    /// One sidebar section: a click-to-fold header (chevron + label with its
-    /// count, which stays visible while folded) over its rows. `searching`
-    /// forces the rows visible ([`pr_section_expanded`]).
-    fn render_pr_section(
-        &mut self,
-        section_key: String,
-        searching: bool,
-        label: String,
-        items: &[MyPrItem],
-        review: bool,
-        next_ix: &mut usize,
-        rows: &[OverviewRow],
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let expanded = pr_section_expanded(&self.pr_collapsed_sections, &section_key, searching);
-        // Element ids stay unique across sections via the running index, so
-        // a folded section still advances it by its item count.
-        let children: Vec<gpui::AnyElement> = if expanded {
-            items
-                .iter()
-                .map(|item| {
-                    let ix = *next_ix;
-                    *next_ix += 1;
-                    self.render_pr_item(ix, item, review, rows, theme, cx)
-                })
-                .collect()
-        } else {
-            *next_ix += items.len();
-            Vec::new()
-        };
-        let chevron = crate::icons::icon(if expanded {
-            crate::icons::ALT_ARROW_DOWN
-        } else {
-            crate::icons::ALT_ARROW_RIGHT
-        })
-        .size(px(13.0))
-        .text_color(theme.text_muted.opacity(0.7));
-        let toggle_key = section_key.clone();
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "overview-pr-section-{section_key}"
-                    )))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px(px(10.0))
-                    .pt(px(10.0))
-                    .pb(px(2.0))
-                    .cursor_pointer()
-                    .text_size(crate::typography::ui_rems(10.5))
-                    .text_color(theme.text_muted.opacity(0.7))
-                    .hover(|el| el.text_color(theme.text))
-                    .child(div().flex_none().size(px(14.0)).child(chevron))
-                    .child(SharedString::from(label))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_pr_section(&toggle_key, cx);
-                    })),
-            )
-            .children(children)
-            .into_any_element()
-    }
-
-    fn render_pr_item(
-        &mut self,
-        ix: usize,
-        item: &MyPrItem,
-        review: bool,
-        rows: &[OverviewRow],
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let title: SharedString = item
-            .summary
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("#{}", item.summary.number))
-            .into();
-        let number_label = format!("#{}", item.summary.number);
-        let state_label: SharedString = if item.summary.is_draft {
-            "draft".into()
-        } else {
-            item.detail
-                .as_ref()
-                .map(|d| d.state.clone())
-                .unwrap_or_else(|| "open".to_string())
-                .into()
-        };
-        // Review rows are someone else's PR: the author-oriented action badge
-        // (CI failing, needs reviewer, ...) doesn't apply, show who asked.
-        let action_badge = if review {
-            None
-        } else {
-            item.detail
-                .as_ref()
-                .and_then(|d| d.action_reasons().into_iter().next())
-                .map(pr_action_badge)
-        };
-        let author_label = review
-            .then(|| {
-                item.summary
-                    .author
-                    .as_deref()
-                    .map(|login| format!("by {login}"))
-            })
-            .flatten();
-        let jump = self.chat_for_pr_url(rows, item.summary.url.as_deref());
-        let url = item.summary.url.clone();
-
-        let mut row = div()
-            .id(("overview-pr-item", ix))
-            .flex()
-            .flex_col()
-            .gap(px(3.0))
-            .px(px(10.0))
-            .py(px(8.0))
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.element_hover))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.text)
-                            .child(title),
-                    )
-                    .when_some(action_badge, |el, (label, color)| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .px(px(6.0))
-                                .py(px(1.0))
-                                .rounded(px(3.0))
-                                .bg(color.opacity(0.15))
-                                .text_size(crate::typography::ui_rems(9.5))
-                                .text_color(color)
-                                .child(SharedString::from(label)),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .text_size(crate::typography::ui_rems(10.5))
-                    .text_color(theme.text_muted.opacity(0.7))
-                    .child(SharedString::from(number_label))
-                    .child(SharedString::from("·"))
-                    .child(SharedString::from(state_label))
-                    .when_some(author_label, |el, label| {
-                        el.child(SharedString::from("·"))
-                            .child(SharedString::from(label))
-                    }),
-            );
-
-        if let Some((chat_id, chat_title)) = jump {
-            let pr_source = self
-                .link_status
-                .get(&chat_id)
-                .and_then(|e| e.status.pr_source);
-            row = row.child(
-                link_source_hover(
-                    div()
-                        .id(("overview-pr-item-chat", ix))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .text_size(crate::typography::ui_rems(10.0))
-                        .text_color(theme.accent),
-                    LinkKind::Pr,
-                    pr_source,
-                )
-                .when(pr_source == Some(ChatLinkSource::Manual), |el| {
-                    el.child(manual_link_pin(theme.accent))
-                })
-                .child(SharedString::from(format!("→ {chat_title}"))),
-            );
-            // Jump in place: chat panel on the right + bring its row
-            // into view — never navigates off the overview.
-            row = row.on_click(cx.listener(move |this, _, _, cx| {
-                this.jump_to_chat_from_pr(chat_id.clone(), cx);
-            }));
-        } else if let Some(url) = url {
-            row = row.child(
-                div()
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .text_color(theme.text_muted.opacity(0.5))
-                    .child(SharedString::from(
-                        "No open chat for this PR — click to open on GitHub",
-                    )),
-            );
-            row = row.on_click(move |_, _, cx| {
-                cx.open_url(&url);
-            });
-            // Review rows without a chat: start one (Cofactr launcher flow).
-            if review && let Some(reference) = crate::pr_review_launch::reference_for_item(item) {
-                use crate::chat_type_view::ReviewStatus;
-                let status = self.pr_review_status.get(&reference.url()).cloned();
-                let busy = matches!(status, Some(ReviewStatus::Starting(_)));
-                let button = div()
-                    .id(("overview-pr-item-review", ix))
-                    .debug_selector(move || format!("overview-pr-item-review-{ix}"))
-                    .flex_none()
-                    .px(px(8.0))
-                    .py(px(2.0))
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(theme.accent.opacity(0.5))
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .text_color(theme.accent)
-                    .when(busy, |el| el.opacity(0.5))
-                    .when(!busy, |el| {
-                        el.cursor_pointer().hover(|el| el.bg(theme.element_hover))
-                    })
-                    .child(if busy { "Starting…" } else { "Review" })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.start_pr_review_from_sidebar(reference.clone(), cx);
-                    }));
-                row = row.child(div().flex().child(button));
-                if let Some(ReviewStatus::Failed(text)) = status {
-                    row = row.child(
-                        div()
-                            .debug_selector(move || format!("overview-pr-item-review-status-{ix}"))
-                            .w_full()
-                            .child(crate::error_notice::ErrorNotice::new(
-                                SharedString::from(format!("overview-pr-item-review-error-{ix}")),
-                                theme,
-                                crate::chat_type_view::REVIEW_FAILURE_TITLE,
-                                text,
-                            )),
-                    );
-                }
-            }
-        }
-
-        row.into_any_element()
     }
 }
 
@@ -7877,16 +6951,6 @@ fn fixture_snapshot_for(space_id: &str, ix: usize) -> WorkOutlineSnapshot {
     serde_json::from_str(&json).unwrap_or(snapshot)
 }
 
-/// `ACTION_SEVERITY` (`session_canvas.html`) — lower sorts first.
-fn pr_action_severity(action: PrAction) -> u8 {
-    match action {
-        PrAction::CiFailing | PrAction::MergeConflict => 0,
-        PrAction::ChangesRequested => 1,
-        PrAction::NeedsReviewer => 2,
-        PrAction::ReadyToMerge => 3,
-    }
-}
-
 #[cfg(test)]
 mod logic_tests {
     use super::*;
@@ -8036,8 +7100,8 @@ mod logic_tests {
 
         let links = effective_pr_links(&status);
         assert_eq!(links.len(), 2);
-        assert!(status_has_pr_url(&status, "https://github.com/a/b/pull/7"));
-        assert!(status_has_pr_url(&status, "https://github.com/a/b/pull/8"));
+        assert_eq!(links[0].url, "https://github.com/a/b/pull/7");
+        assert_eq!(links[1].url, "https://github.com/a/b/pull/8");
         assert_eq!(link_fingerprint(&status).1.len(), 2);
     }
 
@@ -8066,8 +7130,10 @@ mod logic_tests {
         .unwrap();
         apply_link_reply(&mut status, LinkKind::Pr, &one);
         assert_eq!(effective_pr_links(&status).len(), 1);
-        assert!(!status_has_pr_url(&status, "https://github.com/a/b/pull/7"));
-        assert!(status_has_pr_url(&status, "https://github.com/a/b/pull/8"));
+        assert_eq!(
+            effective_pr_links(&status)[0].url,
+            "https://github.com/a/b/pull/8"
+        );
     }
 
     #[test]
@@ -8469,20 +7535,6 @@ mod logic_tests {
     }
 
     #[test]
-    fn badge_count_skips_empty_and_ready_to_merge_only() {
-        let none: Vec<PrAction> = vec![];
-        let ready = vec![PrAction::ReadyToMerge];
-        let failing = vec![PrAction::CiFailing];
-        let mixed = vec![PrAction::NeedsReviewer, PrAction::ReadyToMerge];
-        let reasons: Vec<&[PrAction]> = vec![&none, &ready, &failing, &mixed];
-        assert_eq!(actionable_pr_count(reasons), 2);
-
-        let only_ready: Vec<&[PrAction]> = vec![&ready, &ready];
-        assert_eq!(actionable_pr_count(only_ready), 0);
-        assert_eq!(actionable_pr_count(Vec::<&[PrAction]>::new()), 0);
-    }
-
-    #[test]
     fn hovered_row_reconciliation_drops_only_unmounted_ids() {
         let mounted = vec!["a".to_string(), "b".to_string()];
         let mut hovered = Some("b".to_string());
@@ -8495,183 +7547,6 @@ mod logic_tests {
         assert!(!reconcile_hovered_row(&mut hovered, &[]));
     }
 
-    fn pr_item(number: u64, repo: &str, title: &str, branch: Option<&str>) -> MyPrItem {
-        let detail = branch.map(|b| {
-            serde_json::json!({
-                "number": number, "url": null, "state": "OPEN", "isDraft": false,
-                "reviewDecision": null, "reviewers": [], "checks": null, "title": title,
-                "branch": b, "mergeable": "mergeable", "hasReviewerRequested": true
-            })
-        });
-        serde_json::from_value(serde_json::json!({
-            "number": number, "title": title, "url": null, "repo": repo,
-            "isDraft": false, "updatedAt": null, "detail": detail
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn review_requested_item_deserializes_author_and_search_matches_it() {
-        let item: MyPrItem = serde_json::from_value(serde_json::json!({
-            "number": 9, "title": "Add cache", "url": null, "repo": "cofactr/zeron",
-            "isDraft": false, "updatedAt": null, "author": "octocat", "detail": null
-        }))
-        .unwrap();
-        assert_eq!(item.summary.author.as_deref(), Some("octocat"));
-        assert!(pr_matches_search("octocat", &item));
-        assert!(!pr_matches_search("someone-else", &item));
-        // Authored rows (no `author` key on the wire) still deserialize.
-        assert!(pr_item(1, "a/b", "t", None).summary.author.is_none());
-    }
-
-    #[test]
-    fn pr_search_matches_repo_title_number_and_branch() {
-        let pr = pr_item(
-            1234,
-            "cofactr/Zeron",
-            "Fix Login Redirect",
-            Some("mikey/login-fix"),
-        );
-        // Empty query = everything.
-        assert!(pr_matches_search("", &pr));
-        // Repo, either half, case-insensitive (query arrives lowercased).
-        assert!(pr_matches_search("cofactr/zeron", &pr));
-        assert!(pr_matches_search("zeron", &pr));
-        // Title substring.
-        assert!(pr_matches_search("login redirect", &pr));
-        // Number with or without '#', and partial.
-        assert!(pr_matches_search("1234", &pr));
-        assert!(pr_matches_search("#1234", &pr));
-        assert!(pr_matches_search("#12", &pr));
-        assert!(pr_matches_search("23", &pr));
-        // Branch (from the detail sweep).
-        assert!(pr_matches_search("mikey/login-fix", &pr));
-        // Misses.
-        assert!(!pr_matches_search("#99", &pr));
-        assert!(!pr_matches_search("other-repo", &pr));
-        // No detail yet → no branch field, other fields still match.
-        let pending = pr_item(7, "acme/api", "Bump deps", None);
-        assert!(pr_matches_search("#7", &pending));
-        assert!(!pr_matches_search("mikey/", &pending));
-    }
-
-    #[test]
-    fn pr_collapsed_sections_round_trip_through_the_flag_set() {
-        let mut flags = BTreeSet::new();
-        flags.insert(PR_SIDEBAR_FLAG.to_string());
-        flags.insert("someFutureFlag".to_string());
-        flags.insert(pr_section_flag(PR_SECTION_NEEDS_REVIEW));
-        flags.insert(pr_section_flag(&pr_repo_section_key("cofactr/zeron")));
-        flags.insert(PR_SECTION_COLLAPSED_PREFIX.to_string()); // empty key: junk
-        let collapsed = pr_collapsed_sections_from_flags(&flags);
-        assert_eq!(
-            collapsed,
-            BTreeSet::from(["needs-review".to_string(), "repo:cofactr/zeron".to_string()])
-        );
-        // The open flag and the collapsed entries don't read as each other.
-        assert!(pr_sidebar_open_from_flags(&flags));
-        assert!(pr_collapsed_sections_from_flags(&BTreeSet::new()).is_empty());
-    }
-
-    #[test]
-    fn pr_section_search_overrides_collapsed_state() {
-        let collapsed = BTreeSet::from([PR_SECTION_NEEDS_ACTION.to_string()]);
-        assert!(!pr_section_expanded(
-            &collapsed,
-            PR_SECTION_NEEDS_ACTION,
-            false
-        ));
-        assert!(pr_section_expanded(
-            &collapsed,
-            PR_SECTION_NEEDS_ACTION,
-            true
-        ));
-        assert!(pr_section_expanded(
-            &collapsed,
-            PR_SECTION_NEEDS_REVIEW,
-            false
-        ));
-    }
-
-    #[test]
-    fn pr_sidebar_flag_restores_and_ignores_unknown_entries() {
-        assert!(!pr_sidebar_open_from_flags(&BTreeSet::new()));
-        let junk: BTreeSet<String> =
-            ["viewMode:myPrs".to_string(), "somethingElse".to_string()].into();
-        assert!(!pr_sidebar_open_from_flags(&junk));
-        let on: BTreeSet<String> =
-            [PR_SIDEBAR_FLAG.to_string(), "somethingElse".to_string()].into();
-        assert!(pr_sidebar_open_from_flags(&on));
-    }
-
-    #[test]
-    fn pr_sidebar_empty_message_prefers_loading_while_a_request_is_pending() {
-        assert_eq!(pr_sidebar_empty_message(0, "", true), "Loading…");
-        assert_eq!(
-            pr_sidebar_empty_message(0, "", false),
-            "No open PRs found (or `gh` isn't installed/authenticated)."
-        );
-        assert_eq!(
-            pr_sidebar_empty_message(2, "widgets", true),
-            "No PRs match “widgets”."
-        );
-    }
-
-    #[test]
-    fn pr_sidebar_flag_round_trips_through_the_string_set_file() {
-        let dir = std::env::temp_dir().join(format!("zeron-overview-flags-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // Absent file → closed.
-        let loaded = overview_positions::load_string_set(&dir, overview_positions::UI_FLAGS_FILE);
-        assert!(!pr_sidebar_open_from_flags(&loaded));
-        let on: BTreeSet<String> = [PR_SIDEBAR_FLAG.to_string()].into();
-        overview_positions::save_string_set(&dir, overview_positions::UI_FLAGS_FILE, &on).unwrap();
-        let loaded = overview_positions::load_string_set(&dir, overview_positions::UI_FLAGS_FILE);
-        assert!(pr_sidebar_open_from_flags(&loaded));
-        // Corrupt file degrades to closed rather than erroring.
-        std::fs::write(dir.join(overview_positions::UI_FLAGS_FILE), "\"MyPrs\"").unwrap();
-        let loaded = overview_positions::load_string_set(&dir, overview_positions::UI_FLAGS_FILE);
-        assert!(!pr_sidebar_open_from_flags(&loaded));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[gpui::test]
-    fn pr_sidebar_shortcut_opens_then_toggles_closed(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-        });
-        let state = cx.new(|_| AppState::new());
-        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
-        let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
-        let overview = cx.new(|cx| {
-            Overview::new(
-                state,
-                gpui::WeakEntity::new_invalid(),
-                transcript,
-                composer,
-                cx,
-            )
-        });
-
-        overview.update(cx, |overview, cx| {
-            overview.my_prs_fetched_at = Some(Instant::now());
-            overview.review_prs_fetched_at = Some(Instant::now());
-            overview.open_pr_sidebar(cx);
-            assert!(overview.pr_sidebar_open);
-            assert!(overview.my_prs_fetched_at.is_none());
-            assert!(overview.review_prs_fetched_at.is_none());
-            overview.toggle_pr_sidebar(cx);
-            assert!(!overview.pr_sidebar_open);
-            overview.my_prs_fetched_at = Some(Instant::now());
-            overview.review_prs_fetched_at = Some(Instant::now());
-            overview.toggle_pr_sidebar(cx);
-            assert!(overview.pr_sidebar_open);
-            assert!(overview.my_prs_fetched_at.is_none());
-            assert!(overview.review_prs_fetched_at.is_none());
-        });
-    }
-
     #[test]
     fn view_prefs_round_trip_through_the_flag_set_and_keep_other_flags() {
         let prefs = ViewPrefs {
@@ -8680,12 +7555,7 @@ mod logic_tests {
             show_archived: true,
             groups: vec![GroupDimension::Ticket, GroupDimension::Repo],
         };
-        let mut flags: BTreeSet<String> = [
-            PR_SIDEBAR_FLAG.to_string(),
-            pr_section_flag(PR_SECTION_NEEDS_REVIEW),
-            "someFutureFlag".to_string(),
-        ]
-        .into();
+        let mut flags: BTreeSet<String> = ["someFutureFlag".to_string()].into();
         apply_view_prefs_to_flags(&mut flags, &prefs);
         assert_eq!(
             view_prefs_from_flags(&flags),
@@ -8694,15 +7564,12 @@ mod logic_tests {
         );
         assert!(flags.contains("groupBy:ticket,repo"));
         // Unrelated flags survive and don't read as view prefs.
-        assert!(pr_sidebar_open_from_flags(&flags));
         assert!(flags.contains("someFutureFlag"));
-        assert!(pr_collapsed_sections_from_flags(&flags).contains(PR_SECTION_NEEDS_REVIEW));
 
         // Turning everything off removes every view-pref entry.
         apply_view_prefs_to_flags(&mut flags, &ViewPrefs::default());
         assert_eq!(view_prefs_from_flags(&flags), ViewPrefs::default());
         assert!(!flags.iter().any(|f| f.starts_with(GROUP_BY_PREFIX)));
-        assert!(pr_sidebar_open_from_flags(&flags));
         // Changing the grouping replaces (never accumulates) the groupBy entry.
         let mut flags = BTreeSet::new();
         apply_view_prefs_to_flags(
@@ -8832,6 +7699,33 @@ mod logic_tests {
             apply_view_prefs_to_flags(&mut set, &prefs);
             assert_eq!(set, flags(&["viewMode:outline", "hideStale"]), "{saved:?}");
         }
+    }
+
+    /// A flags file written while the "My PRs" sidebar existed still loads:
+    /// the retired `prSidebarOpen` / `prSectionCollapsed:*` entries are
+    /// ignored and the surviving flags keep their values.
+    #[test]
+    fn flags_file_with_retired_pr_sidebar_entries_still_loads() {
+        let dir =
+            std::env::temp_dir().join(format!("zeron-overview-oldflags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(overview_positions::UI_FLAGS_FILE),
+            r#"["prSidebarOpen","prSectionCollapsed:needs-review","prSectionCollapsed:repo:cofactr/zeron","viewMode:outline","hideStale"]"#,
+        )
+        .unwrap();
+        let loaded = overview_positions::load_string_set(&dir, overview_positions::UI_FLAGS_FILE);
+        assert_eq!(loaded.len(), 5, "the old file loads without error");
+        let prefs = view_prefs_from_flags(&loaded);
+        assert_eq!(prefs.mode, OverviewMode::Outline);
+        assert!(prefs.hide_stale);
+        assert!(!prefs.show_archived);
+        // The retired entries are left in place, not rewritten.
+        let mut rewritten = loaded.clone();
+        apply_view_prefs_to_flags(&mut rewritten, &prefs);
+        assert!(rewritten.contains("prSidebarOpen"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
