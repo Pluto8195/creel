@@ -4,7 +4,7 @@ The Work Outline organizes a project's Chats under nested **work items**. A work
 item can stand for a workstream, a ticket, a pull request, or an investigation.
 It holds the instructions its Chats inherit, the folders and repositories they
 run in, and the questions agents have asked you. Chats stay the main working
-surface. The Outline is a third Overview view beside List and Canvas, and a Chat
+surface. The Outline is the main Overview view, with List beside it, and a Chat
 never needs a work item.
 
 | Concept | What it is |
@@ -17,7 +17,8 @@ never needs a work item.
 
 ## Quick start
 
-1. Open the Overview and choose **Outline**, or press `⇧⌘L` (`Ctrl+Shift+L`).
+1. Open the Overview and choose **Outline**, or press `⇧⌘L` (`Ctrl+Shift+L`). The Overview has two views, List and
+   Outline. A saved view setting that says Canvas (the removed third view) loads as Outline.
 2. Create a work item with **New item**, `⇧⌘I` (`Ctrl+Shift+I`), or `N`. Type a
    title and press Enter. In a project with no work items, the Outline offers
    **Create work item** in place of the empty tree.
@@ -84,7 +85,7 @@ ignore it. The **Archive Chat** and **Archive…** menu entries show the key.
 ### Search
 
 `⌘F` (`Ctrl+F`) focuses the Overview's search field and selects its text, in
-List, Canvas, and Outline. It is one shared field: in the Outline it filters the
+List and Outline. It is one shared field: in the Outline it filters the
 rows ("Nothing matches the search" when none do). The key is fixed (not in
 **Settings → Shortcuts**) and works with or without focus in the Overview; the
 file editor's own Find still wins inside a file, and in a full chat `⌘F` does
@@ -92,8 +93,8 @@ nothing. In the search field:
 
 | Key | Action |
 | --- | --- |
-| `Esc` | Clear the query; when it is already empty, return focus to the List, Canvas, or Outline tree (with a side panel open, an empty-field `Esc` closes the panel first) |
-| `↩` / `↓` | Select the first matching row in List or Outline (Enter on Canvas moves focus to the canvas) and focus it, so the arrow keys work at once |
+| `Esc` | Clear the query; when it is already empty, return focus to the List or Outline tree (with a side panel open, an empty-field `Esc` closes the panel first) |
+| `↩` / `↓` | Select the first matching row in List or Outline and focus it, so the arrow keys work at once |
 
 In List, `↑` / `↓` then move the selected row (`↑` on the first row returns to the
 search) and `↩` opens the selected Chat beside the Overview.
@@ -150,8 +151,7 @@ switches to the full chat with its composer focused. It works while you type in
 the panel's composer, and a draft you started there is still there. It opens:
 
 - the Chat on the selected Outline row, while the Outline tree has focus;
-- otherwise the Chat beside the Overview (the highlighted row in List or
-  Canvas);
+- otherwise the Chat beside the Overview (the highlighted row in List);
 - otherwise the Chat on the selected Outline row.
 
 With none of these, the Outline shows a short notice. In the full chat, Toggle
@@ -230,7 +230,7 @@ that started it stays there while its work item changes. The selection follows t
 and the move applies at once, with the same **Undo** toast as **Move to Work
 Item…** when the Chat's instructions change. Rapid presses apply in order. Chats without a
 project, and Chats that no longer exist, cannot move. A move never changes a
-Chat's Canvas position, folder, or execution setup. The palette's Move Up /
+Chat's folder or execution setup. The palette's Move Up /
 Down, Indent, and Outdent commands (and any shortcut you bind to them) do the
 same as the keys on a Chat row. Archiving an item that has children asks
 whether to archive them as well or move them to another parent first.
@@ -248,7 +248,7 @@ A single-project Outline has no project rows, so none of this applies there.
   places it after. Projects you have never moved, including new ones, follow
   the ones you arranged, in alphabetical order.
 - **Hide.** Choose **Hide from Outline** in a project row's menu. The project
-  and its Chats disappear from the Outline only. The sidebar, List, and Canvas
+  and its Chats disappear from the Outline only. The sidebar and List
   still show them. While any project is hidden, the Outline toolbar shows
   **Hidden projects (N)**. Click it to list hidden projects as dimmed rows, and
   click **Unhide** on a row (or choose **Unhide** in its menu) to bring it back.
@@ -290,7 +290,7 @@ instructions.
 - A Chat launch records an immutable **revision** of its effective instructions.
   A revision allows at most 9,000 characters and 32 entries.
 - If the instructions change after launch, the Chat shows **Instructions
-  changed** in its header, on its Outline row, and on List and Canvas cards. The
+  changed** in its header, on its Outline row, and on List rows. The
   Chat continues to use its applied revision until you act. Click **Compare** to
   see the difference, then **Apply** to use the current instructions.
 - Apply never changes a running turn. It takes effect at the next turn:
@@ -418,7 +418,7 @@ automatically: items and links come only from the actions below.
   rebind **Toggle Inbox column** in Settings → Shortcuts), click **Inbox** in
   the Outline toolbar, run **Toggle Inbox Column** from the command palette, or
   choose **Open Linear Panel** on a Space row. The panel opens in the
-  **Inbox** column on the left of the Outline (List and Canvas too), above
+  **Inbox** column on the left of the Outline (List too), above
   the [GitHub section](#pr-review-sync) when that applies, so the chat panel,
   Work Item Details, and Required Actions stay open beside it on the right.
   The column's × closes both.
@@ -588,10 +588,10 @@ that owns the project, through that device's `gh` login.
   item, else the destination), **Link to selected item**, and **Create work
   item** (under the destination, else the selected item); or drag the row onto
   an Outline item to create it there. Retries never duplicate.
-- **PR review chats (⌘P / ⇧⌘P).** With a destination in the current project,
-  the PR page's **Review chats** tab lists the destination's PR items (chip, Review, Fix CI) with their
-  review Chats under each; click an item for its Details. Without one, the
-  tab keeps its classified list of review Chats.
+- **PR review chats (⇧⌘P).** The page lists only the current project's
+  destination PR items (chip, Review, Fix CI) with their review Chats under
+  each; click an item for its Details. Without a destination it shows an empty
+  state asking you to pick one.
 - If `gh` is missing or signed out, the surfaces say so (`gh auth login`). If
   the engine on this device has no PR review sync, they say **PR review sync
   isn't available on this host yet**.
@@ -636,7 +636,7 @@ duplicate items.
   specific instruction that comes later takes precedence.
 - Codex revision changes require a fresh session (see above). Cursor and ACP
   harnesses cannot receive Work Outline instructions.
-- List rows and Canvas cards show the work-item path, attention, drift, and
+- List rows show the work-item path, attention, drift, and
   exception marks, but not status totals or proposal counts. The sidebar shows
   no Outline indicators.
 - Opening a request does not scroll to the exact message in the transcript.
