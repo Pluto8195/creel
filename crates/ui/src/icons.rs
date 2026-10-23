@@ -206,7 +206,10 @@ icon_assets![
     // favorited state and the picker's favorites rail tab.
     (STAR, "star"),
     (STAR_BOLD, "star-bold"),
-    (ZERON_LOGO, "zeron-logo"),
+    // The Creel mark in full colour, one file per appearance (see [`logo`]).
+    // These are drawn with `img()`, not `icon()`: the winding keeps its greens.
+    (CREEL_LOGO_LIGHT, "creel-logo-light"),
+    (CREEL_LOGO_DARK, "creel-logo-dark"),
     // Harness brand marks (icons.tsx).
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),
@@ -244,6 +247,23 @@ pub fn claude_brand() -> Hsla {
     gpui::rgb(0xD97757).into()
 }
 
+/// The embedded Creel logo asset for a theme appearance: the steel mark on
+/// light themes, the moss mark on dark ones.
+pub fn logo_asset(appearance: crate::theme::Appearance) -> &'static str {
+    if appearance.is_dark() {
+        CREEL_LOGO_DARK
+    } else {
+        CREEL_LOGO_LIGHT
+    }
+}
+
+/// The Creel logo for a theme appearance. The mark is 152×174 (aspect ≈ 0.874);
+/// size it with `.w(..).h(..)` at that ratio. Use `div().opacity(..)` around it
+/// for a watermark, since the logo carries its own colours.
+pub fn logo(appearance: crate::theme::Appearance) -> gpui::Img {
+    gpui::img(logo_asset(appearance)).flex_none()
+}
+
 /// An icon element for an embedded asset path. Size and colour are set by the
 /// caller (`.size(..)`, `.text_color(..)`), matching the web app's
 /// `[&_svg]:size-4` idiom.
@@ -266,6 +286,48 @@ mod tests {
             let text = std::str::from_utf8(&bytes).expect("icon svg is utf-8");
             assert!(text.contains("<svg"), "{path} is not an svg");
             assert!(text.contains("viewBox"), "{path} lacks a viewBox");
+        }
+    }
+
+    #[test]
+    fn logo_follows_the_theme_appearance() {
+        use crate::theme::Appearance;
+        assert_eq!(logo_asset(Appearance::Light), CREEL_LOGO_LIGHT);
+        assert_eq!(logo_asset(Appearance::Dark), CREEL_LOGO_DARK);
+        assert_ne!(CREEL_LOGO_LIGHT, CREEL_LOGO_DARK);
+    }
+
+    #[test]
+    fn logo_assets_exist_parse_and_stay_small() {
+        for (path, ink) in [(CREEL_LOGO_LIGHT, "#183028"), (CREEL_LOGO_DARK, "#D6F1DB")] {
+            let bytes = Assets.load(path).unwrap().expect("logo asset is embedded");
+            assert!(bytes.len() < 4096, "{path} is {} bytes", bytes.len());
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(text.contains(ink), "{path} lacks its ink colour {ink}");
+            let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
+                .unwrap_or_else(|e| panic!("{path} does not parse: {e}"));
+            let size = tree.size();
+            let aspect = size.width() / size.height();
+            assert!((aspect - 152.0 / 174.0).abs() < 0.01, "{path} aspect {aspect}");
+        }
+    }
+
+    #[test]
+    fn logo_renders_in_colour_on_a_transparent_background() {
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(Assets));
+        for (path, ink) in [(CREEL_LOGO_LIGHT, [0x18, 0x30, 0x28]), (CREEL_LOGO_DARK, [0xD6, 0xF1, 0xDB])] {
+            let bytes = Assets.load(path).unwrap().unwrap();
+            let image = renderer.render_single_frame(&bytes, 2.0).expect("logo renders");
+            let px = image.as_bytes(0).unwrap(); // premultiplied BGRA
+            assert_eq!(px[3], 0, "{path}: top-left corner is transparent");
+            let near = |p: &[u8], rgb: [u8; 3]| {
+                p[3] == 255 && (0..3).all(|i| p[2 - i].abs_diff(rgb[i]) <= 6)
+            };
+            assert!(px.chunks_exact(4).any(|p| near(p, ink)), "{path}: has ink pixels");
+            assert!(
+                px.chunks_exact(4).any(|p| near(p, [0x38, 0xD0, 0x59])),
+                "{path}: keeps the clover winding colour"
+            );
         }
     }
 

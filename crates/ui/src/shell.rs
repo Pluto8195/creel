@@ -9706,10 +9706,11 @@ impl Shell {
                         .flex_col()
                         .items_center()
                         .child(
-                            icon(icons::ZERON_LOGO)
-                                .w(px(41.9))
-                                .h(px(48.0))
-                                .text_color(theme.text.opacity(0.09)),
+                            div().opacity(0.09).child(
+                                icons::logo(theme.appearance)
+                                    .w(px(41.9))
+                                    .h(px(48.0)),
+                            ),
                         )
                         .child(
                             div()
@@ -10472,10 +10473,9 @@ impl Shell {
             .items_center()
             .text_center()
             .child(
-                icon(icons::ZERON_LOGO)
+                icons::logo(theme.appearance)
                     .w(px(31.4))
-                    .h(px(36.0))
-                    .text_color(theme.text),
+                    .h(px(36.0)),
             )
             .child(
                 div()
@@ -11127,10 +11127,9 @@ impl Shell {
                 .items_center()
                 .text_center()
                 .child(
-                    icon(icons::ZERON_LOGO)
+                    icons::logo(theme.appearance)
                         .w(px(31.4))
-                        .h(px(36.0))
-                        .text_color(theme.text),
+                        .h(px(36.0)),
                 )
                 .child(
                     div()
@@ -11313,10 +11312,9 @@ impl Shell {
             .flex()
             .flex_col()
             .child(
-                icon(icons::ZERON_LOGO)
+                icons::logo(theme.appearance)
                     .w(px(24.4))
-                    .h(px(28.0))
-                    .text_color(theme.text),
+                    .h(px(28.0)),
             )
             .child(
                 div()
