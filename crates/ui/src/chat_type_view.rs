@@ -3,24 +3,24 @@
 //! a [`ChatViewKind`] specification instead of another one-off page.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
-
 use chrono::{DateTime, Utc};
 use gpui::{
     Context, Entity, FocusHandle, MouseButton, Render, ScrollHandle, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_engine::pr_ticket_cache::{ChatLinkStatus, MyPrItem, PrStatus};
-use zeron_proto::{Chat, ChatIndicator, PrReference, PrReviewAction};
+use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrStatus};
+use zeron_proto::{Chat, ChatIndicator, PrDashTab, PrReference, PrReviewAction};
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::popover;
+use crate::pr_page::{self, DashTabState, PageTab};
 use crate::shell::Shell;
 use crate::state::{AppState, format_time_ago};
 use crate::theme::Theme;
 
 mod pr_destination;
+mod pr_tabs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChatViewKind {
@@ -36,7 +36,7 @@ impl ChatViewKind {
 
     fn title(self) -> &'static str {
         match self {
-            Self::PrReview => "PR review chats",
+            Self::PrReview => "Pull requests",
         }
     }
 
@@ -193,11 +193,13 @@ pub(crate) struct ChatTypeView {
     classification_pending: HashSet<String>,
     links: HashMap<String, ChatLinkStatus>,
     links_pending: HashSet<String>,
-    /// "Review requested" (`REVIEW_REQUESTED_PRS`, same 30s refresh as the
-    /// overview's "Needs my review").
-    review_prs: Vec<MyPrItem>,
-    review_prs_pending: bool,
-    review_prs_fetched_at: Option<Instant>,
+    /// The visible tab (default "Authored by me").
+    tab: PageTab,
+    /// Per dash tab (`pr_page::tab_index`): last good rows, fetch state and
+    /// filters, kept while another tab is showing.
+    dash: [DashTabState; 2],
+    /// Per dash tab text filter.
+    dash_search: [Entity<ComposerInput>; 2],
     /// "PR URL or owner/repo#number" box.
     review_input: Entity<ComposerInput>,
     /// Inline start state per PR URL, and for the URL box.
@@ -206,29 +208,15 @@ pub(crate) struct ChatTypeView {
     _state_observation: Subscription,
     _search_events: Subscription,
     _review_input_events: Subscription,
+    _dash_search_events: Vec<Subscription>,
+    _dash_refresh: gpui::Task<()>,
 }
-
-/// How often the "Review requested" list refetches while the page renders.
-const REVIEW_PRS_REFRESH: Duration = Duration::from_secs(30);
 
 /// A PR review start's inline state on this page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReviewStatus {
     Starting(PrReviewAction),
     Failed(String),
-}
-
-/// The chat already reviewing `url` (its durable PR link), newest first.
-fn existing_review_chat<'a>(chats: &'a [Chat], url: &str) -> Option<&'a Chat> {
-    chats
-        .iter()
-        .filter(|chat| !chat.archived && chat.parent_chat_id.is_none())
-        .filter(|chat| {
-            chat.linked_pr_url
-                .as_deref()
-                .is_some_and(|linked| linked.trim_end_matches('/') == url.trim_end_matches('/'))
-        })
-        .max_by_key(|chat| chat.last_message_at.unwrap_or(chat.created_at))
 }
 
 impl ChatTypeView {
@@ -280,6 +268,36 @@ impl ChatTypeView {
                 }
                 _ => {}
             });
+        let dash_search: [Entity<ComposerInput>; 2] = std::array::from_fn(|_| {
+            cx.new(|cx| {
+                ComposerInput::with_context(
+                    "Filter PRs…",
+                    crate::composer::PALETTE_SEARCH_CONTEXT,
+                    cx,
+                )
+                .with_single_line()
+                .with_accessibility_role(gpui::Role::SearchInput)
+            })
+        });
+        let dash_search_events = dash_search
+            .iter()
+            .map(|input| {
+                cx.subscribe(input, |_: &mut Self, _, event, cx| {
+                    if matches!(event, ComposerInputEvent::Edited) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
+        // Refetch the visible tab every minute while the page is on screen.
+        let dash_refresh = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(pr_page::DASH_REFRESH).await;
+                if this.update(cx, |this, cx| this.dash_tick(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let state_observation = cx.observe(&state, |_, _, cx| cx.notify());
         Self {
             state,
@@ -294,15 +312,17 @@ impl ChatTypeView {
             classification_pending: HashSet::new(),
             links: HashMap::new(),
             links_pending: HashSet::new(),
-            review_prs: Vec::new(),
-            review_prs_pending: false,
-            review_prs_fetched_at: None,
+            tab: PageTab::Dash(PrDashTab::Authored),
+            dash: Default::default(),
+            dash_search,
             review_input,
             review_status: HashMap::new(),
             input_status: None,
             _state_observation: state_observation,
             _search_events: search_events,
             _review_input_events: review_input_events,
+            _dash_search_events: dash_search_events,
+            _dash_refresh: dash_refresh,
         }
     }
 
@@ -312,13 +332,6 @@ impl ChatTypeView {
             &gpui::Focusable::focus_handle(self.review_input.read(cx), cx),
             cx,
         );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_review_prs(&mut self, items: Vec<MyPrItem>, cx: &mut Context<Self>) {
-        self.review_prs = items;
-        self.review_prs_fetched_at = Some(Instant::now());
-        cx.notify();
     }
 
     #[cfg(test)]
@@ -334,37 +347,6 @@ impl ChatTypeView {
     #[cfg(test)]
     pub(crate) fn review_status(&self, url: &str) -> Option<ReviewStatus> {
         self.review_status.get(url).cloned()
-    }
-
-    fn ensure_review_prs(&mut self, cx: &mut Context<Self>) {
-        let fresh = self
-            .review_prs_fetched_at
-            .is_some_and(|at| at.elapsed() < REVIEW_PRS_REFRESH);
-        if fresh || self.review_prs_pending {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.review_prs_pending = true;
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::REVIEW_REQUESTED_PRS, serde_json::json!({}))
-                .await;
-            this.update(cx, |this, cx| {
-                this.review_prs_pending = false;
-                this.review_prs_fetched_at = Some(Instant::now());
-                if let Ok(value) = result
-                    && let Ok(items) = serde_json::from_value::<Vec<MyPrItem>>(value)
-                {
-                    this.review_prs = items;
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Start a review of `reference` through the shell (which opens the new
@@ -446,7 +428,11 @@ impl ChatTypeView {
     }
 
     pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&gpui::Focusable::focus_handle(self.search.read(cx), cx), cx);
+        let input = match self.tab {
+            PageTab::Dash(tab) => &self.dash_search[pr_page::tab_index(tab)],
+            PageTab::Chats => &self.search,
+        };
+        window.focus(&gpui::Focusable::focus_handle(input.read(cx), cx), cx);
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
@@ -580,6 +566,10 @@ impl ChatTypeView {
     ) {
         // The URL box owns its keys (Enter starts a review, not a chat).
         if gpui::Focusable::focus_handle(self.review_input.read(cx), cx).is_focused(window) {
+            return;
+        }
+        // Arrow/Enter navigation belongs to the chat list.
+        if !matches!(self.tab, PageTab::Chats) {
             return;
         }
         if let Some(view) = self.destination(cx) {
@@ -805,14 +795,8 @@ fn status_line(selector: String, status: &ReviewStatus, theme: &Theme) -> gpui::
 }
 
 impl ChatTypeView {
-    /// "Review requested": PRs waiting on my review with Review / Fix CI,
-    /// plus the URL box for any other PR.
-    fn render_review_requested(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        self.ensure_review_prs(cx);
+    /// The URL / `owner/repo#n` box, shown above every tab.
+    fn render_review_box(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let input_busy = matches!(self.input_status, Some(ReviewStatus::Starting(_)));
         let header = div()
             .flex()
@@ -824,10 +808,7 @@ impl ChatTypeView {
                     .text_size(crate::typography::ui_rems(10.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_muted)
-                    .child(SharedString::from(format!(
-                        "REVIEW REQUESTED ({})",
-                        self.review_prs.len()
-                    ))),
+                    .child("REVIEW ANY PR"),
             )
             .child(
                 div()
@@ -849,152 +830,19 @@ impl ChatTypeView {
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.submit_review_input(cx))),
             );
-        let chats = self.state.read(cx).chats.clone();
-        let rows: Vec<gpui::AnyElement> = self
-            .review_prs
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(ix, item)| self.render_review_row(ix, &item, &chats, theme, cx))
-            .collect();
         div()
-            .id("pr-review-requested")
+            .id("pr-review-box")
             .flex_none()
-            .max_h(px(280.0))
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(4.0))
             .px(px(14.0))
-            .py(px(10.0))
+            .py(px(8.0))
             .border_b_1()
             .border_color(theme.border)
             .child(header)
             .when_some(self.input_status.as_ref(), |el, status| {
                 el.child(status_line("pr-review-url-status".into(), status, theme))
-            })
-            .when(rows.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.text_faint)
-                        .child("No PRs are waiting on your review"),
-                )
-            })
-            .children(rows)
-            .into_any_element()
-    }
-
-    fn render_review_row(
-        &mut self,
-        ix: usize,
-        item: &MyPrItem,
-        chats: &[Chat],
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let reference = crate::pr_review_launch::reference_for_item(item);
-        let url = reference.as_ref().map(PrReference::url);
-        let status = url
-            .as_ref()
-            .and_then(|url| self.review_status.get(url))
-            .cloned();
-        let busy = matches!(status, Some(ReviewStatus::Starting(_)));
-        let existing = url
-            .as_deref()
-            .and_then(|url| existing_review_chat(chats, url))
-            .map(|chat| chat.id.clone());
-        let repo_name = item
-            .summary
-            .repo
-            .as_deref()
-            .map(|repo| repo.rsplit('/').next().unwrap_or(repo).to_owned())
-            .unwrap_or_default();
-        let subtitle = [
-            Some(format!("{repo_name}#{}", item.summary.number)),
-            item.summary.author.as_ref().map(|a| format!("by {a}")),
-            item.summary.is_draft.then(|| "draft".to_owned()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
-        let title = item
-            .summary
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("#{}", item.summary.number));
-        let action = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
-            let reference = reference.clone();
-            review_button(
-                format!("pr-review-requested-{kind}-{ix}").into(),
-                label,
-                primary,
-                busy || reference.is_none(),
-                theme,
-            )
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                if let Some(reference) = reference.clone() {
-                    this.start_review(reference, action, false, cx);
-                }
-            }))
-        };
-        let review = action("Review", "review", PrReviewAction::CodeReview, true);
-        let fix_ci = action("Fix CI", "fix-ci", PrReviewAction::FixCi, false);
-        let open = existing.map(|chat_id| {
-            review_button(
-                format!("pr-review-requested-open-{ix}").into(),
-                "Open chat",
-                false,
-                false,
-                theme,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| this.open_chat(chat_id.clone(), cx)))
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                div()
-                    .id(("pr-review-requested-row", ix))
-                    .debug_selector(move || format!("pr-review-requested-row-{ix}"))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .py(px(4.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(title)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(crate::typography::ui_rems(10.5))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(subtitle)),
-                            ),
-                    )
-                    .children(open)
-                    .child(review)
-                    .child(fix_ci),
-            )
-            .when_some(status, |el, status| {
-                el.child(status_line(
-                    format!("pr-review-requested-status-{ix}"),
-                    &status,
-                    theme,
-                ))
             })
             .into_any_element()
     }
@@ -1004,13 +852,14 @@ impl Render for ChatTypeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
+        let on_chats = matches!(self.tab, PageTab::Chats);
         // With a PR review sync destination in the current Space, its PR
         // items replace the classification-based list.
-        let destination = self.destination(cx);
-        let rows = if destination.is_some() {
-            Vec::new()
-        } else {
+        let destination = if on_chats { self.destination(cx) } else { None };
+        let rows = if on_chats && destination.is_none() {
             self.rows(cx)
+        } else {
+            Vec::new()
         };
         let count_label = match &destination {
             Some(view) => format!("{} PRs", view.items.len()),
@@ -1024,6 +873,10 @@ impl Render for ChatTypeView {
             destination.map(|view| self.render_destination(view, &theme, now, cx));
         let destination_mode = destination_list.is_some();
         let shortcut = crate::settings::badge_combo(crate::shell::OPEN_PR_REVIEW_CHATS_COMBO);
+        let dash_body = match self.tab {
+            PageTab::Dash(tab) => Some(self.render_dash(tab, &theme, now, cx)),
+            PageTab::Chats => None,
+        };
 
         div()
             .id("chat-type-view")
@@ -1054,54 +907,60 @@ impl Render for ChatTypeView {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(SharedString::from(self.kind.title())),
                             )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(count_label)),
-                            )
+                            .when(on_chats, |el| {
+                                el.child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(count_label)),
+                                )
+                            })
                             .child(popover::kbd_hint(&theme, &shortcut)),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(div().w(px(280.0)).child(popover::search_input_frame(
-                                &theme,
-                                self.search.clone().into_any_element(),
-                            )))
-                            .child(
-                                div()
-                                    .id("chat-type-show-archived")
-                                    .px(px(9.0))
-                                    .py(px(5.0))
-                                    .rounded(px(6.0))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .cursor_pointer()
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .text_color(if self.show_archived {
-                                        theme.text
-                                    } else {
-                                        theme.text_muted
-                                    })
-                                    .when(self.show_archived, |element| {
-                                        element.bg(theme.element_active)
-                                    })
-                                    .hover(|element| element.bg(theme.element_hover))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_archived = !this.show_archived;
-                                        this.active = 0;
-                                        cx.notify();
-                                    }))
-                                    .child("Show archived"),
-                            ),
-                    ),
+                    .when(on_chats, |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(div().w(px(280.0)).child(popover::search_input_frame(
+                                    &theme,
+                                    self.search.clone().into_any_element(),
+                                )))
+                                .child(
+                                    div()
+                                        .id("chat-type-show-archived")
+                                        .px(px(9.0))
+                                        .py(px(5.0))
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .cursor_pointer()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(if self.show_archived {
+                                            theme.text
+                                        } else {
+                                            theme.text_muted
+                                        })
+                                        .when(self.show_archived, |element| {
+                                            element.bg(theme.element_active)
+                                        })
+                                        .hover(|element| element.bg(theme.element_hover))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_archived = !this.show_archived;
+                                            this.active = 0;
+                                            cx.notify();
+                                        }))
+                                        .child("Show archived"),
+                                ),
+                        )
+                    }),
             )
-            .child(self.render_review_requested(&theme, cx))
+            .child(self.render_review_box(&theme, cx))
+            .child(self.render_tab_bar(&theme, cx))
+            .when_some(dash_body, |el, body| el.child(body))
             .when_some(destination_list, |el, list| el.child(list))
-            .when(!destination_mode, |el| {
+            .when(on_chats && !destination_mode, |el| {
                 el.child(
                     div()
                         .h(px(34.0))

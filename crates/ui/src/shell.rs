@@ -1648,6 +1648,9 @@ pub struct Shell {
     /// Tests: answer `StartPrReview` here instead of the engine.
     #[cfg(test)]
     pr_review_script: Option<pr_review_ui::PrReviewScript>,
+    /// Tests: answer `PrDashboard` here instead of the engine.
+    #[cfg(test)]
+    pub(crate) pr_dash_script: Option<crate::pr_page::PrDashScript>,
     archived_page: Option<Entity<ArchivedPage>>,
     linear_settings_page: Option<Entity<crate::linear::settings_page::LinearSettingsPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
@@ -2116,6 +2119,8 @@ impl Shell {
             pr_review_ops: Default::default(),
             #[cfg(test)]
             pr_review_script: None,
+            #[cfg(test)]
+            pr_dash_script: None,
             archived_page: None,
             linear_settings_page: None,
             appearance_page: None,
@@ -4643,6 +4648,11 @@ impl Shell {
         matches!(self.route, Route::Overview)
     }
 
+    /// The PR page is on screen (its refresh timer skips ticks otherwise).
+    pub(crate) fn is_pr_review_chats_route(&self) -> bool {
+        matches!(self.route, Route::PrReviewChats)
+    }
+
     pub(crate) fn is_repository_topology_route(&self) -> bool {
         matches!(self.route, Route::RepositoryTopology)
     }
@@ -4694,8 +4704,10 @@ impl Shell {
         cx.notify();
     }
 
-    /// From another route, open the overview with My PRs visible. Once there,
-    /// the same shortcut toggles the sidebar closed/open.
+    /// The retired Overview "My PRs" sidebar (⌘P and the palette now open the
+    /// PR page). Kept, unreachable, until the sidebar is deleted from
+    /// `overview.rs`; delete this with it.
+    #[allow(dead_code)]
     fn toggle_my_prs(&mut self, cx: &mut Context<Self>) {
         let already_on_overview = matches!(self.route, Route::Overview);
         if !already_on_overview {
@@ -6450,7 +6462,7 @@ impl Shell {
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child(SharedString::from("PR review chats")),
+                            .child(SharedString::from("Pull requests")),
                     );
                 let bar = div().h(px(Theme::TITLEBAR_HEIGHT)).flex_none().child(inner);
                 self.titlebar_drag_region("pr-review-chats-header-titlebar", bar, cx)
@@ -12390,9 +12402,10 @@ impl Render for Shell {
                  window,
                  cx| { this.open_work_outline_menu_from_keyboard(window, cx) },
             ))
-            .on_action(cx.listener(|this, _: &OpenMyPrs, _, cx| {
+            // ⌘P (customizable) is the PR page, like the fixed ⇧⌘P alias.
+            .on_action(cx.listener(|this, _: &OpenMyPrs, window, cx| {
                 if !this.overlay_owns_keyboard(cx) {
-                    this.toggle_my_prs(cx);
+                    this.open_pr_review_chats_focused(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
