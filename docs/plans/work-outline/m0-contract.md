@@ -1145,6 +1145,19 @@ rule or a gap.
    `operationId = derive_id("zeron-agent-tool\0{chatId}\0{key}", "agent-operation")`, so the
    same key from any Run of the same Chat replays (same ids, no new rows), the same key with
    other inputs is `operationConflict`, and two Chats never collide.
+   *Amendment (forgiving agent tools):* only the create-style tools still require the key
+   (`create_chat`, `work_outline_create_child`, `work_outline_propose_instruction`,
+   `work_outline_create_user_action_request` unless a `dedupeKey` is given, `artifact_publish`).
+   For `work_outline_associate_current_chat`, `work_outline_set_status` and
+   `work_outline_resolve_user_action_request` an omitted key is derived with
+   `agent_tools::derived_idempotency_key` (tool + the arguments + the row's `updatedAt` /
+   `assignedAt`, so a later different call never replays an older one; a `dedupeKey` request
+   uses the dedupe key, the text and the count of resolved requests with that key);
+   `bind_chat_worktree` without a key writes no ledger entry (a bind is find-or-add plus select).
+   Arguments are normalised first (`agent_tools::normalize_arguments`): `snake_case` keys become
+   camelCase, `text`/`title`/`question` -> `request`, `id`/`requestId` -> `userActionRequestId`,
+   `workItem`/`itemId` -> `workItemId` (`parentWorkItemId` on `create_child`). Argument errors
+   append `agent_tools::usage_text` (required, optional, example).
 7. **Existing 14 tools.** Kept. `zeron mcp` no longer reads `ZERON_CHAT_ID` /
    `ZERON_DEVICE_ID`; with `ZERON_AGENT_TOKEN` it re-authenticates before EVERY tool call
    (reads included), so a revoked token disables everything; without a token (a human in a

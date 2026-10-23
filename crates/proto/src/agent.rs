@@ -680,7 +680,8 @@ pub mod agent_tools {
     /// Longest accepted `idempotencyKey`.
     pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 200;
 
-    /// Tool wire names. Every mutating tool requires an `idempotencyKey`.
+    /// Tool wire names. Every mutating tool takes an `idempotencyKey`; only the
+    /// naturally idempotent ones derive it when omitted ([`derived_idempotency_key`]).
     pub mod tools {
         /// The Chat's work item, its effective instructions, and the Space.
         pub const READ_CURRENT: &str = "work_outline_read_current";
