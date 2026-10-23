@@ -77,11 +77,9 @@ const STALE_AFTER: chrono::Duration = chrono::Duration::days(7);
 /// bothers to poll for a fresher answer.
 const LINK_STATUS_REFRESH: Duration = Duration::from_secs(45);
 
-/// Classification (category/origin/tool chips) and subagent scans are
-/// settled-ish once a transcript exists, but an imported chat that keeps
-/// running elsewhere (or gets resumed here) grows new tool calls/subagents —
-/// a generous TTL instead of fetch-once-forever.
-const CLASSIFICATION_REFRESH: Duration = Duration::from_secs(120);
+/// Subagent scans are settled-ish once a transcript exists, but an imported
+/// chat that keeps running elsewhere (or gets resumed here) grows new
+/// subagents — a generous TTL instead of fetch-once-forever.
 const SUBAGENTS_REFRESH: Duration = Duration::from_secs(120);
 /// Subagent refetch TTL while any of a chat's subagents is still `running`
 /// — a running subagent flips to `done` on its own, and the row's status
@@ -290,18 +288,6 @@ pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100)
 /// relative to the per-frame rebuild `rows_dirty` exists to avoid.
 const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
-/// `CHAT_CLASSIFICATION`'s cached response — category/origin (used as
-/// `OverviewRow` fields/grouping keys) plus tool-usage breakdown (used only
-/// by the expanded row detail's chip rows, not copied onto `OverviewRow`
-/// since nothing else needs it per-row).
-#[derive(Clone, Default)]
-struct ClassificationInfo {
-    category: String,
-    origin: String,
-    tool_counts: HashMap<String, usize>,
-    skills_loaded: Vec<String>,
-}
-
 /// One row's worth of what this pass can show.
 #[derive(Clone)]
 struct OverviewRow {
@@ -314,15 +300,6 @@ struct OverviewRow {
     /// `GroupKeyed::group_key` only has `&self` on the row itself, matching
     /// how `overview_grouping` is deliberately UI-crate-agnostic.
     ticket: Option<String>,
-    /// Real `classify_heuristic`/`classify_entrypoint` output, fetched via
-    /// `CHAT_CLASSIFICATION` and copied in the same way `ticket` is — `None`
-    /// while the fetch is still pending, or for a chat that predates this
-    /// feature (imported before classification existed, so it has no
-    /// persisted category/origin) or was never externally imported at all
-    /// (no cursor to read a classification from). All three are legitimate,
-    /// not errors; `group_key` below falls back to `NONE_KEY` for them.
-    category: Option<String>,
-    origin: Option<String>,
     /// [`repo_key_for_chat`] — the Repo grouping key and the repo filter's
     /// key, computed once so both agree by construction.
     repo: String,
@@ -366,25 +343,8 @@ struct OverviewRow {
 
 impl GroupKeyed for OverviewRow {
     /// Repo/Ticket are proxies (cwd basename, linked-ticket identifier).
-    /// Category/Origin are real per-chat classifications computed during
-    /// import (`classify_heuristic`/`classify_entrypoint` +
-    /// peon-hook-derived `agent_mode` detection, `external_import.rs`),
-    /// fetched lazily via `CHAT_CLASSIFICATION` and cached on `Overview`
-    /// (see `ensure_classification`) — `self.category`/`self.origin` are
-    /// `Some` once that fetch lands. `NONE_KEY` is the honest fallback for
-    /// "not fetched yet" / "chat predates this feature" / "never externally
-    /// imported", not a permanent stub — `overview_grouping`'s fixed-order
-    /// buckets absorb it into the dimension's last bucket either way.
     fn group_key(&self, dim: GroupDimension) -> String {
         match dim {
-            GroupDimension::Category => self
-                .category
-                .clone()
-                .unwrap_or_else(|| overview_grouping::NONE_KEY.to_string()),
-            GroupDimension::Origin => self
-                .origin
-                .clone()
-                .unwrap_or_else(|| overview_grouping::NONE_KEY.to_string()),
             GroupDimension::Repo => self.repo.clone(),
             GroupDimension::Ticket => ticket_group_key(self.ticket.as_deref(), self.pr_number),
         }
@@ -474,43 +434,12 @@ fn ticket_group_key(ticket: Option<&str>, pr_number: Option<u64>) -> String {
     }
 }
 
-/// `CATEGORY_META` labels (`session_canvas.html:921-928`).
-fn category_label(key: &str) -> String {
-    match key {
-        "implementing" => "Implementing".into(),
-        "pr_review" => "PR review".into(),
-        "debug" => "Debug / firefight".into(),
-        "research" => "Research".into(),
-        "planning" => "Planning".into(),
-        "quick_question" => "Quick question".into(),
-        "other" => "Other".into(),
-        other => other.replace('_', " "),
-    }
-}
-
-/// `ORIGIN_META` labels (`session_canvas.html:933-940`). Zeron has no
-/// Cursor import, but the label is kept so the legend/table stay a 1:1 port.
-fn origin_label(key: &str) -> String {
-    match key {
-        "agent_mode" => "agent-mode.sh".into(),
-        "cursor" => "Cursor".into(),
-        "sdk_driven" => "SDK-driven".into(),
-        "claude_desktop" => "Claude Desktop".into(),
-        "bare_cli" => "Bare CLI".into(),
-        "unknown" => "Unknown".into(),
-        other => other.replace('_', " "),
-    }
-}
-
 /// Display label for a raw group key (`PartitionGroup::key`) on `dim` —
-/// the reference's per-dimension `getMeta().label`: fixed tables for
-/// Category/Origin, "No repo"/"No ticket / PR" for the dynamic dimensions'
-/// `NONE_KEY` bucket (`repoGroupMeta`/`ticketGroupMeta`), the raw key (a
-/// folder name, a ticket id) otherwise.
+/// the reference's per-dimension `getMeta().label`: "No repo"/"No ticket /
+/// PR" for the `NONE_KEY` bucket (`repoGroupMeta`/`ticketGroupMeta`), the raw
+/// key (a folder name, a ticket id) otherwise.
 fn group_label(dim: GroupDimension, key: &str) -> String {
     match dim {
-        GroupDimension::Category => category_label(key),
-        GroupDimension::Origin => origin_label(key),
         GroupDimension::Repo if key == overview_grouping::NONE_KEY => "No repo".into(),
         GroupDimension::Ticket if key == overview_grouping::NONE_KEY => "No ticket / PR".into(),
         GroupDimension::Repo | GroupDimension::Ticket => key.to_string(),
@@ -518,8 +447,8 @@ fn group_label(dim: GroupDimension, key: &str) -> String {
 }
 
 /// `session_canvas.html`'s `HASH_COLOR_PALETTE` (`~888`) — Repo/Ticket group
-/// colors have no fixed lookup table (unlike Category/Origin), so the same
-/// key always lands on the same hue via a deterministic hash instead.
+/// colors have no fixed lookup table, so the same key always lands on the
+/// same hue via a deterministic hash instead.
 const HASH_COLOR_PALETTE: [u32; 8] = [
     0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767,
 ];
@@ -563,18 +492,16 @@ fn reference_status_color(status: ChatIndicator) -> gpui::Hsla {
 ///   `needs_input`. Not invented here.
 /// - `blocked` ("✕"): Zeron's `Errored` (an unseen failed run) — labeled
 ///   "error", which is what it actually is.
-/// - `not_running` ("○"): an `Idle` chat that came in through external
-///   import (`not_running == true`, i.e. it has an import classification) —
-///   a real Claude Code session found on disk with no live run in Zeron,
-///   the web's exact meaning. A Zeron-native idle chat stays "idle" ("–").
+/// - `not_running` ("○"): no equivalent. It marked an externally imported
+///   session with no live run, which needed the import classification;
+///   without it every `Idle` chat is "idle" ("–").
 /// - `running`/`unknown`: aliases/fallbacks with no distinct Zeron source.
-fn status_style(status: ChatIndicator, not_running: bool) -> (&'static str, &'static str) {
+fn status_style(status: ChatIndicator) -> (&'static str, &'static str) {
     match status {
         ChatIndicator::Working => ("●", "working"),
         ChatIndicator::AwaitingInput => ("●", "needs input"),
         ChatIndicator::Errored => ("✕", "error"),
         ChatIndicator::Completed => ("✓", "done"),
-        ChatIndicator::Idle if not_running => ("○", "not running"),
         ChatIndicator::Idle => ("–", "idle"),
     }
 }
@@ -708,7 +635,7 @@ const HIDE_STALE_FLAG: &str = "hideStale";
 const SHOW_ARCHIVED_FLAG: &str = "showArchived";
 /// Prefix of the UI-flag entry holding the active grouping dimensions in
 /// activation (= nesting) order, comma-joined:
-/// `groupBy:origin,repo`. Exactly one such entry exists at a time (a string
+/// `groupBy:ticket,repo`. Exactly one such entry exists at a time (a string
 /// set has no order of its own, so the order lives inside the one string).
 const GROUP_BY_PREFIX: &str = "groupBy:";
 
@@ -783,93 +710,6 @@ fn restored_repo_filter_hides_everything(
     !known.is_empty() && known.iter().all(|repo| hidden.contains(repo))
 }
 
-/// How long the reclassify button shows its result before reverting.
-const RECLASSIFY_NOTICE: Duration = Duration::from_secs(8);
-
-/// The "Reclassify 'other'" action's lifecycle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ReclassifyState {
-    Idle,
-    /// `RECLASSIFY_OTHER_CHATS` in flight.
-    Running,
-    /// Result text shown in place of the label until the instant passes.
-    Done {
-        text: String,
-        until: Instant,
-    },
-}
-
-/// `RECLASSIFY_OTHER_CHATS` reply (`{examined, reclassified, unchanged,
-/// confirmedOther, inconclusive, failed, jevCalls, deferred}`; missing fields
-/// read as 0).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct ReclassifyOtherReply {
-    examined: usize,
-    reclassified: usize,
-    unchanged: usize,
-    confirmed_other: usize,
-    inconclusive: usize,
-    failed: usize,
-    jev_calls: usize,
-    deferred: usize,
-}
-
-/// The transient result line. Successful `other` answers are a real
-/// classification, not a failure, so report them as "remained Other" and
-/// keep failures/inconclusive answers separate.
-fn reclassify_summary(reply: &ReclassifyOtherReply) -> String {
-    if reply.examined == 0 {
-        return "Nothing to reclassify".to_string();
-    }
-    if reply.jev_calls == 0 && reply.deferred == 0 {
-        return "TypeSafe unavailable, nothing changed".to_string();
-    }
-    let mut parts = vec![format!("{} reclassified", reply.reclassified)];
-    if reply.confirmed_other > 0 {
-        parts.push(format!("{} remained Other", reply.confirmed_other));
-    }
-    if reply.inconclusive > 0 {
-        parts.push(format!("{} inconclusive", reply.inconclusive));
-    }
-    if reply.failed > 0 {
-        parts.push(format!("{} failed", reply.failed));
-    }
-    // Compatibility with an older engine that only returns `unchanged`.
-    let detailed = reply.confirmed_other + reply.inconclusive + reply.failed;
-    let legacy_unchanged = reply.unchanged.saturating_sub(detailed);
-    if legacy_unchanged > 0 {
-        parts.push(format!("{legacy_unchanged} unchanged"));
-    }
-    let mut text = parts.join(", ");
-    if reply.deferred > 0 {
-        text.push_str(" (more remaining \u{2014} run again)");
-    }
-    text
-}
-
-/// What the reclassify button shows: `None` hides it (no `other` chats and no
-/// result to display), otherwise `(label, clickable)`.
-fn reclassify_button_view(other_count: usize, state: &ReclassifyState) -> Option<(String, bool)> {
-    match state {
-        ReclassifyState::Running => Some(("Reclassifying\u{2026}".to_string(), false)),
-        ReclassifyState::Done { text, .. } => Some((text.clone(), false)),
-        // The engine action is global (including archived/filtered chats),
-        // while `other_count` is derived from the currently loaded overview.
-        // Keep it as the visibility gate, but do not present it as the exact
-        // RPC target count.
-        ReclassifyState::Idle if other_count > 0 => Some(("Reclassify 'other'".to_string(), true)),
-        ReclassifyState::Idle => None,
-    }
-}
-
-/// Chats currently filed under `other` (the action's targets).
-fn count_other_rows<'a>(categories: impl Iterator<Item = Option<&'a str>>) -> usize {
-    categories
-        .filter(|category| *category == Some("other"))
-        .count()
-}
-
 /// Whether a PR-sidebar section renders its rows. An active search query
 /// overrides the persisted collapsed state: matches always show, so a hit
 /// can never hide inside a folded section.
@@ -929,48 +769,6 @@ fn cwd_is_worktree(cwd: Option<&str>) -> bool {
     cwd.is_some_and(|c| c.contains("/.worktrees/") || c.contains("/.agent-worktrees/"))
 }
 
-/// `session_canvas.html`'s fixed `CATEGORY_META` colors (`~862-869`), keyed
-/// by the real per-chat category `ensure_classification` fetches (imported
-/// chats only — a chat without one never gets a badge, and groups into
-/// `other`).
-fn category_color(key: &str) -> gpui::Hsla {
-    let hex = match key {
-        "implementing" => 0x3987e5,
-        "pr_review" => 0xd95926,
-        "debug" => 0x8b6fe0,
-        "research" => 0x199e70,
-        "planning" => 0xd55181,
-        "quick_question" => 0xc98500,
-        _ => 0x898781, // "other" / unrecognized
-    };
-    gpui::rgb(hex).into()
-}
-
-/// Per-row category badge — `renderTile`'s own dot+label (`~1054-1165`)
-/// shown on every row regardless of grouping state, distinct from the
-/// GROUP header color a previous pass already wired up. Only rendered once a
-/// real classification is known (`row.category.is_some()`) — no placeholder
-/// badge for a pending fetch or a chat with no classification to show.
-fn category_badge(row: &OverviewRow) -> Option<gpui::AnyElement> {
-    let category = row.category.as_deref()?;
-    let color = category_color(category);
-    Some(
-        div()
-            .flex()
-            .items_center()
-            .gap(px(3.0))
-            .child(div().flex_none().size(px(5.0)).rounded_full().bg(color))
-            .child(
-                div()
-                    .text_size(crate::typography::ui_rems(9.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(color)
-                    .child(SharedString::from(category_label(category).to_uppercase())),
-            )
-            .into_any_element(),
-    )
-}
-
 /// Compact, always-visible model metadata for chat cards. A missing explicit
 /// id means the harness chose its configured default; say that plainly
 /// instead of omitting the field and making the card look unfinished.
@@ -1008,32 +806,15 @@ fn model_badge(chat: &Chat, theme: &Theme) -> gpui::AnyElement {
         .into_any_element()
 }
 
-/// `session_canvas.html`'s fixed `ORIGIN_META` colors (`~874-881`), keyed by
-/// the real per-chat origin `ensure_classification` fetches.
-fn origin_color(key: &str) -> gpui::Hsla {
-    let hex = match key {
-        "agent_mode" => 0x3987e5,
-        "cursor" => 0x199e70,
-        "sdk_driven" => 0x9085e9,
-        "claude_desktop" => 0xc98500,
-        "bare_cli" => 0xd55181,
-        _ => 0x898781, // "unknown"
-    };
-    gpui::rgb(hex).into()
-}
-
 /// A group's display color for `dim`/`key` — `NONE_KEY` is always
 /// `--text-muted` (matches `ticketGroupMeta`/`repoGroupMeta`'s explicit
-/// special-case, `session_canvas.html:~899,~914`); Category/Origin use their
-/// fixed lookup tables; Repo/Ticket hash the key since they have no bounded
-/// value set.
+/// special-case, `session_canvas.html:~899,~914`); Repo/Ticket hash the key
+/// since they have no bounded value set.
 fn group_color(dim: GroupDimension, key: &str) -> gpui::Hsla {
     if key == overview_grouping::NONE_KEY {
         return gpui::rgb(0x898781).into(); // --text-muted
     }
     match dim {
-        GroupDimension::Category => category_color(key),
-        GroupDimension::Origin => origin_color(key),
         GroupDimension::Repo | GroupDimension::Ticket => hash_color(key),
     }
 }
@@ -1075,12 +856,7 @@ mod color_tests {
     #[test]
     fn none_key_is_always_text_muted_regardless_of_dimension() {
         let expected: gpui::Hsla = gpui::rgb(0x898781).into();
-        for dim in [
-            GroupDimension::Category,
-            GroupDimension::Origin,
-            GroupDimension::Repo,
-            GroupDimension::Ticket,
-        ] {
+        for dim in [GroupDimension::Repo, GroupDimension::Ticket] {
             assert_eq!(group_color(dim, overview_grouping::NONE_KEY), expected);
         }
     }
@@ -1793,11 +1569,6 @@ pub struct Overview {
     /// nothing to scan retries on `SUBAGENTS_REFRESH` instead of on every
     /// row rebuild.
     subagents_fetched_at: HashMap<String, Instant>,
-    /// Category/origin classification per chat id. Refetched on
-    /// `CLASSIFICATION_REFRESH` (an imported chat can keep growing).
-    classification: HashMap<String, ClassificationInfo>,
-    classification_pending: HashSet<String>,
-    classification_fetched_at: HashMap<String, Instant>,
     /// `CHAT_CONTEXT_USAGE` per chat id (`None` = engine had no usage).
     /// Refetched on `CONTEXT_USAGE_REFRESH`.
     context_usage: HashMap<String, Option<f32>>,
@@ -1824,10 +1595,6 @@ pub struct Overview {
     /// first non-empty chat list (see [`restored_repo_filter_hides_everything`]).
     /// One-shot so a deliberate "None" in the dropdown isn't undone later.
     repo_filter_needs_validation: bool,
-    /// Imported chats filed under `other` before the repo/search/stale
-    /// filters (set by `rows()`) — the reclassify button's count.
-    other_count: usize,
-    reclassify: ReclassifyState,
     /// The Repos dropdown — the app's standard `Popup` lifecycle (exit
     /// animation + the trigger-press note that keeps a trigger click from
     /// close-then-reopening).
@@ -1881,7 +1648,7 @@ pub struct Overview {
     focus_due: Option<String>,
     /// Set whenever something that could change `rows()`'s OUTPUT happens
     /// (the underlying chat list, `hide_stale`/`show_archived`, or a
-    /// link-status/subagent/classification/context-usage fetch landing with
+    /// link-status/subagent/context-usage fetch landing with
     /// changed data) — `false` the rest of the time, including every
     /// hover/scroll frame. `rows()` skips its expensive rebuild (walking
     /// `AppState`, cloning every `Chat`, re-deriving staleness) on a `false`
@@ -2165,9 +1932,6 @@ impl Overview {
             subagent_pending: HashSet::new(),
             hovered_row: None,
             subagents_fetched_at: HashMap::new(),
-            classification: HashMap::new(),
-            classification_pending: HashSet::new(),
-            classification_fetched_at: HashMap::new(),
             context_usage: HashMap::new(),
             context_usage_pending: HashSet::new(),
             context_usage_fetched_at: HashMap::new(),
@@ -2177,8 +1941,6 @@ impl Overview {
             prefs_loaded: false,
             view_prefs_touched: false,
             repo_filter_needs_validation: false,
-            other_count: 0,
-            reclassify: ReclassifyState::Idle,
             repo_filter: popover::Popup::default(),
             legend_open: false,
             unfiltered_count: 0,
@@ -2658,9 +2420,9 @@ impl Overview {
     }
 
     /// Every per-row TTL-gated lookup, in one place so `rows()` and
-    /// `refresh_tick` can't drift. Subagents/classification only apply to
-    /// chats with a harness session (anything else has no transcript to
-    /// scan, per `SCAN_CHAT_SUBAGENTS`/`CHAT_CLASSIFICATION`'s contract).
+    /// `refresh_tick` can't drift. Subagents only apply to chats with a
+    /// harness session (anything else has no transcript to scan, per
+    /// `SCAN_CHAT_SUBAGENTS`'s contract).
     /// Context usage applies to every chat: its live source is the engine's
     /// own doc store, not an import cursor.
     fn ensure_row_fetches(
@@ -2671,7 +2433,6 @@ impl Overview {
     ) {
         if has_harness_session {
             self.ensure_subagents(chat_id.clone(), cx);
-            self.ensure_classification(chat_id.clone(), cx);
         }
         self.ensure_context_usage(chat_id.clone(), cx);
         self.ensure_link_status(chat_id, cx);
@@ -2771,11 +2532,6 @@ impl Overview {
                 })
                 .collect();
             let subagent_count = self.subagents.get(&chat.id).map_or(0, Vec::len);
-            let (category, origin) = self
-                .classification
-                .get(&chat.id)
-                .map(|info| (Some(info.category.clone()), Some(info.origin.clone())))
-                .unwrap_or((None, None));
             let context_pct = self.context_usage.get(&chat.id).copied().flatten();
             acknowledged_changed |= reconcile_acknowledged(
                 &mut self.acknowledged_done,
@@ -2801,8 +2557,6 @@ impl Overview {
                 chat,
                 stale,
                 ticket,
-                category,
-                origin,
                 repo,
                 pr_number,
                 pr_title,
@@ -2818,7 +2572,6 @@ impl Overview {
             });
         }
         self.known_repos = known_repos;
-        self.other_count = count_other_rows(all.iter().map(|row| row.category.as_deref()));
         if self.repo_filter_needs_validation && !self.known_repos.is_empty() {
             self.repo_filter_needs_validation = false;
             if restored_repo_filter_hides_everything(&self.hidden_repos, &self.known_repos) {
@@ -3441,8 +3194,8 @@ impl Overview {
                     // `subagent_count` is baked onto `OverviewRow`, so only a
                     // COUNT change rebuilds rows; a status flip (running →
                     // done) or a renamed description just repaints, matching
-                    // how `ensure_context_usage`/`ensure_classification` only
-                    // dirty rows on a visible change.
+                    // how `ensure_context_usage` only dirties rows on a
+                    // visible change.
                     let previous_count = this.subagents.get(&chat_id).map_or(0, Vec::len);
                     let next_count = subagents.len();
                     this.subagents.insert(chat_id, subagents);
@@ -3457,203 +3210,9 @@ impl Overview {
         .detach();
     }
 
-    fn ensure_classification(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let fresh_enough = self
-            .classification_fetched_at
-            .get(&chat_id)
-            .is_some_and(|at| at.elapsed() < CLASSIFICATION_REFRESH);
-        if fresh_enough || self.classification_pending.contains(&chat_id) {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.classification_pending.insert(chat_id.clone());
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::CHAT_CLASSIFICATION,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                this.classification_pending.remove(&chat_id);
-                this.classification_fetched_at
-                    .insert(chat_id.clone(), Instant::now());
-                if let Ok(value) = result
-                    && let Some(category) = value.get("category").and_then(|v| v.as_str())
-                    && let Some(origin) = value.get("origin").and_then(|v| v.as_str())
-                {
-                    let tool_counts = value
-                        .get("toolCounts")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    let skills_loaded = value
-                        .get("skillsLoaded")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    let previous = this.classification.insert(
-                        chat_id,
-                        ClassificationInfo {
-                            category: category.to_string(),
-                            origin: origin.to_string(),
-                            tool_counts,
-                            skills_loaded,
-                        },
-                    );
-                    // `category`/`origin` are baked into `OverviewRow` and
-                    // used as grouping keys — only a CHANGE invalidates rows
-                    // (tool/skill chips read
-                    // `classification` live at render).
-                    let changed =
-                        previous.is_none_or(|old| old.category != category || old.origin != origin);
-                    if changed {
-                        this.rows_dirty = true;
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Apply the authoritative result of the shared manual-classification
-    /// mutation immediately instead of waiting for this view's classification
-    /// TTL. This keeps List grouping and the open chat surfaces in sync.
-    pub(crate) fn classification_changed(
-        &mut self,
-        chat_id: &str,
-        value: &serde_json::Value,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(category) = value.get("category").and_then(serde_json::Value::as_str) else {
-            return;
-        };
-        let Some(origin) = value.get("origin").and_then(serde_json::Value::as_str) else {
-            return;
-        };
-        let tool_counts = value
-            .get("toolCounts")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        let skills_loaded = value
-            .get("skillsLoaded")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        self.classification.insert(
-            chat_id.to_string(),
-            ClassificationInfo {
-                category: category.to_string(),
-                origin: origin.to_string(),
-                tool_counts,
-                skills_loaded,
-            },
-        );
-        self.classification_fetched_at
-            .insert(chat_id.to_string(), Instant::now());
-        self.rows_dirty = true;
-        cx.notify();
-    }
-
-    /// "Reclassify 'other'": ask the engine to re-run Jev on every `other`
-    /// chat (up to its manual budget), then show the tally in the button for
-    /// [`RECLASSIFY_NOTICE`] and refetch classifications so moved chats regroup.
-    fn start_reclassify_other(&mut self, cx: &mut Context<Self>) {
-        if self.reclassify == ReclassifyState::Running {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.reclassify = ReclassifyState::Running;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::RECLASSIFY_OTHER_CHATS, serde_json::json!({}))
-                .await;
-            this.update(cx, |this, cx| {
-                let text = match result.map(serde_json::from_value::<ReclassifyOtherReply>) {
-                    Ok(Ok(reply)) => reclassify_summary(&reply),
-                    Ok(Err(_)) => "Reclassify failed".to_string(),
-                    Err(err) => format!("Reclassify failed: {err}"),
-                };
-                this.reclassify = ReclassifyState::Done { text, until: Instant::now() + RECLASSIFY_NOTICE };
-                // Categories moved: drop the TTL so the next row pass refetches.
-                this.classification_fetched_at.clear();
-                this.rows_dirty = true;
-                cx.notify();
-            })
-            .ok();
-            cx.background_executor().timer(RECLASSIFY_NOTICE).await;
-            this.update(cx, |this, cx| {
-                if matches!(&this.reclassify, ReclassifyState::Done { until, .. } if Instant::now() >= *until) {
-                    this.reclassify = ReclassifyState::Idle;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// The toolbar's reclassify button (see [`reclassify_button_view`]).
-    fn render_reclassify_button(
-        &self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let (label, clickable) = reclassify_button_view(self.other_count, &self.reclassify)?;
-        let running = self.reclassify == ReclassifyState::Running;
-        let spinner = running.then(|| {
-            crate::loaders::mini_glyph_spinner(
-                "overview-reclassify-spinner",
-                1.75,
-                theme.glyph,
-                cx.entity_id(),
-                cx,
-            )
-            .into_any_element()
-        });
-        Some(
-            div()
-                .id("overview-reclassify-other")
-                .debug_selector(|| "overview-reclassify-other".into())
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .px(px(7.0))
-                .py(px(2.0))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(theme.border)
-                .text_size(crate::typography::ui_rems(10.5))
-                .text_color(if clickable {
-                    theme.text
-                } else {
-                    theme.text_muted
-                })
-                .when(clickable, |el| {
-                    el.cursor_pointer().hover(|el| el.bg(theme.element_hover))
-                })
-                .when(!clickable, |el| el.opacity(0.75))
-                .children(spinner)
-                .child(SharedString::from(label))
-                .when(clickable, |el| {
-                    el.on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.start_reclassify_other(cx)),
-                    )
-                })
-                .into_any_element(),
-        )
-    }
-
     /// Fetch/refresh one chat's context-window fraction on
     /// `CONTEXT_USAGE_REFRESH`. The attempt time is recorded on success and
-    /// failure alike (like `ensure_classification`), so an engine without the
+    /// failure alike, so an engine without the
     /// method just retries on the TTL. A landed value that rounds to the same
     /// whole percent is a no-op: nothing visible changes, so rows stay
     /// cached (see [`context_pct_changed`]). A real change dirties them.
@@ -4156,7 +3715,6 @@ impl Overview {
             return None;
         };
         self.ensure_link_status(chat_id.clone(), cx);
-        self.ensure_classification(chat_id.clone(), cx);
         let (chat, space) = {
             let state = self.state.read(cx);
             let chat = state.chats.iter().find(|chat| chat.id == chat_id)?.clone();
@@ -4176,16 +3734,8 @@ impl Overview {
             .link_status
             .get(&chat_id)
             .map(|entry| header_links(&entry.status));
-        let classification = self.classification.get(&chat_id);
-        let category = classification.map(|info| category_label(&info.category).to_string());
-        let origin = classification.map(|info| origin_label(&info.origin).to_string());
-        let mut metadata = crate::chat_metadata::metadata_items(
-            &chat,
-            space.as_ref(),
-            links.as_ref(),
-            category.as_deref(),
-            origin.as_deref(),
-        );
+        let mut metadata =
+            crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
         if let Some(path) = self
             .work_item_index
             .item_for_chat(&chat_id)
@@ -4207,8 +3757,6 @@ impl Overview {
                     theme,
                 )
             });
-        let classification_shell = self.shell.clone();
-        let classification_chat_id = chat_id.clone();
         // The chat route drives these per frame (`render_main`); it doesn't
         // run on this route, so the panel does. Without the settled-docked
         // frame, arriving from the blank new-session screen would leave the
@@ -4409,17 +3957,6 @@ impl Overview {
                             "overview-chat-panel",
                             metadata,
                             theme,
-                            Some(std::rc::Rc::new(move |event, _, app| {
-                                if let Some(shell) = classification_shell.upgrade() {
-                                    shell.update(app, |shell, cx| {
-                                        shell.open_chat_classification_at(
-                                            classification_chat_id.clone(),
-                                            event.position(),
-                                            cx,
-                                        );
-                                    });
-                                }
-                            })),
                         )),
                 )
                 .child(
@@ -4753,12 +4290,10 @@ impl Overview {
     ///   carries it, else the reference's own cwd rule, [`cwd_is_worktree`])
     /// - changes (diff stat) — only when the engine's link status carries a
     ///   `diffStat` (see `LinkStatusEntry::diff_stat`); absent today
-    /// - launched via (origin label), pull request (title/state/draft,
+    /// - pull request (title/state/draft,
     ///   review decision, checks, reviewer chips — click opens GitHub),
     ///   linear ticket (identifier/title/status — click opens Linear)
     /// - last message (Zeron has no separate `summary` field)
-    /// - tools used / skills loaded chip rows (imported chats only — that's
-    ///   where `CHAT_CLASSIFICATION`'s tally comes from)
     /// - "Open chat →" + Archive/Unarchive actions. The web's "Open in
     ///   Terminal/Cursor" has no Zeron equivalent (the chat IS here) —
     ///   "Open full chat →" in the preview panel is the analog.
@@ -4771,7 +4306,6 @@ impl Overview {
     ) -> gpui::AnyElement {
         let entry = self.link_status.get(&row.chat.id);
         let link = entry.map(|e| &e.status);
-        let classification = self.classification.get(&row.chat.id);
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         let label_el = |label: &'static str| {
             div()
@@ -4878,10 +4412,6 @@ impl Overview {
                     )))
                     .into_any_element(),
             ));
-        }
-
-        if let Some(origin) = &row.origin {
-            rows.push(detail_row("launched via", text(origin_label(origin))));
         }
 
         if let Some(link) = link {
@@ -5046,23 +4576,6 @@ impl Overview {
 
         if let Some(preview) = &row.chat.last_message_preview {
             rows.push(detail_row("last message", text(preview.clone())));
-        }
-
-        if let Some(info) = classification {
-            // Sorted by count descending — "most-used tool first" reads
-            // better than the web's insertion order; formatted `Name×N`
-            // exactly like `renderToolChips`.
-            let mut tools: Vec<(&String, &usize)> = info.tool_counts.iter().collect();
-            tools.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-            let tool_chips: Vec<String> = tools
-                .into_iter()
-                .map(|(name, count)| format!("{name}×{count}"))
-                .collect();
-            rows.push(detail_row("tools used", chip_row(tool_chips)));
-            rows.push(detail_row(
-                "skills loaded",
-                chip_row(info.skills_loaded.clone()),
-            ));
         }
 
         let archived = row.chat.archived;
@@ -5595,9 +5108,7 @@ impl Render for Overview {
             // clicked = nesting order (`self.active_groups`). A chip shows
             // its position in that order (1-based) while active, so the
             // nesting is legible without opening a menu.
-            let dims: [(GroupDimension, &'static str); 4] = [
-                (GroupDimension::Category, "Task"),
-                (GroupDimension::Origin, "Origin"),
+            let dims: [(GroupDimension, &'static str); 2] = [
                 (GroupDimension::Repo, "Repo"),
                 (GroupDimension::Ticket, "PR / ticket"),
             ];
@@ -5645,8 +5156,6 @@ impl Render for Overview {
                     )
                     .children(chips),
             );
-            // Next to the category (Task) grouping it feeds.
-            toolbar = toolbar.children(self.render_reclassify_button(&theme, cx));
         }
 
         let header = div()
@@ -6049,18 +5558,17 @@ impl Overview {
                 )
                 .children(rows)
         };
-        let statuses: [(ChatIndicator, bool); 6] = [
-            (ChatIndicator::AwaitingInput, false),
-            (ChatIndicator::Working, false),
-            (ChatIndicator::Completed, false),
-            (ChatIndicator::Errored, false),
-            (ChatIndicator::Idle, false),
-            (ChatIndicator::Idle, true),
+        let statuses = [
+            ChatIndicator::AwaitingInput,
+            ChatIndicator::Working,
+            ChatIndicator::Completed,
+            ChatIndicator::Errored,
+            ChatIndicator::Idle,
         ];
         let mut status_rows: Vec<gpui::AnyElement> = statuses
             .iter()
-            .map(|&(status, not_running)| {
-                let (icon, label) = status_style(status, not_running);
+            .map(|&status| {
+                let (icon, label) = status_style(status);
                 swatch_row(reference_status_color(status), format!("{icon} {label}"))
             })
             .collect();
@@ -6087,23 +5595,13 @@ impl Overview {
                 ))
                 .into_any_element(),
         );
-        let category_rows = overview_grouping::CATEGORY_ORDER
-            .iter()
-            .map(|key| swatch_row(category_color(key), category_label(key)))
-            .collect();
-        let origin_rows = overview_grouping::ORIGIN_ORDER
-            .iter()
-            .filter(|key| **key != "cursor")
-            .map(|key| swatch_row(origin_color(key), origin_label(key)))
-            .collect();
         let notes = [
             "White left-edge ribbon = the chat finished and you haven't looked yet. Expanding the row or opening its chat clears it; the next completion re-adds the ribbon.",
             "Dimmed row = stale: no activity for 7 days and not working / waiting on you. \"Hide stale\" filters them out.",
-            "\"not running\" = an imported Claude Code session with no live run in Zeron right now. Its transcript is intact; sending a message resumes it.",
             "Badge row = linked Linear ticket and/or GitHub PR; a PR badge shows its most urgent action (CI failing, merge conflict, changes requested, needs reviewer, ready to merge).",
             "Links come from the branch (inferred), PRs created or mentioned in the chat, or you: \"Add PR / ticket…\" in the expanded detail (or the sidebar chat menu) takes a GitHub PR URL or a ticket id like ENG-1234. Add as many PRs as the chat needs. Hover a PR/ticket for its source; a pin marks manual links, and ✕ in the detail unlinks one stored link.",
             "\"Group by\" toggles combine — the first becomes the top-level headers, each further one nests beneath it. Turn all off for the flat list.",
-            "Click a row = expand for branch/worktree, PR (reviewers, checks, review decision), ticket, last message, tools used, skills loaded, archive.",
+            "Click a row = expand for branch/worktree, PR (reviewers, checks, review decision), ticket, last message, archive.",
             "\"View full chat →\" = live chat side panel: read and reply without leaving the overview (the chat becomes the selected one). \"Open full chat →\" there jumps to the chat itself.",
             "Small rows under a chat = its subagents (dot: blue running, green done). Rows show three plus a remainder count; hover the row to reveal the full stack. Hover a row for its full name; click one to peek at its transcript in a read-only side panel (a subagent can't be continued). ✕ or Escape closes it.",
             "Archive hides a chat from the default view (same as the sidebar's archive). \"Show archived\" brings archived chats back, dimmed.",
@@ -6123,8 +5621,6 @@ impl Overview {
             .flex_wrap()
             .gap(px(24.0))
             .child(group("Status", status_rows))
-            .child(group("Task category", category_rows))
-            .child(group("Origin (lane colors)", origin_rows))
             .child(
                 div()
                     .flex_1()
@@ -6440,7 +5936,7 @@ impl Overview {
             .unwrap_or_else(|| format_time_ago(row.chat.created_at, now))
             .into();
         let dot = reference_status_color(row.status);
-        let (icon, label) = status_style(row.status, row.origin.is_some());
+        let (icon, label) = status_style(row.status);
         let unread = is_unread_done(
             &self.acknowledged_done,
             &chat_id,
@@ -6477,7 +5973,6 @@ impl Overview {
             )
         });
         let is_expanded = self.expanded.contains(&chat_id);
-        let category_badge = category_badge(row);
         let model = model_badge(&row.chat, theme);
         let badges = self.badges_for(&chat_id, theme);
         let archive = (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx));
@@ -6597,8 +6092,7 @@ impl Overview {
                                             .text_color(dot)
                                             .child(SharedString::from(format!("{icon} {label}"))),
                                     )
-                                    .when_some(path_chip, |el, chip| el.child(chip))
-                                    .when_some(category_badge, |el, badge| el.child(badge)),
+                                    .when_some(path_chip, |el, chip| el.child(chip)),
                             )
                             .when_some(badges, |el, badges| el.child(badges)),
                     )
@@ -9062,16 +8556,6 @@ mod logic_tests {
     }
 
     #[test]
-    fn debug_category_has_its_own_label_and_color_and_unknown_keys_degrade() {
-        assert_eq!(category_label("debug"), "Debug / firefight");
-        assert_ne!(category_color("debug"), category_color("other"));
-        assert_ne!(category_color("debug"), category_color("pr_review"));
-        // A key the UI has never heard of: humanized label, neutral color.
-        assert_eq!(category_label("future_thing"), "future thing");
-        assert_eq!(category_color("future_thing"), category_color("other"));
-    }
-
-    #[test]
     fn pr_collapsed_sections_round_trip_through_the_flag_set() {
         let mut flags = BTreeSet::new();
         flags.insert(PR_SIDEBAR_FLAG.to_string());
@@ -9194,11 +8678,7 @@ mod logic_tests {
             mode: OverviewMode::Outline,
             hide_stale: true,
             show_archived: true,
-            groups: vec![
-                GroupDimension::Origin,
-                GroupDimension::Repo,
-                GroupDimension::Category,
-            ],
+            groups: vec![GroupDimension::Ticket, GroupDimension::Repo],
         };
         let mut flags: BTreeSet<String> = [
             PR_SIDEBAR_FLAG.to_string(),
@@ -9212,7 +8692,7 @@ mod logic_tests {
             prefs,
             "activation order survives"
         );
-        assert!(flags.contains("groupBy:origin,repo,category"));
+        assert!(flags.contains("groupBy:ticket,repo"));
         // Unrelated flags survive and don't read as view prefs.
         assert!(pr_sidebar_open_from_flags(&flags));
         assert!(flags.contains("someFutureFlag"));
@@ -9242,6 +8722,22 @@ mod logic_tests {
         assert_eq!(flags, BTreeSet::from(["groupBy:ticket".to_string()]));
     }
 
+    /// A saved `groupBy` written while Category and Origin grouping existed
+    /// still loads: the removed dimensions are dropped, the rest kept.
+    #[test]
+    fn saved_groupings_with_removed_dimensions_load_without_them() {
+        let load = |value: &str| {
+            view_prefs_from_flags(&BTreeSet::from([format!("{GROUP_BY_PREFIX}{value}")])).groups
+        };
+        assert_eq!(load("category,repo"), vec![GroupDimension::Repo]);
+        assert_eq!(load("category,origin,repo"), vec![GroupDimension::Repo]);
+        assert_eq!(load("origin"), Vec::<GroupDimension>::new());
+        assert_eq!(
+            load("origin,ticket,category,repo"),
+            vec![GroupDimension::Ticket, GroupDimension::Repo]
+        );
+    }
+
     #[test]
     fn view_prefs_defaults_and_junk_degrade_gracefully() {
         assert_eq!(
@@ -9261,12 +8757,7 @@ mod logic_tests {
         );
         assert_eq!(prefs.mode, OverviewMode::List);
         // Every dimension's key round-trips.
-        for dim in [
-            GroupDimension::Category,
-            GroupDimension::Origin,
-            GroupDimension::Repo,
-            GroupDimension::Ticket,
-        ] {
+        for dim in [GroupDimension::Repo, GroupDimension::Ticket] {
             assert_eq!(
                 GroupDimension::from_persist_key(dim.persist_key()),
                 Some(dim)
@@ -9352,7 +8843,7 @@ mod logic_tests {
             mode: OverviewMode::Outline,
             hide_stale: false,
             show_archived: true,
-            groups: vec![GroupDimension::Ticket, GroupDimension::Category],
+            groups: vec![GroupDimension::Ticket, GroupDimension::Repo],
         };
         let mut flags =
             overview_positions::load_string_set(&dir, overview_positions::UI_FLAGS_FILE);
@@ -9502,9 +8993,8 @@ mod logic_tests {
             o.view_prefs_changed(cx);
             o.show_archived = true;
             o.view_prefs_changed(cx);
-            o.toggle_group(GroupDimension::Origin, cx);
             o.toggle_group(GroupDimension::Repo, cx);
-            o.toggle_group(GroupDimension::Category, cx);
+            o.toggle_group(GroupDimension::Ticket, cx);
             o.toggle_group(GroupDimension::Repo, cx); // off again
             toggle_repo_hidden(&mut o.hidden_repos, "beta");
             o.repo_filter_changed(cx);
@@ -9515,10 +9005,7 @@ mod logic_tests {
             assert_eq!(o.view_mode, OverviewMode::Outline);
             assert!(o.hide_stale);
             assert!(o.show_archived);
-            assert_eq!(
-                o.active_groups,
-                vec![GroupDimension::Origin, GroupDimension::Category]
-            );
+            assert_eq!(o.active_groups, vec![GroupDimension::Ticket]);
             assert_eq!(o.hidden_repos, BTreeSet::from(["beta".to_string()]));
         });
 
@@ -9530,8 +9017,7 @@ mod logic_tests {
             o.view_prefs_changed(cx);
             o.show_archived = false;
             o.view_prefs_changed(cx);
-            o.toggle_group(GroupDimension::Origin, cx);
-            o.toggle_group(GroupDimension::Category, cx);
+            o.toggle_group(GroupDimension::Ticket, cx);
         });
         let (third, vcx) = overview_over(cx, &state);
         third.update(vcx, |o, _| {
@@ -9598,104 +9084,6 @@ mod logic_tests {
         });
     }
 
-    #[test]
-    fn reclassify_reply_decodes_the_pinned_wire_fields() {
-        let reply: ReclassifyOtherReply = serde_json::from_value(serde_json::json!({
-            "examined": 17, "reclassified": 5, "unchanged": 12, "jevCalls": 17, "deferred": 0
-        }))
-        .unwrap();
-        assert_eq!(
-            reply,
-            ReclassifyOtherReply {
-                examined: 17,
-                reclassified: 5,
-                unchanged: 12,
-                jev_calls: 17,
-                ..Default::default()
-            }
-        );
-        // Missing fields degrade to 0 rather than failing the decode.
-        let empty: ReclassifyOtherReply = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(empty, ReclassifyOtherReply::default());
-    }
-
-    #[test]
-    fn reclassify_summary_reports_counts_and_hints_when_more_remain() {
-        let reply = ReclassifyOtherReply {
-            examined: 17,
-            reclassified: 5,
-            unchanged: 12,
-            jev_calls: 17,
-            ..Default::default()
-        };
-        assert_eq!(reclassify_summary(&reply), "5 reclassified, 12 unchanged");
-        let detailed = ReclassifyOtherReply {
-            examined: 5,
-            reclassified: 1,
-            unchanged: 4,
-            confirmed_other: 2,
-            inconclusive: 1,
-            failed: 1,
-            jev_calls: 5,
-            deferred: 0,
-        };
-        assert_eq!(
-            reclassify_summary(&detailed),
-            "1 reclassified, 2 remained Other, 1 inconclusive, 1 failed"
-        );
-        let capped = ReclassifyOtherReply {
-            examined: 60,
-            reclassified: 40,
-            unchanged: 10,
-            jev_calls: 50,
-            deferred: 10,
-            ..Default::default()
-        };
-        assert_eq!(
-            reclassify_summary(&capped),
-            "40 reclassified, 10 unchanged (more remaining \u{2014} run again)"
-        );
-        assert_eq!(
-            reclassify_summary(&ReclassifyOtherReply::default()),
-            "Nothing to reclassify"
-        );
-        let offline = ReclassifyOtherReply {
-            examined: 3,
-            unchanged: 3,
-            ..Default::default()
-        };
-        assert_eq!(
-            reclassify_summary(&offline),
-            "TypeSafe unavailable, nothing changed"
-        );
-    }
-
-    #[test]
-    fn reclassify_button_shows_only_with_other_chats_or_a_result() {
-        assert_eq!(reclassify_button_view(0, &ReclassifyState::Idle), None);
-        assert_eq!(
-            reclassify_button_view(3, &ReclassifyState::Idle),
-            Some(("Reclassify 'other'".to_string(), true))
-        );
-        assert_eq!(
-            reclassify_button_view(3, &ReclassifyState::Running),
-            Some(("Reclassifying\u{2026}".to_string(), false))
-        );
-        // The result stays visible even once the count drops to zero.
-        let done = ReclassifyState::Done {
-            text: "2 reclassified, 1 unchanged".into(),
-            until: Instant::now(),
-        };
-        assert_eq!(
-            reclassify_button_view(0, &done),
-            Some(("2 reclassified, 1 unchanged".to_string(), false))
-        );
-        assert_eq!(
-            count_other_rows([Some("other"), Some("debug"), None, Some("other")].into_iter()),
-            2
-        );
-    }
-
     #[gpui::test]
     fn embedded_chat_panel_exposes_and_copies_chat_identity(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -9751,165 +9139,6 @@ mod logic_tests {
         );
     }
 
-    /// End to end: the button appears when visible `other` chats exist, a click issues
-    /// `RECLASSIFY_OTHER_CHATS` (no params), the button is disabled while it
-    /// runs, shows the tally on completion, and classifications refetch.
-    #[gpui::test]
-    fn reclassify_button_counts_other_chats_and_runs_the_rpc(cx: &mut gpui::TestAppContext) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _guard = runtime.enter();
-        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
-        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-        });
-        let state = cx.new(|_| AppState::new());
-        state.update(cx, |state, _| {
-            state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
-            ));
-            state.chats = ["c1", "c2", "c3"]
-                .iter()
-                .map(|id| {
-                    let mut chat = row(id, "/r", None).chat;
-                    chat.harness_session_id = Some(format!("s-{id}"));
-                    chat.last_message_at = Some(Utc::now());
-                    chat
-                })
-                .collect();
-        });
-        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
-        let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
-        let (overview, vcx) = cx.add_window_view(|_, cx| {
-            let mut overview = Overview::new(
-                state.clone(),
-                gpui::WeakEntity::new_invalid(),
-                transcript,
-                composer,
-                cx,
-            );
-            for (id, category) in [("c1", "other"), ("c2", "debug"), ("c3", "other")] {
-                overview.classification.insert(
-                    id.to_string(),
-                    ClassificationInfo {
-                        category: category.into(),
-                        origin: "cli".into(),
-                        ..Default::default()
-                    },
-                );
-                overview
-                    .classification_fetched_at
-                    .insert(id.to_string(), Instant::now());
-            }
-            overview
-        });
-        vcx.run_until_parked();
-        // Drain the lookups rows() issued for the chats (all fail; irrelevant).
-        let answer_all = |requests: &mut tokio::sync::mpsc::Receiver<String>,
-                          reclassify: Option<serde_json::Value>| {
-            let mut saw_reclassify = false;
-            while let Ok(frame) = requests.try_recv() {
-                let request: serde_json::Value = serde_json::from_str(&frame).unwrap();
-                let reply = if request["method"] == methods::RECLASSIFY_OTHER_CHATS {
-                    saw_reclassify = true;
-                    assert_eq!(request["params"], serde_json::json!({}));
-                    serde_json::json!({"id": request["id"], "ok": reclassify.clone().unwrap()})
-                } else {
-                    serde_json::json!({"id": request["id"], "err": "unavailable"})
-                };
-                runtime.block_on(async {
-                    replies.send(reply.to_string()).await.unwrap();
-                    while replies.capacity() < replies.max_capacity() {
-                        tokio::task::yield_now().await;
-                    }
-                });
-            }
-            saw_reclassify
-        };
-        assert!(!answer_all(&mut requests, Some(serde_json::json!({}))));
-        vcx.run_until_parked();
-
-        overview.update(vcx, |overview, cx| {
-            overview.rows(cx);
-            assert_eq!(overview.other_count, 2);
-        });
-        assert!(
-            vcx.debug_bounds("overview-reclassify-other").is_some(),
-            "button visible with n > 0"
-        );
-
-        overview.update(vcx, |overview, cx| overview.start_reclassify_other(cx));
-        assert_eq!(
-            overview.read_with(vcx, |o, _| o.reclassify.clone()),
-            ReclassifyState::Running
-        );
-        // A second click while running is ignored.
-        overview.update(vcx, |overview, cx| overview.start_reclassify_other(cx));
-        vcx.run_until_parked();
-        assert!(answer_all(
-            &mut requests,
-            Some(
-                serde_json::json!({"examined": 2, "reclassified": 1, "unchanged": 1, "jevCalls": 2, "deferred": 0})
-            )
-        ));
-        vcx.run_until_parked();
-        overview.update(vcx, |overview, _| {
-            assert!(matches!(
-                &overview.reclassify,
-                ReclassifyState::Done { text, .. } if text == "1 reclassified, 1 unchanged"
-            ));
-            assert!(
-                overview.classification_fetched_at.is_empty(),
-                "classifications refetch"
-            );
-        });
-    }
-
-    /// With no `other` chats and nothing to report, there is no button.
-    #[gpui::test]
-    fn reclassify_button_is_hidden_without_other_chats(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-        });
-        let state = cx.new(|_| AppState::new());
-        state.update(cx, |state, _| {
-            let mut chat = row("c1", "/r", None).chat;
-            chat.last_message_at = Some(Utc::now());
-            state.chats = vec![chat];
-        });
-        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
-        let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
-        let (overview, vcx) = cx.add_window_view(|_, cx| {
-            let mut overview = Overview::new(
-                state.clone(),
-                gpui::WeakEntity::new_invalid(),
-                transcript,
-                composer,
-                cx,
-            );
-            overview.classification.insert(
-                "c1".into(),
-                ClassificationInfo {
-                    category: "debug".into(),
-                    origin: "cli".into(),
-                    ..Default::default()
-                },
-            );
-            overview
-                .classification_fetched_at
-                .insert("c1".into(), Instant::now());
-            overview
-        });
-        vcx.run_until_parked();
-        overview.read_with(vcx, |o, _| assert_eq!(o.other_count, 0));
-        assert!(vcx.debug_bounds("overview-reclassify-other").is_none());
-    }
-
     #[test]
     fn acknowledged_done_resets_when_status_leaves_done() {
         let mut ack: BTreeSet<String> = ["a".to_string()].into();
@@ -9930,17 +9159,13 @@ mod logic_tests {
     #[test]
     fn status_style_maps_zeron_indicators_to_reference_vocabulary() {
         assert_eq!(
-            status_style(ChatIndicator::AwaitingInput, false),
+            status_style(ChatIndicator::AwaitingInput),
             ("●", "needs input")
         );
-        assert_eq!(status_style(ChatIndicator::Completed, true), ("✓", "done"));
-        assert_eq!(status_style(ChatIndicator::Idle, false), ("–", "idle"));
-        assert_eq!(
-            status_style(ChatIndicator::Idle, true),
-            ("○", "not running")
-        );
-        // `not_running` only ever refines Idle.
-        assert_eq!(status_style(ChatIndicator::Working, true), ("●", "working"));
+        assert_eq!(status_style(ChatIndicator::Completed), ("✓", "done"));
+        assert_eq!(status_style(ChatIndicator::Idle), ("–", "idle"));
+        assert_eq!(status_style(ChatIndicator::Working), ("●", "working"));
+        assert_eq!(status_style(ChatIndicator::Errored), ("✕", "error"));
     }
 
     #[test]
@@ -9953,14 +9178,6 @@ mod logic_tests {
 
     #[test]
     fn group_labels_use_reference_meta_tables() {
-        assert_eq!(
-            group_label(GroupDimension::Category, "pr_review"),
-            "PR review"
-        );
-        assert_eq!(
-            group_label(GroupDimension::Origin, "agent_mode"),
-            "agent-mode.sh"
-        );
         assert_eq!(
             group_label(GroupDimension::Repo, overview_grouping::NONE_KEY),
             "No repo"
@@ -10029,8 +9246,6 @@ mod logic_tests {
             chat,
             stale: false,
             ticket: None,
-            category: None,
-            origin: None,
             pr_number: None,
             pr_title: None,
             pr_search_values: Vec::new(),
