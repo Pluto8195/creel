@@ -4358,6 +4358,13 @@ impl Shell {
                 let status = result
                     .ok()
                     .and_then(|value| serde_json::from_value::<ChatLinkStatus>(value).ok());
+                if let Some(status) = &status {
+                    crate::review_chats::note_chat_links(
+                        cx,
+                        &chat_id,
+                        &crate::review_chats::links_of_status(status),
+                    );
+                }
                 this.chat_header_links.insert(
                     chat_id,
                     ChatHeaderLinkCache {

@@ -473,6 +473,11 @@ impl ChatTypeView {
                 if let Ok(value) = result
                     && let Ok(status) = serde_json::from_value::<ChatLinkStatus>(value)
                 {
+                    crate::review_chats::note_chat_links(
+                        cx,
+                        &chat_id,
+                        &crate::review_chats::links_of_status(&status),
+                    );
                     this.links.insert(chat_id.clone(), status);
                 }
                 cx.notify();

@@ -264,6 +264,16 @@ pub(crate) fn note_chat_links(
     cx.default_global::<PrChatLinkIndex>().set_chat(chat_id, links);
 }
 
+/// The PR links (canonical URL, source) of a link status reply.
+pub(crate) fn links_of_status(
+    status: &zeron_engine::pr_ticket_cache::ChatLinkStatus,
+) -> Vec<(String, ChatLinkSource)> {
+    crate::chat_work_context::chat_prs(status)
+        .into_iter()
+        .filter_map(|link| Some((link.pr.url, link.source?)))
+        .collect()
+}
+
 /// Record the chats the PR page's fetch linked to `pr_url`.
 pub(crate) fn note_pr_links(cx: &mut gpui::App, pr_url: &str, links: &[(String, ChatLinkSource)]) {
     cx.default_global::<PrChatLinkIndex>().set_pr(pr_url, links);

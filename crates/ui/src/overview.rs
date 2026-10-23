@@ -2946,6 +2946,12 @@ impl Overview {
                 if let Ok(value) = result
                     && let Ok(status) = serde_json::from_value::<OverviewLinkStatus>(value.clone())
                 {
+                    let links: Vec<_> = status
+                        .pr_links
+                        .iter()
+                        .filter_map(|link| Some((link.url.clone(), link.source?)))
+                        .collect();
+                    crate::review_chats::note_chat_links(cx, &chat_id, &links);
                     let diff_stat = value
                         .get("diffStat")
                         .and_then(|v| serde_json::from_value::<DiffStat>(v.clone()).ok());
