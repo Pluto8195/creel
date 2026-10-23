@@ -617,6 +617,23 @@ pub(crate) enum MemberKind {
     Target,
     /// The chat's own checkout (`chat.cwd`), listed beside diff targets.
     Own,
+    /// A branch / PR range target ("Diff branch / PR…"): read from refs, no
+    /// checkout. Its `checkout_*` are the repository checkout it is read from.
+    Ref,
+}
+
+/// The range a [`MemberKind::Ref`] member diffs: `merge-base(base_ref,
+/// head_ref)...head_ref`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RefRange {
+    /// "PR #6487" / "branch michael/eng-3012-x".
+    pub label: String,
+    pub head_branch: String,
+    pub head_ref: String,
+    /// The head's commit: a moved head re-captures the diff.
+    pub head_sha: Option<String>,
+    pub base_branch: String,
+    pub base_ref: String,
 }
 
 /// One repository a bound Chat can show branch and diff state for.
@@ -636,6 +653,8 @@ pub(crate) struct ExecutionMember {
     /// (the validation message and remediation, or "not confirmed yet").
     /// Surfaces show no diff or actions for an unconfirmed member.
     pub unconfirmed: Option<String>,
+    /// Set for [`MemberKind::Ref`] members only.
+    pub range: Option<RefRange>,
 }
 
 impl ExecutionMember {
@@ -650,6 +669,7 @@ impl ExecutionMember {
             head_sha: repository.head_sha.clone(),
             primary: repository.primary,
             unconfirmed: None,
+            range: None,
         }
     }
 
@@ -664,6 +684,7 @@ impl ExecutionMember {
             head_sha: None,
             primary: binding.primary,
             unconfirmed: Some(unconfirmed),
+            range: None,
         }
     }
 
@@ -684,6 +705,31 @@ impl ExecutionMember {
             head_sha: target.head_sha.clone(),
             primary: false,
             unconfirmed: None,
+            range: None,
+        }
+    }
+
+    /// A resolvable branch / PR range target, shown as one pill labelled
+    /// "PR #n" / "branch <name>".
+    pub(crate) fn from_ref_target(target: &zeron_proto::ChatRefTargetView) -> Self {
+        Self {
+            kind: MemberKind::Ref,
+            repo_id: ref_target_member_id(&target.id),
+            name: target.label.clone(),
+            checkout_path: target.path.clone(),
+            checkout_id: Some(target.checkout_id.clone()),
+            branch: Some(target.head_branch.clone()),
+            head_sha: target.head_sha.clone(),
+            primary: false,
+            unconfirmed: None,
+            range: Some(RefRange {
+                label: target.label.clone(),
+                head_branch: target.head_branch.clone(),
+                head_ref: target.head_ref.clone(),
+                head_sha: target.head_sha.clone(),
+                base_branch: target.base_branch.clone(),
+                base_ref: target.base_ref.clone(),
+            }),
         }
     }
 
@@ -701,17 +747,27 @@ impl ExecutionMember {
             head_sha: None,
             primary: false,
             unconfirmed: None,
+            range: None,
         })
     }
 
-    /// "ui · main" (or "ui · HEAD (abc1234)").
+    /// "ui · main" (or "ui · HEAD (abc1234)"); a ref target is just its
+    /// "PR #n" / "branch <name>" label.
     pub(crate) fn label(&self) -> String {
+        if let Some(range) = &self.range {
+            return range.label.clone();
+        }
         format!(
             "{} \u{b7} {}",
             self.name,
             ref_label(self.branch.as_deref(), self.head_sha.as_deref())
         )
     }
+}
+
+/// Stable member key of a branch / PR range target (`ref:<id>`).
+pub(crate) fn ref_target_member_id(id: &str) -> String {
+    format!("ref:{id}")
 }
 
 /// Stable member key of a diff target (`target:<checkoutId>`).

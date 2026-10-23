@@ -47,7 +47,8 @@ use tokio_util::sync::CancellationToken;
 
 use zeron_proto::{
     Chat, ChatDiffTargetSource, ChatDiffTargetView, ChatDiffTargetsRow, ChatDiffTargetsView,
-    CheckoutDiff, DiffFileSummary, StoredChatDiffTarget, SubmoduleDiffSummary,
+    ChatRefTargetView, CheckoutDiff, DiffFileSummary, RefDiffKind, StoredChatDiffTarget,
+    StoredRefDiffTarget, SubmoduleDiffSummary,
 };
 
 use crate::EngineError;
@@ -173,10 +174,22 @@ struct ResolvedTarget {
     repo_name: String,
 }
 
+/// One stored branch / PR range target whose repository checkout still is the
+/// bound one and whose head ref still resolves.
+#[derive(Debug, Clone)]
+struct ResolvedRefTarget {
+    identity: CheckoutIdentity,
+    stored: StoredRefDiffTarget,
+    selected: bool,
+    repo_name: String,
+    head_sha: String,
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedChatTargets {
     chat_id: String,
     targets: Vec<ResolvedTarget>,
+    ref_targets: Vec<ResolvedRefTarget>,
 }
 
 struct DiffSyncInner {
@@ -614,6 +627,69 @@ async fn resolve_row_targets(
     out
 }
 
+/// The commit a full ref name points at, read from the repository's files
+/// (loose ref, then `packed-refs`) — no spawn. `None` for a missing ref or a
+/// symbolic one.
+pub(crate) fn read_ref_sha(common_dir: &Path, reference: &str) -> Option<String> {
+    if reference.contains("..") || reference.starts_with('/') {
+        return None;
+    }
+    if let Ok(text) = std::fs::read_to_string(common_dir.join(reference)) {
+        let sha = text.trim();
+        return valid_object_id(sha).then(|| sha.to_owned());
+    }
+    let packed = std::fs::read_to_string(common_dir.join("packed-refs")).ok()?;
+    packed.lines().find_map(|line| {
+        let (sha, name) = line.split_once(' ')?;
+        (name.trim() == reference && valid_object_id(sha)).then(|| sha.to_owned())
+    })
+}
+
+/// Resolve one chat row's stored ref targets: the repository checkout must
+/// still be the bound repository (same topology id, same canonical top level)
+/// and the head ref must still exist. Stored order.
+async fn resolve_row_ref_targets(
+    inner: &Arc<DiffSyncInner>,
+    row: &ChatDiffTargetsRow,
+    resolved: &mut HashMap<String, Option<CheckoutIdentity>>,
+    fresh: bool,
+) -> Vec<ResolvedRefTarget> {
+    let mut out = Vec::new();
+    for stored in &row.ref_targets {
+        let identity = match resolved.get(&stored.path) {
+            Some(identity) => identity.clone(),
+            None => {
+                let identity = resolve_identity(inner, &stored.path, fresh).await;
+                resolved.insert(stored.path.clone(), identity.clone());
+                identity
+            }
+        };
+        let Some(identity) = identity else { continue };
+        let common_dir = common_dir_of(&identity.git_dir);
+        if !identity.git_dir.is_dir()
+            || crate::execution_scope::repository_id(&inner.device_id, &common_dir)
+                != stored.repo_id
+            || crate::execution_scope::canonical_lenient(&identity.root)
+                != crate::execution_scope::canonical_lenient(Path::new(&stored.path))
+        {
+            tracing::debug!(path = %stored.path,
+                "diff-sync: ref target repository differs from its binding");
+            continue;
+        }
+        let Some(head_sha) = read_ref_sha(&common_dir, &stored.head_ref) else {
+            continue;
+        };
+        out.push(ResolvedRefTarget {
+            selected: row.selected_ref.as_deref() == Some(stored.id.as_str()),
+            repo_name: repo_display_name(&common_dir, &identity.root),
+            identity,
+            stored: stored.clone(),
+            head_sha,
+        });
+    }
+    out
+}
+
 /// The chat's currently resolvable targets (memoized identities; no fresh
 /// revalidation).
 async fn resolve_chat_targets(inner: &Arc<DiffSyncInner>, chat_id: &str) -> Vec<ResolvedTarget> {
@@ -653,6 +729,14 @@ fn read_head(identity: &CheckoutIdentity) -> (Option<String>, Option<String>) {
     (branch, sha)
 }
 
+/// "PR #n" for a PR target, "branch <name>" otherwise.
+pub(crate) fn ref_target_label(target: &StoredRefDiffTarget) -> String {
+    match (target.kind, target.pr_number) {
+        (RefDiffKind::Pr, Some(number)) => format!("PR #{number}"),
+        _ => format!("branch {}", target.head_branch),
+    }
+}
+
 /// Rebuild and publish the `WatchChatDiffTargets` list from the last
 /// reconcile's resolved targets plus the checkouts' current HEADs. Publishes
 /// only when the list changed.
@@ -660,9 +744,29 @@ fn publish_targets(inner: &Arc<DiffSyncInner>) {
     let resolved = lock(&inner.resolved_targets).clone();
     let mut views: Vec<ChatDiffTargetsView> = resolved
         .iter()
-        .filter(|chat| !chat.targets.is_empty())
+        .filter(|chat| !chat.targets.is_empty() || !chat.ref_targets.is_empty())
         .map(|chat| ChatDiffTargetsView {
             chat_id: chat.chat_id.clone(),
+            ref_targets: chat
+                .ref_targets
+                .iter()
+                .map(|target| ChatRefTargetView {
+                    id: target.stored.id.clone(),
+                    kind: target.stored.kind,
+                    label: ref_target_label(&target.stored),
+                    path: target.identity.root.to_string_lossy().into_owned(),
+                    checkout_id: target.identity.id.clone(),
+                    repo_name: target.repo_name.clone(),
+                    head_branch: target.stored.head_branch.clone(),
+                    head_ref: target.stored.head_ref.clone(),
+                    base_branch: target.stored.base_branch.clone(),
+                    base_ref: target.stored.base_ref.clone(),
+                    head_sha: Some(target.head_sha.clone()),
+                    pr_number: target.stored.pr_number,
+                    pr_url: target.stored.pr_url.clone(),
+                    selected: target.selected,
+                })
+                .collect(),
             targets: chat
                 .targets
                 .iter()
@@ -788,19 +892,27 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     let mut resolved_chats: Vec<ResolvedChatTargets> = Vec::new();
     if let Some(diff_targets) = diff_targets {
         for row in diff_targets.rows() {
-            if row.targets.is_empty() || !local_chat_ids.contains(&row.chat_id) {
+            if (row.targets.is_empty() && row.ref_targets.is_empty())
+                || !local_chat_ids.contains(&row.chat_id)
+            {
                 continue;
             }
             let targets = resolve_row_targets(inner, &row, &mut resolved, fresh).await;
-            for target in &targets {
+            let ref_targets = resolve_row_ref_targets(inner, &row, &mut resolved, fresh).await;
+            for identity in targets
+                .iter()
+                .map(|target| &target.identity)
+                .chain(ref_targets.iter().map(|target| &target.identity))
+            {
                 groups
-                    .entry(target.identity.id.clone())
-                    .or_insert_with(|| (target.identity.clone(), Vec::new()));
+                    .entry(identity.id.clone())
+                    .or_insert_with(|| (identity.clone(), Vec::new()));
             }
-            if !targets.is_empty() {
+            if !targets.is_empty() || !ref_targets.is_empty() {
                 resolved_chats.push(ResolvedChatTargets {
                     chat_id: row.chat_id,
                     targets,
+                    ref_targets,
                 });
             }
         }
@@ -2338,6 +2450,79 @@ pub async fn capture_commit_diff(
     sha: &str,
 ) -> Result<DiffSnapshot, EngineError> {
     let base = commit_diff_base(root, sha).await;
+    capture_revision_pair_diff(repos, root, &base, sha).await
+}
+
+/// The two commits a "Diff branch / PR…" range compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeShas {
+    /// `merge-base(base_ref, head_ref)`.
+    pub merge_base: String,
+    /// The head ref's commit.
+    pub head: String,
+}
+
+/// Resolve `merge-base(base_ref, head_ref)...head_ref` to commits. Read-only;
+/// errors when a ref is unknown or the histories are unrelated.
+pub async fn resolve_range(
+    root: &Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> Result<RangeShas, EngineError> {
+    let verify = |name: &str| format!("{name}^{{commit}}");
+    let head = capture_git(
+        root,
+        &["rev-parse", "--verify", "--end-of-options", &verify(head_ref)],
+        256,
+    )
+    .await
+    .map(|c| String::from_utf8_lossy(&c.stdout).trim().to_string())
+    .map_err(|_| EngineError::Other(format!("{head_ref} does not exist in this repository")))?;
+    let base = capture_git(
+        root,
+        &["rev-parse", "--verify", "--end-of-options", &verify(base_ref)],
+        256,
+    )
+    .await
+    .map(|c| String::from_utf8_lossy(&c.stdout).trim().to_string())
+    .map_err(|_| EngineError::Other(format!("{base_ref} does not exist in this repository")))?;
+    let merged = capture_git(root, &["merge-base", &base, &head], 256)
+        .await
+        .map(|c| String::from_utf8_lossy(&c.stdout).trim().to_string())
+        .unwrap_or_default();
+    if merged.is_empty() {
+        return Err(EngineError::Other(format!(
+            "no merge base between {base_ref} and {head_ref}"
+        )));
+    }
+    Ok(RangeShas {
+        merge_base: merged,
+        head,
+    })
+}
+
+/// "Diff branch / PR…" capture: `merge-base(base_ref, head_ref)` against
+/// `head_ref`, read from refs only (no working tree, no untracked files).
+pub async fn capture_range_diff(
+    repos: &Repos,
+    root: &Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> Result<(DiffSnapshot, RangeShas), EngineError> {
+    let range = resolve_range(root, base_ref, head_ref).await?;
+    let snapshot = capture_revision_pair_diff(repos, root, &range.merge_base, &range.head).await?;
+    Ok((snapshot, range))
+}
+
+/// Snapshot of the changes from commit-ish `base` to commit-ish `sha` (shared
+/// by the per-commit and range captures).
+async fn capture_revision_pair_diff(
+    repos: &Repos,
+    root: &Path,
+    base: &str,
+    sha: &str,
+) -> Result<DiffSnapshot, EngineError> {
+    let base = base.to_owned();
     let branch = repos
         .current_branch(root)
         .await

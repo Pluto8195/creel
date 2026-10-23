@@ -32,6 +32,9 @@ use crate::execution_scope::{canonical_lenient, repository_id};
 use crate::repos::{Repos, hex, is_automatic_access_blocked};
 use crate::workspace_host::WorkspaceHost;
 
+mod refs;
+pub use refs::RefBindOutcome;
+
 /// Longest path accepted from a caller.
 pub const MAX_DIFF_TARGET_PATH_LEN: usize = 4096;
 /// Most submodule checkouts discovered under one chat checkout.
@@ -140,6 +143,9 @@ pub struct DiffTargets {
     workspace: WorkspaceHost,
     device_id: String,
     changes: Arc<watch::Sender<u64>>,
+    /// `gh` for the PR lookups of "Diff branch / PR…" (tests point it at a
+    /// fake).
+    tools: crate::pr_review_launch::PrReviewTools,
 }
 
 impl DiffTargets {
@@ -149,7 +155,14 @@ impl DiffTargets {
             workspace,
             device_id: device_id.into(),
             changes: Arc::new(watch::channel(0).0),
+            tools: crate::pr_review_launch::PrReviewTools::default(),
         }
+    }
+
+    /// Use `tools` (the `gh` executable) for PR lookups.
+    pub fn with_pr_tools(mut self, tools: crate::pr_review_launch::PrReviewTools) -> Self {
+        self.tools = tools;
+        self
     }
 
     pub fn repos(&self) -> &Repos {
@@ -272,6 +285,8 @@ impl DiffTargets {
                         return;
                     }
                 }
+                // At most one of the two selections is set.
+                row.selected_ref = None;
                 if is_own {
                     row.selected = None;
                 } else {
@@ -367,7 +382,10 @@ impl DiffTargets {
         self.local_chat(chat_id)?;
         let changed = self
             .workspace
-            .update_chat_diff_targets(chat_id, |row| row.selected = None)
+            .update_chat_diff_targets(chat_id, |row| {
+                row.selected = None;
+                row.selected_ref = None;
+            })
             .map_err(internal)?;
         if changed {
             self.bump();
@@ -412,7 +430,21 @@ fn effective_selected(row: &ChatDiffTargetsRow) -> Option<&str> {
 
 fn reply_of(row: &ChatDiffTargetsRow) -> ChatDiffTargetsReply {
     let selected = effective_selected(row);
+    let selected_ref = row
+        .selected_ref
+        .as_deref()
+        .filter(|id| row.ref_targets.iter().any(|t| t.id == *id));
     ChatDiffTargetsReply {
+        ref_targets: row
+            .ref_targets
+            .iter()
+            .map(|t| zeron_proto::ChatRefTargetEntry {
+                id: t.id.clone(),
+                kind: t.kind,
+                label: crate::diff_sync::ref_target_label(t),
+                selected: selected_ref == Some(t.id.as_str()),
+            })
+            .collect(),
         targets: row
             .targets
             .iter()

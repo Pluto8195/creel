@@ -93,7 +93,7 @@ pub struct PrReviewTools {
 }
 
 impl PrReviewTools {
-    fn gh(&self) -> Result<Command, PrReviewError> {
+    pub(crate) fn gh(&self) -> Result<Command, PrReviewError> {
         let unavailable = || {
             err(
                 PrReviewErrorCode::GhUnavailable,

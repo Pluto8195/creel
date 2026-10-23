@@ -971,6 +971,10 @@ pub struct GetCheckoutFileDiffTextRequest {
     /// the live working tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
+    /// `mode: "range"` (Diff branch / PR…): the full head ref; `base_ref` is
+    /// the full base ref. The pair is `merge-base(base, head)` vs `head`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
     pub diff_checksum: String,
 }
 
@@ -1388,6 +1392,7 @@ mod tests {
             base_ref: Some("main".into()),
             chat_id: None,
             commit_sha: Some("deadbeef".into()),
+            head_ref: None,
             diff_checksum: "abc".into(),
         };
         let value = serde_json::to_value(&request).unwrap();

@@ -786,6 +786,8 @@ pub struct AppState {
     /// Resolved diff targets per chat: the latest `WatchChatDiffTargets` frame
     /// (full list each time; chats without a resolvable target are absent).
     chat_diff_targets: HashMap<String, Vec<zeron_proto::ChatDiffTargetView>>,
+    /// Resolved branch / PR range targets per chat (same frame).
+    chat_ref_targets: HashMap<String, Vec<zeron_proto::ChatRefTargetView>>,
     /// The last failed `SetChatDiffTarget` per chat (the Changes pane shows it
     /// as a copyable error notice until dismissed or the next write).
     chat_diff_target_errors: HashMap<String, String>,
@@ -885,6 +887,7 @@ impl AppState {
             work_outline_actions_override: None,
             chat_execution: HashMap::new(),
             chat_diff_targets: HashMap::new(),
+            chat_ref_targets: HashMap::new(),
             chat_diff_target_errors: HashMap::new(),
             #[cfg(test)]
             chat_diff_rpc_override: None,
@@ -2029,7 +2032,8 @@ impl AppState {
             None => Vec::new(),
         };
         let targets = self.chat_diff_targets(chat_id);
-        if !targets.is_empty() {
+        let ref_targets = self.chat_ref_targets(chat_id);
+        if !targets.is_empty() || !ref_targets.is_empty() {
             members.extend(
                 self.chats
                     .iter()
@@ -2046,6 +2050,7 @@ impl AppState {
                     members.push(ExecutionMember::from_diff_target(target));
                 }
             }
+            members.extend(ref_targets.iter().map(ExecutionMember::from_ref_target));
         }
         members
     }
@@ -2070,9 +2075,18 @@ impl AppState {
                     .chat_diff_targets(chat_id)
                     .iter()
                     .find(|target| target.selected)?;
-                members
+                members.iter().find(|member| {
+                    member.kind != crate::work_outline::execution::MemberKind::Ref
+                        && member.checkout_path == selected.path
+                })
+            })
+            .or_else(|| {
+                let selected = self
+                    .chat_ref_targets(chat_id)
                     .iter()
-                    .find(|member| member.checkout_path == selected.path)
+                    .find(|target| target.selected)?;
+                let id = crate::work_outline::execution::ref_target_member_id(&selected.id);
+                members.iter().find(|member| member.repo_id == id)
             })
             .or_else(|| crate::work_outline::execution::default_member(&members))
             .cloned()
@@ -2107,7 +2121,10 @@ impl AppState {
         if self.pick_chat_execution_member_locally(chat_id, repo_id) {
             cx.notify();
         }
-        if effective.as_deref() == Some(repo_id) || self.chat_diff_targets(chat_id).is_empty() {
+        if effective.as_deref() == Some(repo_id)
+            || (self.chat_diff_targets(chat_id).is_empty()
+                && self.chat_ref_targets(chat_id).is_empty())
+        {
             return;
         }
         let Some(member) = self
@@ -2117,7 +2134,26 @@ impl AppState {
         else {
             return;
         };
+        if member.kind == MemberKind::Ref {
+            let ref_id = member
+                .repo_id
+                .strip_prefix("ref:")
+                .unwrap_or(&member.repo_id)
+                .to_owned();
+            self.write_chat_diff_target(
+                zeron_proto::SetChatDiffTargetParams {
+                    chat_id: chat_id.to_owned(),
+                    action: zeron_proto::SetChatDiffTargetAction::SelectRef,
+                    ref_id: Some(ref_id),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .detach();
+            return;
+        }
         let (action, path) = match member.kind {
+            MemberKind::Ref => return,
             MemberKind::Target => (
                 zeron_proto::SetChatDiffTargetAction::Select,
                 Some(member.checkout_path),
@@ -2153,6 +2189,14 @@ impl AppState {
             .unwrap_or(&[])
     }
 
+    /// Resolved branch / PR range targets of a Chat (empty when none).
+    pub(crate) fn chat_ref_targets(&self, chat_id: &str) -> &[zeron_proto::ChatRefTargetView] {
+        self.chat_ref_targets
+            .get(chat_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Apply one `WatchChatDiffTargets` frame (the full list). Returns
     /// whether anything changed. In-memory picks that the frame supersedes
     /// are dropped: a frame that selects a target the Chat was not on (the
@@ -2164,38 +2208,62 @@ impl AppState {
         &mut self,
         frame: Vec<zeron_proto::ChatDiffTargetsView>,
     ) -> bool {
-        let next: HashMap<String, Vec<zeron_proto::ChatDiffTargetView>> = frame
-            .into_iter()
-            .filter(|view| !view.targets.is_empty())
-            .map(|view| (view.chat_id, view.targets))
-            .collect();
-        if next == self.chat_diff_targets {
+        let mut next: HashMap<String, Vec<zeron_proto::ChatDiffTargetView>> = HashMap::new();
+        let mut next_refs: HashMap<String, Vec<zeron_proto::ChatRefTargetView>> = HashMap::new();
+        for view in frame {
+            if !view.ref_targets.is_empty() {
+                next_refs.insert(view.chat_id.clone(), view.ref_targets);
+            }
+            if !view.targets.is_empty() {
+                next.insert(view.chat_id, view.targets);
+            }
+        }
+        if next == self.chat_diff_targets && next_refs == self.chat_ref_targets {
             return false;
         }
-        let selected_path = |targets: &HashMap<String, Vec<zeron_proto::ChatDiffTargetView>>,
-                             chat_id: &str| {
+        // What a frame selects: a checkout target's path or a ref target's
+        // id (at most one of the two).
+        let selected_key = |targets: &HashMap<String, Vec<zeron_proto::ChatDiffTargetView>>,
+                            refs: &HashMap<String, Vec<zeron_proto::ChatRefTargetView>>,
+                            chat_id: &str| {
             targets
                 .get(chat_id)
                 .and_then(|targets| targets.iter().find(|target| target.selected))
-                .map(|target| target.path.clone())
+                .map(|target| format!("path:{}", target.path))
+                .or_else(|| {
+                    refs.get(chat_id)
+                        .and_then(|refs| refs.iter().find(|target| target.selected))
+                        .map(|target| format!("ref:{}", target.id))
+                })
         };
         for (chat_id, entry) in &mut self.chat_execution {
             let Some(pick) = entry.selected.as_deref() else {
                 continue;
             };
-            let now = selected_path(&next, chat_id);
-            let reselected =
-                now.is_some() && now != selected_path(&self.chat_diff_targets, chat_id);
-            let vanished = pick.strip_prefix("target:").is_some_and(|checkout_id| {
-                !next
-                    .get(chat_id)
-                    .is_some_and(|targets| targets.iter().any(|t| t.checkout_id == checkout_id))
-            });
+            let now = selected_key(&next, &next_refs, chat_id);
+            let reselected = now.is_some()
+                && now != selected_key(&self.chat_diff_targets, &self.chat_ref_targets, chat_id);
+            let vanished = pick
+                .strip_prefix("target:")
+                .map(|checkout_id| {
+                    !next
+                        .get(chat_id)
+                        .is_some_and(|targets| targets.iter().any(|t| t.checkout_id == checkout_id))
+                })
+                .or_else(|| {
+                    pick.strip_prefix("ref:").map(|id| {
+                        !next_refs
+                            .get(chat_id)
+                            .is_some_and(|refs| refs.iter().any(|t| t.id == id))
+                    })
+                })
+                .unwrap_or(false);
             if reselected || vanished {
                 entry.selected = None;
             }
         }
         self.chat_diff_targets = next;
+        self.chat_ref_targets = next_refs;
         true
     }
 
@@ -2283,15 +2351,69 @@ impl AppState {
         path: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
-        let params = serde_json::to_value(zeron_proto::SetChatDiffTargetParams {
+        self.write_chat_diff_target(
+            zeron_proto::SetChatDiffTargetParams {
+                chat_id: chat_id.to_owned(),
+                action,
+                path,
+                ..Default::default()
+            },
+            cx,
+        )
+    }
+
+    /// `SetChatDiffTarget {chatId, action: bindRef, input, baseBranch?,
+    /// repoPath?}`: resolve a PR number / URL or a branch name, fetch its
+    /// refs read-only and select the new range target. A failure is kept in
+    /// [`Self::chat_diff_target_error`] like every diff target write.
+    pub(crate) fn bind_chat_ref_target(
+        &mut self,
+        chat_id: &str,
+        input: String,
+        repo_path: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        self.write_chat_diff_target(
+            zeron_proto::SetChatDiffTargetParams {
+                chat_id: chat_id.to_owned(),
+                action: zeron_proto::SetChatDiffTargetAction::BindRef,
+                input: Some(input),
+                repo_path,
+                ..Default::default()
+            },
+            cx,
+        )
+    }
+
+    /// `ListChatRefDiffCandidates {chatId}`: linked PRs first, then branches
+    /// matching the chat's ticket, in engine order.
+    pub(crate) fn list_chat_ref_candidates(
+        &self,
+        chat_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<zeron_proto::RefDiffCandidate>, String>> {
+        let params = serde_json::to_value(zeron_proto::ListChatDiffCheckoutsParams {
             chat_id: chat_id.to_owned(),
-            action,
-            path,
         })
         .unwrap_or_default();
-        self.chat_diff_target_errors.remove(chat_id);
+        let task = self.chat_diff_rpc(methods::LIST_CHAT_REF_DIFF_CANDIDATES, params, cx);
+        cx.spawn(async move |_, _| {
+            let value = task.await?;
+            serde_json::from_value::<zeron_proto::ListChatRefDiffCandidatesReply>(value)
+                .map(|reply| reply.candidates)
+                .map_err(|error| format!("Malformed branch list from the engine: {error}"))
+        })
+    }
+
+    fn write_chat_diff_target(
+        &mut self,
+        params: zeron_proto::SetChatDiffTargetParams,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let chat_id = params.chat_id.clone();
+        let params = serde_json::to_value(params).unwrap_or_default();
+        self.chat_diff_target_errors.remove(&chat_id);
         let task = self.chat_diff_rpc(methods::SET_CHAT_DIFF_TARGET, params, cx);
-        let chat_id = chat_id.to_owned();
         cx.spawn(async move |this, cx| {
             let result = task.await.map(|_| ());
             if let Err(message) = &result {

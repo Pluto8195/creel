@@ -1556,3 +1556,75 @@ agent tool and the Changes pane's "Diff checkout…" picker both write.
 10. **Not done.** Per-target edge sidecars and PR lookup from a target's path; remote-device
     chats; automatic suggestion without the agent (a worktree found only by the picker). The
     implement-ticket skill needs one line after `git worktree add` (outside this repository).
+
+## Amendment: diff a branch or PR without a checkout
+
+Found with ENG-3012 (flagship PRs #6487 and #6488): once a ticket's worktree is cleaned up, or
+when a PR exists only on the remote, the "Diff checkout…" picker has nothing to show. This adds
+"Diff branch / PR…" next to it: the Changes pane diffs `merge-base(base, head)...head` from a
+repository's refs, no checkout needed. It builds on the chat diff targets amendment above and the
+PR page parity chat-PR links (`chatPrLinks`, `ChatLinkSource`).
+
+1. **Decision: its own fields on the `chatDiffTargets` row, not a new kind in `targets`.** The
+   row gains `refTargets` (JSON, ≤ 8 `StoredRefDiffTarget`) and `selectedRef` (a ref target id or
+   null). Rejected: a `kind` on `StoredChatDiffTarget`.
+   - Every consumer of `targets` assumes a checkout: validation against the checkout family, the
+     `repoId`/`worktreeId` identity re-check, the Latest turn snapshot per target, the pill's
+     `checkoutId`, "bound" flags in the picker. A ref target has none of those, so each would need
+     a guard (and a missed one would snapshot or watch something that is not a work tree).
+   - Old rows decode unchanged (`refTargets` absent = none) and old binaries ignore the new keys.
+   - At most one of `selected` and `selectedRef` is set: selecting a checkout clears the ref
+     selection and vice versa; `ClearSelection` clears both (the chat's own checkout).
+2. **Stored shape.** `StoredRefDiffTarget {id, kind: pr|branch, path, repoId, headBranch, headRef,
+   baseBranch, baseRef, prNumber?, prUrl?, boundAt}`. `path` is the canonical path of a repository
+   checkout of the chat's family (its own checkout or a submodule, never a linked worktree, so it
+   outlives worktree cleanup). `headRef`/`baseRef` are fully qualified (`refs/remotes/origin/<b>`,
+   a local `refs/heads/<b>` when nothing was fetched, or `refs/zeron/pr/<n>/head`), so the diff
+   needs no lookup. `id` = `pr-`/`br-` + 16 hex of sha256(repoId, PR number or head branch):
+   binding the same PR or branch again replaces the target instead of adding one.
+3. **Binding (`SetChatDiffTarget` actions `bindRef`, `selectRef`, `unbindRef`).** `bindRef
+   {input, baseBranch?, repoPath?}` (crates/engine/src/diff_targets/refs.rs):
+   - `input` is a PR URL, a PR number (`6487`, `#6487`) or a branch name (`origin/` and
+     `refs/heads/` prefixes mean the same branch).
+   - Repository: a PR URL's `owner/repo` is matched against `remote.origin.url` of the chat's own
+     checkout and its submodules. A bare number uses the chat's linked PRs with that number, else
+     the only GitHub repository of the family, else is refused ("paste the PR URL"). A branch name
+     is looked for where it already exists, then where `origin` has it; the picker passes
+     `repoPath` for the candidates it listed.
+   - Refs are fetched read-only: `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>` as
+     the PR launcher does (`--no-recurse-submodules`, 60 s limit). Only remote-tracking refs of the
+     local repository move; nothing is pushed and no remote state changes. A PR whose branch is
+     not fetchable (a fork, a deleted branch, no `gh`) falls back to
+     `+refs/pull/<n>/head:refs/zeron/pr/<n>/head`.
+   - PR head and base branch come from `gh pr view --json headRefName,baseRefName,
+     isCrossRepository` (the launcher's `PrReviewTools`, so tests use a fake script). The base is,
+     in order: the explicit `baseBranch`, the PR's base, `origin/main`, `origin/master` (a local
+     branch when `origin` lacks it). A missing base is refused by name.
+   - All `git` spawns use `zeron_harness::git_command()`.
+4. **Diff.** `GetCheckoutDiff` and `GetCheckoutFileDiffText` accept `mode: "range"` with `baseRef`
+   and `headRef` (new optional `headRef` on the file text request). The engine resolves
+   `merge-base(base, head)` and the head commit, then reuses the per-commit capture (name-status,
+   numstat, raw, patch, submodule sections; no working tree, no untracked files), so the file list
+   and the diff view are the Branch scope's. Both file sides are immutable blobs; the checksum
+   covers the patch and files, so a head that moved turns the file text reply `stale`.
+5. **Live view.** Diff-sync resolves `refTargets` like targets: the repository checkout must still
+   be the bound repository (same topology id and top level) and the head ref must still exist
+   (read from the git dir's files, no spawn); otherwise the target is absent. `WatchChatDiffTargets`
+   items gain `refTargets: [ChatRefTargetView {id, kind, label, path, checkoutId, repoName,
+   headBranch, headRef, baseBranch, baseRef, headSha?, prNumber?, prUrl?, selected}]`; the label is
+   "PR #n" or "branch <name>". The repository checkout gets a diff-sync entry like a target.
+6. **Picker.** `ListChatRefDiffCandidates {chatId}` (read-only, local refs only, never fetches)
+   returns the chat's linked PRs first, in link order (only those whose repository the chat has),
+   then branches of the family whose name contains the chat's ticket id (linked ticket, else the id
+   in the chat branch; trunk names excluded; newest commit first; ≤ 30). The UI adds a free-text row
+   for what is typed (PR number or URL, or a branch name) unless a candidate already is that.
+7. **UI.** A pill per ref target, labelled "PR #n" / "branch <name>", beside the own checkout and
+   checkout targets (`MemberKind::Ref`, member id `ref:<id>`). Selecting one persists `selectRef`.
+   While a ref pill is selected the pane is in `DiffScope::Range`: no scope menu (Working tree and
+   Latest turn do not exist for it), the header shows the label and `head → base`, and the capture
+   is the `range` mode above. Selecting the own checkout or a checkout target restores the normal
+   scopes. Chats without ref targets are unchanged.
+8. **Not done.** The target is not re-fetched on its own: a PR that gets new commits shows them
+   after the next `bindRef` for it (pick it in the picker again); remote-device chats; an unbind
+   control in the UI (the engine action exists); inline review comments on a range view are
+   stored against the chat like any other pane's.

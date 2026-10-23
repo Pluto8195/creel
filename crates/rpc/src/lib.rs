@@ -148,6 +148,12 @@ pub mod methods {
     /// (the chat's own checkout, its submodules, and every linked worktree of
     /// the root repository and of each submodule). Read-only, local device.
     pub const LIST_CHAT_DIFF_CHECKOUTS: &str = "ListChatDiffCheckouts";
+    /// Candidates of the "Diff branch / PR…" picker: `zeron_proto::
+    /// ListChatDiffCheckoutsParams` (`{chatId}`) → `zeron_proto::
+    /// ListChatRefDiffCandidatesReply`: the chat's linked PRs first, then
+    /// branches whose name contains the chat's ticket id. Read-only (local
+    /// refs only, never fetches), local device.
+    pub const LIST_CHAT_REF_DIFF_CANDIDATES: &str = "ListChatRefDiffCandidates";
     /// Write a chat's diff target (the manual "Diff checkout…" picker):
     /// `zeron_proto::SetChatDiffTargetParams` → `zeron_proto::
     /// ChatDiffTargetsReply`. Validates the path like the `bind_chat_worktree`
