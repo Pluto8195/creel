@@ -678,10 +678,10 @@ impl ExecutionValidationError {
                 "Start or resume this Chat from the device that owns the Space."
             }
             Self::DeviceOffline { .. } => {
-                "Bring the owning device online, then try again. Zeron will not run the work \
+                "Bring the owning device online, then try again. Creel will not run the work \
                  elsewhere."
             }
-            Self::HostUnsupported { .. } => "Update Zeron on the owning device, then try again.",
+            Self::HostUnsupported { .. } => "Update Creel on the owning device, then try again.",
             Self::SpaceMissing { .. } => {
                 "Recreate or re-add the Space, then configure execution again."
             }
@@ -711,7 +711,7 @@ impl ExecutionValidationError {
             }
             Self::BranchMismatch { .. } => {
                 "Switch the checkout to the expected branch yourself, or update the expected \
-                 branch in the execution configuration. Zeron never switches branches."
+                 branch in the execution configuration. Creel never switches branches."
             }
             Self::MemberOutsideRoot { .. } => {
                 "Move the worktree under the execution root, widen the execution root, or use a \
@@ -721,15 +721,15 @@ impl ExecutionValidationError {
                 "Mark exactly one repository as primary in the execution configuration."
             }
             Self::ConfigInvalid { reason } if reason.starts_with(MALFORMED_CHAT_BINDING_REASON) => {
-                "Update Zeron on this device if another device runs a newer version, or start a \
-                 new Chat from the work item. Zeron will not run this Chat without its binding."
+                "Update Creel on this device if another device runs a newer version, or start a \
+                 new Chat from the work item. Creel will not run this Chat without its binding."
             }
             Self::ConfigInvalid { .. } | Self::Unknown => {
                 "Edit or reset the execution configuration."
             }
             Self::ResumeRootMismatch { .. } => {
                 "Start a new Chat from the work item to begin a fresh session in the execution \
-                 root. Zeron will not resume or restart this conversation elsewhere."
+                 root. Creel will not resume or restart this conversation elsewhere."
             }
             Self::BoundChatRetarget { .. } => {
                 "Start a new Chat from the work item with the folder or worktree you want; this \

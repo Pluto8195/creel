@@ -6865,7 +6865,7 @@ impl Render for Changes {
                 } else if message.contains("unknown method") {
                     (
                         SharedString::from(
-                            "This chat's device is running an older Zeron — update it to view branch and turn diffs",
+                            "This chat's device is running an older Creel — update it to view branch and turn diffs",
                         ),
                         false,
                     )
@@ -6892,7 +6892,7 @@ impl Render for Changes {
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
                 .child(SharedString::from(
-                    "No changes shown: Zeron could not confirm this repository's checkout.",
+                    "No changes shown: Creel could not confirm this repository's checkout.",
                 ))
                 .child(SharedString::from(reason))
                 .into_any_element()

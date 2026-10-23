@@ -999,7 +999,7 @@ pub mod agent_tools {
         },
         ToolUsage {
             tool: "create_chat",
-            required: &[p("idempotencyKey", "inside a Zeron chat; a stable string")],
+            required: &[p("idempotencyKey", "inside a Creel chat; a stable string")],
             optional: &[
                 p("project", "project path or id"),
                 p("prompt", "first message (required with workItemId)"),

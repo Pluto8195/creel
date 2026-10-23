@@ -170,11 +170,11 @@ pub(crate) fn instruction_host_blocker(state: &AppState, chat_id: &str) -> Optio
         InstructionHostSupport::Supported => unreachable!(),
         InstructionHostSupport::UnknownDevice => format!(
             "This Chat\u{2019}s host hasn\u{2019}t synced to this workspace yet, so it can\u{2019}t \
-             take Work Outline instructions. Open Zeron on {host} to apply them."
+             take Work Outline instructions. Open Creel on {host} to apply them."
         ),
         InstructionHostSupport::ZeronUpgradeRequired => format!(
             "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
-             Update Zeron on {host} to apply them."
+             Update Creel on {host} to apply them."
         ),
         InstructionHostSupport::HarnessUnsupported(harness) => {
             let cli = crate::settings::harnesses::cli_name(harness);
@@ -1628,7 +1628,7 @@ mod tests {
             blocker.as_deref(),
             Some(
                 "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
-                 Update Zeron on Studio to apply them."
+                 Update Creel on Studio to apply them."
             )
         );
         // The local engine's device row decides too (not its static
@@ -1641,7 +1641,7 @@ mod tests {
         let local = shell.read_with(cx, |shell, cx| {
             instruction_host_blocker(shell.state.read(cx), CHAT_API).unwrap()
         });
-        assert!(local.ends_with("Update Zeron on this device to apply them."));
+        assert!(local.ends_with("Update Creel on this device to apply them."));
 
         shell.update(cx, |shell, cx| shell.open_instruction_compare(CHAT_API, cx));
         draw(cx);

@@ -6509,7 +6509,7 @@ pub(crate) fn delete_space_copy(name: &str, device: &str, sessions: usize) -> St
         format!("its {sessions} sessions")
     };
     format!(
-        "Removing “{name}” permanently deletes {sessions} on {device}: its chats leave Zeron’s \
+        "Removing “{name}” permanently deletes {sessions} on {device}: its chats leave Creel’s \
          index, and its whole Work Outline (work items, instructions, and requests) is deleted. \
          This can’t be undone. To just declutter the Outline, use Hide from Outline."
     )
@@ -6527,7 +6527,7 @@ mod tests {
         assert!(one.contains("its 1 session on Laptop"), "{one}");
         let many = delete_space_copy("Alpha", "Laptop", 3);
         assert!(many.contains("its 3 sessions on Laptop"), "{many}");
-        assert!(many.contains("leave Zeron’s index"), "{many}");
+        assert!(many.contains("leave Creel’s index"), "{many}");
         assert!(many.contains("whole Work Outline"), "{many}");
         assert!(many.contains("can’t be undone"), "{many}");
         assert!(

@@ -2,7 +2,11 @@
 # macOS packaging: build the release binary for the host arch and produce
 #   target/package/zeron-<version>-macos-<arch>.dmg          (user download)
 #   target/package/zeron-<version>-macos-<arch>-app.tar.gz   (auto-updater)
-# containing Zeron.app (unsigned unless CODESIGN_IDENTITY is set).
+# containing Creel.app (unsigned unless CODESIGN_IDENTITY is set). The release
+# asset file names keep the zeron- prefix: the update manifest, the release
+# workflow, and the download links all key on them. The dmg volume and the app
+# inside it are named Creel; the auto-update tarball keeps an internal
+# Zeron.app directory so already-installed builds can still unpack it.
 #
 # Usage: scripts/package-macos.sh
 # Env:   CODESIGN_IDENTITY="Developer ID Application: …" to sign the bundle.
@@ -17,7 +21,8 @@ command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
 ARCH="$(uname -m)" # arm64 on Apple silicon runners
 OUT_DIR="$ROOT/target/package"
-APP="$OUT_DIR/Zeron.app"
+APP="$OUT_DIR/Creel.app"
+UPDATE_APP_DIRNAME="Zeron.app"
 DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
 APP_TARBALL="$OUT_DIR/zeron-$VERSION-macos-$ARCH-app.tar.gz"
 
@@ -34,14 +39,14 @@ cp "$ROOT/crates/ui/assets/fonts/licenses/"* "$APP/Contents/Resources/licenses/f
 # Icon: iconset from the pre-masked macOS icon (squircle + margins + shadow
 # baked into dist/macos/icon-1024.png — sips can't alpha-mask, so the mask is
 # applied ahead of time; dist/zeron.png stays the full-bleed shared artwork).
-ICONSET="$OUT_DIR/zeron.iconset"
+ICONSET="$OUT_DIR/creel.iconset"
 rm -rf "$ICONSET" && mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   retina=$((size * 2))
   sips -z "$retina" "$retina" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/zeron.icns"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/creel.icns"
 rm -rf "$ICONSET"
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
@@ -77,7 +82,13 @@ if $NOTARIZE; then
 fi
 
 # The auto-updater artifact.
-tar -czf "$APP_TARBALL" -C "$OUT_DIR" Zeron.app
+# Older installed builds look for Zeron.app inside the tarball, so tar a copy
+# under that directory name (renaming a bundle directory keeps its signature).
+UPDATE_STAGE="$OUT_DIR/update-stage"
+rm -rf "$UPDATE_STAGE" && mkdir -p "$UPDATE_STAGE"
+ditto "$APP" "$UPDATE_STAGE/$UPDATE_APP_DIRNAME"
+tar -czf "$APP_TARBALL" -C "$UPDATE_STAGE" "$UPDATE_APP_DIRNAME"
+rm -rf "$UPDATE_STAGE"
 echo "packaged: $APP_TARBALL"
 
 # The dmg presents the classic drag-into-Applications layout over the
@@ -101,12 +112,12 @@ import dmgbuild
 app = os.environ["APP"]
 dmgbuild.build_dmg(
     filename=os.environ["DMG"],
-    volume_name="Zeron",
+    volume_name="Creel",
     settings={
         "format": "UDZO",
         "files": [app],
         "symlinks": {"Applications": "/Applications"},
-        "icon": os.path.join(app, "Contents/Resources/zeron.icns"),
+        "icon": os.path.join(app, "Contents/Resources/creel.icns"),
         "background": os.environ["BG_TIFF"],
         "show_status_bar": False,
         "show_tab_view": False,
@@ -118,7 +129,7 @@ dmgbuild.build_dmg(
         "window_rect": ((200, 120), (660, 400)),
         "icon_size": 104,
         "text_size": 12,
-        "icon_locations": {"Zeron.app": (165, 195), "Applications": (495, 195)},
+        "icon_locations": {"Creel.app": (165, 195), "Applications": (495, 195)},
     },
 )
 PY

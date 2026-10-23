@@ -254,7 +254,7 @@ A single-project Outline has no project rows, so none of this applies there.
   click **Unhide** on a row (or choose **Unhide** in its menu) to bring it back.
 - **Rename Project…** opens the same rename dialog as the sidebar's project menu.
 - **Delete Project…** opens the sidebar's **Remove project?** confirmation.
-  Removing a project permanently deletes its sessions: its Chats leave Zeron's
+  Removing a project permanently deletes its sessions: its Chats leave Creel's
   index, and its whole Work Outline (work items, instructions, and requests) is
   deleted. This can't be undone. To just declutter the Outline, use **Hide from
   Outline** instead. Cancel deletes nothing.
@@ -346,9 +346,9 @@ instructions.
   **Start Chat** validates again, and Start stays disabled until validation
   passes. When the setup does not pin a worktree, the dialog lets you choose the
   Space workspace, an existing checkout, or a new worktree.
-- Zeron does not fall back to another checkout. If a path, repository, or
+- Creel does not fall back to another checkout. If a path, repository, or
   worktree is missing, moved, pruned, or offline, launch or resume is blocked
-  with the problem and how to fix it. Zeron never creates or switches a branch
+  with the problem and how to fix it. Creel never creates or switches a branch
   silently.
 - Each Chat keeps the setup it launched with. Later edits never retarget existing
   Chats, so a Chat whose setup now differs is marked as an exception (folder
@@ -369,9 +369,9 @@ instructions.
   (there is no agent to reply to). They resolve themselves when you submit
   the review or the PR is merged, closed, or no longer asks for you.
 - **Reply & resolve** answers the agent. Type your answer in the note box and
-  press Enter (or Cmd+Enter). Zeron sends it to the Chat that asked, as your
+  press Enter (or Cmd+Enter). Creel sends it to the Chat that asked, as your
   own message: `Re: "<request>": <your note>`, with the request cut to about
-  120 characters. Zeron resolves the request with the same note only after the
+  120 characters. Creel resolves the request with the same note only after the
   Chat accepts the message:
   - If the agent is idle, the message starts its next turn.
   - If the agent is busy, the message is queued until the turn ends, like a
@@ -392,7 +392,7 @@ instructions.
   archived or deleted, Resolve is the only choice: Reply & resolve is
   disabled, and its tooltip says why. Escape or **Cancel** closes the note
   box. Resolved requests are kept under **Resolved**.
-- Zeron notifies you when an item goes from zero to one or more open requests:
+- Creel notifies you when an item goes from zero to one or more open requests:
   one notification per item, with retries deduplicated. Notifications follow your
   notification, background-only, and input-sound settings. Requests always
   appear in Required Actions, even when notifications are off.
@@ -406,14 +406,14 @@ and keeps pasted Linear URLs as plain links. Nothing is added to the Outline
 automatically: items and links come only from the actions below.
 
 - **Connect.** In **Settings → Linear**, paste a Linear personal API key and
-  click **Save**. Zeron checks the key with Linear before storing it in this
+  click **Save**. Creel checks the key with Linear before storing it in this
   Mac's Keychain, then shows **Connected as \<name\>**. The key is never shown
   again or given to agents. **Disconnect** removes the stored key. If Linear
-  rejects the key later, Zeron deletes it and asks you to reconnect.
+  rejects the key later, Creel deletes it and asks you to reconnect.
 - **Turn it on.** Open the project's Space-root details (**Instructions** on the
   Space row) and switch on **Linear**. Without a key, **Connect Linear…** opens
   Settings → Linear. The first time you paste a Linear URL in a project with
-  Linear off, Zeron offers **Enable** once.
+  Linear off, Creel offers **Enable** once.
 - **Linear panel.** Press `⌥⌘L` (`Ctrl+Shift+E` on Windows and Linux;
   rebind **Toggle Inbox column** in Settings → Shortcuts), click **Inbox** in
   the Outline toolbar, run **Toggle Inbox Column** from the command palette, or
@@ -469,7 +469,7 @@ automatically: items and links come only from the actions below.
   item's last children, then selects the first new one. `Esc` or **Cancel**
   closes it.
 - A project link made by pasting a project URL is keyed by the URL. It still
-  counts for the rules above (Zeron matches the id at the end of the URL).
+  counts for the rules above (Creel matches the id at the end of the URL).
   Once the panel has loaded **My projects**, its project chip shows **Fix
   link**, which relinks it by the project's id (link anew, then remove the old
   link).
@@ -485,7 +485,7 @@ automatically: items and links come only from the actions below.
   the full chip, ↻ (refresh every linked item in the project from Linear) and
   **Unlink**.
 - **Synced fields.** An issue item's title and description follow Linear
-  (Zeron syncs about every 15 minutes, and on ↻) until you edit them in Zeron.
+  (Creel syncs about every 15 minutes, and on ↻) until you edit them in Creel.
   A field that still follows Linear shows **Synced from Linear**. When you link
   an issue to an item that already has a description, your description is kept
   and only the title follows Linear.
@@ -533,7 +533,7 @@ that owns the project, through that device's `gh` login.
   fixed-width icons on the right, in projects with the sync, so they line up
   as columns: **author · needs you · your review · CI · PR**.
   - *Author:* the PR author's GitHub login, shortened to 10 characters (full
-    login on hover), or **you** when you wrote it. Zeron learns your login
+    login on hover), or **you** when you wrote it. Creel learns your login
     once from `gh` (`gh api user`); until it has it, every author shows the
     plain login. The chat's work-context strip says "you" the same way.
   - *Needs you:* the usual attention dot (and count). It replaces the "N active
@@ -545,8 +545,8 @@ that owns the project, through that device's `gh` login.
   - *CI:* a dot (green passing, red failing, amber running; none without
     checks).
   - *PR:* the pull-request icon, colored by state (green open, grey draft,
-    purple merged, red closed). Click it to open the PR (in Zeron or your
-    browser, per **Open web links in Zeron**).
+    purple merged, red closed). Click it to open the PR (in Creel or your
+    browser, per **Open web links in Creel**).
   Each icon has its own hover; hovering the group shows the whole line (`#42 ·
   Open · CI failing · Re-review requested · by alex · 2 chats`). On a narrow
   Outline the title keeps at least about 120 px and the icons drop in this
@@ -628,7 +628,7 @@ duplicate items.
 
 ## Limitations
 
-- Work Outline instructions are added to Claude Code's system prompt. Zeron
+- Work Outline instructions are added to Claude Code's system prompt. Creel
   cannot mechanically stop them from outranking repository instructions, so the
   instruction envelope states that they never override repository, global,
   skill, or safety instructions. Instructions do not reach harness-native

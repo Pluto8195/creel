@@ -182,7 +182,7 @@ async function recoverInterruptedRun(agentId) {
   if (interruptedRun && ["queued", "running"].includes(interruptedRun.status)) {
     await ownedStore.runs.update({run: {
       ...interruptedRun, status: "cancelled", endedAt: Date.now(), updatedAt: Date.now(),
-      error: "The previous Zeron process stopped before completing this turn.",
+      error: "The previous Creel process stopped before completing this turn.",
     }});
   }
   // Preserve the newest available conversation checkpoint; never start a new

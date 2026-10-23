@@ -585,7 +585,7 @@ impl RenderBroker {
             lock(&self.pending).remove(&request_id);
             return Err(ArtifactError::new(
                 ArtifactErrorCode::RenderUnavailable,
-                "no Zeron window is open on this device to render the artifact; say so instead \
+                "no Creel window is open on this device to render the artifact; say so instead \
                  of claiming it was checked",
             ));
         }

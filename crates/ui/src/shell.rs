@@ -2032,7 +2032,7 @@ impl Shell {
             Some("signin") => Some(GatePhase::SignIn),
             Some("org") => Some(GatePhase::OrgGate),
             Some("failed") => Some(GatePhase::Failed(
-                "Could not reach the zeron engine on port 27901".into(),
+                "Could not reach the Creel engine on port 27901".into(),
             )),
             _ => None,
         };
@@ -2505,7 +2505,7 @@ impl Shell {
                 {
                     let body = match connectivity {
                         zeron_proto::ConnectivityState::Offline => "Your device is offline",
-                        _ => "Zeron is trying to reconnect",
+                        _ => "Creel is trying to reconnect",
                     };
                     crate::notify::post("Connection unavailable", body, None);
                 }
@@ -4278,7 +4278,7 @@ impl Shell {
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Zeron conversation link copied".into());
+            self.sidebar_notice = Some("Creel conversation link copied".into());
         } else {
             self.sidebar_notice = Some("Conversation link is not ready yet".into());
         }
@@ -5895,7 +5895,7 @@ impl Shell {
                     },
                     Err(err) => {
                         shell.runtime_change_error = Some(format!(
-                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
+                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Creel."
                         ).into());
                         cx.notify();
                     }
@@ -8538,7 +8538,7 @@ impl Shell {
         } else if remote_engine {
             "Stop daemon and quit"
         } else {
-            "Quit Zeron"
+            "Quit Creel"
         };
 
         if self.sync_flow == SyncFlow::Enabling && needs_org {
@@ -8563,7 +8563,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Finish signing in in your browser. Zeron will keep using this local workspace until you quit and reopen.",
+                        "Finish signing in in your browser. Creel will keep using this local workspace until you quit and reopen.",
                     )),
                 )
                 .child(
@@ -8607,14 +8607,14 @@ impl Shell {
                     )
                     .into(),
                     (Some(email), None) => format!(
-                        "You're signed in as {email}. Zeron can switch to your synced workspace now."
+                        "You're signed in as {email}. Creel can switch to your synced workspace now."
                     )
                     .into(),
                     (None, Some(phrase)) => format!(
                         "Bring {phrase} from this device into your synced workspace, or start it fresh."
                     )
                     .into(),
-                    (None, None) => "Zeron can switch to your synced workspace now.".into(),
+                    (None, None) => "Creel can switch to your synced workspace now.".into(),
                 };
                 let mut actions = div()
                     .mt(px(16.0))
@@ -8803,9 +8803,9 @@ impl Shell {
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
                         if remote_engine {
-                            "Zeron is using a background daemon. Stop it and quit Zeron, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Creel is using a background daemon. Stop it and quit Creel, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         } else {
-                            "Quit and reopen Zeron to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Quit and reopen Creel to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         },
                     )),
                 )
@@ -8850,7 +8850,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Zeron will remove your credentials, close the synced workspace, and continue in local mode.",
+                        "Creel will remove your credentials, close the synced workspace, and continue in local mode.",
                     )),
                 )
                 .child(
@@ -9254,7 +9254,7 @@ impl Shell {
                                     .size(px(16.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from("Zeron conversation link")),
+                            .child(SharedString::from("Creel conversation link")),
                     )
                     .when_some(harness_link, |menu, link| {
                         menu.child(
@@ -10493,7 +10493,7 @@ impl Shell {
                     .line_height(px(19.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
-                        "Zeron removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
+                        "Creel removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
                     )),
             )
             .when_some(self.runtime_change_error.clone(), |card, error| {
@@ -11138,7 +11138,7 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(18.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text)
-                        .child(SharedString::from("Log in to Zeron")),
+                        .child(SharedString::from("Log in to Creel")),
                 )
                 .child(
                     div()
@@ -11293,11 +11293,11 @@ impl Shell {
         // then existing memberships and the account escape hatch.
         let blurb: SharedString = match email {
             Some(email) => format!(
-                "Zeron is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+                "Creel is organized around workspaces — create one for yourself or your team. Signed in as {email}."
             )
             .into(),
             None => {
-                "Zeron is organized around workspaces — create one for yourself or your team."
+                "Creel is organized around workspaces — create one for yourself or your team."
                     .into()
             }
         };

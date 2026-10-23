@@ -171,7 +171,7 @@ impl Shell {
                 })
                 .map(|device| {
                     format!(
-                        "Update Zeron on {} to start Chats from work items",
+                        "Update Creel on {} to start Chats from work items",
                         device.name
                     )
                 })
@@ -716,7 +716,7 @@ pub(super) fn start_chat_card(
                     ValidationHeadline::DeviceOffline { device_id } => (
                         "start-chat-validation-device-offline",
                         format!(
-                            "{} is offline \u{2014} Zeron will not start this Chat elsewhere",
+                            "{} is offline \u{2014} Creel will not start this Chat elsewhere",
                             device_name(shell, &device_id, cx)
                         ),
                         theme.warning,
@@ -724,7 +724,7 @@ pub(super) fn start_chat_card(
                     ValidationHeadline::HostUnsupported { device_id } => (
                         "start-chat-validation-host-unsupported",
                         format!(
-                            "{} runs a Zeron that can\u{2019}t validate execution",
+                            "{} runs a Creel that can\u{2019}t validate execution",
                             device_name(shell, &device_id, cx)
                         ),
                         theme.warning,

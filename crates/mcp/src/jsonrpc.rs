@@ -25,8 +25,8 @@ const LATEST_PROTOCOL: &str = "2025-11-25";
 /// guidance every agent needs first. Detail that does not fit belongs in the
 /// tool descriptions (`tools.rs`).
 const INSTRUCTIONS: &str = "\
-Zeron runs coding agents in chats, each in a project (a folder on a device). \
-These tools operate the local Zeron engine.\n\
+Creel runs coding agents in chats, each in a project (a folder on a device). \
+These tools operate the local Creel engine.\n\
 \n\
 Worktrees: right after `git worktree add`, or when resuming a worktree for \
 this chat's work, call `bind_chat_worktree` with its absolute top-level \

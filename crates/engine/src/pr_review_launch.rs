@@ -885,7 +885,7 @@ impl PrReviewLauncher {
                 return Err(err(
                     PrReviewErrorCode::Fork,
                     format!(
-                        "PR {number} comes from a fork; check it out by hand (Zeron only checks out branches pushed to {owner}/{name})."
+                        "PR {number} comes from a fork; check it out by hand (Creel only checks out branches pushed to {owner}/{name})."
                     ),
                 ));
             }

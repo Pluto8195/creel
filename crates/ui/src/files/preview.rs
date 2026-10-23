@@ -2064,7 +2064,7 @@ impl FilesSurface {
                                 if confirming_reload {
                                     "Discard unsaved changes?"
                                 } else {
-                                    "This file changed outside Zeron."
+                                    "This file changed outside Creel."
                                 },
                             ))
                             .child(
