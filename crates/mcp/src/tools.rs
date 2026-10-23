@@ -2453,6 +2453,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("idempotencyKey is required"), "{err}");
+        // The error lists the parameters and shows an example call.
+        assert!(err.contains("Usage of create_chat:"), "{err}");
+        assert!(err.contains("required: idempotencyKey"), "{err}");
+        assert!(err.contains("optional: project"), "{err}");
+        assert!(err.contains("example: {\"workItemId\""), "{err}");
 
         let args = json!({ "project": "/repo/comet", "title": "Child", "prompt": "go",
                            "idempotency_key": "spawn-reviewer" });
@@ -2696,6 +2701,67 @@ mod tests {
         assert_eq!(calls[0]["arguments"]["status"], "active");
         // The tool never sends a chat id: the engine derives it.
         assert!(calls[0]["arguments"].get("chatId").is_none());
+    }
+
+    /// Agents often call before the full schema has loaded and guess names:
+    /// the server maps the common guesses before the engine (or `create_chat`)
+    /// parses them, and an argument error says what to pass.
+    #[tokio::test]
+    async fn guessed_argument_names_are_normalised_before_dispatch() {
+        let world = Arc::new(World::default());
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        agent
+            .call(
+                agent_tool_names::CREATE_USER_ACTION_REQUEST,
+                json!({ "question": "Which branch?", "dedupe_key": "branch" }),
+            )
+            .await
+            .unwrap();
+        agent
+            .call(
+                agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
+                json!({ "id": "req-1" }),
+            )
+            .await
+            .unwrap();
+        agent
+            .call(
+                agent_tool_names::SET_STATUS,
+                json!({ "itemId": "item-1", "status": "completed" }),
+            )
+            .await
+            .unwrap();
+        let request = &world.agent_calls(agent_tool_names::CREATE_USER_ACTION_REQUEST)[0];
+        assert_eq!(request["arguments"]["request"], "Which branch?");
+        assert_eq!(request["arguments"]["dedupeKey"], "branch");
+        assert!(request["arguments"].get("question").is_none());
+        let resolve = &world.agent_calls(agent_tool_names::RESOLVE_USER_ACTION_REQUEST)[0];
+        assert_eq!(resolve["arguments"]["userActionRequestId"], "req-1");
+        let status = &world.agent_calls(agent_tool_names::SET_STATUS)[0];
+        assert_eq!(status["arguments"]["workItemId"], "item-1");
+
+        // create_chat: camelCase key and `workItem` reach the real fields.
+        let created = agent
+            .call(
+                "create_chat",
+                json!({ "idempotencyKey": "leaf-2", "workItem": "item-leaf", "prompt": "go" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["workItemId"], "item-leaf");
+        let launch = &world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT)[0];
+        assert_eq!(launch["arguments"]["idempotencyKey"], "leaf-2");
+
+        // A wrong value type is an argument error with the usage appended.
+        let err = agent
+            .call(
+                "create_chat",
+                json!({ "idempotency_key": "k", "wait": "yes" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("invalid arguments"), "{err}");
+        assert!(err.contains("Usage of create_chat:"), "{err}");
     }
 
     #[tokio::test]

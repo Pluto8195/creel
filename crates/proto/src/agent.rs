@@ -1158,6 +1158,135 @@ pub mod agent_tools {
         }
 
         #[test]
+        fn derived_keys_are_stable_short_and_scoped_to_their_parts() {
+            let key = derived_idempotency_key("set", &["item", "completed", "7"]);
+            assert_eq!(
+                key,
+                derived_idempotency_key("set", &["item", "completed", "7"])
+            );
+            assert!(key.starts_with("auto:"));
+            // Long inputs still give a short key and a registry-sized operation id.
+            let long = "x".repeat(5000);
+            let long_key = derived_idempotency_key("set", &[&long, &long]);
+            assert_eq!(long_key.len(), key.len());
+            assert!(validate_idempotency_key(Some(&long_key)).is_ok());
+            assert!(operation_id("chat", &long_key).len() <= 64);
+            assert_ne!(
+                key,
+                derived_idempotency_key("set", &["item", "completed", "8"])
+            );
+            assert_ne!(
+                key,
+                derived_idempotency_key("other", &["item", "completed", "7"])
+            );
+            assert_ne!(
+                derived_idempotency_key("t", &["ab", "c"]),
+                derived_idempotency_key("t", &["a", "bc"])
+            );
+        }
+
+        #[test]
+        fn guessed_names_normalise_to_the_real_parameters() {
+            use serde_json::json;
+            let n = |tool: &str, args: Value| normalize_arguments(tool, &args);
+            assert_eq!(
+                n(
+                    tools::CREATE_USER_ACTION_REQUEST,
+                    json!({ "text": "Q?", "idempotency_key": "k" })
+                ),
+                json!({ "request": "Q?", "idempotencyKey": "k" })
+            );
+            for alias in ["title", "question", "text"] {
+                assert_eq!(
+                    n(tools::CREATE_USER_ACTION_REQUEST, json!({ alias: "Q?" })),
+                    json!({ "request": "Q?" }),
+                    "{alias}"
+                );
+            }
+            for alias in ["id", "requestId", "request_id", "user_action_request_id"] {
+                assert_eq!(
+                    n(tools::RESOLVE_USER_ACTION_REQUEST, json!({ alias: "r1" })),
+                    json!({ "userActionRequestId": "r1" }),
+                    "{alias}"
+                );
+            }
+            for alias in ["workItem", "itemId", "work_item_id"] {
+                assert_eq!(
+                    n(tools::SET_STATUS, json!({ alias: "w", "status": "active" })),
+                    json!({ "workItemId": "w", "status": "active" }),
+                    "{alias}"
+                );
+                assert_eq!(
+                    n(tools::ASSOCIATE_CURRENT_CHAT, json!({ alias: "w" })),
+                    json!({ "workItemId": "w" }),
+                    "{alias}"
+                );
+            }
+            assert_eq!(
+                n(
+                    tools::CREATE_CHILD,
+                    json!({ "title": "t", "workItemId": "p" })
+                ),
+                json!({ "title": "t", "parentWorkItemId": "p" })
+            );
+            // A canonical name wins over an alias, whatever the order.
+            assert_eq!(
+                n(
+                    tools::CREATE_USER_ACTION_REQUEST,
+                    json!({ "text": "alias", "request": "real" })
+                ),
+                json!({ "request": "real" })
+            );
+            // `text` is the real parameter of propose_instruction.
+            assert_eq!(
+                n(tools::PROPOSE_INSTRUCTION, json!({ "text": "t" })),
+                json!({ "text": "t" })
+            );
+            // create_chat keeps its snake_case names but takes the item aliases.
+            assert_eq!(
+                n(
+                    "create_chat",
+                    json!({ "workItem": "w", "idempotency_key": "k", "timeout_secs": 5 })
+                ),
+                json!({ "workItemId": "w", "idempotency_key": "k", "timeout_secs": 5 })
+            );
+            // Null arguments become an empty object; other tools are untouched.
+            assert_eq!(n(tools::READ_CURRENT, Value::Null), json!({}));
+            assert_eq!(
+                n("read_chat", json!({ "chat": "c", "text": "x" })),
+                json!({ "chat": "c", "text": "x" })
+            );
+        }
+
+        #[test]
+        fn every_engine_tool_has_usage_with_its_required_and_optional_parameters() {
+            let mut names: Vec<&str> = tools::WORK_OUTLINE.to_vec();
+            names.extend(tools::ARTIFACTS);
+            names.extend([tools::BIND_CHAT_WORKTREE, "create_chat"]);
+            for name in names {
+                let usage = usage_text(name).unwrap_or_else(|| panic!("no usage for {name}"));
+                assert!(usage.contains(&format!("Usage of {name}:")), "{usage}");
+                assert!(
+                    usage.contains("required:") && usage.contains("optional:"),
+                    "{usage}"
+                );
+                let example = usage_of(name).unwrap().example;
+                serde_json::from_str::<Value>(example)
+                    .unwrap_or_else(|e| panic!("{name} example is not JSON: {e}"));
+            }
+            let text = with_usage(
+                tools::SET_STATUS,
+                "invalid arguments: missing field `status`",
+            );
+            assert!(text.starts_with("invalid arguments: missing field `status`\nUsage of"));
+            assert!(text.contains("optional: workItemId (defaults to your chat's item), idempotencyKey (derived when omitted)"));
+            assert!(text.contains(r#"example: {"status": "completed"}"#));
+            // Not appended twice, and unknown tools pass through.
+            assert_eq!(with_usage(tools::SET_STATUS, &text), text);
+            assert_eq!(with_usage("nope", "x"), "x");
+        }
+
+        #[test]
         fn error_codes_are_lenient() {
             let code: AgentToolErrorCode = serde_json::from_str("\"newer\"").unwrap();
             assert_eq!(code, AgentToolErrorCode::Unsupported);

@@ -1558,9 +1558,6 @@ async fn bind_chat_worktree_validates_arguments_and_authentication() {
     let rig = bind_rig(true);
     let path = text(&rig.sub_wt);
     for (arguments, what) in [
-        (json!({ "path": path }), "missing key"),
-        (json!({ "path": path, "idempotencyKey": "" }), "empty key"),
-        (json!({ "path": path, "idempotencyKey": "  " }), "blank key"),
         (json!({ "idempotencyKey": "k" }), "missing path"),
         (json!({ "path": "", "idempotencyKey": "k" }), "empty path"),
         (json!({ "path": 7, "idempotencyKey": "k" }), "bad path type"),
@@ -1571,12 +1568,79 @@ async fn bind_chat_worktree_validates_arguments_and_authentication() {
     }
     assert!(rig.targets.stored(CHAT).targets.is_empty());
 
+    // A key is optional for a bind (blank counts as omitted).
+    for key in [None, Some(""), Some("  ")] {
+        let mut arguments = json!({ "path": path });
+        if let Some(key) = key {
+            arguments["idempotencyKey"] = json!(key);
+        }
+        bind_call(&rig, &rig.token, arguments)
+            .unwrap_or_else(|e| panic!("bind with key {key:?}: {e}"));
+    }
+
     let good = json!({ "path": path, "idempotencyKey": "k" });
     for token in ["", "zat_forged", &format!("{}0", rig.token)] {
         let err = bind_call(&rig, token, good.clone()).unwrap_err();
         assert_eq!(err.code(), "unauthenticated", "{token:?}");
     }
-    assert!(rig.targets.stored(CHAT).targets.is_empty());
+    assert_eq!(rig.targets.stored(CHAT).targets.len(), 1);
+}
+
+/// Replay of today's failure (Mikey's ENG-1655 review chat and the
+/// pr-page-parity child): `bind_chat_worktree` without an `idempotencyKey`
+/// binds, and rebinding a path later re-selects it even after another bind.
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_chat_worktree_without_a_key_binds_and_rebinding_reselects() {
+    let rig = bind_rig(true);
+    let call = |path: &Path| {
+        bind_call(&rig, &rig.token, json!({ "path": text(path) })).unwrap_or_else(|e| panic!("{e}"))
+    };
+    let selected = || -> Option<String> {
+        rig.targets
+            .stored(CHAT)
+            .targets
+            .into_iter()
+            .find(|t| t.selected)
+            .map(|t| t.path)
+    };
+    let first = call(&rig.sub_wt);
+    assert_eq!(first["selected"], true);
+    assert_eq!(first["replayed"], false);
+    // The same call again is harmless: still one target.
+    let again = call(&rig.sub_wt);
+    assert_eq!(again["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(again["replayed"], false);
+    // Bind another path, then the first again: the first is selected, not
+    // replayed as a stale no-op.
+    call(&rig.root_wt);
+    assert_eq!(selected().as_deref(), Some(text(&rig.root_wt).as_str()));
+    call(&rig.sub_wt);
+    assert_eq!(selected().as_deref(), Some(text(&rig.sub_wt).as_str()));
+    assert_eq!(rig.targets.stored(CHAT).targets.len(), 2);
+    // No replay ledger entries were written for the keyless calls.
+    assert!(rig.targets.rows().into_iter().all(|row| row.ops.is_empty()));
+
+    // `snake_case` keys are accepted too.
+    let reply = bind_call(
+        &rig,
+        &rig.token,
+        json!({ "path": text(&rig.sub_wt), "idempotency_key": "snake" }),
+    )
+    .unwrap();
+    assert_eq!(reply["replayed"], false);
+    let row = rig.targets.rows().into_iter().next().unwrap();
+    assert_eq!(
+        row.ops,
+        vec![zeron_proto::agent_tools::operation_id(CHAT, "snake")]
+    );
+
+    // A missing path lists the parameters and an example.
+    let err = bind_call(&rig, &rig.token, json!({}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("path is required"), "{err}");
+    assert!(err.contains("Usage of bind_chat_worktree"), "{err}");
+    assert!(err.contains("example:"), "{err}");
 }
 
 /// Engine assembly attaches the shared `DiffTargets` itself: a bind works
@@ -1752,4 +1816,204 @@ async fn a_coordinator_resolving_its_childs_deduped_request_persists_across_read
         request_is_resolved(&after, &request_id),
         "the resolution did not survive a restart"
     );
+}
+
+// ---- forgiving calls ----------------------------------------------------------
+
+/// Replays of the calls agents got wrong on their first try (Claude Code loads
+/// MCP tools lazily, so they guess parameters): missing keys on naturally
+/// idempotent tools and guessed field names now succeed; the create-style
+/// tools name the missing field and show an example.
+#[tokio::test(flavor = "multi_thread")]
+async fn first_guess_calls_succeed_or_say_exactly_what_to_pass() {
+    let rig = rig().await;
+    let root = create_item(&rig, "op-root", "Feature", None).await;
+    let lease = rig
+        .core
+        .sessions
+        .agent_tokens()
+        .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+    let call = |name: &'static str, arguments: Value| {
+        let (rig, token) = (&rig, token.clone());
+        async move { tool(rig, &token, name, arguments).await }
+    };
+
+    // associate_current_chat: no key, `workItem` for `workItemId`.
+    call(
+        "work_outline_associate_current_chat",
+        json!({ "workItem": root }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        snapshot(&rig)
+            .assignments
+            .iter()
+            .find(|a| a.chat_id == CHAT)
+            .and_then(|a| a.work_item_id.clone())
+            .as_deref(),
+        Some(root.as_str())
+    );
+    // The same call again is fine.
+    call(
+        "work_outline_associate_current_chat",
+        json!({ "itemId": root }),
+    )
+    .await
+    .unwrap();
+
+    // work_outline_set_status: no key; completing, reopening and completing
+    // again each take effect (a derived key must not replay a stale result).
+    let status = |rig: &Rig| snapshot(rig).item(&root).unwrap().status;
+    for (wanted, expected) in [
+        ("completed", zeron_proto::WorkItemStatus::Completed),
+        ("active", zeron_proto::WorkItemStatus::Active),
+        ("completed", zeron_proto::WorkItemStatus::Completed),
+        ("completed", zeron_proto::WorkItemStatus::Completed),
+    ] {
+        // Updates are stamped with the clock; keep the stamps apart.
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        call("work_outline_set_status", json!({ "status": wanted }))
+            .await
+            .unwrap();
+        assert_eq!(status(&rig), expected, "after {wanted}");
+    }
+    // Also by an explicit item and a snake_case key.
+    call(
+        "work_outline_set_status",
+        json!({ "status": "active", "work_item_id": root, "idempotency_key": "reopen" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status(&rig), zeron_proto::WorkItemStatus::Active);
+
+    // create_user_action_request: `text` for `request`, a dedupeKey as the key.
+    let created = call(
+        "work_outline_create_user_action_request",
+        json!({ "text": "Which branch?", "detail": "main or release", "dedupeKey": "branch" }),
+    )
+    .await
+    .unwrap();
+    let request_id = created["userActionRequestId"].as_str().unwrap().to_owned();
+    // Repeating the call returns the same open request, not a duplicate.
+    let repeated = call(
+        "work_outline_create_user_action_request",
+        json!({ "title": "Which branch?", "detail": "main or release", "dedupeKey": "branch" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(repeated["userActionRequestId"], request_id.as_str());
+    assert_eq!(
+        snapshot(&rig)
+            .user_action_requests
+            .iter()
+            .filter(|r| r.is_open() && !r.deduped)
+            .count(),
+        1
+    );
+    // `question` works as well, with an explicit key.
+    let other = call(
+        "work_outline_create_user_action_request",
+        json!({ "question": "Ship it?", "idempotencyKey": "ship" }),
+    )
+    .await
+    .unwrap();
+    assert_ne!(other["userActionRequestId"], request_id.as_str());
+
+    // resolve: `id` for `userActionRequestId`, no key; a retry is fine.
+    for _ in 0..2 {
+        call(
+            "work_outline_resolve_user_action_request",
+            json!({ "id": request_id, "resolution": "main" }),
+        )
+        .await
+        .unwrap();
+    }
+    assert!(request_is_resolved(&snapshot(&rig), &request_id));
+    call(
+        "work_outline_resolve_user_action_request",
+        json!({ "requestId": other["userActionRequestId"] }),
+    )
+    .await
+    .unwrap();
+
+    // The same dedupeKey after a resolve is a new request, not a replay.
+    let reasked = call(
+        "work_outline_create_user_action_request",
+        json!({ "request": "Which branch?", "detail": "main or release", "dedupeKey": "branch" }),
+    )
+    .await
+    .unwrap();
+    assert_ne!(reasked["userActionRequestId"], request_id.as_str());
+    assert!(!request_is_resolved(
+        &snapshot(&rig),
+        reasked["userActionRequestId"].as_str().unwrap()
+    ));
+
+    // Create-style tools keep their key but say exactly what is missing.
+    let err = call(
+        "work_outline_create_user_action_request",
+        json!({ "request": "No key, no dedupeKey" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("idempotencyKey is required"), "{err}");
+    assert!(err.contains("dedupeKey"), "{err}");
+    assert!(
+        err.contains("Usage of work_outline_create_user_action_request"),
+        "{err}"
+    );
+    assert!(err.contains("example:"), "{err}");
+    let err = call("work_outline_create_user_action_request", json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing field `request`"), "{err}");
+    assert!(err.contains("required: request"), "{err}");
+    assert!(err.contains("optional: detail"), "{err}");
+    assert!(err.contains("example: {\"request\""), "{err}");
+    let err = call("work_outline_create_child", json!({ "title": "x" }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("idempotencyKey is required"), "{err}");
+    assert!(err.contains("Usage of work_outline_create_child"), "{err}");
+    let err = call(
+        "work_outline_propose_instruction",
+        json!({ "idempotencyKey": "k" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("missing field `text`"), "{err}");
+    assert!(
+        err.contains("Usage of work_outline_propose_instruction"),
+        "{err}"
+    );
+    let err = call("work_outline_resolve_user_action_request", json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing field `userActionRequestId`"), "{err}");
+    assert!(err.contains("example:"), "{err}");
+    let err = call("work_outline_set_status", json!({ "status": "done" }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("status must be active or completed"), "{err}");
+    assert!(err.contains("Usage of work_outline_set_status"), "{err}");
+
+    // `parentId` stands for `parentWorkItemId` on create_child; the key stays
+    // required, and `idempotency_key` is accepted for it.
+    let child = call(
+        "work_outline_create_child",
+        json!({ "title": "Child", "parentId": root, "idempotency_key": "child-1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(child["parentWorkItemId"], root.as_str());
+    // A retry with the snake_case key replays the same child.
+    let retry = call(
+        "work_outline_create_child",
+        json!({ "title": "Child", "parent": root, "idempotencyKey": "child-1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry["workItemId"], child["workItemId"]);
 }

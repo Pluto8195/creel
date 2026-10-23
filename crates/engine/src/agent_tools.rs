@@ -1146,9 +1146,9 @@ impl AgentToolsService {
         // either, a retry could duplicate the request.
         let operation_id = match non_empty(args.dedupe_key.clone()) {
             Some(dedupe_key) => context.operation_id_or_derived(arguments, || {
-                // Earlier requests with this key (open or resolved) make a
-                // repeat after a resolve a new request, not a replay.
-                let earlier = self
+                // A repeat while the request is open replays it (same id);
+                // once it is resolved, asking again is a new request.
+                let resolved = self
                     .work_outline
                     .snapshot(&context.grant.space_id)
                     .user_action_requests
@@ -1156,6 +1156,8 @@ impl AgentToolsService {
                     .filter(|r| {
                         r.work_item_id == work_item_id
                             && r.dedupe_key.as_deref() == Some(dedupe_key.as_str())
+                            && !r.deduped
+                            && !r.is_open()
                     })
                     .count()
                     .to_string();
@@ -1166,7 +1168,7 @@ impl AgentToolsService {
                         &dedupe_key,
                         &args.request,
                         args.detail.as_deref().unwrap_or_default(),
-                        &earlier,
+                        &resolved,
                     ],
                 ))
             })?,
