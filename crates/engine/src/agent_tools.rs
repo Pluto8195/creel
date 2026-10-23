@@ -1109,6 +1109,28 @@ impl AgentToolsService {
                 operation_id,
             });
         self.apply(context, &mutation)?;
+        // `resolved` is read back from the row, never assumed from the call
+        // succeeding: a mutation that wrote nothing must not report success.
+        let resolved = self
+            .workspace
+            .registry_row(
+                zeron_doc::work_outline::KIND_USER_ACTION_REQUESTS,
+                &args.user_action_request_id,
+            )
+            .and_then(|row| {
+                row.fields
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .is_some_and(|state| state == "resolved");
+        if !resolved {
+            return Err(WorkOutlineError::new(
+                zeron_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
+                "the request is still open after the resolve; nothing was changed",
+            )
+            .into());
+        }
         Ok(json!({ "userActionRequestId": args.user_action_request_id, "resolved": true }))
     }
 

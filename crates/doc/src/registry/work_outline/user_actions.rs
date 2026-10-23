@@ -36,8 +36,8 @@ use zeron_proto::work_outline_user_actions::{
     InstructionProposalTarget, ProposalReviewState, ProposalTargetScope,
     ProposeWorkItemInstructionParams, RejectWorkItemInstructionProposalParams,
     ResolveUserActionRequestParams, UserActionOriginKind, UserActionRequestState,
-    UserActionRequestView,
-    UserActionResolution, WorkItemInstructionProposalView, user_action_limits,
+    UserActionRequestView, UserActionResolution, WorkItemInstructionProposalView,
+    user_action_limits,
 };
 
 use super::instructions::{NewInstruction, check_instruction_text, checked_source};
@@ -611,9 +611,13 @@ impl RegistryDoc {
         if !request.is_open() {
             return Ok(());
         }
-        // An agent resolves only its own Chat's members of the group: a
-        // duplicate another Chat raised is that Chat's request and stays
-        // open (the user's resolve keeps whole-group behavior).
+        // An agent resolves only the members of the group it may resolve: its
+        // own Chat's and, for a coordinator, its direct children's (the same
+        // rule `authorize_agent_mutation` applies to the target). A duplicate
+        // another Chat raised is that Chat's request and stays open (the
+        // user's resolve keeps whole-group behavior). The target is always in
+        // the group: filtering it out by the caller's Chat id once made a
+        // coordinator's resolve of its child's deduped request write nothing.
         let agent_chat = match actor.kind {
             WorkOutlineActorKind::Agent => Some(actor.chat_id.clone().unwrap_or_default()),
             _ => None,
@@ -625,7 +629,12 @@ impl RegistryDoc {
                 .into_iter()
                 .map(|r| r.view)
                 .filter(|r| r.is_open() && r.dedupe_key.as_ref() == Some(key))
-                .filter(|r| agent_chat.as_ref().is_none_or(|chat| r.chat_id == *chat))
+                .filter(|r| {
+                    r.id == p.user_action_request_id
+                        || agent_chat
+                            .as_ref()
+                            .is_none_or(|chat| self.agent_may_resolve_origin(chat, &r.chat_id))
+                })
                 .collect(),
         };
         let plan = Self::plan_resolutions(&group, actor, now_ms, p.note.as_deref());
@@ -929,6 +938,20 @@ impl RegistryDoc {
             .flatten()
     }
 
+    /// Whether an agent acting for Chat `agent_chat` may resolve a request
+    /// raised by `origin`: its own Chat, or a Chat it created (a
+    /// coordinator closes what its direct children raised, e.g. "Ready to
+    /// merge"); never requests from Chats a person started or another agent
+    /// created.
+    fn agent_may_resolve_origin(&self, agent_chat: &str, origin: &str) -> bool {
+        origin == agent_chat
+            || self
+                .chat(origin)
+                .ok()
+                .flatten()
+                .is_some_and(|c| c.parent_chat_id.as_deref() == Some(agent_chat))
+    }
+
     /// The narrow agent policy: `Ok` when an agent acting for Chat
     /// `chat_id` may perform `mutation`, else `unauthorized` (with the
     /// reason). Allowed, all within the Chat's Space:
@@ -1067,18 +1090,8 @@ impl RegistryDoc {
                 let origin = self
                     .overlay_row(KIND_USER_ACTION_REQUESTS, &p.user_action_request_id)
                     .and_then(|row| str_field(&row, "chatId"));
-                // A coordinator also closes what its own child Chats raised
-                // (e.g. "Ready to merge"); never requests from Chats a person
-                // started or another agent created.
-                let raised_by_own_child = |origin: &str| {
-                    self.chat(origin)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|c| c.parent_chat_id.as_deref() == Some(chat_id))
-                };
                 match origin {
-                    Some(origin) if origin == chat_id => Ok(()),
-                    Some(origin) if raised_by_own_child(&origin) => Ok(()),
+                    Some(origin) if self.agent_may_resolve_origin(chat_id, &origin) => Ok(()),
                     Some(_) => Err(unauthorized(
                         "Agents may only resolve requests their own Chat or a Chat it created \
                          raised",

@@ -1167,6 +1167,79 @@ fn agent_resolve_closes_only_its_own_members_of_a_dedupe_group() {
     );
 }
 
+/// A coordinator (`c1`) closes what its direct child (`c3`) raised, including
+/// the child's whole dedupe group. The target used to be dropped from the group
+/// by the CALLER's Chat id, so a deduped request resolved to a no-op.
+#[test]
+fn coordinator_resolve_closes_its_childs_dedupe_group_and_nothing_else() {
+    let mut f = fixture();
+    let child = f.child.clone();
+    let mut c3 = space_chat("c3", Some(SPACE));
+    c3.parent_chat_id = Some("c1".into());
+    f.doc.upsert_chat(&c3).unwrap();
+    let mut c4 = space_chat("c4", Some(SPACE));
+    c4.parent_chat_id = Some("c3".into());
+    f.doc.upsert_chat(&c4).unwrap();
+    assign(&mut f.doc, "as-c3", "c3", &child);
+    assign(&mut f.doc, "as-c4", "c4", &child);
+    assign(&mut f.doc, "as-c2", "c2", &child);
+    let raise = |f: &mut Fixture, op: &str, chat: &str, key: Option<&str>| {
+        apply_as(
+            &mut f.doc,
+            &agent(chat),
+            request_params(op, &child, chat, key),
+        )
+        .unwrap()
+        .user_action_request_id
+        .unwrap()
+    };
+    let first = raise(&mut f, "k1", "c3", Some("ready"));
+    let again = raise(&mut f, "k2", "c3", Some("ready"));
+    let other_chat = raise(&mut f, "k3", "c2", Some("ready"));
+    let grandchild = raise(&mut f, "k4", "c4", None);
+    let plain = raise(&mut f, "k5", "c3", None);
+
+    // The coordinator resolves one deduped request: both of the child's group
+    // members close, the unrelated chat's duplicate stays open.
+    as_agent(&mut f, resolve_params("cx", &first, Some("Merged"))).unwrap();
+    let s = snap(&f.doc);
+    for id in [&first, &again] {
+        assert!(!s.user_action_request(id).unwrap().is_unresolved(), "{id}");
+    }
+    assert!(s.user_action_request(&other_chat).unwrap().is_unresolved());
+    // An undeduped child request resolves too.
+    as_agent(&mut f, resolve_params("cy", &plain, None)).unwrap();
+    assert!(
+        !snap(&f.doc)
+            .user_action_request(&plain)
+            .unwrap()
+            .is_unresolved()
+    );
+    // Grandchildren stay out of reach, loudly.
+    denied(&mut f, resolve_params("cz", &grandchild, None));
+    assert!(
+        snap(&f.doc)
+            .user_action_request(&grandchild)
+            .unwrap()
+            .is_unresolved()
+    );
+    // An unrelated Chat cannot resolve the child's request either.
+    let again_open = raise(&mut f, "k6", "c3", Some("later"));
+    let err = apply_as(
+        &mut f.doc,
+        &agent("c2"),
+        resolve_params("cw", &again_open, None),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, WorkOutlineErrorCode::Unauthorized);
+    assert!(
+        snap(&f.doc)
+            .user_action_request(&again_open)
+            .unwrap()
+            .is_unresolved()
+    );
+}
+
 #[test]
 fn agent_may_set_active_or_completed_on_its_subtree_and_never_auto_resolves() {
     let mut f = fixture();
