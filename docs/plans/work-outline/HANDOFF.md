@@ -170,9 +170,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - It's one line, expandable. Variants by precedence: PR review item (own item, ancestor, or a
     launcher review chat) > Linear issue (the ticket plus its PRs, or "No PR yet") > Linear project
     or pinned plan (plan title, revision, age, "+N artifacts", or "No plan yet"). No strip otherwise.
-  - Launcher review chats are detected through the `pr_review` classification tag
-    (`shell/work_context_ui.rs:28`). Removing Canvas classification has to replace this, e.g. with
-    a launcher-sourced chat PR link.
+  - Launcher review chats are detected by their `review_launcher` chat-PR link
+    (`ChatPr::launched_review` in `chat_work_context.rs`).
   - Follow-ups: PR line counts / unresolved threads / conflicts; open-question counts in the
     planning strip; matching the chat's diff-target branch to PR heads; the strip in the overview's
     chat panel.
@@ -216,9 +215,28 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     totals text moved to the tooltip.
   - `?` has a Plan group and "Open the PR page".
   - Items with several PRs show up to 3 PR icons plus "+N".
-- **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
-  `capture_source_context_reads_the_dispatch_checkout`,
-  `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
+- **Canvas view and chat auto-classification removed** (2026-10-23; restore point: tag
+  `pre-canvas-removal` at `8bdce21d`; 44 files, −10,869 / +1,278):
+  - `OverviewMode` is List / Outline. A saved `viewMode:canvas` loads as Outline.
+  - Classification is gone: the RPCs, the classifier, the startup repair and reclassify passes, the
+    header category/origin chips and override menu, and Reclassify.
+  - List grouping is Repo / Ticket. Expanded List rows lost "launched via" and the tools/skills
+    tallies.
+  - The generic TypeSafe/Jev client in `typesafe.rs` is kept for reuse.
+  - The PR page "Review chats" tab lists chats with a `review_launcher` link when no destination is
+    set.
+  - Stored classification and position files are left on disk, unread.
+- **Known test failures** (pre-existing, not regressions):
+  - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
+    `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
+  - Engine lib, flaky while Zeron itself is running (likely the live instance lock):
+    `instance_lock::holder_probe_reports_pid_without_disturbing_the_lock`.
+  - Engine integration, verified failing on `a3651a9d` before remove-canvas:
+    - `e2e::generated_image_is_materialized_before_publication_and_survives_reopen`
+    - `external_import_sync::sync_picks_up_a_closed_message_but_defers_the_new_open_reply`
+    - `local_first::online_runtime_shutdown_stops_edge_workers_and_retires_the_graph`
+    - `m5c_accounts_uploads_titles::titling_e2e_names_chat_and_renames_worktree_branch`
+    - `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send`
 
 ## Working model (since 2026-10-20)
 
@@ -257,10 +275,8 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 - **Artifacts phase 4:** G (comments on HTML anchors).
 - **Artifacts phase 5:** F (side-by-side options + pick) and H (canonical plan with the linked
   Linear project shown next to it; no mirroring into Linear).
-- **Remove Canvas auto-classification** (Mikey asked to start cutting it now that the outline is
-  the deliberate structure). Proposal given, not started.
 - **Chat header / side-panel revamp** based on the outline (item path, instructions state,
-  execution root). Design proposed, waiting on Mikey's approval.
+  execution root). The work-context strip shipped; the rest is waiting on Mikey's approval.
 
 ## Parked (do not start unasked)
 
