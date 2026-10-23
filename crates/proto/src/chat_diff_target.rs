@@ -183,7 +183,7 @@ pub enum SetChatDiffTargetAction {
 }
 
 /// Params of `SetChatDiffTarget`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetChatDiffTargetParams {
     pub chat_id: String,
