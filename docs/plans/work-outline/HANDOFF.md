@@ -198,6 +198,24 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     remove-canvas.
   - Not done: the leaderboard tab, the person picker, the churn discount for blank and comment
     lines, the diff bar, and file paging beyond 100 files.
+- **Diff a branch or PR without a checkout** (2026-10-23; `m0-contract.md` "Amendment: diff a
+  branch or PR without a checkout"):
+  - "Diff branch / PR…" sits next to "Diff checkout…". It suggests linked PRs first, then
+    ticket-matching branches, and accepts a PR number, URL or branch name as free text.
+  - The repo is picked from the PR's owner/repo across the checkout and its submodules. Refs are
+    fetched read-only, falling back to `refs/pull/<n>/head`. The base is explicit, else the PR's
+    base, else `origin/main`.
+  - The diff is `merge-base...head`, via the `range` mode of `GetCheckoutDiff` /
+    `GetCheckoutFileDiffText`.
+  - Stored as `refTargets` / `selectedRef` on the `chatDiffTargets` row.
+  - Not done: auto-refetch, and an unbind control in the UI.
+- **Row icon follow-ups** (2026-10-23):
+  - A `PrViewer` RPC returns the cached `gh api user` login, so rows and the chat strip show "you"
+    for your own PRs.
+  - Linear rows are icon clusters (assignee · needs · status) with narrow-width dropping, and their
+    totals text moved to the tooltip.
+  - `?` has a Plan group and "Open the PR page".
+  - Items with several PRs show up to 3 PR icons plus "+N".
 - **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
   `capture_source_context_reads_the_dispatch_checkout`,
   `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
