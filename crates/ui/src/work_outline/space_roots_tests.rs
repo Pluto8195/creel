@@ -15,7 +15,7 @@ fn space_json(id: &str, path: &str) -> zeron_proto::Space {
 }
 
 fn space_chat(id: &str, space: &str, path: &str) -> zeron_proto::Chat {
-    let mut chat = row_ex(id, path, None, 0, false).chat;
+    let mut chat = row(id, path, None).chat;
     chat.space_id = Some(space.into());
     chat.title = Some(format!("Chat {id}"));
     chat.last_message_at = Some(Utc::now());

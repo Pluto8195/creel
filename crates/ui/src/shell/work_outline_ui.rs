@@ -2510,18 +2510,14 @@ mod tests {
     }
 
     /// Through the real keymap, ⌘F focuses the shared search field and
-    /// selects its text in List, Canvas and Outline, whatever had focus.
+    /// selects its text in List and Outline, whatever had focus.
     #[gpui::test]
-    fn find_focuses_the_search_in_list_canvas_and_outline(cx: &mut gpui::TestAppContext) {
+    fn find_focuses_the_search_in_list_and_outline(cx: &mut gpui::TestAppContext) {
         use crate::overview::OverviewMode;
 
         let dir = tempfile::tempdir().unwrap();
         let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
-        for mode in [
-            OverviewMode::Outline,
-            OverviewMode::List,
-            OverviewMode::Canvas,
-        ] {
+        for mode in [OverviewMode::Outline, OverviewMode::List] {
             set_mode(&overview, mode, cx);
             overview.update(cx, |overview, cx| {
                 overview.set_search_text_for_test("old", cx)
@@ -2587,11 +2583,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let (_shell, overview, outline, cx) = toggle_shell(cx, dir.path());
-        for mode in [
-            OverviewMode::List,
-            OverviewMode::Canvas,
-            OverviewMode::Outline,
-        ] {
+        for mode in [OverviewMode::List, OverviewMode::Outline] {
             set_mode(&overview, mode, cx);
             cx.simulate_keystrokes(&find_key());
             cx.simulate_keystrokes("z q");

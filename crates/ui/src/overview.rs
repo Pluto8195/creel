@@ -1,4 +1,4 @@
-//! Multi-chat overview (ticket 002 phase 1 + spatial-canvas UX preview):
+//! Multi-chat overview (ticket 002 phase 1):
 //! every current chat, at once, in one view — the thing
 //! `session_canvas.html`/`session_canvas_server.py` (the `agent-mode-tools`
 //! stopgap tool) already does, without leaving for the single-chat route.
@@ -15,61 +15,28 @@
 //! filtered by the same search box.
 //!
 //! Two rendering modes over the SAME `OverviewRow` data:
-//! - List: phase 1's original plain row list.
-//! - Canvas: a spatial tile board (drag-to-reposition, pan, zoom), previewing
-//!   the target UX from `session_canvas.html`'s `renderTile`/`canvasScroll`
-//!   ahead of phases 2-5 (PR/ticket linkage, subagent nesting, archive,
-//!   staleness) landing their data. Tile layout/drag/pan/zoom code never
-//!   reads anything beyond `OverviewRow` — a later phase adds a field there
-//!   and a small append to `tile_body`, not a rewrite of this file's spatial
-//!   mechanics.
+//! - List: the plain row list, optionally grouped.
+//! - Outline: the Work Outline tree of work items and their Chats.
 //!
-//! Tile size follows context-window occupancy, like `session_canvas.html`'s
-//! `tileSize`: each chat's `CHAT_CONTEXT_USAGE` fraction (fetched lazily per
-//! visible row by `ensure_context_usage`) maps to a main-tile width of
-//! 200..=300px (null → 200) and a MINIMUM height of 0.44 × width (see
-//! [`tile_size_for_pct`]); the aspect is a floor and the card still grows to
-//! fit its content. gpui tiles
-//! need a size known up front (no "measure the real rendered card" pass like
-//! the reference's own packer), so `OverviewRow::tile_size` takes the `max`
-//! of that aspect floor and a deterministic content-height ESTIMATE
-//! ([`tile_content_height_estimate`]) accounting for what varies per row: a
-//! PR/ticket badge row, and the compact subagent preview (three rows plus a
-//! "+N more" row). Hovering a card temporarily reveals the complete stack
-//! without making every board slot pay for the expanded height.
-//! `tile_size` is the ONE place every consumer reads
-//! a tile's size from — the flat grid, the grouped packer, both overlap-
-//! repair passes, viewport culling and fit-to-matches all use it, so a new
-//! content driver of height only ever needs adding inside that one function.
-//! Nested subagent tiles follow their parent tile's width; they never size by
-//! their own context. (Flat mode's fixed default-slot stride only budgets a
-//! bounded number of them — see [`tile_max_size`].) An expanded tile's detail block is a separate,
-//! deliberately NOT height-aware case — see `render_canvas_flat`/
-//! `render_canvas_grouped`'s own comments on why (a real, scoped follow-up,
-//! not touched here).
-//!
-//! Flat-canvas drag positions persist per device (`overview_positions`,
-//! JSON under the engine data dir — the analog of the reference's
-//! localStorage), as do the acknowledged-"done" set and the repo filter's
-//! hidden set and the My PRs sidebar's open state (`UI_FLAGS_FILE`). View
-//! mode, pan/zoom and the other toggles are in-memory only. Ticket 002
-//! puts cross-device layout sync out of scope for v1.
+//! The acknowledged-"done" set, the repo filter's hidden set, the work-item
+//! filter and the My PRs sidebar's open state persist per device
+//! (`overview_positions`, JSON under the engine data dir; the view mode, the
+//! toggles and the grouping persist in `UI_FLAGS_FILE`). Ticket 002 puts
+//! cross-device layout sync out of scope for v1.
 //!
 //! Freshness: the TTL-gated `ensure_*` fetches only get a chance to re-run
 //! when something calls them, so a mounted, visible overview runs a light
 //! [`IDLE_REFRESH`] tick (`refresh_tick`) that re-checks every visible row's
-//! TTLs and repaints relative times without forcing a row rebuild or
-//! grouped relayout unless a fetch actually changed something.
+//! TTLs and repaints relative times without forcing a row rebuild unless a fetch
+//! actually changed something.
 
-use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use gpui::{
-    Bounds, Context, Entity, MouseButton, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
-    ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Window, div, prelude::*, px,
+    Context, Entity, MouseButton, ScrollHandle, SharedString, Subscription, Window, div,
+    prelude::*, px,
 };
 
 use zeron_engine::pr_ticket_cache::{ChecksStatus, MyPrItem, PrAction, PrStatus, TicketStatus};
@@ -78,7 +45,6 @@ use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_grouping::{self, GroupDimension, GroupKeyed, Partition};
-use crate::overview_layout::{self, PackItem};
 use crate::overview_positions;
 use crate::popover;
 use crate::shell::Shell;
@@ -326,12 +292,6 @@ pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100)
 /// visible id set actually changed.
 const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
-/// Web `fitViewToCards` padding, board-space px.
-const FIT_PADDING: f32 = 80.0;
-/// Search auto-fit only fires once the query has narrowed to this many
-/// matches or fewer (web: `matches.length <= 8`).
-const FIT_MAX_MATCHES: usize = 8;
-
 /// `CHAT_CLASSIFICATION`'s cached response — category/origin (used as
 /// `OverviewRow` fields/grouping keys) plus tool-usage breakdown (used only
 /// by the expanded tile detail's chip rows, not copied onto `OverviewRow`
@@ -377,21 +337,14 @@ struct OverviewRow {
     /// singular fields above remain the stable grouping fallback.
     pr_search_values: Vec<String>,
     /// `CHAT_CONTEXT_USAGE` fraction (`0.0..=1.0`), copied in like `ticket`
-    /// because it sets the tile's size and therefore feeds layout. `None`
-    /// until the fetch lands, or when the engine has no usage for this chat.
+    /// so the cached rows carry it. `None` until the fetch lands, or when the
+    /// engine has no usage for this chat.
     context_pct: Option<f32>,
-    /// How many compact subagent tiles exist for this chat — copied in from
-    /// `Overview.subagents` like
-    /// `ticket`, because it feeds `tile_size` (subagent tiles push a tile
-    /// taller than its context-% aspect ratio) and `tile_size` is a method on this type, not
-    /// on `Overview`, which has no `&self` access to that map. `0` while the
-    /// fetch is pending or the chat genuinely has none — both render no
-    /// rows, so they're indistinguishable here on purpose.
+    /// How many compact subagent rows exist for this chat — copied in from
+    /// `Overview.subagents` like `ticket`. `0` while the fetch is pending or
+    /// the chat genuinely has none — both render no rows, so they're
+    /// indistinguishable here on purpose.
     subagent_count: usize,
-    /// Whether `badges_for` would render a PR/ticket badge row for this
-    /// chat — copied in like `subagent_count`, for the same reason (it
-    /// feeds `tile_size`). See [`link_has_badge_row`].
-    has_badge_row: bool,
     /// `chat.cwd` cheaply looks like a linked worktree — the expanded detail
     /// offers "Close out worktree…" and the engine plan decides actual
     /// eligibility. Computed in the cached `rows()` pass so the fs check never
@@ -412,43 +365,6 @@ struct OverviewRow {
     /// The Chat captured an execution configuration that differs from its
     /// item's current one (Work Outline exception). Shares the title line.
     execution_exception: bool,
-}
-
-impl OverviewRow {
-    /// This row's main-tile board-space size, `(width, height)` — the ONE
-    /// place every packing/culling/overlap-repair/fit-to-view consumer reads
-    /// a tile's size from (see the module doc comment), so a new content
-    /// driver of tile height only ever needs adding here. Height is the
-    /// `max` of the context-%-driven aspect ratio ([`tile_size_for_pct`]) and
-    /// a deterministic estimate of what this row's actual content needs
-    /// ([`tile_content_height_estimate`]) — the packing-time stand-in for
-    /// the reference's real DOM measurement, since gpui has no "measure this
-    /// offscreen" primitive to ask for one instead.
-    fn tile_size(&self) -> (f32, f32) {
-        let (w, aspect_h) = tile_size_for_pct(self.context_pct);
-        let content_h = tile_content_height_estimate(self.subagent_count, self.has_badge_row);
-        (w, aspect_h.max(content_h))
-    }
-
-    /// Temporary visual size while the pointer is over a canvas tile. Board
-    /// packing deliberately continues to use `tile_size`; the two-line title,
-    /// optional branch/message rows, and complete subagent stack float above
-    /// neighbors until the pointer leaves instead of making the board jump.
-    fn hovered_tile_size(&self) -> (f32, f32) {
-        let (w, aspect_h) = tile_size_for_pct(self.context_pct);
-        let mut content_h = TILE_CONTENT_MIN_H + HOVER_TITLE_EXTRA_H;
-        if self.has_badge_row {
-            content_h += BADGE_ROW_ADDED_H;
-        }
-        if self.chat.branch.is_some() {
-            content_h += HOVER_BRANCH_ADDED_H;
-        }
-        if self.chat.last_message_preview.is_some() {
-            content_h += HOVER_LAST_MESSAGE_ADDED_H;
-        }
-        content_h += subagent_stack_height(self.subagent_count);
-        (w, aspect_h.max(content_h))
-    }
 }
 
 impl GroupKeyed for OverviewRow {
@@ -779,10 +695,10 @@ fn pr_collapsed_sections_from_flags(flags: &BTreeSet<String>) -> BTreeSet<String
         .collect()
 }
 
-/// UI-flag entry: the canvas is the main column's mode. The legacy spelling
-/// from the List/Canvas boolean era, kept verbatim so every existing choice
-/// survives with zero rewrite.
-const VIEW_CANVAS_FLAG: &str = "viewMode:canvas";
+/// Legacy UI-flag entry from when a Canvas view existed. Read-only: a saved
+/// `viewMode:canvas` loads as Outline ([`OverviewMode::from_flags`]) and is
+/// never written back (the writer purges every `viewMode:` flag).
+const LEGACY_VIEW_CANVAS_FLAG: &str = "viewMode:canvas";
 /// UI-flag entry: the Work Outline is the main column's mode. Older builds
 /// read it as an unknown flag, i.e. List (downgrade-safe).
 const VIEW_OUTLINE_FLAG: &str = "viewMode:outline";
@@ -964,76 +880,6 @@ fn pr_section_expanded(collapsed: &BTreeSet<String>, section_key: &str, searchin
     searching || !collapsed.contains(section_key)
 }
 
-/// Jump-to-tile framing for a PR row click: center `rect` in the viewport,
-/// zooming IN to at least 100% when it still fits (so the target is
-/// readable) but never out from the user's current zoom unless the tile
-/// wouldn't fit otherwise. `viewport` is the canvas container's own measured
-/// size, which already excludes both side panels.
-fn focus_view_on_rect(
-    rect: (f32, f32, f32, f32),
-    viewport: (f32, f32),
-    current_zoom: f32,
-) -> (f32, (f32, f32)) {
-    let (x, y, w, h) = rect;
-    let fit_zoom = (viewport.0 / (w + FIT_PADDING * 2.0).max(1.0))
-        .min(viewport.1 / (h + FIT_PADDING * 2.0).max(1.0));
-    let zoom = current_zoom
-        .max(1.0)
-        .min(fit_zoom)
-        .clamp(ZOOM_MIN, ZOOM_MAX);
-    let pan = (
-        viewport.0 / 2.0 - (x + w / 2.0) * zoom,
-        viewport.1 / 2.0 - (y + h / 2.0) * zoom,
-    );
-    (zoom, pan)
-}
-
-/// `fitViewToCards` (`session_canvas.html:1703-1721`): given board-space
-/// rects `(x, y, w, h)` and the viewport size, the `(zoom, pan)` that frames
-/// them with `FIT_PADDING` on every side, zoom clamped to
-/// `[ZOOM_MIN, ZOOM_MAX]`, centered on the bbox midpoint. `None` for no
-/// rects.
-fn fit_view_to_rects(
-    rects: &[(f32, f32, f32, f32)],
-    viewport: (f32, f32),
-) -> Option<(f32, (f32, f32))> {
-    if rects.is_empty() {
-        return None;
-    }
-    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
-    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for &(x, y, w, h) in rects {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x + w);
-        max_y = max_y.max(y + h);
-    }
-    let content_w = (max_x - min_x + FIT_PADDING * 2.0).max(1.0);
-    let content_h = (max_y - min_y + FIT_PADDING * 2.0).max(1.0);
-    let zoom = (viewport.0 / content_w)
-        .min(viewport.1 / content_h)
-        .clamp(ZOOM_MIN, ZOOM_MAX);
-    let pan = (
-        viewport.0 / 2.0 - ((min_x + max_x) / 2.0) * zoom,
-        viewport.1 / 2.0 - ((min_y + max_y) / 2.0) * zoom,
-    );
-    Some((zoom, pan))
-}
-
-/// Whether the off-screen rescue pill should show this frame: at least one
-/// tile exists on the canvas (post-filter), but the per-tile viewport-
-/// intersection check the render loop already runs while culling
-/// (`Overview::tile_in_viewport`, against each tile's CURRENT animated
-/// position — not a separate target-position check, so a tile mid-
-/// organize-move can't cause a false positive) found none of them on
-/// screen. A board with no tiles at all (everything filtered out) is the
-/// ordinary empty state, not a rescue case, so it's `false` too. Kept as a
-/// plain function of the render loop's own tally so it's directly testable
-/// without a live `Overview`/`Context`.
-fn no_tiles_visible(tile_count: usize, any_tile_visible: bool) -> bool {
-    tile_count > 0 && !any_tile_visible
-}
-
 /// Drop hover state when its element is no longer mounted. Hover-leave is
 /// not guaranteed when filtering, changing view modes, or viewport culling
 /// removes the element under the pointer, so renderers reconcile against the
@@ -1084,17 +930,6 @@ fn sorted_repo_keys(known: &BTreeSet<String>) -> Vec<String> {
 /// fallback until/unless the engine's link status carries its own flag.
 fn cwd_is_worktree(cwd: Option<&str>) -> bool {
     cwd.is_some_and(|c| c.contains("/.worktrees/") || c.contains("/.agent-worktrees/"))
-}
-
-/// `shortenCwd` (`session_canvas.html:1045-1049`): more than 3 segments
-/// shows `.../<last two>`.
-fn shorten_cwd(cwd: &str) -> String {
-    let parts: Vec<&str> = cwd.split('/').collect();
-    if parts.len() > 3 {
-        format!(".../{}", parts[parts.len() - 2..].join("/"))
-    } else {
-        cwd.to_string()
-    }
 }
 
 /// `session_canvas.html`'s fixed `CATEGORY_META` colors (`~862-869`), keyed
@@ -1313,144 +1148,6 @@ fn flatten_partition<'a>(
     }
 }
 
-/// The result of [`layout_partition`]: every leaf row's LOCAL position
-/// (relative to this node's own top-left `(0, 0)`) and size, every group
-/// label's LOCAL position, and this node's own total content size — a
-/// caller combines these with the node's own screen offset (see
-/// `render_canvas_grouped`) to get final absolute canvas coordinates.
-#[derive(Clone)]
-struct LaidOutPartition {
-    /// chat_id -> local (x, y).
-    positions: HashMap<String, (f32, f32)>,
-    /// (label, local x, local y, nesting depth) for every `Groups` level in
-    /// this subtree, including nested ones — a caller renders one text
-    /// element per entry.
-    labels: Vec<(String, gpui::Hsla, f32, f32, usize)>,
-    /// (local x, local y, width, height, nesting depth) — one bounding box
-    /// per `Groups` level (label + all its content), including nested ones.
-    /// A caller draws a background/border rect per entry so groups read as
-    /// distinct visual sections, not just a floating text label with no
-    /// boundary (the reported "doesn't look like blocks or sections" gap).
-    group_boxes: Vec<(f32, f32, f32, f32, usize)>,
-    width: f32,
-    height: f32,
-}
-
-/// Recursively lays out a `Partition` tree. Every group level is packed as a
-/// compact two-dimensional cluster instead of choosing one axis for the whole
-/// level. That keeps repo -> ticket -> chat hierarchies visually nested while
-/// avoiding the long horizontal/vertical strings produced by lane layouts.
-/// `Leaves` get packed via
-/// `overview_layout::pack_rects` (free-rectangle packing, not a fixed grid)
-/// — this is the LOCAL per-group pack; a caller runs a second, GLOBAL
-/// `overview_layout::repair_overlaps` pass across every leaf's combined
-/// absolute position afterward, matching the reference's two-tier repair
-/// (packRects' own embedded local repair, then organizeByDimensions' final
-/// cross-group sweep).
-fn layout_partition(partition: &Partition<&OverviewRow>, depth: usize) -> LaidOutPartition {
-    match partition {
-        Partition::Leaves(rows) => {
-            // Each tile's real context-% size — the web's `measureItem`
-            // equivalent, known up front here instead of read off the DOM.
-            let items: Vec<PackItem> = rows
-                .iter()
-                .map(|r| {
-                    let (width, height) = r.tile_size();
-                    PackItem {
-                        id: r.chat.id.clone(),
-                        width,
-                        height,
-                    }
-                })
-                .collect();
-            let packed = overview_layout::pack_rects(&items, TILE_GAP);
-            LaidOutPartition {
-                positions: packed
-                    .positions
-                    .into_iter()
-                    .map(|(id, p)| (id, (p.x, p.y)))
-                    .collect(),
-                labels: Vec::new(),
-                group_boxes: Vec::new(),
-                width: packed.width,
-                height: packed.height,
-            }
-        }
-        Partition::Groups { dimension, groups } => {
-            let label_h = if depth == 0 {
-                GROUP_TOP_LABEL_H
-            } else {
-                GROUP_NESTED_LABEL_H
-            };
-            let group_gap = if depth == 0 {
-                GROUP_TOP_GAP
-            } else {
-                GROUP_NESTED_GAP
-            };
-            // Lay each child out first so its complete measured rectangle can
-            // participate in the parent pack. `pack_rects` targets a roughly
-            // square footprint from total area, creating a dense center of
-            // mass at every hierarchy level rather than a single long lane.
-            let children: Vec<LaidOutPartition> = groups
-                .iter()
-                .map(|group| layout_partition(&group.items, depth + 1))
-                .collect();
-            let pack_items: Vec<PackItem> = children
-                .iter()
-                .enumerate()
-                .map(|(index, child)| PackItem {
-                    id: index.to_string(),
-                    width: child.width.max(TILE_MIN_W),
-                    height: child.height + label_h,
-                })
-                .collect();
-            let packed_groups = overview_layout::pack_group_rects(&pack_items, group_gap);
-
-            let mut positions: HashMap<String, (f32, f32)> = HashMap::new();
-            let mut labels: Vec<(String, gpui::Hsla, f32, f32, usize)> = Vec::new();
-            let mut group_boxes: Vec<(f32, f32, f32, f32, usize)> = Vec::new();
-            for (group_index, (g, child)) in groups.iter().zip(children.into_iter()).enumerate() {
-                let packed = packed_groups.positions[&group_index.to_string()];
-                let (label_x, label_y) = (packed.x, packed.y);
-                let (content_x, content_y) = (packed.x, packed.y + label_h);
-                // `makeLaneHeader`'s `${meta.label} (${count})`.
-                labels.push((
-                    format!(
-                        "{} ({})",
-                        group_label(*dimension, &g.key),
-                        count_rows(&g.items)
-                    ),
-                    group_color(*dimension, &g.key),
-                    label_x,
-                    label_y,
-                    depth,
-                ));
-                for (id, (x, y)) in child.positions {
-                    positions.insert(id, (x + content_x, y + content_y));
-                }
-                for (lbl, lcolor, lx, ly, ldepth) in child.labels {
-                    labels.push((lbl, lcolor, lx + content_x, ly + content_y, ldepth));
-                }
-                // Floor for a degenerate (empty) child; a real leaf group's
-                // packed width already spans its widest tile.
-                let child_w = child.width.max(TILE_MIN_W);
-                let child_h = child.height + label_h;
-                group_boxes.push((label_x, label_y, child_w, child_h, depth));
-                for (bx, by, bw, bh, bdepth) in child.group_boxes {
-                    group_boxes.push((bx + content_x, by + content_y, bw, bh, bdepth));
-                }
-            }
-            LaidOutPartition {
-                positions,
-                labels,
-                group_boxes,
-                width: packed_groups.width,
-                height: packed_groups.height,
-            }
-        }
-    }
-}
-
 struct LinkStatusEntry {
     status: OverviewLinkStatus,
     /// Uncommitted diff stat, if the engine's `CHAT_LINK_STATUS` response
@@ -1506,16 +1203,11 @@ struct DiffStat {
 }
 
 /// What of a landed link status feeds `OverviewRow`/grouping/search — a
-/// refetch whose fingerprint is unchanged must not dirty rows or drop the
-/// grouped layout cache (badges/detail read `link_status` live at render).
-/// Includes [`link_has_badge_row`] because that bool is ALSO baked onto
-/// `OverviewRow` now (`has_badge_row`, feeding `tile_size`) — a PR's action
-/// reasons can flip the badge row's presence (e.g. checks start failing)
-/// without the ticket identifier/PR number/PR title changing at all, and a
-/// stale `has_badge_row` would mean stale packing.
+/// refetch whose fingerprint is unchanged must not dirty rows (badges/detail
+/// read `link_status` live at render).
 fn link_fingerprint(
     status: &OverviewLinkStatus,
-) -> (Option<String>, Vec<(String, u64, Option<String>)>, bool) {
+) -> (Option<String>, Vec<(String, u64, Option<String>)>) {
     let prs = effective_pr_links(status)
         .into_iter()
         .map(|link| {
@@ -1527,18 +1219,11 @@ fn link_fingerprint(
             (link.url, number, title)
         })
         .collect();
-    (
-        status.ticket.as_ref().map(|t| t.identifier.clone()),
-        prs,
-        link_has_badge_row(status),
-    )
+    (status.ticket.as_ref().map(|t| t.identifier.clone()), prs)
 }
 
 /// Whether `badges_for` would render a PR/ticket badge row for this link
-/// status: a linked ticket, or a PR with at least one action reason. Shared
-/// between `badges_for` (what to draw) and `rows()`/`link_fingerprint`
-/// (baking presence into `OverviewRow::has_badge_row`, which feeds
-/// `tile_size`) so the two can never disagree about whether a row exists.
+/// status: a linked ticket, or at least one linked PR.
 fn link_has_badge_row(status: &OverviewLinkStatus) -> bool {
     status.ticket.is_some() || !effective_pr_links(status).is_empty()
 }
@@ -1940,25 +1625,20 @@ fn pr_action_badge(action: PrAction) -> (&'static str, gpui::Hsla) {
 /// replaced the whole body; it is now the independent left sidebar
 /// ([`Overview::pr_sidebar_open`]) shown alongside any of these.
 ///
-/// Persisted as at most one `viewMode:` flag in `UI_FLAGS_FILE` (a tolerant
-/// enum over the old List/Canvas boolean): no flag = List,
-/// [`VIEW_CANVAS_FLAG`] = Canvas, [`VIEW_OUTLINE_FLAG`] = Outline, any other
-/// `viewMode:` value = List. Both flags present (only after a round trip
-/// through an older build that toggles the canvas flag alone) = Canvas: an
-/// old build can only have set it deliberately.
+/// Persisted as at most one `viewMode:` flag in `UI_FLAGS_FILE`: no flag =
+/// List, [`VIEW_OUTLINE_FLAG`] = Outline, any other `viewMode:` value = List.
+/// The legacy [`LEGACY_VIEW_CANVAS_FLAG`] (the removed Canvas view) also reads
+/// as Outline, alone or alongside the outline flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum OverviewMode {
     #[default]
     List,
-    Canvas,
     Outline,
 }
 
 impl OverviewMode {
     fn from_flags(flags: &BTreeSet<String>) -> Self {
-        if flags.contains(VIEW_CANVAS_FLAG) {
-            Self::Canvas
-        } else if flags.contains(VIEW_OUTLINE_FLAG) {
+        if flags.contains(VIEW_OUTLINE_FLAG) || flags.contains(LEGACY_VIEW_CANVAS_FLAG) {
             Self::Outline
         } else {
             Self::List
@@ -1969,20 +1649,9 @@ impl OverviewMode {
     fn flag(self) -> Option<&'static str> {
         match self {
             Self::List => None,
-            Self::Canvas => Some(VIEW_CANVAS_FLAG),
             Self::Outline => Some(VIEW_OUTLINE_FLAG),
         }
     }
-}
-
-/// A PR-row jump waiting for the layout it will be framed in. Opening the
-/// chat panel narrows the canvas in the SAME frame the jump is requested,
-/// but `canvas_bounds` is only captured at paint — so the focus waits
-/// `settle_frames` painted frames before reading the viewport, or it would
-/// center against the pre-panel width.
-struct PendingFocus {
-    chat_id: String,
-    settle_frames: u8,
 }
 
 /// How long a fetched "my open PRs" list stays good before this view
@@ -1990,290 +1659,15 @@ struct PendingFocus {
 /// cache's own TTL/sweep.
 const MY_PRS_REFRESH: Duration = Duration::from_secs(30);
 
-/// Logical (unzoomed, unpanned) tile position on the canvas.
-#[derive(Debug, Clone, Copy)]
-struct TilePos {
-    x: f32,
-    y: f32,
-}
-
-impl TilePos {
-    /// Sub-pixel layout jitter (float noise from a repack that lands in the
-    /// same place) must not count as a move worth animating.
-    fn approx_eq(self, other: TilePos) -> bool {
-        (self.x - other.x).abs() < 0.5 && (self.y - other.y).abs() < 0.5
-    }
-}
-
-/// Web `.card { transition: left/top 0.55s ... }`.
-const TILE_MOVE_DURATION: Duration = Duration::from_millis(550);
-
-/// CSS `cubic-bezier(0.34, 1.56, 0.64, 1)` — the web card-move curve: an
-/// ease-out that overshoots (y peaks ~1.1) before settling. Deliberately NOT
-/// `motion::CubicBezier::eval`, which clamps its output to `[0,1]` (gpui's
-/// animation element asserts that range) and would flatten the overshoot
-/// away; this is only ever used as a position lerp factor, where >1 is the
-/// point.
-fn tile_move_ease(x: f32) -> f32 {
-    const X1: f32 = 0.34;
-    const Y1: f32 = 1.56;
-    const X2: f32 = 0.64;
-    const Y2: f32 = 1.0;
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    // Bernstein form with P0=(0,0), P3=(1,1).
-    let bez = |p1: f32, p2: f32, t: f32| {
-        let u = 1.0 - t;
-        3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t
-    };
-    // x(t) is monotonic (x1, x2 ∈ [0,1]) — plain bisection is exact enough
-    // and branch-free of Newton's degenerate-derivative cases.
-    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
-    for _ in 0..24 {
-        let mid = (lo + hi) * 0.5;
-        if bez(X1, X2, mid) < x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bez(Y1, Y2, (lo + hi) * 0.5)
-}
-
-/// One tile's in-flight organize move, in LOGICAL board coords (so pan/zoom
-/// mid-flight just transform it like any other position).
-#[derive(Debug, Clone, Copy)]
-struct TileMove {
-    from: TilePos,
-    to: TilePos,
-    started: Instant,
-}
-
-impl TileMove {
-    /// Displayed position at `now` (eased; may overshoot `to`), or `None`
-    /// once the move has finished — the caller then renders `to` exactly and
-    /// drops the move.
-    fn sample(&self, now: Instant, duration: Duration) -> Option<TilePos> {
-        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
-        let raw = elapsed / duration.as_secs_f32().max(f32::EPSILON);
-        if raw >= 1.0 {
-            return None;
-        }
-        Some(lerp_pos(self.from, self.to, tile_move_ease(raw)))
-    }
-}
-
-fn lerp_pos(from: TilePos, to: TilePos, t: f32) -> TilePos {
-    TilePos {
-        x: from.x + (to.x - from.x) * t,
-        y: from.y + (to.y - from.y) * t,
-    }
-}
-
-/// The animate-or-snap decision for one tile in one layout pass. Returns the
-/// move to keep (or start) and the position to render this frame.
-///
-/// - `prev_target`: the position the last canvas pass assigned this tile.
-///   `None` = first appearance (new chat, filter re-reveal, entering canvas
-///   mode) → no animation, never fly in from anywhere.
-/// - `live_drag`: the user is dragging this tile → its position is already
-///   the cursor's; animating would make it lag the pointer. Drag release
-///   produces no target change, so it doesn't animate either.
-/// - Otherwise a target change (grouping applied/changed/removed, repack,
-///   overlap repair) starts a move from wherever the tile is DISPLAYED right
-///   now — mid-flight retargets continue from the current (possibly
-///   overshooting) spot instead of jumping back to the old target.
-fn plan_tile_motion(
-    prev_target: Option<TilePos>,
-    current: Option<TileMove>,
-    target: TilePos,
-    live_drag: bool,
-    reduced_motion: bool,
-    now: Instant,
-    duration: Duration,
-) -> (Option<TileMove>, TilePos) {
-    let Some(prev) = prev_target else {
-        return (None, target);
-    };
-    if live_drag || reduced_motion {
-        return (None, target);
-    }
-    let displayed_now = current.and_then(|m| m.sample(now, duration));
-    if prev.approx_eq(target) {
-        // Unchanged target: keep playing an in-flight move toward it, if any.
-        return match (current, displayed_now) {
-            (Some(m), Some(pos)) if m.to.approx_eq(target) => (Some(m), pos),
-            _ => (None, target),
-        };
-    }
-    let from = displayed_now.unwrap_or(prev);
-    let next = TileMove {
-        from,
-        to: target,
-        started: now,
-    };
-    (Some(next), from)
-}
-
-/// In-flight tile press/drag state — see `Overview::dragging_tile`'s doc
-/// comment for why this replaced a bare `Option<(String, (f32, f32))>`.
-#[derive(Debug, Clone)]
-struct TileDrag {
-    chat_id: String,
-    offset: (f32, f32),
-    down_cursor: (f32, f32),
-    committed: bool,
-}
-
-/// Exact port of `session_canvas.html`'s `DRAG_THRESHOLD_PX` (`~1196`).
-/// Movement below this, measured in board/logical space (screen movement
-/// divided by zoom, matching the reference's own `/zoom` scaling so a drag
-/// feels 1:1 regardless of zoom level), is a click; at or above it, a drag.
-const DRAG_THRESHOLD_PX: f32 = 4.0;
-
-/// Wide/compact main-tile width at 0% and 100% context. The wider face
-/// exposes substantially more of the title while the shallower aspect keeps
-/// the wall of cards dense vertically.
-const TILE_MIN_W: f32 = 200.0;
-const TILE_MAX_W: f32 = 300.0;
-/// Expanded metadata gets its own wider surface. The collapsed face remains
-/// at its context-driven width so the context meter and face chrome do not
-/// stretch to match a long PR title in the detail below it.
-const TILE_EXPANDED_W: f32 = 480.0;
-const TILE_ASPECT: f32 = 0.44;
-/// Height floor for the tile face's ALWAYS-present rows (title, cwd,
-/// context bar + label, status row, open button/expand-hint footer). The
-/// web's tile grows to fit its content and gets measured for packing; gpui
-/// tiles here need a size known up front, so this is the content-fit floor
-/// that both 0.44 × width ([`tile_size_for_pct`]) and the row's OWN variable
-/// content ([`tile_content_height_estimate`]) sit on top of. At 200px
-/// (0.44 × 200 = 88) the floor wins; at 300px (132) the aspect ratio wins.
-/// Does NOT bake in badges/subagent tiles any more — those are only present
-/// on some rows, so [`tile_content_height_estimate`] adds them on top of
-/// this floor exactly when a row actually has them, instead of every tile
-/// paying for space it may not use (or, the bug this replaces, every tile
-/// NOT paying for space it needs).
-const TILE_CONTENT_MIN_H: f32 = 120.0;
-const TILE_GAP: f32 = 14.0;
-/// `tile_body`'s own flex-column gap between each direct child row —
-/// shared here so [`tile_content_height_estimate`]'s per-optional-row
-/// addition matches the real spacing instead of a duplicated magic number.
-const TILE_ROW_GAP: f32 = 2.0;
-/// Height `badges_for`'s PR/ticket badge row adds when present: an ~18px
-/// badge-chip row (`py(1)` × 2 + ~9.5px text, rounded up) plus the
-/// flex-column gap separating it from its neighbors in `tile_body`.
+/// Height of the PR/ticket badge row `badges_for` renders when present.
 const BADGE_ROW_H: f32 = 18.0;
-const BADGE_ROW_ADDED_H: f32 = BADGE_ROW_H + TILE_ROW_GAP;
-/// One compact nested subagent tile (`.tile.compact`), set as
-/// an explicit height on the rendered tile (`subagent_tile`) so this
-/// estimate and the real layout can never drift apart.
+/// Height of one compact nested subagent row (`.tile.compact`).
 const SUBAGENT_TILE_H: f32 = 24.0;
 /// Gap between adjacent compact subagent tiles.
 const SUBAGENT_TILE_GAP: f32 = 4.0;
-/// Keep cards scannable at rest. A fourth compact row communicates the
-/// remainder; hovering the card swaps the preview for the complete stack.
+/// Keep rows scannable at rest. A fourth compact row communicates the
+/// remainder; hovering the row swaps the preview for the complete stack.
 const SUBAGENT_PREVIEW_LIMIT: usize = 3;
-/// Space between the parent card's own face and its subagent stack.
-/// own face and its subagent stack. `tile_body`'s flex-column gap already
-/// supplies [`TILE_ROW_GAP`] of it; the stack adds the rest as a top margin.
-const SUBAGENT_STACK_TOP: f32 = 8.0;
-/// Hover expands the title from one line to a fixed two-line slot, then
-/// optionally adds compact branch and last-message synopsis rows. These
-/// constants include the direct-child gap where appropriate so the hover
-/// size estimate stays in lockstep with `tile_body`.
-const HOVER_TITLE_EXTRA_H: f32 = 16.0;
-const HOVER_BRANCH_ADDED_H: f32 = 16.0;
-const HOVER_LAST_MESSAGE_ADDED_H: f32 = 34.0;
-/// Three previews plus the "+N more" row is the largest resting stack.
-const FLAT_STRIDE_SUBAGENT_TILES: usize = SUBAGENT_PREVIEW_LIMIT + 1;
-
-/// Wide/compact `tileSize(pct, 200, 300)`:
-/// `round(min + pct * (max - min))`, null → 0. Clamped to `0.0..=1.0` (and a
-/// non-finite value treated as null) so a bad engine value can't produce a
-/// negative or huge tile. The web doesn't clamp, but the engine promises
-/// that range anyway.
-fn tile_width_for_pct(pct: Option<f32>) -> f32 {
-    let p = pct.filter(|p| p.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0);
-    (TILE_MIN_W + p * (TILE_MAX_W - TILE_MIN_W)).round()
-}
-
-/// `(width, height)` for a main tile at `pct`, from the context-%-driven
-/// aspect ratio ALONE: width per [`tile_width_for_pct`], height
-/// `round(width * 0.44)` floored at [`TILE_CONTENT_MIN_H`]. Doesn't know
-/// about a row's own content (subagent tiles, a badge row) — see
-/// `OverviewRow::tile_size`, the actual per-row size every layout consumer
-/// uses, which takes the `max` of this and [`tile_content_height_estimate`].
-fn tile_size_for_pct(pct: Option<f32>) -> (f32, f32) {
-    let w = tile_width_for_pct(pct);
-    (w, (w * TILE_ASPECT).round().max(TILE_CONTENT_MIN_H))
-}
-
-/// Width of the expanded card surface in board-space pixels. Kept separate
-/// from [`tile_width_for_pct`] because expanding should reveal more metadata,
-/// not mutate the collapsed face (especially its full-width context meter).
-fn expanded_tile_width(collapsed_width: f32) -> f32 {
-    collapsed_width.max(TILE_EXPANDED_W)
-}
-
-/// Deterministic tile CONTENT-height estimate — the packing-time stand-in
-/// for the web reference's real per-card DOM measurement (`measureItem`),
-/// since gpui tiles need a size known up front and there's no "measure this
-/// offscreen" primitive to ask for one instead. [`TILE_CONTENT_MIN_H`]
-/// already covers the tile face's rows every tile always renders; this adds
-/// exactly what varies per row, matching what `tile_body` conditionally
-/// renders:
-/// - a PR/ticket badge row (`badges_for`), when `has_badge_row`
-/// - the resting subagent preview (`subagent_tiles_for`): up to three
-///   fixed-height compact tiles plus a "+N more" row when needed.
-///
-/// Monotonic in both `subagent_count` and `has_badge_row`: more content
-/// never produces a smaller estimate. Must be kept in lockstep with
-/// `tile_body`'s actual children — a new always-shown or conditionally-shown
-/// row there needs a matching term here, or this silently under-estimates
-/// again (the defect this function exists to fix in the first place).
-fn tile_content_height_estimate(subagent_count: usize, has_badge_row: bool) -> f32 {
-    let mut height = TILE_CONTENT_MIN_H;
-    if has_badge_row {
-        height += BADGE_ROW_ADDED_H;
-    }
-    height += subagent_stack_height(subagent_preview_row_count(subagent_count));
-    height
-}
-
-/// Number of compact rows shown before hover: at most three agents and one
-/// remainder indicator.
-fn subagent_preview_row_count(count: usize) -> usize {
-    count.min(SUBAGENT_PREVIEW_LIMIT) + usize::from(count > SUBAGENT_PREVIEW_LIMIT)
-}
-
-/// Height the subagent stack adds below the tile face (0 for none) — also
-/// what `tile_body` reserves for it, so the two share one formula.
-fn subagent_stack_height(count: usize) -> f32 {
-    if count == 0 {
-        return 0.0;
-    }
-    SUBAGENT_STACK_TOP
-        + count as f32 * SUBAGENT_TILE_H
-        + count.saturating_sub(1) as f32 * SUBAGENT_TILE_GAP
-}
-
-/// The flat grid's slot stride basis (see `position_for`): the largest
-/// context-% width, and a height covering a badge row plus
-/// [`FLAT_STRIDE_SUBAGENT_TILES`] subagent tiles.
-///
-/// This is the exact largest resting card: the preview cannot exceed three
-/// agents plus its remainder row. A hovered card may temporarily extend
-/// beyond this stride, but paints above neighbors and collapses again on
-/// pointer leave, so it does not spread the entire board apart.
-fn tile_max_size() -> (f32, f32) {
-    let (w, aspect_h) = tile_size_for_pct(Some(1.0));
-    let bounded_content_h = tile_content_height_estimate(FLAT_STRIDE_SUBAGENT_TILES, true);
-    (w, aspect_h.max(bounded_content_h))
-}
 
 /// The fill bar's filled fraction: `Math.round((pct || 0) * 100)%`.
 fn context_fill_fraction(pct: Option<f32>) -> f32 {
@@ -2302,13 +1696,6 @@ fn context_pct_label(pct: Option<f32>) -> String {
 /// drift on a live chat is no change either (see [`context_pct_percent`]).
 fn context_pct_changed(previous: Option<Option<f32>>, next: Option<f32>) -> bool {
     context_pct_percent(previous.flatten()) != context_pct_percent(next)
-}
-
-/// Flat-canvas default grid slot stride: the max tile size plus the gap, so
-/// no two default slots can overlap at any context %.
-fn flat_grid_stride() -> (f32, f32) {
-    let (w, h) = tile_max_size();
-    (w + TILE_GAP, h + TILE_GAP)
 }
 
 /// The context bar + `N% context` label from `renderTile`'s tile face
@@ -2341,18 +1728,6 @@ fn context_meter(pct: Option<f32>, theme: &Theme, zoom: f32) -> gpui::Div {
                 .child(SharedString::from(context_pct_label(pct))),
         )
 }
-const GRID_COLS: usize = 4;
-/// Matches `session_canvas.html`'s `MIN_ZOOM`/`MAX_ZOOM` exactly.
-const ZOOM_MIN: f32 = 0.25;
-const ZOOM_MAX: f32 = 2.0;
-/// Grouped-canvas layout only (see `render_canvas_body`'s grouped branch).
-const GROUP_TOP_LABEL_H: f32 = 40.0;
-const GROUP_NESTED_LABEL_H: f32 = 22.0;
-const GROUP_TOP_GAP: f32 = 56.0;
-const GROUP_NESTED_GAP: f32 = 28.0;
-/// `GROUP_BOX_PADDING` (`session_canvas.html:1308-1319`): how far a group's
-/// tinted box extends past its header + content.
-const GROUP_BOX_PADDING: f32 = 10.0;
 
 /// Width of the interactive chat panel. Wide enough that the embedded
 /// composer's footer (pickers, send) isn't crushed — the composer itself
@@ -2405,48 +1780,11 @@ pub struct Overview {
     /// scroll container)`, headers counted. Rebuilt every List render.
     list_order: Vec<(String, usize)>,
     view_mode: OverviewMode,
-    /// Logical grid/drag positions, keyed by chat id. Populated lazily: a
-    /// chat not yet here gets a default grid slot the first time canvas mode
-    /// renders it.
-    tile_positions: HashMap<String, TilePos>,
-    canvas_pan: (f32, f32),
-    canvas_zoom: f32,
-    /// Armed on tile press, resolved on release. `offset`: cursor offset
-    /// from the tile's logical top-left at press (used to compute a live
-    /// drag position). `down_cursor`: window cursor at press, to measure
-    /// cumulative movement. `committed`: whether movement has exceeded
-    /// `DRAG_THRESHOLD_PX` — ports `session_canvas.html`'s own
-    /// press/move/release click-vs-drag disambiguation (`makeCard`,
-    /// `~1711-1761`: `moved < DRAG_THRESHOLD_PX` on release means "this was
-    /// a click", not a drag). Previously this app set a single
-    /// "dragging" flag unconditionally on press and tried to disambiguate
-    /// via a separate `on_click` handler racing against the canvas root's
-    /// `on_mouse_up` clearing that flag — a real, evidenced bug (the fix
-    /// commit's message covers why): depending on gpui's dispatch order
-    /// that race resolved differently call to call, which is exactly why
-    /// clicking a tile was reported as unreliable ("sometimes it does
-    /// bring up chat" — read: the race happened to clear the flag before
-    /// the stale `on_click` fired). This single state machine, resolved
-    /// only on release, removes the race entirely.
-    dragging_tile: Option<TileDrag>,
-    /// Last layout-assigned LOGICAL position per tile rendered by the most
-    /// recent canvas pass (flat or grouped) — the "previous position" the
-    /// organize animation moves from. Pruned to the tiles actually present
-    /// each pass and cleared outside canvas mode, so a tile that (re)appears
-    /// has no entry and never flies in.
-    tile_targets: HashMap<String, TilePos>,
-    /// In-flight organize moves (see `plan_tile_motion`). Purely a render-time
-    /// position offset: never touches `rows_dirty` or the layout cache. While
-    /// non-empty, `render` requests one more animation frame; once every move
-    /// settles it's empty and nothing is scheduled — zero cost at rest.
-    tile_moves: HashMap<String, TileMove>,
     /// Tiles currently showing their expanded detail (toggled by a real
     /// click — movement under `DRAG_THRESHOLD_PX` — matching the
     /// reference's `expandedIds`/`toggleExpanded`). Never causes navigation;
     /// only the explicit "Open chat" affordance does that.
     expanded: HashSet<String>,
-    /// (cursor position at pan-start, pan offset at pan-start).
-    panning: Option<((f32, f32), (f32, f32))>,
     link_status: HashMap<String, LinkStatusEntry>,
     link_status_pending: HashSet<String>,
     /// Subagents per chat id. Fetched once per chat (not refreshed on an
@@ -2508,9 +1846,6 @@ pub struct Overview {
     /// Rows before any filter (archived-inclusion aside) — lets the empty
     /// state tell "no chats at all" from "everything filtered out".
     unfiltered_count: usize,
-    /// Set by a search edit; the next canvas render auto-fits to the matches
-    /// when there are 1..=`FIT_MAX_MATCHES` of them (web search handler).
-    pending_fit_to_matches: bool,
     refresh_ticks: u32,
     _refresh_task: gpui::Task<()>,
     /// Composable grouping dimensions, in activation (click) order — the
@@ -2551,24 +1886,10 @@ pub struct Overview {
     /// [`pr_repo_section_key`]) the user folded. Persisted as
     /// [`PR_SECTION_COLLAPSED_PREFIX`] entries in `UI_FLAGS_FILE`.
     pr_collapsed_sections: BTreeSet<String>,
-    /// See [`PendingFocus`].
-    pending_focus: Option<PendingFocus>,
-    /// The chat a canvas/list pass should bring into view THIS frame —
-    /// set in `render` once `pending_focus` has settled, consumed by the
-    /// body renderer, and cleared after it either way.
+    /// The chat the List should scroll into view on the next render (a PR
+    /// sidebar jump, or opening the link editor) — consumed by the List body
+    /// and cleared after that render either way.
     focus_due: Option<String>,
-    /// The Canvas container's own on-screen bounds, captured each paint via
-    /// a `gpui::canvas` overlay (`mouse events report `position` in WINDOW
-    /// coordinates, not element-local — this is what converts a scroll/click
-    /// event's cursor into canvas-local coordinates for zoom-to-cursor math).
-    /// `None` until the first paint.
-    canvas_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Whether `tile_positions` has had persisted positions merged in yet —
-    /// loaded lazily on flat canvas mode's first render (not in `new`, which
-    /// has no `cx` to read `AppState.data_dir` through, and `data_dir` may
-    /// still be `None` immediately after construction, before engine
-    /// bootstrap completes).
-    positions_loaded: bool,
     /// Set whenever something that could change `rows()`'s OUTPUT happens
     /// (the underlying chat list, `hide_stale`/`show_archived`, or a
     /// link-status/subagent/classification/context-usage fetch landing with
@@ -2584,16 +1905,6 @@ pub struct Overview {
     /// changed.
     rows_dirty: bool,
     rows_cache: Vec<OverviewRow>,
-    /// Grouped-canvas layout (packing + the global overlap-repair pass) is
-    /// genuinely expensive — real rectangle-packing plus a second full sweep
-    /// across every tile — and its OUTPUT depends only on which chat ids are
-    /// present, their tile sizes, and `active_groups`, never on
-    /// `canvas_pan`/`canvas_zoom` (those apply as a pure `to_screen`
-    /// transform at paint time, over already-computed LOGICAL positions).
-    /// Cached here, keyed by `(row ids, tile widths, active_groups)`;
-    /// pan/zoom/drag frames reuse it
-    /// untouched.
-    grouped_layout_cache: Option<GroupedLayoutCache>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
     /// grid before this. Same `ComposerInput` pattern `pickers.rs` already
@@ -2738,22 +2049,6 @@ pub struct Overview {
     _link_input_events: Subscription,
 }
 
-/// See [`Overview::grouped_layout_cache`].
-struct GroupedLayoutCache {
-    key_ids: Vec<String>,
-    /// Each row's full tile `(width, height)`, parallel to `key_ids`. Used to
-    /// be width-only ("width alone determines height") back when height was
-    /// purely `TILE_ASPECT` × width — no longer true now that a row's real
-    /// content (subagent count, a badge row) can change its height with its
-    /// width unchanged (see `OverviewRow::tile_size`), so the full size has
-    /// to be the key or a content-only change would silently reuse a
-    /// too-short cached layout.
-    key_sizes: Vec<(f32, f32)>,
-    key_groups: Vec<GroupDimension>,
-    laid_out: LaidOutPartition,
-    repaired: HashMap<String, overview_layout::PackedPosition>,
-}
-
 impl Overview {
     pub fn new(
         state: Entity<AppState>,
@@ -2764,7 +2059,6 @@ impl Overview {
     ) -> Self {
         let observe = cx.observe(&state, |this, _, cx| {
             this.rows_dirty = true;
-            this.grouped_layout_cache = None;
             cx.notify();
         });
         let search = cx.new(|cx| {
@@ -2782,8 +2076,6 @@ impl Overview {
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 this.rows_dirty = true;
-                this.grouped_layout_cache = None;
-                this.pending_fit_to_matches = true;
                 cx.notify();
             }
         });
@@ -2883,14 +2175,7 @@ impl Overview {
             list_selected: None,
             list_order: Vec::new(),
             view_mode: OverviewMode::List,
-            tile_positions: HashMap::new(),
-            canvas_pan: (0.0, 0.0),
-            canvas_zoom: 1.0,
-            dragging_tile: None,
-            tile_targets: HashMap::new(),
-            tile_moves: HashMap::new(),
             expanded: HashSet::new(),
-            panning: None,
             link_status: HashMap::new(),
             link_status_pending: HashSet::new(),
             subagents: HashMap::new(),
@@ -2914,7 +2199,6 @@ impl Overview {
             repo_filter: popover::Popup::default(),
             legend_open: false,
             unfiltered_count: 0,
-            pending_fit_to_matches: false,
             refresh_ticks: 0,
             _refresh_task: refresh_task,
             active_groups: Vec::new(),
@@ -2931,13 +2215,9 @@ impl Overview {
             pr_sidebar_scroll: ScrollHandle::new(),
             pr_search,
             pr_collapsed_sections: BTreeSet::new(),
-            pending_focus: None,
             focus_due: None,
-            canvas_bounds: Rc::new(Cell::new(None)),
-            positions_loaded: false,
             rows_dirty: true,
             rows_cache: Vec::new(),
-            grouped_layout_cache: None,
             search,
             chat_panel_open: false,
             outline_chat_return: None,
@@ -2991,12 +2271,8 @@ impl Overview {
         }
     }
 
-    pub(crate) fn is_canvas(&self) -> bool {
-        self.view_mode == OverviewMode::Canvas
-    }
-
     /// Cmd/Ctrl+F follows the platform Find convention in every Overview
-    /// mode (List, Canvas and Outline share the toolbar search, which also
+    /// mode (List and Outline share the toolbar search, which also
     /// filters the Outline). Selecting the existing query makes a repeated
     /// search immediately replaceable.
     pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -3012,9 +2288,9 @@ impl Overview {
     }
 
     /// Hand focus from the search field to the body of the current mode:
-    /// the Outline tree, or the List / Canvas surface. With `first_row`
-    /// (Enter / Down) the first matching row is selected as well in List and
-    /// Outline, so the arrow keys work at once.
+    /// the Outline tree, or the List surface. With `first_row` (Enter /
+    /// Down) the first matching row is selected as well, so the arrow keys
+    /// work at once.
     fn leave_search(&mut self, first_row: bool, window: &mut Window, cx: &mut Context<Self>) {
         match self.view_mode {
             OverviewMode::Outline => {
@@ -3026,9 +2302,9 @@ impl Overview {
                     }
                 });
             }
-            OverviewMode::List | OverviewMode::Canvas => {
+            OverviewMode::List => {
                 window.focus(&self.body_focus, cx);
-                if first_row && self.view_mode == OverviewMode::List {
+                if first_row {
                     self.select_list_row(0, cx);
                 }
             }
@@ -3187,7 +2463,6 @@ impl Overview {
         if !self.hidden_repos.is_empty() {
             self.repo_filter_needs_validation = true;
             self.rows_dirty = true;
-            self.grouped_layout_cache = None;
         }
         // A toggle made before `data_dir` existed wins over the older file.
         if !self.view_prefs_touched {
@@ -3197,7 +2472,6 @@ impl Overview {
             self.show_archived = prefs.show_archived;
             self.active_groups = prefs.groups;
             self.rows_dirty = true;
-            self.grouped_layout_cache = None;
         }
     }
 
@@ -3352,10 +2626,7 @@ impl Overview {
 
     fn jump_to_chat_from_pr(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.open_chat_panel(chat_id.clone(), cx);
-        self.pending_focus = Some(PendingFocus {
-            chat_id,
-            settle_frames: 1,
-        });
+        self.focus_due = Some(chat_id);
         cx.notify();
     }
 
@@ -3368,7 +2639,6 @@ impl Overview {
             cx,
         );
         self.rows_dirty = true;
-        self.grouped_layout_cache = None;
         cx.notify();
     }
 
@@ -3434,7 +2704,6 @@ impl Overview {
         }
         // Cache key includes `active_groups`, so this alone would naturally
         // miss on the next read anyway — dropped explicitly for clarity.
-        self.grouped_layout_cache = None;
         self.view_prefs_changed(cx);
     }
 
@@ -3522,10 +2791,6 @@ impl Overview {
                     values
                 })
                 .collect();
-            // Feeds `OverviewRow::tile_size` — see `has_badge_row`/
-            // `subagent_count`'s own doc comments for why these are copied
-            // in here rather than read off `self` inside `tile_size`.
-            let has_badge_row = link.is_some_and(link_has_badge_row);
             let subagent_count = self.subagents.get(&chat.id).map_or(0, Vec::len);
             let (category, origin) = self
                 .classification
@@ -3565,7 +2830,6 @@ impl Overview {
                 pr_search_values,
                 context_pct,
                 subagent_count,
-                has_badge_row,
                 closeable,
                 work_item_path,
                 user_action_required,
@@ -3983,7 +3247,6 @@ impl Overview {
                     // read `link_status` live).
                     if previous.as_ref() != Some(&fingerprint) {
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                     }
                 }
                 // Fetch failure: the stale entry (if any) keeps rendering;
@@ -4020,10 +3283,7 @@ impl Overview {
             cx,
         );
         if reveal {
-            self.pending_focus = Some(PendingFocus {
-                chat_id,
-                settle_frames: 1,
-            });
+            self.focus_due = Some(chat_id);
         }
         cx.notify();
     }
@@ -4134,7 +3394,6 @@ impl Overview {
                         apply_link_reply(&mut entry.status, kind, &reply);
                         entry.fetched_at = expired;
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                         if this
                             .link_error
                             .as_ref()
@@ -4212,7 +3471,6 @@ impl Overview {
                     this.subagents.insert(chat_id, subagents);
                     if previous_count != next_count {
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                     }
                 }
                 cx.notify();
@@ -4275,7 +3533,6 @@ impl Overview {
                         previous.is_none_or(|old| old.category != category || old.origin != origin);
                     if changed {
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                     }
                 }
                 cx.notify();
@@ -4320,7 +3577,6 @@ impl Overview {
         self.classification_fetched_at
             .insert(chat_id.to_string(), Instant::now());
         self.rows_dirty = true;
-        self.grouped_layout_cache = None;
         cx.notify();
     }
 
@@ -4351,7 +3607,6 @@ impl Overview {
                 // Categories moved: drop the TTL so the next row pass refetches.
                 this.classification_fetched_at.clear();
                 this.rows_dirty = true;
-                this.grouped_layout_cache = None;
                 cx.notify();
             })
             .ok();
@@ -4458,7 +3713,6 @@ impl Overview {
                     let previous = this.context_usage.insert(chat_id, pct);
                     if context_pct_changed(previous, pct) {
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                         cx.notify();
                     }
                 }
@@ -4575,22 +3829,17 @@ impl Overview {
         let ticket_label = link
             .and_then(|s| s.ticket.as_ref())
             .map(|t| t.identifier.clone());
-        // Equivalent to `pr_badge.is_none() && ticket_label.is_none()`, but
-        // routed through the shared helper so this can never drift from
-        // `OverviewRow::has_badge_row` (see `link_has_badge_row`'s doc
-        // comment).
         if !link.is_some_and(link_has_badge_row) {
             return None;
         }
         let ticket_source = link.and_then(|s| s.ticket_source);
-        // The tile-height estimate reserves exactly one badge line. Keep the
-        // complete badge set in that horizontal line and clip at the card
-        // edge instead of wrapping into unreserved rows. The aggregate
-        // tooltip exposes the full clipped sequence; each reachable badge
-        // retains its provenance tooltip too.
+        // Keep the complete badge set in one horizontal line and clip at the
+        // row edge instead of wrapping. The aggregate tooltip exposes the
+        // full clipped sequence; each reachable badge retains its provenance
+        // tooltip too.
         let mut summary = Vec::new();
         let mut row = div()
-            .debug_selector(|| "overview-tile-badges".into())
+            .debug_selector(|| "overview-row-badges".into())
             .flex_none()
             .w_full()
             .h(px(BADGE_ROW_H * zoom))
@@ -6076,383 +5325,6 @@ impl Overview {
             .child(SharedString::from("✕"))
             .into_any_element()
     }
-
-    /// Consume the search-edit auto-fit request: `true` only when the query
-    /// is non-empty and narrowed things to 1..=`FIT_MAX_MATCHES` rows (web:
-    /// broad one-character queries must not yank the view around).
-    fn take_pending_fit(&mut self, match_count: usize, cx: &Context<Self>) -> bool {
-        if !std::mem::take(&mut self.pending_fit_to_matches) {
-            return false;
-        }
-        let has_query = !self.search.read(cx).text().trim().is_empty();
-        has_query && (1..=FIT_MAX_MATCHES).contains(&match_count)
-    }
-
-    /// Apply [`fit_view_to_rects`] against the captured canvas viewport. A
-    /// no-op before the first paint (no bounds to fit into yet).
-    fn fit_view(&mut self, rects: &[(f32, f32, f32, f32)]) {
-        let Some(bounds) = self.canvas_bounds.get() else {
-            return;
-        };
-        let viewport = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        if let Some((zoom, pan)) = fit_view_to_rects(rects, viewport) {
-            self.canvas_zoom = zoom;
-            self.canvas_pan = pan;
-        }
-    }
-
-    /// Frame one tile for a PR-row jump ([`focus_view_on_rect`]) against the
-    /// captured canvas viewport — measured at paint, so it is already the
-    /// width left over between the PR sidebar and the chat panel. `rect` is
-    /// the tile's layout TARGET, so an in-flight organize move settles into
-    /// the framed spot.
-    fn focus_view(&mut self, rect: (f32, f32, f32, f32)) {
-        let Some(bounds) = self.canvas_bounds.get() else {
-            return;
-        };
-        let viewport = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        let (zoom, pan) = focus_view_on_rect(rect, viewport, self.canvas_zoom);
-        self.canvas_zoom = zoom;
-        self.canvas_pan = pan;
-    }
-
-    /// Zoom toward a specific WINDOW-coordinate cursor position, keeping the
-    /// board-space point currently under the cursor stationary — ports
-    /// `session_canvas.html`'s `setZoom` exactly (`~1620-1631`: convert
-    /// cursor to board-space at the OLD zoom, apply the new zoom, then solve
-    /// pan so that same board point lands back under the cursor). Falls back
-    /// to treating the cursor as already canvas-local if bounds haven't been
-    /// captured yet (first-frame edge case — `canvas_bounds` is `None` until
-    /// the bounds-capture `canvas()` overlay's first paint).
-    fn zoom_toward(&mut self, target_zoom: f32, cursor_window: (f32, f32)) {
-        let origin = self
-            .canvas_bounds
-            .get()
-            .map(|b| (f32::from(b.origin.x), f32::from(b.origin.y)))
-            .unwrap_or((0.0, 0.0));
-        let cursor = (cursor_window.0 - origin.0, cursor_window.1 - origin.1);
-        let old_zoom = self.canvas_zoom;
-        let board = (
-            (cursor.0 - self.canvas_pan.0) / old_zoom,
-            (cursor.1 - self.canvas_pan.1) / old_zoom,
-        );
-        let new_zoom = target_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
-        self.canvas_zoom = new_zoom;
-        self.canvas_pan = (cursor.0 - board.0 * new_zoom, cursor.1 - board.1 * new_zoom);
-    }
-
-    /// Viewport culling: gpui has real paint-time clipping (`ContentMask`,
-    /// applied via `.overflow_hidden()`, already on the canvas container) but
-    /// that only clips the final painted pixels — `request_layout`/`prepaint`
-    /// still run unconditionally for every child element regardless of
-    /// visibility (confirmed by reading gpui's own `div.rs` directly: no
-    /// bounds check gates those calls). At real scale (~227 tiles, each with
-    /// several text runs) that's exactly the "scene too large" GPU buffer
-    /// growth seen in real logs (28889 text-glyph quads in one frame) — text
-    /// shaping for every tile happens whether or not it's on-screen. This
-    /// skips constructing a tile's `AnyElement` at all when its screen-space
-    /// bounds don't intersect the viewport (plus a margin so tiles don't pop
-    /// in abruptly while panning), catching the cost before layout/prepaint
-    /// ever run for it, not just before paint.
-    fn tile_in_viewport(&self, screen_x: f32, screen_y: f32, tile_w: f32, tile_h: f32) -> bool {
-        const MARGIN_PX: f32 = 200.0;
-        let Some(bounds) = self.canvas_bounds.get() else {
-            return true; // first frame, bounds not captured yet — render everything once
-        };
-        let (vw, vh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        screen_x + tile_w >= -MARGIN_PX
-            && screen_x <= vw + MARGIN_PX
-            && screen_y + tile_h >= -MARGIN_PX
-            && screen_y <= vh + MARGIN_PX
-    }
-
-    /// The canvas viewport's own center in window coordinates, for the +/-
-    /// zoom buttons (which zoom toward viewport center, unlike scroll-to-
-    /// zoom which targets the cursor) — `session_canvas.html`'s zoom-in/
-    /// zoom-out buttons do the same (`~1665-1672`).
-    fn canvas_center_window(&self) -> (f32, f32) {
-        match self.canvas_bounds.get() {
-            Some(b) => (
-                f32::from(b.origin.x) + f32::from(b.size.width) / 2.0,
-                f32::from(b.origin.y) + f32::from(b.size.height) / 2.0,
-            ),
-            None => (0.0, 0.0),
-        }
-    }
-
-    /// The zoom-percentage label + `+`/`-`/fit-all controls, overlaid on the
-    /// canvas (bottom-right) — ports `session_canvas.html`'s `#zoom-in`/
-    /// `#zoom-out`/`zoomLabel` (`~1665-1676`): buttons zoom toward viewport
-    /// center, clicking the percentage resets to 100% zoom / origin pan in
-    /// one click. `fit_all_rects` is the bounding-box input for the "Fit
-    /// all" button — every currently on-canvas tile's board-space rect
-    /// (post-filter, this mode's own positions), the same set the search
-    /// auto-fit (`fit_view`/`take_pending_fit`) already frames; empty is a
-    /// no-op ([`fit_view_to_rects`] returns `None` for an empty slice).
-    fn render_zoom_controls(
-        &self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-        fit_all_rects: Vec<(f32, f32, f32, f32)>,
-    ) -> gpui::AnyElement {
-        let zoom_pct = (self.canvas_zoom * 100.0).round() as i32;
-        let btn = |label: &'static str| {
-            div()
-                .id(SharedString::from(format!("overview-zoom-{label}")))
-                .flex_none()
-                .size(px(20.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .text_size(crate::typography::ui_rems(12.0))
-                .text_color(theme.text_muted)
-                .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
-                .child(SharedString::from(label))
-        };
-        div()
-            .id("overview-zoom-controls")
-            .absolute()
-            .bottom(px(10.0))
-            .right(px(10.0))
-            .flex()
-            .items_center()
-            .gap(px(2.0))
-            .p(px(3.0))
-            .rounded(px(6.0))
-            .bg(theme.surface_raised.opacity(0.9))
-            .border_1()
-            .border_color(theme.border)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(btn("−").on_click(cx.listener(|this, _, _, cx| {
-                let center = this.canvas_center_window();
-                this.zoom_toward(this.canvas_zoom / 1.2, center);
-                cx.notify();
-            })))
-            .child(
-                div()
-                    .id("overview-zoom-pct")
-                    .flex_none()
-                    .px(px(4.0))
-                    .cursor_pointer()
-                    .text_size(crate::typography::ui_rems(10.5))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(format!("{zoom_pct}%")))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.canvas_zoom = 1.0;
-                        this.canvas_pan = (0.0, 0.0);
-                        cx.notify();
-                    })),
-            )
-            .child(btn("+").on_click(cx.listener(|this, _, _, cx| {
-                let center = this.canvas_center_window();
-                this.zoom_toward(this.canvas_zoom * 1.2, center);
-                cx.notify();
-            })))
-            .child(
-                div()
-                    .id("overview-zoom-fit-all")
-                    .flex_none()
-                    .size(px(20.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .text_color(theme.text_muted)
-                    .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
-                    .child(crate::icons::icon(crate::icons::EXPAND_ARROWS).size(px(11.0)))
-                    .tooltip(|_, cx| cx.new(|_| LinkSourceTooltip("Fit all cards".into())).into())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.fit_view(&fit_all_rects);
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
-    }
-
-    /// Off-screen rescue pill ("N cards off-screen — Fit view"): shown when
-    /// every currently on-canvas tile (post-filter) is outside the
-    /// viewport — i.e. the user panned/zoomed away and is staring at empty
-    /// board space, not merely that all tiles happen to be filtered out.
-    /// Detection reuses the exact same [`Self::tile_in_viewport`] result the
-    /// render loop already computed against each tile's CURRENT (animated)
-    /// position for viewport culling — not a separate check against target
-    /// positions — so a tile mid-organize-move that happens to be off its
-    /// straight-line path for one frame can never trip a false positive:
-    /// whatever this says is "visible" is exactly what painted this frame.
-    /// Clicking the pill runs the identical [`fit_view`] bbox math as the
-    /// zoom cluster's "Fit all" button.
-    fn render_rescue_pill(
-        &self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-        count: usize,
-        rects: Vec<(f32, f32, f32, f32)>,
-    ) -> gpui::AnyElement {
-        let label = format!(
-            "{count} card{} off-screen — Fit view",
-            if count == 1 { "" } else { "s" }
-        );
-        div()
-            .id("overview-rescue-wrap")
-            .absolute()
-            .top(px(14.0))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .id("overview-rescue-pill")
-                    .h(px(28.0))
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.surface_raised)
-                    .shadow_md()
-                    .cursor_pointer()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text)
-                    .hover(|el| el.bg(theme.element_hover))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.fit_view(&rects);
-                        cx.notify();
-                    }))
-                    .child(SharedString::from(label)),
-            )
-            .into_any_element()
-    }
-
-    /// A zero-size `gpui::canvas` overlay whose only job is capturing the
-    /// parent canvas container's own on-screen bounds into `canvas_bounds`
-    /// each paint (see that field's doc comment for why this is needed —
-    /// mouse events report window coordinates, not element-local ones).
-    fn bounds_capture(&self) -> gpui::AnyElement {
-        let bounds_cell = self.canvas_bounds.clone();
-        gpui::canvas(
-            move |bounds, _, _| {
-                bounds_cell.set(Some(bounds));
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0()
-        .into_any_element()
-    }
-
-    /// The logical position for `chat_id`, assigning (and caching) a default
-    /// grid slot if this is the first time canvas mode has seen it (either
-    /// truly new, or no persisted position exists for it yet). The slot
-    /// stride is the LARGEST tile size ([`flat_grid_stride`]), not this
-    /// tile's current one: a slot is assigned once and kept, while the tile
-    /// keeps growing as its context fills, so a stride sized to today's
-    /// width would overlap its neighbor later. The web's `defaultPosition`
-    /// does the same with a fixed stride larger than any tile.
-    /// Where to DRAW a tile whose layout target this pass is `target` —
-    /// records the target and starts/continues/drops its organize move via
-    /// `plan_tile_motion`. Called for every present tile (culled or not)
-    /// before viewport culling, so culling sees the interpolated position
-    /// and an off-screen tile's move still tracks its target.
-    fn animated_tile_pos(
-        &mut self,
-        chat_id: &str,
-        target: TilePos,
-        now: Instant,
-        reduced: bool,
-    ) -> TilePos {
-        let live_drag = self
-            .dragging_tile
-            .as_ref()
-            .is_some_and(|d| d.committed && d.chat_id == chat_id);
-        let duration = TILE_MOVE_DURATION.mul_f32(crate::motion::speed_scale());
-        let prev = self.tile_targets.insert(chat_id.to_string(), target);
-        let current = self.tile_moves.get(chat_id).copied();
-        let (next, pos) =
-            plan_tile_motion(prev, current, target, live_drag, reduced, now, duration);
-        match next {
-            Some(m) => {
-                self.tile_moves.insert(chat_id.to_string(), m);
-            }
-            None => {
-                self.tile_moves.remove(chat_id);
-            }
-        }
-        pos
-    }
-
-    /// End of a canvas pass: forget tiles that weren't present, so their
-    /// next appearance counts as a first appearance (no fly-in).
-    fn prune_tile_motion(&mut self, present: &HashSet<&str>) {
-        self.tile_targets
-            .retain(|id, _| present.contains(id.as_str()));
-        self.tile_moves
-            .retain(|id, _| present.contains(id.as_str()));
-    }
-
-    fn clear_tile_motion(&mut self) {
-        self.tile_targets.clear();
-        self.tile_moves.clear();
-    }
-
-    fn position_for(&mut self, chat_id: &str, slot: usize) -> TilePos {
-        if let Some(pos) = self.tile_positions.get(chat_id) {
-            return *pos;
-        }
-        let (stride_w, stride_h) = flat_grid_stride();
-        let col = (slot % GRID_COLS) as f32;
-        let row = (slot / GRID_COLS) as f32;
-        let pos = TilePos {
-            x: col * stride_w,
-            y: row * stride_h,
-        };
-        self.tile_positions.insert(chat_id.to_string(), pos);
-        pos
-    }
-
-    /// Merge persisted tile positions (`overview_positions::load_positions`)
-    /// into `tile_positions` — the client-side analog of the reference tool's
-    /// `localStorage`-backed free-form layout surviving a reload. Runs once,
-    /// lazily, the first time flat canvas mode renders (not in `new`, which
-    /// has no `cx` to read `AppState.data_dir` through). A chat already
-    /// present in `tile_positions` (assigned a default grid slot earlier this
-    /// session, before this load ran) keeps that slot rather than jumping —
-    /// `HashMap::entry().or_insert()` only fills gaps, never overwrites.
-    fn ensure_positions_loaded(&mut self, cx: &Context<Self>) {
-        if self.positions_loaded {
-            return;
-        }
-        self.positions_loaded = true;
-        let Some(data_dir) = self.state.read(cx).data_dir.clone() else {
-            return; // engine not bootstrapped yet; nothing to load from
-        };
-        for (id, (x, y)) in overview_positions::load_positions(&data_dir) {
-            self.tile_positions.entry(id).or_insert(TilePos { x, y });
-        }
-    }
-
-    /// Persist the current flat-mode layout — called on tile-drag release.
-    /// Grouped-mode positions are algorithm-computed every render, never
-    /// user-placed, so they're deliberately never saved here.
-    fn save_positions(&self, cx: &Context<Self>) {
-        let Some(data_dir) = self.state.read(cx).data_dir.clone() else {
-            return;
-        };
-        let positions: overview_positions::Positions = self
-            .tile_positions
-            .iter()
-            .map(|(id, pos)| (id.clone(), (pos.x, pos.y)))
-            .collect();
-        if let Err(err) = overview_positions::save_positions(&data_dir, &positions) {
-            tracing::warn!(error = %err, "saving overview tile positions failed");
-        }
-    }
 }
 
 impl Render for Overview {
@@ -6627,16 +5499,6 @@ impl Render for Overview {
                                     ),
                             )
                             .child(
-                                toggle(OverviewMode::Canvas, "Canvas".into(), self.view_mode)
-                                    .hint("Canvas view", HintKey::None)
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.set_mode(OverviewMode::Canvas, cx);
-                                        }),
-                                    ),
-                            )
-                            .child(
                                 toggle(OverviewMode::Outline, "Outline".into(), self.view_mode)
                                     .hint(
                                         "Outline: work items and their Chats",
@@ -6739,7 +5601,6 @@ impl Render for Overview {
                             this.hide_stale = !this.hide_stale;
                             this.view_prefs_changed(cx);
                             this.rows_dirty = true;
-                            this.grouped_layout_cache = None;
                             cx.notify();
                         }),
                     ),
@@ -6757,7 +5618,6 @@ impl Render for Overview {
                         this.show_archived = !this.show_archived;
                         this.view_prefs_changed(cx);
                         this.rows_dirty = true;
-                        this.grouped_layout_cache = None;
                         cx.notify();
                     }),
                 ),
@@ -6858,25 +5718,6 @@ impl Render for Overview {
 
         let legend = self.legend_open.then(|| self.render_legend(&theme));
 
-        if self.view_mode != OverviewMode::Canvas {
-            // Auto-fit is a canvas-only reaction to the edit that caused it —
-            // never a deferred jump on a later mode switch.
-            self.pending_fit_to_matches = false;
-            // Re-entering canvas mode is a first appearance for every tile —
-            // never animate from wherever they were before leaving.
-            self.clear_tile_motion();
-        }
-        // Settle a PR-row jump (see `PendingFocus`): wait out the frame(s)
-        // whose paint re-measures the canvas at its new width, then hand the
-        // target to this frame's body renderer.
-        if let Some(pending) = self.pending_focus.as_mut() {
-            if pending.settle_frames > 0 {
-                pending.settle_frames -= 1;
-                window.request_animation_frame();
-            } else {
-                self.focus_due = self.pending_focus.take().map(|p| p.chat_id);
-            }
-        }
         // Built before the body, which consumes `rows`.
         let pr_sidebar = self.render_pr_sidebar(&rows, &theme, cx);
         let body = match self.view_mode {
@@ -6884,22 +5725,11 @@ impl Render for Overview {
                 let body = self.render_list_body(&rows, &theme, cx);
                 self.surface_focus_wrapper(body, cx)
             }
-            OverviewMode::Canvas => {
-                let body = self.render_canvas_body(rows, &theme, cx);
-                self.surface_focus_wrapper(body, cx)
-            }
             OverviewMode::Outline => self.render_outline_body(cx),
         };
         // A focus the body couldn't use (target filtered out / not a row)
         // is dropped, never replayed on a later frame.
         self.focus_due = None;
-        // Organize moves are hand-driven (see `tile_moves`): one frame at a
-        // time while any is in flight. The pass that sees the last move
-        // finish leaves `tile_moves` empty and schedules nothing, so an idle
-        // canvas never keeps the window redrawing.
-        if !self.tile_moves.is_empty() {
-            window.request_animation_frame();
-        }
 
         let main = div()
             .flex_1()
@@ -7875,1005 +6705,6 @@ impl Overview {
             .into_any_element()
     }
 
-    /// One tile's content — status color, title, cwd, relative time, PR/
-    /// ticket badges, dimmed when stale, carrying a white left-edge ribbon
-    /// while an unacknowledged done, then the parent's stack of compact
-    /// subagent tiles under the face. The only place a later phase should
-    /// need to touch to add more per-chat detail: append a child here, not
-    /// to the drag/pan/zoom plumbing around it. `open_button` (the face's
-    /// "View full chat →" control) and `subagent_tiles`
-    /// (`subagent_tiles_for`) are built by the caller, which has the `cx`
-    /// for their listeners.
-    ///
-    /// `zoom` scales every size/spacing value in here proportionally (List
-    /// mode passes `1.0`, which has no zoom concept; Canvas mode passes
-    /// `self.canvas_zoom`). gpui's `Transformation` (used for icon rotation
-    /// elsewhere in this codebase) is an SVG-element-only primitive — not a
-    /// general subtree transform — so there's no way to scale a whole
-    /// rendered `div()` tree for free here; scaling each value explicitly is
-    /// the real fix, not a workaround. This only touches rendered sizes, not
-    /// the tile's screen position/hit-testing math (computed separately in
-    /// the canvas layout functions), so click/drag behavior is unaffected.
-    fn tile_body(
-        &self,
-        row: &OverviewRow,
-        theme: &Theme,
-        now: chrono::DateTime<Utc>,
-        zoom: f32,
-        open_button: gpui::AnyElement,
-        subagent_tiles: Vec<gpui::AnyElement>,
-    ) -> gpui::AnyElement {
-        let title: SharedString = row
-            .chat
-            .title
-            .clone()
-            .unwrap_or_else(|| "New session".to_string())
-            .into();
-        let cwd: SharedString = row
-            .chat
-            .cwd
-            .as_deref()
-            .map(shorten_cwd)
-            .unwrap_or_else(|| "No folder".to_string())
-            .into();
-        let when: SharedString = row
-            .chat
-            .last_message_at
-            .map(|at| format_time_ago(at, now))
-            .unwrap_or_else(|| format_time_ago(row.chat.created_at, now))
-            .into();
-        let dot = reference_status_color(row.status);
-        let (icon, label) = status_style(row.status, row.origin.is_some());
-        let unread = is_unread_done(
-            &self.acknowledged_done,
-            &row.chat.id,
-            row.status == ChatIndicator::Completed,
-        );
-        let (dim, ribbon) = card_dimming(row.chat.archived, row.stale, unread);
-        // A chat whose work item needs the user stays at full opacity.
-        let dim = dim.filter(|_| !(row.user_action_required && !row.chat.archived));
-        // Work-item chips share existing lines (title row, status row), so
-        // the card's size and `tile_content_height_estimate` are unchanged.
-        let attention = crate::work_outline::chips::attention_indicator(
-            format!("overview-tile-attention-{}", row.chat.id),
-            row.user_action_required,
-            row.user_action_count,
-            theme,
-            zoom,
-        );
-        let exception_mark = row.execution_exception.then(|| {
-            crate::work_outline::chips::execution_exception_mark(
-                format!("overview-tile-execution-exception-{}", row.chat.id),
-                theme,
-                zoom,
-            )
-        });
-        let drift_mark = row.instruction_drift.then(|| {
-            self.instruction_drift_mark(
-                format!("overview-tile-instruction-drift-{}", row.chat.id),
-                &row.chat.id,
-                false,
-                theme,
-                zoom,
-            )
-        });
-        let path_chip = row.work_item_path.as_ref().map(|path| {
-            crate::work_outline::chips::path_chip(
-                format!("overview-tile-work-item-{}", row.chat.id),
-                path,
-                theme,
-                zoom,
-            )
-        });
-        // Status color as a whole-tile background tint, not just the small
-        // dot — ports `renderTile`'s `color-mix(in srgb, ${st.color} 14%,
-        // surface)` (its own code comment argues this "reads at a glance
-        // across a wall of tiles far better than a small status dot alone,"
-        // directly relevant at Zeron's real scale). `Hsla::blend` at a low
-        // source alpha is the same math as a CSS color-mix against the base.
-        let tinted_bg = theme.surface_raised.blend(dot.opacity(0.14));
-        // Border tinted by status too, not just the background — exact port
-        // of `renderTile`'s `borderColor: color-mix(in srgb, ${st.color} 30%,
-        // var(--border))`.
-        let tinted_border = theme.border.blend(dot.opacity(0.30));
-        let badges = self.badges_for(&row.chat.id, theme, zoom);
-        let category_badge = category_badge(row, zoom);
-        let model = model_badge(&row.chat, theme, zoom);
-        let is_expanded = self.expanded.contains(&row.chat.id);
-        let is_hovered = self.hovered_tile.as_deref() == Some(row.chat.id.as_str());
-        let hover_branch = is_hovered.then(|| row.chat.branch.clone()).flatten();
-        let hover_preview = is_hovered
-            .then(|| row.chat.last_message_preview.clone())
-            .flatten();
-        div()
-            .debug_selector(|| "overview-tile-body".into())
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap(px(TILE_ROW_GAP * zoom))
-            .p(px(8.0 * zoom))
-            .rounded(px(8.0 * zoom))
-            // Belt-and-suspenders on top of `tile_size`'s content-height
-            // estimate: any residual mis-estimate (an unusually long title
-            // wrap, a font-metrics difference, etc.) clips at the tile's own
-            // rounded corner instead of spilling past its background into
-            // whatever's rendered next, which is the visible symptom the
-            // estimate exists to prevent in the first place.
-            .overflow_hidden()
-            .border_1()
-            .border_color(tinted_border)
-            // The chat open in the side panel.
-            .when(
-                self.panel_highlight.as_deref() == Some(row.chat.id.as_str()),
-                |el| el.border_color(theme.accent),
-            )
-            .bg(tinted_bg)
-            .shadow_sm()
-            .when(is_hovered, |el| el.shadow_lg())
-            .hover(|el| el.border_color(dot.opacity(0.6)))
-            // Reference's exact `.card.archived { opacity: 0.4 }` /
-            // `.card.stale { opacity: 0.55 }` — except an unread-done card,
-            // which stays at full opacity until acknowledged (`card_dimming`).
-            .when_some(dim, |el, opacity| el.opacity(opacity))
-            // `.card.unread-done` — a bright left-edge ribbon, no border
-            // change (the web changes no border either); see
-            // `unread_done_ribbon`.
-            .when(ribbon, |el| el.child(unread_done_ribbon(zoom)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0 * zoom))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(7.0 * zoom))
-                            .rounded_full()
-                            .bg(dot),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "overview-tile-title".into())
-                            .flex_1()
-                            .min_w_0()
-                            .text_color(theme.text)
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_size(crate::typography::ui_rems(13.0 * zoom))
-                            .when(!is_hovered, |el| el.truncate())
-                            .when(is_hovered, |el| {
-                                el.h(px(32.0 * zoom))
-                                    .line_height(px(16.0 * zoom))
-                                    .overflow_hidden()
-                            })
-                            .child(title),
-                    )
-                    .children(drift_mark)
-                    .children(exception_mark)
-                    .when_some(attention, |el, attention| el.child(attention)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0 * zoom))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(10.5 * zoom))
-                            .text_color(theme.text_muted.opacity(0.7))
-                            .child(cwd),
-                    )
-                    .child(model),
-            )
-            .when_some(hover_branch, |el, branch| {
-                el.child(
-                    div()
-                        .debug_selector(|| "overview-tile-hover-branch".into())
-                        .flex_none()
-                        .h(px(14.0 * zoom))
-                        .flex()
-                        .items_center()
-                        .truncate()
-                        .text_size(crate::typography::ui_rems(9.5 * zoom))
-                        .text_color(theme.text_muted.opacity(0.75))
-                        .child(SharedString::from(format!("⎇ {branch}"))),
-                )
-            })
-            // `.fill-bar` + `.pct-label`, right under the title block like
-            // the web's tile face.
-            .child(context_meter(row.context_pct, theme, zoom).mt(px(2.0 * zoom)))
-            // `.status-row`: dot color + icon + label, then (Zeron-only)
-            // relative time and the category badge.
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0 * zoom))
-                    .text_size(crate::typography::ui_rems(10.0 * zoom))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(dot)
-                            .child(SharedString::from(format!("{icon} {label}"))),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text_muted.opacity(0.6))
-                            .child(when),
-                    )
-                    .when_some(path_chip, |el, chip| el.child(chip))
-                    .child(div().flex_1())
-                    .when_some(category_badge, |el, badge| el.child(badge)),
-            )
-            .when_some(badges, |el, badges| el.child(badges))
-            .when_some(hover_preview, |el, preview| {
-                el.child(
-                    div()
-                        .debug_selector(|| "overview-tile-hover-last-message".into())
-                        .flex_none()
-                        .h(px(32.0 * zoom))
-                        .line_height(px(16.0 * zoom))
-                        .overflow_hidden()
-                        .text_size(crate::typography::ui_rems(9.5 * zoom))
-                        .text_color(theme.text_muted.opacity(0.8))
-                        .child(SharedString::from(format!("Last message · {preview}"))),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_end()
-                    .justify_between()
-                    .gap(px(6.0 * zoom))
-                    .child(open_button)
-                    // Exact port of `renderTile`'s `<div class="expand-hint">
-                    // click for more details</div>` — shown only when NOT
-                    // already expanded, same as the reference.
-                    .when(!is_expanded, |el| {
-                        el.child(
-                            div()
-                                .text_size(crate::typography::ui_rems(9.0 * zoom))
-                                .text_color(theme.text_muted.opacity(0.4))
-                                .child(SharedString::from("click for more details")),
-                        )
-                    }),
-            )
-            // `.connector > .subagents`: the vertical stack of compact
-            // subagent tiles under the face. Exactly
-            // `subagent_stack_height` tall (fixed-height tiles, fixed gaps,
-            // `mt` + this column's own `TILE_ROW_GAP` = the connector's
-            // 10px), so `tile_size` reserved precisely this.
-            .when(!subagent_tiles.is_empty(), |el| {
-                el.child(
-                    div()
-                        .debug_selector(|| "overview-tile-subagents".into())
-                        .flex_none()
-                        .mt(px((SUBAGENT_STACK_TOP - TILE_ROW_GAP) * zoom))
-                        .flex()
-                        .flex_col()
-                        .gap(px(SUBAGENT_TILE_GAP * zoom))
-                        .children(subagent_tiles),
-                )
-            })
-            .into_any_element()
-    }
-
-    /// Spatial tile board: absolute-positioned tiles over a pannable/
-    /// zoomable canvas surface. Drag idiom follows the pane-resize-handle
-    /// pattern already used in `shell.rs` (`on_mouse_down` arms a live drag,
-    /// `on_mouse_move`/`on_mouse_up` on the canvas root track and finish it)
-    /// rather than gpui's `on_drag`/`on_drag_move` ghost-payload machinery —
-    /// simpler for continuous free-position dragging where the moving
-    /// element IS the payload, not a proxy.
-    ///
-    /// Zoom is applied to tile position/size at layout time (not a real
-    /// content-scale transform — nothing else in this codebase uses one on
-    /// arbitrary content, and fighting gpui for that wasn't worth it here);
-    /// visually indistinguishable from a transform for this purpose.
-    fn render_canvas_body(
-        &mut self,
-        rows: Vec<OverviewRow>,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        if rows.is_empty() {
-            self.pending_fit_to_matches = false;
-            self.clear_tile_motion();
-            self.hovered_tile = None;
-            return self.render_empty_state(theme, cx);
-        }
-        if self.active_groups.is_empty() {
-            self.render_canvas_flat(rows, theme, cx)
-        } else {
-            self.render_canvas_grouped(rows, theme, cx)
-        }
-    }
-
-    /// Ungrouped canvas: free-drag tiles over a pannable/zoomable surface —
-    /// the original single-scatter layout, unchanged.
-    fn render_canvas_flat(
-        &mut self,
-        rows: Vec<OverviewRow>,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        self.ensure_positions_loaded(cx);
-        // Every currently on-canvas tile's board-space rect (post-filter,
-        // flat mode's own positions) — feeds both the search auto-fit below
-        // and the "Fit all"/off-screen-rescue controls in the zoom cluster.
-        let all_rects: Vec<(f32, f32, f32, f32)> = rows
-            .iter()
-            .enumerate()
-            .map(|(slot, row)| {
-                let pos = self.position_for(&row.chat.id, slot);
-                let (w, h) = row.tile_size();
-                (pos.x, pos.y, w, h)
-            })
-            .collect();
-        if self.take_pending_fit(rows.len(), cx) {
-            self.fit_view(&all_rects);
-        }
-        if let Some(focus_id) = self.focus_due.take()
-            && let Some((slot, row)) = rows.iter().enumerate().find(|(_, r)| r.chat.id == focus_id)
-        {
-            let pos = self.position_for(&focus_id, slot);
-            let (w, h) = row.tile_size();
-            self.focus_view((pos.x, pos.y, w, h));
-        }
-        let now = Utc::now();
-        let zoom = self.canvas_zoom;
-        let (pan_x, pan_y) = self.canvas_pan;
-
-        // gpui has no z-index/stacking-context primitive at all (confirmed
-        // against its own source — `Interactivity` exposes nothing like it;
-        // paint order is purely child-array order, later paints over
-        // earlier). The reference tolerates an expanded/interacted card
-        // overlapping its neighbors by bumping its DOM z-index
-        // (`session_canvas.html`'s `makeCard`, `card.style.zIndex = ++zTop`)
-        // — the gpui equivalent of "paint on top" is "render last", so this
-        // collects `(paint_on_top, element)` and stable-sorts expanded or
-        // hovered tiles to the end of the child list before the previously-reported
-        // "expanded content hidden behind the tile below it" bug.
-        let anim_now = Instant::now();
-        let reduced = cx.reduce_motion();
-        let present_ids: Vec<String> = rows.iter().map(|r| r.chat.id.clone()).collect();
-        // Tracks whether ANY tile intersected the viewport this frame, for
-        // the off-screen rescue pill — set from the exact same
-        // `tile_in_viewport` call viewport culling already makes below,
-        // against each tile's CURRENT animated position, so an in-flight
-        // organize move can't produce a false "all off-screen" reading (see
-        // `render_rescue_pill`'s doc comment).
-        let mut any_tile_visible = false;
-        let mut mounted_ids = Vec::new();
-        let mut tiles: Vec<(bool, _)> = rows
-            .into_iter()
-            .enumerate()
-            .filter_map(|(slot, row)| {
-                let chat_id = row.chat.id.clone();
-                let target = self.position_for(&chat_id, slot);
-                let pos = self.animated_tile_pos(&chat_id, target, anim_now, reduced);
-                let screen_x = pos.x * zoom + pan_x;
-                let screen_y = pos.y * zoom + pan_y;
-                let has_subagent_overflow = row.subagent_count > SUBAGENT_PREVIEW_LIMIT;
-                let is_hovered = self.hovered_tile.as_deref() == Some(chat_id.as_str());
-                let is_expanded = self.expanded.contains(&chat_id);
-                let show_all_subagents = has_subagent_overflow && is_hovered;
-                let (board_w, board_h) = if is_hovered {
-                    row.hovered_tile_size()
-                } else {
-                    row.tile_size()
-                };
-                let (tile_w, tile_h) = (board_w * zoom, board_h * zoom);
-                let card_w = if is_expanded {
-                    expanded_tile_width(board_w) * zoom
-                } else {
-                    tile_w
-                };
-                // Skip building this tile's element at all when off-screen —
-                // see `tile_in_viewport`'s doc comment for why this has to
-                // happen before `tile_body` runs, not just before paint. An
-                // expanded tile's real height exceeds `tile_h`; the margin
-                // comfortably covers that without tracking exact expanded
-                // height here.
-                let in_viewport = self.tile_in_viewport(screen_x, screen_y, card_w, tile_h);
-                if in_viewport {
-                    any_tile_visible = true;
-                }
-                if !in_viewport {
-                    return None;
-                }
-                mounted_ids.push(chat_id.clone());
-                let open_button = self.open_chat_button(chat_id.clone(), theme, cx, zoom);
-                let subagent_tiles =
-                    self.subagent_tiles_for(&chat_id, theme, zoom, show_all_subagents, cx);
-                let content = self.tile_body(&row, theme, now, zoom, open_button, subagent_tiles);
-                let archive = (!row.chat.archived)
-                    .then(|| self.archive_button(chat_id.clone(), theme, cx, zoom));
-                let detail = is_expanded.then(|| {
-                    self.expanded_detail_for(
-                        &row,
-                        theme,
-                        chat_id.clone(),
-                        zoom,
-                        Some(expanded_tile_width(board_w)),
-                        cx,
-                    )
-                });
-                let face = div()
-                    .relative()
-                    .w(px(tile_w))
-                    .h(px(tile_h))
-                    .child(content)
-                    .when_some(archive, |el, archive| {
-                        el.child(div().absolute().top(px(4.0)).right(px(4.0)).child(archive))
-                    });
-                let drag_id = chat_id.clone();
-                let hover_id = chat_id.clone();
-                let element = div()
-                    .id(("overview-tile", slot))
-                    .absolute()
-                    .left(px(screen_x))
-                    .top(px(screen_y))
-                    .w(px(card_w))
-                    .cursor_pointer()
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered {
-                            if this.hovered_tile.as_deref() != Some(hover_id.as_str()) {
-                                this.hovered_tile = Some(hover_id.clone());
-                                cx.notify();
-                            }
-                        } else if this.hovered_tile.as_deref() == Some(hover_id.as_str()) {
-                            this.hovered_tile = None;
-                            cx.notify();
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                            let pos = this
-                                .tile_positions
-                                .get(&drag_id)
-                                .copied()
-                                .unwrap_or(TilePos { x: 0.0, y: 0.0 });
-                            let tile_screen = (
-                                pos.x * this.canvas_zoom + this.canvas_pan.0,
-                                pos.y * this.canvas_zoom + this.canvas_pan.1,
-                            );
-                            let offset = (cursor.0 - tile_screen.0, cursor.1 - tile_screen.1);
-                            this.dragging_tile = Some(TileDrag {
-                                chat_id: drag_id.clone(),
-                                offset,
-                                down_cursor: cursor,
-                                committed: false,
-                            });
-                        }),
-                    )
-                    .child(face)
-                    .when_some(detail, |el, detail| el.child(detail));
-                Some((is_expanded || is_hovered, element))
-            })
-            .collect();
-        reconcile_hovered_tile(&mut self.hovered_tile, &mounted_ids);
-        self.prune_tile_motion(&present_ids.iter().map(String::as_str).collect());
-        tiles.sort_by_key(|(is_expanded, _)| *is_expanded);
-        let tiles: Vec<_> = tiles.into_iter().map(|(_, element)| element).collect();
-        // Rescue pill only once tiles actually exist and none of them
-        // intersected the viewport this frame — never for an empty/filtered
-        // board (that's the ordinary empty state, not "off-screen"). See
-        // `no_tiles_visible`'s doc comment.
-        let rescue_pill = no_tiles_visible(present_ids.len(), any_tile_visible)
-            .then(|| self.render_rescue_pill(theme, cx, present_ids.len(), all_rects.clone()));
-
-        div()
-            .id("overview-canvas")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .bg(theme.surface)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, _, _cx| {
-                    // Background press (tiles already stopped propagation on
-                    // their own mouse-down) — arm a pan drag.
-                    this.panning = Some((
-                        (f32::from(event.position.x), f32::from(event.position.y)),
-                        this.canvas_pan,
-                    ));
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                if let Some(drag) = this.dragging_tile.as_mut() {
-                    let zoom = this.canvas_zoom;
-                    // Board-space cumulative movement (screen delta / zoom) —
-                    // matches the reference's own `(clientX - startX) / zoom`
-                    // scaling so the threshold feels the same at any zoom.
-                    let moved_x = (cursor.0 - drag.down_cursor.0) / zoom;
-                    let moved_y = (cursor.1 - drag.down_cursor.1) / zoom;
-                    if !drag.committed
-                        && (moved_x.abs() >= DRAG_THRESHOLD_PX
-                            || moved_y.abs() >= DRAG_THRESHOLD_PX)
-                    {
-                        drag.committed = true;
-                    }
-                    if drag.committed {
-                        let chat_id = drag.chat_id.clone();
-                        let offset = drag.offset;
-                        let screen = (cursor.0 - offset.0, cursor.1 - offset.1);
-                        let logical = (
-                            (screen.0 - this.canvas_pan.0) / zoom,
-                            (screen.1 - this.canvas_pan.1) / zoom,
-                        );
-                        this.tile_positions.insert(
-                            chat_id,
-                            TilePos {
-                                x: logical.0,
-                                y: logical.1,
-                            },
-                        );
-                    }
-                    cx.notify();
-                } else if let Some((start_cursor, start_pan)) = this.panning {
-                    this.canvas_pan = (
-                        start_pan.0 + (cursor.0 - start_cursor.0),
-                        start_pan.1 + (cursor.1 - start_cursor.1),
-                    );
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    // Resolved here, on release, matching the reference's own
-                    // `onUp` — never on a separate racing `on_click` handler
-                    // (see `dragging_tile`'s doc comment for the bug this
-                    // replaced). Committed (moved past threshold) = real
-                    // drag, persist the new position. Not committed = a
-                    // click, toggle expand in place — never navigates.
-                    if let Some(drag) = this.dragging_tile.take() {
-                        if drag.committed {
-                            this.save_positions(cx);
-                        } else {
-                            this.toggle_expanded(&drag.chat_id, cx);
-                        }
-                    }
-                    this.panning = None;
-                    cx.notify();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    // A release outside the canvas bounds only counts as a
-                    // drag-save, never a click-to-expand (mirrors treating an
-                    // off-element release as "cancel the gesture" rather than
-                    // activating it).
-                    if let Some(drag) = this.dragging_tile.take()
-                        && drag.committed
-                    {
-                        this.save_positions(cx);
-                    }
-                    this.panning = None;
-                    cx.notify();
-                }),
-            )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                let delta = event.delta.pixel_delta(px(1.0));
-                if event.modifiers.control {
-                    // Ctrl+scroll zooms toward the cursor — matches
-                    // `session_canvas.html`'s `exp(-deltaY * 0.01)` curve
-                    // exactly (`~1657`).
-                    let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                    let factor = (-f32::from(delta.y) * 0.01).exp();
-                    this.zoom_toward(this.canvas_zoom * factor, cursor);
-                } else {
-                    // Plain scroll pans (`~1659-1660`). Sign matches macOS
-                    // natural-scrolling: content follows the finger/swipe
-                    // direction, not the viewport.
-                    this.canvas_pan.0 += f32::from(delta.x);
-                    this.canvas_pan.1 += f32::from(delta.y);
-                }
-                cx.notify();
-            }))
-            .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
-                // Native trackpad pinch — the primary, natural-feeling zoom
-                // trigger on macOS. `event.delta` is already a usable
-                // fractional zoom change (0.1 == 10%), unlike a browser's
-                // Ctrl+wheel translation of the same gesture, so this reuses
-                // `zoom_toward` directly rather than going through the
-                // wheel-delta curve above. Ctrl+scroll stays as a secondary
-                // trigger for non-trackpad input; both share the same
-                // zoom_toward, so they can never disagree on the math.
-                let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                this.zoom_toward(this.canvas_zoom * (1.0 + event.delta), cursor);
-                cx.notify();
-            }))
-            .children(tiles)
-            .child(self.bounds_capture())
-            .child(self.render_zoom_controls(theme, cx, all_rects))
-            .when_some(rescue_pill, |el, pill| el.child(pill))
-            .into_any_element()
-    }
-
-    /// Grouped canvas: tiles partitioned by `self.active_groups` (composable,
-    /// same `overview_grouping::partition` List mode's grouped rendering
-    /// uses), laid out via `layout_partition` — real free-rectangle packing
-    /// per leaf group (`overview_layout::pack_rects`), not a fixed grid, and
-    /// compact two-dimensional packing of group boxes at every hierarchy
-    /// depth. A final GLOBAL `overview_layout::repair_overlaps` sweep
-    /// runs across every leaf's already-placed absolute position, matching
-    /// the reference's two-tier repair (local packing repair, then a
-    /// cross-group safety net — `overview_layout`'s own doc comment).
-    /// Positions are recomputed fresh every render from group membership —
-    /// deliberately NOT stored in `self.tile_positions` (that map is
-    /// flat-mode's free-drag/persisted state; mixing the two would mean a
-    /// tile keeps a stale absolute position from a previous grouping/drag
-    /// when regions shift). Tiles are click-to-open only here, no drag — a
-    /// per-tile drag would need per-region bounds clamping to mean anything,
-    /// real scope this pass doesn't need; panning and zooming the whole
-    /// canvas still work, same as flat mode.
-    fn render_canvas_grouped(
-        &mut self,
-        rows: Vec<OverviewRow>,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let now = Utc::now();
-
-        let by_id: HashMap<String, &OverviewRow> =
-            rows.iter().map(|r| (r.chat.id.clone(), r)).collect();
-
-        // Packing + the global repair sweep are real work (free-rectangle
-        // packing per group, then an O(n) overlap check across every tile)
-        // and their OUTPUT depends only on which chat ids are present and
-        // `active_groups` — never on `canvas_pan`/`canvas_zoom`, which apply
-        // afterward as a pure `to_screen` transform. Without this cache, a
-        // pan/zoom/drag frame (which calls `cx.notify()` on every single
-        // pointer-move) reran the whole computation from scratch — the
-        // confirmed primary cause of the reported sluggishness once this
-        // view had 227+ real tiles to lay out.
-        let key_ids: Vec<String> = rows.iter().map(|r| r.chat.id.clone()).collect();
-        // Tile sizes feed packing, so they're part of the key too — belt-
-        // and-suspenders on top of `ensure_context_usage`/`ensure_subagents`/
-        // `ensure_link_status` dropping the cache themselves on a real
-        // change. Full `(width, height)`, not width alone: height can now
-        // change independent of width (subagent count changing, a
-        // badge row appearing/disappearing — see `GroupedLayoutCache::key_sizes`'s
-        // doc comment), so a width-only key would miss exactly that case.
-        let key_sizes: Vec<(f32, f32)> = rows.iter().map(|r| r.tile_size()).collect();
-        let cache_hit = self.grouped_layout_cache.as_ref().is_some_and(|c| {
-            c.key_ids == key_ids && c.key_sizes == key_sizes && c.key_groups == self.active_groups
-        });
-        if !cache_hit {
-            let refs: Vec<&OverviewRow> = rows.iter().collect();
-            let tree = overview_grouping::partition(refs, &self.active_groups);
-            let laid_out = layout_partition(&tree, 0);
-
-            // Global second-tier repair: every leaf's already-locally-packed
-            // absolute position, combined, re-checked for cross-group overlap
-            // (a per-group pack alone can't catch two different groups' boxes
-            // drifting into each other).
-            let positioned: Vec<overview_layout::PositionedItem> = laid_out
-                .positions
-                .iter()
-                .map(|(id, (x, y))| {
-                    let (width, height) = by_id
-                        .get(id)
-                        .map(|r| r.tile_size())
-                        .unwrap_or_else(|| tile_size_for_pct(None));
-                    overview_layout::PositionedItem {
-                        id: id.clone(),
-                        x: *x,
-                        y: *y,
-                        width,
-                        height,
-                    }
-                })
-                .collect();
-            let repaired = overview_layout::repair_overlaps(&positioned, TILE_GAP);
-            self.grouped_layout_cache = Some(GroupedLayoutCache {
-                key_ids,
-                key_sizes,
-                key_groups: self.active_groups.clone(),
-                laid_out,
-                repaired,
-            });
-        }
-        // Cloned out (cheap — a plain HashMap/Vec copy, not a recompute) so
-        // the borrow of `self.grouped_layout_cache` ends here: the render
-        // loop below calls `self.tile_body`/`self.expanded_detail_for`/etc.,
-        // which would otherwise conflict with an outstanding borrow through
-        // `cache`.
-        let cache = self
-            .grouped_layout_cache
-            .as_ref()
-            .expect("just populated on a miss, present on a hit");
-        let laid_out = cache.laid_out.clone();
-        let repaired = cache.repaired.clone();
-
-        // Every currently on-canvas tile's board-space rect (post-filter,
-        // grouped mode's own packed positions) — feeds both the search
-        // auto-fit below and the "Fit all"/off-screen-rescue controls in the
-        // zoom cluster.
-        let all_rects: Vec<(f32, f32, f32, f32)> = repaired
-            .iter()
-            .filter_map(|(id, p)| {
-                let (w, h) = by_id.get(id)?.tile_size();
-                Some((p.x, p.y, w, h))
-            })
-            .collect();
-        if self.take_pending_fit(rows.len(), cx) {
-            self.fit_view(&all_rects);
-        }
-        if let Some(focus_id) = self.focus_due.take()
-            && let (Some(p), Some(row)) = (repaired.get(&focus_id), by_id.get(&focus_id))
-        {
-            let (w, h) = row.tile_size();
-            self.focus_view((p.x, p.y, w, h));
-        }
-        let zoom = self.canvas_zoom;
-        let (pan_x, pan_y) = self.canvas_pan;
-        let to_screen = |x: f32, y: f32| (x * zoom + pan_x, y * zoom + pan_y);
-
-        let mut elements: Vec<gpui::AnyElement> = Vec::new();
-        // Visual region per group — a background tint + border so groups
-        // read as distinct blocks/sections at a glance, not just a floating
-        // label with nothing delineating where one group ends and the next
-        // begins. Shallower (outer) groups first so nested boxes paint on
-        // top of their parent's, matching normal containment expectations.
-        let mut boxes: Vec<_> = laid_out.group_boxes.iter().collect();
-        boxes.sort_by_key(|(_, _, _, _, depth)| *depth);
-        // `.group-box` / `.group-box.nested` (`session_canvas.html:316-326`):
-        // tinted in the group's own color (border 32%/26%, fill 6%/5%),
-        // radius 14 top-level / 8 nested, padded `GROUP_BOX_PADDING` beyond
-        // the content (`makeGroupBox`). gpui has no fractional border
-        // widths, so the web's 1.5px top-level border rounds to 2px.
-        for (local_x, local_y, w, h, depth) in boxes {
-            let (screen_x, screen_y) =
-                to_screen(*local_x - GROUP_BOX_PADDING, *local_y - GROUP_BOX_PADDING);
-            let color = laid_out
-                .labels
-                .iter()
-                .find(|(_, _, lx, ly, ldepth)| lx == local_x && ly == local_y && ldepth == depth)
-                .map(|(_, color, ..)| *color)
-                .unwrap_or(theme.border);
-            let top = *depth == 0;
-            elements.push(
-                div()
-                    .id(("overview-group-box", elements.len()))
-                    .absolute()
-                    .left(px(screen_x))
-                    .top(px(screen_y))
-                    .w(px((*w + GROUP_BOX_PADDING * 2.0) * zoom))
-                    .h(px((*h + GROUP_BOX_PADDING * 2.0) * zoom))
-                    .rounded(px(if top { 14.0 } else { 8.0 } * zoom))
-                    .when(top, |el| {
-                        el.border_2()
-                            .border_color(color.opacity(0.32))
-                            .bg(color.opacity(0.06))
-                    })
-                    .when(!top, |el| {
-                        el.border_1()
-                            .border_color(color.opacity(0.26))
-                            .bg(color.opacity(0.05))
-                    })
-                    .into_any_element(),
-            );
-        }
-        // Lane headers paint after every box (web: z-index 50+depth, always
-        // above any box).
-        for (label, color, local_x, local_y, depth) in &laid_out.labels {
-            let (screen_x, screen_y) = to_screen(*local_x, *local_y);
-            elements.push(
-                div()
-                    .id(("overview-group-label", elements.len()))
-                    .absolute()
-                    .left(px(screen_x))
-                    .top(px(screen_y))
-                    .child(lane_header(label.clone(), *color, *depth, zoom))
-                    .into_any_element(),
-            );
-        }
-        // Same paint-order fix as flat mode (see that function's comment):
-        // gpui has no z-index primitive, so an expanded or hovered
-        // tile's extra height is rendered last among the tiles, so it paints over
-        // whichever neighbor its packed position happens to overlap. Real
-        // height-aware repacking (feeding the expanded tile's actual taller
-        // box into `pack_rects` so neighbors get pushed instead of
-        // overlapped at all) would need `self.expanded` in the cache key
-        // above plus feeding the expanded height (not just the collapsed
-        // context-% size) through `pack_rects`/`repair_overlaps` — a real,
-        // separate scope of work, not done here; this is the same tolerance the
-        // reference itself uses (z-index bump, not a reflow), not a lesser
-        // substitute.
-        let anim_now = Instant::now();
-        let reduced = cx.reduce_motion();
-        let mut tiles: Vec<(bool, gpui::AnyElement)> = Vec::new();
-        // See flat mode's `any_tile_visible` for why this is driven by the
-        // same per-tile `tile_in_viewport` call culling already makes below
-        // (current animated position, not a separate target-position check)
-        // — it's what decides the off-screen rescue pill.
-        let mut any_tile_visible = false;
-        let mut mounted_ids = Vec::new();
-        for (slot, (chat_id, packed)) in repaired.iter().enumerate() {
-            let Some(&row) = by_id.get(chat_id) else {
-                continue; // shouldn't happen — every id in `positions` came from `rows`
-            };
-            let pos = self.animated_tile_pos(
-                chat_id,
-                TilePos {
-                    x: packed.x,
-                    y: packed.y,
-                },
-                anim_now,
-                reduced,
-            );
-            let (screen_x, screen_y) = to_screen(pos.x, pos.y);
-            let has_subagent_overflow = row.subagent_count > SUBAGENT_PREVIEW_LIMIT;
-            let is_hovered = self.hovered_tile.as_deref() == Some(chat_id.as_str());
-            let is_expanded = self.expanded.contains(chat_id);
-            let show_all_subagents = has_subagent_overflow && is_hovered;
-            let (board_w, board_h) = if is_hovered {
-                row.hovered_tile_size()
-            } else {
-                row.tile_size()
-            };
-            let (tile_w, tile_h) = (board_w * zoom, board_h * zoom);
-            let card_w = if is_expanded {
-                expanded_tile_width(board_w) * zoom
-            } else {
-                tile_w
-            };
-            // Same viewport culling as flat mode — see `tile_in_viewport`'s
-            // doc comment.
-            let in_viewport = self.tile_in_viewport(screen_x, screen_y, card_w, tile_h);
-            if in_viewport {
-                any_tile_visible = true;
-            }
-            if !in_viewport {
-                continue;
-            }
-            mounted_ids.push(chat_id.clone());
-            let open_button = self.open_chat_button(chat_id.clone(), theme, cx, zoom);
-            let subagent_tiles =
-                self.subagent_tiles_for(chat_id, theme, zoom, show_all_subagents, cx);
-            let content = self.tile_body(row, theme, now, zoom, open_button, subagent_tiles);
-            let archive =
-                (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx, zoom));
-            let detail = is_expanded.then(|| {
-                self.expanded_detail_for(
-                    row,
-                    theme,
-                    chat_id.clone(),
-                    zoom,
-                    Some(expanded_tile_width(board_w)),
-                    cx,
-                )
-            });
-            let face = div()
-                .relative()
-                .w(px(tile_w))
-                .h(px(tile_h))
-                .child(content)
-                .when_some(archive, |el, archive| {
-                    el.child(div().absolute().top(px(4.0)).right(px(4.0)).child(archive))
-                });
-            let toggle_id = chat_id.clone();
-            let hover_id = chat_id.clone();
-            tiles.push((
-                is_expanded || is_hovered,
-                div()
-                    .id(("overview-grouped-tile", slot))
-                    .absolute()
-                    .left(px(screen_x))
-                    .top(px(screen_y))
-                    .w(px(card_w))
-                    .cursor_pointer()
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered {
-                            if this.hovered_tile.as_deref() != Some(hover_id.as_str()) {
-                                this.hovered_tile = Some(hover_id.clone());
-                                cx.notify();
-                            }
-                        } else if this.hovered_tile.as_deref() == Some(hover_id.as_str()) {
-                            this.hovered_tile = None;
-                            cx.notify();
-                        }
-                    }))
-                    // No drag here (positions are algorithm-computed, not
-                    // user-placed — see this fn's own doc comment), so a
-                    // plain click always toggles expand; no threshold needed.
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_expanded(&toggle_id, cx);
-                        cx.notify();
-                    }))
-                    .child(face)
-                    .when_some(detail, |el, detail| el.child(detail))
-                    .into_any_element(),
-            ));
-        }
-        reconcile_hovered_tile(&mut self.hovered_tile, &mounted_ids);
-        self.prune_tile_motion(&repaired.keys().map(String::as_str).collect());
-        tiles.sort_by_key(|(is_expanded, _)| *is_expanded);
-        elements.extend(tiles.into_iter().map(|(_, element)| element));
-        // Rescue pill only once tiles actually exist and none of them
-        // intersected the viewport this frame — never for an empty/filtered
-        // board (that's the ordinary empty state, not "off-screen"). See
-        // `no_tiles_visible`'s doc comment.
-        let rescue_pill = no_tiles_visible(repaired.len(), any_tile_visible)
-            .then(|| self.render_rescue_pill(theme, cx, repaired.len(), all_rects.clone()));
-
-        div()
-            .id("overview-canvas-grouped")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .bg(theme.surface)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, _, _cx| {
-                    this.panning = Some((
-                        (f32::from(event.position.x), f32::from(event.position.y)),
-                        this.canvas_pan,
-                    ));
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if let Some((start_cursor, start_pan)) = this.panning {
-                    let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                    this.canvas_pan = (
-                        start_pan.0 + (cursor.0 - start_cursor.0),
-                        start_pan.1 + (cursor.1 - start_cursor.1),
-                    );
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.panning = None;
-                    cx.notify();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.panning = None;
-                    cx.notify();
-                }),
-            )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                let delta = event.delta.pixel_delta(px(1.0));
-                if event.modifiers.control {
-                    let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                    let factor = (-f32::from(delta.y) * 0.01).exp();
-                    this.zoom_toward(this.canvas_zoom * factor, cursor);
-                } else {
-                    this.canvas_pan.0 += f32::from(delta.x);
-                    this.canvas_pan.1 += f32::from(delta.y);
-                }
-                cx.notify();
-            }))
-            .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
-                let cursor = (f32::from(event.position.x), f32::from(event.position.y));
-                this.zoom_toward(this.canvas_zoom * (1.0 + event.delta), cursor);
-                cx.notify();
-            }))
-            .children(elements)
-            .child(self.bounds_capture())
-            .child(self.render_zoom_controls(theme, cx, all_rects))
-            .when_some(rescue_pill, |el, pill| el.child(pill))
-            .into_any_element()
-    }
-
     /// Left "My PRs" sidebar — `Some` only while `pr_sidebar_open`. Every
     /// open PR the signed-in `gh` account authored, across every repo it can
     /// see, in `renderPrPane`'s two-part shape (`session_canvas.html`): an
@@ -9802,7 +7633,6 @@ impl Overview {
             cx,
         );
         self.rows_dirty = true;
-        self.grouped_layout_cache = None;
         cx.notify();
     }
 
@@ -10536,7 +8366,6 @@ impl Overview {
     ) {
         self.outline_fixture = Some(loads);
         self.rows_dirty = true;
-        self.grouped_layout_cache = None;
         self.outline_dirty = true;
         cx.notify();
     }
@@ -10634,6 +8463,7 @@ fn pr_action_severity(action: PrAction) -> u8 {
 #[cfg(test)]
 mod logic_tests {
     use super::*;
+    use gpui::{Bounds, Pixels};
 
     fn pr(url: &str) -> ParsedLink {
         ParsedLink {
@@ -11226,74 +9056,6 @@ mod logic_tests {
     }
 
     #[test]
-    fn fit_view_frames_bbox_with_padding_and_centers() {
-        // One 260x118 tile at (100, 50) in a 1000x800 viewport.
-        let (zoom, pan) =
-            fit_view_to_rects(&[(100.0, 50.0, 260.0, 118.0)], (1000.0, 800.0)).unwrap();
-        // content = 260+160 x 118+160 = 420 x 278 → min(1000/420, 800/278)
-        // = 2.38 → clamped to ZOOM_MAX.
-        assert_eq!(zoom, ZOOM_MAX);
-        let (cx, cy) = (100.0 + 130.0, 50.0 + 59.0);
-        assert!((pan.0 - (500.0 - cx * zoom)).abs() < 1e-3);
-        assert!((pan.1 - (400.0 - cy * zoom)).abs() < 1e-3);
-        // The bbox midpoint lands on the viewport center.
-        assert!((cx * zoom + pan.0 - 500.0).abs() < 1e-3);
-        assert!((cy * zoom + pan.1 - 400.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn fit_view_clamps_to_min_zoom_and_handles_empty() {
-        assert!(fit_view_to_rects(&[], (1000.0, 800.0)).is_none());
-        let far = [(0.0, 0.0, 10.0, 10.0), (20_000.0, 0.0, 10.0, 10.0)];
-        let (zoom, _) = fit_view_to_rects(&far, (1000.0, 800.0)).unwrap();
-        assert_eq!(zoom, ZOOM_MIN);
-        // A moderate spread fits exactly (width-bound).
-        let spread = [(0.0, 0.0, 100.0, 100.0), (740.0, 0.0, 100.0, 100.0)];
-        let (zoom, _) = fit_view_to_rects(&spread, (1000.0, 800.0)).unwrap();
-        assert!((zoom - 1000.0 / 1000.0).abs() < 1e-4);
-    }
-
-    /// "Fit all" bbox math over several tiles of DIFFERENT sizes, against
-    /// the reduced viewport left over with both side panels open — same
-    /// viewport shape as [`focus_view_centers_tile_in_the_narrowed_viewport`].
-    #[test]
-    fn fit_view_frames_multiple_variable_size_tiles_with_both_panels_open() {
-        let viewport = (1440.0 - PR_SIDEBAR_W - CHAT_PANEL_W, 800.0);
-        // Three tiles, deliberately different widths/heights, scattered.
-        let rects = [
-            (0.0, 0.0, 260.0, 118.0),
-            (400.0, 50.0, 340.0, 220.0),
-            (150.0, 300.0, 180.0, 90.0),
-        ];
-        let (zoom, pan) = fit_view_to_rects(&rects, viewport).unwrap();
-        // bbox: x in [0, 740], y in [0, 390].
-        let (min_x, min_y, max_x, max_y) = (0.0_f32, 0.0_f32, 740.0_f32, 390.0_f32);
-        let content_w = max_x - min_x + FIT_PADDING * 2.0;
-        let content_h = max_y - min_y + FIT_PADDING * 2.0;
-        let expected_zoom = (viewport.0 / content_w)
-            .min(viewport.1 / content_h)
-            .clamp(ZOOM_MIN, ZOOM_MAX);
-        assert!((zoom - expected_zoom).abs() < 1e-4);
-        // The bbox midpoint lands on the (narrowed) viewport's own center.
-        let (cx, cy) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
-        assert!((cx * zoom + pan.0 - viewport.0 / 2.0).abs() < 1e-3);
-        assert!((cy * zoom + pan.1 - viewport.1 / 2.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn no_tiles_visible_only_when_tiles_exist_and_none_are_on_screen() {
-        // All off-screen: tiles present, none intersect the viewport.
-        assert!(no_tiles_visible(5, false));
-        // At least one on-screen: never a rescue case.
-        assert!(!no_tiles_visible(5, true));
-        // No tiles at all (e.g. filtered to nothing) — the ordinary empty
-        // state, not a rescue case, even though "none visible" is trivially
-        // true.
-        assert!(!no_tiles_visible(0, false));
-        assert!(!no_tiles_visible(0, true));
-    }
-
-    #[test]
     fn hovered_tile_reconciliation_drops_only_unmounted_ids() {
         let mounted = vec!["a".to_string(), "b".to_string()];
         let mut hovered = Some("b".to_string());
@@ -11496,7 +9258,7 @@ mod logic_tests {
     #[test]
     fn view_prefs_round_trip_through_the_flag_set_and_keep_other_flags() {
         let prefs = ViewPrefs {
-            mode: OverviewMode::Canvas,
+            mode: OverviewMode::Outline,
             hide_stale: true,
             show_archived: true,
             groups: vec![
@@ -11579,20 +9341,23 @@ mod logic_tests {
         }
     }
 
-    /// Overview-mode migration: the legacy List/Canvas boolean flag keeps
-    /// meaning what it meant, Outline gets its own flag, exactly one flag is
-    /// ever written, and unknown/conflicting flags degrade deterministically.
+    /// Overview-mode persistence: the removed Canvas view's legacy flag loads
+    /// as Outline, exactly one flag is ever written (never the legacy one),
+    /// and unknown/conflicting flags degrade deterministically.
     #[test]
-    fn overview_mode_migrates_the_legacy_flag_and_writes_exactly_one() {
+    fn overview_mode_loads_a_saved_canvas_view_as_outline_and_writes_exactly_one() {
         let flags =
             |keys: &[&str]| -> BTreeSet<String> { keys.iter().map(|k| k.to_string()).collect() };
-        // Legacy files.
         assert_eq!(OverviewMode::from_flags(&flags(&[])), OverviewMode::List);
+        // The removed Canvas view: alone, or next to the outline flag.
         assert_eq!(
             OverviewMode::from_flags(&flags(&["viewMode:canvas"])),
-            OverviewMode::Canvas
+            OverviewMode::Outline
         );
-        // New spelling.
+        assert_eq!(
+            OverviewMode::from_flags(&flags(&["viewMode:outline", "viewMode:canvas"])),
+            OverviewMode::Outline
+        );
         assert_eq!(
             OverviewMode::from_flags(&flags(&["viewMode:outline"])),
             OverviewMode::Outline
@@ -11602,17 +9367,8 @@ mod logic_tests {
             OverviewMode::from_flags(&flags(&["viewMode:myPrs", "viewMode:board"])),
             OverviewMode::List
         );
-        // Both present (after a downgrade round trip): canvas wins.
-        assert_eq!(
-            OverviewMode::from_flags(&flags(&["viewMode:outline", "viewMode:canvas"])),
-            OverviewMode::Canvas
-        );
         // The writer purges every `viewMode:` entry and writes one.
-        for mode in [
-            OverviewMode::List,
-            OverviewMode::Canvas,
-            OverviewMode::Outline,
-        ] {
+        for mode in [OverviewMode::List, OverviewMode::Outline] {
             let mut set = flags(&[
                 "viewMode:canvas",
                 "viewMode:outline",
@@ -11637,21 +9393,21 @@ mod logic_tests {
                 usize::from(mode != OverviewMode::List),
                 "{mode:?}: {set:?}"
             );
+            assert!(!set.contains(LEGACY_VIEW_CANVAS_FLAG));
             assert_eq!(view_prefs_from_flags(&set).mode, mode);
             assert!(set.contains("prSidebarOpen"), "unrelated flags survive");
         }
-        // Downgrade safety: an older build only knows `viewMode:canvas`; an
-        // Outline file has none, so the old reader sees List (not Canvas).
-        let mut outline = BTreeSet::new();
-        apply_view_prefs_to_flags(
-            &mut outline,
-            &ViewPrefs {
-                mode: OverviewMode::Outline,
-                ..Default::default()
-            },
-        );
-        assert!(!outline.contains(VIEW_CANVAS_FLAG));
-        assert_eq!(outline, flags(&["viewMode:outline"]));
+        // Re-saving a loaded Canvas view writes only the outline flag.
+        for saved in [
+            &["viewMode:canvas", "hideStale"][..],
+            &["viewMode:canvas", "viewMode:outline", "hideStale"][..],
+        ] {
+            let mut set = flags(saved);
+            let prefs = view_prefs_from_flags(&set);
+            assert_eq!(prefs.mode, OverviewMode::Outline);
+            apply_view_prefs_to_flags(&mut set, &prefs);
+            assert_eq!(set, flags(&["viewMode:outline", "hideStale"]), "{saved:?}");
+        }
     }
 
     #[test]
@@ -11660,7 +9416,7 @@ mod logic_tests {
             std::env::temp_dir().join(format!("zeron-overview-viewprefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let prefs = ViewPrefs {
-            mode: OverviewMode::Canvas,
+            mode: OverviewMode::Outline,
             hide_stale: false,
             show_archived: true,
             groups: vec![GroupDimension::Ticket, GroupDimension::Category],
@@ -11746,11 +9502,7 @@ mod logic_tests {
         let dir = tempfile::tempdir().unwrap();
         let state = state_with_repos(cx, dir.path(), &["alpha"]);
         let (overview, vcx) = overview_over(cx, &state);
-        for mode in [
-            OverviewMode::Canvas,
-            OverviewMode::List,
-            OverviewMode::Outline,
-        ] {
+        for mode in [OverviewMode::List, OverviewMode::Outline] {
             overview.update(vcx, |overview, cx| {
                 overview.view_mode = mode;
                 overview
@@ -11792,7 +9544,7 @@ mod logic_tests {
                 .iter()
                 .enumerate()
                 .map(|(i, cwd)| {
-                    let mut chat = row_ex(&format!("c{i}"), cwd, None, 0, false).chat;
+                    let mut chat = row(&format!("c{i}"), cwd, None).chat;
                     chat.last_message_at = Some(Utc::now());
                     chat
                 })
@@ -11811,7 +9563,7 @@ mod logic_tests {
         let (first, vcx) = overview_over(cx, &state);
         first.update(vcx, |o, cx| {
             assert!(o.prefs_loaded, "data_dir was available at first render");
-            o.view_mode = OverviewMode::Canvas;
+            o.view_mode = OverviewMode::Outline;
             o.view_prefs_changed(cx);
             o.hide_stale = true;
             o.view_prefs_changed(cx);
@@ -11827,7 +9579,7 @@ mod logic_tests {
 
         let (second, vcx) = overview_over(cx, &state);
         second.update(vcx, |o, _| {
-            assert_eq!(o.view_mode, OverviewMode::Canvas);
+            assert_eq!(o.view_mode, OverviewMode::Outline);
             assert!(o.hide_stale);
             assert!(o.show_archived);
             assert_eq!(
@@ -12019,7 +9771,7 @@ mod logic_tests {
         });
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
-            let mut chat = row_ex("chat-7", "/r", None, 0, false).chat;
+            let mut chat = row("chat-7", "/r", None).chat;
             chat.title = Some("Fix login".into());
             chat.harness_session_id = Some("sess-9".into());
             chat.last_message_at = Some(Utc::now());
@@ -12090,7 +9842,7 @@ mod logic_tests {
             state.chats = ["c1", "c2", "c3"]
                 .iter()
                 .map(|id| {
-                    let mut chat = row_ex(id, "/r", None, 0, false).chat;
+                    let mut chat = row(id, "/r", None).chat;
                     chat.harness_session_id = Some(format!("s-{id}"));
                     chat.last_message_at = Some(Utc::now());
                     chat
@@ -12193,7 +9945,7 @@ mod logic_tests {
         });
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
-            let mut chat = row_ex("c1", "/r", None, 0, false).chat;
+            let mut chat = row("c1", "/r", None).chat;
             chat.last_message_at = Some(Utc::now());
             state.chats = vec![chat];
         });
@@ -12223,25 +9975,6 @@ mod logic_tests {
         vcx.run_until_parked();
         overview.read_with(vcx, |o, _| assert_eq!(o.other_count, 0));
         assert!(vcx.debug_bounds("overview-reclassify-other").is_none());
-    }
-
-    #[test]
-    fn focus_view_centers_tile_in_the_narrowed_viewport() {
-        // A 1440px window minus the PR sidebar (340) and chat panel (540).
-        let viewport = (1440.0 - PR_SIDEBAR_W - CHAT_PANEL_W, 800.0);
-        let rect = (1000.0, 600.0, 260.0, 160.0);
-        // Zoomed out: jumps in to 100% (still fits: 560 >= 260+160).
-        let (zoom, pan) = focus_view_on_rect(rect, viewport, 0.4);
-        assert_eq!(zoom, 1.0);
-        assert!(((1000.0 + 130.0) * zoom + pan.0 - viewport.0 / 2.0).abs() < 1e-3);
-        assert!(((600.0 + 80.0) * zoom + pan.1 - viewport.1 / 2.0).abs() < 1e-3);
-        // Already zoomed in and it fits: keeps the user's zoom.
-        let (zoom, _) = focus_view_on_rect(rect, viewport, 1.3);
-        assert!((zoom - 1.3).abs() < 1e-4);
-        // A viewport too narrow for the tile at the current zoom: zooms out
-        // to fit rather than centering a clipped tile.
-        let (zoom, _) = focus_view_on_rect(rect, (300.0, 800.0), 1.5);
-        assert!((zoom - 300.0 / 420.0).abs() < 1e-4);
     }
 
     #[test]
@@ -12278,13 +10011,11 @@ mod logic_tests {
     }
 
     #[test]
-    fn cwd_helpers_match_reference_rules() {
+    fn worktree_cwds_match_reference_rules() {
         assert!(cwd_is_worktree(Some("/r/ws/.worktrees/eng-1")));
         assert!(cwd_is_worktree(Some("/r/ws/.agent-worktrees/x/y")));
         assert!(!cwd_is_worktree(Some("/r/ws")));
         assert!(!cwd_is_worktree(None));
-        assert_eq!(shorten_cwd("/Users/m/Projects/zeron"), ".../Projects/zeron");
-        assert_eq!(shorten_cwd("/Users/m"), "/Users/m");
     }
 
     #[test]
@@ -12306,105 +10037,6 @@ mod logic_tests {
             "No ticket / PR"
         );
         assert_eq!(group_label(GroupDimension::Repo, "zeron"), "zeron");
-    }
-
-    #[test]
-    fn tile_width_matches_reference_tile_size() {
-        // Wide/compact `tileSize(pct, 200, 300)`: null → min, 1.0 → max,
-        // linear + rounded.
-        assert_eq!(tile_width_for_pct(None), 200.0);
-        assert_eq!(tile_width_for_pct(Some(0.0)), 200.0);
-        assert_eq!(tile_width_for_pct(Some(1.0)), 300.0);
-        assert_eq!(tile_width_for_pct(Some(0.5)), 250.0);
-        assert_eq!(tile_width_for_pct(Some(0.333)), 233.0); // 233.3 → 233
-        assert_eq!(tile_width_for_pct(Some(0.337)), 234.0); // 233.7 → 234
-    }
-
-    #[test]
-    fn tile_width_clamps_out_of_range_and_non_finite() {
-        assert_eq!(tile_width_for_pct(Some(-0.4)), 200.0);
-        assert_eq!(tile_width_for_pct(Some(3.0)), 300.0);
-        assert_eq!(tile_width_for_pct(Some(f32::NAN)), 200.0);
-        assert_eq!(tile_width_for_pct(Some(f32::INFINITY)), 200.0);
-    }
-
-    #[test]
-    fn expanded_width_is_wider_but_never_shrinks_the_face() {
-        assert_eq!(expanded_tile_width(TILE_MIN_W), 480.0);
-        assert_eq!(expanded_tile_width(TILE_MAX_W), 480.0);
-        assert_eq!(expanded_tile_width(640.0), 640.0);
-    }
-
-    #[test]
-    fn tile_height_is_aspect_ratio_over_content_floor() {
-        // 0.44 × 300 = 132, above the content floor.
-        assert_eq!(tile_size_for_pct(Some(1.0)), (300.0, 132.0));
-        // 0.44 × 200 = 88, below it: the floor wins.
-        assert_eq!(tile_size_for_pct(None), (200.0, TILE_CONTENT_MIN_H));
-        // Height never shrinks as width grows.
-        let mut last = 0.0;
-        for i in 0..=100 {
-            let (_, h) = tile_size_for_pct(Some(i as f32 / 100.0));
-            assert!(h >= last, "height shrank at {i}%");
-            last = h;
-        }
-        // `tile_max_size` also accounts for CONTENT height — a badge row +
-        // `FLAT_STRIDE_SUBAGENT_TILES` (4) compact rows: 120 + 20 + (8 +
-        // 4×24 + 3×4) — three agents plus the remainder indicator.
-        assert_eq!(tile_max_size(), (300.0, 256.0));
-    }
-
-    #[test]
-    fn tile_content_height_estimate_caps_the_resting_subagent_preview() {
-        // No optional content: exactly the fixed-row floor.
-        assert_eq!(tile_content_height_estimate(0, false), TILE_CONTENT_MIN_H);
-        assert_eq!(subagent_stack_height(0), 0.0);
-        // 1 subagent: the connector's 8px + one 24px tile, no gap.
-        assert_eq!(tile_content_height_estimate(1, false), 152.0);
-        // 2: two tiles + one 4px gap.
-        assert_eq!(
-            tile_content_height_estimate(2, false),
-            120.0 + 8.0 + 48.0 + 4.0
-        );
-        // 36: three agents plus one "+33 more" row.
-        assert_eq!(subagent_stack_height(36), 8.0 + 36.0 * 24.0 + 35.0 * 4.0);
-        assert_eq!(subagent_preview_row_count(36), 4);
-        assert_eq!(tile_content_height_estimate(36, false), 236.0);
-        // Once the remainder row appears, higher counts do not inflate the
-        // resting canvas layout.
-        assert_eq!(
-            tile_content_height_estimate(6, false),
-            tile_content_height_estimate(5, false)
-        );
-        // A badge row adds a flat amount on top, independent of subagents.
-        assert_eq!(tile_content_height_estimate(0, true), 140.0);
-        assert_eq!(tile_content_height_estimate(36, true), 256.0);
-    }
-
-    #[test]
-    fn tile_content_height_estimate_is_monotonic_in_both_inputs() {
-        // More subagents never shrinks the estimate; after three, the
-        // remainder indicator keeps the resting height fixed.
-        for has_badge in [false, true] {
-            let mut last = tile_content_height_estimate(0, has_badge);
-            for count in 1..=40 {
-                let h = tile_content_height_estimate(count, has_badge);
-                assert!(
-                    h >= last,
-                    "height shrank going to {count} subagents (badge={has_badge})"
-                );
-                last = h;
-            }
-        }
-        // Adding a badge row never shrinks the estimate, holding subagent
-        // count fixed.
-        for count in [0, 1, 2, 5, 36] {
-            assert!(
-                tile_content_height_estimate(count, true)
-                    >= tile_content_height_estimate(count, false),
-                "badge row shrank the estimate at {count} subagents"
-            );
-        }
     }
 
     #[test]
@@ -12432,27 +10064,7 @@ mod logic_tests {
         assert!(!context_pct_changed(Some(None), None));
     }
 
-    #[test]
-    fn flat_grid_stride_fits_the_largest_tile() {
-        let (sw, sh) = flat_grid_stride();
-        let (mw, mh) = tile_max_size();
-        assert_eq!((sw, sh), (mw + TILE_GAP, mh + TILE_GAP));
-    }
-
     fn row(id: &str, cwd: &str, pct: Option<f32>) -> OverviewRow {
-        row_ex(id, cwd, pct, 0, false)
-    }
-
-    /// Like [`row`], but also setting the two content fields that now feed
-    /// `tile_size` — for tests that need tiles whose height varies
-    /// independent of their context-%-driven width.
-    fn row_ex(
-        id: &str,
-        cwd: &str,
-        pct: Option<f32>,
-        subagent_count: usize,
-        has_badge_row: bool,
-    ) -> OverviewRow {
         use chrono::TimeZone;
         let chat = Chat {
             id: id.into(),
@@ -12490,8 +10102,7 @@ mod logic_tests {
             pr_title: None,
             pr_search_values: Vec::new(),
             context_pct: pct,
-            subagent_count,
-            has_badge_row,
+            subagent_count: 0,
             closeable: false,
             work_item_path: None,
             user_action_required: false,
@@ -12517,240 +10128,6 @@ mod logic_tests {
     }
 
     #[test]
-    fn row_tile_size_uses_the_content_height_estimate_when_it_exceeds_aspect() {
-        // 0% context: aspect height is the floor (120), well under what 2
-        // subagents + a badge row need (200) — `tile_size` must pick the
-        // taller of the two, not the context-driven one alone.
-        let tall = row_ex("c", "/r/zeron", None, 2, true);
-        assert_eq!(tall.tile_size(), (200.0, 200.0));
-        // 100% context, no optional content: aspect height (132) exceeds
-        // the bare content floor (120) — aspect wins here instead.
-        let wide = row_ex("c", "/r/zeron", Some(1.0), 0, false);
-        assert_eq!(wide.tile_size(), (300.0, 132.0));
-        // ...but even one subagent tile (152) outgrows it.
-        let wide_sub = row_ex("c", "/r/zeron", Some(1.0), 1, false);
-        assert_eq!(wide_sub.tile_size(), (300.0, 152.0));
-        // A 36-subagent parent rests at three rows plus the remainder row,
-        // then grows to the complete stack only while hovered.
-        let huge = row_ex("c", "/r/zeron", Some(1.0), 36, true);
-        assert_eq!(huge.tile_size(), (300.0, 256.0));
-        assert_eq!(huge.hovered_tile_size(), (300.0, 1168.0));
-
-        let mut metadata = row_ex("meta", "/r/zeron", Some(1.0), 0, false);
-        metadata.chat.branch = Some("feature/wide-cards".into());
-        metadata.chat.last_message_preview = Some("Implemented the canvas revamp".into());
-        assert_eq!(metadata.hovered_tile_size(), (300.0, 186.0));
-    }
-
-    #[test]
-    fn grouped_layout_packs_variable_tile_sizes_without_overlap() {
-        let pcts = [
-            None,
-            Some(1.0),
-            Some(0.2),
-            Some(0.75),
-            Some(0.5),
-            None,
-            Some(0.9),
-        ];
-        let rows: Vec<OverviewRow> = pcts
-            .iter()
-            .enumerate()
-            .map(|(i, &p)| {
-                let repo = if i % 2 == 0 { "/r/zeron" } else { "/r/ui" };
-                row(&format!("c{i}"), repo, p)
-            })
-            .collect();
-        let refs: Vec<&OverviewRow> = rows.iter().collect();
-        let tree = overview_grouping::partition(refs, &[GroupDimension::Repo]);
-        let laid_out = layout_partition(&tree, 0);
-        assert_eq!(laid_out.positions.len(), rows.len());
-
-        let rects: Vec<(f32, f32, f32, f32)> = rows
-            .iter()
-            .map(|r| {
-                let (x, y) = laid_out.positions[&r.chat.id];
-                let (w, h) = r.tile_size();
-                (x, y, w, h)
-            })
-            .collect();
-        for i in 0..rects.len() {
-            for j in (i + 1)..rects.len() {
-                let (a, b) = (rects[i], rects[j]);
-                let overlap =
-                    a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1;
-                assert!(!overlap, "tiles {i} and {j} overlap: {a:?} vs {b:?}");
-            }
-        }
-        // Every tile sits inside its group's box: box widths account for the
-        // real (variable) widths, not a uniform constant.
-        for (r, &(x, y, w, h)) in rows.iter().zip(&rects) {
-            let inside = laid_out.group_boxes.iter().any(|&(bx, by, bw, bh, _)| {
-                x >= bx && y >= by && x + w <= bx + bw + 0.01 && y + h <= by + bh + 0.01
-            });
-            assert!(inside, "{} escapes every group box", r.chat.id);
-        }
-    }
-
-    #[test]
-    fn grouped_layout_forms_dense_two_dimensional_clusters_at_each_depth() {
-        let mut rows = Vec::new();
-        for repo in 0..6 {
-            for ticket in 0..4 {
-                let mut item = row(
-                    &format!("repo-{repo}-ticket-{ticket}"),
-                    &format!("/r/repo-{repo}"),
-                    None,
-                );
-                item.ticket = Some(format!("task-{repo}-{ticket}"));
-                rows.push(item);
-            }
-        }
-        let refs: Vec<&OverviewRow> = rows.iter().collect();
-        let tree =
-            overview_grouping::partition(refs, &[GroupDimension::Repo, GroupDimension::Ticket]);
-        let laid_out = layout_partition(&tree, 0);
-
-        let top: Vec<_> = laid_out
-            .group_boxes
-            .iter()
-            .copied()
-            .filter(|(_, _, _, _, depth)| *depth == 0)
-            .collect();
-        assert_eq!(top.len(), 6);
-        assert!(
-            top.iter()
-                .map(|group| group.0 as i64)
-                .collect::<BTreeSet<_>>()
-                .len()
-                > 1,
-            "repo groups should occupy multiple columns: {top:?}"
-        );
-        assert!(
-            top.iter()
-                .map(|group| group.1 as i64)
-                .collect::<BTreeSet<_>>()
-                .len()
-                > 1,
-            "repo groups should occupy multiple rows: {top:?}"
-        );
-
-        let first_repo = top[0];
-        let nested: Vec<_> = laid_out
-            .group_boxes
-            .iter()
-            .copied()
-            .filter(|(x, y, w, h, depth)| {
-                *depth == 1
-                    && *x >= first_repo.0
-                    && *y >= first_repo.1 + GROUP_TOP_LABEL_H
-                    && *x + *w <= first_repo.0 + first_repo.2 + 0.01
-                    && *y + *h <= first_repo.1 + first_repo.3 + 0.01
-            })
-            .collect();
-        assert_eq!(nested.len(), 4);
-        assert!(
-            nested
-                .iter()
-                .map(|group| group.0 as i64)
-                .collect::<BTreeSet<_>>()
-                .len()
-                > 1,
-            "ticket groups should occupy multiple columns: {nested:?}"
-        );
-        assert!(
-            nested
-                .iter()
-                .map(|group| group.1 as i64)
-                .collect::<BTreeSet<_>>()
-                .len()
-                > 1,
-            "ticket groups should occupy multiple rows: {nested:?}"
-        );
-
-        // The pack is intentionally landscape but still compact: six equal
-        // repos should never become a six-wide or six-tall string.
-        let aspect = laid_out.width / laid_out.height;
-        assert!((0.5..=2.5).contains(&aspect), "canvas aspect {aspect}");
-        let repeated = layout_partition(&tree, 0);
-        assert_eq!(repeated.positions, laid_out.positions);
-        assert_eq!(repeated.group_boxes, laid_out.group_boxes);
-    }
-
-    /// Extends the mixed-size case above with rows that share the exact
-    /// same context % (so identical width) but differ in subagent
-    /// count/badge presence — the case a width-only size wouldn't catch at
-    /// all, and the exact scenario `tile_content_height_estimate` exists
-    /// for: two same-width tiles with very different real heights must
-    /// still pack, group-box, and never overlap correctly.
-    #[test]
-    fn grouped_layout_packs_rows_with_mixed_content_heights_without_overlap() {
-        let specs: [(Option<f32>, usize, bool); 8] = [
-            (Some(0.5), 0, false),
-            (Some(0.5), 0, true),
-            (Some(0.5), 1, false),
-            (Some(0.5), 2, false),
-            (Some(0.5), 2, true),
-            (Some(0.5), 5, false),
-            (Some(0.5), 5, true),
-            (Some(0.5), 36, false),
-        ];
-        let rows: Vec<OverviewRow> = specs
-            .iter()
-            .enumerate()
-            .map(|(i, &(pct, subagents, badge))| {
-                let repo = if i % 2 == 0 { "/r/zeron" } else { "/r/ui" };
-                row_ex(&format!("m{i}"), repo, pct, subagents, badge)
-            })
-            .collect();
-        // Every row has the SAME width (same pct) but the sizes genuinely
-        // differ in height only — the precondition this test exists to
-        // exercise.
-        let sizes: Vec<(f32, f32)> = rows.iter().map(|r| r.tile_size()).collect();
-        assert!(
-            sizes.iter().all(|s| s.0 == sizes[0].0),
-            "widths should all match: {sizes:?}"
-        );
-        assert!(
-            sizes
-                .iter()
-                .map(|s| s.1 as i64)
-                .collect::<BTreeSet<_>>()
-                .len()
-                > 1,
-            "heights should vary: {sizes:?}"
-        );
-
-        let refs: Vec<&OverviewRow> = rows.iter().collect();
-        let tree = overview_grouping::partition(refs, &[GroupDimension::Repo]);
-        let laid_out = layout_partition(&tree, 0);
-        assert_eq!(laid_out.positions.len(), rows.len());
-
-        let rects: Vec<(f32, f32, f32, f32)> = rows
-            .iter()
-            .map(|r| {
-                let (x, y) = laid_out.positions[&r.chat.id];
-                let (w, h) = r.tile_size();
-                (x, y, w, h)
-            })
-            .collect();
-        for i in 0..rects.len() {
-            for j in (i + 1)..rects.len() {
-                let (a, b) = (rects[i], rects[j]);
-                let overlap =
-                    a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1;
-                assert!(!overlap, "tiles {i} and {j} overlap: {a:?} vs {b:?}");
-            }
-        }
-        for (r, &(x, y, w, h)) in rows.iter().zip(&rects) {
-            let inside = laid_out.group_boxes.iter().any(|&(bx, by, bw, bh, _)| {
-                x >= bx && y >= by && x + w <= bx + bw + 0.01 && y + h <= by + bh + 0.01
-            });
-            assert!(inside, "{} escapes every group box", r.chat.id);
-        }
-    }
-
-    #[test]
     fn unread_done_overrides_stale_dimming_but_not_archived() {
         // Fresh unread done, stale unread done: full opacity, ribbon shown.
         assert_eq!(card_dimming(false, false, true), (None, true));
@@ -12763,121 +10140,8 @@ mod logic_tests {
         assert_eq!(card_dimming(true, false, false), (Some(0.4), false));
     }
 
-    #[test]
-    fn tile_move_ease_matches_web_curve_endpoints_and_overshoots() {
-        assert_eq!(tile_move_ease(0.0), 0.0);
-        assert_eq!(tile_move_ease(1.0), 1.0);
-        assert_eq!(tile_move_ease(-1.0), 0.0);
-        assert_eq!(tile_move_ease(2.0), 1.0);
-        let samples: Vec<(f32, f32)> = (1..100)
-            .map(|i| i as f32 / 100.0)
-            .map(|x| (x, tile_move_ease(x)))
-            .collect();
-        let (peak_x, peak) = samples
-            .iter()
-            .copied()
-            .fold((0.0, f32::MIN), |a, b| if b.1 > a.1 { b } else { a });
-        assert!(
-            peak > 1.05,
-            "overshoot peak {peak} should exceed 1 (web curve peaks ~1.1)"
-        );
-        assert!(peak_x > 0.5 && peak_x < 1.0, "overshoot peak at x={peak_x}");
-        // Ease-out: well past halfway by the midpoint, monotonic rise before the peak.
-        assert!(tile_move_ease(0.5) > 0.9);
-        let rising: Vec<f32> = samples
-            .iter()
-            .filter(|(x, _)| *x <= peak_x)
-            .map(|s| s.1)
-            .collect();
-        assert!(rising.windows(2).all(|w| w[1] >= w[0]));
-        // Settles back toward 1 at the end.
-        assert!((tile_move_ease(0.99) - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn lerp_pos_interpolates_and_extrapolates() {
-        let a = TilePos { x: 0.0, y: 100.0 };
-        let b = TilePos { x: 200.0, y: 0.0 };
-        assert!(lerp_pos(a, b, 0.0).approx_eq(a));
-        assert!(lerp_pos(a, b, 1.0).approx_eq(b));
-        assert!(lerp_pos(a, b, 0.5).approx_eq(TilePos { x: 100.0, y: 50.0 }));
-        // Overshoot carries past the target along the same line.
-        assert!(lerp_pos(a, b, 1.1).approx_eq(TilePos { x: 220.0, y: -10.0 }));
-    }
-
-    #[test]
-    fn tile_move_samples_then_finishes() {
-        let t0 = Instant::now();
-        let dur = Duration::from_millis(550);
-        let m = TileMove {
-            from: TilePos { x: 0.0, y: 0.0 },
-            to: TilePos { x: 100.0, y: 0.0 },
-            started: t0,
-        };
-        assert!(m.sample(t0, dur).unwrap().approx_eq(m.from));
-        let mid = m.sample(t0 + Duration::from_millis(275), dur).unwrap();
-        assert!(mid.x > 50.0 && mid.x < 115.0, "mid {mid:?}");
-        assert!(m.sample(t0 + dur, dur).is_none());
-        assert!(m.sample(t0 + Duration::from_secs(5), dur).is_none());
-    }
-
-    #[test]
-    fn tile_motion_animates_only_organize_moves() {
-        let t0 = Instant::now();
-        let dur = Duration::from_millis(550);
-        let old = TilePos { x: 0.0, y: 0.0 };
-        let new = TilePos { x: 300.0, y: 120.0 };
-
-        // First appearance: no fly-in.
-        let (m, pos) = plan_tile_motion(None, None, new, false, false, t0, dur);
-        assert!(m.is_none() && pos.approx_eq(new));
-
-        // Unchanged target at rest: nothing to do.
-        let (m, pos) = plan_tile_motion(Some(new), None, new, false, false, t0, dur);
-        assert!(m.is_none() && pos.approx_eq(new));
-
-        // Live drag of this tile: snap, even though the target moved.
-        let (m, pos) = plan_tile_motion(Some(old), None, new, true, false, t0, dur);
-        assert!(m.is_none() && pos.approx_eq(new));
-
-        // Reduced motion: snap.
-        let (m, pos) = plan_tile_motion(Some(old), None, new, false, true, t0, dur);
-        assert!(m.is_none() && pos.approx_eq(new));
-
-        // Organize move: starts at the old position, heading to the new one.
-        let (m, pos) = plan_tile_motion(Some(old), None, new, false, false, t0, dur);
-        let m = m.expect("organize move animates");
-        assert!(pos.approx_eq(old) && m.from.approx_eq(old) && m.to.approx_eq(new));
-
-        // Mid-flight, same target: keeps playing from the eased position.
-        let t1 = t0 + Duration::from_millis(200);
-        let (m2, pos) = plan_tile_motion(Some(new), Some(m), new, false, false, t1, dur);
-        let m2 = m2.expect("still in flight");
-        assert_eq!(m2.started, t0);
-        assert!(!pos.approx_eq(old) && !pos.approx_eq(new));
-
-        // Mid-flight retarget: continues from the displayed spot, not a jump.
-        let other = TilePos { x: -50.0, y: 400.0 };
-        let (m3, pos3) = plan_tile_motion(Some(new), Some(m), other, false, false, t1, dur);
-        let m3 = m3.expect("retarget animates");
-        assert!(pos3.approx_eq(pos) && m3.from.approx_eq(pos) && m3.to.approx_eq(other));
-
-        // Finished: the move is dropped and the target renders exactly, so
-        // nothing keeps requesting frames.
-        let (m4, pos) = plan_tile_motion(Some(new), Some(m), new, false, false, t0 + dur, dur);
-        assert!(m4.is_none() && pos.approx_eq(new));
-
-        // Sub-pixel repack jitter is not a move.
-        let jitter = TilePos {
-            x: new.x + 0.2,
-            y: new.y - 0.2,
-        };
-        let (m5, _) = plan_tile_motion(Some(new), None, jitter, false, false, t0, dur);
-        assert!(m5.is_none());
-    }
-
     #[gpui::test]
-    fn canvas_multi_pr_and_ticket_badges_fit_the_reserved_single_line(
+    fn list_multi_pr_and_ticket_badges_stay_on_a_single_line(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -12886,7 +10150,7 @@ mod logic_tests {
         });
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
-            let mut chat = row_ex("c1", "/r", None, 0, false).chat;
+            let mut chat = row("c1", "/r", None).chat;
             chat.last_message_at = Some(Utc::now());
             state.chats = vec![chat];
         });
@@ -12908,7 +10172,7 @@ mod logic_tests {
         };
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
-        let (overview, vcx) = cx.add_window_view(|_, cx| {
+        let (_overview, vcx) = cx.add_window_view(|_, cx| {
             let mut overview = Overview::new(
                 state.clone(),
                 gpui::WeakEntity::new_invalid(),
@@ -12916,7 +10180,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = OverviewMode::Canvas;
+            overview.view_mode = OverviewMode::List;
             overview.link_status.insert(
                 "c1".into(),
                 LinkStatusEntry {
@@ -12930,27 +10194,19 @@ mod logic_tests {
         });
         vcx.run_until_parked();
 
-        overview.update(vcx, |overview, cx| {
-            let row = &overview.rows(cx)[0];
-            assert!(row.has_badge_row);
-            assert_eq!(
-                row.tile_size(),
-                (TILE_MIN_W, TILE_CONTENT_MIN_H + BADGE_ROW_ADDED_H)
-            );
-        });
-        let tile = vcx
-            .debug_bounds("overview-tile-body")
-            .expect("tile rendered");
+        let row = vcx
+            .debug_bounds("overview-list-row")
+            .expect("row rendered");
         let badges = vcx
-            .debug_bounds("overview-tile-badges")
+            .debug_bounds("overview-row-badges")
             .expect("badge row rendered");
         assert!(
             (f32::from(badges.size.height) - BADGE_ROW_H).abs() < 0.5,
-            "badge row must remain the reserved single line: {badges:?}"
+            "badge row must remain a single line: {badges:?}"
         );
         assert!(
-            badges.top() >= tile.top() && badges.bottom() <= tile.bottom() + px(0.5),
-            "single-line badges must fit the packed tile: {badges:?} in {tile:?}"
+            badges.top() >= row.top() && badges.bottom() <= row.bottom() + px(0.5),
+            "single-line badges must fit inside the row: {badges:?} in {row:?}"
         );
         for selector in [
             "overview-badge-pr-c1-0",
@@ -12970,55 +10226,13 @@ mod logic_tests {
         );
     }
 
+    /// End to end over the real UI path: a chat with a harness session gets a
+    /// `SCAN_CHAT_SUBAGENTS` request from `rows()`, the reply lands in
+    /// `subagents`, the row's `subagent_count` follows, and List mode lays the
+    /// subagent block out INSIDE the row's bounds (not clipped past its
+    /// bottom edge by the `overflow_hidden` row).
     #[gpui::test]
-    fn canvas_culling_clears_hover_for_the_unmounted_tile(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-        });
-        let state = cx.new(|_| AppState::new());
-        state.update(cx, |state, _| {
-            let mut chat = row_ex("c1", "/r", None, 0, false).chat;
-            chat.last_message_at = Some(Utc::now());
-            state.chats = vec![chat];
-        });
-        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
-        let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
-        let (overview, vcx) = cx.add_window_view(|_, cx| {
-            let mut overview = Overview::new(
-                state.clone(),
-                gpui::WeakEntity::new_invalid(),
-                transcript,
-                composer,
-                cx,
-            );
-            overview.view_mode = OverviewMode::Canvas;
-            overview
-        });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("overview-tile-body").is_some());
-
-        // Model the missing hover-leave case: the pointer had entered this
-        // tile, then panning culled its element before gpui could send leave.
-        overview.update(vcx, |overview, cx| {
-            overview.hovered_tile = Some("c1".into());
-            overview.canvas_pan = (100_000.0, 100_000.0);
-            cx.notify();
-        });
-        vcx.run_until_parked();
-        overview.update(vcx, |overview, _| {
-            assert!(overview.hovered_tile.is_none());
-        });
-    }
-
-    /// End to end over the real UI path the canvas uses: a chat with a
-    /// harness session gets a `SCAN_CHAT_SUBAGENTS` request from `rows()`,
-    /// the reply lands in `subagents`, the row's `subagent_count` (tile
-    /// height) follows, and Canvas mode actually lays the subagent block out
-    /// INSIDE the tile's bounds (not clipped past its bottom edge by the
-    /// fixed-height, `overflow_hidden` tile).
-    #[gpui::test]
-    fn canvas_tile_renders_scanned_subagent_rows_inside_its_bounds(cx: &mut gpui::TestAppContext) {
+    fn list_row_renders_scanned_subagent_rows_inside_its_bounds(cx: &mut gpui::TestAppContext) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -13035,7 +10249,7 @@ mod logic_tests {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
                 zeron_rpc::RpcClient::new(out, inbound),
             ));
-            let mut chat = row_ex("c1", "/r", None, 0, false).chat;
+            let mut chat = row("c1", "/r", None).chat;
             chat.harness_session_id = Some("s1".into());
             chat.last_message_at = Some(Utc::now());
             state.chats = vec![chat];
@@ -13050,7 +10264,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = OverviewMode::Canvas;
+            overview.view_mode = OverviewMode::List;
             overview
         });
         vcx.run_until_parked();
@@ -13087,15 +10301,15 @@ mod logic_tests {
             assert_eq!(overview.subagents.get("c1").map(Vec::len), Some(3));
             assert_eq!(overview.rows(cx)[0].subagent_count, 3);
         });
-        let tile = vcx
-            .debug_bounds("overview-tile-body")
-            .expect("tile rendered");
+        let row = vcx
+            .debug_bounds("overview-list-row")
+            .expect("row rendered");
         let block = vcx
-            .debug_bounds("overview-tile-subagents")
-            .expect("subagent rows rendered in the tile");
+            .debug_bounds("overview-list-subagents")
+            .expect("subagent rows rendered in the row");
         assert!(
-            block.top() >= tile.top() && block.bottom() <= tile.bottom(),
-            "subagent block {block:?} must sit inside tile {tile:?}"
+            block.top() >= row.top() && block.bottom() <= row.bottom(),
+            "subagent block {block:?} must sit inside row {row:?}"
         );
         // Exactly three agents need no remainder row.
         assert!(
@@ -13103,14 +10317,15 @@ mod logic_tests {
         );
     }
 
-    /// Collapsed/hovered subagent stack + the peek, end to end on the canvas:
+    /// Collapsed/hovered subagent stack + the peek, end to end on the List:
     /// a 36-subagent parent rests at three rows plus an indicator, expands to
-    /// every compact tile on hover, and clicking one opens the read-only transcript panel WITHOUT
-    /// toggling the parent's expand, issues `READ_SUBAGENT_TRANSCRIPT` for
-    /// that `{chatId, agentId}`, shows a loading state until the reply
-    /// lands, then renders the turns; Escape closes it back to the canvas.
+    /// every compact row on hover, and clicking one opens the read-only
+    /// transcript panel WITHOUT toggling the parent's expand, issues
+    /// `READ_SUBAGENT_TRANSCRIPT` for that `{chatId, agentId}`, shows a
+    /// loading state until the reply lands, then renders the turns; Escape
+    /// closes it back to the bare list.
     #[gpui::test]
-    fn canvas_subagent_tile_click_opens_readonly_peek(cx: &mut gpui::TestAppContext) {
+    fn list_subagent_row_click_opens_readonly_peek(cx: &mut gpui::TestAppContext) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -13127,12 +10342,7 @@ mod logic_tests {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
                 zeron_rpc::RpcClient::new(out, inbound),
             ));
-            let mut chat = row_ex("c1", "/r", None, 0, false).chat;
-            chat.title =
-                Some("A deliberately long canvas title that needs the second hover line".into());
-            chat.branch = Some("feature/canvas-hover-details".into());
-            chat.last_message_preview =
-                Some("Finished the compact card layout and verified its interactions".into());
+            let mut chat = row("c1", "/r", None).chat;
             chat.harness_session_id = Some("s1".into());
             chat.last_message_at = Some(Utc::now());
             state.chats = vec![chat];
@@ -13147,7 +10357,7 @@ mod logic_tests {
                 composer,
                 cx,
             );
-            overview.view_mode = OverviewMode::Canvas;
+            overview.view_mode = OverviewMode::List;
             overview
         });
         vcx.run_until_parked();
@@ -13200,84 +10410,51 @@ mod logic_tests {
             assert_eq!(overview.subagents.get("c1").map(Vec::len), Some(36));
             let row = &overview.rows(cx)[0];
             assert_eq!(row.subagent_count, 36);
-            assert_eq!(row.tile_size().1, tile_content_height_estimate(36, false));
         });
         vcx.run_until_parked();
-        let tile = vcx
-            .debug_bounds("overview-tile-body")
-            .expect("tile rendered");
-        let resting_title = vcx
-            .debug_bounds("overview-tile-title")
-            .expect("resting title rendered");
-        assert!(
-            vcx.debug_bounds("overview-tile-hover-branch").is_none()
-                && vcx
-                    .debug_bounds("overview-tile-hover-last-message")
-                    .is_none(),
-            "hover-only metadata stays out of the resting card"
-        );
+        let row = vcx
+            .debug_bounds("overview-list-row")
+            .expect("row rendered");
         assert!(
             vcx.debug_bounds("overview-card-model").is_some(),
-            "card renders model metadata"
+            "row renders model metadata"
         );
         let block = vcx
-            .debug_bounds("overview-tile-subagents")
+            .debug_bounds("overview-list-subagents")
             .expect("subagent stack rendered");
         assert!(
             vcx.debug_bounds("overview-subagent-more").is_some(),
-            "resting card shows remainder row"
+            "resting row shows remainder row"
         );
         assert!(
-            block.top() >= tile.top() && block.bottom() <= tile.bottom() + px(0.5),
-            "preview stack {block:?} must fit inside the resting tile {tile:?}"
+            block.top() >= row.top() && block.bottom() <= row.bottom() + px(0.5),
+            "preview stack {block:?} must fit inside the resting row {row:?}"
         );
+        // The block carries the row's 8px bottom padding.
+        let stack = |rows: f32| rows * SUBAGENT_TILE_H + (rows - 1.0) * SUBAGENT_TILE_GAP + 8.0;
         assert!(
-            (f32::from(block.size.height)
-                - (subagent_stack_height(subagent_preview_row_count(36)) - SUBAGENT_STACK_TOP))
-                .abs()
+            (f32::from(block.size.height) - stack((SUBAGENT_PREVIEW_LIMIT + 1) as f32)).abs()
                 < 1.0,
             "preview rows laid out at their fixed height: {block:?}"
         );
 
-        // Hovering anywhere on the card replaces the indicator with the full
-        // list and grows the visual card above its canvas neighbors.
-        vcx.simulate_mouse_move(tile.center(), None, gpui::Modifiers::default());
+        // Hovering anywhere on the row replaces the indicator with the full
+        // list.
+        vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         vcx.run_until_parked();
         overview.update(vcx, |overview, _| {
             assert_eq!(overview.hovered_tile.as_deref(), Some("c1"));
         });
-        let hovered_tile = vcx
-            .debug_bounds("overview-tile-body")
-            .expect("hovered tile rendered");
-        let hovered_title = vcx
-            .debug_bounds("overview-tile-title")
-            .expect("hovered title rendered");
-        assert!(
-            hovered_title.size.height > resting_title.size.height,
-            "hover expands the title from one line to two: {resting_title:?} -> {hovered_title:?}"
-        );
-        assert!(
-            vcx.debug_bounds("overview-tile-hover-branch").is_some()
-                && vcx
-                    .debug_bounds("overview-tile-hover-last-message")
-                    .is_some(),
-            "hover reveals branch and two-line last-message synopsis"
-        );
-        assert!(
-            hovered_tile.size.height > tile.size.height,
-            "hovered card floats taller without repacking: {tile:?} -> {hovered_tile:?}"
-        );
         assert!(vcx.debug_bounds("overview-subagent-more").is_none());
         let block = vcx
-            .debug_bounds("overview-tile-subagents")
+            .debug_bounds("overview-list-subagents")
             .expect("expanded subagent stack rendered");
         assert!(
-            (f32::from(block.size.height) - (subagent_stack_height(36) - SUBAGENT_STACK_TOP)).abs()
-                < 1.0,
-            "every hovered tile laid out at its fixed height: {block:?}"
+            (f32::from(block.size.height) - stack(36.0)).abs() < 1.0,
+            "every hovered row laid out at its fixed height: {block:?}"
         );
 
-        // Click the first compact tile.
+        // Click the first compact row.
         let first = gpui::point(
             block.left() + px(30.0),
             block.top() + px(SUBAGENT_TILE_H / 2.0),
@@ -13340,7 +10517,7 @@ mod logic_tests {
             state.chats = ids
                 .iter()
                 .map(|id| {
-                    let mut chat = row_ex(id, "/r", None, 0, false).chat;
+                    let mut chat = row(id, "/r", None).chat;
                     chat.last_message_at = Some(Utc::now());
                     chat
                 })
@@ -13432,7 +10609,7 @@ mod logic_tests {
             ]
             .iter()
             .map(|id| {
-                let mut chat = row_ex(id, "/work/alpha", None, 0, false).chat;
+                let mut chat = row(id, "/work/alpha", None).chat;
                 chat.space_id = Some("s1".into());
                 chat.title = Some(format!("Chat {id}"));
                 chat.last_message_at = Some(Utc::now());
@@ -13473,7 +10650,7 @@ mod logic_tests {
         let flags =
             overview_positions::load_string_set(dir.path(), overview_positions::UI_FLAGS_FILE);
         assert!(flags.contains(VIEW_OUTLINE_FLAG));
-        assert!(!flags.contains(VIEW_CANVAS_FLAG));
+        assert!(!flags.contains(LEGACY_VIEW_CANVAS_FLAG));
         let (second, vcx) = overview_over(cx, &state);
         second.update(vcx, |o, _| assert_eq!(o.mode(), OverviewMode::Outline));
     }
@@ -13971,77 +11148,36 @@ mod logic_tests {
         assert!(work_item_filter::load_filter(dir.path()).is_empty());
     }
 
-    /// Canvas cards carry the chips on existing lines: the card's size is
-    /// the same with or without an association.
-    #[gpui::test]
-    fn canvas_cards_show_chips_without_changing_tile_size(cx: &mut gpui::TestAppContext) {
-        let dir = tempfile::tempdir().unwrap();
-        let (overview, _state, vcx) = outline_overview(cx, dir.path());
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
-        draw(vcx);
-        assert!(vcx.debug_bounds("work-item-path-chip").is_some());
-        assert!(vcx.debug_bounds("work-item-attention").is_some());
-        let (with, without) = overview.update(vcx, |o, cx| {
-            let with: Vec<(String, (f32, f32))> = o
-                .rows(cx)
-                .iter()
-                .map(|r| (r.chat.id.clone(), r.tile_size()))
-                .collect();
-            o.set_outline_loads(HashMap::new(), cx);
-            let without: Vec<(String, (f32, f32))> = o
-                .rows(cx)
-                .iter()
-                .map(|r| (r.chat.id.clone(), r.tile_size()))
-                .collect();
-            (with, without)
-        });
-        assert_eq!(with, without);
-    }
-
     /// Execution exceptions: only the exception Chat carries the compact
-    /// mark on List rows and Canvas cards, and it never changes a card's
-    /// size; the work-item filter keeps bound Chats with their item.
+    /// mark on List rows.
     #[gpui::test]
-    fn execution_exception_marks_fit_list_and_canvas_without_changing_tile_size(
+    fn execution_exception_marks_flag_only_the_exception_chat_on_list_rows(
         cx: &mut gpui::TestAppContext,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let (overview, _state, vcx) = outline_overview(cx, dir.path());
-        let sizes = |o: &mut Overview, cx: &mut Context<Overview>| {
-            o.rows(cx)
-                .iter()
-                .map(|r| (r.chat.id.clone(), r.tile_size()))
-                .collect::<Vec<_>>()
-        };
         let marks = |vcx: &mut gpui::VisualTestContext, prefix: &str| {
             [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
                 .into_iter()
                 .filter(|id| row_bounds(vcx, format!("{prefix}{id}")).is_some())
                 .collect::<Vec<_>>()
         };
-        let without = overview.update(vcx, |o, cx| {
+        overview.update(vcx, |o, cx| {
             o.set_outline_loads(fixture_loads(None), cx);
-            sizes(o, cx)
         });
-        let with = overview.update(vcx, |o, cx| {
+        draw(vcx);
+        assert!(marks(vcx, "overview-row-execution-exception-").is_empty());
+        overview.update(vcx, |o, cx| {
             o.set_outline_loads(fixture_loads(Some(execution_fixture::snapshot("s1"))), cx);
-            sizes(o, cx)
         });
-        assert_eq!(with, without, "the exception mark never feeds tile size");
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::List, cx));
         draw(vcx);
         assert_eq!(marks(vcx, "overview-row-execution-exception-"), [CHAT_API]);
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
-        draw(vcx);
-        assert_eq!(marks(vcx, "overview-tile-execution-exception-"), [CHAT_API]);
     }
 
-    /// Drift marks: only drifted Chats carry one, on List rows, Canvas cards,
-    /// and the chat-panel header, and the mark never changes a card's size.
+    /// Drift marks: only drifted Chats carry one, on List rows and the
+    /// chat-panel header.
     #[gpui::test]
-    fn drift_marks_flag_only_drifted_chats_without_changing_tile_size(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn drift_marks_flag_only_drifted_chats(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (overview, state, vcx) = outline_overview(cx, dir.path());
         let drifted = instruction_fixture::snapshot("s1");
@@ -14049,23 +11185,16 @@ mod logic_tests {
         for chat_state in &mut current.chat_instruction_states {
             chat_state.drift = false;
         }
-        let sizes = |o: &mut Overview, cx: &mut Context<Overview>| {
-            o.rows(cx)
-                .iter()
-                .map(|r| (r.chat.id.clone(), r.tile_size()))
-                .collect::<Vec<_>>()
-        };
         let marks = |vcx: &mut gpui::VisualTestContext, prefix: &str| {
             [CHAT_API, CHAT_AUTH, CHAT_UI, CHAT_LOOSE_A]
                 .into_iter()
                 .filter(|id| row_bounds(vcx, format!("{prefix}{id}")).is_some())
                 .collect::<Vec<_>>()
         };
-        let without = overview.update(vcx, |o, cx| {
+        overview.update(vcx, |o, cx| {
             o.set_outline_loads(fixture_loads(Some(current)), cx);
-            sizes(o, cx)
         });
-        let with = overview.update(vcx, |o, cx| {
+        overview.update(vcx, |o, cx| {
             o.set_outline_loads(fixture_loads(Some(drifted)), cx);
             let rows = o.rows(cx);
             let flagged: Vec<_> = rows
@@ -14074,15 +11203,10 @@ mod logic_tests {
                 .map(|r| r.chat.id.as_str())
                 .collect();
             assert_eq!(flagged, [CHAT_API]);
-            sizes(o, cx)
         });
-        assert_eq!(with, without, "the drift mark never feeds tile size");
 
         draw(vcx);
         assert_eq!(marks(vcx, "overview-row-instruction-drift-"), [CHAT_API]);
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
-        draw(vcx);
-        assert_eq!(marks(vcx, "overview-tile-instruction-drift-"), [CHAT_API]);
 
         // The chat-panel header: marked for the drifted Chat only.
         for (chat, expected) in [(CHAT_AUTH, false), (CHAT_API, true)] {
@@ -14099,51 +11223,6 @@ mod logic_tests {
                 "{chat}"
             );
         }
-    }
-
-    /// Spec "Integrate with the existing overview": associating, moving, or
-    /// removing a Chat (and filtering by work item, and switching to Outline)
-    /// never writes Canvas positions.
-    #[gpui::test]
-    fn association_changes_leave_canvas_positions_byte_identical(cx: &mut gpui::TestAppContext) {
-        let dir = tempfile::tempdir().unwrap();
-        let (overview, _state, vcx) = outline_overview(cx, dir.path());
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
-        draw(vcx);
-        // A prior drag persisted the layout.
-        overview.update(vcx, |o, cx| o.save_positions(cx));
-        let path = overview_positions::path(dir.path());
-        let before_bytes = std::fs::read(&path).unwrap();
-        let before = overview.read_with(vcx, |o, _| o.tile_positions.clone());
-
-        // Move chat-api to UI, disassociate chat-ui, associate a loose chat.
-        let mut moved = crate::work_outline::store::fixture_snapshot("s1");
-        for item in &mut moved.items {
-            item.chat_ids.retain(|c| c != CHAT_API && c != CHAT_UI);
-            if item.id == UI {
-                item.chat_ids.push(CHAT_API.into());
-                item.chat_ids.push(CHAT_LOOSE_A.into());
-            }
-        }
-        overview.update(vcx, |o, cx| {
-            o.set_outline_loads(fixture_loads(Some(moved)), cx)
-        });
-        draw(vcx);
-        overview.update(vcx, |o, cx| o.toggle_work_item_filter(UI, cx));
-        draw(vcx);
-        overview.update(vcx, |o, cx| o.toggle_work_item_filter(UI, cx));
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Outline, cx));
-        draw(vcx);
-        overview.update(vcx, |o, cx| o.set_mode(OverviewMode::Canvas, cx));
-        draw(vcx);
-
-        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
-        overview.read_with(vcx, |o, _| {
-            for (id, pos) in &before {
-                let now = o.tile_positions.get(id).copied().unwrap();
-                assert!(now.x == pos.x && now.y == pos.y, "{id} kept its slot");
-            }
-        });
     }
 
     // ----------------------------------------------------------------------

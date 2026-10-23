@@ -1,4 +1,4 @@
-//! Composable multi-dimension grouping for the multichat overview canvas —
+//! Composable multi-dimension grouping for the multichat overview list —
 //! a port of `session_canvas.html`'s `GROUP_DIMENSIONS`/`activeGroups`/
 //! `partitionAndPlace` (verified by reading that file directly with
 //! `grep -a`/a non-grep tool; plain `grep` silently treats the whole file as
@@ -10,11 +10,10 @@
 //! order you activate them in is the nesting order (a `Set`'s insertion
 //! order in JS — an ordered `Vec` here is the direct equivalent and doesn't
 //! need any of `Set`'s other semantics). `partitionAndPlace`
-//! (session_canvas.html:1499-1541) recurses over the active dimensions:
-//! depth 0 lays its groups out as columns, every deeper dimension nests as
-//! rows inside its parent group, and once dimensions run out the remaining
-//! rows are leaves to be pixel-packed (`packRects` — a sibling module's job,
-//! not this one's; see [`Partition::Leaves`]).
+//! (session_canvas.html:1499-1541) recurses over the active dimensions;
+//! once dimensions run out the remaining rows are the leaves (see
+//! [`Partition::Leaves`]). The list renders each level as a header with its
+//! rows nested beneath.
 //!
 //! This module is the pure partitioning step only: given rows and an
 //! ordered list of active dimensions, produce the nested group tree. It
@@ -234,28 +233,21 @@ pub struct PartitionGroup<T> {
 
 /// The result of recursively partitioning rows by an ordered list of
 /// dimensions. Mirrors `partitionAndPlace`'s recursion structure
-/// (`session_canvas.html:1499-1541`) minus the pixel-packing (a sibling
-/// module's job — see the doc comment on [`Leaves`](Partition::Leaves))
-/// and minus label/color metadata (a UI-layer concern — see
-/// [`PartitionGroup`]).
+/// (`session_canvas.html:1499-1541`) minus label/color metadata (a UI-layer
+/// concern — see [`PartitionGroup`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Partition<T> {
     /// No active dimensions left (or none were active to begin with): the
-    /// rows to place directly. In the reference this is exactly the point
-    /// where `measureItem`+`packRects` take over (`session_canvas.html:
-    /// 1508-1516`) — real 2D rectangle-packing within this group's bounds,
-    /// not something this module does. A caller wanting flat/ungrouped
-    /// layout should call [`partition`] with an empty `dims` slice and get
-    /// back exactly one `Leaves` containing every row, in input order.
+    /// rows to render directly. A caller wanting flat/ungrouped output
+    /// should call [`partition`] with an empty `dims` slice and get back
+    /// exactly one `Leaves` containing every row, in input order.
     Leaves(Vec<T>),
     /// One active dimension at this depth: its rows split into ordered
     /// groups (empty ones dropped), each recursively partitioned by
-    /// whatever dimensions remain. The reference lays depth-0 groups out
-    /// side by side (columns) and every deeper depth's groups top to
-    /// bottom (rows) inside their parent — that's a rendering/layout
+    /// whatever dimensions remain. How the levels are drawn is a rendering
     /// decision for whatever consumes this tree, not encoded here (the
-    /// depth is implicit in tree nesting, so a caller doing the columns/
-    /// rows layout can track it by recursion depth while walking this).
+    /// depth is implicit in tree nesting, so a caller can track it by
+    /// recursion depth while walking this).
     Groups {
         dimension: GroupDimension,
         groups: Vec<PartitionGroup<T>>,

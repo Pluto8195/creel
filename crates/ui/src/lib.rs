@@ -53,7 +53,6 @@ mod notice;
 pub mod notify;
 pub mod overview;
 pub mod overview_grouping;
-pub mod overview_layout;
 pub mod overview_positions;
 pub mod pickers;
 pub mod popover;

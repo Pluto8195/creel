@@ -425,8 +425,8 @@ fn chat_home(
     hidden_ids: &HashSet<&str>,
     options: &OutlineOptions,
 ) -> Option<String> {
-    // A hidden Space's Chats are not in the Outline at all (List, Canvas and
-    // the sidebar still show them).
+    // A hidden Space's Chats are not in the Outline at all (List and the
+    // sidebar still show them).
     if chat
         .space_id
         .as_deref()

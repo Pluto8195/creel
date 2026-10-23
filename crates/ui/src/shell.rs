@@ -443,8 +443,7 @@ pub fn apply_keymap(
         // Not (yet) a customizable `ShortcutId` — same tier as ⌘K above.
         KeyBinding::new(&platform_combo("mod-shift-o"), OpenOverview, None),
         // Contextual overview navigation: Find targets the Overview search
-        // (List, Canvas and Outline) and ⌘⇧G moves from Canvas to the
-        // repository/worktree map.
+        // (List and Outline) and ⌘⇧G opens the repository/worktree map.
         KeyBinding::new(
             &platform_combo(FOCUS_OVERVIEW_SEARCH_COMBO),
             FocusOverviewSearch,
@@ -4751,7 +4750,7 @@ impl Shell {
 
     /// Open the workspace's repository/worktree ownership graph. Kept as its
     /// own route because it has a different data source and deterministic
-    /// hierarchy from the freeform chat overview canvas.
+    /// hierarchy from the chat overview.
     pub(crate) fn open_repository_topology(&mut self, cx: &mut Context<Self>) {
         self.command_palette = None;
         self.route = Route::RepositoryTopology;
@@ -5188,7 +5187,7 @@ impl Shell {
     }
 
     /// Rename through the single durable `renameChat` mutation while updating
-    /// the shared chat row optimistically. Sidebar, full-chat titlebar, Canvas,
+    /// the shared chat row optimistically. Sidebar, full-chat titlebar, Overview,
     /// and every other title consumer repaint from that same row immediately.
     fn persist_chat_title(&mut self, chat_id: String, title: String, cx: &mut Context<Self>) {
         let previous = self

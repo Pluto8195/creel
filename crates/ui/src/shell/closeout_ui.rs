@@ -10,7 +10,7 @@
 //! still-open dialog, which then re-plans quietly so its buttons track the
 //! engine's current view. On success the engine archives the chat;
 //! the `WATCH_CHATS` stream carries that into `AppState`, which the overview
-//! observes, so the tile leaves the canvas with no extra refresh call.
+//! observes, so the row leaves the overview with no extra refresh call.
 
 use super::*;
 

@@ -10,8 +10,8 @@
 //! - Order: Spaces in the list come first, in list order; any other Space
 //!   (a new one) follows alphabetically. Every write stores the full current
 //!   order, which drops Spaces that no longer exist.
-//! - Hidden: a hidden Space renders nothing in the Outline (List, Canvas and
-//!   the sidebar still show it and its Chats). The toolbar's "Hidden
+//! - Hidden: a hidden Space renders nothing in the Outline (List and the
+//!   sidebar still show it and its Chats). The toolbar's "Hidden
 //!   projects (N)" shows hidden Spaces as dimmed root rows with Unhide.
 //! - Only with more than one Space: a single-Space Outline has no root rows.
 //!

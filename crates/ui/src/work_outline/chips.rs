@@ -1,5 +1,5 @@
-//! Shared element builders for work-item metadata on List rows, Canvas
-//! cards, Outline rows, and Work Item Details.
+//! Shared element builders for work-item metadata on List rows,
+//! Outline rows, and Work Item Details.
 //!
 //! Attention ("User Action Required") uses the sidebar's theme vocabulary —
 //! `theme.accent`, the color the sidebar gives an Awaiting Input Chat — not
@@ -117,9 +117,9 @@ pub(crate) const INSTRUCTION_DRIFT_TOOLTIP: &str =
 /// "Instructions changed" mark for a drifted Chat: the warning triangle the
 /// Outline chip and chat header use, optionally with the label. `id` doubles
 /// as the debug selector (unique per frame). It sits on an
-/// existing line (title row), so it never changes a card's size. `on_click`
-/// opens Compare; the mark stops mouse-down propagation so a Canvas card does
-/// not start a drag or toggle under it.
+/// existing line (title row), so it never changes a row's size. `on_click`
+/// opens Compare; the mark stops mouse-down propagation so the List row does
+/// not toggle under it.
 pub(crate) fn instruction_drift_mark(
     id: impl Into<SharedString>,
     with_label: bool,
@@ -158,9 +158,8 @@ pub(crate) fn instruction_drift_mark(
 }
 
 /// The execution-exception mark for a Chat running with a captured
-/// configuration that differs from its item's current one (List rows,
-/// Canvas cards). Compact (no label) so it shares the title line and never
-/// feeds `tile_size`.
+/// configuration that differs from its item's current one (List rows).
+/// Compact (no label) so it shares the title line.
 pub(crate) fn execution_exception_mark(
     id: impl Into<SharedString>,
     theme: &Theme,

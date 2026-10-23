@@ -1,64 +1,27 @@
-//! Local persistence for the multichat overview's free-form canvas tile
-//! positions — the client-side analog of the reference `session_canvas.html`
-//! tool's `positions[id]`/`savePositions()` (localStorage). Purely local,
-//! per-device UI state, not synced workspace data, so it lives alongside
-//! `ui-settings.json` under the engine's local data dir rather than in the
+//! Small per-device overview UI-state files under the engine's local data
+//! dir — the acknowledged-"done" set, the hidden-repos filter set, the UI
+//! flags and the Outline's own sets. Purely local UI state, not synced
+//! workspace data, so it lives alongside `ui-settings.json` rather than in the
 //! doc store — same convention `SettingsStore` already uses (`settings.rs`).
 //!
-//! Wired into `overview.rs`: loaded lazily on flat canvas mode's first
-//! render (`ensure_positions_loaded`), saved on every committed tile-drag
-//! release (`save_positions`).
-//!
-//! Also hosts the overview's other small per-device UI-state files — the
-//! acknowledged-"done" set (the reference's
-//! `session-canvas-acknowledged-done-v1` localStorage key) and the hidden-
-//! repos filter set (the reference's `hiddenRepos`, persisted in its UI-state
-//! key) — via the generic [`load_string_set`]/[`save_string_set`] pair, same
-//! atomic-write/corrupt-degrades-to-empty contract as positions.
+//! Everything goes through the generic [`load_string_set`]/[`save_string_set`]
+//! (and list) pairs: atomic write, corrupt degrades to empty. (The Canvas
+//! view's `overview-positions.json` is no longer read or written; an old copy
+//! is simply left on disk.)
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::io;
-use std::path::{Path, PathBuf};
-
-const FILE_NAME: &str = "overview-positions.json";
-
-/// `chat_id -> (x, y)` in canvas logical (unzoomed) coordinates.
-pub type Positions = HashMap<String, (f32, f32)>;
-
-/// Load from `{data_dir}/overview-positions.json`. An absent or corrupt file
-/// degrades to an empty map (no saved positions yet) rather than an error —
-/// callers fall back to their own default layout in that case.
-pub fn load_positions(data_dir: &Path) -> Positions {
-    match std::fs::read_to_string(path(data_dir)) {
-        Ok(text) => match serde_json::from_str::<Positions>(&text) {
-            Ok(positions) => positions,
-            Err(err) => {
-                tracing::warn!(error = %err, "overview-positions corrupt; starting empty");
-                Positions::new()
-            }
-        },
-        Err(_) => Positions::new(),
-    }
-}
-
-/// Write atomically (see [`write_json_atomic`]).
-pub fn save_positions(data_dir: &Path, positions: &Positions) -> io::Result<()> {
-    write_json_atomic(data_dir, &path(data_dir), positions)
-}
-
-pub fn path(data_dir: &Path) -> PathBuf {
-    data_dir.join(FILE_NAME)
-}
+use std::path::Path;
 
 /// Chat ids whose "done" status the user has already acknowledged (expanded
-/// the tile or opened the chat) — see `overview.rs`'s unread-done glow.
+/// the row or opened the chat) — see `overview.rs`'s unread-done ribbon.
 pub const ACKNOWLEDGED_DONE_FILE: &str = "overview-acknowledged-done.json";
 /// Repo keys (cwd last path segment) the repo filter currently hides.
 pub const HIDDEN_REPOS_FILE: &str = "overview-hidden-repos.json";
 /// Named on/off overview UI toggles that persist (a string is present = on),
 /// e.g. the My PRs sidebar. Unknown entries are ignored by readers.
 pub const UI_FLAGS_FILE: &str = "overview-ui-flags.json";
-/// Work-item ids (plus the `~unassociated` sentinel) the List/Canvas
+/// Work-item ids (plus the `~unassociated` sentinel) the List
 /// work-item filter keeps; empty = no filter. See `work_outline::filter`.
 pub const WORK_ITEM_FILTER_FILE: &str = "overview-work-item-filter.json";
 /// Outline row keys the user collapsed (Space roots, work items, groups).
@@ -68,12 +31,12 @@ pub const OUTLINE_COLLAPSED_FILE: &str = "overview-outline-collapsed.json";
 /// Space ids in the order the user arranged the Outline's Space roots
 /// (an ordered list; Spaces not in it follow alphabetically).
 pub const OUTLINE_SPACE_ORDER_FILE: &str = "overview-outline-space-order.json";
-/// Space ids the user hid from the Outline (List, Canvas, and the sidebar
-/// are unaffected).
+/// Space ids the user hid from the Outline (List and the sidebar are
+/// unaffected).
 pub const OUTLINE_HIDDEN_SPACES_FILE: &str = "overview-outline-hidden-spaces.json";
 
 /// Load a JSON string array from `{data_dir}/{file_name}`. Absent or corrupt
-/// degrades to empty, same as [`load_positions`].
+/// degrades to empty.
 pub fn load_string_set(data_dir: &Path, file_name: &str) -> BTreeSet<String> {
     match std::fs::read_to_string(data_dir.join(file_name)) {
         Ok(text) => match serde_json::from_str::<BTreeSet<String>>(&text) {
@@ -130,56 +93,6 @@ fn write_json_atomic<T: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn round_trips_through_save_and_load() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut positions = Positions::new();
-        positions.insert("chat-1".to_string(), (12.5, -40.0));
-        positions.insert("chat-2".to_string(), (0.0, 0.0));
-
-        save_positions(dir.path(), &positions).expect("save");
-        let loaded = load_positions(dir.path());
-
-        assert_eq!(loaded, positions);
-    }
-
-    #[test]
-    fn missing_file_loads_as_empty_not_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let loaded = load_positions(dir.path());
-        assert!(loaded.is_empty());
-    }
-
-    #[test]
-    fn corrupt_file_degrades_to_empty_rather_than_panicking() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(path(dir.path()), b"{ not valid json").expect("write corrupt file");
-        let loaded = load_positions(dir.path());
-        assert!(loaded.is_empty());
-    }
-
-    #[test]
-    fn save_creates_the_data_dir_if_missing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let nested = dir.path().join("nested").join("data");
-        let positions = Positions::from([("chat-1".to_string(), (1.0, 2.0))]);
-
-        save_positions(&nested, &positions).expect("save into missing dir");
-        assert_eq!(load_positions(&nested), positions);
-    }
-
-    #[test]
-    fn overwriting_replaces_the_previous_contents() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let first = Positions::from([("chat-1".to_string(), (1.0, 1.0))]);
-        save_positions(dir.path(), &first).expect("save first");
-
-        let second = Positions::from([("chat-2".to_string(), (2.0, 2.0))]);
-        save_positions(dir.path(), &second).expect("save second");
-
-        assert_eq!(load_positions(dir.path()), second);
-    }
 
     #[test]
     fn string_set_round_trips_and_missing_or_corrupt_is_empty() {
