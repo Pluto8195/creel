@@ -1469,6 +1469,11 @@ re-association rule are unchanged.
    when the request's origin Chat is the caller or a Chat whose `parentChatId` is the caller
    (so a coordinator closes "Ready to merge" after merging). Requests from Chats a person
    started, or that another agent created, stay unauthorized.
+   An agent's resolve also closes the target's dedupe group, limited to members it may resolve
+   (its own Chat's and its direct children's). The target is always in the group; a coordinator's
+   resolve of a child's request with a `dedupeKey` once wrote nothing, while the tool replied
+   `resolved: true`. The tool now reads the row back and fails with `operationConflict` if it is
+   still open.
 
 ## Amendment: chat diff targets (agent worktree)
 

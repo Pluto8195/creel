@@ -1620,3 +1620,136 @@ async fn bind_chat_worktree_refuses_a_chat_hosted_on_another_device() {
     .unwrap_err();
     assert_eq!(err.code(), "forbidden", "{err}");
 }
+
+/// What a coordinator's resolve of its child's request must leave behind.
+fn request_is_resolved(snapshot: &WorkOutlineSnapshot, id: &str) -> bool {
+    snapshot
+        .user_action_requests
+        .iter()
+        .find(|r| r.id == id)
+        .is_some_and(|r| r.state == zeron_proto::UserActionRequestState::Resolved)
+}
+
+fn open_request_ids(read: &Value) -> Vec<String> {
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        for request in node["openUserActionRequests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            out.push(request["id"].as_str().unwrap_or_default().to_owned());
+        }
+        for child in node["children"].as_array().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&read["tree"], &mut out);
+    out
+}
+
+/// A child's request is raised with a `dedupeKey` (the tool guidance tells
+/// agents to pass one per topic). The coordinator's resolve used to select the
+/// dedupe group by the CALLER's Chat id, so the child's request fell out of
+/// its own group, nothing was written, and the reply still said `resolved`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_resolving_its_childs_deduped_request_persists_across_reads_and_restart() {
+    let rig = rig().await;
+    let root = create_item(&rig, "op-root", "Coordinator", None).await;
+    let leaf = create_item(&rig, "op-leaf", "Leaf", Some(&root)).await;
+    assign_chat(&rig, "assign-caller", CHAT, &root).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let coordinator = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = coordinator.token().to_owned();
+
+    let launched = tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args("leaf-worker", &leaf, "workspace-write"),
+    )
+    .await
+    .unwrap();
+    let child = launched["chatId"].as_str().unwrap().to_owned();
+    let child_lease = tokens.mint(&child, "run-2", SPACE, &rig.core.device_id);
+    let raised = tool(
+        &rig,
+        child_lease.token(),
+        "work_outline_create_user_action_request",
+        json!({ "request": "Ready to merge: leaf", "dedupeKey": "ready-leaf",
+                "idempotencyKey": "ready" }),
+    )
+    .await
+    .unwrap();
+    let request_id = raised["userActionRequestId"].as_str().unwrap().to_owned();
+    let open = |read: &Value| open_request_ids(read).contains(&request_id);
+    let read = tool(&rig, &token, "work_outline_read_subtree", json!({}))
+        .await
+        .unwrap();
+    assert!(open(&read), "the child's request starts open: {read}");
+
+    // An unrelated Chat is refused loudly and the request stays open.
+    let stranger = tokens.mint(OTHER_CHAT, "run-3", SPACE, &rig.core.device_id);
+    let err = tool(
+        &rig,
+        stranger.token(),
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "idempotencyKey": "close-other" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("work-outline/unauthorized"), "{err}");
+    assert!(!request_is_resolved(&snapshot(&rig), &request_id));
+
+    let reply = tool(
+        &rig,
+        &token,
+        "work_outline_resolve_user_action_request",
+        json!({ "userActionRequestId": request_id, "resolution": "Merged",
+                "idempotencyKey": "close-parent" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["resolved"], true);
+
+    // The reply is backed by the row, by the subtree read, and by the row's
+    // own fields.
+    assert!(request_is_resolved(&snapshot(&rig), &request_id));
+    let read = tool(&rig, &token, "work_outline_read_subtree", json!({}))
+        .await
+        .unwrap();
+    assert!(!open(&read), "still open after the resolve: {read}");
+    let row = rig
+        .core
+        .workspace
+        .registry_row("userActionRequests", &request_id)
+        .expect("the request row exists");
+    assert_eq!(row.fields.get("state"), Some(&json!("resolved")), "{row:?}");
+    assert_eq!(rig.core.workspace.registry_pending_len(), 0);
+
+    // Re-assembling the engine from the same profile keeps it resolved.
+    rig.harness.release.notify_waiters();
+    let Rig {
+        _tmp, core, client, ..
+    } = rig;
+    drop(client);
+    // A graceful restart flushes the debounced registry snapshot first.
+    core.workspace.shutdown();
+    drop(core);
+    let root_dir = std::fs::canonicalize(_tmp.path()).unwrap();
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(GatedHarness::default()));
+    let again = EngineCore::assemble(
+        &root_dir.join("data"),
+        Arc::new(registry),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core re-assembles from the same profile");
+    let inputs = again.workspace.work_outline_inputs(SPACE);
+    let after = zeron_doc::materialize_work_outline(SPACE, &inputs);
+    assert!(
+        request_is_resolved(&after, &request_id),
+        "the resolution did not survive a restart"
+    );
+}
