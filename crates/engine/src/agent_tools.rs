@@ -583,6 +583,31 @@ impl CallContext<'_> {
             .map_err(AgentToolError::invalid)?;
         Ok(agent_tools::operation_id(&self.grant.chat_id, key))
     }
+
+    /// The operation id for the caller's `idempotencyKey`, or, when it is
+    /// omitted, for the key `derive` builds (see `derived_idempotency_key`).
+    /// Only naturally idempotent tools derive; the rest use `operation_id`.
+    fn operation_id_or_derived(
+        &self,
+        arguments: &Value,
+        derive: impl FnOnce() -> Result<String, AgentToolError>,
+    ) -> Result<String, AgentToolError> {
+        let args: KeyArgs = parse_args(arguments)?;
+        if non_empty(args.idempotency_key).is_some() {
+            return self.operation_id(arguments);
+        }
+        Ok(agent_tools::operation_id(&self.grant.chat_id, &derive()?))
+    }
+
+    /// A registry row's numeric field as text (`""` when absent): the state
+    /// a derived key depends on, so a later call never replays an older one.
+    fn row_stamp(&self, kind: &str, id: &str, field: &str) -> String {
+        self.workspace
+            .registry_row(kind, id)
+            .and_then(|row| row.fields.get(field).and_then(Value::as_i64))
+            .map(|stamp| stamp.to_string())
+            .unwrap_or_default()
+    }
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -795,37 +820,57 @@ impl AgentToolsService {
     }
 
     /// `AgentToolCall`: authenticate, authorize, and run one tool.
+    ///
+    /// Arguments are normalised first (guessed names such as `text` for
+    /// `request` map to the real parameter), and an argument error carries
+    /// the tool's expected parameters and an example call.
     pub fn call(&self, params: &AgentToolCallParams) -> Result<Value, AgentToolError> {
         let context = self.context(&params.token)?;
-        let arguments = &params.arguments;
-        match params.tool.as_str() {
-            tools::READ_CURRENT => Ok(self.read_current(&context)),
-            tools::READ_SUBTREE => self.read_subtree(&context, arguments),
-            tools::CREATE_CHILD => self.create_child(&context, arguments),
-            tools::ASSOCIATE_CURRENT_CHAT => self.associate_current_chat(&context, arguments),
-            tools::SET_STATUS => self.set_status(&context, arguments),
+        let arguments = agent_tools::normalize_arguments(&params.tool, &params.arguments);
+        self.dispatch(&context, &params.tool, &arguments)
+            .map_err(|error| match error {
+                AgentToolError::Refused {
+                    code: AgentToolErrorCode::Invalid,
+                    message,
+                } => AgentToolError::invalid(agent_tools::with_usage(&params.tool, &message)),
+                other => other,
+            })
+    }
+
+    fn dispatch(
+        &self,
+        context: &CallContext,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<Value, AgentToolError> {
+        match tool {
+            tools::READ_CURRENT => Ok(self.read_current(context)),
+            tools::READ_SUBTREE => self.read_subtree(context, arguments),
+            tools::CREATE_CHILD => self.create_child(context, arguments),
+            tools::ASSOCIATE_CURRENT_CHAT => self.associate_current_chat(context, arguments),
+            tools::SET_STATUS => self.set_status(context, arguments),
             tools::CREATE_USER_ACTION_REQUEST => {
-                self.create_user_action_request(&context, arguments)
+                self.create_user_action_request(context, arguments)
             }
             tools::RESOLVE_USER_ACTION_REQUEST => {
-                self.resolve_user_action_request(&context, arguments)
+                self.resolve_user_action_request(context, arguments)
             }
-            tools::PROPOSE_INSTRUCTION => self.propose_instruction(&context, arguments),
-            tools::QUEUE_CHILD_CHAT_TURN => self.queue_child_chat_turn(&context, arguments),
-            tools::CLAIM_CHILD_CHAT => self.claim_child_chat(&context, arguments),
+            tools::PROPOSE_INSTRUCTION => self.propose_instruction(context, arguments),
+            tools::QUEUE_CHILD_CHAT_TURN => self.queue_child_chat_turn(context, arguments),
+            tools::CLAIM_CHILD_CHAT => self.claim_child_chat(context, arguments),
             tools::ARTIFACT_PUBLISH => {
-                let (service, caller) = self.artifact_call(&context)?;
+                let (service, caller) = self.artifact_call(context)?;
                 Ok(service.agent_publish(&caller, arguments)?)
             }
             tools::ARTIFACT_GET_PLAN => {
-                let (service, caller) = self.artifact_call(&context)?;
+                let (service, caller) = self.artifact_call(context)?;
                 Ok(service.agent_get_plan(&caller)?)
             }
             tools::ARTIFACT_RENDER_CHECK => {
-                let (service, caller) = self.artifact_call(&context)?;
+                let (service, caller) = self.artifact_call(context)?;
                 Ok(service.agent_render_check(&caller, arguments)?)
             }
-            tools::BIND_CHAT_WORKTREE => self.bind_chat_worktree(&context, arguments),
+            tools::BIND_CHAT_WORKTREE => self.bind_chat_worktree(context, arguments),
             other => Err(AgentToolError::refused(
                 AgentToolErrorCode::Unsupported,
                 format!("unknown agent tool: {other}"),
@@ -855,7 +900,14 @@ impl AgentToolsService {
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
         let args: BindWorktreeArgs = parse_args(arguments)?;
-        let operation_id = context.operation_id(arguments)?;
+        // Binding is a find-or-add plus select, so without a key it needs no
+        // replay ledger: a repeat re-selects the same target (a derived key
+        // would instead replay a stale selection after binding another path).
+        let key: KeyArgs = parse_args(arguments)?;
+        let operation_id = match non_empty(key.idempotency_key) {
+            Some(_) => Some(context.operation_id(arguments)?),
+            None => None,
+        };
         let path = args.path.as_deref().map(str::trim).unwrap_or_default();
         if path.is_empty() {
             return Err(AgentToolError::invalid(
@@ -874,7 +926,7 @@ impl AgentToolsService {
                 chat_id,
                 path,
                 ChatDiffTargetSource::Agent,
-                Some(&operation_id),
+                operation_id.as_deref(),
             )
             .map_err(|e| match e {
                 DiffTargetError::NotLocal { .. } => {
@@ -977,8 +1029,8 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: CreateChildArgs = parse_args(arguments)?;
+        let operation_id = context.operation_id(arguments)?;
         let status = match args.status.as_deref().map(str::trim) {
             None | Some("") | Some("pending") => None,
             Some("active") => Some(WorkItemStatus::Active),
@@ -1014,8 +1066,18 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: AssociateArgs = parse_args(arguments)?;
+        let operation_id = context.operation_id_or_derived(arguments, || {
+            let assigned = context.row_stamp(
+                zeron_doc::work_outline::KIND_WORK_ITEM_CHAT_ASSIGNMENTS,
+                &context.grant.chat_id,
+                "assignedAt",
+            );
+            Ok(agent_tools::derived_idempotency_key(
+                tools::ASSOCIATE_CURRENT_CHAT,
+                &[&context.grant.chat_id, &args.work_item_id, &assigned],
+            ))
+        })?;
         let mutation = WorkOutlineMutation::AssignChatToWorkItem(AssignChatToWorkItemParams {
             chat_id: context.grant.chat_id.clone(),
             work_item_id: args.work_item_id.clone(),
@@ -1030,7 +1092,6 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: SetStatusArgs = parse_args(arguments)?;
         let status = match args.status.trim() {
             "active" => WorkItemStatus::Active,
@@ -1045,6 +1106,17 @@ impl AgentToolsService {
             Some(id) => id,
             None => context.require_item("changing status")?,
         };
+        let operation_id = context.operation_id_or_derived(arguments, || {
+            let updated = context.row_stamp(
+                zeron_doc::work_outline::KIND_WORK_ITEMS,
+                &target,
+                "updatedAt",
+            );
+            Ok(agent_tools::derived_idempotency_key(
+                tools::SET_STATUS,
+                &[&target, args.status.trim(), &updated],
+            ))
+        })?;
         // `resolveOpenRequests` stays false: completing an item with open
         // requests fails (`openUserActionRequests`), never auto-resolves.
         let mutation = WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
@@ -1064,13 +1136,42 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: CreateUserActionRequestArgs = parse_args(arguments)?;
         if args.request.trim().is_empty() {
             return Err(AgentToolError::invalid("request is empty"));
         }
         // Requests are created on the Chat's own item, with the Chat as origin.
         let work_item_id = context.require_item("asking the user for an action")?;
+        // A `dedupeKey` stands in for a missing `idempotencyKey`; without
+        // either, a retry could duplicate the request.
+        let operation_id = match non_empty(args.dedupe_key.clone()) {
+            Some(dedupe_key) => context.operation_id_or_derived(arguments, || {
+                // Earlier requests with this key (open or resolved) make a
+                // repeat after a resolve a new request, not a replay.
+                let earlier = self
+                    .work_outline
+                    .snapshot(&context.grant.space_id)
+                    .user_action_requests
+                    .iter()
+                    .filter(|r| {
+                        r.work_item_id == work_item_id
+                            && r.dedupe_key.as_deref() == Some(dedupe_key.as_str())
+                    })
+                    .count()
+                    .to_string();
+                Ok(agent_tools::derived_idempotency_key(
+                    tools::CREATE_USER_ACTION_REQUEST,
+                    &[
+                        &work_item_id,
+                        &dedupe_key,
+                        &args.request,
+                        args.detail.as_deref().unwrap_or_default(),
+                        &earlier,
+                    ],
+                ))
+            })?,
+            None => context.operation_id(arguments)?,
+        };
         let mutation =
             WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
                 work_item_id: work_item_id.clone(),
@@ -1097,11 +1198,17 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: ResolveUserActionRequestArgs = parse_args(arguments)?;
         if args.user_action_request_id.trim().is_empty() {
             return Err(AgentToolError::invalid("userActionRequestId is empty"));
         }
+        // Resolving is terminal, so the request id alone identifies the change.
+        let operation_id = context.operation_id_or_derived(arguments, || {
+            Ok(agent_tools::derived_idempotency_key(
+                tools::RESOLVE_USER_ACTION_REQUEST,
+                &[args.user_action_request_id.trim()],
+            ))
+        })?;
         let mutation =
             WorkOutlineMutation::ResolveUserActionRequest(ResolveUserActionRequestParams {
                 user_action_request_id: args.user_action_request_id.clone(),
@@ -1139,8 +1246,8 @@ impl AgentToolsService {
         context: &CallContext,
         arguments: &Value,
     ) -> Result<Value, AgentToolError> {
-        let operation_id = context.operation_id(arguments)?;
         let args: ProposeInstructionArgs = parse_args(arguments)?;
+        let operation_id = context.operation_id(arguments)?;
         if args.text.trim().is_empty() {
             return Err(AgentToolError::invalid("text is empty"));
         }
