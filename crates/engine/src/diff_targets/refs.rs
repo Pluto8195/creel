@@ -31,8 +31,8 @@ use zeron_proto::{
 };
 
 use super::{
-    DiffTargetError, DiffTargets, Family, canonical_lenient, checkout_facts, git_text, hex, internal,
-    path_string, repository_id,
+    DiffTargetError, DiffTargets, Family, canonical_lenient, checkout_facts, git_text, hex,
+    internal, path_string, repository_id,
 };
 use crate::chat_links::canonicalize_pr_url;
 use crate::pr_review_launch::github_slug;
@@ -66,7 +66,10 @@ struct RepoCheckout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RefInput {
     /// A PR URL: repository slug (lowercase) and number.
-    PrUrl { slug: String, number: u64 },
+    PrUrl {
+        slug: String,
+        number: u64,
+    },
     /// A bare PR number (`6487`, `#6487`).
     PrNumber(u64),
     Branch(String),
@@ -169,7 +172,13 @@ fn ref_exists(repo: &Path, full_ref: &str) -> bool {
 /// repository's refs change). Bounded by [`FETCH_TIMEOUT`].
 fn fetch(repo: &Path, refspec: &str) -> Result<(), String> {
     let mut child = zeron_harness::git_command()
-        .args(["fetch", "--quiet", "--no-recurse-submodules", "origin", refspec])
+        .args([
+            "fetch",
+            "--quiet",
+            "--no-recurse-submodules",
+            "origin",
+            refspec,
+        ])
         .current_dir(repo)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -326,9 +335,13 @@ impl DiffTargets {
                 let repo = self.repo_for_pr_number(&chat, &repos, number)?;
                 self.resolve_pr(&repo, number, base_override.as_deref())?
             }
-            RefInput::Branch(name) => {
-                self.resolve_branch(&family.own, &repos, &name, repo_hint, base_override.as_deref())?
-            }
+            RefInput::Branch(name) => self.resolve_branch(
+                &family.own,
+                &repos,
+                &name,
+                repo_hint,
+                base_override.as_deref(),
+            )?,
         };
         let id = ref_target_id(&resolved);
         let target = StoredRefDiffTarget {
@@ -487,22 +500,27 @@ impl DiffTargets {
         let (head_branch, head_ref) = match known_head {
             Some(branch) => match head_of_branch(&repo.path, &branch) {
                 Ok(head_ref) => (branch, head_ref),
-                Err(branch_error) => pull_head(&repo.path, number, facts.as_ref()).map_err(
-                    |pull_error| head_fetch_failed(&repo.name, &format!("PR #{number}"), &branch_error, &pull_error),
-                )?,
+                Err(branch_error) => {
+                    pull_head(&repo.path, number, facts.as_ref()).map_err(|pull_error| {
+                        head_fetch_failed(
+                            &repo.name,
+                            &format!("PR #{number}"),
+                            &branch_error,
+                            &pull_error,
+                        )
+                    })?
+                }
             },
             None => pull_head(&repo.path, number, facts.as_ref()).map_err(|pull_error| {
                 head_fetch_failed(&repo.name, &format!("PR #{number}"), "", &pull_error)
             })?,
         };
-        let base = base_override
-            .map(str::to_owned)
-            .or_else(|| {
-                facts
-                    .as_ref()
-                    .map(|f| f.base_ref_name.clone())
-                    .filter(|b| valid_branch(&repo.path, b))
-            });
+        let base = base_override.map(str::to_owned).or_else(|| {
+            facts
+                .as_ref()
+                .map(|f| f.base_ref_name.clone())
+                .filter(|b| valid_branch(&repo.path, b))
+        });
         let (base_branch, base_ref) = resolve_base(repo, base.as_deref())?;
         Ok(Resolved {
             repo: repo.clone(),
@@ -776,7 +794,10 @@ fn pull_head(
 
 /// The base: `wanted`, else `main`, else `master`. Fetches it read-only
 /// (best effort) and reads it from `origin`, else from a local branch.
-fn resolve_base(repo: &RepoCheckout, wanted: Option<&str>) -> Result<(String, String), DiffTargetError> {
+fn resolve_base(
+    repo: &RepoCheckout,
+    wanted: Option<&str>,
+) -> Result<(String, String), DiffTargetError> {
     let defaults = ["main", "master"];
     let names: Vec<&str> = match wanted {
         Some(name) => vec![name],
