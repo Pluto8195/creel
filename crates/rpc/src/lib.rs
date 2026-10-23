@@ -234,6 +234,10 @@ pub mod methods {
     /// `PrReviewSyncNowParams {spaceId}` → `PrReviewSyncNowReply {created,
     /// updated, resolved}`.
     pub const PR_REVIEW_SYNC_NOW: &str = "PrReviewSyncNow";
+    /// No params → `PrViewerReply {login}`: the GitHub login `gh` is signed
+    /// in as (cached per engine run). Same `github/<code>` errors as the
+    /// rest.
+    pub const PR_VIEWER: &str = "PrViewer";
     /// `PrMyOpenParams {spaceId}` → `[PullRequestStatusSummary]` (the user's
     /// open PRs in the Space's repositories).
     pub const PR_MY_OPEN: &str = "PrMyOpen";
@@ -699,6 +703,7 @@ mod tests {
     #[test]
     fn pr_review_sync_wire_names_are_pinned() {
         assert_eq!(methods::PR_STATUS, "PrStatus");
+        assert_eq!(methods::PR_VIEWER, "PrViewer");
         assert_eq!(methods::PR_REVIEW_SYNC_NOW, "PrReviewSyncNow");
         assert_eq!(methods::PR_MY_OPEN, "PrMyOpen");
         assert_eq!(methods::PR_REVIEW_REQUESTED, "PrReviewRequested");

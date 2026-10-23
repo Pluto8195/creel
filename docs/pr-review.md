@@ -194,8 +194,8 @@ Rules for both sources:
 - Links are only added: never removed, never moved, never duplicated (one
   reference per item and PR; the operation id is a hash of item and PR). A
   reference you remove is not added back. An item can link several PRs (a
-  ticket's UI and Flagship PRs); the Outline shows the icons for the first and a chip for each
-  further PR, and Details lists the others under the first.
+  ticket's UI and Flagship PRs); the Outline shows an icon for each PR (up to three, then
+  "+N"), and Details lists the others under the first.
 - A Chat's PR is linked once, to the item the Chat belongs to when the PR is
   first seen, and only if no item of the project links that PR yet. Moving
   the Chat to another item later keeps the existing link where it is (the

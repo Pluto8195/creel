@@ -333,15 +333,56 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
                 .collect(),
         },
         linear_group(mac),
-        github_group(mac),
+        github_group(mac, keymap),
+        plan_group(mac),
     ]
+}
+
+/// The plan-reading rows of the shortcut reference (an Artifact tab): the
+/// section keys, the section rail's keys and find, from the tab's own key
+/// table.
+fn plan_group(mac: bool) -> ShortcutGroup {
+    use crate::artifacts::tab::find_view as keys;
+    let label = |combo: &str| key_label_on(mac, combo);
+    let pair = |a: &str, b: &str| format!("{} / {}", label(a), label(b));
+    ShortcutGroup {
+        title: "Plan",
+        rows: vec![
+            ShortcutRow {
+                label: "Previous / next section",
+                keys: Some(pair(keys::SECTION_PREVIOUS_COMBO, keys::SECTION_NEXT_COMBO)),
+            },
+            ShortcutRow {
+                label: "Focus the section rail",
+                keys: Some(label(keys::FOCUS_INDEX_COMBO)),
+            },
+            ShortcutRow {
+                label: "In the rail: previous / next / first / last section",
+                keys: Some(
+                    keys::RAIL_COMBOS
+                        .iter()
+                        .map(|combo| label(combo))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+            },
+            ShortcutRow {
+                label: "Find in the plan",
+                keys: Some(label(keys::FIND_OPEN_COMBO)),
+            },
+            ShortcutRow {
+                label: "Next / previous match",
+                keys: Some(pair(keys::FIND_NEXT_COMBO, keys::FIND_PREVIOUS_COMBO)),
+            },
+        ],
+    }
 }
 
 /// The GitHub rows of the shortcut reference (projects with the PR review
 /// sync): ⌘↩ on a PR review item starts a code review of its PR filed under
 /// the item; the item menu picks the sync destination and offers Review /
 /// Fix CI / Open on GitHub.
-fn github_group(mac: bool) -> ShortcutGroup {
+fn github_group(mac: bool, keymap: &KeymapConfig) -> ShortcutGroup {
     let right_click = if mac {
         "Right-click / \u{2303}-click"
     } else {
@@ -350,6 +391,10 @@ fn github_group(mac: bool) -> ShortcutGroup {
     ShortcutGroup {
         title: "GitHub",
         rows: vec![
+            ShortcutRow {
+                label: "Open the PR page",
+                keys: hint_keys_on(mac, keymap, HintKey::App(ShortcutId::OpenMyPrs)),
+            },
             ShortcutRow {
                 label: "Review the PR (PR review item)",
                 keys: Some(key_label_on(
@@ -600,7 +645,8 @@ mod tests {
                 "Restructure",
                 "Commands",
                 "Linear",
-                "GitHub"
+                "GitHub",
+                "Plan"
             ]
         );
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
@@ -679,6 +725,69 @@ mod tests {
         assert_eq!(
             row(&groups, "Show Outline Shortcuts").keys.as_deref(),
             Some("Ctrl+Alt+/")
+        );
+    }
+
+    /// The reference lists the plan keys, with the same combos the Artifact
+    /// tab binds, and ⌘P as the PR page.
+    #[test]
+    fn reference_lists_the_plan_keys_and_the_pr_page() {
+        let keymap = KeymapConfig::default();
+        let keys = |groups: &[ShortcutGroup], title: &str, label: &str| {
+            groups
+                .iter()
+                .find(|group| group.title == title)
+                .unwrap_or_else(|| panic!("{title} group"))
+                .rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} row"))
+                .keys
+                .clone()
+        };
+        let mac = shortcut_reference_on(true, &keymap);
+        let plain = shortcut_reference_on(false, &keymap);
+        for (label, on_mac, elsewhere) in [
+            (
+                "Previous / next section",
+                "\u{2325}\u{2191} / \u{2325}\u{2193}",
+                "Alt+\u{2191} / Alt+\u{2193}",
+            ),
+            (
+                "Focus the section rail",
+                "\u{2325}\u{2318}S",
+                "Ctrl+Alt+S",
+            ),
+            (
+                "In the rail: previous / next / first / last section",
+                "\u{2191} \u{2193} Home End",
+                "\u{2191} \u{2193} Home End",
+            ),
+            ("Find in the plan", "\u{2318}F", "Ctrl+F"),
+            (
+                "Next / previous match",
+                "\u{2318}G / \u{21e7}\u{2318}G",
+                "Ctrl+G / Ctrl+Shift+G",
+            ),
+        ] {
+            assert_eq!(keys(&mac, "Plan", label).as_deref(), Some(on_mac), "{label}");
+            assert_eq!(keys(&plain, "Plan", label).as_deref(), Some(elsewhere), "{label}");
+        }
+        // The PR page row follows the live binding.
+        assert_eq!(
+            keys(&mac, "GitHub", "Open the PR page").as_deref(),
+            Some("\u{2318}P")
+        );
+        let mut rebound = KeymapConfig::default();
+        rebound.set(ShortcutId::OpenMyPrs, "mod-alt-p".into());
+        assert_eq!(
+            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page").as_deref(),
+            Some("\u{2325}\u{2318}P")
+        );
+        rebound.set(ShortcutId::OpenMyPrs, String::new());
+        assert_eq!(
+            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page"),
+            None
         );
     }
 

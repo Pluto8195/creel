@@ -787,6 +787,28 @@ async fn setting_the_destination_syncs_the_space() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pr_viewer_is_the_signed_in_login_fetched_once() {
+    let rig = rig().await;
+    let asked = |rig: &Rig| {
+        rig.gh_calls()
+            .iter()
+            .filter(|c| c.as_str() == "api user")
+            .count()
+    };
+    let reply = rig.call(methods::PR_VIEWER, json!({})).await.unwrap();
+    assert_eq!(reply, json!({ "login": "me" }));
+    rig.call(methods::PR_VIEWER, json!({})).await.unwrap();
+    assert_eq!(asked(&rig), 1, "served from the cache");
+
+    // Signed out (no cached login yet): the coded error, nothing cached.
+    rig.core
+        .pr_review_sync
+        .reconfigure(PrReviewSyncConfig::for_tests(rig.gh_dir.join("no-such-gh")));
+    let error = rig.github_err(methods::PR_VIEWER, json!({})).await;
+    assert_eq!(error.code, GithubErrorCode::GhMissing);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gh_missing_and_signed_out_fail_without_writes() {
     let rig = rig().await;
     rig.destination().await;

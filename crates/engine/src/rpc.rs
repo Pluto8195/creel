@@ -3003,6 +3003,12 @@ impl RpcService for EngineRpc {
                 let p: zeron_proto::PrStatusParams = parse_params(params)?;
                 Self::github_reply(self.pr_review_sync.status(&p).await)
             }
+            methods::PR_VIEWER => Self::github_reply(
+                self.pr_review_sync
+                    .viewer_login()
+                    .await
+                    .map(|login| zeron_proto::PrViewerReply { login }),
+            ),
             methods::PR_REVIEW_SYNC_NOW => {
                 let p: zeron_proto::PrReviewSyncNowParams = parse_params(params)?;
                 Self::github_reply(self.pr_review_sync.sync_space(&p.space_id, true).await)

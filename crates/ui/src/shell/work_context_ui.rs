@@ -65,6 +65,9 @@ impl Shell {
         for pr in &prs {
             crate::github::store::request_status(&self.state, pr, false, cx);
         }
+        if !prs.is_empty() {
+            crate::github::store::request_viewer(&self.state, cx);
+        }
         if let Some(ticket) = &ticket {
             crate::linear::store::request_issue(&self.state, &ticket.identifier, false, cx);
         }
@@ -87,6 +90,7 @@ impl Shell {
                     .find(|project| project.id == id)
                     .cloned()
             }),
+            viewer: state.github.viewer().map(str::to_owned),
             now: chrono::Utc::now(),
         }
     }
@@ -265,6 +269,9 @@ mod tests {
                         Some(crate::work_outline::WorkOutlineActions::scripted(Arc::new(
                             move |method, params| {
                                 sink.lock().unwrap().push(method.to_string());
+                                if method == "PrViewer" {
+                                    return Ok(serde_json::json!({"login": "someone-else"}));
+                                }
                                 assert_eq!(method, "PrStatus", "{params}");
                                 let number = params["number"].as_u64().unwrap_or(7);
                                 Ok(serde_json::to_value(gf::summary("app", number, "Add auth"))
@@ -324,6 +331,26 @@ mod tests {
         (shell, calls, vcx)
     }
 
+    /// The scripted calls other than the viewer's.
+    fn status_calls(calls: &Calls) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| *method != "PrViewer")
+            .cloned()
+            .collect()
+    }
+
+    fn viewer_calls(calls: &Calls) -> usize {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| *method == "PrViewer")
+            .count()
+    }
+
     fn draw(vcx: &mut VisualTestContext) {
         vcx.update(|window, cx| window.draw(cx).clear());
         vcx.run_until_parked();
@@ -336,7 +363,8 @@ mod tests {
         assert!(vcx.debug_bounds("work-context-strip").is_some());
         assert!(vcx.debug_bounds("work-context-pr-number").is_some());
         // The status arrived through the shared store and replaced the note.
-        assert_eq!(calls.lock().unwrap().as_slice(), ["PrStatus"]);
+        assert_eq!(status_calls(&calls), ["PrStatus"]);
+        assert_eq!(viewer_calls(&calls), 1, "the viewer is asked once");
         assert!(vcx.debug_bounds("work-context-pr-title").is_some());
         assert!(vcx.debug_bounds("work-context-pr-note").is_none());
         shell.read_with(vcx, |shell, _| {
@@ -370,7 +398,7 @@ mod tests {
     fn a_launcher_review_chat_gets_the_strip_for_its_pr(cx: &mut TestAppContext) {
         let (_, calls, vcx) = mount(cx, CHAT_LOOSE_A, true);
         assert!(vcx.debug_bounds("work-context-strip").is_some());
-        assert_eq!(calls.lock().unwrap().as_slice(), ["PrStatus"]);
+        assert_eq!(status_calls(&calls), ["PrStatus"]);
         let at = vcx.debug_bounds("work-context-pr-number").unwrap().center();
         vcx.simulate_click(at, gpui::Modifiers::default());
         assert_eq!(

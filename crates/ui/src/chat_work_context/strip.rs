@@ -55,6 +55,8 @@ pub(crate) struct StripData {
     pub prs: HashMap<String, PrEntry>,
     pub issue: Option<IssueEntry>,
     pub project: Option<LinearProjectSummary>,
+    /// The viewer's GitHub login, when known (the author reads "you").
+    pub viewer: Option<String>,
     pub now: DateTime<Utc>,
 }
 
@@ -99,6 +101,7 @@ fn time_ago(iso: &str, now: DateTime<Utc>) -> Option<String> {
 pub(crate) fn pr_fields(
     pr: &PullRequestRef,
     entry: Option<&PrEntry>,
+    viewer: Option<&str>,
     now: DateTime<Utc>,
 ) -> PrFields {
     let number = format!("{} #{}", pr.repo, pr.number);
@@ -108,7 +111,7 @@ pub(crate) fn pr_fields(
             PrFields {
                 number,
                 title: Some(status.title.clone()).filter(|title| !title.trim().is_empty()),
-                author: row_icons::author_text(&status.author, None),
+                author: row_icons::author_text(&status.author, viewer),
                 icon: row_icons::pr_icon(status.state),
                 state: Some(chip::state_label(status.state)),
                 my_review: row_icons::review_icon(status.my_review_state).zip(
@@ -296,7 +299,7 @@ fn pr_segments(
     theme: &Theme,
 ) -> Vec<AnyElement> {
     let entry = data.entry(pr);
-    let fields = pr_fields(pr, entry, data.now);
+    let fields = pr_fields(pr, entry, data.viewer.as_deref(), data.now);
     let status = entry.and_then(PrEntry::ready);
     let mut out: Vec<AnyElement> = vec![pr_icon_mark(
         &format!("{prefix}-pr-icon"),
@@ -340,7 +343,7 @@ fn pr_segments(
         }
         if let Some(author) = &fields.author {
             let tip = status
-                .map(|status| row_icons::author_tooltip(&status.author, None))
+                .map(|status| row_icons::author_tooltip(&status.author, data.viewer.as_deref()))
                 .unwrap_or_default();
             out.push(
                 tooltip(
@@ -690,7 +693,7 @@ fn pr_panel(
     theme: &Theme,
 ) -> AnyElement {
     let entry = data.entry(pr);
-    let fields = pr_fields(pr, entry, data.now);
+    let fields = pr_fields(pr, entry, data.viewer.as_deref(), data.now);
     let status = entry.and_then(PrEntry::ready);
     let key = format!("work-context-panel-pr-{index}");
     let open = actions.open_url.clone();
@@ -727,7 +730,17 @@ fn pr_panel(
             }
         };
         line("State", "state", fields.state.map(str::to_owned));
-        line("Author", "author", status.map(|s| s.author.clone()).filter(|a| !a.is_empty()));
+        line(
+            "Author",
+            "author",
+            status.map(|s| s.author.clone()).filter(|a| !a.is_empty()).map(|author| {
+                if fields.author.as_deref() == Some("you") {
+                    format!("{author} (you)")
+                } else {
+                    author
+                }
+            }),
+        );
         line("CI", "ci", fields.ci.map(|(_, label)| label.to_owned()));
         line("Decision", "decision", fields.decision.map(str::to_owned));
         line("Your review", "my-review", fields.my_review.map(|(_, _, label)| label.to_owned()));

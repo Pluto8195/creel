@@ -591,6 +591,11 @@ impl PrReviewSyncService {
         })
     }
 
+    /// The signed-in login (`PrViewer`), cached per engine run.
+    pub async fn viewer_login(&self) -> Result<String, GithubError> {
+        self.viewer().await
+    }
+
     /// The signed-in login (once per engine run).
     async fn viewer(&self) -> Result<String, GithubError> {
         if let Some(login) = lock(&self.inner.viewer).clone() {

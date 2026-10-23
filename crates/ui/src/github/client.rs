@@ -10,7 +10,7 @@ use gpui::Task;
 use zeron_proto::{
     CreateWorkItemExternalReferenceParams, CreateWorkItemParams, GithubError, GithubErrorCode,
     PrMyOpenParams, PrReviewRequestedParams, PrReviewSyncNowParams, PrReviewSyncNowReply,
-    PrStatusParams, PullRequestRef, PullRequestStatusSummary, SetPrReviewSyncDestinationParams,
+    PrStatusParams, PrViewerReply, PullRequestRef, PullRequestStatusSummary, SetPrReviewSyncDestinationParams,
     WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply, WorkOutlineMutation,
 };
 use zeron_rpc::methods;
@@ -185,6 +185,11 @@ impl WorkOutlineActions {
                 force_refresh,
             },
         )
+    }
+
+    /// `PrViewer`: the GitHub login `gh` is signed in as.
+    pub(crate) fn pr_viewer(&self) -> GithubTask<PrViewerReply> {
+        self.github_call(methods::PR_VIEWER, serde_json::json!({}))
     }
 
     pub(crate) fn pr_review_sync_now(&self, space_id: &str) -> GithubTask<PrReviewSyncNowReply> {
