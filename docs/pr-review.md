@@ -19,8 +19,18 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   PR in the browser), title with tags, churn, reviewers (or author), CI, open
   comments and age, plus the Zeron chats linked to the PR as chips (click
   opens the chat). Review-requested rows have **Review** (`/code-review`) and
-  **Fix CI** (`/fix-ci`); **Review** becomes **Open chat** when a live review
-  chat already links the PR. Authored rows offer **Fix CI** while CI fails.
+  **Fix CI** (`/fix-ci`). Authored rows offer **Fix CI** while CI fails.
+  A PR's **review chat** is a live (not archived) chat that is assigned to the
+  PR's review work item, or linked to the PR as `manual` or `review_launcher`
+  (mention, branch, ticket, diff-target and created-in-chat links stay plain
+  chips). A finished or idle review chat still counts. While a PR has one,
+  **Open review** is the row's primary action, in the accent color with the
+  chat's title and state (working, idle, awaiting input, finished); **Review**
+  moves into the row's **⋯** menu as **Start another review**, which also lists
+  the other review chats (the most recent opens from the button). Up / Down
+  move the highlighted row and **Enter** opens its review chat, or starts a
+  review when there is none. The same "being reviewed" marker shows on the
+  PR's row in the Outline and in the chat's work-context strip.
   The box in the header (all tabs) takes a PR URL
   (`https://github.com/owner/repo/pull/123`) or `owner/repo#123`.
 - **Command palette → Review PR…** opens the PR page with the PR box focused.
