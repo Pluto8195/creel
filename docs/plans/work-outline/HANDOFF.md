@@ -226,6 +226,16 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - The PR page "Review chats" tab lists chats with a `review_launcher` link when no destination is
     set.
   - Stored classification and position files are left on disk, unread.
+- **Forgiving agent tools** (2026-10-23; `agent_tools::normalize_arguments`, `proto/src/agent.rs`):
+  - Agents often call zeron-agent tools before their schema loads. These tools now derive an
+    idempotency key when it's omitted: `bind_chat_worktree`, `set_status`,
+    `associate_current_chat`, `resolve_user_action_request`, and `create_user_action_request`
+    when it has a `dedupeKey`.
+  - Aliases are accepted: text/title/question → request; id/requestId → userActionRequestId;
+    itemId/workItem → workItemId; snake_case → camelCase.
+  - Argument errors list the tool's parameters with an example call.
+  - Keys stay required for create_chat, create_child, propose_instruction, artifact_publish and
+    create_user_action_request without a `dedupeKey`.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
