@@ -171,8 +171,8 @@ fn origin_label(key: &str) -> String {
 
 /// Extract the compact presentation values returned by `CHAT_CLASSIFICATION`.
 /// Keeping this adapter beside the shared strip lets the full-chat route show
-/// the same category/origin metadata as Canvas without depending on Canvas's
-/// private row model.
+/// the same category/origin metadata as the overview list without depending
+/// on its private row model.
 pub(crate) fn classification_labels(value: &serde_json::Value) -> (Option<String>, Option<String>) {
     let category = value
         .get("category")

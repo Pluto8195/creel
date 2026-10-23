@@ -1,5 +1,5 @@
 //! The Overview's side of the Linear panel: its own LEFT column (between
-//! the My PRs sidebar and the Outline/List/Canvas body), independent of the
+//! the My PRs sidebar and the Outline/List body), independent of the
 //! right slot, so the chat panel / Work Item Details / Required Actions stay
 //! up beside it. Open/close (toggle command + hotkey, Outline toolbar
 //! button, Space row menu), the per-device open flag and width, the edge
@@ -25,7 +25,7 @@ use crate::work_outline::WorkOutlineCommand;
 use crate::work_outline::hints::{HintKey, WithHint};
 use crate::work_outline::model::{OutlineRowKind, row_key};
 
-/// The narrowest the Outline/List/Canvas body gets while the Linear column
+/// The narrowest the Outline/List body gets while the Linear column
 /// is inline; past that the column shrinks, then overlays.
 pub(crate) const OVERVIEW_BODY_MIN_W: f32 = 360.0;
 /// Hit target of the column's right-edge resize grabber.
@@ -114,7 +114,7 @@ pub(crate) struct LinearColumnState {
     overview_width: Rc<Cell<Option<f32>>>,
     /// Focus the panel's search on the next render.
     focus_search: bool,
-    /// Focus the Outline tree (or List/Canvas body) on the next render.
+    /// Focus the Outline tree (or List body) on the next render.
     return_focus: bool,
 }
 
@@ -351,7 +351,7 @@ impl Overview {
     }
 
     /// Close the column (persisted). `return_focus`: hand the keyboard back
-    /// to the Outline tree (List/Canvas: the body) on the next render.
+    /// to the Outline tree (List: the body) on the next render.
     pub(crate) fn close_linear_panel(&mut self, return_focus: bool, cx: &mut Context<Self>) {
         if self.linear_column.open {
             self.set_linear_open(false, cx);
@@ -415,7 +415,7 @@ impl Overview {
         }
     }
 
-    /// The Outline tree in Outline mode, else the List/Canvas body.
+    /// The Outline tree in Outline mode, else the List body.
     fn focus_overview_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view_mode == super::OverviewMode::Outline {
             let handle = gpui::Focusable::focus_handle(self.outline.read(cx), cx);

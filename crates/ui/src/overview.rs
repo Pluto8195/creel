@@ -6,7 +6,7 @@
 //! `Transcript`/`Composer` entities (live transcript + working composer) by
 //! selecting the chat without changing the route — see
 //! [`Overview::chat_panel_open`]. The same right-side slot has a second,
-//! read-only mode: clicking one of a chat's compact subagent tiles "peeks"
+//! read-only mode: clicking one of a chat's compact subagent rows "peeks"
 //! into that subagent's transcript (`READ_SUBAGENT_TRANSCRIPT`; no composer
 //! — a subagent can't be continued) — see [`Overview::subagent_peek`].
 //!
@@ -84,7 +84,7 @@ const LINK_STATUS_REFRESH: Duration = Duration::from_secs(45);
 const CLASSIFICATION_REFRESH: Duration = Duration::from_secs(120);
 const SUBAGENTS_REFRESH: Duration = Duration::from_secs(120);
 /// Subagent refetch TTL while any of a chat's subagents is still `running`
-/// — a running subagent flips to `done` on its own, and the tile's status
+/// — a running subagent flips to `done` on its own, and the row's status
 /// dot should follow within an idle tick or so, not two minutes later. Just
 /// under [`IDLE_REFRESH`], same reasoning as [`CONTEXT_USAGE_REFRESH`].
 const SUBAGENTS_RUNNING_REFRESH: Duration = Duration::from_secs(12);
@@ -294,7 +294,7 @@ const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
 /// `CHAT_CLASSIFICATION`'s cached response — category/origin (used as
 /// `OverviewRow` fields/grouping keys) plus tool-usage breakdown (used only
-/// by the expanded tile detail's chip rows, not copied onto `OverviewRow`
+/// by the expanded row detail's chip rows, not copied onto `OverviewRow`
 /// since nothing else needs it per-row).
 #[derive(Clone, Default)]
 struct ClassificationInfo {
@@ -351,16 +351,15 @@ struct OverviewRow {
     /// runs per frame.
     closeable: bool,
     /// The associated work item's breadcrumb (path chip), copied in from the
-    /// Work Outline index in `rows()` like `ticket`. Never feeds `tile_size`:
-    /// the chip shares an existing line of the card/row.
+    /// Work Outline index in `rows()` like `ticket`. The chip shares an
+    /// existing line of the row.
     work_item_path: Option<WorkItemPathLabel>,
     /// The associated work item is in User Action Required.
     user_action_required: bool,
     /// Its unresolved user-action request count (0 until Milestone 4).
     user_action_count: u32,
     /// The Chat's effective instructions changed since its applied revision
-    /// (Work Outline drift). Never feeds `tile_size`: the mark shares the
-    /// title line.
+    /// (Work Outline drift). The mark shares the title line.
     instruction_drift: bool,
     /// The Chat captured an execution configuration that differs from its
     /// item's current one (Work Outline exception). Shares the title line.
@@ -543,7 +542,7 @@ fn hash_color(key: &str) -> gpui::Hsla {
 
 /// Exact `--status-*` hex values from `session_canvas.html`'s `:root` CSS
 /// (`~20-22`) and `STATUS_STYLES` (`~837-846`) — replaces the app theme's
-/// own approximation so tile tint/status colors genuinely match the
+/// own approximation so status colors genuinely match the
 /// reference instead of merely resembling it.
 fn reference_status_color(status: ChatIndicator) -> gpui::Hsla {
     match status {
@@ -604,7 +603,7 @@ fn reconcile_acknowledged(
     !is_done && acknowledged.remove(chat_id)
 }
 
-/// Whether a tile should carry the unread-done ribbon.
+/// Whether a row should carry the unread-done ribbon.
 fn is_unread_done(acknowledged: &BTreeSet<String>, chat_id: &str, is_done: bool) -> bool {
     is_done && !acknowledged.contains(chat_id)
 }
@@ -884,7 +883,7 @@ fn pr_section_expanded(collapsed: &BTreeSet<String>, section_key: &str, searchin
 /// not guaranteed when filtering, changing view modes, or viewport culling
 /// removes the element under the pointer, so renderers reconcile against the
 /// ids they actually built this frame.
-fn reconcile_hovered_tile(hovered: &mut Option<String>, mounted_ids: &[String]) -> bool {
+fn reconcile_hovered_row(hovered: &mut Option<String>, mounted_ids: &[String]) -> bool {
     let stale = hovered
         .as_ref()
         .is_some_and(|id| !mounted_ids.iter().any(|mounted| mounted == id));
@@ -949,29 +948,29 @@ fn category_color(key: &str) -> gpui::Hsla {
     gpui::rgb(hex).into()
 }
 
-/// Per-tile category badge — `renderTile`'s own dot+label (`~1054-1165`)
-/// shown on every tile regardless of grouping state, distinct from the
+/// Per-row category badge — `renderTile`'s own dot+label (`~1054-1165`)
+/// shown on every row regardless of grouping state, distinct from the
 /// GROUP header color a previous pass already wired up. Only rendered once a
 /// real classification is known (`row.category.is_some()`) — no placeholder
 /// badge for a pending fetch or a chat with no classification to show.
-fn category_badge(row: &OverviewRow, zoom: f32) -> Option<gpui::AnyElement> {
+fn category_badge(row: &OverviewRow) -> Option<gpui::AnyElement> {
     let category = row.category.as_deref()?;
     let color = category_color(category);
     Some(
         div()
             .flex()
             .items_center()
-            .gap(px(3.0 * zoom))
+            .gap(px(3.0))
             .child(
                 div()
                     .flex_none()
-                    .size(px(5.0 * zoom))
+                    .size(px(5.0))
                     .rounded_full()
                     .bg(color),
             )
             .child(
                 div()
-                    .text_size(crate::typography::ui_rems(9.0 * zoom))
+                    .text_size(crate::typography::ui_rems(9.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(color)
                     .child(SharedString::from(category_label(category).to_uppercase())),
@@ -991,7 +990,7 @@ fn chat_model_label(chat: &Chat) -> &str {
         .unwrap_or("default model")
 }
 
-fn model_badge(chat: &Chat, theme: &Theme, zoom: f32) -> gpui::AnyElement {
+fn model_badge(chat: &Chat, theme: &Theme) -> gpui::AnyElement {
     let model = chat_model_label(chat);
     let label: SharedString = model.to_string().into();
     let tooltip: SharedString = if model == "default model" {
@@ -1004,13 +1003,13 @@ fn model_badge(chat: &Chat, theme: &Theme, zoom: f32) -> gpui::AnyElement {
         .id(SharedString::from(format!("overview-model-{}", chat.id)))
         .debug_selector(|| "overview-card-model".into())
         .flex_none()
-        .max_w(px(112.0 * zoom))
-        .px(px(5.0 * zoom))
-        .py(px(1.0 * zoom))
-        .rounded(px(4.0 * zoom))
+        .max_w(px(112.0))
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(4.0))
         .bg(theme.element_hover.opacity(0.7))
         .truncate()
-        .text_size(crate::typography::ui_rems(9.0 * zoom))
+        .text_size(crate::typography::ui_rems(9.0))
         .text_color(theme.text_muted.opacity(0.85))
         .tooltip(move |_, cx| cx.new(|_| LinkSourceTooltip(tooltip.clone())).into())
         .child(label)
@@ -1554,7 +1553,7 @@ fn merge_refetched_link(
 }
 
 /// Tiny hover tooltip carrying one short text (link provenance, a compact
-/// subagent tile's full name). Wraps past `max_w` (web `.name-tooltip`'s
+/// subagent row's full name). Wraps past `max_w` (web `.name-tooltip`'s
 /// `max-width` + `white-space: normal`).
 struct LinkSourceTooltip(SharedString);
 
@@ -1588,9 +1587,9 @@ fn link_source_hover(
 }
 
 /// The tiny pin glyph marking a manually linked PR/ticket.
-fn manual_link_pin(color: gpui::Hsla, zoom: f32) -> gpui::Svg {
+fn manual_link_pin(color: gpui::Hsla) -> gpui::Svg {
     crate::icons::icon(crate::icons::PIN)
-        .size(px(9.0 * zoom))
+        .size(px(9.0))
         .text_color(color.opacity(0.8))
 }
 
@@ -1700,18 +1699,18 @@ fn context_pct_changed(previous: Option<Option<f32>>, next: Option<f32>) -> bool
 
 /// The context bar + `N% context` label from `renderTile`'s tile face
 /// (`.fill-bar` 4px/radius 2 on `--gridline` with an `--accent` fill,
-/// `.pct-label` 10px muted tabular). Shared by canvas tiles and list rows.
-fn context_meter(pct: Option<f32>, theme: &Theme, zoom: f32) -> gpui::Div {
+/// `.pct-label` 10px muted tabular), as shown on each list row.
+fn context_meter(pct: Option<f32>, theme: &Theme) -> gpui::Div {
     let accent: gpui::Hsla = gpui::rgb(0x3987e5).into(); // --accent
     div()
         .flex()
         .flex_col()
-        .gap(px(2.0 * zoom))
+        .gap(px(2.0))
         .child(
             div()
                 .w_full()
-                .h(px(4.0 * zoom))
-                .rounded(px(2.0 * zoom))
+                .h(px(4.0))
+                .rounded(px(2.0))
                 .overflow_hidden()
                 .bg(theme.border)
                 .child(
@@ -1723,7 +1722,7 @@ fn context_meter(pct: Option<f32>, theme: &Theme, zoom: f32) -> gpui::Div {
         )
         .child(
             div()
-                .text_size(crate::typography::ui_rems(10.0 * zoom))
+                .text_size(crate::typography::ui_rems(10.0))
                 .text_color(theme.text_muted)
                 .child(SharedString::from(context_pct_label(pct))),
         )
@@ -1736,7 +1735,7 @@ const CHAT_PANEL_W: f32 = 540.0;
 /// Horizontal inset of the composer inside the chat panel.
 const CHAT_PANEL_COMPOSER_PAD: f32 = 10.0;
 /// Width of the left "My PRs" sidebar (see [`Overview::pr_sidebar_open`]).
-/// Fixed, like `CHAT_PANEL_W`; the list/canvas column between the two
+/// Fixed, like `CHAT_PANEL_W`; the list/Outline column between the two
 /// panels is the only thing that flexes.
 const PR_SIDEBAR_W: f32 = 340.0;
 /// Entry in `overview_positions::UI_FLAGS_FILE` meaning "the My PRs sidebar
@@ -1771,7 +1770,7 @@ pub struct Overview {
     state: Entity<AppState>,
     shell: gpui::WeakEntity<Shell>,
     scroll: ScrollHandle,
-    /// The focus target for the List / Canvas surface: Esc, Enter and Down
+    /// The focus target for the List surface: Esc, Enter and Down
     /// from the search field land here, and a click on the surface takes it.
     body_focus: gpui::FocusHandle,
     /// The keyboard-selected List row (chat id).
@@ -1780,10 +1779,9 @@ pub struct Overview {
     /// scroll container)`, headers counted. Rebuilt every List render.
     list_order: Vec<(String, usize)>,
     view_mode: OverviewMode,
-    /// Tiles currently showing their expanded detail (toggled by a real
-    /// click — movement under `DRAG_THRESHOLD_PX` — matching the
-    /// reference's `expandedIds`/`toggleExpanded`). Never causes navigation;
-    /// only the explicit "Open chat" affordance does that.
+    /// Rows currently showing their expanded detail (toggled by a click,
+    /// matching the reference's `expandedIds`/`toggleExpanded`). Never causes
+    /// navigation; only the explicit "Open chat" affordance does that.
     expanded: HashSet<String>,
     link_status: HashMap<String, LinkStatusEntry>,
     link_status_pending: HashSet<String>,
@@ -1795,10 +1793,10 @@ pub struct Overview {
     /// `SCAN_CHAT_SUBAGENTS`'s contract).
     subagents: HashMap<String, Vec<SubagentItem>>,
     subagent_pending: HashSet<String>,
-    /// Canvas tile (or list row with subagent overflow) currently hovered.
+    /// The list row with subagent overflow currently hovered.
     /// Kept separate from `expanded`: hover must not acknowledge a completed
     /// chat or open its detail panel.
-    hovered_tile: Option<String>,
+    hovered_row: Option<String>,
     /// Last attempt time per chat (success OR failure), so a chat with
     /// nothing to scan retries on `SUBAGENTS_REFRESH` instead of on every
     /// row rebuild.
@@ -1813,7 +1811,7 @@ pub struct Overview {
     context_usage: HashMap<String, Option<f32>>,
     context_usage_pending: HashSet<String>,
     context_usage_fetched_at: HashMap<String, Instant>,
-    /// Chat ids whose "done" has been acknowledged (tile expanded / chat
+    /// Chat ids whose "done" has been acknowledged (row expanded / chat
     /// opened) — the web's `acknowledgedDone`, persisted via
     /// `overview_positions::ACKNOWLEDGED_DONE_FILE`.
     acknowledged_done: BTreeSet<String>,
@@ -1857,7 +1855,7 @@ pub struct Overview {
     /// `hideStale` default (`session_canvas.html`).
     hide_stale: bool,
     /// "Show archived" toggle — default off, matches the reference's own
-    /// `showArchived` default. Archived tiles render heavily dimmed when on.
+    /// `showArchived` default. Archived rows render heavily dimmed when on.
     show_archived: bool,
     my_prs: Vec<MyPrItem>,
     my_prs_pending: bool,
@@ -1870,10 +1868,9 @@ pub struct Overview {
     pr_review_status: HashMap<String, crate::chat_type_view::ReviewStatus>,
     review_prs_fetched_at: Option<Instant>,
     /// Left "My PRs" sidebar (toolbar toggle). Rendered as the overview's
-    /// leftmost fixed-width column — `[sidebar | list/canvas | chat panel]`
-    /// — so the canvas simply measures narrower (its `canvas_bounds` come
-    /// from paint, so culling/fit/zoom math follow automatically). The
-    /// sidebar has its own search box ([`Overview::pr_search`]).
+    /// leftmost fixed-width column — `[sidebar | list/Outline | chat panel]`
+    /// — so the body simply measures narrower. The sidebar has its own
+    /// search box ([`Overview::pr_search`]).
     /// Persisted via `overview_positions::UI_FLAGS_FILE`.
     pr_sidebar_open: bool,
     /// The sidebar's own scroll (it is visible alongside the list, which
@@ -1893,27 +1890,21 @@ pub struct Overview {
     /// Set whenever something that could change `rows()`'s OUTPUT happens
     /// (the underlying chat list, `hide_stale`/`show_archived`, or a
     /// link-status/subagent/classification/context-usage fetch landing with
-    /// changed data) — `false` the rest
-    /// of the time, including every pan/zoom/drag frame. `rows()` skips its
-    /// expensive rebuild (walking `AppState`, cloning every `Chat`,
-    /// re-deriving staleness) on a `false` read and returns the cache
-    /// instead — this was the primary reported cause of "slow / low
-    /// framerate" during canvas interaction: pan/zoom/drag call `cx.notify()`
-    /// on every single pointer-move, and without this flag `rows()` (and, in
-    /// grouped mode, a full rectangle-repack) reran from scratch on every one
-    /// of those frames regardless of whether the row set had actually
-    /// changed.
+    /// changed data) — `false` the rest of the time, including every
+    /// hover/scroll frame. `rows()` skips its expensive rebuild (walking
+    /// `AppState`, cloning every `Chat`, re-deriving staleness) on a `false`
+    /// read and returns the cache instead.
     rows_dirty: bool,
     rows_cache: Vec<OverviewRow>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
-    /// grid before this. Same `ComposerInput` pattern `pickers.rs` already
+    /// set before this. Same `ComposerInput` pattern `pickers.rs` already
     /// uses for its own search boxes.
     search: Entity<ComposerInput>,
     /// "View full chat →" opens an interactive chat panel alongside the
     /// overview instead of navigating away to `Route::Chat` — the reference
     /// tool's own `openTranscriptPanel` shape (an in-page panel, never
-    /// leaving the canvas), but live: it SELECTS the chat
+    /// leaving the overview), but live: it SELECTS the chat
     /// (`Shell::preview_chat_in_overview`, route untouched) and renders the
     /// Shell's own `transcript`/`composer` entities, so sending, queueing,
     /// the question wizard, interrupt, attachments and resume all work
@@ -1935,8 +1926,8 @@ pub struct Overview {
     /// The Shell's own composer (see `chat_panel_open`).
     composer: Entity<crate::composer::Composer>,
     /// The chat the panel shows this frame (`panel_chat_id`), snapshotted at
-    /// the top of `render` so `tile_body`/`render_list_row` can outline it
-    /// without a `cx`.
+    /// the top of `render` so `render_list_row` can outline it without a
+    /// `cx`.
     panel_highlight: Option<String>,
     /// The chat whose expanded detail shows the inline "Add PR / ticket…"
     /// input (at most one at a time — `link_input` is a single entity and
@@ -1953,7 +1944,7 @@ pub struct Overview {
     /// The right-side panel's read-only subagent-transcript mode (see
     /// [`SubagentPeek`]). Mutually exclusive with `chat_panel_open`: opening
     /// either replaces the other (`open_subagent_peek`/`open_chat_panel`),
-    /// and closing a peek returns to the bare canvas/list, never to a chat
+    /// and closing a peek returns to the bare list, never to a chat
     /// panel it replaced.
     subagent_peek: Option<SubagentPeek>,
     /// Monotonic id for peek fetches — web `transcriptRequestId`.
@@ -1993,7 +1984,7 @@ pub struct Overview {
     /// Chat → work item lookups across every loaded Space (path chips,
     /// attention, the work-item filter). Rebuilt by `rows()`.
     work_item_index: WorkItemIndex,
-    /// List/Canvas work-item filter (item ids + `UNASSOCIATED_KEY`),
+    /// List work-item filter (item ids + `UNASSOCIATED_KEY`),
     /// persisted via `overview_positions::WORK_ITEM_FILTER_FILE`.
     work_item_filter: BTreeSet<String>,
     /// One-shot stale-filter check once every Space's outline has loaded.
@@ -2180,7 +2171,7 @@ impl Overview {
             link_status_pending: HashSet::new(),
             subagents: HashMap::new(),
             subagent_pending: HashSet::new(),
-            hovered_tile: None,
+            hovered_row: None,
             subagents_fetched_at: HashMap::new(),
             classification: HashMap::new(),
             classification_pending: HashSet::new(),
@@ -2397,7 +2388,7 @@ impl Overview {
         window.prevent_default();
     }
 
-    /// Click-to-expand (tile or list row). Expanding also acknowledges an
+    /// Click-to-expand (list row). Expanding also acknowledges an
     /// unread done — web `toggleExpanded` → `acknowledgeDone`.
     fn toggle_expanded(&mut self, chat_id: &str, cx: &Context<Self>) {
         if !self.expanded.remove(chat_id) {
@@ -2568,9 +2559,8 @@ impl Overview {
     }
 
     /// A PR row's jump: open the chat in the right-hand panel (which also
-    /// outlines its tile/row via `panel_highlight`) and bring it into view
-    /// in whichever body mode is showing — see [`PendingFocus`] for why the
-    /// framing waits a painted frame.
+    /// outlines its row via `panel_highlight`) and scroll it into view in
+    /// the List.
     #[cfg(test)]
     pub(crate) fn set_review_prs_for_test(&mut self, items: Vec<MyPrItem>, cx: &mut Context<Self>) {
         self.review_prs = items;
@@ -2728,8 +2718,7 @@ impl Overview {
 
         let now = Utc::now();
         // Work Outline facts for path chips, attention, and the work-item
-        // filter. Association never feeds layout: nothing here touches
-        // `tile_positions` or `position_for`.
+        // filter.
         let outline_spaces = self.outline_spaces(cx);
         let snapshots: Vec<std::sync::Arc<WorkOutlineSnapshot>> = outline_spaces
             .iter()
@@ -3041,7 +3030,7 @@ impl Overview {
         cx.notify();
     }
 
-    /// Clicking a compact subagent tile: open the right-side panel in its
+    /// Clicking a compact subagent row: open the right-side panel in its
     /// read-only transcript mode (web `openTranscriptPanel(session.id,
     /// sub.id, title)`), replacing whatever the panel showed — including the
     /// live chat panel, which is closed, not stacked underneath. Issues a
@@ -3116,7 +3105,7 @@ impl Overview {
         cx.notify();
     }
 
-    /// ✕ / Escape on a peek: back to the bare canvas/list.
+    /// ✕ / Escape on a peek: back to the bare list.
     fn close_subagent_peek(&mut self, cx: &mut Context<Self>) {
         if self.subagent_peek.take().is_some() {
             cx.notify();
@@ -3261,7 +3250,7 @@ impl Overview {
     /// Open the inline "Add PR / ticket…" editor in `chat_id`'s expanded
     /// detail (expanding it if needed), focused and empty. Also the entry
     /// point for the sidebar chat menu's "Add PR / ticket…", which switches
-    /// to the overview first; `reveal` then brings the row/tile into view
+    /// to the overview first; `reveal` then brings the row into view
     /// the same way a PR-sidebar jump does.
     pub(crate) fn open_link_editor(
         &mut self,
@@ -3459,13 +3448,11 @@ impl Overview {
                 if let Ok(value) = result
                     && let Ok(subagents) = serde_json::from_value::<Vec<SubagentItem>>(value)
                 {
-                    // `subagent_count` is baked onto `OverviewRow` and feeds
-                    // `tile_size` (every subagent is its own tile row — see
-                    // `tile_content_height_estimate`), so only a COUNT change
-                    // relayouts; a status flip (running → done) or a renamed
-                    // description just repaints, matching how
-                    // `ensure_context_usage`/`ensure_classification` only
-                    // dirty rows on a layout-visible change.
+                    // `subagent_count` is baked onto `OverviewRow`, so only a
+                    // COUNT change rebuilds rows; a status flip (running →
+                    // done) or a renamed description just repaints, matching
+                    // how `ensure_context_usage`/`ensure_classification` only
+                    // dirty rows on a visible change.
                     let previous_count = this.subagents.get(&chat_id).map_or(0, Vec::len);
                     let next_count = subagents.len();
                     this.subagents.insert(chat_id, subagents);
@@ -3544,7 +3531,7 @@ impl Overview {
 
     /// Apply the authoritative result of the shared manual-classification
     /// mutation immediately instead of waiting for this view's classification
-    /// TTL. This keeps Canvas/List grouping and the open chat surfaces in sync.
+    /// TTL. This keeps List grouping and the open chat surfaces in sync.
     pub(crate) fn classification_changed(
         &mut self,
         chat_id: &str,
@@ -3678,9 +3665,8 @@ impl Overview {
     /// `CONTEXT_USAGE_REFRESH`. The attempt time is recorded on success and
     /// failure alike (like `ensure_classification`), so an engine without the
     /// method just retries on the TTL. A landed value that rounds to the same
-    /// whole percent is a no-op: nothing visible changes, so rows and the
-    /// grouped layout stay cached (see [`context_pct_changed`]). A real
-    /// change dirties both, because tile size feeds packing.
+    /// whole percent is a no-op: nothing visible changes, so rows stay
+    /// cached (see [`context_pct_changed`]). A real change dirties them.
     fn ensure_context_usage(&mut self, chat_id: String, cx: &mut Context<Self>) {
         let fresh_enough = self
             .context_usage_fetched_at
@@ -3821,10 +3807,9 @@ impl Overview {
     /// Compact badge row for one chat: PR action (if any, highest-severity
     /// reason only), ticket identifier (if any). `None` when there's nothing
     /// to show yet (no data fetched, or fetched and genuinely nothing
-    /// linked) — callers skip rendering the row. Subagents are no longer a
-    /// badge here — see `subagent_tiles_for` for real nested tiles, matching
-    /// the reference's actual visual nesting instead of a summary count.
-    fn badges_for(&self, chat_id: &str, theme: &Theme, zoom: f32) -> Option<gpui::AnyElement> {
+    /// linked) — callers skip rendering the row. Subagents are not a badge
+    /// here — see `subagent_tiles_for` for the nested compact rows.
+    fn badges_for(&self, chat_id: &str, theme: &Theme) -> Option<gpui::AnyElement> {
         let link = self.link_status.get(chat_id).map(|e| &e.status);
         let ticket_label = link
             .and_then(|s| s.ticket.as_ref())
@@ -3842,10 +3827,10 @@ impl Overview {
             .debug_selector(|| "overview-row-badges".into())
             .flex_none()
             .w_full()
-            .h(px(BADGE_ROW_H * zoom))
+            .h(px(BADGE_ROW_H))
             .flex()
             .items_center()
-            .gap(px(6.0 * zoom))
+            .gap(px(6.0))
             .overflow_hidden()
             .whitespace_nowrap();
         for (index, pr_link) in link.into_iter().flat_map(effective_pr_links).enumerate() {
@@ -3874,18 +3859,18 @@ impl Overview {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(3.0 * zoom))
-                        .px(px(6.0 * zoom))
-                        .py(px(1.0 * zoom))
-                        .rounded(px(3.0 * zoom))
+                        .gap(px(3.0))
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
                         .bg(color.opacity(0.15))
-                        .text_size(crate::typography::ui_rems(9.5 * zoom))
+                        .text_size(crate::typography::ui_rems(9.5))
                         .text_color(color),
                     LinkKind::Pr,
                     pr_source,
                 )
                 .when(pr_source == Some(ChatLinkSource::Manual), |el| {
-                    el.child(manual_link_pin(color, zoom))
+                    el.child(manual_link_pin(color))
                 })
                 .child(SharedString::from(label)),
             );
@@ -3902,18 +3887,18 @@ impl Overview {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(3.0 * zoom))
-                        .px(px(6.0 * zoom))
-                        .py(px(1.0 * zoom))
-                        .rounded(px(3.0 * zoom))
+                        .gap(px(3.0))
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
                         .bg(theme.element_hover)
-                        .text_size(crate::typography::ui_rems(9.5 * zoom))
+                        .text_size(crate::typography::ui_rems(9.5))
                         .text_color(theme.text_muted),
                     LinkKind::Ticket,
                     ticket_source,
                 )
                 .when(ticket_source == Some(ChatLinkSource::Manual), |el| {
-                    el.child(manual_link_pin(theme.text_muted, zoom))
+                    el.child(manual_link_pin(theme.text_muted))
                 })
                 .child(SharedString::from(identifier)),
             );
@@ -3926,34 +3911,30 @@ impl Overview {
         )
     }
 
-    /// Compact nested tiles for a chat's subagents — `session_canvas.html`'s
+    /// Compact nested rows for a chat's subagents — `session_canvas.html`'s
     /// `.tile.compact` sub-agent tiles (`~441-517`, `renderTile`'s compact
     /// branch `~1150-1160`, the stack itself `~1864-1906`). At rest this
     /// returns three agents plus a "+N more" row; `show_all` returns the full
-    /// stack while the parent card is hovered. Each agent is a single fixed-height row — status dot
-    /// (running = accent, done = green), truncated name, muted agent type,
-    /// and a "⋯" affordance — with the full name in a hover tooltip (gpui's
-    /// deferred tooltip layer: floats above everything, never reflows or
-    /// gets clipped by the parent tile's `overflow_hidden`). Spans the
-    /// parent's width; never sized by its own context (the web's rule).
+    /// stack while the parent row is hovered. Each agent is a single
+    /// fixed-height row — status dot (running = accent, done = green),
+    /// truncated name, muted agent type, and a "⋯" affordance — with the full
+    /// name in a hover tooltip (gpui's deferred tooltip layer: floats above
+    /// everything, never reflows or gets clipped by the parent row's
+    /// `overflow_hidden`). Spans the parent's width; never sized by its own
+    /// context (the web's rule).
     ///
     /// Clicking one opens its read-only transcript peek
     /// (`open_subagent_peek`). The press stops propagation at mouse-DOWN —
     /// like the web's `subTile.addEventListener("pointerdown", e =>
-    /// e.stopPropagation())` — so the parent tile never arms its drag /
-    /// click-to-expand (flat mode resolves that on the canvas's mouse-up
-    /// from a drag armed at mouse-down; grouped mode's parent `on_click`
-    /// needs its own mouse-down to register), and the click itself stops
-    /// again for good measure.
+    /// e.stopPropagation())` — so the parent row never toggles its expand,
+    /// and the click itself stops again for good measure.
     ///
-    /// Shared by Canvas tiles (`zoom` = canvas zoom) and List rows (`1.0`).
     /// Empty when the chat has no subagents (or they haven't been fetched
     /// yet) — callers skip rendering.
     fn subagent_tiles_for(
         &self,
         chat_id: &str,
         theme: &Theme,
-        zoom: f32,
         show_all: bool,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
@@ -3990,12 +3971,12 @@ impl Overview {
                     .debug_selector(|| "overview-subagent-tile".into())
                     .flex_none()
                     .w_full()
-                    .h(px(SUBAGENT_TILE_H * zoom))
+                    .h(px(SUBAGENT_TILE_H))
                     .flex()
                     .items_center()
-                    .gap(px(4.0 * zoom))
-                    .px(px(7.0 * zoom))
-                    .rounded(px(8.0 * zoom))
+                    .gap(px(4.0))
+                    .px(px(7.0))
+                    .rounded(px(8.0))
                     .border_1()
                     // Same status tint as the parent card (`renderTile`'s
                     // 14% background / 30% border color-mix).
@@ -4013,16 +3994,16 @@ impl Overview {
                     .child(
                         div()
                             .flex_none()
-                            .size(px(8.0 * zoom))
+                            .size(px(8.0))
                             .rounded_full()
                             .bg(color),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(20.0 * zoom))
+                            .min_w(px(20.0))
                             .truncate()
-                            .text_size(crate::typography::ui_rems(10.0 * zoom))
+                            .text_size(crate::typography::ui_rems(10.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text)
                             .child(SharedString::from(name)),
@@ -4034,9 +4015,9 @@ impl Overview {
                                 div()
                                     .flex_shrink(1.0)
                                     .min_w_0()
-                                    .max_w(px(120.0 * zoom))
+                                    .max_w(px(120.0))
                                     .truncate()
-                                    .text_size(crate::typography::ui_rems(9.0 * zoom))
+                                    .text_size(crate::typography::ui_rems(9.0))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(agent_type)),
                             )
@@ -4045,12 +4026,12 @@ impl Overview {
                     .child(
                         div()
                             .flex_none()
-                            .size(px(15.0 * zoom))
+                            .size(px(15.0))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.0 * zoom))
-                            .text_size(crate::typography::ui_rems(11.0 * zoom))
+                            .rounded(px(4.0))
+                            .text_size(crate::typography::ui_rems(11.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from("⋯")),
                     )
@@ -4065,15 +4046,15 @@ impl Overview {
                     .debug_selector(|| "overview-subagent-more".into())
                     .flex_none()
                     .w_full()
-                    .h(px(SUBAGENT_TILE_H * zoom))
+                    .h(px(SUBAGENT_TILE_H))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0 * zoom))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(theme.border.opacity(0.65))
                     .bg(theme.surface_raised.opacity(0.6))
-                    .text_size(crate::typography::ui_rems(9.5 * zoom))
+                    .text_size(crate::typography::ui_rems(9.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_muted)
                     .child(SharedString::from(format!(
@@ -4085,30 +4066,25 @@ impl Overview {
         tiles
     }
 
-    /// Small archive affordance — reused by both the list row and the tile.
-    /// Always visible rather than hover-gated: simpler, and a stray click
-    /// only archives (reversible via the sidebar's own archived-chats view),
-    /// not a destructive delete. `zoom` scales it in Canvas mode (`1.0` from
-    /// List mode, which has no zoom concept) so it shrinks/grows with the
-    /// tile instead of staying a fixed pixel size while everything around it
-    /// scales.
+    /// Small archive affordance on the list row. Always visible rather than
+    /// hover-gated: simpler, and a stray click only archives (reversible via
+    /// the sidebar's own archived-chats view), not a destructive delete.
     fn archive_button(
         &self,
         chat_id: String,
         theme: &Theme,
         cx: &mut Context<Self>,
-        zoom: f32,
     ) -> gpui::AnyElement {
         div()
             .id(SharedString::from(format!("overview-archive-{chat_id}")))
             .flex_none()
-            .size(px(16.0 * zoom))
-            .rounded(px(3.0 * zoom))
+            .size(px(16.0))
+            .rounded(px(3.0))
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .text_size(crate::typography::ui_rems(11.0 * zoom))
+            .text_size(crate::typography::ui_rems(11.0))
             .text_color(theme.text_muted.opacity(0.5))
             .hover(|el| el.bg(theme.element_hover).text_color(theme.text_muted))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -4122,10 +4098,9 @@ impl Overview {
     /// Explicit "View full chat" affordance — opens the interactive chat
     /// panel (`session_canvas.html`'s separate "View chat" button,
     /// `~1137-1143`: its own `pointerdown` stop-propagation keeps it from
-    /// also triggering the card's own drag/click-to-expand gesture). Only
-    /// the panel's "Open full chat →" actually leaves the overview.
-    /// Tile/row body clicks toggle expand in place instead — see
-    /// `toggle_expanded`.
+    /// also triggering the row's click-to-expand gesture). Only the panel's
+    /// "Open full chat →" actually leaves the overview. Row body clicks
+    /// toggle expand in place instead — see `toggle_expanded`.
     #[cfg(test)]
     pub(crate) fn expanded_is_empty(&self) -> bool {
         self.expanded.is_empty()
@@ -4139,7 +4114,6 @@ impl Overview {
         chat_id: &str,
         with_label: bool,
         theme: &Theme,
-        zoom: f32,
     ) -> gpui::AnyElement {
         let shell = self.shell.clone();
         let chat_id = chat_id.to_owned();
@@ -4147,7 +4121,6 @@ impl Overview {
             id,
             with_label,
             theme,
-            zoom,
             move |_, _, cx| {
                 shell
                     .update(cx, |shell, cx| shell.open_instruction_compare(&chat_id, cx))
@@ -4161,16 +4134,15 @@ impl Overview {
         chat_id: String,
         theme: &Theme,
         cx: &mut Context<Self>,
-        zoom: f32,
     ) -> gpui::AnyElement {
         div()
             .id(SharedString::from(format!("overview-open-{chat_id}")))
             .flex_none()
-            .px(px(8.0 * zoom))
-            .py(px(2.0 * zoom))
-            .rounded(px(4.0 * zoom))
+            .px(px(8.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .text_size(crate::typography::ui_rems(10.0 * zoom))
+            .text_size(crate::typography::ui_rems(10.0))
             .text_color(theme.accent)
             .bg(theme.accent.opacity(0.1))
             .hover(|el| el.bg(theme.accent.opacity(0.2)))
@@ -4249,7 +4221,6 @@ impl Overview {
                     &chat_id,
                     true,
                     theme,
-                    1.0,
                 )
             });
         let classification_shell = self.shell.clone();
@@ -4493,7 +4464,7 @@ impl Overview {
     /// loaded) and a ✕; body = its turns (role label + time, text, tool
     /// chips), scrolled to the end on load. No composer: a subagent can't be
     /// continued. Same width/chrome as the live chat panel so switching
-    /// between the two modes doesn't jump the canvas.
+    /// between the two modes doesn't jump the layout.
     fn render_subagent_peek(
         &mut self,
         theme: &Theme,
@@ -4791,8 +4762,7 @@ impl Overview {
             .into_any_element()
     }
 
-    /// Inline expanded detail — toggled by a real tile/row click (not a
-    /// drag), never navigates. Ports `renderDetails`
+    /// Inline expanded detail — toggled by a row click, never navigates. Ports `renderDetails`
     /// (`session_canvas.html:1092-1113`) field by field, from data actually
     /// available here:
     /// - branch + worktree badge (engine `isWorktree` when the link status
@@ -4813,8 +4783,6 @@ impl Overview {
         row: &OverviewRow,
         theme: &Theme,
         chat_id: String,
-        zoom: f32,
-        canvas_width: Option<f32>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let entry = self.link_status.get(&row.chat.id);
@@ -4824,16 +4792,16 @@ impl Overview {
         let label_el = |label: &'static str| {
             div()
                 .flex_none()
-                .w(px(78.0 * zoom))
-                .text_size(crate::typography::ui_rems(10.0 * zoom))
+                .w(px(78.0))
+                .text_size(crate::typography::ui_rems(10.0))
                 .text_color(theme.text_muted.opacity(0.6))
                 .child(SharedString::from(label))
         };
         let detail_row = |label: &'static str, value: gpui::AnyElement| {
             div()
                 .flex()
-                .gap(px(6.0 * zoom))
-                .text_size(crate::typography::ui_rems(10.0 * zoom))
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(10.0))
                 .child(label_el(label))
                 .child(
                     div()
@@ -4847,11 +4815,11 @@ impl Overview {
         let text = |value: String| SharedString::from(value).into_any_element();
         let chip = |text: String, color: gpui::Hsla, bg: gpui::Hsla| {
             div()
-                .px(px(6.0 * zoom))
-                .py(px(1.0 * zoom))
-                .rounded(px(3.0 * zoom))
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(3.0))
                 .bg(bg)
-                .text_size(crate::typography::ui_rems(9.5 * zoom))
+                .text_size(crate::typography::ui_rems(9.5))
                 .text_color(color)
                 .child(SharedString::from(text))
         };
@@ -4866,7 +4834,7 @@ impl Overview {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(4.0 * zoom))
+                .gap(px(4.0))
                 .children(
                     chips
                         .into_iter()
@@ -4884,7 +4852,7 @@ impl Overview {
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(px(5.0 * zoom))
+                .gap(px(5.0))
                 .child(SharedString::from(format!("⎇ {branch}")))
                 .when(is_worktree, |el| {
                     el.child(chip(
@@ -4909,7 +4877,7 @@ impl Overview {
                 "changes",
                 div()
                     .flex()
-                    .gap(px(4.0 * zoom))
+                    .gap(px(4.0))
                     .child(
                         div()
                             .text_color(gpui::rgb(0x0ca30c))
@@ -4960,14 +4928,14 @@ impl Overview {
                         .max_w_full()
                         .flex()
                         .flex_col()
-                        .gap(px(4.0 * zoom))
+                        .gap(px(4.0))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.0 * zoom))
+                                .gap(px(4.0))
                                 .when(pr_source == Some(ChatLinkSource::Manual), |el| {
-                                    el.child(manual_link_pin(theme.text_muted, zoom))
+                                    el.child(manual_link_pin(theme.text_muted))
                                 })
                                 .child(
                                     link_source_hover(
@@ -4978,7 +4946,7 @@ impl Overview {
                                             .flex_1()
                                             .min_w_0()
                                             .flex()
-                                            .gap(px(4.0 * zoom)),
+                                            .gap(px(4.0)),
                                         LinkKind::Pr,
                                         pr_source,
                                     )
@@ -4991,8 +4959,8 @@ impl Overview {
                                             .flex_1()
                                             .min_w_0()
                                             .max_w_full()
-                                            .max_h(px(32.0 * zoom))
-                                            .line_height(px(16.0 * zoom))
+                                            .max_h(px(32.0))
+                                            .line_height(px(16.0))
                                             .whitespace_normal()
                                             .overflow_hidden()
                                             .child(SharedString::from(summary)),
@@ -5013,7 +4981,6 @@ impl Overview {
                                         LinkKind::Pr,
                                         Some(url.clone()),
                                         theme,
-                                        zoom,
                                         cx,
                                     ))
                                 }),
@@ -5033,7 +5000,7 @@ impl Overview {
                         .max_w_full()
                         .flex()
                         .flex_col()
-                        .gap(px(8.0 * zoom))
+                        .gap(px(8.0))
                         .children(values)
                         .into_any_element(),
                 ));
@@ -5055,9 +5022,9 @@ impl Overview {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.0 * zoom))
+                    .gap(px(4.0))
                     .when(ticket_source == Some(ChatLinkSource::Manual), |el| {
-                        el.child(manual_link_pin(theme.text_muted, zoom))
+                        el.child(manual_link_pin(theme.text_muted))
                     })
                     .child(
                         link_source_hover(
@@ -5086,7 +5053,6 @@ impl Overview {
                             LinkKind::Ticket,
                             None,
                             theme,
-                            zoom,
                             cx,
                         ))
                     })
@@ -5122,11 +5088,11 @@ impl Overview {
                 "overview-detail-archive-{chat_id}"
             )))
             .flex_none()
-            .px(px(8.0 * zoom))
-            .py(px(2.0 * zoom))
-            .rounded(px(4.0 * zoom))
+            .px(px(8.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .text_size(crate::typography::ui_rems(10.0 * zoom))
+            .text_size(crate::typography::ui_rems(10.0))
             .text_color(theme.text_muted)
             .border_1()
             .border_color(theme.border)
@@ -5148,11 +5114,11 @@ impl Overview {
                     "overview-detail-closeout-{chat_id}"
                 )))
                 .flex_none()
-                .px(px(8.0 * zoom))
-                .py(px(2.0 * zoom))
-                .rounded(px(4.0 * zoom))
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
                 .cursor_pointer()
-                .text_size(crate::typography::ui_rems(10.0 * zoom))
+                .text_size(crate::typography::ui_rems(10.0))
                 .text_color(theme.text_muted)
                 .border_1()
                 .border_color(theme.border)
@@ -5171,11 +5137,11 @@ impl Overview {
                 "overview-detail-link-{chat_id}"
             )))
             .flex_none()
-            .px(px(8.0 * zoom))
-            .py(px(2.0 * zoom))
-            .rounded(px(4.0 * zoom))
+            .px(px(8.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .text_size(crate::typography::ui_rems(10.0 * zoom))
+            .text_size(crate::typography::ui_rems(10.0))
             .text_color(theme.text_muted)
             .border_1()
             .border_color(theme.border)
@@ -5211,7 +5177,7 @@ impl Overview {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.0 * zoom))
+                .gap(px(2.0))
                 .child(
                     div()
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -5230,7 +5196,7 @@ impl Overview {
                 )
                 .child(
                     div()
-                        .text_size(crate::typography::ui_rems(9.5 * zoom))
+                        .text_size(crate::typography::ui_rems(9.5))
                         .text_color(theme.text_muted.opacity(0.6))
                         .child(SharedString::from(hint)),
                 )
@@ -5239,7 +5205,7 @@ impl Overview {
         let critical: gpui::Hsla = gpui::rgb(0xd03b3b).into();
         let error_line = link_error.map(|message| {
             div()
-                .text_size(crate::typography::ui_rems(9.5 * zoom))
+                .text_size(crate::typography::ui_rems(9.5))
                 .text_color(critical)
                 .child(SharedString::from(message))
                 .into_any_element()
@@ -5247,34 +5213,28 @@ impl Overview {
 
         div()
             .w_full()
-            // Canvas detail is deliberately wider than the compact face.
-            // Its explicit width also contains pathological PR/ticket titles,
-            // instead of allowing their min-content width to stretch this
-            // card (and the face's context meter) indefinitely. List detail
-            // keeps filling its ordinary row.
-            .when_some(canvas_width, |el, width| el.w(px(width * zoom)))
             .max_w_full()
             .flex()
             .flex_col()
             .overflow_hidden()
-            .gap(px(4.0 * zoom))
-            .p(px(8.0 * zoom))
-            .mt(px(4.0 * zoom))
-            .rounded(px(6.0 * zoom))
+            .gap(px(4.0))
+            .p(px(8.0))
+            .mt(px(4.0))
+            .rounded(px(6.0))
             // Was `theme.surface.opacity(0.6)` — see-through enough to hurt
-            // contrast against whatever else is on the canvas underneath.
-            // Solid background, same as the tile itself.
+            // contrast against whatever else is underneath. Solid background,
+            // same as the row itself.
             .bg(theme.surface_raised)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(rows)
             .child(
                 div()
-                    .pt(px(4.0 * zoom))
+                    .pt(px(4.0))
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(6.0 * zoom))
-                    .child(self.open_chat_button(chat_id, theme, cx, zoom))
+                    .gap(px(6.0))
+                    .child(self.open_chat_button(chat_id, theme, cx))
                     .child(archive_toggle)
                     .child(link_toggle)
                     .children(closeout),
@@ -5293,7 +5253,6 @@ impl Overview {
         kind: LinkKind,
         value: Option<String>,
         theme: &Theme,
-        zoom: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tooltip = SharedString::from(match kind {
@@ -5306,10 +5265,10 @@ impl Overview {
                 kind.wire()
             )))
             .flex_none()
-            .px(px(4.0 * zoom))
-            .rounded(px(3.0 * zoom))
+            .px(px(4.0))
+            .rounded(px(3.0))
             .cursor_pointer()
-            .text_size(crate::typography::ui_rems(10.0 * zoom))
+            .text_size(crate::typography::ui_rems(10.0))
             .text_color(theme.text_muted.opacity(0.5))
             .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -5519,7 +5478,7 @@ impl Render for Overview {
                     )
                     .child(
                         // A sidebar toggle, not a view mode: its own segment so it
-                        // reads as independent of List/Canvas.
+                        // reads as independent of List/Outline.
                         div()
                             .p(px(2.0))
                             .rounded(px(6.0))
@@ -5786,7 +5745,7 @@ impl Render for Overview {
 
         // `[PR sidebar | Linear | main | right panel]`: the side panels are
         // `flex_none` widths and `main` is `flex_1().min_w_0()`, so the
-        // list/canvas/Outline is what shrinks. The Linear column yields
+        // list/Outline is what shrinks. The Linear column yields
         // first (down to its minimum, then it overlays `main`) so the body
         // keeps `linear_host::OVERVIEW_BODY_MIN_W`.
         div()
@@ -5836,7 +5795,7 @@ impl Render for Overview {
 }
 
 impl Overview {
-    /// Wrap a List / Canvas body in its keyboard focus target (Esc / Enter /
+    /// Wrap the List body in its keyboard focus target (Esc / Enter /
     /// Down from the search land on it; List arrows and Enter run here).
     fn surface_focus_wrapper(
         &self,
@@ -6154,21 +6113,18 @@ impl Overview {
             .map(|key| swatch_row(origin_color(key), origin_label(key)))
             .collect();
         let notes = [
-            "Tile background tint = status color (same as the status dot) — a tinted tile scans faster than the dot alone.",
-            "White left-edge ribbon = the chat finished and you haven't looked yet. Expanding the tile or opening its chat clears it; the next completion re-adds the ribbon.",
-            "Dimmed tile = stale: no activity for 7 days and not working / waiting on you. \"Hide stale\" filters them out.",
+            "White left-edge ribbon = the chat finished and you haven't looked yet. Expanding the row or opening its chat clears it; the next completion re-adds the ribbon.",
+            "Dimmed row = stale: no activity for 7 days and not working / waiting on you. \"Hide stale\" filters them out.",
             "\"not running\" = an imported Claude Code session with no live run in Zeron right now. Its transcript is intact; sending a message resumes it.",
             "Badge row = linked Linear ticket and/or GitHub PR; a PR badge shows its most urgent action (CI failing, merge conflict, changes requested, needs reviewer, ready to merge).",
             "Links come from the branch (inferred), PRs created or mentioned in the chat, or you: \"Add PR / ticket…\" in the expanded detail (or the sidebar chat menu) takes a GitHub PR URL or a ticket id like ENG-1234. Add as many PRs as the chat needs. Hover a PR/ticket for its source; a pin marks manual links, and ✕ in the detail unlinks one stored link.",
-            "\"Group by\" toggles combine — the first becomes columns, each further one subdivides into rows. Turn all off to return to your own layout.",
-            "Click a tile or row = expand for branch/worktree, PR (reviewers, checks, review decision), ticket, last message, tools used, skills loaded, archive.",
-            "Drag a tile (ungrouped canvas) = move it; positions are remembered across restarts.",
+            "\"Group by\" toggles combine — the first becomes the top-level headers, each further one nests beneath it. Turn all off for the flat list.",
+            "Click a row = expand for branch/worktree, PR (reviewers, checks, review decision), ticket, last message, tools used, skills loaded, archive.",
             "\"View full chat →\" = live chat side panel: read and reply without leaving the overview (the chat becomes the selected one). \"Open full chat →\" there jumps to the chat itself.",
-            "Small tiles under a card = its subagents (dot: blue running, green done). Cards show three plus a remainder count; hover the card to reveal the full stack. Hover a row for its full name; click one to peek at its transcript in a read-only side panel (a subagent can't be continued). ✕ or Escape closes it.",
+            "Small rows under a chat = its subagents (dot: blue running, green done). Rows show three plus a remainder count; hover the row to reveal the full stack. Hover a row for its full name; click one to peek at its transcript in a read-only side panel (a subagent can't be continued). ✕ or Escape closes it.",
             "Archive hides a chat from the default view (same as the sidebar's archive). \"Show archived\" brings archived chats back, dimmed.",
-            "\"Repos\" hides whole repos everywhere (canvas, list, grouping, search). Search matches title, branch, last message, folder, ticket id and PR title, and zooms the canvas to 1-8 matches.",
-            "\"My PRs\" opens a left sidebar of every open PR you authored (\u{26a1} actionable first, then by repo) beside the list or canvas, with PRs awaiting your review in a \"Needs my review\" section on top. Its count lights red when something needs you — CI failing, changes requested, a merge conflict, no reviewer ever requested (ready-to-merge alone doesn't count), or a review requested from you. The sidebar has its own search box that filters PRs by repo, title, number (123 or #123), branch and author (the toolbar search only filters chats). Click a section header to fold it; a PR search shows matches even inside folded sections. Clicking a PR with a linked chat opens that chat in the side panel and brings its tile/row into view; otherwise it opens the PR on GitHub.",
-            "Canvas: scroll to pan, pinch or Ctrl+scroll to zoom, − / + to zoom around the center, click the % to reset, ⤢ to fit every card in view. Panned or zoomed away from every card? A \"Fit view\" pill appears — click it to snap back.",
+            "\"Repos\" hides whole repos everywhere (list, grouping, search). Search matches title, branch, last message, folder, ticket id and PR title.",
+            "\"My PRs\" opens a left sidebar of every open PR you authored (\u{26a1} actionable first, then by repo) beside the list or Outline, with PRs awaiting your review in a \"Needs my review\" section on top. Its count lights red when something needs you — CI failing, changes requested, a merge conflict, no reviewer ever requested (ready-to-merge alone doesn't count), or a review requested from you. The sidebar has its own search box that filters PRs by repo, title, number (123 or #123), branch and author (the toolbar search only filters chats). Click a section header to fold it; a PR search shows matches even inside folded sections. Clicking a PR with a linked chat opens that chat in the side panel and brings its row into view; otherwise it opens the PR on GitHub.",
         ];
         div()
             .flex_none()
@@ -6198,7 +6154,7 @@ impl Overview {
                             .text_size(crate::typography::ui_rems(10.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text)
-                            .child(SharedString::from("READING A TILE")),
+                            .child(SharedString::from("READING A ROW")),
                     )
                     .children(notes.iter().map(|note| {
                         div()
@@ -6310,7 +6266,7 @@ fn card_dimming(archived: bool, stale: bool, unread_done: bool) -> (Option<f32>,
 /// plain white is the safest choice against all of them, so that's the
 /// color used at the call sites, at full opacity.
 ///
-/// `scale` is the canvas zoom (`1.0` for list rows/legend), floored so the
+/// `scale` is the swatch scale (`1.0` for list rows), floored so the
 /// ribbon stays visible zoomed out — same floor `unread_done_glow` used for
 /// its blur/spread.
 const UNREAD_DONE_RIBBON_WIDTH: f32 = 3.0;
@@ -6340,22 +6296,22 @@ fn unread_done_ribbon(scale: f32) -> gpui::Div {
 /// text in the group's color, underlined in the same color; top level is
 /// 13px bold uppercase with a 2px rule, nested is 10px semibold mixed-case
 /// with a 1px rule.
-fn lane_header(text: String, color: gpui::Hsla, depth: usize, zoom: f32) -> gpui::Div {
+fn lane_header(text: String, color: gpui::Hsla, depth: usize) -> gpui::Div {
     let top = depth == 0;
     div()
         .flex_none()
         .text_color(color)
         .border_color(color)
         .when(top, |el| {
-            el.text_size(crate::typography::ui_rems(13.0 * zoom))
+            el.text_size(crate::typography::ui_rems(13.0))
                 .font_weight(gpui::FontWeight::BOLD)
-                .pb(px(6.0 * zoom))
+                .pb(px(6.0))
                 .border_b_2()
         })
         .when(!top, |el| {
-            el.text_size(crate::typography::ui_rems(10.0 * zoom))
+            el.text_size(crate::typography::ui_rems(10.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .pb(px(3.0 * zoom))
+                .pb(px(3.0))
                 .border_b_1()
         })
         .child(SharedString::from(if top {
@@ -6373,7 +6329,7 @@ impl Overview {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mounted_ids: Vec<String> = rows.iter().map(|row| row.chat.id.clone()).collect();
-        reconcile_hovered_tile(&mut self.hovered_tile, &mounted_ids);
+        reconcile_hovered_row(&mut self.hovered_row, &mounted_ids);
         self.list_order.clear();
         if rows.is_empty() {
             self.list_selected = None;
@@ -6410,7 +6366,7 @@ impl Overview {
             let mut ix = 0usize;
             for item in items {
                 match item {
-                    // Same header treatment as the canvas lane headers
+                    // Same header treatment as the web's lane headers
                     // (`.lane-header` / `.lane-header.nested`): colored,
                     // underlined in its own color, uppercase+bold at the top
                     // level, smaller/thinner nested.
@@ -6426,7 +6382,7 @@ impl Overview {
                             .pr(px(10.0))
                             .pt(px(if depth == 0 { 14.0 } else { 8.0 }))
                             .pb(px(2.0))
-                            .child(lane_header(format!("{label} ({count})"), color, depth, 1.0))
+                            .child(lane_header(format!("{label} ({count})"), color, depth))
                             .into_any_element(),
                     ),
                     ListItem::Row(row) => {
@@ -6468,8 +6424,7 @@ impl Overview {
             .into_any_element()
     }
 
-    /// One List-mode row. Same click split as a canvas tile (web
-    /// `renderTile`): clicking the row toggles its expanded detail in place
+    /// One List-mode row. Same click split as the web's `renderTile`: clicking the row toggles its expanded detail in place
     /// (and acknowledges an unread done); the explicit "View full chat →"
     /// control opens the interactive chat panel. Neither navigates away
     /// — "Open full chat →" in that panel does.
@@ -6515,13 +6470,11 @@ impl Overview {
             row.user_action_required,
             row.user_action_count,
             theme,
-            1.0,
         );
         let exception_mark = row.execution_exception.then(|| {
             crate::work_outline::chips::execution_exception_mark(
                 format!("overview-row-execution-exception-{chat_id}"),
                 theme,
-                1.0,
             )
         });
         let drift_mark = row.instruction_drift.then(|| {
@@ -6530,7 +6483,6 @@ impl Overview {
                 &chat_id,
                 false,
                 theme,
-                1.0,
             )
         });
         let path_chip = row.work_item_path.as_ref().map(|path| {
@@ -6538,22 +6490,21 @@ impl Overview {
                 format!("overview-row-work-item-{chat_id}"),
                 path,
                 theme,
-                1.0,
             )
         });
         let is_expanded = self.expanded.contains(&chat_id);
-        let category_badge = category_badge(row, 1.0);
-        let model = model_badge(&row.chat, theme, 1.0);
-        let badges = self.badges_for(&chat_id, theme, 1.0);
+        let category_badge = category_badge(row);
+        let model = model_badge(&row.chat, theme);
+        let badges = self.badges_for(&chat_id, theme);
         let archive =
-            (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx, 1.0));
-        let open_button = self.open_chat_button(chat_id.clone(), theme, cx, 1.0);
+            (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx));
+        let open_button = self.open_chat_button(chat_id.clone(), theme, cx);
         let has_subagent_overflow = row.subagent_count > SUBAGENT_PREVIEW_LIMIT;
         let show_all_subagents =
-            has_subagent_overflow && self.hovered_tile.as_deref() == Some(chat_id.as_str());
-        let subagent_tiles = self.subagent_tiles_for(&chat_id, theme, 1.0, show_all_subagents, cx);
+            has_subagent_overflow && self.hovered_row.as_deref() == Some(chat_id.as_str());
+        let subagent_tiles = self.subagent_tiles_for(&chat_id, theme, show_all_subagents, cx);
         let detail = is_expanded
-            .then(|| self.expanded_detail_for(row, theme, chat_id.clone(), 1.0, None, cx));
+            .then(|| self.expanded_detail_for(row, theme, chat_id.clone(), cx));
         let toggle_id = chat_id.clone();
         let hover_id = chat_id.clone();
         div()
@@ -6593,12 +6544,12 @@ impl Overview {
             .when(has_subagent_overflow, |el| {
                 el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered {
-                        if this.hovered_tile.as_deref() != Some(hover_id.as_str()) {
-                            this.hovered_tile = Some(hover_id.clone());
+                        if this.hovered_row.as_deref() != Some(hover_id.as_str()) {
+                            this.hovered_row = Some(hover_id.clone());
                             cx.notify();
                         }
-                    } else if this.hovered_tile.as_deref() == Some(hover_id.as_str()) {
-                        this.hovered_tile = None;
+                    } else if this.hovered_row.as_deref() == Some(hover_id.as_str()) {
+                        this.hovered_row = None;
                         cx.notify();
                     }
                 }))
@@ -6669,12 +6620,11 @@ impl Overview {
                             )
                             .when_some(badges, |el, badges| el.child(badges)),
                     )
-                    // Same bar + label as the tile face, at a fixed width so
+                    // Same bar + label as the web's tile face, at a fixed width so
                     // the column lines up down the list.
                     .child(div().flex_none().w(px(76.0)).child(context_meter(
                         row.context_pct,
                         theme,
-                        1.0,
                     )))
                     .child(
                         div()
@@ -7111,11 +7061,11 @@ impl Overview {
                     pr_source,
                 )
                 .when(pr_source == Some(ChatLinkSource::Manual), |el| {
-                    el.child(manual_link_pin(theme.accent, 1.0))
+                    el.child(manual_link_pin(theme.accent))
                 })
                 .child(SharedString::from(format!("→ {chat_title}"))),
             );
-            // Jump in place: chat panel on the right + bring its tile/row
+            // Jump in place: chat panel on the right + bring its row
             // into view — never navigates off the overview.
             row = row.on_click(cx.listener(move |this, _, _, cx| {
                 this.jump_to_chat_from_pr(chat_id.clone(), cx);
@@ -7186,7 +7136,7 @@ impl Overview {
             return;
         }
         self.view_mode = mode;
-        self.hovered_tile = None;
+        self.hovered_row = None;
         self.outline_dirty = true;
         self.view_prefs_changed(cx);
         cx.notify();
@@ -7213,7 +7163,7 @@ impl Overview {
     }
 
     /// Tell the watch reconciler which Spaces' outlines the Overview needs:
-    /// all of them (path chips and attention on List/Canvas need them too).
+    /// all of them (path chips and attention on the List need them too).
     /// Only on change, so it never loops with the `AppState` observer.
     fn declare_outline_spaces(&mut self, cx: &mut Context<Self>) {
         if self.outline_fixture.is_some() {
@@ -7433,7 +7383,7 @@ impl Overview {
         out
     }
 
-    /// The List/Canvas work-item filter dropdown (same shape as "Repos").
+    /// The List work-item filter dropdown (same shape as "Repos").
     fn render_work_item_filter(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active = !self.work_item_filter.is_empty() || self.work_item_filter_popup.is_open();
         let trigger = div()
@@ -7623,8 +7573,7 @@ impl Overview {
         self.work_item_filter_changed(cx);
     }
 
-    /// Persist and re-derive rows. Filtering only changes which rows exist;
-    /// flat-canvas positions of the remaining chats are untouched.
+    /// Persist and re-derive rows. Filtering only changes which rows exist.
     fn work_item_filter_changed(&mut self, cx: &mut Context<Self>) {
         self.work_item_filter_needs_validation = false;
         self.save_string_set(
@@ -7998,7 +7947,7 @@ impl Overview {
 
     /// The Chat Open Full Chat opens: the Outline's selected Chat row while
     /// the tree has focus, else the Chat the panel shows (the highlighted
-    /// List / Canvas row; its composer may have focus), else the Outline's
+    /// List row; its composer may have focus), else the Outline's
     /// selected Chat row. A panel hidden under Work Item Details or Required
     /// Actions does not count; neither does a Chat row whose Chat is gone.
     pub(crate) fn full_chat_target(&self, window: &Window, cx: &gpui::App) -> Option<String> {
@@ -8122,7 +8071,7 @@ impl Overview {
         cx.notify();
     }
 
-    /// Tests: whether the List / Canvas surface holds focus.
+    /// Tests: whether the List surface holds focus.
     #[cfg(test)]
     pub(crate) fn body_focused(&self, window: &Window) -> bool {
         self.body_focus.is_focused(window)
@@ -8150,8 +8099,8 @@ impl Overview {
         self.open_chat_panel(chat_id, cx);
     }
 
-    /// Open Full Chat with nothing to open: a notice in the Outline (List
-    /// and Canvas have no notice line; there the command does nothing).
+    /// Open Full Chat with nothing to open: a notice in the Outline (the
+    /// List has no notice line; there the command does nothing).
     pub(crate) fn show_full_chat_notice(&mut self, cx: &mut Context<Self>) {
         if self.view_mode == OverviewMode::Outline {
             self.show_outline_notice("Select a Chat or open one beside the Outline first", cx);
@@ -9056,16 +9005,16 @@ mod logic_tests {
     }
 
     #[test]
-    fn hovered_tile_reconciliation_drops_only_unmounted_ids() {
+    fn hovered_row_reconciliation_drops_only_unmounted_ids() {
         let mounted = vec!["a".to_string(), "b".to_string()];
         let mut hovered = Some("b".to_string());
-        assert!(!reconcile_hovered_tile(&mut hovered, &mounted));
+        assert!(!reconcile_hovered_row(&mut hovered, &mounted));
         assert_eq!(hovered.as_deref(), Some("b"));
 
         let mounted = vec!["a".to_string()];
-        assert!(reconcile_hovered_tile(&mut hovered, &mounted));
+        assert!(reconcile_hovered_row(&mut hovered, &mounted));
         assert!(hovered.is_none());
-        assert!(!reconcile_hovered_tile(&mut hovered, &[]));
+        assert!(!reconcile_hovered_row(&mut hovered, &[]));
     }
 
     fn pr_item(number: u64, repo: &str, title: &str, branch: Option<&str>) -> MyPrItem {
@@ -10443,7 +10392,7 @@ mod logic_tests {
         vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         vcx.run_until_parked();
         overview.update(vcx, |overview, _| {
-            assert_eq!(overview.hovered_tile.as_deref(), Some("c1"));
+            assert_eq!(overview.hovered_row.as_deref(), Some("c1"));
         });
         assert!(vcx.debug_bounds("overview-subagent-more").is_none());
         let block = vcx
