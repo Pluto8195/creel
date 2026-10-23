@@ -79,6 +79,11 @@ pub(crate) struct ChangesTarget {
     /// Match a diff only by `checkout_id` (a validated member), never by a
     /// cwd fallback.
     pub exact_checkout: bool,
+    /// Set when the selected pill is a branch / PR range target: the pane
+    /// shows `merge-base(base, head)...head` from refs ([`DiffScope::Range`])
+    /// of the repository checkout in `cwd`, with no working tree or turn
+    /// scopes.
+    pub range: Option<crate::work_outline::execution::RefRange>,
 }
 
 impl ChangesTarget {
@@ -91,6 +96,7 @@ impl ChangesTarget {
             branch: chat.branch.clone(),
             unconfirmed: None,
             exact_checkout: false,
+            range: None,
         }
     }
 
@@ -122,6 +128,7 @@ impl ChangesTarget {
                     target.checkout_id = member.checkout_id;
                     target.branch = member.branch;
                     target.exact_checkout = true;
+                    target.range = member.range;
                 }
             }
         }
@@ -1029,6 +1036,11 @@ pub enum DiffScope {
     /// History row click opens. Never listed in the scope menu
     /// ([`Self::ALL`]); a commit-pinned pane is born this way and stays.
     Commit,
+    /// "Diff branch / PR…": `merge-base(base, head)...head` read from a
+    /// repository's refs, no checkout. Never listed in the scope menu
+    /// ([`Self::ALL`]); a pane is in it exactly while its chat's selected pill
+    /// is a branch / PR target, and then has no working tree or turn scope.
+    Range,
 }
 
 impl DiffScope {
@@ -1043,6 +1055,7 @@ impl DiffScope {
             Self::LatestTurn => "Checkout changes since this chat’s latest turn",
             Self::History => "History",
             Self::Commit => "Commit",
+            Self::Range => "Branch or PR changes",
         }
     }
 
@@ -1054,6 +1067,7 @@ impl DiffScope {
             Self::LatestTurn => "turn",
             Self::History => "history",
             Self::Commit => "commit",
+            Self::Range => "range",
         }
     }
 }
@@ -1063,7 +1077,7 @@ pub fn scope_label(scope: DiffScope, count: usize, base: Option<&str>) -> String
     let files = if count == 1 { "file" } else { "files" };
     match scope {
         DiffScope::WorkingTree => uncommitted_label(count),
-        DiffScope::Branch => match base {
+        DiffScope::Branch | DiffScope::Range => match base {
             Some(base) => format!("{count} Changed {files} vs {base}"),
             None => format!("{count} Changed {files}"),
         },
@@ -1098,7 +1112,7 @@ pub fn default_base_ref(branches: &[String], current: Option<&str>) -> Option<St
 pub fn clean_message(scope: DiffScope, base: Option<&str>) -> String {
     match scope {
         DiffScope::WorkingTree => "No uncommitted changes".to_string(),
-        DiffScope::Branch => match base {
+        DiffScope::Branch | DiffScope::Range => match base {
             Some(base) => format!("No changes vs {base}"),
             None => "No branch changes".to_string(),
         },
@@ -1341,6 +1355,7 @@ fn file_diff_text_request(
     base_ref: Option<String>,
     chat_id: Option<String>,
     commit_sha: Option<String>,
+    head_ref: Option<String>,
 ) -> zeron_proto::GetCheckoutFileDiffTextRequest {
     zeron_proto::GetCheckoutFileDiffTextRequest {
         checkout_id: diff.checkout_id.clone(),
@@ -1351,7 +1366,7 @@ fn file_diff_text_request(
         base_ref,
         chat_id,
         commit_sha,
-        head_ref: None,
+        head_ref,
         diff_checksum: diff.checksum.clone(),
     }
 }
@@ -2356,6 +2371,7 @@ impl Changes {
                 Some(ChangesTarget {
                     unconfirmed: None,
                     exact_checkout: false,
+            range: None,
                     chat_id,
                     device_id: String::new(),
                     cwd: None,
@@ -2363,7 +2379,9 @@ impl Changes {
                     branch: None,
                 })
             });
-        Self::with_owner(state, owner, cx)
+        let mut changes = Self::with_owner(state, owner, cx);
+        changes.sync_scope_with_owner();
+        changes
     }
 
     fn with_owner(
@@ -2546,6 +2564,7 @@ impl Changes {
             return false;
         }
         self.owner = Some(next);
+        self.sync_scope_with_owner();
         self.diffs.clear();
         self.parsed = None;
         self.rows.clear();
@@ -2563,6 +2582,23 @@ impl Changes {
         self.started = false;
         self.watch_for = None;
         true
+    }
+
+    /// A pane is in [`DiffScope::Range`] exactly while its owner's selected
+    /// pill is a branch / PR target. Leaving one restores the working tree
+    /// scope; History and commit panes never change.
+    fn sync_scope_with_owner(&mut self) {
+        let ranged = self.owner.as_ref().is_some_and(|owner| owner.range.is_some());
+        if ranged {
+            if matches!(
+                self.scope,
+                DiffScope::WorkingTree | DiffScope::Branch | DiffScope::LatestTurn
+            ) {
+                self.scope = DiffScope::Range;
+            }
+        } else if self.scope == DiffScope::Range {
+            self.scope = DiffScope::WorkingTree;
+        }
     }
 
     fn owner_chat_id_owned(&self) -> Option<String> {
@@ -2725,7 +2761,9 @@ impl Changes {
         match self.scope {
             DiffScope::WorkingTree if self.pinned_cwd.is_some() => self.scoped.clone(),
             DiffScope::WorkingTree => self.resolved(cx),
-            DiffScope::Branch | DiffScope::LatestTurn | DiffScope::Commit => self.scoped.clone(),
+            DiffScope::Branch | DiffScope::LatestTurn | DiffScope::Commit | DiffScope::Range => {
+                self.scoped.clone()
+            }
             DiffScope::History => None,
         }
     }
@@ -2737,6 +2775,10 @@ impl Changes {
             DiffScope::WorkingTree => "wt".to_string(),
             DiffScope::Branch => format!("br:{}", self.base_ref.as_deref().unwrap_or("")),
             DiffScope::LatestTurn => "turn".to_string(),
+            DiffScope::Range => match self.owner.as_ref().and_then(|o| o.range.as_ref()) {
+                Some(range) => format!("range:{}:{}", range.base_ref, range.head_ref),
+                None => "range".to_string(),
+            },
             DiffScope::History => "history".to_string(),
             DiffScope::Commit => format!(
                 "commit:{}",
@@ -2858,6 +2900,14 @@ impl Changes {
             },
             _ => None,
         };
+        // A range pane reads two refs of the repository checkout.
+        let range = match self.scope {
+            DiffScope::Range => match self.owner.as_ref().and_then(|o| o.range.clone()) {
+                Some(range) => Some(range),
+                None => return,
+            },
+            _ => None,
+        };
         let target = self.desired_target(cx);
         let checkout_id = self
             .owner
@@ -2873,7 +2923,21 @@ impl Changes {
             base.as_deref().unwrap_or(""),
             commit_sha.as_deref().unwrap_or("")
         );
-        let watch_sum = self.resolved(cx).map(|d| d.checksum).unwrap_or_default();
+        let context = match &range {
+            Some(range) => format!(
+                "{context}|{}|{}|{}",
+                range.base_ref,
+                range.head_ref,
+                range.head_sha.as_deref().unwrap_or("")
+            ),
+            None => context,
+        };
+        // Refs only: the checkout's own working tree is irrelevant.
+        let watch_sum = if range.is_some() {
+            String::new()
+        } else {
+            self.resolved(cx).map(|d| d.checksum).unwrap_or_default()
+        };
         let key = format!("{context}|{watch_sum}");
         if self.scoped_for.as_deref() == Some(key.as_str())
             || self.scoped_inflight.as_deref() == Some(key.as_str())
@@ -2908,6 +2972,10 @@ impl Changes {
             }
             if let Some(sha) = commit_sha {
                 params.insert("commitSha".into(), serde_json::Value::String(sha));
+            }
+            if let Some(range) = range {
+                params.insert("baseRef".into(), serde_json::Value::String(range.base_ref));
+                params.insert("headRef".into(), serde_json::Value::String(range.head_ref));
             }
             if let Some(target) = target {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
@@ -3085,7 +3153,8 @@ impl Changes {
                 .update(cx, |history, cx| history.ensure_loaded(cx));
             return;
         }
-        if self.scope != DiffScope::Commit && self.pinned_cwd.is_none() {
+        if !matches!(self.scope, DiffScope::Commit | DiffScope::Range) && self.pinned_cwd.is_none()
+        {
             self.ensure_branches(cx);
         }
         self.ensure_scoped(cx);
@@ -4225,7 +4294,13 @@ impl Changes {
         let target = self.desired_target(cx);
         let chat_id = self.owner_chat_id_owned();
         let mode = self.scope.mode().to_string();
-        let base_ref = self.base_ref.clone();
+        let (base_ref, head_ref) = match (self.scope, self.owner.as_ref().and_then(|o| o.range.as_ref())) {
+            (DiffScope::Range, Some(range)) => (
+                Some(range.base_ref.clone()),
+                Some(range.head_ref.clone()),
+            ),
+            _ => (self.base_ref.clone(), None),
+        };
         let commit_sha = (self.scope == DiffScope::Commit)
             .then(|| self.commit.as_ref().map(|commit| commit.sha.clone()))
             .flatten();
@@ -4240,6 +4315,7 @@ impl Changes {
                     base_ref,
                     chat_id,
                     commit_sha,
+                    head_ref,
                 );
                 let mut params = serde_json::to_value(request)
                     .ok()
@@ -5203,6 +5279,42 @@ impl Changes {
                 .text_color(theme.text_dim)
                 .child(SharedString::from(history_branch.unwrap_or_default()))
                 .into_any_element()
+        } else if scope == DiffScope::Range {
+            // A branch / PR target has exactly one scope: name it ("PR #n" /
+            // "branch <name>") instead of offering the scope menu.
+            let label = self
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.range.as_ref())
+                .map(|range| range.label.clone())
+                .unwrap_or_else(|| scope.label().to_owned());
+            div()
+                .id("changes-range-title")
+                .debug_selector(|| "changes-range-title".into())
+                .h(px(crate::surface_chrome::CONTROL_SIZE))
+                .px(px(8.0))
+                .max_w(px(250.0))
+                .min_w_0()
+                .flex_shrink(1.0)
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    crate::icons::icon(crate::icons::GIT_BRANCH)
+                        .size(px(12.0))
+                        .flex_none()
+                        .text_color(theme.text_muted),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.0))
+                        .line_height(px(14.0))
+                        .text_color(theme.text)
+                        .child(SharedString::from(label)),
+                )
+                .into_any_element()
         } else if self.scope_menu.get().is_some() {
             let closing = self.scope_menu.closing_since();
             let menu = self.render_scope_menu(&theme, cx);
@@ -5316,6 +5428,28 @@ impl Changes {
     /// `{branch} → {base ⌄}` — which ref the branch scope compares against
     /// (t3code's ref strip), inlined into the pane header. Branch scope only.
     fn render_ref_selector(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.scope == DiffScope::Range {
+            // Fixed pair, no base picker: `head → base` of the target.
+            let range = self.owner.as_ref().and_then(|owner| owner.range.as_ref())?;
+            return Some(
+                div()
+                    .id("changes-range-refs")
+                    .debug_selector(|| "changes-range-refs".into())
+                    .min_w_0()
+                    .truncate()
+                    .h(px(crate::surface_chrome::CONTROL_SIZE))
+                    .flex()
+                    .items_center()
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(11.5))
+                    .text_color(theme.text_dim)
+                    .child(SharedString::from(format!(
+                        "{} \u{2192} {}",
+                        range.head_branch, range.base_branch
+                    )))
+                    .into_any_element(),
+            );
+        }
         if self.scope != DiffScope::Branch {
             return None;
         }
@@ -5844,6 +5978,7 @@ impl Changes {
             let target = ChangesTarget {
                 unconfirmed: None,
                 exact_checkout: false,
+            range: None,
                 chat_id: String::new(),
                 device_id: String::new(),
                 cwd: Some(cwd.clone()),
@@ -7967,6 +8102,7 @@ index 1111111..2222222 160000
             Some("main".into()),
             Some("chat".into()),
             None,
+            None,
         );
         assert_eq!(request.path, "src/lib.rs");
         assert_eq!(request.repository_path.as_deref(), Some("vendor/lib"));
@@ -8004,6 +8140,7 @@ index 1111111..2222222 160000
         let target = ChangesTarget {
             unconfirmed: None,
             exact_checkout: false,
+            range: None,
             chat_id: "chat-a".into(),
             device_id: "device-a".into(),
             cwd: Some("/repo/shared".into()),
@@ -8015,6 +8152,7 @@ index 1111111..2222222 160000
         let target = ChangesTarget {
             unconfirmed: None,
             exact_checkout: false,
+            range: None,
             chat_id: "chat-b".into(),
             device_id: "device-b".into(),
             cwd: Some("/repo/shared".into()),
@@ -8050,6 +8188,7 @@ index 1111111..2222222 160000
         let target = ChangesTarget {
             unconfirmed: None,
             exact_checkout: false,
+            range: None,
             chat_id: "chat".into(),
             device_id: "device".into(),
             cwd: Some("/projects/zeron/.worktrees/feature-123".into()),
@@ -8211,6 +8350,7 @@ index 1111111..2222222 160000
             branch: None,
             unconfirmed: None,
             exact_checkout: true,
+            range: None,
         };
         let diffs = vec![diff("co-other", "d", "/work/alpha/ui", "x")];
         assert!(target.resolve(&diffs).is_none());
@@ -8734,6 +8874,7 @@ index 1111111..2222222 160000
         vec![zeron_proto::ChatDiffTargetsView {
             chat_id: "chat-wt".into(),
             targets,
+            ref_targets: Vec::new(),
         }]
     }
 
@@ -9227,6 +9368,7 @@ index 1111111..2222222 160000
                         true,
                     ),
                 ],
+                ref_targets: Vec::new(),
             }]);
             cx.notify();
         });
