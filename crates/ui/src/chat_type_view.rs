@@ -201,6 +201,8 @@ pub(crate) struct ChatTypeView {
     review_input: Entity<ComposerInput>,
     /// Inline start state per PR URL, and for the URL box.
     review_status: HashMap<String, ReviewStatus>,
+    /// The PR (URL) whose row overflow menu is open.
+    review_menu: popover::Popup<String>,
     input_status: Option<ReviewStatus>,
     _state_observation: Subscription,
     _search_events: Subscription,
@@ -279,10 +281,13 @@ impl ChatTypeView {
         let dash_search_events = dash_search
             .iter()
             .map(|input| {
-                cx.subscribe(input, |_: &mut Self, _, event, cx| {
-                    if matches!(event, ComposerInputEvent::Edited) {
+                cx.subscribe(input, |this: &mut Self, _, event, cx| match event {
+                    ComposerInputEvent::Edited => {
+                        this.active = 0;
                         cx.notify();
                     }
+                    ComposerInputEvent::Submitted => this.activate_dash_row(cx),
+                    _ => {}
                 })
             })
             .collect();
@@ -312,6 +317,7 @@ impl ChatTypeView {
             dash_search,
             review_input,
             review_status: HashMap::new(),
+            review_menu: popover::Popup::default(),
             input_status: None,
             _state_observation: state_observation,
             _search_events: search_events,
@@ -523,8 +529,9 @@ impl ChatTypeView {
         if gpui::Focusable::focus_handle(self.review_input.read(cx), cx).is_focused(window) {
             return;
         }
-        // Arrow/Enter navigation belongs to the chat list.
-        if !matches!(self.tab, PageTab::Chats) {
+        // Arrow/Enter navigation belongs to the visible list.
+        if let PageTab::Dash(tab) = self.tab {
+            self.dash_key_down(tab, event, cx);
             return;
         }
         if let Some(view) = self.destination(cx) {
@@ -820,9 +827,12 @@ impl Render for ChatTypeView {
             Some(view) => format!("{} PRs", view.items.len()),
             None => format!("{} chats", rows.len()),
         };
-        let count = destination
-            .as_ref()
-            .map_or(rows.len(), |view| view.items.len());
+        let count = match self.tab {
+            PageTab::Dash(tab) => self.dash_visible(tab, cx).0.len(),
+            PageTab::Chats => destination
+                .as_ref()
+                .map_or(rows.len(), |view| view.items.len()),
+        };
         self.active = self.active.min(count.saturating_sub(1));
         let destination_list =
             destination.map(|view| self.render_destination(view, &theme, now, cx));
