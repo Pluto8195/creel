@@ -23,6 +23,7 @@ pub mod change_requests;
 pub mod changes;
 pub mod chat_closeout;
 mod chat_metadata;
+mod chat_work_context;
 pub mod chat_type_view;
 mod comment_ui;
 pub mod comments;
