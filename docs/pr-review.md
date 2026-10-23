@@ -11,8 +11,7 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   palette's **My PRs** opens it too. The page is a port of pr-dash with three
   tabs: **Authored by me** (default) and **Review requested**, both fed by
   `PrDashboard` (see [pr-dash spec](plans/work-outline/pr-dash-spec.md)), and
-  **Review chats** (the classified review Chats, or the destination list
-  below). Each dash tab title carries its needs-you count (`urgent / total`,
+  **Review chats** (the destination list below, or the launcher review Chats). Each dash tab title carries its needs-you count (`urgent / total`,
   red when anything needs you, over rows that pass **hide drafts**); the page
   refetches the visible tab every minute and **Refresh** forces. A tab has
   bucket chips (multi-select), **hide drafts** (on), **group by status** (on)
@@ -76,10 +75,11 @@ Steps, on the device that owns the Space:
 6. **Chat.** Created at the Space root (launch.sh `cd "$ws"`) with the
    caller's agent config (the UI sends the composer's new-chat agent; the
    engine defaults to Claude Code), titled `Review <name>#<n>: <PR title>`
-   (`Fix CI …` for fix-ci), linked to the PR (manual `ChatPrLink`),
+   (`Fix CI …` for fix-ci), linked to the PR (a `ChatPrLink` with source `review_launcher`),
    assigned to `workItemId` when given (the item must be in the same Space),
-   and the seeded prompt is queued last. The PR link is what marks the chat as
-   a launcher-created review chat; there is no separate classification.
+   and the seeded prompt is queued last. The `review_launcher` PR link is what
+   marks the chat as a launcher-created review chat; there is no separate
+   classification.
 
 The prompts are launch.sh's, verbatim:
 
@@ -154,9 +154,10 @@ Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
 `notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
 sync isn't available on this host yet".
 
-⇧⌘P lists only the current project's destination PR items (synced PR items)
-with their review Chats nested. Without a destination the page shows an empty
-state asking you to pick one; the old classification-based list is gone.
+When the current project has a destination, the **Review chats** tab lists the
+destination's PR items (synced PR items) with their review Chats nested.
+Without one it lists the launcher review Chats: the Chats with a PR link whose
+source is `review_launcher`. Chat classification no longer exists.
 
 ## PRs on work items
 

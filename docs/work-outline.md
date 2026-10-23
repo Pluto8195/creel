@@ -588,10 +588,11 @@ that owns the project, through that device's `gh` login.
   item, else the destination), **Link to selected item**, and **Create work
   item** (under the destination, else the selected item); or drag the row onto
   an Outline item to create it there. Retries never duplicate.
-- **PR review chats (⇧⌘P).** The page lists only the current project's
-  destination PR items (chip, Review, Fix CI) with their review Chats under
-  each; click an item for its Details. Without a destination it shows an empty
-  state asking you to pick one.
+- **PR review chats (⌘P / ⇧⌘P).** With a destination in the current project,
+  the PR page's **Review chats** tab lists the destination's PR items (chip,
+  Review, Fix CI) with their review Chats under each; click an item for its
+  Details. Without one, the tab lists the launcher review Chats (the Chats with
+  a `review_launcher` PR link).
 - If `gh` is missing or signed out, the surfaces say so (`gh auth login`). If
   the engine on this device has no PR review sync, they say **PR review sync
   isn't available on this host yet**.
