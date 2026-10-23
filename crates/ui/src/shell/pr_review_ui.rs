@@ -1184,6 +1184,89 @@ mod tests {
         assert_eq!(calls[0]["action"], "codeReview");
     }
 
+    fn add_review_chat(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, id: &str) {
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.chats.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "deviceId": "d", "title": "Review flagship#21",
+                        "archived": false, "createdAt": "2026-10-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                )
+            })
+        });
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[gpui::test]
+    fn the_number_opens_a_side_browser_beside_the_review_chat(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = authored_page_with_review_on_21(&shell, cx);
+        add_review_chat(&shell, cx, "chat-review-21");
+        // The PR page has no side pane: #21 goes to its review chat, with
+        // the browser beside it.
+        click(cx, "pr-dash-number-0");
+        cx.run_until_parked();
+        assert!(cx.opened_url().is_none());
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review-21"));
+            assert_eq!(shell.active_chat, "chat-review-21");
+            assert!(shell.right_pane_open(cx));
+            let urls: Vec<_> = shell
+                .browsers
+                .values()
+                .map(|browser| browser.read(cx).page.url.clone())
+                .collect();
+            assert_eq!(urls, [Some("https://github.com/acme/flagship/pull/21".to_string())]);
+        });
+        // Back on the page, the same PR focuses that tab instead of adding one.
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        click(cx, "pr-dash-number-0");
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| assert_eq!(shell.browsers.len(), 1));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[gpui::test]
+    fn command_click_on_the_number_and_the_off_setting_stay_external(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = authored_page_with_review_on_21(&shell, cx);
+        add_review_chat(&shell, cx, "chat-review-21");
+        let at = cx.debug_bounds("pr-dash-number-0").unwrap().center();
+        cx.simulate_click(at, gpui::Modifiers::secondary_key());
+        draw(cx);
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/acme/flagship/pull/21")
+        );
+        shell.read_with(cx, |shell, _| {
+            assert!(matches!(shell.route, Route::PrReviewChats), "the page stays");
+            assert!(shell.browsers.is_empty());
+        });
+        // Setting off: a plain click is external too.
+        cx.update(|_, cx| {
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings.open_web_links_in_zeron = false
+            })
+        });
+        click(cx, "pr-dash-number-1");
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/acme/flagship/pull/22")
+        );
+        shell.read_with(cx, |shell, _| {
+            assert!(matches!(shell.route, Route::PrReviewChats));
+            assert!(shell.browsers.is_empty());
+        });
+    }
+
     #[gpui::test]
     fn the_number_opens_the_pr_in_the_browser(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

@@ -164,7 +164,10 @@ impl Shell {
                 });
             }),
             open_url: Rc::new(move |url, window, cx| {
-                url_shell.update(cx, |this, cx| this.open_work_item_reference(&url, window, cx));
+                let external = window.modifiers().secondary();
+                url_shell.update(cx, |this, cx| {
+                    this.open_web_reference(&url, external, window, cx)
+                });
             }),
             open_item: Rc::new(move |item_id, window, cx| {
                 let Some(space_id) = space_id.clone() else {
@@ -438,6 +441,261 @@ mod tests {
             assert!(vcx.debug_bounds("work-context-strip").is_none(), "{chat_id}");
             assert!(calls.lock().unwrap().is_empty(), "no fetch for {chat_id}");
             shell.read_with(vcx, |shell, _| assert_eq!(shell.chat_header_extra_clearance, 0.0));
+        }
+    }
+
+    /// Web and PR links from every surface go through one Shell entry point
+    /// (`open_web_reference`). Only the model is asserted: tabs, URLs, the
+    /// route and the external opener, never rendering.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    mod web_references {
+        use super::*;
+        use crate::shell::Route;
+        use gpui::{ClickEvent, Modifiers, MouseClickEvent, MouseDownEvent, MouseUpEvent};
+
+        const PR_7: &str = "https://github.com/acme/app/pull/7";
+        const PR_99: &str = "https://github.com/acme/app/pull/99";
+
+        fn open(
+            shell: &Entity<Shell>,
+            vcx: &mut VisualTestContext,
+            url: &str,
+            external: bool,
+        ) {
+            vcx.update(|window, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.open_web_reference(url, external, window, cx)
+                })
+            });
+            vcx.run_until_parked();
+        }
+
+        fn select(shell: &Entity<Shell>, vcx: &mut VisualTestContext, chat: &str, route: Route) {
+            shell.update(vcx, |shell, cx| {
+                shell.route = route;
+                let state = shell.state.clone();
+                state.update(cx, |state, cx| state.select_chat(Some(chat.into()), cx));
+            });
+            vcx.run_until_parked();
+        }
+
+        fn add_space(shell: &Entity<Shell>, vcx: &mut VisualTestContext) {
+            shell.update(vcx, |shell, cx| {
+                shell.state.update(cx, |state, _| {
+                    state.spaces.push(zeron_proto::Space {
+                        id: "s1".into(),
+                        device_id: "device".into(),
+                        path: "/project".into(),
+                        name: None,
+                        git_detected: false,
+                        git_checked_at: None,
+                        checkout_id: None,
+                        created_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+                    })
+                })
+            });
+        }
+
+        fn tabs(shell: &Entity<Shell>, vcx: &mut VisualTestContext) -> Vec<String> {
+            shell.read_with(vcx, |shell, cx| {
+                let mut tabs: Vec<_> = shell.browsers.iter().collect();
+                tabs.sort_by_key(|(id, _)| **id);
+                tabs.into_iter()
+                    .map(|(_, browser)| browser.read(cx).page.url.clone().unwrap_or_default())
+                    .collect()
+            })
+        }
+
+        fn set_open_in_zeron(vcx: &mut VisualTestContext, on: bool) {
+            vcx.update(|_, cx| {
+                crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                    settings.open_web_links_in_zeron = on
+                })
+            });
+        }
+
+        /// The chat route with `chat` on screen.
+        fn on_chat(shell: &Entity<Shell>, vcx: &mut VisualTestContext, chat: &str) {
+            select(shell, vcx, chat, Route::Chat);
+            shell.read_with(vcx, |shell, _| assert_eq!(shell.active_chat, chat));
+        }
+
+        #[gpui::test]
+        fn the_strip_opens_the_pr_in_a_side_tab_and_focuses_it_the_second_time(
+            cx: &mut TestAppContext,
+        ) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            on_chat(&shell, vcx, CHAT_API);
+            let at = vcx.debug_bounds("work-context-pr-number").unwrap().center();
+            vcx.simulate_click(at, Modifiers::default());
+            draw(vcx);
+            assert_eq!(tabs(&shell, vcx), [PR_7]);
+            assert!(vcx.opened_url().is_none(), "not the external browser");
+            shell.read_with(vcx, |shell, cx| {
+                assert!(shell.right_pane_open(cx));
+                let first = shell.browser_seq;
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Browser(first));
+            });
+            // Another page opens a second tab; the PR again focuses the first.
+            open(&shell, vcx, "https://example.com/docs", false);
+            assert_eq!(tabs(&shell, vcx).len(), 2);
+            let at = vcx.debug_bounds("work-context-pr-number").unwrap().center();
+            vcx.simulate_click(at, Modifiers::default());
+            draw(vcx);
+            assert_eq!(tabs(&shell, vcx), [PR_7, "https://example.com/docs"]);
+            shell.read_with(vcx, |shell, cx| {
+                let first = *shell.browsers.keys().min().unwrap();
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Browser(first));
+            });
+        }
+
+        #[gpui::test]
+        fn command_click_and_the_off_setting_open_the_external_browser(cx: &mut TestAppContext) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            on_chat(&shell, vcx, CHAT_API);
+            // ⌘-click on the strip's number.
+            let at = vcx.debug_bounds("work-context-pr-number").unwrap().center();
+            vcx.simulate_click(at, Modifiers::secondary_key());
+            draw(vcx);
+            assert_eq!(vcx.opened_url().as_deref(), Some(PR_7));
+            assert!(tabs(&shell, vcx).is_empty());
+            // The explicit external entry (context menu).
+            open(&shell, vcx, "https://example.com/menu", true);
+            assert_eq!(vcx.opened_url().as_deref(), Some("https://example.com/menu"));
+            // With the setting off nothing changes.
+            set_open_in_zeron(vcx, false);
+            open(&shell, vcx, "https://example.com/off", false);
+            assert_eq!(vcx.opened_url().as_deref(), Some("https://example.com/off"));
+            assert!(tabs(&shell, vcx).is_empty());
+        }
+
+        #[gpui::test]
+        fn pr_chip_clicks_follow_the_same_rules(cx: &mut TestAppContext) {
+            // `open_pr` backs the outline row icons, the details panel, the
+            // overview detail rows and the PR chips.
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            on_chat(&shell, vcx, CHAT_API);
+            let click = |modifiers: Modifiers| {
+                ClickEvent::Mouse(MouseClickEvent {
+                    down: MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        click_count: 1,
+                        modifiers,
+                        ..Default::default()
+                    },
+                    up: MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        click_count: 1,
+                        modifiers,
+                        ..Default::default()
+                    },
+                })
+            };
+            let weak = shell.downgrade();
+            vcx.update(|window, cx| {
+                crate::github::chip::open_pr(Some(weak.clone()), PR_7.into())(
+                    &click(Modifiers::default()),
+                    window,
+                    cx,
+                )
+            });
+            assert_eq!(tabs(&shell, vcx), [PR_7]);
+            assert!(vcx.opened_url().is_none());
+            // Again: focus, no duplicate.
+            vcx.update(|window, cx| {
+                crate::github::chip::open_pr(Some(weak.clone()), PR_7.into())(
+                    &click(Modifiers::default()),
+                    window,
+                    cx,
+                )
+            });
+            assert_eq!(tabs(&shell, vcx).len(), 1);
+            // ⌘-click.
+            vcx.update(|window, cx| {
+                crate::github::chip::open_pr(Some(weak.clone()), PR_99.into())(
+                    &click(Modifiers::secondary_key()),
+                    window,
+                    cx,
+                )
+            });
+            assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
+            assert_eq!(tabs(&shell, vcx).len(), 1);
+        }
+
+        #[gpui::test]
+        fn a_route_without_a_side_pane_goes_to_the_review_chat(cx: &mut TestAppContext) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            add_space(&shell, vcx);
+            // The PR page (or the outline): nothing selected, no side pane.
+            shell.update(vcx, |shell, cx| {
+                shell.route = Route::PrReviewChats;
+                cx.notify();
+            });
+            // PR #7 is reviewed in CHAT_API (assigned to its review item).
+            open(&shell, vcx, PR_7, false);
+            shell.read_with(vcx, |shell, cx| {
+                assert!(matches!(shell.route, Route::Chat));
+                assert_eq!(shell.active_chat, CHAT_API);
+                assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some(CHAT_API));
+                assert!(shell.right_pane_open(cx), "the browser sits beside the chat");
+            });
+            assert_eq!(tabs(&shell, vcx), [PR_7]);
+            assert!(vcx.opened_url().is_none());
+        }
+
+        #[gpui::test]
+        fn a_pr_without_a_review_chat_uses_the_selected_chat_else_goes_external(
+            cx: &mut TestAppContext,
+        ) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            add_space(&shell, vcx);
+            // Nothing to host a tab: the external browser.
+            shell.update(vcx, |shell, cx| {
+                shell.route = Route::Overview;
+                cx.notify();
+            });
+            open(&shell, vcx, PR_99, false);
+            assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
+            assert!(tabs(&shell, vcx).is_empty());
+            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::Overview));
+            // The Overview previews CHAT_UI: the tab opens beside it.
+            select(&shell, vcx, CHAT_UI, Route::Overview);
+            open(&shell, vcx, PR_99, false);
+            shell.read_with(vcx, |shell, cx| {
+                assert!(matches!(shell.route, Route::Chat));
+                assert_eq!(shell.active_chat, CHAT_UI);
+                assert!(shell.right_pane_open(cx));
+            });
+            assert_eq!(tabs(&shell, vcx), [PR_99]);
+            // A plain web link takes the same route.
+            select(&shell, vcx, CHAT_UI, Route::PrReviewChats);
+            open(&shell, vcx, "https://example.com/spec", false);
+            assert_eq!(tabs(&shell, vcx), [PR_99, "https://example.com/spec"]);
+        }
+
+        #[gpui::test]
+        fn off_the_chat_route_the_setting_and_command_click_still_win(cx: &mut TestAppContext) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            add_space(&shell, vcx);
+            select(&shell, vcx, CHAT_API, Route::PrReviewChats);
+            open(&shell, vcx, PR_7, true);
+            assert_eq!(vcx.opened_url().as_deref(), Some(PR_7));
+            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::PrReviewChats));
+            set_open_in_zeron(vcx, false);
+            open(&shell, vcx, PR_99, false);
+            assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
+            assert!(tabs(&shell, vcx).is_empty());
+            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::PrReviewChats));
+        }
+
+        #[gpui::test]
+        fn a_link_that_is_not_web_is_refused(cx: &mut TestAppContext) {
+            let (shell, _, vcx) = mount(cx, CHAT_API, false);
+            on_chat(&shell, vcx, CHAT_API);
+            open(&shell, vcx, "file:///etc/passwd", false);
+            assert!(tabs(&shell, vcx).is_empty());
+            assert!(vcx.opened_url().is_none());
+            shell.read_with(vcx, |shell, _| assert!(shell.sidebar_notice.is_some()));
         }
     }
 }

@@ -120,25 +120,49 @@ pub(crate) fn tooltip_text(status: &PullRequestStatusSummary) -> String {
     lines.join("\n")
 }
 
+/// Open a web or PR link from a click handler through the Shell's single
+/// entry point (web-link preference, side browser, route fallback).
+/// `external` forces the external browser (⌘-click). The Shell is `shell`,
+/// else the window's root; with neither it is the external browser.
+pub(crate) fn open_link(
+    shell: Option<&WeakEntity<crate::shell::Shell>>,
+    url: &str,
+    external: bool,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let shell = shell
+        .and_then(WeakEntity::upgrade)
+        .or_else(|| window.root::<crate::shell::Shell>().flatten());
+    match shell {
+        Some(shell) => shell.update(cx, |shell, cx| {
+            shell.open_web_reference(url, external, window, cx)
+        }),
+        None => cx.open_url(url),
+    }
+}
+
+/// Whether a click asks for the external browser (⌘-click; Ctrl-click off
+/// macOS).
+pub(crate) fn click_forces_external(event: &gpui::ClickEvent) -> bool {
+    event.modifiers().secondary()
+}
+
 /// Open `url` through the Shell (web-link preference), else the browser.
+/// ⌘-click always opens the external browser.
 pub(crate) fn open_pr(
     shell: Option<WeakEntity<crate::shell::Shell>>,
     url: String,
 ) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
-    move |_, window, cx| {
+    move |event, window, cx| {
         cx.stop_propagation();
-        let opened = shell
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .map(|shell| {
-                shell.update(cx, |shell, cx| {
-                    shell.open_work_item_reference(&url, window, cx)
-                })
-            })
-            .is_some();
-        if !opened {
-            cx.open_url(&url);
-        }
+        open_link(
+            shell.as_ref(),
+            &url,
+            click_forces_external(event),
+            window,
+            cx,
+        );
     }
 }
 

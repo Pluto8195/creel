@@ -325,8 +325,14 @@ pub(crate) fn metadata_strip(
                 )
                 .tooltip(move |_, cx| cx.new(|_| MetadataTooltip(tooltip.clone())).into())
                 .when_some(action, |chip, action| {
-                    chip.on_click(move |_, _, cx| match &action {
-                        MetadataAction::OpenUrl(url) => cx.open_url(url),
+                    chip.on_click(move |event, window, cx| match &action {
+                        MetadataAction::OpenUrl(url) => crate::github::chip::open_link(
+                            None,
+                            url,
+                            crate::github::chip::click_forces_external(event),
+                            window,
+                            cx,
+                        ),
                         MetadataAction::Copy(value) => {
                             cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
                         }

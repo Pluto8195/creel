@@ -232,13 +232,7 @@ impl Shell {
 
     /// A web link in an artifact follows the web-link preference.
     fn open_artifact_web_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::settings::current(cx).open_web_links_in_zeron
-            && cfg!(any(target_os = "macos", target_os = "linux"))
-        {
-            self.add_browser_surface(Some(url.to_owned()), window, cx);
-        } else {
-            cx.open_url(url);
-        }
+        self.open_web_reference(url, false, window, cx);
     }
 
     /// A link clicked inside a rendered artifact (HTML document or
