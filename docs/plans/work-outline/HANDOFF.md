@@ -183,6 +183,21 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Fix: `agent_may_resolve_origin` (the caller's own chat or a direct child) is shared by
     authorization and the group filter. The tool reads the row back and returns `operationConflict`
     if nothing changed.
+- **PR page parity with pr-dash** (2026-10-23; `proto/src/pr_dash.rs`, `engine/src/pr_dash.rs`,
+  `engine/src/pr_chat_links.rs`, `ui/src/pr_page/`):
+  - ⌘P (`OpenMyPrs`) and ⇧⌘P open the PR page. It has pr-dash's two tabs: Authored, and Review
+    requested (`review-requested:@me` + `reviewed-by:@me -author:@me`), fetched through the
+    `PrDashboard` GraphQL RPC. The 9 authored and 8 incoming bucket rules are ported, with
+    needs-you counts and churn, reviewer, CI, thread and conflict fields. The old chat table is
+    kept as a third "Review chats" tab.
+  - Chat-PR links gained the sources `branch`, `diff_target`, `ticket` and `review_launcher`. URLs
+    are compared in canonical form, and every PR URL from one `gh pr create` is linked. The
+    launcher reuses an existing chat for the same PR and action. A launcher review chat is
+    identified only by its `review_launcher` link.
+  - The old overview "My PRs" sidebar is unreachable; deleting it is a follow-up after
+    remove-canvas.
+  - Not done: the leaderboard tab, the person picker, the churn discount for blank and comment
+    lines, the diff bar, and file paging beyond 100 files.
 - **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
   `capture_source_context_reads_the_dispatch_checkout`,
   `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
