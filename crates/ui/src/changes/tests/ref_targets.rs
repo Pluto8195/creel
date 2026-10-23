@@ -129,7 +129,6 @@ struct Opened<'a> {
     /// Frames the pane sent to the engine itself (diff watch, scoped
     /// capture, branch list): what the client wrote to its transport.
     frames: tokio::sync::mpsc::Receiver<String>,
-    _server_out: tokio::sync::mpsc::Sender<String>,
     vcx: &'a mut gpui::VisualTestContext,
 }
 
@@ -180,6 +179,10 @@ fn open<'a>(
     let calls: RpcCalls = Default::default();
     let (out, frames) = tokio::sync::mpsc::channel::<String>(64);
     let (server_out, inbound) = tokio::sync::mpsc::channel::<String>(64);
+    // The client's reader must never see its inbound side close: it would
+    // fail the pane's pending calls from the reactor thread, which gpui's
+    // test scheduler rejects. Leaking the sender keeps it open.
+    std::mem::forget(server_out);
     let client = zeron_rpc::RpcClient::new(out, inbound);
     let state_slot: Arc<Mutex<Option<Entity<AppState>>>> = Default::default();
     let slot = state_slot.clone();
@@ -210,7 +213,6 @@ fn open<'a>(
         state,
         calls,
         frames,
-        _server_out: server_out,
         vcx,
     }
 }
@@ -274,7 +276,7 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, calls, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, None, None);
+    let Opened { changes, calls, vcx, frames: _frames, .. } = open(cx, None, None);
     draw(vcx);
     let checkout = vcx.debug_bounds("changes-checkout-trigger").expect("Diff checkout…");
     let branch_or_pr = vcx
@@ -306,7 +308,7 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
 fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, state, calls, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, None, None);
+    let Opened { changes, state, calls, vcx, frames: _frames, .. } = open(cx, None, None);
     open_ref_picker(&changes, &calls, vcx);
     draw(vcx);
     // A real click on the first row: the linked PR (by URL, no repo hint).
@@ -351,7 +353,7 @@ fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
 fn free_text_accepts_a_pr_number_a_pr_url_and_a_branch_name(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, calls, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, None, None);
+    let Opened { changes, calls, vcx, frames: _frames, .. } = open(cx, None, None);
     open_ref_picker(&changes, &calls, vcx);
 
     // A PR that is not linked: offered as typed.
@@ -390,7 +392,7 @@ fn a_refused_bind_shows_the_engines_message_and_closes_the_picker(cx: &mut gpui:
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
     let message = "Branch nope was not found in ws, flagship (git fetch said: not found).";
-    let Opened { changes, state, calls, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, None, Some(message));
+    let Opened { changes, state, calls, vcx, frames: _frames, .. } = open(cx, None, Some(message));
     open_ref_picker(&changes, &calls, vcx);
     type_query(&changes, vcx, "nope");
     changes.update(vcx, |changes, cx| changes.ref_target_menu_key(&key("enter"), cx));
@@ -418,7 +420,7 @@ fn a_refused_bind_shows_the_engines_message_and_closes_the_picker(cx: &mut gpui:
 fn pills_are_labelled_pr_n_and_branch_name_beside_the_own_checkout(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { state, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
+    let Opened { state, vcx, frames: _frames, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
     state.read_with(vcx, |state, _| {
         let labels: Vec<String> = state
             .chat_execution_members("chat-wt")
@@ -445,7 +447,7 @@ fn a_selected_ref_target_puts_the_pane_in_range_scope_with_no_working_tree_or_tu
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, state, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, None, None);
+    let Opened { changes, state, vcx, frames: _frames, .. } = open(cx, None, None);
     // Before: the chat's own checkout, the normal scopes.
     draw(vcx);
     changes.read_with(vcx, |changes, _| {
@@ -500,7 +502,7 @@ fn picking_a_ref_pill_persists_select_ref_and_a_vanished_ref_drops_the_pick(
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { state, calls, vcx, frames: _frames, _server_out: _keep, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
+    let Opened { state, calls, vcx, frames: _frames, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
     // The second pill is the branch target.
     state.update(vcx, |state, cx| {
         state.select_chat_execution_member("chat-wt", "ref:br-1", cx)
@@ -625,7 +627,7 @@ fn chats_without_ref_targets_are_unchanged(cx: &mut gpui::TestAppContext) {
     let _guard = runtime.enter();
     let mut opened = open(cx, None, None);
     let requests = opened.engine_requests();
-    let Opened { changes, state, calls, vcx, frames: _frames, _server_out: _keep, .. } = opened;
+    let Opened { changes, state, calls, vcx, frames: _frames, .. } = opened;
     draw(vcx);
     state.read_with(vcx, |state, _| {
         assert!(state.chat_execution_members("chat-wt").is_empty());
