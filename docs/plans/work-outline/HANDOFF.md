@@ -243,6 +243,9 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Enter on a PR row opens the review chat, else starts a review; ↑↓ move the row highlight.
   - The same "being reviewed" marker shows on the outline row and in the chat strip.
   - The overview "My PRs" sidebar code is deleted; old UI-flag keys still load.
+  - Authored rows get the same Review / Open review actions, with Fix CI kept when CI fails. When
+    the viewer authored the PR (the cached `gh api user` login matches the `gh pr view` author),
+    the launcher seeds a self-review prompt; otherwise it keeps the reviewer prompt.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
