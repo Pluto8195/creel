@@ -9,7 +9,8 @@
 //!    `remote.origin.url`, never by folder name; the outermost Space wins,
 //!    so the Cofactr workspace superproject beats a Space opened on one of
 //!    its submodules;
-//! 2. `gh pr view` → head branch and `isCrossRepository` (forks refused);
+//! 2. `gh pr view` → head branch, `isCrossRepository` (forks refused) and the
+//!    author (a review of the viewer's own PR is seeded as a self-review);
 //! 3. `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`;
 //! 4. choose the checkout exactly like launch.sh: the branch's existing
 //!    checkout (canonical or any worktree) → the canonical checkout when it
@@ -27,7 +28,9 @@
 //! in the processed ledger, and the finished reply is kept in a device-local
 //! sidecar, so a retry returns the same Chat without touching git again.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -245,6 +248,14 @@ struct PrHead {
     is_cross_repository: bool,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    author: Option<PrAuthor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PrAuthor {
+    #[serde(default)]
+    login: String,
 }
 
 fn gh_pr_view(
@@ -262,7 +273,7 @@ fn gh_pr_view(
             "--repo",
             &format!("{owner}/{name}"),
             "--json",
-            "headRefName,isCrossRepository,title",
+            "headRefName,isCrossRepository,title,author",
         ])
         .output()
         .map_err(|e| {
@@ -500,9 +511,19 @@ pub fn describe_location(ws: &Path, root: &Path, path: &Path, branch: &str, behi
     location
 }
 
-/// launch.sh's prompts, verbatim.
-pub fn seeded_prompt(action: PrReviewAction, url: &str, branch: &str, location: &str) -> String {
+/// launch.sh's prompts, verbatim, except that a review of the viewer's own PR
+/// (`self_review`) reviews it as its author instead of as a reviewer.
+pub fn seeded_prompt(
+    action: PrReviewAction,
+    url: &str,
+    branch: &str,
+    location: &str,
+    self_review: bool,
+) -> String {
     match action {
+        PrReviewAction::CodeReview if self_review => format!(
+            "/code-review {url} — my own PR; review it as its author, before or while I wait for reviewers: look for bugs, missing tests, risky changes and unclear diffs. Its branch `{branch}` is checked out at {location}; review the PR's commits against its base, not local changes. Report findings to me here. Fix clear problems on the PR branch only if I ask, and don't post review comments or approve on GitHub."
+        ),
         PrReviewAction::FixCi => format!(
             "/fix-ci {url} — my PR. Its branch `{branch}` is checked out at {location}; do all the work there."
         ),
@@ -614,12 +635,18 @@ fn check_operation_id(operation_id: &str) -> Result<(), PrReviewError> {
     }
 }
 
+/// The signed-in GitHub login (the engine's cached `PrViewer`); `None` when
+/// it is unknown.
+pub type ViewerLogin =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
+
 /// `StartPrReview` on the device that owns the Space. Cheap to clone.
 #[derive(Clone)]
 pub struct PrReviewLauncher {
     workspace: WorkspaceHost,
     doc_host: DocHost,
     tools: PrReviewTools,
+    viewer: Option<ViewerLogin>,
     gate: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -629,8 +656,30 @@ impl PrReviewLauncher {
             workspace,
             doc_host,
             tools,
+            viewer: None,
             gate: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Where the viewer's login comes from; without it every PR is reviewed
+    /// as someone else's.
+    pub fn with_viewer(mut self, viewer: ViewerLogin) -> Self {
+        self.viewer = Some(viewer);
+        self
+    }
+
+    /// Whether the viewer is the PR's author (an unknown login on either
+    /// side is "no").
+    async fn is_own_pr(&self, head: &PrHead) -> bool {
+        let Some(author) = head.author.as_ref().filter(|a| !a.login.is_empty()) else {
+            return false;
+        };
+        let Some(viewer) = &self.viewer else {
+            return false;
+        };
+        viewer()
+            .await
+            .is_some_and(|login| login.eq_ignore_ascii_case(&author.login))
     }
 
     pub fn with_tools(mut self, tools: PrReviewTools) -> Self {
@@ -822,7 +871,6 @@ impl PrReviewLauncher {
         // 2-5. gh + git, off the runtime.
         let tools = self.tools.clone();
         let (owner, name, number) = (p.repo_owner.clone(), p.repo_name.clone(), p.number);
-        let action = p.action;
         let ws = found.ws.clone();
         let repo_dir = found.repo_dir.clone();
         let claim = {
@@ -848,12 +896,14 @@ impl PrReviewLauncher {
             let root = worktrees_root(&ws, &tools.worktrees_dir_env);
             let location = describe_location(&ws, &root, &chosen.path, &branch, behind);
             let url = format!("https://github.com/{owner}/{name}/pull/{number}");
-            let prompt = seeded_prompt(action, &url, &branch, &location);
-            Ok::<_, PrReviewError>((head, chosen, behind, url, prompt))
+            Ok::<_, PrReviewError>((head, chosen, behind, url, location))
         })
         .await
         .map_err(|e| invalid(e.to_string()))??;
-        let (head, chosen, behind, url, prompt) = checkout;
+        let (head, chosen, behind, url, location) = checkout;
+        let self_review =
+            matches!(p.action, PrReviewAction::CodeReview) && self.is_own_pr(&head).await;
+        let prompt = seeded_prompt(p.action, &url, &head.head_ref_name, &location, self_review);
         let branch = head.head_ref_name.clone();
         let mut notes = chosen.notes.clone();
         if behind > 0 {

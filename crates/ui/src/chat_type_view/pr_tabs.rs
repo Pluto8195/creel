@@ -764,8 +764,8 @@ impl ChatTypeView {
         let overflow = primary.is_some().then(|| {
             self.review_overflow(ix, row, &review_chats, reference.clone(), busy, theme, cx)
         });
-        // Actions: Review / Open chat and Fix CI on review rows, Fix CI on a
-        // failing authored PR.
+        // Actions: Review / Open review on every row; Fix CI always on review
+        // rows, only while CI fails on an authored PR.
         let start = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
             let reference = reference.clone();
             review_button(
@@ -792,7 +792,7 @@ impl ChatTypeView {
             .items_start()
             .gap(px(6.0))
             .children(open_review)
-            .when(primary.is_none() && review_side, |el| {
+            .when(primary.is_none(), |el| {
                 el.child(start("Review", "review", PrReviewAction::CodeReview, true))
             })
             .when(review_side || pr_page::ci_failing(row), |el| {

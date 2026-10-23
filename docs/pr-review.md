@@ -66,7 +66,7 @@ Steps, on the device that owns the Space:
    When no local Space matches, the engine asks each other device that owns
    Spaces and advertises `pr-review-launch-v1`.
 2. **PR.** `gh pr view <n> --repo <owner>/<name> --json
-   headRefName,isCrossRepository,title`. Forks are refused.
+   headRefName,isCrossRepository,title,author`. Forks are refused.
 3. **Fetch.** `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`.
 4. **Location**, in launch.sh's order:
    1. wherever `<b>` is already checked out (the canonical checkout or any
@@ -97,6 +97,14 @@ The prompts are launch.sh's, verbatim:
   reviewer. Its branch `<b>` is checked out at <location>; review the PR's
   commits against its base, not local changes. Report findings to me here and
   don't post anything to GitHub unless I ask.``
+- code-review of the viewer's own PR (its author is the engine's cached
+  `PrViewer` login; an unknown login keeps the prompt above): ``/code-review
+  <url> — my own PR; review it as its author, before or while I wait for
+  reviewers: look for bugs, missing tests, risky changes and unclear diffs.
+  Its branch `<b>` is checked out at <location>; review the PR's commits
+  against its base, not local changes. Report findings to me here. Fix clear
+  problems on the PR branch only if I ask, and don't post review comments or
+  approve on GitHub.``
 - fix-ci: ``/fix-ci <url> — my PR. Its branch `<b>` is checked out at
   <location>; do all the work there.``
 
