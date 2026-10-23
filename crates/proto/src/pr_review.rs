@@ -92,6 +92,11 @@ pub struct StartPrReviewReply {
     /// warning, which fallback was taken and why).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// An existing live review Chat for this PR and action was returned; no
+    /// Chat, checkout or Run was created. `branch`, `checkout_path`, `cwd`
+    /// and `prompt` are the values recorded when that Chat was launched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reused: bool,
 }
 
 /// Stable failure codes of `StartPrReview`.

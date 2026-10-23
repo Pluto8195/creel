@@ -1500,7 +1500,11 @@ impl ExternalSessionImporter {
     ) -> Result<usize, EngineError> {
         let mut repaired = 0;
         for chat in self.workspace.read_chats()? {
-            if chat.linked_pr_url.is_some() || chat.linked_ticket_id.is_some() {
+            // Skip only a chat that already has a PR link: a chat that
+            // merely mentioned a ticket early still needs its PR scan
+            // (audit C.6; the ticket mirror is set by almost any chat).
+            if chat.linked_pr_url.is_some() || !self.workspace.chat_pr_links(&chat.id)?.is_empty()
+            {
                 continue;
             }
             if self.link_scan_marker_path(&chat.id).is_file() {
@@ -1524,22 +1528,24 @@ impl ExternalSessionImporter {
                 }
             };
             let mut changed = false;
-            if let Some(url) = &mined.created_pr {
-                changed |= self.workspace.set_chat_link(
-                    &chat.id,
-                    ChatLinkKind::Pr,
-                    Some(url),
-                    ChatLinkSource::CreatedInChat,
-                )?;
-            } else if let Some(url) = &mined.mentioned_pr {
-                changed |= self.workspace.set_chat_link(
-                    &chat.id,
-                    ChatLinkKind::Pr,
-                    Some(url),
-                    ChatLinkSource::Mentioned,
-                )?;
+            // Every created URL, then the other mentions (a mention of a
+            // created URL loses to `created_in_chat` by precedence anyway).
+            for (urls, source) in [
+                (&mined.created_prs, ChatLinkSource::CreatedInChat),
+                (&mined.mentioned_prs, ChatLinkSource::Mentioned),
+            ] {
+                for url in urls {
+                    changed |= self.workspace.set_chat_link(
+                        &chat.id,
+                        ChatLinkKind::Pr,
+                        Some(url),
+                        source,
+                    )?;
+                }
             }
-            if let Some(id) = &mined.mentioned_ticket {
+            if chat.linked_ticket_id.is_none()
+                && let Some(id) = &mined.mentioned_ticket
+            {
                 changed |= self.workspace.set_chat_link(
                     &chat.id,
                     ChatLinkKind::Ticket,
@@ -1547,6 +1553,7 @@ impl ExternalSessionImporter {
                     ChatLinkSource::Mentioned,
                 )?;
             }
+            // The marker means "this chat's transcript was scanned for PRs".
             let _ = std::fs::create_dir_all(self.link_scan_markers_dir());
             let _ = std::fs::write(self.link_scan_marker_path(&chat.id), b"");
             if changed {
@@ -1557,7 +1564,9 @@ impl ExternalSessionImporter {
     }
 
     fn link_scan_markers_dir(&self) -> PathBuf {
-        self.store.root().join("link_scan_markers")
+        // `_v2`: the first generation also marked chats whose scan stopped
+        // at a ticket guard; those get one fresh PR scan.
+        self.store.root().join("link_scan_markers_v2")
     }
 
     fn link_scan_marker_path(&self, chat_id: &str) -> PathBuf {
@@ -2145,17 +2154,81 @@ impl ExternalSessionImporter {
     }
 }
 
+/// The category recorded for `chat_id` under a docs store root, read straight
+/// from the sidecar files ([`ExternalSessionImporter::classification_for`]'s
+/// sources: the import sync cursor, then the native classification) for
+/// callers that hold only the workspace host. Best-effort: `None` when
+/// nothing is recorded or a file cannot be read.
+pub(crate) fn category_in_store(root: PathBuf, chat_id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Recorded {
+        #[serde(default)]
+        category: String,
+    }
+    for dir in [
+        root.join("external_import_cursors"),
+        root.join("native_chat_classifications"),
+    ] {
+        let Ok(raw) = std::fs::read_to_string(dir.join(format!("{chat_id}.json"))) else {
+            continue;
+        };
+        if let Ok(recorded) = serde_json::from_str::<Recorded>(&raw)
+            && !recorded.category.is_empty()
+        {
+            return Some(recorded.category);
+        }
+    }
+    None
+}
+
 /// What [`mine_links_from_entries`] found across one transcript — the
 /// backfill repair's own view of the same signals the live tap watches for.
 #[derive(Default)]
 struct MinedLinks {
-    /// A `gh pr create`-shaped tool call whose result contained a PR URL —
-    /// wins outright over `mentioned_pr` (the caller never writes both).
-    created_pr: Option<String>,
-    /// Most recent PR URL seen in any tool result or message text.
-    mentioned_pr: Option<String>,
+    /// Every URL a successful `gh pr create`-shaped tool call printed (a
+    /// stacked-PR call prints several), distinct, in transcript order.
+    created_prs: Vec<String>,
+    /// Other PR URLs seen in tool results or message text, distinct, oldest
+    /// first, capped to the most recent [`MAX_MINED_MENTIONS`] (live mining
+    /// stamps every mention; the repair stays bounded against noise).
+    mentioned_prs: Vec<String>,
     /// Most recent ticket id seen in user/assistant message text.
     mentioned_ticket: Option<String>,
+}
+
+const MAX_MINED_MENTIONS: usize = 10;
+
+impl MinedLinks {
+    fn push_created(&mut self, url: String) {
+        let canonical = crate::chat_links::canonicalize_pr_url(&url);
+        if !self
+            .created_prs
+            .iter()
+            .any(|u| crate::chat_links::canonicalize_pr_url(u) == canonical)
+        {
+            self.created_prs.push(url);
+        }
+        self.mentioned_prs
+            .retain(|u| crate::chat_links::canonicalize_pr_url(u) != canonical);
+    }
+
+    fn push_mentioned(&mut self, url: String) {
+        let canonical = crate::chat_links::canonicalize_pr_url(&url);
+        if self
+            .created_prs
+            .iter()
+            .any(|u| crate::chat_links::canonicalize_pr_url(u) == canonical)
+        {
+            return;
+        }
+        // Most recent mention moves to the back.
+        self.mentioned_prs
+            .retain(|u| crate::chat_links::canonicalize_pr_url(u) != canonical);
+        self.mentioned_prs.push(url);
+        if self.mentioned_prs.len() > MAX_MINED_MENTIONS {
+            self.mentioned_prs.remove(0);
+        }
+    }
 }
 
 /// Scan a parsed transcript's entries for durable PR/ticket link signals —
@@ -2176,24 +2249,27 @@ fn mine_links_from_entries(entries: &[(usize, SessionMessageEntry)]) -> MinedLin
                 MessagePart::Tool {
                     call,
                     output: Some(output),
+                    is_error,
                     ..
                 } => {
                     let invocation = crate::chat_links::tool_call_invocation_text(call);
-                    let Some(url) = crate::chat_links::extract_pr_url(output) else {
-                        continue;
-                    };
-                    if crate::chat_links::looks_like_pr_create(&invocation) {
-                        mined.created_pr = Some(url);
-                    } else {
-                        mined.mentioned_pr = Some(url);
+                    let is_create = crate::chat_links::looks_like_pr_create(&invocation);
+                    for (url, source) in
+                        crate::chat_links::tool_result_pr_links(is_create, *is_error, output)
+                    {
+                        if source == ChatLinkSource::CreatedInChat {
+                            mined.push_created(url);
+                        } else {
+                            mined.push_mentioned(url);
+                        }
                     }
                 }
                 MessagePart::Text { text, .. } if is_message_role => {
                     if let Some(id) = crate::chat_links::extract_ticket_mention(text) {
                         mined.mentioned_ticket = Some(id);
                     }
-                    if let Some(url) = crate::chat_links::extract_pr_url(text) {
-                        mined.mentioned_pr = Some(url);
+                    for url in crate::chat_links::extract_pr_urls(text) {
+                        mined.push_mentioned(url);
                     }
                 }
                 _ => {}
@@ -3729,10 +3805,46 @@ mod link_mining_tests {
         )];
         let mined = mine_links_from_entries(&entries);
         assert_eq!(
-            mined.created_pr.as_deref(),
-            Some("https://github.com/acme/widgets/pull/42")
+            mined.created_prs,
+            vec!["https://github.com/acme/widgets/pull/42".to_owned()]
         );
-        assert!(mined.mentioned_pr.is_none());
+        assert!(mined.mentioned_prs.is_empty());
+    }
+
+    /// A create call that prints several URLs (stacked PRs) is credited with
+    /// all of them, and a failed create credits none.
+    #[test]
+    fn multi_url_create_output_stamps_every_created_pr_and_errors_stamp_none() {
+        let output = "https://github.com/Cofactr/flagship/pull/6487\nhttps://github.com/Cofactr/flagship/pull/6488";
+        let entries = vec![entry(
+            MessageRole::Assistant,
+            vec![tool_part(
+                "t1",
+                ToolCall::Exec {
+                    command: "PR1=$(gh pr create --fill) && PR2=$(gh pr create --fill)".into(),
+                },
+                Some(output),
+            )],
+        )];
+        let mined = mine_links_from_entries(&entries);
+        assert_eq!(mined.created_prs.len(), 2);
+        assert!(mined.created_prs[1].ends_with("/6488"));
+        assert!(mined.mentioned_prs.is_empty());
+
+        let mut failed_part = tool_part(
+            "t2",
+            ToolCall::Exec {
+                command: "gh pr create".into(),
+            },
+            Some("already exists: https://github.com/acme/ui/pull/4"),
+        );
+        if let MessagePart::Tool { is_error, .. } = &mut failed_part {
+            *is_error = true;
+        }
+        let failed = vec![entry(MessageRole::Assistant, vec![failed_part])];
+        let mined = mine_links_from_entries(&failed);
+        assert!(mined.created_prs.is_empty());
+        assert_eq!(mined.mentioned_prs.len(), 1);
     }
 
     /// A PR URL in a NON-creation tool result (e.g. `gh pr view`) stamps
@@ -3750,10 +3862,10 @@ mod link_mining_tests {
             )],
         )];
         let mined = mine_links_from_entries(&entries);
-        assert!(mined.created_pr.is_none());
+        assert!(mined.created_prs.is_empty());
         assert_eq!(
-            mined.mentioned_pr.as_deref(),
-            Some("https://github.com/acme/widgets/pull/42")
+            mined.mentioned_prs,
+            vec!["https://github.com/acme/widgets/pull/42".to_owned()]
         );
     }
 
@@ -3771,8 +3883,8 @@ mod link_mining_tests {
         )];
         let mined = mine_links_from_entries(&entries);
         assert_eq!(
-            mined.mentioned_pr.as_deref(),
-            Some("https://github.com/acme/widgets/pull/7")
+            mined.mentioned_prs,
+            vec!["https://github.com/acme/widgets/pull/7".to_owned()]
         );
     }
 
@@ -3798,7 +3910,7 @@ mod link_mining_tests {
         ];
         let mined = mine_links_from_entries(&entries);
         assert_eq!(
-            mined.mentioned_pr.as_deref(),
+            mined.mentioned_prs.last().map(String::as_str),
             Some("https://github.com/acme/widgets/pull/2")
         );
     }
@@ -3835,8 +3947,8 @@ mod link_mining_tests {
     #[test]
     fn empty_transcript_mines_nothing() {
         let mined = mine_links_from_entries(&[]);
-        assert!(mined.created_pr.is_none());
-        assert!(mined.mentioned_pr.is_none());
+        assert!(mined.created_prs.is_empty());
+        assert!(mined.mentioned_prs.is_empty());
         assert!(mined.mentioned_ticket.is_none());
     }
 }

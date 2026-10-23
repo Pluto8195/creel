@@ -102,7 +102,7 @@ pub fn link_operation(work_item_id: &str, pr_key: &str) -> String {
 pub fn is_high_confidence(source: ChatLinkSource) -> bool {
     matches!(
         source,
-        ChatLinkSource::Manual | ChatLinkSource::CreatedInChat
+        ChatLinkSource::Manual | ChatLinkSource::ReviewLauncher | ChatLinkSource::CreatedInChat
     )
 }
 
@@ -128,7 +128,7 @@ pub fn created_pr_urls(entries: &[SessionMessageEntry]) -> Vec<String> {
             if !crate::chat_links::looks_like_pr_create(&invocation) {
                 continue;
             }
-            if let Some(url) = crate::chat_links::extract_pr_url(output) {
+            for url in crate::chat_links::extract_pr_urls(output) {
                 let url = crate::chat_links::canonicalize_pr_url(&url);
                 if seen.insert(url.clone()) {
                     urls.push(url);

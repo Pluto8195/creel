@@ -2990,15 +2990,19 @@ async fn drive_run(
                 AgentEvent::ToolResult {
                     id,
                     output: Some(output),
+                    is_error,
                     ..
                 } => {
-                    if pr_create_tool_ids.contains(id) {
-                        if let Some(url) = crate::chat_links::extract_pr_url(output) {
-                            crate::chat_links::mine_pr_created(&workspace, &chat_id, &url);
-                        }
-                    } else {
-                        crate::chat_links::mine_pr_mention(&workspace, &chat_id, output);
-                    }
+                    // See `chat_links::tool_result_pr_links`: every URL of a
+                    // successful create is `created_in_chat`; a failed create
+                    // only mentions.
+                    crate::chat_links::mine_tool_result_links(
+                        &workspace,
+                        &chat_id,
+                        pr_create_tool_ids.contains(id),
+                        *is_error,
+                        output,
+                    );
                 }
                 _ => {}
             }
