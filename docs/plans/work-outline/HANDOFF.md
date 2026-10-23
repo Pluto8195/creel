@@ -236,6 +236,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Argument errors list the tool's parameters with an example call.
   - Keys stay required for create_chat, create_child, propose_instruction, artifact_publish and
     create_user_action_request without a `dedupeKey`.
+- **Review chat replaces Review; My PRs sidebar deleted** (2026-10-23; `ui/src/review_chats.rs`):
+  - A PR's review chat is a live chat assigned to its review item, or one linked with source
+    `manual` or `review_launcher`. When one exists, the PR page row's primary action is "Open
+    review" (title plus live state), and Review moves to the row menu as "Start another review".
+  - Enter on a PR row opens the review chat, else starts a review; ↑↓ move the row highlight.
+  - The same "being reviewed" marker shows on the outline row and in the chat strip.
+  - The overview "My PRs" sidebar code is deleted; old UI-flag keys still load.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
