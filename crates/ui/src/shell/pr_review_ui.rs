@@ -104,7 +104,6 @@ mod tests {
     use crate::pr_page::fixtures::row;
     use crate::pr_page::PageTab;
     use std::sync::{Arc, Mutex};
-    use zeron_engine::pr_ticket_cache::{MyOpenPr, MyPrItem};
     use zeron_proto::{ChatLinkSource, PrDashBucket, PrDashChat, PrDashRow, PrDashTab};
 
     type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -163,21 +162,6 @@ mod tests {
             .center();
         cx.simulate_click(at, gpui::Modifiers::default());
         draw(cx);
-    }
-
-    fn item(number: u64, title: &str) -> MyPrItem {
-        MyPrItem {
-            summary: MyOpenPr {
-                number,
-                title: Some(title.into()),
-                url: Some(format!("https://github.com/acme/flagship/pull/{number}")),
-                repo: Some("acme/flagship".into()),
-                is_draft: false,
-                updated_at: None,
-                author: Some("octo".into()),
-            },
-            detail: None,
-        }
     }
 
     fn reply(chat: &str, behind: u64) -> serde_json::Value {
@@ -366,38 +350,6 @@ mod tests {
         assert_eq!(calls[1]["operationId"], op.as_str());
         assert_eq!(calls[2]["action"], "fixCi");
         assert_ne!(calls[2]["operationId"], op.as_str());
-    }
-
-    #[gpui::test]
-    fn needs_my_review_rows_offer_review_and_open_the_new_chat(cx: &mut gpui::TestAppContext) {
-        let dir = tempfile::tempdir().unwrap();
-        let (shell, cx) = test_shell(cx, dir.path());
-        let calls: Calls = Arc::default();
-        let sink = calls.clone();
-        shell.update(cx, |shell, cx| {
-            shell.pr_review_script = Some(Arc::new(move |params| {
-                sink.lock().unwrap().push(params.clone());
-                Ok(reply("chat-sidebar", 0))
-            }));
-            shell.toggle_my_prs(cx);
-            let page = shell.ensure_overview_page(cx);
-            page.update(cx, |overview, cx| {
-                overview.set_review_prs_for_test(vec![item(7, "Add X")], cx)
-            });
-        });
-        draw(cx);
-        click(cx, "overview-pr-item-review-0");
-        let calls = calls.lock().unwrap().clone();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["number"], 7);
-        assert_eq!(calls[0]["action"], "codeReview");
-        shell.read_with(cx, |shell, cx| {
-            assert!(matches!(shell.route, Route::Chat));
-            assert_eq!(
-                shell.state.read(cx).selected_chat.as_deref(),
-                Some("chat-sidebar")
-            );
-        });
     }
 
     #[gpui::test]

@@ -19,7 +19,8 @@ pub const ACKNOWLEDGED_DONE_FILE: &str = "overview-acknowledged-done.json";
 /// Repo keys (cwd last path segment) the repo filter currently hides.
 pub const HIDDEN_REPOS_FILE: &str = "overview-hidden-repos.json";
 /// Named on/off overview UI toggles that persist (a string is present = on),
-/// e.g. the My PRs sidebar. Unknown entries are ignored by readers.
+/// e.g. the Hide stale toggle. Unknown entries (including retired flags such
+/// as the old PR sidebar's) are ignored by readers.
 pub const UI_FLAGS_FILE: &str = "overview-ui-flags.json";
 /// Work-item ids (plus the `~unassociated` sentinel) the List
 /// work-item filter keeps; empty = no filter. See `work_outline::filter`.

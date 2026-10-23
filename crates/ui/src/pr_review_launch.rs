@@ -1,12 +1,11 @@
 //! Client side of the "Review PR" launcher (`StartPrReview`,
 //! docs/pr-review.md): request building with stable operation ids, the RPC
 //! call, and the user-facing text for results and refusals. The surfaces
-//! (⇧⌘P page, the overview's "Needs my review" rows, the palette) go
+//! (⌘P page, the palette) go
 //! through [`crate::shell::Shell::start_pr_review`].
 
 use std::collections::HashMap;
 
-use zeron_engine::pr_ticket_cache::MyPrItem;
 use zeron_proto::{
     ChatConfig, PrReference, PrReviewAction, PrReviewError, PrReviewErrorCode, StartPrReviewParams,
     StartPrReviewReply,
@@ -102,15 +101,6 @@ pub(crate) async fn start(
     }
 }
 
-/// The PR a "Needs my review" row names (its URL, else `repo` + number).
-pub(crate) fn reference_for_item(item: &MyPrItem) -> Option<PrReference> {
-    if let Some(reference) = item.summary.url.as_deref().and_then(PrReference::parse) {
-        return Some(reference);
-    }
-    let (owner, name) = item.summary.repo.as_deref()?.split_once('/')?;
-    PrReference::parse(&format!("{owner}/{name}#{}", item.summary.number))
-}
-
 /// What the URL box says about unparseable input.
 pub(crate) const REFERENCE_HINT: &str =
     "Enter a PR URL (https://github.com/owner/repo/pull/123) or owner/repo#123";
@@ -150,7 +140,6 @@ pub(crate) fn started_notice(reply: &StartPrReviewReply) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_engine::pr_ticket_cache::MyOpenPr;
 
     fn reference() -> PrReference {
         PrReference::parse("acme/app#12").unwrap()
@@ -183,27 +172,6 @@ mod tests {
             ),
             ("acme", "app", 12)
         );
-    }
-
-    #[test]
-    fn review_rows_resolve_their_pr_from_the_url_or_repo() {
-        let mut item = MyPrItem {
-            summary: MyOpenPr {
-                number: 5,
-                title: None,
-                url: Some("https://github.com/acme/app/pull/5".into()),
-                repo: Some("acme/app".into()),
-                is_draft: false,
-                updated_at: None,
-                author: None,
-            },
-            detail: None,
-        };
-        assert_eq!(reference_for_item(&item), PrReference::parse("acme/app#5"));
-        item.summary.url = None;
-        assert_eq!(reference_for_item(&item), PrReference::parse("acme/app#5"));
-        item.summary.repo = None;
-        assert_eq!(reference_for_item(&item), None);
     }
 
     #[test]
