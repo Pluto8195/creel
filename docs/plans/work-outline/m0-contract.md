@@ -224,6 +224,9 @@ resume cwd mismatch is an error, and `zeron/*` branch auto-minting and auto-rena
 
 ## 7. User interface decisions
 
+> 2026-10-23: Canvas and chat classification were removed; stored positions and classification rows are kept but no longer read or written. See tag pre-canvas-removal. The `viewMode:canvas` flag now loads as Outline, and the
+> Canvas bullets below no longer apply.
+
 - Overview mode is persisted as flags in `overview-ui-flags.json`: `viewMode:canvas`,
   `viewMode:outline`, else List; exactly one written. Older builds read Outline as List.
 - New attention indicators use theme tokens (sidebar vocabulary), not the Overview's hardcoded
