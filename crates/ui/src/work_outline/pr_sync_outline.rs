@@ -167,7 +167,6 @@ impl OutlineView {
                     item.needs_user_action(),
                     item.unresolved_actions,
                     theme,
-                    1.0,
                 ),
                 chat_count: item.chat_count,
                 totals_line: totals
