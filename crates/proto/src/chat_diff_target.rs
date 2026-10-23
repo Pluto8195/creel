@@ -58,6 +58,56 @@ pub struct ChatDiffTargetView {
 pub struct ChatDiffTargetsView {
     pub chat_id: String,
     pub targets: Vec<ChatDiffTargetView>,
+    /// Branch / PR range targets (`m0-contract.md` § "Diff a branch or PR").
+    /// Resolved like `targets`: only those whose repository checkout still
+    /// resolves and whose head ref still exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ref_targets: Vec<ChatRefTargetView>,
+}
+
+/// What a ref target names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RefDiffKind {
+    /// A pull request, labelled "PR #n".
+    Pr,
+    /// A branch, labelled "branch <name>".
+    Branch,
+}
+
+/// One resolved branch / PR range target: `merge-base(base_ref, head_ref)...
+/// head_ref` of a repository, read from its refs only (no checkout).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRefTargetView {
+    /// Stable id (the `selectRef` / `unbindRef` argument).
+    pub id: String,
+    pub kind: RefDiffKind,
+    /// "PR #6487" or "branch michael/eng-3012-x".
+    pub label: String,
+    /// The repository checkout the range is read from (the diff watch / RPC
+    /// `cwd`): the chat's own checkout or one of its submodules, never a
+    /// linked worktree.
+    pub path: String,
+    /// `CheckoutIdentity.id` of `path`.
+    pub checkout_id: String,
+    pub repo_name: String,
+    /// Head branch name (without `refs/...`).
+    pub head_branch: String,
+    /// Full ref the head is read from (`refs/remotes/origin/<b>`, ...).
+    pub head_ref: String,
+    /// Base branch name as shown ("main").
+    pub base_branch: String,
+    /// Full ref the base is read from.
+    pub base_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default)]
+    pub selected: bool,
 }
 
 /// What a [`DiffCheckoutCandidate`] is.
@@ -123,6 +173,13 @@ pub enum SetChatDiffTargetAction {
     /// Clear the selection: the chat's own checkout is shown again. Bound
     /// targets stay listed in the member picker.
     ClearSelection,
+    /// Resolve `input` (a PR number, a PR URL, or a branch name) to a branch /
+    /// PR range target, fetch its refs read-only, store it and select it.
+    BindRef,
+    /// Select the stored ref target `refId` (clears the checkout selection).
+    SelectRef,
+    /// Forget the ref target `refId`.
+    UnbindRef,
 }
 
 /// Params of `SetChatDiffTarget`.
@@ -135,6 +192,17 @@ pub struct SetChatDiffTargetParams {
     /// Required for `select` and `unbind`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Required for `bindRef`: a PR number (`6487`, `#6487`), a PR URL, or a
+    /// branch name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// `bindRef`: compare against this branch instead of the PR's base (or
+    /// `main`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+    /// Required for `selectRef` and `unbindRef`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<String>,
 }
 
 /// Reply of `SetChatDiffTarget` (and the engine-side result of the agent
@@ -143,6 +211,20 @@ pub struct SetChatDiffTargetParams {
 #[serde(rename_all = "camelCase")]
 pub struct ChatDiffTargetsReply {
     pub targets: Vec<ChatDiffTargetEntry>,
+    /// Stored ref targets (id, label, selected).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ref_targets: Vec<ChatRefTargetEntry>,
+}
+
+/// One stored ref target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRefTargetEntry {
+    pub id: String,
+    pub kind: RefDiffKind,
+    pub label: String,
+    #[serde(default)]
+    pub selected: bool,
 }
 
 /// One stored target.
@@ -158,6 +240,8 @@ pub struct ChatDiffTargetEntry {
 
 /// Most targets one chat can hold (one worktree per submodule, plus slack).
 pub const MAX_CHAT_DIFF_TARGETS: usize = 16;
+/// Most ref targets one chat can hold.
+pub const MAX_CHAT_REF_TARGETS: usize = 8;
 /// Most recent operation ids a `chatDiffTargets` row remembers for replay.
 pub const MAX_CHAT_DIFF_TARGET_OPS: usize = 16;
 
@@ -179,6 +263,37 @@ pub struct StoredChatDiffTarget {
     pub bound_at: i64,
 }
 
+/// A branch / PR range target as stored in the `chatDiffTargets` row
+/// (`ref_targets`). Refs are stored fully qualified so the range can be read
+/// without any lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredRefDiffTarget {
+    /// Stable id: `pr:<repo id>#<n>` or `br:<repo id>:<branch>`, hashed to fit
+    /// an operation id.
+    pub id: String,
+    pub kind: RefDiffKind,
+    /// Canonical path of the repository checkout the refs live in.
+    pub path: String,
+    /// Topology repository id of `path` when bound.
+    pub repo_id: String,
+    /// Head branch name.
+    pub head_branch: String,
+    /// Full head ref.
+    pub head_ref: String,
+    /// Base branch name.
+    pub base_branch: String,
+    /// Full base ref.
+    pub base_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// Unix milliseconds.
+    #[serde(default)]
+    pub bound_at: i64,
+}
+
 /// The decoded `chatDiffTargets` row of one chat (row id = chat id).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -195,4 +310,43 @@ pub struct ChatDiffTargetsRow {
     pub ops: Vec<String>,
     #[serde(default)]
     pub updated_at: i64,
+    /// Branch / PR range targets (≤ [`MAX_CHAT_REF_TARGETS`]); rows written
+    /// before this field existed read as empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ref_targets: Vec<StoredRefDiffTarget>,
+    /// Id of the selected ref target. At most one of `selected` and
+    /// `selected_ref` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_ref: Option<String>,
+}
+
+/// One entry of the "Diff branch / PR…" picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefDiffCandidate {
+    pub kind: RefDiffKind,
+    /// "PR #6487" / "branch michael/eng-3012-x".
+    pub label: String,
+    /// Extra line: the PR URL, or the repository name.
+    pub detail: String,
+    /// What to pass as `bindRef` `input` (the PR URL or the branch name).
+    pub input: String,
+    pub repo_name: String,
+    /// A PR linked to this chat (`chatPrLinks`); these sort first.
+    #[serde(default)]
+    pub linked: bool,
+    /// The chat's ticket id appears in the branch name.
+    #[serde(default)]
+    pub suggested: bool,
+    /// Already stored as a ref target of this chat.
+    #[serde(default)]
+    pub bound: bool,
+}
+
+/// Reply of `ListChatRefDiffCandidates {chatId}`: linked PRs first (in link
+/// order), then branches matching the chat's ticket (newest first).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListChatRefDiffCandidatesReply {
+    pub candidates: Vec<RefDiffCandidate>,
 }

@@ -5,7 +5,8 @@
 
 use super::*;
 use zeron_proto::{
-    ChatDiffTargetsRow, MAX_CHAT_DIFF_TARGET_OPS, MAX_CHAT_DIFF_TARGETS, StoredChatDiffTarget,
+    ChatDiffTargetsRow, MAX_CHAT_DIFF_TARGET_OPS, MAX_CHAT_DIFF_TARGETS, MAX_CHAT_REF_TARGETS,
+    StoredChatDiffTarget, StoredRefDiffTarget,
 };
 
 /// Wire version of the row's JSON payload.
@@ -30,9 +31,22 @@ fn decode(row: &RegistryRow) -> Option<ChatDiffTargetsRow> {
             Some(Value::String(text)) => serde_json::from_str(text)?,
             Some(other) => serde_json::from_value(other.clone())?,
         };
+        // `refTargets` / `selectedRef` arrived after v1 rows existed: absent
+        // reads as none, so an older row decodes unchanged.
+        let ref_targets: Vec<StoredRefDiffTarget> = match row.fields.get("refTargets") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(text)) => serde_json::from_str(text)?,
+            Some(other) => serde_json::from_value(other.clone())?,
+        };
         Ok(ChatDiffTargetsRow {
             chat_id: chat_id.clone(),
             targets,
+            ref_targets,
+            selected_ref: row
+                .fields
+                .get("selectedRef")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             selected: row
                 .fields
                 .get("selected")
@@ -49,6 +63,7 @@ fn decode(row: &RegistryRow) -> Option<ChatDiffTargetsRow> {
     match decoded {
         Ok(mut value) => {
             value.targets.truncate(MAX_CHAT_DIFF_TARGETS);
+            value.ref_targets.truncate(MAX_CHAT_REF_TARGETS);
             let over = value.ops.len().saturating_sub(MAX_CHAT_DIFF_TARGET_OPS);
             value.ops.drain(..over);
             Some(value)
@@ -100,6 +115,8 @@ impl RegistryDoc {
                 ("chatId", json!(row.chat_id)),
                 ("targets", json!(serde_json::to_string(&row.targets)?)),
                 ("selected", opt_str(row.selected.as_deref())),
+                ("refTargets", json!(serde_json::to_string(&row.ref_targets)?)),
+                ("selectedRef", opt_str(row.selected_ref.as_deref())),
                 ("ops", json!(serde_json::to_string(&row.ops)?)),
                 ("updatedAt", json!(row.updated_at)),
                 ("v", json!(ROW_VERSION)),
@@ -159,7 +176,44 @@ mod tests {
             selected: Some("/w/b".into()),
             ops: vec!["op-1".into()],
             updated_at: 10,
+            ..Default::default()
         }
+    }
+
+    fn ref_target(id: &str) -> StoredRefDiffTarget {
+        StoredRefDiffTarget {
+            id: id.into(),
+            kind: zeron_proto::RefDiffKind::Pr,
+            path: "/w/flagship".into(),
+            repo_id: "repo:abc".into(),
+            head_branch: "eng-3012-x".into(),
+            head_ref: "refs/remotes/origin/eng-3012-x".into(),
+            base_branch: "main".into(),
+            base_ref: "refs/remotes/origin/main".into(),
+            pr_number: Some(6487),
+            pr_url: Some("https://github.com/o/r/pull/6487".into()),
+            bound_at: 7,
+        }
+    }
+
+    #[test]
+    fn ref_targets_roundtrip_and_old_rows_read_as_none() {
+        let mut ws = RegistryDoc::new("dev-a");
+        let mut with_refs = row("chat-1");
+        with_refs.ref_targets = vec![ref_target("pr:1")];
+        with_refs.selected_ref = Some("pr:1".into());
+        assert!(ws.put_chat_diff_targets(&with_refs).unwrap());
+        assert_eq!(ws.chat_diff_targets("chat-1"), Some(with_refs));
+        // A row written before the fields existed has neither key.
+        ws.write(
+            KIND_CHAT_DIFF_TARGETS,
+            "old",
+            OpKind::Upsert,
+            fields([("chatId", json!("old")), ("targets", json!("[]"))]),
+        );
+        let old = ws.chat_diff_targets("old").unwrap();
+        assert!(old.ref_targets.is_empty());
+        assert_eq!(old.selected_ref, None);
     }
 
     #[test]

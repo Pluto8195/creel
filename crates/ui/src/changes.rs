@@ -1351,6 +1351,7 @@ fn file_diff_text_request(
         base_ref,
         chat_id,
         commit_sha,
+        head_ref: None,
         diff_checksum: diff.checksum.clone(),
     }
 }

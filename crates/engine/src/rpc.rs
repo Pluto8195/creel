@@ -4864,6 +4864,7 @@ mod tests {
     fn chat_diff_target_methods_are_local_not_forwardable() {
         for method in [
             methods::LIST_CHAT_DIFF_CHECKOUTS,
+            methods::LIST_CHAT_REF_DIFF_CANDIDATES,
             methods::SET_CHAT_DIFF_TARGET,
             methods::WATCH_CHAT_DIFF_TARGETS,
         ] {
