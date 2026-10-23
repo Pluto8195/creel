@@ -159,7 +159,8 @@ pub struct PrDashChat {
     pub source: ChatLinkSource,
     #[serde(default)]
     pub archived: bool,
-    /// The chat was started by the review launcher (`pr_review`).
+    /// The chat was started by the review launcher: its link to this PR has
+    /// source `review_launcher` (no chat classification is consulted).
     #[serde(default)]
     pub is_review: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -998,17 +998,12 @@ impl PrReviewLauncher {
                 continue;
             }
             let linked = self.workspace.chat_pr_links(&chat.id).is_ok_and(|links| {
-                links
-                    .iter()
-                    .any(|link| crate::chat_links::canonicalize_pr_url(&link.url) == target)
+                links.iter().any(|link| {
+                    link.source == zeron_proto::ChatLinkSource::ReviewLauncher
+                        && crate::chat_links::canonicalize_pr_url(&link.url) == target
+                })
             });
             if !linked {
-                continue;
-            }
-            if let Some(category) =
-                crate::external_import::category_in_store(self.workspace.store_root(), &chat.id)
-                && category != "pr_review"
-            {
                 continue;
             }
             let active = chat.last_message_at.unwrap_or(chat.created_at);

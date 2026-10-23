@@ -2153,33 +2153,6 @@ impl ExternalSessionImporter {
     }
 }
 
-/// The category recorded for `chat_id` under a docs store root, read straight
-/// from the sidecar files ([`ExternalSessionImporter::classification_for`]'s
-/// sources: the import sync cursor, then the native classification) for
-/// callers that hold only the workspace host. Best-effort: `None` when
-/// nothing is recorded or a file cannot be read.
-pub(crate) fn category_in_store(root: PathBuf, chat_id: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Recorded {
-        #[serde(default)]
-        category: String,
-    }
-    for dir in [
-        root.join("external_import_cursors"),
-        root.join("native_chat_classifications"),
-    ] {
-        let Ok(raw) = std::fs::read_to_string(dir.join(format!("{chat_id}.json"))) else {
-            continue;
-        };
-        if let Ok(recorded) = serde_json::from_str::<Recorded>(&raw)
-            && !recorded.category.is_empty()
-        {
-            return Some(recorded.category);
-        }
-    }
-    None
-}
-
 /// What [`mine_links_from_entries`] found across one transcript — the
 /// backfill repair's own view of the same signals the live tap watches for.
 #[derive(Default)]

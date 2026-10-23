@@ -323,7 +323,9 @@ pub fn plan_matches(chats: &[ChatFacts], candidates: &[PrLinkCandidate], git: &G
                         .to_owned(),
                     source: hit.source,
                     archived: hit.chat.archived,
-                    is_review: false,
+                    // The launcher's own link marks a review chat; the
+                    // `pr_review` classification is not consulted.
+                    is_review: hit.source == ChatLinkSource::ReviewLauncher,
                     updated_at: hit.chat.updated.map(|at| at.to_rfc3339()),
                 })
                 .collect(),
@@ -431,17 +433,11 @@ impl WorkspaceHost {
             git.slugs.insert(path, slug);
         }
 
-        let mut plan = plan_matches(&chats, candidates, &git);
+        let plan = plan_matches(&chats, candidates, &git);
         for link in &plan.new_links {
             if let Err(error) = self.add_chat_pr_link(&link.chat_id, &link.url, link.source) {
                 tracing::warn!(chat = %link.chat_id, %error, "inferred PR link write failed");
             }
-        }
-        let store_root = self.store_root();
-        for chat in plan.by_url.values_mut().flatten() {
-            chat.is_review =
-                crate::external_import::category_in_store(store_root.clone(), &chat.chat_id)
-                    .is_some_and(|category| category == "pr_review");
         }
         plan.by_url
     }
@@ -701,6 +697,22 @@ mod tests {
             ChatLinkSource::Ticket
         );
         assert_eq!(plan.by_url[&by_title.url][0].source, ChatLinkSource::Ticket);
+    }
+
+    #[test]
+    fn a_review_chat_is_the_one_with_a_review_launcher_link() {
+        let cand = candidate(1, "feat/eng-1-x", "ENG-1");
+        let mut launched = chat("launched");
+        launched.links = vec![link(1, ChatLinkSource::ReviewLauncher)];
+        let mut manual = chat("manual");
+        manual.links = vec![link(1, ChatLinkSource::Manual)];
+        let plan = plan_matches(&[launched, manual], &[cand.clone()], &GitFacts::default());
+        let flags: Vec<(&str, bool)> = plan.by_url[&cand.url]
+            .iter()
+            .map(|c| (c.chat_id.as_str(), c.is_review))
+            .collect();
+        assert!(flags.contains(&("launched", true)), "{flags:?}");
+        assert!(flags.contains(&("manual", false)), "{flags:?}");
     }
 
     #[test]
