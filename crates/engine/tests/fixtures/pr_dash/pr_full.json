@@ -1,0 +1,92 @@
+{
+  "number": 12,
+  "title": "ENG-45 Add widget cache",
+  "url": "https://github.com/Acme/widgets/pull/12",
+  "state": "OPEN",
+  "isDraft": false,
+  "additions": 400,
+  "deletions": 40,
+  "changedFiles": 6,
+  "createdAt": "2026-10-01T10:00:00Z",
+  "updatedAt": "2026-10-20T09:00:00Z",
+  "mergedAt": null,
+  "closedAt": null,
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "CLEAN",
+  "reviewDecision": "REVIEW_REQUIRED",
+  "repository": { "nameWithOwner": "Acme/widgets" },
+  "headRefName": "alice/cache-work",
+  "baseRefName": "main",
+  "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+  "author": { "login": "alice" },
+  "labels": { "nodes": [ { "name": "risk:low", "color": "00ff00" }, { "name": "backend", "color": "0000ff" } ] },
+  "assignees": { "nodes": [ { "login": "alice" } ] },
+  "reviewRequests": {
+    "nodes": [
+      { "requestedReviewer": { "__typename": "User", "login": "bob" } },
+      { "requestedReviewer": { "__typename": "User", "login": "erin" } },
+      { "requestedReviewer": { "__typename": "Team", "name": "platform" } }
+    ]
+  },
+  "reviews": {
+    "nodes": [
+      { "author": { "__typename": "User", "login": "dave" }, "state": "APPROVED", "submittedAt": "2026-10-02T10:00:00Z", "bodyText": "lgtm" },
+      { "author": { "__typename": "User", "login": "bob" }, "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-03T10:00:00Z", "bodyText": "needs a test" },
+      { "author": { "__typename": "User", "login": "bob" }, "state": "COMMENTED", "submittedAt": "2026-10-04T10:00:00Z", "bodyText": "nit: rename" },
+      { "author": { "__typename": "Bot", "login": "greptile-apps" }, "state": "COMMENTED", "submittedAt": "2026-10-05T10:00:00Z", "bodyText": "Summary of the change" },
+      { "author": { "__typename": "User", "login": "carol" }, "state": "COMMENTED", "submittedAt": "2026-10-06T10:00:00Z", "bodyText": "" },
+      { "author": { "__typename": "User", "login": "alice" }, "state": "COMMENTED", "submittedAt": "2026-10-07T10:00:00Z", "bodyText": "replied inline" },
+      { "author": { "__typename": "User", "login": "frank" }, "state": "PENDING", "submittedAt": null, "bodyText": "draft review" }
+    ]
+  },
+  "comments": {
+    "totalCount": 4,
+    "nodes": [
+      { "author": { "__typename": "User", "login": "dave" }, "createdAt": "2026-10-08T10:00:00Z" },
+      { "author": { "__typename": "Bot", "login": "github-actions" }, "createdAt": "2026-10-09T10:00:00Z" },
+      { "author": { "__typename": "User", "login": "alice" }, "createdAt": "2026-10-10T10:00:00Z" },
+      { "author": { "__typename": "User", "login": "erin" }, "createdAt": "2026-10-11T10:00:00Z" }
+    ]
+  },
+  "files": {
+    "totalCount": 6,
+    "pageInfo": { "hasNextPage": false, "endCursor": null },
+    "nodes": [
+      { "path": "src/cache.rs", "additions": 100, "deletions": 20, "changeType": "MODIFIED" },
+      { "path": "src/new_widget.rs", "additions": 200, "deletions": 0, "changeType": "ADDED" },
+      { "path": "tests/cache_test.rs", "additions": 60, "deletions": 10, "changeType": "MODIFIED" },
+      { "path": "Cargo.lock", "additions": 10, "deletions": 10, "changeType": "MODIFIED" },
+      { "path": "docs/guide.md", "additions": 30, "deletions": 0, "changeType": "ADDED" },
+      { "path": "assets/logo.png", "additions": 0, "deletions": 0, "changeType": "ADDED" }
+    ]
+  },
+  "reviewThreads": {
+    "nodes": [
+      { "isResolved": false, "isOutdated": false, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "dave" } } ] } },
+      { "isResolved": false, "isOutdated": false, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "dave" } }, { "author": { "__typename": "User", "login": "alice" } } ] } },
+      { "isResolved": false, "isOutdated": false, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "alice" } }, { "author": { "__typename": "User", "login": "dave" } } ] } },
+      { "isResolved": false, "isOutdated": false, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "alice" } }, { "author": { "__typename": "Bot", "login": "greptile-apps" } } ] } },
+      { "isResolved": false, "isOutdated": true, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "dave" } } ] } },
+      { "isResolved": true, "isOutdated": false, "comments": { "nodes": [ { "author": { "__typename": "User", "login": "dave" } } ] } }
+    ]
+  },
+  "commits": {
+    "nodes": [
+      {
+        "commit": {
+          "statusCheckRollup": {
+            "state": "FAILURE",
+            "contexts": {
+              "nodes": [
+                { "__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS", "status": "COMPLETED", "detailsUrl": "https://ci.example.test/build" },
+                { "__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE", "status": "COMPLETED", "detailsUrl": "https://ci.example.test/lint" },
+                { "__typename": "CheckRun", "name": "e2e", "conclusion": "CANCELLED", "status": "COMPLETED", "detailsUrl": "https://ci.example.test/e2e" },
+                { "__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "targetUrl": "https://ci.example.test/legacy" }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

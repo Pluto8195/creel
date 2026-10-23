@@ -732,6 +732,9 @@ pub struct EngineRpc {
     local_import: Option<crate::local_import::LocalImporter>,
     external_import: Option<crate::external_import::ExternalSessionImporter>,
     pr_ticket_cache: Option<crate::pr_ticket_cache::PrTicketCache>,
+    /// The PR page's data service (`PR_DASHBOARD`); built on first use, it
+    /// needs no boot-time wiring.
+    pr_dash: std::sync::OnceLock<crate::pr_dash::PrDash>,
     context_usage: Option<crate::context_usage::ContextUsageProvider>,
     /// `(path, mtime)`-cached subagent transcript turn-building
     /// (`READ_SUBAGENT_TRANSCRIPT`). Unlike `context_usage`/`pr_ticket_cache`,
@@ -874,6 +877,7 @@ impl EngineRpc {
             local_import: None,
             external_import: None,
             pr_ticket_cache: None,
+            pr_dash: std::sync::OnceLock::new(),
             context_usage: None,
             subagent_transcript_cache: crate::subagent_transcript::TranscriptCache::new(),
             work_outline,
@@ -3505,6 +3509,31 @@ impl RpcService for EngineRpc {
                     .await;
                 let items = cache.my_open_prs();
                 RpcReply::value(&items)
+            }
+            methods::PR_DASHBOARD => {
+                let p: zeron_proto::PrDashParams = parse_params(params)?;
+                let dash = self
+                    .pr_dash
+                    .get_or_init(crate::pr_dash::PrDash::with_real_gh);
+                let mut reply = dash.dashboard(p.tab, p.force).await;
+                // Chat links change independently of the PR rows, so they are
+                // resolved on every call, cached rows or not.
+                let candidates: Vec<crate::pr_chat_links::PrLinkCandidate> = reply
+                    .rows
+                    .iter()
+                    .map(|row| crate::pr_chat_links::PrLinkCandidate {
+                        url: row.url.clone(),
+                        number: row.number,
+                        repo_full: row.repo_full.clone(),
+                        head_ref: row.head_ref.clone(),
+                        title: row.title.clone(),
+                    })
+                    .collect();
+                let mut chats = self.workspace.pr_chat_matches(&candidates).await;
+                for row in &mut reply.rows {
+                    row.chats = chats.remove(&row.url).unwrap_or_default();
+                }
+                RpcReply::value(&reply)
             }
             methods::START_PR_REVIEW => {
                 let p: zeron_proto::StartPrReviewParams = parse_params(params)?;

@@ -1899,11 +1899,7 @@ fn mirror_primary_pr_link(doc: &mut RegistryDoc, chat_id: &str) -> Result<(), ze
 }
 
 fn pr_link_source_rank(source: ChatLinkSource) -> u8 {
-    match source {
-        ChatLinkSource::Mentioned => 0,
-        ChatLinkSource::CreatedInChat => 1,
-        ChatLinkSource::Manual => 2,
-    }
+    source.rank()
 }
 
 impl WorkspaceHostInner {

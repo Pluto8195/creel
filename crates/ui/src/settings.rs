@@ -964,7 +964,7 @@ impl ShortcutId {
             ShortcutId::ToggleChanges => "Toggle right sidebar",
             ShortcutId::ToggleFiles => "Toggle files panel",
             ShortcutId::ToggleTerminal => "Toggle terminal",
-            ShortcutId::OpenMyPrs => "Toggle My PRs",
+            ShortcutId::OpenMyPrs => "Open PR page",
             ShortcutId::NewSession => "New session",
             ShortcutId::NewProject => "New project",
             ShortcutId::OpenModelPicker => "Open model picker",

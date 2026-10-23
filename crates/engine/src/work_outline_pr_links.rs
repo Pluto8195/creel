@@ -102,7 +102,7 @@ pub fn link_operation(work_item_id: &str, pr_key: &str) -> String {
 pub fn is_high_confidence(source: ChatLinkSource) -> bool {
     matches!(
         source,
-        ChatLinkSource::Manual | ChatLinkSource::CreatedInChat
+        ChatLinkSource::Manual | ChatLinkSource::ReviewLauncher | ChatLinkSource::CreatedInChat
     )
 }
 
@@ -128,7 +128,7 @@ pub fn created_pr_urls(entries: &[SessionMessageEntry]) -> Vec<String> {
             if !crate::chat_links::looks_like_pr_create(&invocation) {
                 continue;
             }
-            if let Some(url) = crate::chat_links::extract_pr_url(output) {
+            for url in crate::chat_links::extract_pr_urls(output) {
                 let url = crate::chat_links::canonicalize_pr_url(&url);
                 if seen.insert(url.clone()) {
                     urls.push(url);
@@ -594,5 +594,30 @@ mod tests {
                 "https://github.com/acme/flagship/pull/5".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn every_url_of_a_create_output_counts_and_the_launcher_is_high_confidence() {
+        let entries = vec![entry(vec![tool(
+            "PR1=$(gh pr create --fill) && PR2=$(gh pr create --fill)",
+            Some("https://github.com/Acme/UI/pull/3\nhttps://github.com/Acme/UI/pull/4\n"),
+            false,
+        )])];
+        assert_eq!(
+            created_pr_urls(&entries),
+            vec![
+                "https://github.com/acme/ui/pull/3".to_owned(),
+                "https://github.com/acme/ui/pull/4".to_owned(),
+            ]
+        );
+        assert!(is_high_confidence(ChatLinkSource::ReviewLauncher));
+        for source in [
+            ChatLinkSource::Mentioned,
+            ChatLinkSource::Branch,
+            ChatLinkSource::DiffTarget,
+            ChatLinkSource::Ticket,
+        ] {
+            assert!(!is_high_confidence(source), "{source:?}");
+        }
     }
 }

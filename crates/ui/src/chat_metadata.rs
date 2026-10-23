@@ -127,6 +127,7 @@ fn source_label(source: Option<ChatLinkSource>) -> &'static str {
         Some(ChatLinkSource::Manual) => "linked manually",
         Some(ChatLinkSource::CreatedInChat) => "created in this chat",
         Some(ChatLinkSource::Mentioned) => "mentioned in this chat",
+        Some(other) => other.inferred_label().unwrap_or("linked"),
         None => "inferred from the branch",
     }
 }

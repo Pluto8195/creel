@@ -25,6 +25,7 @@ use zeron_proto::{ChatLinkSource, ToolCall};
 /// returned string when the source text had one immediately before the host
 /// (`https://github.com/...`); a bare `github.com/...` mention is returned
 /// exactly as it appeared, unprefixed. `None` when no PR URL appears at all.
+#[cfg(test)]
 pub(crate) fn extract_pr_url(text: &str) -> Option<String> {
     extract_pr_urls(text).into_iter().next()
 }
@@ -183,17 +184,39 @@ pub(crate) fn mine_ticket_mention(workspace: &WorkspaceHost, chat_id: &str, text
     }
 }
 
-/// Stamp a `created_in_chat` PR link — the engine watched THIS chat run
-/// `gh pr create` and mint the PR. Best-effort, same contract as
-/// [`mine_pr_mention`].
-pub(crate) fn mine_pr_created(workspace: &WorkspaceHost, chat_id: &str, url: &str) {
-    if let Err(err) = workspace.set_chat_link(
-        chat_id,
-        ChatLinkKind::Pr,
-        Some(url),
-        ChatLinkSource::CreatedInChat,
-    ) {
-        tracing::warn!(chat = %chat_id, error = %err, "PR created-in-chat link write failed");
+/// The PR links one tool result earns: every URL of a SUCCESSFUL PR-create
+/// call's output is `created_in_chat` (stacked PRs, a loop of `gh pr create`);
+/// a failed create ("a pull request ... already exists: <url>") created
+/// nothing, so its URLs only degrade to `mentioned`; any other tool result's
+/// URLs are mentions.
+pub(crate) fn tool_result_pr_links(
+    is_pr_create: bool,
+    is_error: bool,
+    output: &str,
+) -> Vec<(String, ChatLinkSource)> {
+    let source = if is_pr_create && !is_error {
+        ChatLinkSource::CreatedInChat
+    } else {
+        ChatLinkSource::Mentioned
+    };
+    extract_pr_urls(output)
+        .into_iter()
+        .map(|url| (url, source))
+        .collect()
+}
+
+/// Persist [`tool_result_pr_links`] for one tool result. Best-effort.
+pub(crate) fn mine_tool_result_links(
+    workspace: &WorkspaceHost,
+    chat_id: &str,
+    is_pr_create: bool,
+    is_error: bool,
+    output: &str,
+) {
+    for (url, source) in tool_result_pr_links(is_pr_create, is_error, output) {
+        if let Err(err) = workspace.set_chat_link(chat_id, ChatLinkKind::Pr, Some(&url), source) {
+            tracing::warn!(chat = %chat_id, error = %err, "PR tool-result link write failed");
+        }
     }
 }
 
@@ -309,11 +332,79 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_links_stamp_every_created_url() {
+        let out = "https://github.com/Cofactr/flagship/pull/6487\nhttps://github.com/Cofactr/flagship/pull/6488\n";
+        let links = tool_result_pr_links(true, false, out);
+        assert_eq!(links.len(), 2);
+        assert!(
+            links
+                .iter()
+                .all(|(_, s)| *s == ChatLinkSource::CreatedInChat)
+        );
+        assert!(links[1].0.ends_with("/6488"));
+    }
+
+    #[test]
+    fn tool_result_links_do_not_credit_a_failed_create() {
+        let out =
+            "a pull request for branch \"x\" already exists:\nhttps://github.com/acme/ui/pull/4";
+        let links = tool_result_pr_links(true, true, out);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].1, ChatLinkSource::Mentioned);
+        let other = tool_result_pr_links(false, false, out);
+        assert_eq!(other[0].1, ChatLinkSource::Mentioned);
+    }
+
+    #[test]
     fn extract_ticket_mention_delegates_to_the_shared_regex() {
         assert_eq!(
             extract_ticket_mention("see ENG-2715 for context"),
             Some("ENG-2715".into())
         );
         assert_eq!(extract_ticket_mention("nothing here"), None);
+    }
+
+    #[tokio::test]
+    async fn the_live_tap_persists_every_created_url_and_ignores_a_failed_create() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap()),
+            crate::workspace_host::WorkspaceHostConfig {
+                device_id: "dev".into(),
+                device_name: "Dev".into(),
+                platform: "macos".into(),
+                org_id: "org".into(),
+                user_id: "user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        host.create_chat("c1", None, Some("dev"), None, None)
+            .unwrap();
+        mine_tool_result_links(
+            &host,
+            "c1",
+            true,
+            false,
+            "https://github.com/Cofactr/flagship/pull/6487\nhttps://github.com/Cofactr/flagship/pull/6488",
+        );
+        mine_tool_result_links(
+            &host,
+            "c1",
+            true,
+            true,
+            "already exists: https://github.com/Cofactr/flagship/pull/9",
+        );
+        let links = host.chat_pr_links("c1").unwrap();
+        let source_of = |n: u64| {
+            links
+                .iter()
+                .find(|l| l.url.ends_with(&format!("/{n}")))
+                .map(|l| l.source)
+        };
+        assert_eq!(source_of(6487), Some(ChatLinkSource::CreatedInChat));
+        assert_eq!(source_of(6488), Some(ChatLinkSource::CreatedInChat));
+        assert_eq!(source_of(9), Some(ChatLinkSource::Mentioned));
     }
 }

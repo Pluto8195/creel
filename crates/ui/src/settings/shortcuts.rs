@@ -527,7 +527,9 @@ fn description(id: ShortcutId) -> &'static str {
         ShortcutId::ToggleChanges => "Show or hide the right sidebar for the current session.",
         ShortcutId::ToggleFiles => "Show or hide the files panel for the current session.",
         ShortcutId::ToggleTerminal => "Show or hide the terminal for the current session.",
-        ShortcutId::OpenMyPrs => "Open or close the My PRs sidebar in the overview.",
+        ShortcutId::OpenMyPrs => {
+            "Open the PR page: your PRs, review requests and PR review chats. ⇧⌘P also opens it."
+        }
         ShortcutId::NewSession => "Open a blank session canvas to start a new session.",
         ShortcutId::NewProject => "Open the new project dialog.",
         ShortcutId::OpenModelPicker => "Open the model picker for the current session.",

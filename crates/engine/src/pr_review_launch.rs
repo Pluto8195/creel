@@ -556,7 +556,34 @@ struct LaunchInputs<'a> {
 #[serde(rename_all = "camelCase")]
 struct StoredReply {
     inputs_hash: String,
+    /// The action this start ran (reuse matches PR + action). Absent in
+    /// replies stored before reuse existed; [`stored_action`] falls back to
+    /// the reply's title verb.
+    #[serde(default)]
+    action: Option<PrReviewAction>,
     reply: StartPrReviewReply,
+}
+
+/// The action a stored launch ran: the recorded one, else the verb its Chat
+/// title was minted with ([`chat_title`]).
+fn stored_action(stored: &StoredReply) -> Option<PrReviewAction> {
+    stored.action.or_else(|| {
+        let title = stored.reply.title.as_str();
+        if title.starts_with("Fix CI ") {
+            Some(PrReviewAction::FixCi)
+        } else if title.starts_with("Review ") {
+            Some(PrReviewAction::CodeReview)
+        } else {
+            None
+        }
+    })
+}
+
+/// The canonical (lowercase) PR URL of a launch's repo + number.
+fn launch_pr_url(owner: &str, name: &str, number: u64) -> String {
+    crate::chat_links::canonicalize_pr_url(&format!(
+        "https://github.com/{owner}/{name}/pull/{number}"
+    ))
 }
 
 fn check_part(label: &str, value: &str) -> Result<(), PrReviewError> {
@@ -724,6 +751,34 @@ impl PrReviewLauncher {
             }
             return Ok(stored.reply);
         }
+        // An existing live review Chat for this PR and action is reused:
+        // no new Chat, checkout, `gh` call or Run.
+        if let Some(reply) = self.reusable_review(p) {
+            if let Some(item) = &p.work_item_id {
+                match self.workspace.work_item_space(item) {
+                    Some(space) if space == reply.space_id => {}
+                    Some(_) => {
+                        return Err(invalid(
+                            "The work item belongs to another project than the PR's checkout",
+                        ));
+                    }
+                    None => return Err(invalid("Work item not found")),
+                }
+            }
+            self.claim_inputs(op, &inputs_hash)?;
+            if let Some(item) = &p.work_item_id {
+                self.ensure_assignment(&reply.chat_id, item, op)?;
+            }
+            self.store_reply(
+                op,
+                &StoredReply {
+                    inputs_hash,
+                    action: Some(p.action),
+                    reply: reply.clone(),
+                },
+            );
+            return Ok(reply);
+        }
         if self
             .workspace
             .registry_row_state(zeron_doc::KIND_CHATS, &chat_id)
@@ -845,7 +900,7 @@ impl PrReviewLauncher {
                 &chat_id,
                 ChatLinkKind::Pr,
                 Some(&url),
-                zeron_proto::ChatLinkSource::Manual,
+                zeron_proto::ChatLinkSource::ReviewLauncher,
             )
             .map_err(engine)?;
         if let Some(item) = &p.work_item_id {
@@ -895,15 +950,78 @@ impl PrReviewLauncher {
             behind_by: behind,
             prompt,
             notes,
+            reused: false,
         };
         self.store_reply(
             op,
             &StoredReply {
                 inputs_hash,
+                action: Some(p.action),
                 reply: reply.clone(),
             },
         );
         Ok(reply)
+    }
+
+    /// The reply of a live review Chat this device launched earlier for the
+    /// same PR and action, with `reused` set. The launcher's stored replies
+    /// are the record of what it launched (they carry the action and the
+    /// checkout values); a candidate must also still exist, be unarchived,
+    /// hold a durable link to the PR (canonical, so casing never matters),
+    /// sit in the requested Space, and not have been re-categorized away from
+    /// `pr_review` (an unset category counts: the RPC layer classifies after
+    /// the launch returns). The most recently active candidate wins.
+    fn reusable_review(&self, p: &StartPrReviewParams) -> Option<StartPrReviewReply> {
+        let target = launch_pr_url(&p.repo_owner, &p.repo_name, p.number);
+        let dir = self.workspace.store_root().join(REPLY_DIR);
+        let mut best: Option<(chrono::DateTime<chrono::Utc>, StartPrReviewReply)> = None;
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let Ok(raw) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(stored) = serde_json::from_slice::<StoredReply>(&raw) else {
+                continue;
+            };
+            if stored_action(&stored) != Some(p.action)
+                || crate::chat_links::canonicalize_pr_url(&stored.reply.pr_url) != target
+            {
+                continue;
+            }
+            let Ok(Some(chat)) = self.workspace.chat(&stored.reply.chat_id) else {
+                continue;
+            };
+            if chat.archived
+                || p.space_id
+                    .as_deref()
+                    .is_some_and(|space| chat.space_id.as_deref() != Some(space))
+            {
+                continue;
+            }
+            let linked = self.workspace.chat_pr_links(&chat.id).is_ok_and(|links| {
+                links.iter().any(|link| {
+                    link.source == zeron_proto::ChatLinkSource::ReviewLauncher
+                        && crate::chat_links::canonicalize_pr_url(&link.url) == target
+                })
+            });
+            if !linked {
+                continue;
+            }
+            let active = chat.last_message_at.unwrap_or(chat.created_at);
+            if best.as_ref().is_some_and(|(at, _)| *at >= active) {
+                continue;
+            }
+            let mut reply = stored.reply;
+            if let Some(title) = chat.title.as_deref().filter(|t| !t.trim().is_empty()) {
+                reply.title = title.to_owned();
+            }
+            // The checkout side effects are not repeated, so the behind-by
+            // count and its notes would be stale: report none.
+            reply.behind_by = 0;
+            reply.notes = Vec::new();
+            reply.reused = true;
+            best = Some((active, reply));
+        }
+        best.map(|(_, reply)| reply)
     }
 
     fn ensure_assignment(

@@ -6,14 +6,25 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
 
 ## Entry points
 
-- **⇧⌘P (PR review chats)**: a **Review requested** section above the review
-  chats lists every PR where your review is requested (`ReviewRequestedPrs`)
-  with **Review** (`/code-review`) and **Fix CI** (`/fix-ci`), plus **Open
-  chat** when a chat already links the PR. The box next to it takes a PR URL
+- **⌘P / ⇧⌘P (the PR page)**: ⌘P is `OpenMyPrs` (customizable in Settings →
+  Shortcuts, default `mod-p`, "Open PR page"); ⇧⌘P is a fixed alias; the
+  palette's **My PRs** opens it too. The page is a port of pr-dash with three
+  tabs: **Authored by me** (default) and **Review requested**, both fed by
+  `PrDashboard` (see [pr-dash spec](plans/work-outline/pr-dash-spec.md)), and
+  **Review chats** (the classified review Chats, or the destination list
+  below). Each dash tab title carries its needs-you count (`urgent / total`,
+  red when anything needs you, over rows that pass **hide drafts**); the page
+  refetches the visible tab every minute and **Refresh** forces. A tab has
+  bucket chips (multi-select), **hide drafts** (on), **group by status** (on)
+  and a text filter, each kept per tab. Rows list repo, `#number` (opens the
+  PR in the browser), title with tags, churn, reviewers (or author), CI, open
+  comments and age, plus the Zeron chats linked to the PR as chips (click
+  opens the chat). Review-requested rows have **Review** (`/code-review`) and
+  **Fix CI** (`/fix-ci`); **Review** becomes **Open chat** when a live review
+  chat already links the PR. Authored rows offer **Fix CI** while CI fails.
+  The box in the header (all tabs) takes a PR URL
   (`https://github.com/owner/repo/pull/123`) or `owner/repo#123`.
-- **Overview → My PRs → Needs my review**: rows without a linked chat get a
-  **Review** button; rows with one still jump to that chat.
-- **Command palette → Review PR…** opens ⇧⌘P with the PR box focused.
+- **Command palette → Review PR…** opens the PR page with the PR box focused.
 - **PR review sync** ([Work Outline](work-outline.md#pr-review-sync)): `⌘↩`
   on a PR review item, **Review** / **Fix CI** in its Details or right-click
   menu, the Inbox column's GitHub section, and ⇧⌘P's destination list send
@@ -144,10 +155,10 @@ Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
 `notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
 sync isn't available on this host yet".
 
-When the current project has a destination, ⇧⌘P lists the destination's PR
-items with their review Chats nested instead of the `pr_review`
-classification; without one the classified list stays (classification is
-being retired).
+When the current project has a destination, the PR page's **Review chats** tab
+lists the destination's PR items with their review Chats nested instead of the
+`pr_review` classification; without one the classified list stays
+(classification is being retired).
 
 ## PRs on work items
 

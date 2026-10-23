@@ -101,8 +101,11 @@ impl Shell {
 mod tests {
     use super::*;
     use crate::chat_type_view::ReviewStatus;
+    use crate::pr_page::fixtures::row;
+    use crate::pr_page::PageTab;
     use std::sync::{Arc, Mutex};
     use zeron_engine::pr_ticket_cache::{MyOpenPr, MyPrItem};
+    use zeron_proto::{ChatLinkSource, PrDashBucket, PrDashChat, PrDashRow, PrDashTab};
 
     type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
 
@@ -137,6 +140,11 @@ mod tests {
                 cx,
             )
         })
+    }
+
+    /// A leaked selector for `debug_bounds` (tests only).
+    fn sel(text: String) -> &'static str {
+        Box::leak(text.into_boxed_str())
     }
 
     fn draw(cx: &mut gpui::VisualTestContext) {
@@ -183,14 +191,95 @@ mod tests {
         })
     }
 
-    /// Script `StartPrReview` and open ⇧⌘P with two review-requested PRs.
-    fn open_page(
+    const T1: &str = "2026-10-20T10:00:00Z";
+    const T2: &str = "2026-10-21T10:00:00Z";
+    const T3: &str = "2026-10-22T10:00:00Z";
+
+    fn chat_link(id: &str, title: &str, archived: bool, is_review: bool) -> PrDashChat {
+        PrDashChat {
+            chat_id: id.into(),
+            title: title.into(),
+            source: ChatLinkSource::Manual,
+            archived,
+            is_review,
+            updated_at: None,
+        }
+    }
+
+    /// Review-requested fixtures: #7 and #8 wait on me (so the two review
+    /// buttons the older tests click are rows 0 and 1), #9 is approved and
+    /// already has a review chat; #7 also links a plain work chat.
+    fn review_rows() -> Vec<PrDashRow> {
+        let mut seven = row(7, PrDashBucket::ToReview, T3);
+        seven.title = "Add X".into();
+        seven.chats = vec![chat_link("chat-work", "Implement X", false, false)];
+        let mut eight = row(8, PrDashBucket::ToReview, T2);
+        eight.title = "Fix Y".into();
+        let mut nine = row(9, PrDashBucket::Approved, T1);
+        nine.title = "Tidy Z".into();
+        nine.chats = vec![
+            chat_link("chat-old-review", "Old review of Z", true, true),
+            chat_link("chat-review-9", "Review flagship#9", false, true),
+        ];
+        vec![seven, eight, nine]
+    }
+
+    /// Authored fixtures: two needs-you rows (#21 newer than #22), a
+    /// needs-you draft, one in review and one ready.
+    fn authored_rows() -> Vec<PrDashRow> {
+        let mut needs = row(21, PrDashBucket::NeedsYou, T3);
+        needs.reasons = vec!["2 checks failing".into()];
+        needs.ci = Some("FAILURE".into());
+        let older = row(22, PrDashBucket::NeedsYou, T1);
+        let mut draft = row(24, PrDashBucket::NeedsYou, T3);
+        draft.draft = true;
+        vec![
+            needs,
+            older,
+            row(23, PrDashBucket::InReview, T2),
+            draft,
+            row(25, PrDashBucket::Ready, T2),
+        ]
+    }
+
+    fn dash_reply(rows: Vec<PrDashRow>) -> serde_json::Value {
+        serde_json::json!({
+            "me": "octo", "rows": rows, "fetchedAt": "2026-10-23T12:00:00Z",
+        })
+    }
+
+    type DashRows = Arc<Mutex<(Vec<PrDashRow>, Vec<PrDashRow>)>>;
+
+    /// Answer `PrDashboard` from `rows` (authored, review requested),
+    /// recording every call.
+    fn script_dash(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> (Calls, DashRows) {
+        let calls: Calls = Arc::default();
+        let rows: DashRows = Arc::new(Mutex::new((authored_rows(), review_rows())));
+        let (sink, source) = (calls.clone(), rows.clone());
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                let rows = source.lock().unwrap();
+                Ok(dash_reply(if params["tab"] == "authored" {
+                    rows.0.clone()
+                } else {
+                    rows.1.clone()
+                }))
+            }));
+        });
+        (calls, rows)
+    }
+
+    /// Script `StartPrReview` and `PrDashboard`, then open ⇧⌘P on `tab`.
+    fn open_page_on(
         shell: &Entity<Shell>,
         cx: &mut gpui::VisualTestContext,
+        tab: PageTab,
         answer: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
     ) -> (Calls, Entity<crate::chat_type_view::ChatTypeView>) {
         let calls: Calls = Arc::default();
         let sink = calls.clone();
+        script_dash(shell, cx);
         let page = shell.update(cx, |shell, cx| {
             shell.pr_review_script = Some(Arc::new(move |params| {
                 sink.lock().unwrap().push(params.clone());
@@ -199,11 +288,24 @@ mod tests {
             shell.open_pr_review_chats(cx);
             shell.ensure_pr_review_chats_page(cx)
         });
-        page.update(cx, |page, cx| {
-            page.set_review_prs(vec![item(7, "Add X"), item(8, "Fix Y")], cx)
-        });
+        draw(cx);
+        page.update(cx, |page, cx| page.set_tab(tab, cx));
         draw(cx);
         (calls, page)
+    }
+
+    /// ⇧⌘P on the "Review requested" tab (#7, #8, #9).
+    fn open_page(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        answer: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
+    ) -> (Calls, Entity<crate::chat_type_view::ChatTypeView>) {
+        open_page_on(
+            shell,
+            cx,
+            PageTab::Dash(PrDashTab::ReviewRequested),
+            answer,
+        )
     }
 
     #[gpui::test]
@@ -214,17 +316,17 @@ mod tests {
         let (shell, cx) = test_shell(cx, dir.path());
         let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-review", 2)));
         for selector in [
-            "pr-review-requested-row-0",
-            "pr-review-requested-review-0",
-            "pr-review-requested-fix-ci-0",
-            "pr-review-requested-row-1",
+            "pr-dash-row-0",
+            "pr-dash-review-0",
+            "pr-dash-fix-ci-0",
+            "pr-dash-row-1",
             "pr-review-url-input",
             "pr-review-url-submit",
         ] {
             assert!(cx.debug_bounds(selector).is_some(), "{selector} renders");
         }
 
-        click(cx, "pr-review-requested-review-0");
+        click(cx, "pr-dash-review-0");
         let first = calls.lock().unwrap()[0].clone();
         assert_eq!(first["repoOwner"], "acme");
         assert_eq!(first["repoName"], "flagship");
@@ -249,10 +351,10 @@ mod tests {
         // Fix CI is another request.
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
-        click(cx, "pr-review-requested-review-0");
+        click(cx, "pr-dash-review-0");
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
-        click(cx, "pr-review-requested-fix-ci-0");
+        click(cx, "pr-dash-fix-ci-0");
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1]["operationId"], op.as_str());
@@ -299,7 +401,7 @@ mod tests {
         let (_calls, page) = open_page(&shell, cx, |_| {
             Err("pr-review/fork: PR 8 comes from a fork; check it out by hand".into())
         });
-        click(cx, "pr-review-requested-review-1");
+        click(cx, "pr-dash-review-1");
         shell.read_with(cx, |shell, _| {
             assert!(
                 matches!(shell.route, Route::PrReviewChats),
@@ -316,7 +418,7 @@ mod tests {
             }
             other => panic!("expected an inline failure, got {other:?}"),
         }
-        assert!(cx.debug_bounds("pr-review-requested-status-1").is_some());
+        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
     }
 
     /// The git worktree failure Mikey hit, verbatim: multi-line stderr.
@@ -329,7 +431,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let (_calls, page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
-        click(cx, "pr-review-requested-review-1");
+        click(cx, "pr-dash-review-1");
         let text = match page.read_with(cx, |page, _| {
             page.review_status("https://github.com/acme/flagship/pull/8")
         }) {
@@ -346,12 +448,12 @@ mod tests {
             assert!(text.contains(line), "{line} in {text}");
         }
         // Rendered as the shared error card, with its Copy button.
-        assert!(cx.debug_bounds("pr-review-requested-status-1").is_some());
+        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
         assert!(
-            cx.debug_bounds("pr-review-requested-status-1-error")
+            cx.debug_bounds("pr-dash-status-1-error")
                 .is_some()
         );
-        click(cx, "pr-review-requested-status-1-error-copy");
+        click(cx, "pr-dash-status-1-error-copy");
         let copied = cx
             .read_from_clipboard()
             .and_then(|item| item.text())
@@ -364,7 +466,7 @@ mod tests {
         // It stays: a later frame does not clear it.
         draw(cx);
         assert!(
-            cx.debug_bounds("pr-review-requested-status-1-error")
+            cx.debug_bounds("pr-dash-status-1-error")
                 .is_some()
         );
     }
@@ -459,7 +561,9 @@ mod tests {
             snapshot.space_settings.pr_review_sync_work_item_id = Some(LAUNCH.into());
             state.set_work_outline_for_test(snapshot);
         });
-        let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-item-review", 0)));
+        let (calls, _page) = open_page_on(&shell, cx, PageTab::Chats, |_| {
+            Ok(reply("chat-item-review", 0))
+        });
         for selector in [
             "pr-destination-rows",
             "pr-destination-row-w-api",
@@ -489,8 +593,360 @@ mod tests {
     fn without_a_destination_the_classification_list_stays(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
-        let (_calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat", 0)));
+        let (_calls, _page) = open_page_on(&shell, cx, PageTab::Chats, |_| Ok(reply("chat", 0)));
         assert!(cx.debug_bounds("pr-destination-rows").is_none());
         assert!(cx.debug_bounds("chat-type-rows").is_some());
+    }
+
+    // ---- the PR page's pr-dash tabs ----
+
+    fn lines(
+        page: &Entity<crate::chat_type_view::ChatTypeView>,
+        cx: &mut gpui::VisualTestContext,
+        tab: PrDashTab,
+    ) -> Vec<String> {
+        page.read_with(cx, |page, cx| page.dash_lines(tab, cx))
+    }
+
+    fn authored_page(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (Calls, Entity<crate::chat_type_view::ChatTypeView>) {
+        open_page_on(shell, cx, PageTab::Dash(PrDashTab::Authored), |_| {
+            Ok(reply("chat-review", 0))
+        })
+    }
+
+    #[gpui::test]
+    fn tabs_keep_their_own_rows_and_filters(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        // Default tab: Authored by me, grouped in bucket order, drafts hidden.
+        assert_eq!(
+            lines(&page, cx, PrDashTab::Authored),
+            ["● Needs you · 2", "#21", "#22", "✓ Ready to merge · 1", "#25", "· In review · 1", "#23"]
+        );
+        for selector in ["pr-page-tab-authored", "pr-page-tab-review-requested", "pr-page-tab-chats"] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        assert!(cx.debug_bounds("pr-review-url-input").is_some(), "URL box on every tab");
+
+        // A chip filter on this tab ...
+        click(cx, "pr-dash-chip-authored-ready");
+        assert_eq!(
+            lines(&page, cx, PrDashTab::Authored),
+            ["✓ Ready to merge · 1", "#25"]
+        );
+        // ... does not leak into the other tab, which shows its own rows.
+        click(cx, "pr-page-tab-review-requested");
+        assert_eq!(
+            lines(&page, cx, PrDashTab::ReviewRequested),
+            ["● Waiting on you · 2", "#7", "#8", "✓ Approved · 1", "#9"]
+        );
+        assert!(cx.debug_bounds("pr-dash-row-2").is_some());
+        assert!(cx.debug_bounds("pr-dash-chip-review-requested-to-review").is_some());
+        assert!(cx.debug_bounds("pr-dash-chip-authored-ready").is_none());
+        // Back: the authored chip selection is still there.
+        click(cx, "pr-page-tab-authored");
+        assert_eq!(
+            lines(&page, cx, PrDashTab::Authored),
+            ["✓ Ready to merge · 1", "#25"]
+        );
+        // The chats tab keeps the old table.
+        click(cx, "pr-page-tab-chats");
+        assert!(cx.debug_bounds("chat-type-rows").is_some());
+        assert!(cx.debug_bounds("pr-review-url-input").is_some());
+        assert!(cx.debug_bounds("pr-dash-rows").is_none());
+    }
+
+    #[gpui::test]
+    fn tab_badges_show_urgent_over_total_or_just_the_total(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        click(cx, "pr-page-tab-review-requested");
+        // Authored: 2 needs-you of 4 admitted rows (the draft is hidden).
+        assert_eq!(
+            page.read_with(cx, |page, _| page.dash_badge(PrDashTab::Authored)),
+            Some(crate::pr_page::Badge { text: "2 / 4".into(), alert: true })
+        );
+        assert!(cx.debug_bounds("pr-page-tab-badge-alert-authored").is_some());
+        // Review requested: 2 waiting on me of 3.
+        assert_eq!(
+            page.read_with(cx, |page, _| page.dash_badge(PrDashTab::ReviewRequested)),
+            Some(crate::pr_page::Badge { text: "2 / 3".into(), alert: true })
+        );
+        assert!(cx.debug_bounds("pr-page-tab-badge-alert-review-requested").is_some());
+
+        // Nothing urgent anywhere: a plain count, no alert class.
+        let calm = vec![row(31, PrDashBucket::InReview, T1), row(32, PrDashBucket::Approved, T2)];
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(move |_| Ok(dash_reply(calm.clone()))));
+        });
+        click(cx, "pr-dash-refresh");
+        assert_eq!(
+            page.read_with(cx, |page, _| page.dash_badge(PrDashTab::ReviewRequested)),
+            Some(crate::pr_page::Badge { text: "2".into(), alert: false })
+        );
+        assert!(cx.debug_bounds("pr-page-tab-badge-review-requested").is_some());
+        assert!(cx.debug_bounds("pr-page-tab-badge-alert-review-requested").is_none());
+    }
+
+    #[gpui::test]
+    fn hide_drafts_group_toggle_and_filters(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        let authored = |page: &Entity<crate::chat_type_view::ChatTypeView>, cx: &mut gpui::VisualTestContext| {
+            lines(page, cx, PrDashTab::Authored)
+        };
+        assert!(!authored(&page, cx).contains(&"#24".to_owned()), "drafts hidden by default");
+        assert_eq!(page.read_with(cx, |page, cx| page.dash_summary(PrDashTab::Authored, cx)), "4 of 4");
+
+        // Unchecking hide drafts admits the draft everywhere: list, chips,
+        // summary and the badge.
+        click(cx, "pr-dash-hide-drafts");
+        assert_eq!(
+            authored(&page, cx),
+            ["● Needs you · 3", "#21", "#24", "#22", "✓ Ready to merge · 1", "#25", "· In review · 1", "#23"]
+        );
+        assert_eq!(page.read_with(cx, |page, cx| page.dash_summary(PrDashTab::Authored, cx)), "5 of 5");
+        assert_eq!(
+            page.read_with(cx, |page, _| page.dash_badge(PrDashTab::Authored)).unwrap().text,
+            "3 / 5"
+        );
+        click(cx, "pr-dash-hide-drafts");
+        assert_eq!(authored(&page, cx).len(), 7);
+
+        // Group off: one flat list, newest first, no headers.
+        click(cx, "pr-dash-group");
+        assert_eq!(authored(&page, cx), ["#21", "#23", "#25", "#22"]);
+        assert!(cx.debug_bounds("pr-dash-group-needs-you").is_none());
+        click(cx, "pr-dash-group");
+        assert!(cx.debug_bounds("pr-dash-group-needs-you").is_some());
+
+        // Chips: one per bucket with rows; OR semantics; counts in the text.
+        assert!(cx.debug_bounds("pr-dash-chip-authored-needs-you").is_some());
+        assert!(cx.debug_bounds("pr-dash-chip-authored-comments").is_none());
+        click(cx, "pr-dash-chip-authored-ready");
+        click(cx, "pr-dash-chip-authored-in-review");
+        assert_eq!(
+            authored(&page, cx),
+            ["✓ Ready to merge · 1", "#25", "· In review · 1", "#23"]
+        );
+        assert_eq!(page.read_with(cx, |page, cx| page.dash_summary(PrDashTab::Authored, cx)), "2 of 4");
+        click(cx, "pr-dash-chip-authored-ready");
+        assert_eq!(authored(&page, cx), ["· In review · 1", "#23"]);
+
+        // Text search: every term must match (title, author, number, labels).
+        click(cx, "pr-dash-chip-authored-in-review");
+        let input = page.read_with(cx, |page, _| page.dash_search_input(PrDashTab::Authored));
+        input.update(cx, |input, cx| input.set_text("pr 25", cx));
+        draw(cx);
+        assert_eq!(authored(&page, cx), ["✓ Ready to merge · 1", "#25"]);
+        input.update(cx, |input, cx| input.set_text("octo nomatch", cx));
+        draw(cx);
+        assert!(authored(&page, cx).is_empty());
+        assert!(cx.debug_bounds("pr-dash-empty").is_some());
+    }
+
+    #[gpui::test]
+    fn the_page_shows_loading_then_errors_inline_and_keeps_the_last_rows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        assert!(cx.debug_bounds("pr-dash-error").is_none());
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(|_| Err("gh: HTTP 502".into())));
+        });
+        click(cx, "pr-dash-refresh");
+        assert!(cx.debug_bounds("pr-dash-error").is_some());
+        assert_eq!(lines(&page, cx, PrDashTab::Authored).len(), 7, "last good rows stay");
+        // A reply that carries `error` is shown the same way.
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(|_| {
+                Ok(serde_json::json!({
+                    "me": "octo", "rows": [], "fetchedAt": "2026-10-23T12:00:00Z",
+                    "error": "rate limited"
+                }))
+            }));
+        });
+        click(cx, "pr-dash-refresh");
+        assert!(cx.debug_bounds("pr-dash-error").is_some());
+        assert!(cx.debug_bounds("pr-dash-empty").is_some());
+        // A good reply clears it.
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(|_| Ok(dash_reply(vec![row(1, PrDashBucket::InReview, T1)]))));
+        });
+        click(cx, "pr-dash-refresh");
+        assert!(cx.debug_bounds("pr-dash-error").is_none());
+        assert_eq!(lines(&page, cx, PrDashTab::Authored), ["· In review · 1", "#1"]);
+    }
+
+    #[gpui::test]
+    fn the_page_says_loading_until_the_first_reply(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        script_dash(&shell, cx);
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        assert!(cx.debug_bounds("pr-dash-loading").is_some());
+        draw(cx);
+        assert!(cx.debug_bounds("pr-dash-loading").is_none());
+        assert!(cx.debug_bounds("pr-dash-row-0").is_some());
+    }
+
+    #[gpui::test]
+    fn the_visible_tab_refetches_every_minute_only_while_on_screen(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = authored_page(&shell, cx);
+        let (calls, _rows) = script_dash(&shell, cx);
+        let count = |calls: &Calls| {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.get("tab").is_some())
+                .count()
+        };
+        cx.executor().advance_clock(std::time::Duration::from_secs(61));
+        cx.run_until_parked();
+        assert_eq!(count(&calls), 1, "one refetch of the visible tab");
+        assert_eq!(calls.lock().unwrap()[0]["tab"], "authored");
+        assert_eq!(calls.lock().unwrap()[0]["force"], false);
+        // Off the page the timer fetches nothing.
+        shell.update(cx, |shell, cx| shell.open_overview(cx));
+        draw(cx);
+        cx.executor().advance_clock(std::time::Duration::from_secs(61));
+        cx.run_until_parked();
+        assert_eq!(count(&calls), 1);
+    }
+
+    #[gpui::test]
+    fn the_refresh_button_forces(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = authored_page(&shell, cx);
+        let (calls, _rows) = script_dash(&shell, cx);
+        click(cx, "pr-dash-refresh");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["force"], true);
+    }
+
+    #[gpui::test]
+    fn cmd_p_and_cmd_shift_p_open_the_pr_page(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        cx.update(|_, cx| {
+            apply_keymap(
+                cx,
+                &crate::settings::KeymapConfig::default(),
+                crate::settings::ComposerSendBehavior::default(),
+            );
+        });
+        script_dash(&shell, cx);
+        draw(cx);
+        for combo in ["mod-p", "mod-shift-p"] {
+            shell.update(cx, |shell, cx| shell.open_overview(cx));
+            draw(cx);
+            shell.read_with(cx, |shell, _| assert!(matches!(shell.route, Route::Overview)));
+            cx.simulate_keystrokes(&platform_combo(combo));
+            draw(cx);
+            shell.read_with(cx, |shell, _| {
+                assert!(matches!(shell.route, Route::PrReviewChats), "{combo}")
+            });
+            assert!(cx.debug_bounds("pr-page-tab-authored").is_some(), "{combo}");
+        }
+    }
+
+    #[gpui::test]
+    fn a_linked_chat_chip_opens_that_chat(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("unused", 0)));
+        // #7 links a work chat; #9 links an archived and a live review chat.
+        for selector in ["pr-dash-chat-0-0", "pr-dash-chat-2-0", "pr-dash-chat-2-1"] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        assert!(cx.debug_bounds("pr-dash-chat-1-0").is_none(), "#8 has no chats");
+        click(cx, "pr-dash-chat-0-0");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-work"));
+        });
+        assert!(calls.lock().unwrap().is_empty(), "no review was started");
+    }
+
+    #[gpui::test]
+    fn review_reopens_an_existing_review_chat_instead_of_starting_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-started", 0)));
+        // #9 has a live review chat: "Open chat" replaces Review.
+        assert!(cx.debug_bounds("pr-dash-open-chat-2").is_some());
+        assert!(cx.debug_bounds("pr-dash-review-2").is_none());
+        assert!(cx.debug_bounds("pr-dash-fix-ci-2").is_some());
+        // #7 and #8 have none (the plain work chat does not count).
+        for ix in [0, 1] {
+            assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_some());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-open-chat-{ix}"))).is_none());
+        }
+        click(cx, "pr-dash-open-chat-2");
+        assert!(calls.lock().unwrap().is_empty(), "StartPrReview is never called");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review-9"));
+        });
+        // A row with none starts one.
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        click(cx, "pr-dash-review-1");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 8);
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-started"));
+        });
+    }
+
+    #[gpui::test]
+    fn authored_rows_only_offer_fix_ci_when_ci_is_failing(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = authored_page(&shell, cx);
+        // Row 0 is #21 (CI failing); #22 passes.
+        assert!(cx.debug_bounds("pr-dash-fix-ci-0").is_some());
+        assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
+        for ix in 0..4 {
+            assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_none());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-open-chat-{ix}"))).is_none());
+        }
+        click(cx, "pr-dash-fix-ci-0");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 21);
+        assert_eq!(calls[0]["action"], "fixCi");
+    }
+
+    #[gpui::test]
+    fn the_number_opens_the_pr_in_the_browser(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, _page) = authored_page(&shell, cx);
+        click(cx, "pr-dash-number-0");
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/acme/flagship/pull/21")
+        );
     }
 }

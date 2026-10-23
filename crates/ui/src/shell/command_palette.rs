@@ -62,7 +62,7 @@ impl Entry {
             Self::Overview => Some(("Open overview", icons::WIDGET)),
             Self::PrReviewChats => Some(("Open PR review chats", icons::PULL_REQUEST)),
             Self::ReviewPr => Some(("Review PR…", icons::PULL_REQUEST)),
-            Self::MyPrs => Some(("Toggle My PRs", icons::PULL_REQUEST)),
+            Self::MyPrs => Some(("My PRs", icons::PULL_REQUEST)),
             Self::ImportSessionCanvasSessions => Some((
                 "Import all sessions from session_canvas",
                 icons::FOLDER_WITH_FILES,
@@ -237,7 +237,7 @@ impl Shell {
             Entry::Overview => self.open_overview(cx),
             Entry::PrReviewChats => self.open_pr_review_chats_focused(window, cx),
             Entry::ReviewPr => self.open_review_pr_input(window, cx),
-            Entry::MyPrs => self.toggle_my_prs(cx),
+            Entry::MyPrs => self.open_pr_review_chats_focused(window, cx),
             Entry::ImportSessionCanvasSessions => self.bulk_import_session_canvas_sessions(cx),
             Entry::WorkOutline(command) => self.run_work_outline_command(command, window, cx),
             Entry::Theme(_) => unreachable!(),
