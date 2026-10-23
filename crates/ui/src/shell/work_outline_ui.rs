@@ -107,33 +107,56 @@ pub(super) enum WorkOutlineModal {
     Shortcuts,
 }
 
-/// How a work item reference link should open.
+/// How a web reference link should open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ReferenceOpen {
-    /// The internal browser surface of the selected chat.
+    /// A browser tab in the side pane of the chat on screen.
     Internal(String),
+    /// The route has no side pane: show `chat_id`, with the browser tab
+    /// beside it.
+    InChat {
+        navigation: String,
+        chat_id: String,
+    },
     External(String),
     Rejected,
 }
 
-/// Pure routing for [`Shell::open_work_item_reference`]. Only http(s) URLs
-/// pass (`LinkTarget` validation). The internal browser exists only on the
-/// Chat route with a chat selected and the web-link preference on; from
-/// Overview-hosted details there is no source chat, so the external browser
-/// is used (m0-contract section 7).
+/// Where a reference could open in Zeron.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SurfaceHost {
+    /// The route on screen hosts the side pane (the Chat route with a chat).
+    Here,
+    /// The route has none; this chat can host it after a route switch.
+    Chat(String),
+    /// Nothing can host it.
+    Nowhere,
+}
+
+/// Pure routing for [`Shell::open_web_reference`]. Only http(s) URLs pass
+/// (`LinkTarget` validation). `force_external` is the escape hatch (⌘-click):
+/// it beats the preference. Otherwise the preference decides, and the host
+/// decides where the tab goes (m0-contract section 7).
 pub(super) fn reference_open(
     url: &str,
-    on_chat_route_with_chat: bool,
+    host: &SurfaceHost,
     open_web_links_in_zeron: bool,
     embedded_platform: bool,
+    force_external: bool,
 ) -> ReferenceOpen {
     match LinkTarget::new(url, url).navigation {
         Err(_) => ReferenceOpen::Rejected,
         Ok(navigation) => {
-            if on_chat_route_with_chat && open_web_links_in_zeron && embedded_platform {
-                ReferenceOpen::Internal(navigation)
-            } else {
-                ReferenceOpen::External(navigation)
+            if force_external || !open_web_links_in_zeron || !embedded_platform {
+                return ReferenceOpen::External(navigation);
+            }
+            match host {
+                SurfaceHost::Here => ReferenceOpen::Internal(navigation),
+                SurfaceHost::Chat(chat_id) => ReferenceOpen::InChat {
+                    navigation,
+                    chat_id: chat_id.clone(),
+                },
+                SurfaceHost::Nowhere => ReferenceOpen::External(navigation),
             }
         }
     }
@@ -624,8 +647,8 @@ impl Shell {
             .unwrap_or(zeron_proto::HarnessId::ClaudeCode)
     }
 
-    /// Open the external reference of a work item per the web-link
-    /// preference. See [`reference_open`]. Never touches manual PR/ticket
+    /// The one entry point for web and PR links: [`Self::open_web_reference`]
+    /// without the ⌘-click escape hatch. Never touches manual PR/ticket
     /// links: it only opens a URL.
     pub(crate) fn open_work_item_reference(
         &mut self,
@@ -633,20 +656,49 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_web_reference(url, false, window, cx);
+    }
+
+    /// Open a web or PR link per the web-link preference, from any surface.
+    /// With the preference on it opens in a browser tab of the side pane
+    /// (focusing a tab already on that page); on a route without a side pane
+    /// it goes to a chat that has one (see [`Self::reference_host`]).
+    /// `force_external` (⌘-click, "Open in external browser") and the
+    /// preference being off open the external browser.
+    pub(crate) fn open_web_reference(
+        &mut self,
+        url: &str,
+        force_external: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.open_artifact_link(url, window, cx) {
             return;
         }
-        let on_chat = matches!(self.route, Route::Chat) && !self.active_chat.is_empty();
+        let host = self.reference_host(url, cx);
         let in_app = crate::settings::current(cx).open_web_links_in_zeron;
         match reference_open(
             url,
-            on_chat,
+            &host,
             in_app,
             cfg!(any(target_os = "macos", target_os = "linux")),
+            force_external,
         ) {
-            ReferenceOpen::Internal(navigation) => {
-                self.set_surfaces_open(true, cx);
-                self.add_browser_surface(Some(navigation), window, cx);
+            ReferenceOpen::Internal(navigation) => self.open_browser_url(navigation, window, cx),
+            ReferenceOpen::InChat {
+                navigation,
+                chat_id,
+            } => {
+                self.open_chat(chat_id.clone(), cx);
+                // Selecting another chat reaches `active_chat` only once the
+                // state observers have run, and the tab needs the session.
+                cx.defer_in(window, move |this, window, cx| {
+                    if this.active_chat == chat_id {
+                        this.open_browser_url(navigation, window, cx);
+                    } else {
+                        cx.open_url(&navigation);
+                    }
+                });
             }
             ReferenceOpen::External(navigation) => cx.open_url(&navigation),
             ReferenceOpen::Rejected => {
@@ -654,6 +706,52 @@ impl Shell {
                 cx.notify();
             }
         }
+    }
+
+    /// Where `url` can open in Zeron. The side pane exists only on the Chat
+    /// route, so from the PR page, the Outline or the Overview it goes to a
+    /// chat: the PR's review chat, else the chat the shell has selected.
+    /// With neither there is no session to hold a tab, so it opens
+    /// externally.
+    fn reference_host(&self, url: &str, cx: &App) -> SurfaceHost {
+        if matches!(self.route, Route::Chat) && !self.active_chat.is_empty() {
+            return SurfaceHost::Here;
+        }
+        if let Some(chat_id) = self.review_chat_for_url(url, cx) {
+            return SurfaceHost::Chat(chat_id);
+        }
+        let selected = self.state.read(cx).selected_chat.clone();
+        match selected {
+            Some(chat_id) if !chat_id.is_empty() => SurfaceHost::Chat(chat_id),
+            _ => SurfaceHost::Nowhere,
+        }
+    }
+
+    /// The most recent review chat of the PR `url` names, across every Space
+    /// (a PR link carries no Space).
+    fn review_chat_for_url(&self, url: &str, cx: &App) -> Option<String> {
+        let pr = crate::chat_work_context::parse_pr_url(url)?;
+        let state = self.state.read(cx);
+        let mut snapshots: Vec<_> = state
+            .spaces
+            .iter()
+            .map(|space| state.work_outline(&space.id).snapshot().cloned())
+            .collect();
+        if snapshots.is_empty() {
+            snapshots.push(None);
+        }
+        let mut chats = Vec::new();
+        for snapshot in snapshots {
+            chats.extend(crate::review_chats::for_pr(
+                cx,
+                snapshot.as_deref(),
+                &pr,
+                &[],
+                |id| crate::review_chats::fact_from_state(state, id),
+            ));
+        }
+        chats.sort_by(|a, b| b.updated.cmp(&a.updated));
+        crate::review_chats::primary(&chats).map(|chat| chat.chat_id.clone())
     }
 
     /// Show a window modal (discard draft, move with descendants, ...) and
@@ -1311,35 +1409,74 @@ mod tests {
     }
 
     #[test]
-    fn references_open_externally_unless_a_chat_browser_exists() {
+    fn references_open_internally_when_a_chat_can_host_the_browser() {
         let url = "https://github.com/acme/launch/pull/42";
-        // Overview-hosted details: external, whatever the preference.
-        assert!(matches!(
-            reference_open(url, false, true, true),
-            ReferenceOpen::External(_)
-        ));
-        assert!(matches!(
-            reference_open(url, true, true, true),
-            ReferenceOpen::Internal(_)
-        ));
-        assert!(matches!(
-            reference_open(url, true, false, true),
-            ReferenceOpen::External(_)
-        ));
-        assert!(matches!(
-            reference_open(url, true, true, false),
-            ReferenceOpen::External(_)
-        ));
+        let nav = "https://github.com/acme/launch/pull/42".to_string();
+        // The chat route hosts the pane itself.
+        assert_eq!(
+            reference_open(url, &SurfaceHost::Here, true, true, false),
+            ReferenceOpen::Internal(nav.clone())
+        );
+        // A route without a pane goes to a chat with the browser beside it.
+        assert_eq!(
+            reference_open(url, &SurfaceHost::Chat("review".into()), true, true, false),
+            ReferenceOpen::InChat {
+                navigation: nav.clone(),
+                chat_id: "review".into()
+            }
+        );
+        // No chat anywhere: nothing can hold a tab.
+        assert_eq!(
+            reference_open(url, &SurfaceHost::Nowhere, true, true, false),
+            ReferenceOpen::External(nav.clone())
+        );
+    }
+
+    #[test]
+    fn references_stay_external_when_the_preference_is_off_or_forced() {
+        let url = "https://github.com/acme/launch/pull/42";
+        for host in [
+            SurfaceHost::Here,
+            SurfaceHost::Chat("review".into()),
+            SurfaceHost::Nowhere,
+        ] {
+            // Preference off.
+            assert!(
+                matches!(
+                    reference_open(url, &host, false, true, false),
+                    ReferenceOpen::External(_)
+                ),
+                "{host:?}"
+            );
+            // ⌘-click wins over the preference.
+            assert!(
+                matches!(
+                    reference_open(url, &host, true, true, true),
+                    ReferenceOpen::External(_)
+                ),
+                "{host:?}"
+            );
+            // No embedded browser on this platform.
+            assert!(
+                matches!(
+                    reference_open(url, &host, true, false, false),
+                    ReferenceOpen::External(_)
+                ),
+                "{host:?}"
+            );
+        }
     }
 
     #[test]
     fn non_web_references_are_rejected() {
         for url in ["file:///etc/passwd", "javascript:alert(1)", "not a url", ""] {
-            assert_eq!(
-                reference_open(url, false, true, true),
-                ReferenceOpen::Rejected,
-                "{url}"
-            );
+            for force in [false, true] {
+                assert_eq!(
+                    reference_open(url, &SurfaceHost::Here, true, true, force),
+                    ReferenceOpen::Rejected,
+                    "{url}"
+                );
+            }
         }
     }
 

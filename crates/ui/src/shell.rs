@@ -3125,10 +3125,41 @@ impl Shell {
         let outcome = resolved.web_outcome(cfg!(any(target_os = "macos", target_os = "linux")));
         if outcome == LinkOutcome::Internal {
             self.leave_overview_for_chat(cx);
-            self.set_surfaces_open(true, cx);
-            self.add_browser_surface(activation.target.navigation.clone().ok(), window, cx);
+            match activation.target.navigation.clone().ok() {
+                Some(url) => self.open_browser_url(url, window, cx),
+                None => {
+                    self.set_surfaces_open(true, cx);
+                    self.add_browser_surface(None, window, cx);
+                }
+            }
         }
         outcome
+    }
+
+    /// Show `url` in the current session's side browser: focus the tab that
+    /// already shows it, else open a new one. Opens the pane if it is closed.
+    fn open_browser_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_surfaces_open(true, cx);
+        if let Some(id) = self.browser_tab_showing(&url, cx) {
+            self.set_right_active(RightSurface::Browser(id), cx);
+            cx.notify();
+            return;
+        }
+        self.add_browser_surface(Some(url), window, cx);
+    }
+
+    /// The current session's browser tab already on `url`, if any.
+    fn browser_tab_showing(&self, url: &str, cx: &App) -> Option<u64> {
+        self.right_tabs
+            .get(&self.panel_key(cx))?
+            .iter()
+            .find_map(|surface| {
+                let RightSurface::Browser(id) = surface else {
+                    return None;
+                };
+                let page = self.browsers.get(id)?.read(cx).page.url.clone()?;
+                crate::browser::model::same_page(&page, url).then_some(*id)
+            })
     }
 
     /// Browser tabs are independent instances owned by the current session.
@@ -14416,7 +14447,11 @@ mod exit_regressions {
                     shell.resolved_right_active(cx),
                     RightSurface::Browser(first)
                 );
+                // The same page again focuses its tab; a page's own new-tab
+                // request (target=_blank) still opens another.
                 shell.activate_session_link(&activation, window, cx);
+                assert_eq!(shell.browsers.len(), 1);
+                shell.add_browser_surface(Some("https://example.com/docs".into()), window, cx);
                 assert_eq!(shell.browsers.len(), 2);
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
                     settings.open_web_links_in_zeron = false;
@@ -14432,13 +14467,13 @@ mod exit_regressions {
                     LinkOutcome::Internal,
                     "the explicit internal action ignores the default preference"
                 );
-                assert_eq!(shell.browsers.len(), 3);
+                assert_eq!(shell.browsers.len(), 2, "and focuses the open tab");
                 activation.action = LinkAction::External;
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
                     LinkOutcome::External("https://example.com/docs".into())
                 );
-                assert_eq!(shell.browsers.len(), 3);
+                assert_eq!(shell.browsers.len(), 2);
                 activation.source_session = Some("other-session".into());
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
@@ -14452,7 +14487,7 @@ mod exit_regressions {
                     shell.activate_session_link(&activation, window, cx),
                     LinkOutcome::Rejected
                 );
-                assert_eq!(shell.browsers.len(), 3);
+                assert_eq!(shell.browsers.len(), 2);
                 shell.state.update(cx, |state, _| {
                     state.selected_chat = Some("first-session".into())
                 });
@@ -14478,7 +14513,7 @@ mod exit_regressions {
                     shell.activate_session_link(&activation, window, cx),
                     LinkOutcome::Internal
                 );
-                assert_eq!(shell.browsers.len(), 4);
+                assert_eq!(shell.browsers.len(), 2);
                 let weak = shell.browsers[&first].downgrade();
                 shell.close_right_surface(RightSurface::Browser(first), window, cx);
                 weak

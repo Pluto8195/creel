@@ -84,6 +84,9 @@ impl Shell {
                 }
             }
             GithubMenuAction::OpenOnGithub(url) => self.open_work_item_reference(&url, window, cx),
+            GithubMenuAction::OpenOnGithubExternal(url) => {
+                self.open_web_reference(&url, true, window, cx)
+            }
             GithubMenuAction::Refresh(pr) => {
                 crate::github::store::request_status(&self.state, &pr, true, cx)
             }

@@ -235,8 +235,13 @@ resume cwd mismatch is an error, and `zeron/*` branch auto-minting and auto-rena
   when nothing is selected; they are never hidden.
 - Child Chats (`parentChatId`) render nested under their parent Chat in Outline when the parent is
   shown, otherwise under their own assignment or Unassociated Chats. They never disappear.
-- External references open per the web-link preference where an internal browser surface exists;
-  from Overview-hosted Work Item Details (no source Chat) they open in the external browser.
+- Web and PR links open per the web-link preference from every surface (PR page, outline rows and
+  details, chat strip, transcript) through one Shell entry point, `open_web_reference`. On the Chat
+  route the browser tab opens in the side pane; a tab already on that page is focused instead of
+  duplicated. Routes without a side pane (PR page, Overview, Outline) switch to a chat that has
+  one: the PR's review chat, else the chat the shell has selected; with neither they open
+  externally. ⌘-click, the "Open in external browser" entries, and the preference being off always
+  open the external browser. (Amends the earlier "Overview-hosted details open externally" rule.)
 - Canvas positions are never written by outline code (`position_for` must not be called from
   association paths).
 

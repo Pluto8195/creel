@@ -345,6 +345,7 @@ fn item_menu_offers_github_entries(cx: &mut gpui::TestAppContext) {
             "github-review",
             "github-fix-ci",
             "github-open",
+            "github-open-external",
             "github-refresh",
         ] {
             assert!(api.contains(&id), "{id}");

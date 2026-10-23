@@ -176,7 +176,7 @@ impl Element for LinkRanges {
                             {
                                 activate_link(
                                     click_target.clone(),
-                                    LinkAction::Primary,
+                                    click_action(event),
                                     click_ui.as_ref(),
                                     window,
                                     cx,
@@ -463,6 +463,16 @@ impl Element for LinkRanges {
         }
     }
 }
+/// What a click on a link does: the web-link preference decides
+/// (`Primary`), except ⌘-click, the escape hatch to the external browser.
+fn click_action(event: &ClickEvent) -> LinkAction {
+    if event.modifiers().secondary() {
+        LinkAction::External
+    } else {
+        LinkAction::Primary
+    }
+}
+
 fn click_is_activation(event: &ClickEvent) -> bool {
     match event {
         ClickEvent::Mouse(event) => {
@@ -478,6 +488,38 @@ fn click_is_activation(event: &ClickEvent) -> bool {
 mod tests {
     use super::*;
     use gpui::{MouseClickEvent, MouseDownEvent, MouseUpEvent, TestAppContext, point};
+    #[test]
+    fn command_click_opens_the_external_browser() {
+        let click = |modifiers: gpui::Modifiers| {
+            ClickEvent::Mouse(MouseClickEvent {
+                down: MouseDownEvent {
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers,
+                    ..Default::default()
+                },
+                up: MouseUpEvent {
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers,
+                    ..Default::default()
+                },
+            })
+        };
+        assert_eq!(
+            click_action(&click(gpui::Modifiers::default())),
+            LinkAction::Primary
+        );
+        assert_eq!(
+            click_action(&click(gpui::Modifiers::secondary_key())),
+            LinkAction::External
+        );
+        // A keyboard activation never carries modifiers.
+        assert_eq!(
+            click_action(&ClickEvent::Keyboard(Default::default())),
+            LinkAction::Primary
+        );
+    }
     #[test]
     fn selection_drags_and_secondary_clicks_do_not_navigate() {
         let mut event = MouseClickEvent {

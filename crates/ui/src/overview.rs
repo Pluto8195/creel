@@ -4074,6 +4074,7 @@ impl Overview {
                     }
                     let url = pr_link.url.clone();
                     let open_url = url.clone();
+                    let open_shell = self.shell.clone();
                     let pr_source = pr_link.source;
                     div()
                         .min_w_0()
@@ -4125,7 +4126,9 @@ impl Overview {
                                                 .child(SharedString::from(icon)),
                                         )
                                     })
-                                    .on_click(move |_, _, cx| cx.open_url(&open_url)),
+                                    .on_click(
+                                        crate::github::chip::open_pr(Some(open_shell), open_url),
+                                    ),
                                 )
                                 .when(pr_source.is_some(), |el| {
                                     el.child(self.unlink_button(
@@ -4168,6 +4171,7 @@ impl Overview {
                 summary.push_str(&format!(" ({status})"));
             }
             let url = ticket.url.clone();
+            let ticket_shell = self.shell.clone();
             let ticket_source = link.and_then(|s| s.ticket_source);
             rows.push(detail_row(
                 "linear ticket",
@@ -4196,7 +4200,7 @@ impl Overview {
                         })
                         .child(SharedString::from(summary))
                         .when_some(url, |el, url| {
-                            el.on_click(move |_, _, cx| cx.open_url(&url))
+                            el.on_click(crate::github::chip::open_pr(Some(ticket_shell), url))
                         }),
                     )
                     .when(ticket_source.is_some(), |el| {

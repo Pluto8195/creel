@@ -68,6 +68,20 @@ pub fn normalize_address(input: &str) -> Result<String, &'static str> {
     Ok(parsed.into())
 }
 
+/// Whether two addresses name the same page, for focusing an open tab rather
+/// than opening a duplicate. The fragment and a trailing path slash do not
+/// count; the query does.
+pub fn same_page(a: &str, b: &str) -> bool {
+    fn key(address: &str) -> Option<String> {
+        let mut url = url::Url::parse(&normalize_address(address).ok()?).ok()?;
+        url.set_fragment(None);
+        let path = url.path().trim_end_matches('/').to_owned();
+        url.set_path(&path);
+        Some(url.into())
+    }
+    matches!((key(a), key(b)), (Some(a), Some(b)) if a == b)
+}
+
 /// Chat links require an explicit web authority; never infer a scheme or
 /// silently strip controls, credentials, malformed escapes or backslashes.
 pub fn transcript_address(input: &str) -> Result<String, &'static str> {
@@ -166,6 +180,23 @@ mod tests {
         assert_eq!(presentation(false, true), Presentation::Hidden);
         assert_eq!(presentation(true, true), Presentation::Passthrough);
         assert_eq!(presentation(true, false), Presentation::Live);
+    }
+    #[test]
+    fn same_page_ignores_fragment_and_trailing_slash_only() {
+        assert!(same_page(
+            "https://github.com/acme/app/pull/4",
+            "https://github.com/acme/app/pull/4/#discussion_r1"
+        ));
+        assert!(same_page("https://Example.com", "https://example.com/"));
+        assert!(!same_page(
+            "https://github.com/acme/app/pull/4",
+            "https://github.com/acme/app/pull/5"
+        ));
+        assert!(!same_page(
+            "https://example.com/?a=1",
+            "https://example.com/?a=2"
+        ));
+        assert!(!same_page("file:///tmp/a", "file:///tmp/a"));
     }
     #[test]
     fn tab_labels_fall_back_to_host_then_browser() {

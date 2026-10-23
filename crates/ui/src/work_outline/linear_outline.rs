@@ -245,20 +245,15 @@ fn open_link(
     shell: Option<WeakEntity<crate::shell::Shell>>,
     url: String,
 ) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
-    move |_, window, cx| {
+    move |event, window, cx| {
         cx.stop_propagation();
-        let opened = shell
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .map(|shell| {
-                shell.update(cx, |shell, cx| {
-                    shell.open_work_item_reference(&url, window, cx)
-                })
-            })
-            .is_some();
-        if !opened {
-            cx.open_url(&url);
-        }
+        crate::github::chip::open_link(
+            shell.as_ref(),
+            &url,
+            crate::github::chip::click_forces_external(event),
+            window,
+            cx,
+        );
     }
 }
 

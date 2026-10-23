@@ -170,9 +170,15 @@ fn render_pull_request_badge(
         .when(interactive, |el| {
             el.cursor_pointer()
                 .hover(move |style| style.bg(color.opacity(0.16)).text_color(color))
-                .on_click(move |_, _, cx| {
+                .on_click(move |event, window, cx| {
                     cx.stop_propagation();
-                    cx.open_url(&url);
+                    crate::github::chip::open_link(
+                        None,
+                        &url,
+                        crate::github::chip::click_forces_external(event),
+                        window,
+                        cx,
+                    );
                 })
                 .tooltip(move |_, cx| {
                     cx.new(|_| ChangeRequestTooltip::new(&tooltip_summary))

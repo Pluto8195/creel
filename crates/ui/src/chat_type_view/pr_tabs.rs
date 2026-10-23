@@ -596,6 +596,7 @@ impl ChatTypeView {
             )
             .tooltip(move |_, cx| cx.new(|_| TextTooltip(dot_tip.clone())).into());
         let url = row.url.clone();
+        let number_shell = self.shell.clone();
         let number = div()
             .id(("pr-dash-number", ix))
             .debug_selector(move || format!("pr-dash-number-{ix}"))
@@ -606,10 +607,11 @@ impl ChatTypeView {
             .text_color(theme.accent)
             .hover(|el| el.underline())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(move |_, _, cx| cx.open_url(&url))
+            .on_click(crate::github::chip::open_pr(Some(number_shell), url))
             .child(SharedString::from(format!("#{}", row.number)));
 
         // Title, tags, linked chats.
+        let tag_shell = self.shell.clone();
         let tags = pr_page::title_tags(row)
             .into_iter()
             .enumerate()
@@ -624,11 +626,12 @@ impl ChatTypeView {
                     .text_size(crate::typography::ui_rems(10.0))
                     .text_color(color)
                     .child(SharedString::from(tag.text));
+                let tag_shell = tag_shell.clone();
                 match tag.url {
                     Some(url) => pill
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .on_click(crate::github::chip::open_pr(Some(tag_shell), url))
                         .into_any_element(),
                     None => pill.into_any_element(),
                 }

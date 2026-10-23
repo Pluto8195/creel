@@ -25,6 +25,8 @@ pub(crate) enum GithubMenuAction {
     },
     /// Open the PR URL (web-link preference).
     OpenOnGithub(String),
+    /// Open the PR URL in the external browser, whatever the preference.
+    OpenOnGithubExternal(String),
     /// `PrStatus` with `forceRefresh`.
     Refresh(PullRequestRef),
 }
@@ -83,6 +85,12 @@ pub(crate) fn item_entries(snapshot: &WorkOutlineSnapshot, item_id: &str) -> Vec
                 "Open on GitHub",
                 icons::ARROW_UP_RIGHT,
                 MenuAction::Github(GithubMenuAction::OpenOnGithub(pr.url.clone())),
+            ),
+            MenuEntry::new(
+                "github-open-external",
+                "Open in External Browser",
+                icons::ARROW_UP_RIGHT,
+                MenuAction::Github(GithubMenuAction::OpenOnGithubExternal(pr.url.clone())),
             ),
             MenuEntry::new(
                 "github-refresh",
@@ -153,6 +161,7 @@ mod tests {
                 "github-review",
                 "github-fix-ci",
                 "github-open",
+                "github-open-external",
                 "github-refresh",
                 "github-use-destination"
             ]
