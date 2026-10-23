@@ -43,6 +43,9 @@ const NEEDS_WIDTH: f32 = 16.0;
 const REVIEW_WIDTH: f32 = 12.0;
 const CI_WIDTH: f32 = 8.0;
 const PR_WIDTH: f32 = 14.0;
+/// An item with several PRs shows this many PR icons in all, then "+N".
+pub(crate) const MAX_PR_ICONS: usize = 3;
+const MORE_WIDTH: f32 = 18.0;
 /// What the row spends outside the title, the cluster and the other chips:
 /// list padding, row padding and border, the status glyph and the gaps.
 const ROW_CHROME: f32 = 12.0 + 8.0 + 2.0 + 12.0 + 12.0;
@@ -132,6 +135,33 @@ pub(crate) fn author_tooltip(author: &str, viewer: Option<&str>) -> String {
         Some(_) => format!("Author: {author}"),
         None => "Author unknown".to_string(),
     }
+}
+
+/// How many of an item's `total` PRs get an icon, and how many are left for
+/// the "+N" mark.
+pub(crate) fn pr_icon_split(total: usize) -> (usize, usize) {
+    let shown = total.clamp(1, MAX_PR_ICONS);
+    (shown, total.saturating_sub(shown))
+}
+
+/// The PR slot's width for `total` PRs: the icons, and the "+N" mark when
+/// some don't get one.
+pub(crate) fn pr_slot_width(total: usize) -> f32 {
+    let (shown, overflow) = pr_icon_split(total);
+    let marks = shown + usize::from(overflow > 0);
+    PR_WIDTH * shown as f32
+        + if overflow > 0 { MORE_WIDTH } else { 0.0 }
+        + SLOT_GAP * (marks as f32 - 1.0)
+}
+
+/// The tooltip line of a PR beyond the first: `Also acme/app#43 · Open`.
+pub(crate) fn more_pr_line(pr: &PullRequestRef, entry: Option<&PrEntry>) -> String {
+    let state = match entry {
+        Some(PrEntry::Ready { status, .. }) => chip::state_label(status.state),
+        Some(PrEntry::Failed { .. }) => "unavailable",
+        _ => "loading",
+    };
+    format!("Also {} \u{00b7} {state}", pr.external_id())
 }
 
 /// The PR icon's tooltip.
@@ -235,8 +265,9 @@ pub(crate) fn slot_room(row_width: f32, indent: f32, other_chips: f32) -> f32 {
     row_width - ROW_CHROME - indent - other_chips - TITLE_MIN_WIDTH
 }
 
-/// One fixed-width slot; `content` centered (author: right-aligned).
-fn slot(
+/// One fixed-width slot; `content` centered (author: right-aligned). Also
+/// the Linear row cluster's slots.
+pub(crate) fn slot(
     selector: String,
     width: f32,
     right_aligned: bool,
@@ -288,30 +319,29 @@ pub(crate) struct PrRowArgs<'a> {
     pub chat_count: u32,
     /// "Including descendants: …" (shown as the tooltip's second line).
     pub totals_line: Option<String>,
+    /// The item's further PRs (after `pr`), in link order: each gets its own
+    /// icon in the PR slot, up to [`MAX_PR_ICONS`] in all, then "+N".
+    pub more: Vec<MorePr<'a>>,
     pub visible: VisibleSlots,
 }
 
-/// The PR cluster of one row. Without a fetched status (loading, failed) only
-/// the PR icon and the attention slot carry content; the other slots stay
-/// empty so the columns still line up.
-pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
-    let PrRowArgs {
-        key,
-        pr,
-        entry,
-        shell,
-        viewer,
-        attention,
-        chat_count,
-        totals_line,
-        visible,
-    } = args;
-    let status = match entry {
-        Some(PrEntry::Ready { status, .. }) => Some(status.as_ref()),
-        _ => None,
-    };
-    let (pr_path, pr_color, pr_tip, line) = match (entry, status) {
-        (_, Some(status)) => {
+/// One further PR of the item.
+pub(crate) struct MorePr<'a> {
+    pub pr: &'a PullRequestRef,
+    pub entry: Option<&'a PrEntry>,
+}
+
+/// The PR icon, its color, its tooltip and the line the cluster's tooltip
+/// starts with, for any entry state (loading and failed ones read plainly).
+fn pr_mark_parts(
+    pr: &PullRequestRef,
+    entry: Option<&PrEntry>,
+    chat_count: u32,
+    viewer: Option<&str>,
+    theme: &Theme,
+) -> (&'static str, Hsla, String, String) {
+    match entry {
+        Some(PrEntry::Ready { status, .. }) => {
             let (path, tone) = pr_icon(status.state);
             (
                 path,
@@ -320,7 +350,7 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
                 group_line(status, chat_count, viewer),
             )
         }
-        (Some(PrEntry::Failed { error, .. }), None) => {
+        Some(PrEntry::Failed { error, .. }) => {
             let text = format!("{}: {}", pr.external_id(), error.user_text());
             let color = if error.not_available() {
                 theme.text_faint
@@ -343,7 +373,64 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
                 text,
             )
         }
+    }
+}
+
+/// A clickable PR icon (state-colored, tooltip), the PR slot's content.
+fn pr_mark(
+    id: String,
+    path: &'static str,
+    color: Hsla,
+    tip: String,
+    shell: Option<WeakEntity<crate::shell::Shell>>,
+    url: String,
+    theme: &Theme,
+) -> AnyElement {
+    let selector = id.clone();
+    let tip: SharedString = tip.into();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .w(px(PR_WIDTH))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .cursor_pointer()
+        .hover(|el| el.bg(theme.element_hover))
+        .child(crate::icons::icon(path).size(px(12.0)).text_color(color))
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(chip::open_pr(shell, url))
+        .into_any_element()
+}
+
+/// The PR cluster of one row. Without a fetched status (loading, failed) only
+/// the PR icon and the attention slot carry content; the other slots stay
+/// empty so the columns still line up.
+pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
+    let PrRowArgs {
+        key,
+        pr,
+        entry,
+        shell,
+        viewer,
+        attention,
+        chat_count,
+        totals_line,
+        more,
+        visible,
+    } = args;
+    let status = match entry {
+        Some(PrEntry::Ready { status, .. }) => Some(status.as_ref()),
+        _ => None,
     };
+    let (pr_path, pr_color, pr_tip, line) = pr_mark_parts(pr, entry, chat_count, viewer, theme);
+    let mut line = line;
+    for extra in &more {
+        line = format!("{line}\n{}", more_pr_line(extra.pr, extra.entry));
+    }
     let line = match totals_line {
         Some(totals) => format!("{line}\n{totals}"),
         None => line,
@@ -402,28 +489,58 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
                 .into_any_element()
         });
 
-    let pr_id = format!("outline-pr-{key}");
-    let pr_selector = pr_id.clone();
-    let pr_tip: SharedString = pr_tip.into();
-    let pr_mark = div()
-        .id(SharedString::from(pr_id))
-        .debug_selector(move || pr_selector.clone())
+    let (icons, overflow) = pr_icon_split(1 + more.len());
+    let mut marks = vec![pr_mark(
+        format!("outline-pr-{key}"),
+        pr_path,
+        pr_color,
+        pr_tip,
+        shell.clone(),
+        pr.url.clone(),
+        theme,
+    )];
+    for (index, extra) in more.iter().take(icons - 1).enumerate() {
+        let (path, color, tip, _) = pr_mark_parts(extra.pr, extra.entry, 0, viewer, theme);
+        marks.push(pr_mark(
+            format!("outline-pr-{key}-{}", index + 1),
+            path,
+            color,
+            tip,
+            shell.clone(),
+            extra.pr.url.clone(),
+            theme,
+        ));
+    }
+    if overflow > 0 {
+        let hidden = more
+            .iter()
+            .skip(icons - 1)
+            .map(|extra| more_pr_line(extra.pr, extra.entry))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tip: SharedString = hidden.into();
+        let selector = format!("outline-pr-more-{key}");
+        marks.push(
+            div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .w(px(MORE_WIDTH))
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(format!("+{overflow}")))
+                .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                .into_any_element(),
+        );
+    }
+    let pr_slot_content = div()
         .flex_none()
         .flex()
         .items_center()
-        .justify_center()
-        .rounded(px(3.0))
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.element_hover))
-        .child(
-            crate::icons::icon(pr_path)
-                .size(px(12.0))
-                .text_color(pr_color),
-        )
-        .tooltip(move |_, cx| cx.new(|_| TextTooltip(pr_tip.clone())).into())
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(chip::open_pr(shell, pr.url.clone()))
+        .gap(px(SLOT_GAP))
+        .children(marks)
         .into_any_element();
+    let slot_width = pr_slot_width(1 + more.len());
 
     let line: SharedString = line.into();
     let group_selector = format!("outline-pr-slots-{key}");
@@ -473,9 +590,9 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
         })
         .child(slot(
             format!("outline-pr-slot-pr-{key}"),
-            PR_WIDTH,
+            slot_width,
             false,
-            Some(pr_mark),
+            Some(pr_slot_content),
         ))
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(line.clone())).into())
         .into_any_element()

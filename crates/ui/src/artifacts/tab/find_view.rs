@@ -49,21 +49,36 @@ const POLL_MS: u64 = 350;
 /// How soon after a find command the page is asked for the new count.
 const COUNT_DELAY_MS: u64 = 70;
 
-/// Bind ⌘F / ⌘G / ⇧⌘G (Ctrl elsewhere) in the Artifact tab. Registered after
-/// the app's global ⌘F so a tab with focus wins ties.
+/// The Artifact tab's keys (stored `mod-…` form), shared by the bindings and
+/// the `?` shortcut reference so they cannot drift apart.
+pub(crate) const FIND_OPEN_COMBO: &str = "mod-f";
+pub(crate) const FIND_NEXT_COMBO: &str = "mod-g";
+pub(crate) const FIND_PREVIOUS_COMBO: &str = "mod-shift-g";
+pub(crate) const SECTION_PREVIOUS_COMBO: &str = "alt-up";
+pub(crate) const SECTION_NEXT_COMBO: &str = "alt-down";
+pub(crate) const FOCUS_INDEX_COMBO: &str = "mod-alt-s";
+/// The rail's own keys, while it has focus.
+pub(crate) const RAIL_COMBOS: [&str; 4] = ["up", "down", "home", "end"];
+
+/// Bind ⌘F / ⌘G / ⇧⌘G (Ctrl elsewhere) and the section keys in the Artifact
+/// tab. Registered after the app's global ⌘F so a tab with focus wins ties.
 pub(crate) fn bind_keys(cx: &mut App) {
     use crate::settings::platform_combo;
     cx.bind_keys([
-        KeyBinding::new(&platform_combo("mod-f"), FindOpen, Some(KEY_CONTEXT)),
-        KeyBinding::new(&platform_combo("mod-g"), FindNext, Some(KEY_CONTEXT)),
+        KeyBinding::new(&platform_combo(FIND_OPEN_COMBO), FindOpen, Some(KEY_CONTEXT)),
+        KeyBinding::new(&platform_combo(FIND_NEXT_COMBO), FindNext, Some(KEY_CONTEXT)),
         KeyBinding::new(
-            &platform_combo("mod-shift-g"),
+            &platform_combo(FIND_PREVIOUS_COMBO),
             FindPrevious,
             Some(KEY_CONTEXT),
         ),
-        KeyBinding::new("alt-up", SectionPrevious, Some(KEY_CONTEXT)),
-        KeyBinding::new("alt-down", SectionNext, Some(KEY_CONTEXT)),
-        KeyBinding::new(&platform_combo("mod-alt-s"), FocusIndex, Some(KEY_CONTEXT)),
+        KeyBinding::new(SECTION_PREVIOUS_COMBO, SectionPrevious, Some(KEY_CONTEXT)),
+        KeyBinding::new(SECTION_NEXT_COMBO, SectionNext, Some(KEY_CONTEXT)),
+        KeyBinding::new(
+            &platform_combo(FOCUS_INDEX_COMBO),
+            FocusIndex,
+            Some(KEY_CONTEXT),
+        ),
     ]);
 }
 

@@ -43,6 +43,24 @@ pub(crate) fn join_chips(a: Option<AnyElement>, b: Option<AnyElement>) -> Option
     }
 }
 
+/// A linked issue and what is cached of it.
+pub(super) struct LinearIssueRow {
+    pub identifier: String,
+    pub url: String,
+    pub entry: Option<IssueEntry>,
+}
+
+/// What an item row shows of its Linear links.
+#[derive(Default)]
+pub(super) struct LinearParts {
+    /// The project chip and "Fix link".
+    pub chips: Option<AnyElement>,
+    /// The linked issue, drawn as the row's icon cluster.
+    pub issue: Option<LinearIssueRow>,
+    pub has_project_chip: bool,
+    pub has_fix_chip: bool,
+}
+
 impl OutlineView {
     /// Whether dropping `drag` on item `item_id` of `space_id` creates a
     /// work item there: same Space, Linear on, live target, nothing being
@@ -100,17 +118,21 @@ impl OutlineView {
         cx.notify();
     }
 
-    /// The Linear chips of an item row (none outside Linear-enabled Spaces).
-    pub(super) fn linear_chips(
+    /// The Linear parts of an item row (none outside Linear-enabled Spaces):
+    /// the project and "Fix link" chips, and the linked issue's data for the
+    /// row's icon cluster.
+    pub(super) fn linear_parts(
         &self,
         key: &str,
         item: &ItemRow,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let snapshot = self.snapshot(&item.space_id)?;
+    ) -> LinearParts {
+        let Some(snapshot) = self.snapshot(&item.space_id) else {
+            return LinearParts::default();
+        };
         if !crate::linear::space_enabled(Some(snapshot)) {
-            return None;
+            return LinearParts::default();
         }
         let issue = snapshot
             .linear_issue_reference(&item.item_id)
@@ -132,18 +154,17 @@ impl OutlineView {
             Some((reference, project))
         });
         let shell = self.shell.clone();
-        let issue_chip = issue.map(|(identifier, url)| {
+        let issue = issue.map(|(identifier, url)| {
             store::request_issue(&self.state, &identifier, false, cx);
             let entry = self.state.read(cx).linear.issue(&identifier).cloned();
-            issue_row_icons(
-                format!("outline-linear-{key}"),
-                &identifier,
-                entry.as_ref(),
+            LinearIssueRow {
+                identifier,
                 url,
-                shell.clone(),
-                theme,
-            )
+                entry,
+            }
         });
+        let has_project_chip = project.is_some();
+        let has_fix_chip = repair.is_some();
         let project_chip = project.map(|(name, url)| {
             project_chip(
                 format!("outline-linear-project-{key}"),
@@ -161,7 +182,12 @@ impl OutlineView {
                 }))
                 .into_any_element()
         });
-        join_chips(join_chips(issue_chip, project_chip), fix_chip)
+        LinearParts {
+            chips: join_chips(project_chip, fix_chip),
+            issue,
+            has_project_chip,
+            has_fix_chip,
+        }
     }
 
     /// Fix link on a slug-keyed project link: relink by the real project id,
@@ -276,16 +302,18 @@ pub(crate) fn issue_row_tooltip(issue: &LinearIssueSummary) -> String {
     format!("{}\n{}", parts.join(" \u{00b7} "), issue.title)
 }
 
-/// The Linear slots of an Outline row: the state's dot and status icon in
-/// one fixed-width cluster (identifier, assignee and the rest in the
-/// tooltip). Click opens the issue per the web-link preference. The details
-/// panel keeps the full text chip ([`issue_chip`]).
+/// The Linear status slot of an Outline row: the state's dot (when
+/// `show_dot`) and status icon in one fixed-width element (identifier,
+/// assignee and the rest in the tooltip). Click opens the issue per the
+/// web-link preference. The details panel keeps the full text chip
+/// ([`issue_chip`]).
 pub(crate) fn issue_row_icons(
     id: String,
     identifier: &str,
     entry: Option<&IssueEntry>,
     url: String,
     shell: Option<WeakEntity<crate::shell::Shell>>,
+    show_dot: bool,
     theme: &Theme,
 ) -> AnyElement {
     let selector = id.clone();
@@ -311,7 +339,7 @@ pub(crate) fn issue_row_icons(
         .id(SharedString::from(id))
         .debug_selector(move || selector.clone())
         .flex_none()
-        .w(px(LINEAR_SLOTS_WIDTH))
+        .w(px(status_width(show_dot)))
         .flex()
         .items_center()
         .justify_between()
@@ -319,7 +347,9 @@ pub(crate) fn issue_row_icons(
         .rounded(px(3.0))
         .cursor_pointer()
         .hover(|el| el.bg(theme.element_hover))
-        .child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
+        .when(show_dot, |el| {
+            el.child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
+        })
         .child(
             div()
                 .flex_none()
@@ -339,9 +369,187 @@ pub(crate) fn issue_row_icons(
         .into_any_element()
 }
 
-/// Fixed width of the Linear cluster (dot, gap, icon, padding) so the
-/// slots line up across rows.
-const LINEAR_SLOTS_WIDTH: f32 = 28.0;
+/// Fixed width of the status slot (dot, gap, icon, padding; just the icon
+/// and padding when the dot is dropped) so the slots line up across rows.
+fn status_width(show_dot: bool) -> f32 {
+    if show_dot {
+        STATUS_WIDTH
+    } else {
+        STATUS_ICON_WIDTH
+    }
+}
+
+const STATUS_WIDTH: f32 = 28.0;
+const STATUS_ICON_WIDTH: f32 = 17.0;
+const ASSIGNEE_WIDTH: f32 = 58.0;
+const NEEDS_WIDTH: f32 = 16.0;
+const SLOT_GAP: f32 = 4.0;
+
+/// Which droppable slots of a Linear row cluster are shown (the needs slot
+/// and the status icon never drop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinearSlots {
+    pub assignee: bool,
+    pub dot: bool,
+}
+
+impl LinearSlots {
+    pub(crate) const ALL: Self = Self {
+        assignee: true,
+        dot: true,
+    };
+
+    /// The width of the cluster with these slots.
+    pub(crate) fn width(self) -> f32 {
+        let mut widths = vec![NEEDS_WIDTH, status_width(self.dot)];
+        if self.assignee {
+            widths.push(ASSIGNEE_WIDTH);
+        }
+        widths.iter().sum::<f32>() + SLOT_GAP * (widths.len() as f32 - 1.0)
+    }
+}
+
+/// The slots that fit in `room` pixels: the state dot drops first (the icon
+/// carries the state's color), then the assignee.
+pub(crate) fn linear_visible_slots(room: f32) -> LinearSlots {
+    let mut slots = LinearSlots::ALL;
+    if slots.width() > room {
+        slots.dot = false;
+    }
+    if slots.width() > room {
+        slots.assignee = false;
+    }
+    slots
+}
+
+/// Everything the Linear cluster needs from the row.
+pub(crate) struct LinearRowArgs<'a> {
+    pub key: &'a str,
+    pub issue: &'a LinearIssueRow,
+    pub shell: Option<WeakEntity<crate::shell::Shell>>,
+    /// The item's attention indicator, when it needs the user.
+    pub attention: Option<AnyElement>,
+    pub chat_count: u32,
+    /// "Including descendants: …" (the tooltip's last line).
+    pub totals_line: Option<String>,
+    pub visible: LinearSlots,
+}
+
+/// The cluster's tooltip: the issue line, then the chat count and totals the
+/// row no longer shows as text.
+pub(crate) fn linear_group_line(
+    identifier: &str,
+    entry: Option<&IssueEntry>,
+    chat_count: u32,
+    totals_line: Option<&str>,
+) -> String {
+    let mut line = match entry {
+        Some(IssueEntry::Ready { issue, .. }) => issue_row_tooltip(issue),
+        Some(IssueEntry::Failed { error, .. }) => format!("{identifier}: {}", error.user_text()),
+        _ => format!("{identifier} (loading from Linear)"),
+    };
+    if chat_count > 0 {
+        line = format!(
+            "{line}\n{chat_count} associated chat{}",
+            if chat_count == 1 { "" } else { "s" }
+        );
+    }
+    if let Some(totals) = totals_line {
+        line = format!("{line}\n{totals}");
+    }
+    line
+}
+
+/// The icon cluster of a Linear row, like a PR row's: `assignee · needs ·
+/// status`. The totals text, chat count and references icon are folded into
+/// the tooltip. Without a fetched issue the status slot carries the row and
+/// the assignee stays empty so the columns still line up.
+pub(crate) fn issue_row_slots(args: LinearRowArgs<'_>, theme: &Theme) -> AnyElement {
+    let LinearRowArgs {
+        key,
+        issue,
+        shell,
+        attention,
+        chat_count,
+        totals_line,
+        visible,
+    } = args;
+    let ready = match &issue.entry {
+        Some(IssueEntry::Ready { issue, .. }) => Some(issue),
+        _ => None,
+    };
+    let line: SharedString = linear_group_line(
+        &issue.identifier,
+        issue.entry.as_ref(),
+        chat_count,
+        totals_line.as_deref(),
+    )
+    .into();
+    let assignee = ready.and_then(|ready| ready.assignee.as_ref()).and_then(|user| {
+        let name = crate::linear::user_name(user);
+        crate::github::row_icons::author_text(&name, None).map(|text| (text, name))
+    });
+    let assignee = assignee.map(|(text, name)| {
+        let selector = format!("outline-linear-assignee-{key}");
+        let tip: SharedString = format!("Assigned to {name}").into();
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .min_w_0()
+            .truncate()
+            .text_size(crate::typography::ui_rems(10.0))
+            .text_color(theme.text_faint)
+            .child(SharedString::from(text))
+            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .into_any_element()
+    });
+    let status = issue_row_icons(
+        format!("outline-linear-{key}"),
+        &issue.identifier,
+        issue.entry.as_ref(),
+        issue.url.clone(),
+        shell,
+        visible.dot,
+        theme,
+    );
+    let group_selector = format!("outline-linear-slots-{key}");
+    div()
+        .id(SharedString::from(group_selector.clone()))
+        .debug_selector(move || group_selector.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(SLOT_GAP))
+        .when(visible.assignee, |el| {
+            el.child(crate::github::row_icons::slot(
+                format!("outline-linear-slot-assignee-{key}"),
+                ASSIGNEE_WIDTH,
+                true,
+                assignee,
+            ))
+        })
+        .child(crate::github::row_icons::slot(
+            format!("outline-linear-slot-needs-{key}"),
+            NEEDS_WIDTH,
+            false,
+            attention.map(|indicator| {
+                let selector = format!("outline-linear-needs-{key}");
+                div()
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .child(indicator)
+                    .into_any_element()
+            }),
+        ))
+        .child(crate::github::row_icons::slot(
+            format!("outline-linear-slot-status-{key}"),
+            status_width(visible.dot),
+            false,
+            Some(status),
+        ))
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(line.clone())).into())
+        .into_any_element()
+}
 
 /// The live issue chip: state dot + name, priority, assignee.
 pub(crate) fn issue_chip(

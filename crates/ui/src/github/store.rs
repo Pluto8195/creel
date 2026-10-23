@@ -82,9 +82,36 @@ pub(crate) struct GithubStore {
     in_flight: HashSet<String>,
     /// The last Sync now per Space.
     pub sync_results: HashMap<String, SyncResult>,
+    /// The signed-in GitHub login, for "you" on the viewer's own PRs.
+    viewer: ViewerEntry,
+}
+
+/// What is known of the viewer's login: asked once and kept; a failure
+/// waits [`STATUS_RETRY`] before the next automatic try.
+#[derive(Debug, Default)]
+enum ViewerEntry {
+    #[default]
+    Unknown,
+    Loading,
+    Known(String),
+    Failed(Instant),
 }
 
 impl GithubStore {
+    /// The viewer's GitHub login, once fetched ([`request_viewer`]).
+    pub(crate) fn viewer(&self) -> Option<&str> {
+        match &self.viewer {
+            ViewerEntry::Known(login) => Some(login),
+            _ => None,
+        }
+    }
+
+    /// Set the viewer's login (headless tests).
+    #[cfg(test)]
+    pub(crate) fn set_viewer_for_test(&mut self, login: &str) {
+        self.viewer = ViewerEntry::Known(login.to_string());
+    }
+
     pub(crate) fn status(&self, pr: &PullRequestRef) -> Option<&PrEntry> {
         self.statuses.get(&pr.key())
     }
@@ -199,6 +226,42 @@ pub(crate) fn request_status(
                 },
             };
             store.statuses.insert(key, entry);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Fetch the viewer's login once (`PrViewer`; the engine caches it too).
+/// Does not notify while asking, so it is safe to call while rendering; the
+/// rows redraw when the login arrives. A failed ask is retried after
+/// [`STATUS_RETRY`] the next time a row asks.
+pub(crate) fn request_viewer(state: &Entity<AppState>, cx: &mut App) {
+    let now = Instant::now();
+    let Some(task) = state.update(cx, |state, _| {
+        let due = match &state.github.viewer {
+            ViewerEntry::Unknown => true,
+            ViewerEntry::Failed(at) => now.duration_since(*at) >= STATUS_RETRY,
+            ViewerEntry::Loading | ViewerEntry::Known(_) => false,
+        };
+        if !due {
+            return None;
+        }
+        state.github.viewer = ViewerEntry::Loading;
+        Some(state.work_outline_actions().pr_viewer())
+    }) else {
+        return;
+    };
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        state.update(cx, |state, cx| {
+            state.github.viewer = match result {
+                Ok(reply) if !reply.login.trim().is_empty() => {
+                    ViewerEntry::Known(reply.login.trim().to_string())
+                }
+                _ => ViewerEntry::Failed(Instant::now()),
+            };
             cx.notify();
         });
     })
