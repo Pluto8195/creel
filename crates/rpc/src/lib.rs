@@ -377,6 +377,10 @@ pub mod methods {
     /// `detail` always null). Pure cache read off its own search slot.
     /// IPC-only (not forwardable), same reason as `MY_OPEN_PRS`.
     pub const REVIEW_REQUESTED_PRS: &str = "ReviewRequestedPrs";
+    /// The PR page (pr-dash port): `PrDashParams` → `PrDashReply`. One tab per
+    /// call; rows are classified and carry the Zeron chats linked to each PR.
+    /// IPC-only (it shells out to the local `gh`).
+    pub const PR_DASHBOARD: &str = "PrDashboard";
     /// One-time migration: import every remaining Claude Code session on disk
     /// (same underlying scan `ScanExternalSessions` uses), carrying over
     /// archive status from the `session_canvas` stopgap tool this ticket

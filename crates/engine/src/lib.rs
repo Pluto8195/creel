@@ -38,6 +38,7 @@ pub mod linear;
 pub mod liveness;
 pub mod local_import;
 mod model_catalogs;
+pub mod pr_chat_links;
 pub mod pr_review_launch;
 pub mod pr_review_sync;
 pub mod pr_ticket_cache;

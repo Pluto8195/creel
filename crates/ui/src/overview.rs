@@ -1672,6 +1672,7 @@ fn link_source_label(kind: LinkKind, source: Option<ChatLinkSource>) -> &'static
         (LinkKind::Pr, Some(ChatLinkSource::CreatedInChat)) => "PR created in this chat",
         (LinkKind::Ticket, Some(ChatLinkSource::CreatedInChat)) => "Created in this chat",
         (_, Some(ChatLinkSource::Mentioned)) => "Mentioned in conversation",
+        (_, Some(inferred)) => inferred.inferred_label().unwrap_or("Linked"),
         (_, None) => "Inferred from branch",
     }
 }

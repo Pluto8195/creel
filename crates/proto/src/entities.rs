@@ -181,7 +181,15 @@ pub struct ChatConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ChatLinkSource {
     Manual,
+    /// The ⇧⌘P review launcher created this chat for the PR.
+    ReviewLauncher,
     CreatedInChat,
+    /// The chat's branch is the PR's head branch.
+    Branch,
+    /// The chat's bound diff target (`chatDiffTargets`) is on the PR's head branch.
+    DiffTarget,
+    /// The chat's ticket id appears in the PR's branch or title.
+    Ticket,
     Mentioned,
 }
 
@@ -197,11 +205,26 @@ pub struct ChatPrLink {
 
 impl ChatLinkSource {
     /// Higher ranks win ties against a lower-or-absent stored source.
-    fn rank(self) -> u8 {
+    pub fn rank(self) -> u8 {
         match self {
             ChatLinkSource::Mentioned => 0,
-            ChatLinkSource::CreatedInChat => 1,
-            ChatLinkSource::Manual => 2,
+            ChatLinkSource::Ticket => 1,
+            ChatLinkSource::DiffTarget => 2,
+            ChatLinkSource::Branch => 3,
+            ChatLinkSource::CreatedInChat => 4,
+            ChatLinkSource::ReviewLauncher => 5,
+            ChatLinkSource::Manual => 6,
+        }
+    }
+
+    /// Provenance phrase for the link's tooltip ("matched by …").
+    pub fn inferred_label(self) -> Option<&'static str> {
+        match self {
+            ChatLinkSource::ReviewLauncher => Some("Started by the PR review launcher"),
+            ChatLinkSource::Branch => Some("The chat's branch is this PR's branch"),
+            ChatLinkSource::DiffTarget => Some("The chat's diff checkout is on this PR's branch"),
+            ChatLinkSource::Ticket => Some("The chat's ticket is named in this PR"),
+            _ => None,
         }
     }
 

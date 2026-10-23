@@ -9,6 +9,7 @@ pub mod chat_diff_target;
 pub mod entities;
 pub mod linear;
 pub mod motion;
+pub mod pr_dash;
 pub mod pr_review;
 pub mod pr_review_sync;
 pub mod preview;
@@ -37,6 +38,7 @@ pub use artifacts::{
 pub use chat_diff_target::*;
 pub use entities::*;
 pub use linear::*;
+pub use pr_dash::*;
 pub use pr_review::*;
 pub use pr_review_sync::*;
 pub use preview::*;
