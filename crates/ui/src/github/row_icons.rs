@@ -255,8 +255,9 @@ fn slot(
         .into_any_element()
 }
 
-/// A tooltip-carrying icon (the child of a slot).
-fn icon_mark(
+/// A tooltip-carrying icon (the child of a slot; also the chat work-context
+/// strip's icons).
+pub(crate) fn icon_mark(
     id: String,
     path: &'static str,
     color: Hsla,

@@ -76,6 +76,7 @@ mod sidebar_sections;
 pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
+mod work_context_ui;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -1759,6 +1760,11 @@ pub struct Shell {
     chat_header_links_pending: std::collections::HashSet<String>,
     chat_header_classification: std::collections::HashMap<String, ChatHeaderClassificationCache>,
     chat_header_classification_pending: std::collections::HashSet<String>,
+    /// Chats whose work-context strip (`chat_work_context`) is expanded.
+    chat_work_context_open: std::collections::HashSet<String>,
+    /// What the full-chat header adds below the metadata line (the work-context
+    /// strip's line), so the transcript's top fade clears it.
+    chat_header_extra_clearance: f32,
     /// Local lifecycle of an in-app update (macOS bundle swap) — the engine's
     /// UpdateStatus stream says WHETHER one exists; this says how far the
     /// download/stage of it has come in this process.
@@ -2176,6 +2182,8 @@ impl Shell {
             chat_header_links_pending: Default::default(),
             chat_header_classification: Default::default(),
             chat_header_classification_pending: Default::default(),
+            chat_work_context_open: Default::default(),
+            chat_header_extra_clearance: 0.0,
             update_flow: UpdateFlow::Idle,
             update_task: None,
             update_dismissed: None,
@@ -4576,6 +4584,7 @@ impl Shell {
             classification.and_then(|entry| entry.category.as_deref()),
             classification.and_then(|entry| entry.origin.as_deref()),
         );
+        let work_context = self.render_chat_work_context(&chat_id, theme, cx);
         let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
         let proposal_status = self.render_chat_proposal_status(&chat_id, theme, cx);
         Some(
@@ -4606,6 +4615,7 @@ impl Shell {
                         })),
                     )
                 })
+                .when_some(work_context, |el, strip| el.child(strip))
                 .when_some(instruction_status, |el, status| el.child(status))
                 .when_some(proposal_status, |el, status| el.child(status))
                 .into_any_element(),
@@ -10072,7 +10082,11 @@ impl Shell {
                         // Fully faded by the metadata strip's bottom edge;
                         // title and chip text are opaque, so transcript text
                         // underneath either reads as a collision.
-                        .inset_top(Theme::TITLEBAR_HEIGHT + CHAT_HEADER_METADATA_CLEARANCE)
+                        .inset_top(
+                            Theme::TITLEBAR_HEIGHT
+                                + CHAT_HEADER_METADATA_CLEARANCE
+                                + self.chat_header_extra_clearance,
+                        )
                         .band_top(Theme::TRANSCRIPT_FADE_BAND)
                         .band_bottom(bottom_band),
                     )
