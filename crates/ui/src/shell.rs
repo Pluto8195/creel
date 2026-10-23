@@ -91,14 +91,6 @@ struct ChatHeaderLinkCache {
     fetched_at: Instant,
 }
 
-struct ChatHeaderClassificationCache {
-    category_key: Option<String>,
-    category: Option<String>,
-    origin: Option<String>,
-    manual: bool,
-    fetched_at: Instant,
-}
-
 actions!(
     shell,
     [
@@ -174,7 +166,6 @@ pub(crate) fn restore_mounted_focus(
 enum ChatMenuPage {
     Root,
     Copy,
-    Classification,
 }
 
 #[derive(Clone)]
@@ -1760,8 +1751,6 @@ pub struct Shell {
     /// existing multi-PR `CHAT_LINK_STATUS` endpoint.
     chat_header_links: std::collections::HashMap<String, ChatHeaderLinkCache>,
     chat_header_links_pending: std::collections::HashSet<String>,
-    chat_header_classification: std::collections::HashMap<String, ChatHeaderClassificationCache>,
-    chat_header_classification_pending: std::collections::HashSet<String>,
     /// Chats whose work-context strip (`chat_work_context`) is expanded.
     chat_work_context_open: std::collections::HashSet<String>,
     /// What the full-chat header adds below the metadata line (the work-context
@@ -2184,8 +2173,6 @@ impl Shell {
             copied_chat_identity_clear: None,
             chat_header_links: Default::default(),
             chat_header_links_pending: Default::default(),
-            chat_header_classification: Default::default(),
-            chat_header_classification_pending: Default::default(),
             chat_work_context_open: Default::default(),
             chat_header_extra_clearance: 0.0,
             update_flow: UpdateFlow::Idle,
@@ -4248,112 +4235,6 @@ impl Shell {
         }
     }
 
-    fn open_chat_classification_menu(&mut self, cx: &mut Context<Self>) {
-        let chat_id = self.chat_menu.open_mut().map(|menu| {
-            menu.page = ChatMenuPage::Classification;
-            menu.chat_id.clone()
-        });
-        if let Some(chat_id) = chat_id {
-            self.ensure_chat_header_classification(chat_id, cx);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn open_chat_classification_at(
-        &mut self,
-        chat_id: String,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat_menu.open(ChatMenuState {
-            chat_id: chat_id.clone(),
-            position,
-            page: ChatMenuPage::Classification,
-            closeable: false,
-        });
-        self.ensure_chat_header_classification(chat_id, cx);
-        cx.notify();
-    }
-
-    fn set_chat_classification(
-        &mut self,
-        chat_id: String,
-        category: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.chat_header_classification_pending.contains(&chat_id) {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.chat_header_classification_pending
-            .insert(chat_id.clone());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::SET_CHAT_CLASSIFICATION,
-                    serde_json::json!({ "chatId": chat_id, "category": category }),
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                this.chat_header_classification_pending.remove(&chat_id);
-                match result {
-                    Ok(value) => {
-                        let category_key = value
-                            .get("category")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
-                        let (category, origin) =
-                            crate::chat_metadata::classification_labels(&value);
-                        let manual = value
-                            .get("manual")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        this.chat_header_classification.insert(
-                            chat_id.clone(),
-                            ChatHeaderClassificationCache {
-                                category_key,
-                                category,
-                                origin,
-                                manual,
-                                fetched_at: Instant::now(),
-                            },
-                        );
-                        if let Some(overview) = &this.overview_page {
-                            overview.update(cx, |overview, cx| {
-                                overview.classification_changed(&chat_id, &value, cx);
-                            });
-                        }
-                        if let Some(page) = &this.pr_review_chats_page {
-                            page.update(cx, |page, cx| {
-                                page.classification_changed(&chat_id, &value, cx);
-                            });
-                        }
-                        this.sidebar_notice = Some(
-                            if manual {
-                                "Task category updated"
-                            } else {
-                                "Task category returned to automatic"
-                            }
-                            .into(),
-                        );
-                        this.close_chat_menu(cx);
-                    }
-                    Err(error) => {
-                        this.sidebar_notice =
-                            Some(format!("Couldn’t update task category: {error}").into());
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     fn copy_zeron_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let link = {
             let state = self.state.read(cx);
@@ -4491,63 +4372,6 @@ impl Shell {
         .detach();
     }
 
-    fn ensure_chat_header_classification(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        if self
-            .chat_header_classification
-            .get(&chat_id)
-            .is_some_and(|entry| entry.fetched_at.elapsed() < CHAT_HEADER_LINK_REFRESH)
-            || self.chat_header_classification_pending.contains(&chat_id)
-        {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.chat_header_classification_pending
-            .insert(chat_id.clone());
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::CHAT_CLASSIFICATION,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                this.chat_header_classification_pending.remove(&chat_id);
-                let (category, origin) = result
-                    .as_ref()
-                    .ok()
-                    .map(crate::chat_metadata::classification_labels)
-                    .unwrap_or_default();
-                let category_key = result
-                    .as_ref()
-                    .ok()
-                    .and_then(|value| value.get("category"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                this.chat_header_classification.insert(
-                    chat_id,
-                    ChatHeaderClassificationCache {
-                        category_key,
-                        category,
-                        origin,
-                        manual: result
-                            .as_ref()
-                            .ok()
-                            .and_then(|value| value.get("manual"))
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        fetched_at: Instant::now(),
-                    },
-                );
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     pub(crate) fn invalidate_chat_header_links(&mut self, chat_id: &str) {
         self.chat_header_links.remove(chat_id);
     }
@@ -4572,22 +4396,12 @@ impl Shell {
                 .cloned();
             (chat, space)
         };
-        if chat.harness_session_id.is_some() {
-            self.ensure_chat_header_classification(chat_id.clone(), cx);
-        }
         let links = self
             .chat_header_links
             .get(&chat_id)
             .and_then(|entry| entry.status.as_ref())
             .map(crate::chat_metadata::HeaderLinks::from_status);
-        let classification = self.chat_header_classification.get(&chat_id);
-        let items = crate::chat_metadata::metadata_items(
-            &chat,
-            space.as_ref(),
-            links.as_ref(),
-            classification.and_then(|entry| entry.category.as_deref()),
-            classification.and_then(|entry| entry.origin.as_deref()),
-        );
+        let items = crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
         let work_context = self.render_chat_work_context(&chat_id, theme, cx);
         let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
         let proposal_status = self.render_chat_proposal_status(&chat_id, theme, cx);
@@ -4601,24 +4415,11 @@ impl Shell {
                 .border_b_1()
                 .border_color(theme.border.opacity(0.7))
                 .bg(theme.surface.opacity(0.94))
-                .child({
-                    let shell = cx.entity();
-                    let edit_chat_id = chat_id.clone();
-                    crate::chat_metadata::metadata_strip(
-                        "full-chat-header",
-                        items,
-                        theme,
-                        Some(std::rc::Rc::new(move |event, _, app| {
-                            shell.update(app, |this, cx| {
-                                this.open_chat_classification_at(
-                                    edit_chat_id.clone(),
-                                    event.position(),
-                                    cx,
-                                );
-                            });
-                        })),
-                    )
-                })
+                .child(crate::chat_metadata::metadata_strip(
+                    "full-chat-header",
+                    items,
+                    theme,
+                ))
                 .when_some(work_context, |el, strip| el.child(strip))
                 .when_some(instruction_status, |el, status| el.child(status))
                 .when_some(proposal_status, |el, status| el.child(status))
@@ -9279,19 +9080,6 @@ impl Shell {
                             .child(SharedString::from("Rename…")),
                     )
                     .child(
-                        popover::menu_row(
-                            &theme,
-                            false,
-                            format!("chat-menu-classification-{chat_id}"),
-                        )
-                        .id("chat-menu-classification")
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.open_chat_classification_menu(cx)),
-                        )
-                        .child(icon(icons::TAG).size(px(16.0)).text_color(theme.text_muted))
-                        .child(SharedString::from("Change task category…")),
-                    )
-                    .child(
                         popover::menu_row(&theme, false, format!("chat-menu-pin-{chat_id}"))
                             .id("chat-menu-pin")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -9491,82 +9279,6 @@ impl Shell {
                             .child(SharedString::from("Harness session ID")),
                         )
                     })
-                }
-                ChatMenuPage::Classification => {
-                    let current = self
-                        .chat_header_classification
-                        .get(&chat_id)
-                        .and_then(|entry| entry.category_key.clone());
-                    let manual = self
-                        .chat_header_classification
-                        .get(&chat_id)
-                        .is_some_and(|entry| entry.manual);
-                    let back_id = chat_id.clone();
-                    let mut menu = menu
-                        .child(
-                            popover::menu_row(
-                                &theme,
-                                false,
-                                format!("chat-classification-back-{chat_id}"),
-                            )
-                            .id("chat-classification-back")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(menu) = this.chat_menu.open_mut() {
-                                    menu.page = ChatMenuPage::Root;
-                                    debug_assert_eq!(menu.chat_id, back_id);
-                                    cx.notify();
-                                }
-                            }))
-                            .child(
-                                icon(icons::ALT_ARROW_LEFT)
-                                    .size(px(14.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Task category")),
-                        )
-                        .child(popover::menu_separator());
-                    for (value, label) in crate::chat_metadata::CATEGORY_CHOICES {
-                        let selected = manual && current.as_deref() == Some(value);
-                        let set_id = chat_id.clone();
-                        let category = value.to_string();
-                        menu = menu.child(
-                            popover::menu_row(
-                                &theme,
-                                selected,
-                                format!("chat-classification-{value}-{chat_id}"),
-                            )
-                            .id(SharedString::from(format!(
-                                "chat-classification-choice-{value}"
-                            )))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_chat_classification(
-                                    set_id.clone(),
-                                    Some(category.clone()),
-                                    cx,
-                                )
-                            }))
-                            .child(div().w(px(16.0)).flex_none().when(selected, |el| {
-                                el.child(icon(icons::CHECK).size(px(13.0)).text_color(theme.accent))
-                            }))
-                            .child(SharedString::from(label)),
-                        );
-                    }
-                    let auto_id = chat_id.clone();
-                    menu.child(popover::menu_separator()).child(
-                        popover::menu_row(
-                            &theme,
-                            !manual,
-                            format!("chat-classification-auto-{chat_id}"),
-                        )
-                        .id("chat-classification-auto")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_chat_classification(auto_id.clone(), None, cx)
-                        }))
-                        .child(div().w(px(16.0)).flex_none().when(!manual, |el| {
-                            el.child(icon(icons::CHECK).size(px(13.0)).text_color(theme.accent))
-                        }))
-                        .child(SharedString::from("Automatic")),
-                    )
                 }
             }
             .into_any_element();

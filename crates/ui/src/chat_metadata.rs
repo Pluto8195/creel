@@ -6,10 +6,9 @@
 //! contract.
 
 use gpui::{
-    App, ClickEvent, ClipboardItem, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    Render, SharedString, Styled as _, Window, div, prelude::*, px,
+    ClipboardItem, InteractiveElement as _, IntoElement as _, ParentElement as _, Render,
+    SharedString, Styled as _, div, prelude::*, px,
 };
-use std::rc::Rc;
 use zeron_engine::pr_ticket_cache::ChatLinkStatus;
 use zeron_proto::{Chat, ChatLinkSource, Space};
 
@@ -80,20 +79,7 @@ impl HeaderLinks {
 enum MetadataAction {
     OpenUrl(String),
     Copy(String),
-    EditCategory,
 }
-
-pub(crate) const CATEGORY_CHOICES: [(&str, &str); 7] = [
-    ("implementing", "Implementing"),
-    ("pr_review", "PR review"),
-    ("debug", "Debug / firefight"),
-    ("research", "Research"),
-    ("planning", "Planning"),
-    ("quick_question", "Quick question"),
-    ("other", "Other"),
-];
-
-pub(crate) type EditCategoryHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MetadataItem {
@@ -150,41 +136,6 @@ fn compact_id(value: &str) -> String {
     }
 }
 
-pub(crate) fn category_label(key: &str) -> String {
-    CATEGORY_CHOICES
-        .iter()
-        .find_map(|(value, label)| (*value == key).then_some((*label).to_string()))
-        .unwrap_or_else(|| key.replace('_', " "))
-}
-
-fn origin_label(key: &str) -> String {
-    match key {
-        "agent_mode" => "agent-mode.sh".into(),
-        "cursor" => "Cursor".into(),
-        "sdk_driven" => "SDK-driven".into(),
-        "claude_desktop" => "Claude Desktop".into(),
-        "bare_cli" => "Bare CLI".into(),
-        "unknown" => "Unknown".into(),
-        other => other.replace('_', " "),
-    }
-}
-
-/// Extract the compact presentation values returned by `CHAT_CLASSIFICATION`.
-/// Keeping this adapter beside the shared strip lets the full-chat route show
-/// the same category/origin metadata as the overview list without depending
-/// on its private row model.
-pub(crate) fn classification_labels(value: &serde_json::Value) -> (Option<String>, Option<String>) {
-    let category = value
-        .get("category")
-        .and_then(serde_json::Value::as_str)
-        .map(category_label);
-    let origin = value
-        .get("origin")
-        .and_then(serde_json::Value::as_str)
-        .map(origin_label);
-    (category, origin)
-}
-
 /// Stable, compact item list shared by both header surfaces. Optional values
 /// are omitted, except model: a missing explicit model is shown honestly as
 /// the harness default instead of guessed.
@@ -192,8 +143,6 @@ pub(crate) fn metadata_items(
     chat: &Chat,
     space: Option<&Space>,
     links: Option<&HeaderLinks>,
-    category: Option<&str>,
-    origin: Option<&str>,
 ) -> Vec<MetadataItem> {
     let mut items = Vec::new();
     if let Some(links) = links {
@@ -277,22 +226,6 @@ pub(crate) fn metadata_items(
             .unwrap_or(cwd);
         items.push(item("workspace", format!("Workspace {name}"), cwd));
     }
-    if let Some(category) = category.map(str::trim).filter(|value| !value.is_empty()) {
-        let mut category_item = item(
-            "category",
-            format!("Category {category}"),
-            format!("Category: {category} · click to change"),
-        );
-        category_item.action = Some(MetadataAction::EditCategory);
-        items.push(category_item);
-    }
-    if let Some(origin) = origin.map(str::trim).filter(|value| !value.is_empty()) {
-        items.push(item(
-            "origin",
-            format!("Origin {origin}"),
-            format!("Origin: {origin}"),
-        ));
-    }
 
     let mut chat_id = item(
         "chat-id",
@@ -349,7 +282,6 @@ pub(crate) fn metadata_strip(
     prefix: &str,
     items: Vec<MetadataItem>,
     theme: &Theme,
-    on_edit_category: Option<EditCategoryHandler>,
 ) -> gpui::AnyElement {
     let prefix = prefix.to_string();
     div()
@@ -365,7 +297,6 @@ pub(crate) fn metadata_strip(
             let tooltip: SharedString = item.tooltip.into();
             let action = item.action;
             let clickable = action.is_some();
-            let on_edit_category = on_edit_category.clone();
             div()
                 .id(SharedString::from(format!(
                     "{prefix}-metadata-{}",
@@ -394,15 +325,10 @@ pub(crate) fn metadata_strip(
                 )
                 .tooltip(move |_, cx| cx.new(|_| MetadataTooltip(tooltip.clone())).into())
                 .when_some(action, |chip, action| {
-                    chip.on_click(move |event, window, cx| match &action {
+                    chip.on_click(move |_, _, cx| match &action {
                         MetadataAction::OpenUrl(url) => cx.open_url(url),
                         MetadataAction::Copy(value) => {
                             cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                        }
-                        MetadataAction::EditCategory => {
-                            if let Some(handler) = &on_edit_category {
-                                handler(event, window, cx);
-                            }
                         }
                     })
                 })
@@ -455,20 +381,12 @@ mod tests {
                 url: Some("https://linear.app/acme/issue/ENG-42".into()),
             }),
         };
-        let items = metadata_items(
-            &chat(),
-            None,
-            Some(&links),
-            Some("coding"),
-            Some("imported"),
-        );
+        let items = metadata_items(&chat(), None, Some(&links));
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert!(labels.contains(&"PR #7"));
         assert!(labels.contains(&"PR #8"));
         assert!(labels.contains(&"Ticket ENG-42"));
         assert!(labels.contains(&"Model default"));
-        assert!(labels.contains(&"Category coding"));
-        assert!(labels.contains(&"Origin imported"));
         assert_eq!(
             items.iter().find(|item| item.key == "pr-0").unwrap().action,
             Some(MetadataAction::OpenUrl(
@@ -489,7 +407,7 @@ mod tests {
 
     #[test]
     fn ids_are_compact_but_copy_the_complete_value() {
-        let items = metadata_items(&chat(), None, None, None, None);
+        let items = metadata_items(&chat(), None, None);
         let chat_id = items.iter().find(|item| item.key == "chat-id").unwrap();
         assert_eq!(chat_id.label, "Chat chat-12345…");
         assert_eq!(
@@ -539,40 +457,11 @@ mod tests {
     }
 
     #[test]
-    fn classification_adapter_matches_canvas_labels_and_handles_missing_values() {
-        let value = serde_json::json!({
-            "category": "pr_review",
-            "origin": "bare_cli"
-        });
-        assert_eq!(
-            classification_labels(&value),
-            (Some("PR review".into()), Some("Bare CLI".into()))
-        );
-        assert_eq!(
-            classification_labels(&serde_json::json!({
-                "category": null,
-                "origin": null
-            })),
-            (None, None)
-        );
-    }
-
-    #[test]
     fn work_item_metadata_shows_the_compact_path_with_the_full_path_tooltip() {
         let item = work_item_item("… › API › Auth", "Launch › API › Auth");
         assert_eq!(item.key, "work-item");
         assert_eq!(item.label, "… › API › Auth");
         assert_eq!(item.tooltip, "Work item: Launch › API › Auth");
         assert_eq!(item.action, None);
-    }
-
-    #[test]
-    fn category_metadata_is_the_shared_editor_entry_point() {
-        let items = metadata_items(&chat(), None, None, Some("Planning"), None);
-        let category = items.iter().find(|item| item.key == "category").unwrap();
-        assert_eq!(category.label, "Category Planning");
-        assert_eq!(category.action, Some(MetadataAction::EditCategory));
-        assert!(category.tooltip.contains("click to change"));
-        assert_eq!(CATEGORY_CHOICES.len(), 7);
     }
 }
