@@ -77,8 +77,9 @@ Steps, on the device that owns the Space:
    caller's agent config (the UI sends the composer's new-chat agent; the
    engine defaults to Claude Code), titled `Review <name>#<n>: <PR title>`
    (`Fix CI …` for fix-ci), linked to the PR (manual `ChatPrLink`),
-   classified `pr_review` (manual), assigned to `workItemId` when given (the
-   item must be in the same Space), and the seeded prompt is queued last.
+   assigned to `workItemId` when given (the item must be in the same Space),
+   and the seeded prompt is queued last. The PR link is what marks the chat as
+   a launcher-created review chat; there is no separate classification.
 
 The prompts are launch.sh's, verbatim:
 
@@ -112,9 +113,7 @@ of the window, so double-clicks and retries land on the same chat.
 
 `StartPrReview` is forwardable. With `spaceId` on another device the engine
 forwards to that device; a forwarded call (it carries `targetDeviceId`) never
-fans out again. The caller also writes the `pr_review` classification into its
-own sidecar once the chat row replicates, so ⇧⌘P on the calling device lists
-it.
+fans out again.
 
 ## Differences from launch.sh
 
@@ -155,10 +154,9 @@ Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
 `notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
 sync isn't available on this host yet".
 
-When the current project has a destination, the PR page's **Review chats** tab
-lists the destination's PR items with their review Chats nested instead of the
-`pr_review` classification; without one the classified list stays
-(classification is being retired).
+⇧⌘P lists only the current project's destination PR items (synced PR items)
+with their review Chats nested. Without a destination the page shows an empty
+state asking you to pick one; the old classification-based list is gone.
 
 ## PRs on work items
 
