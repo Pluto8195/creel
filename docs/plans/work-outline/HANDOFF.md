@@ -165,6 +165,17 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - It is now 1886 characters, with a test enforcing ≤ 1900 and checking the key phrases. It tells
     agents to call `bind_chat_worktree` right after `git worktree add`.
   - Keep new guidance short and near the top, or put it in the tool descriptions.
+- **Work-context strip in the full chat view** (2026-10-23, `chat_work_context{,/strip}.rs`,
+  `shell/work_context_ui.rs`):
+  - It's one line, expandable. Variants by precedence: PR review item (own item, ancestor, or a
+    launcher review chat) > Linear issue (the ticket plus its PRs, or "No PR yet") > Linear project
+    or pinned plan (plan title, revision, age, "+N artifacts", or "No plan yet"). No strip otherwise.
+  - Launcher review chats are detected through the `pr_review` classification tag
+    (`shell/work_context_ui.rs:28`). Removing Canvas classification has to replace this, e.g. with
+    a launcher-sourced chat PR link.
+  - Follow-ups: PR line counts / unresolved threads / conflicts; open-question counts in the
+    planning strip; matching the chat's diff-target branch to PR heads; the strip in the overview's
+    chat panel.
 - **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
   `capture_source_context_reads_the_dispatch_checkout`,
   `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
