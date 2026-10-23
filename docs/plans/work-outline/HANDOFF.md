@@ -176,6 +176,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Follow-ups: PR line counts / unresolved threads / conflicts; open-question counts in the
     planning strip; matching the chat's diff-target branch to PR heads; the strip in the overview's
     chat panel.
+- **Coordinator resolve fix** (2026-10-23):
+  - Bug: coordinator resolves of a child's request silently wrote nothing when the request had a
+    `dedupeKey`, which agents always pass. The dedupe group was filtered down to the caller's own
+    requests, yet the tool still replied `resolved:true`.
+  - Fix: `agent_may_resolve_origin` (the caller's own chat or a direct child) is shared by
+    authorization and the group filter. The tool reads the row back and returns `operationConflict`
+    if nothing changed.
 - **Known engine lib failures** (pre-existing on main `3801cb5b`, not regressions):
   `capture_source_context_reads_the_dispatch_checkout`,
   `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
