@@ -874,6 +874,48 @@ fn the_review_strip_shows_the_linked_ticket_chip(cx: &mut TestAppContext) {
     assert_eq!(log.borrow().urls, ["https://linear.app/acme/issue/eng-7/x"]);
 }
 
+fn review_chat(id: &str, title: &str, state: zeron_proto::ChatIndicator) -> crate::review_chats::ReviewChat {
+    crate::review_chats::ReviewChat {
+        chat_id: id.into(),
+        title: title.into(),
+        state,
+        updated: None,
+        reason: crate::review_chats::ReviewReason::Assigned,
+    }
+}
+
+#[gpui::test]
+fn a_pr_with_a_review_chat_shows_the_being_reviewed_marker(cx: &mut TestAppContext) {
+    let mut data = data_for(&[gf::summary("app", 42, "Add auth")]);
+    let (_, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data.clone());
+    assert!(!present(vcx, "work-context-reviewing"), "no review chat, no marker");
+
+    data.review_chats = vec![
+        review_chat("chat-new", "Review app#42", zeron_proto::ChatIndicator::Working),
+        review_chat("chat-old", "Earlier", zeron_proto::ChatIndicator::Idle),
+    ];
+    let (_, log, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data);
+    assert!(present(vcx, "work-context-reviewing"));
+    // A click opens the most recent review chat without toggling the strip.
+    click(vcx, "work-context-reviewing");
+    assert_eq!(log.borrow().chats, ["chat-new"]);
+    assert!(!present(vcx, "work-context-panel"));
+}
+
+#[gpui::test]
+fn the_implementation_strip_marks_a_pr_under_review_too(cx: &mut TestAppContext) {
+    let mut data = data_for(&[gf::summary("app", 42, "Add auth")]);
+    data.review_chats = vec![review_chat(
+        "chat-r",
+        "Review app#42",
+        zeron_proto::ChatIndicator::AwaitingInput,
+    )];
+    let (_, log, vcx) = mount(cx, implementation_context(&[pr_ref("app", 42)]), data);
+    assert!(present(vcx, "work-context-reviewing"));
+    click(vcx, "work-context-reviewing");
+    assert_eq!(log.borrow().chats, ["chat-r"]);
+}
+
 fn implementation_context(prs: &[PullRequestRef]) -> WorkContext {
     WorkContext {
         item_id: Some(UI.into()),

@@ -199,7 +199,13 @@ mod tests {
         PrDashChat {
             chat_id: id.into(),
             title: title.into(),
-            source: ChatLinkSource::Manual,
+            // A review chat is linked by the launcher; any other chat is
+            // only mentioned the PR.
+            source: if is_review {
+                ChatLinkSource::ReviewLauncher
+            } else {
+                ChatLinkSource::Mentioned
+            },
             archived,
             is_review,
             updated_at: None,
@@ -935,22 +941,27 @@ mod tests {
     }
 
     #[gpui::test]
-    fn review_reopens_an_existing_review_chat_instead_of_starting_one(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn open_review_replaces_review_when_a_review_chat_exists(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-started", 0)));
-        // #9 has a live review chat: "Open chat" replaces Review.
-        assert!(cx.debug_bounds("pr-dash-open-chat-2").is_some());
+        // #9 has a live review chat: Open review is the primary action and
+        // Review is gone from the row.
+        assert!(cx.debug_bounds("pr-dash-open-review-2").is_some());
         assert!(cx.debug_bounds("pr-dash-review-2").is_none());
         assert!(cx.debug_bounds("pr-dash-fix-ci-2").is_some());
-        // #7 and #8 have none (the plain work chat does not count).
+        // The button names the chat and its live state.
+        let detail = cx
+            .debug_bounds("pr-dash-open-review-detail-2")
+            .expect("the chat title and state render");
+        assert!(detail.size.width > gpui::px(0.0));
+        // #7 and #8 have none (the plain work chat only mentions #7).
         for ix in [0, 1] {
             assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_some());
-            assert!(cx.debug_bounds(sel(format!("pr-dash-open-chat-{ix}"))).is_none());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-open-review-{ix}"))).is_none());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-more-{ix}"))).is_none());
         }
-        click(cx, "pr-dash-open-chat-2");
+        click(cx, "pr-dash-open-review-2");
         assert!(calls.lock().unwrap().is_empty(), "StartPrReview is never called");
         shell.read_with(cx, |shell, cx| {
             assert!(matches!(shell.route, Route::Chat));
@@ -969,6 +980,118 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_overflow_menu_offers_start_another_review(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = open_page(&shell, cx, |_| Ok(reply("chat-second", 0)));
+        assert!(cx.debug_bounds("pr-dash-start-another-2").is_none(), "closed by default");
+        click(cx, "pr-dash-more-2");
+        assert!(cx.debug_bounds("pr-dash-start-another-2").is_some());
+        click(cx, "pr-dash-start-another-2");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 9);
+        assert_eq!(calls[0]["action"], "codeReview");
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-second"));
+        });
+    }
+
+    #[gpui::test]
+    fn the_menu_lists_the_other_review_chats_and_open_review_takes_the_latest(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, rows) = {
+            let calls: Calls = Arc::default();
+            let sink = calls.clone();
+            let (_, rows) = script_dash(&shell, cx);
+            shell.update(cx, |shell, _| {
+                shell.pr_review_script = Some(Arc::new(move |params| {
+                    sink.lock().unwrap().push(params.clone());
+                    Ok(reply("unused", 0))
+                }));
+            });
+            (calls, rows)
+        };
+        {
+            let mut rows = rows.lock().unwrap();
+            let nine = rows.1.iter_mut().find(|row| row.number == 9).unwrap();
+            let mut older = chat_link("chat-review-old", "Earlier review", false, true);
+            older.updated_at = Some(T1.into());
+            let mut newer = chat_link("chat-review-new", "Second review", false, true);
+            newer.updated_at = Some(T3.into());
+            // A manually linked chat is a review chat too.
+            let mut manual = chat_link("chat-manual", "Pinned by hand", false, false);
+            manual.source = ChatLinkSource::Manual;
+            manual.updated_at = Some(T2.into());
+            nine.chats = vec![older, newer, manual];
+        }
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        let page = shell.update(cx, |shell, cx| shell.ensure_pr_review_chats_page(cx));
+        draw(cx);
+        page.update(cx, |page, cx| {
+            page.set_tab(PageTab::Dash(PrDashTab::ReviewRequested), cx)
+        });
+        draw(cx);
+        click(cx, "pr-dash-more-2");
+        // Most recent first: "Second review" opens, the others are listed.
+        assert!(cx.debug_bounds("pr-dash-review-other-2-0").is_some());
+        assert!(cx.debug_bounds("pr-dash-review-other-2-1").is_some());
+        assert!(cx.debug_bounds("pr-dash-review-other-2-2").is_none());
+        click(cx, "pr-dash-review-other-2-0");
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-manual"));
+        });
+        // Let the menu's exit animation finish before the next click (the
+        // popup measures it in wall-clock time).
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        assert!(cx.debug_bounds("pr-dash-start-another-2").is_none(), "the menu is gone");
+        click(cx, "pr-dash-open-review-2");
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("chat-review-new")
+            );
+        });
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    fn enter_opens_the_review_chat_or_starts_a_review(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, page) = open_page(&shell, cx, |_| Ok(reply("chat-started", 0)));
+        let focus = page.read_with(cx, |page, _| page.focus_handle());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        // Row 0 (#7) has no review chat: Enter starts a review.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["number"], 7);
+            assert_eq!(calls[0]["action"], "codeReview");
+        }
+        // Down twice: row 2 (#9) has one, so Enter opens it.
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.simulate_keystrokes("down down enter");
+        draw(cx);
+        assert_eq!(calls.lock().unwrap().len(), 1, "no second review was started");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review-9"));
+        });
+    }
+
+    #[gpui::test]
     fn authored_rows_only_offer_fix_ci_when_ci_is_failing(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
@@ -978,7 +1101,7 @@ mod tests {
         assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
         for ix in 0..4 {
             assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_none());
-            assert!(cx.debug_bounds(sel(format!("pr-dash-open-chat-{ix}"))).is_none());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-open-review-{ix}"))).is_none());
         }
         click(cx, "pr-dash-fix-ci-0");
         let calls = calls.lock().unwrap().clone();
