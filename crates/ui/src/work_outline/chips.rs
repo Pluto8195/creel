@@ -89,13 +89,7 @@ pub(crate) fn attention_indicator(
             .text_size(crate::typography::ui_rems(9.5))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(color)
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(6.0))
-                    .rounded_full()
-                    .bg(color),
-            )
+            .child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
             .when(count > 1, |el| {
                 el.child(SharedString::from(count.to_string()))
             })
@@ -156,10 +150,7 @@ pub(crate) fn instruction_drift_mark(
 /// The execution-exception mark for a Chat running with a captured
 /// configuration that differs from its item's current one (List rows).
 /// Compact (no label) so it shares the title line.
-pub(crate) fn execution_exception_mark(
-    id: impl Into<SharedString>,
-    theme: &Theme,
-) -> AnyElement {
+pub(crate) fn execution_exception_mark(id: impl Into<SharedString>, theme: &Theme) -> AnyElement {
     let id: SharedString = id.into();
     let selector = id.to_string();
     div()

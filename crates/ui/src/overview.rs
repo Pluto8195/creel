@@ -277,7 +277,7 @@ const CONTEXT_USAGE_REFRESH: Duration = Duration::from_secs(12);
 
 /// Idle-refresh cadence while the overview is the visible route — see
 /// `refresh_tick`. Only re-checks TTLs (each fetch keeps its own, longer
-/// TTL) and repaints; it never forces a relayout by itself.
+/// TTL) and repaints; it never forces a row rebuild by itself.
 const IDLE_REFRESH: Duration = Duration::from_secs(15);
 
 /// How long the Outline selection must rest on a Chat row before the chat
@@ -287,9 +287,7 @@ pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100)
 
 /// Every Nth idle tick also re-derives rows (staleness is time-based, so a
 /// chat can cross `STALE_AFTER` while nothing else changes). ~60s — cheap
-/// relative to the per-frame rebuild `rows_dirty` exists to avoid, and the
-/// grouped layout cache stays keyed on ids so it still hits unless the
-/// visible id set actually changed.
+/// relative to the per-frame rebuild `rows_dirty` exists to avoid.
 const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
 /// `CHAT_CLASSIFICATION`'s cached response — category/origin (used as
@@ -880,8 +878,8 @@ fn pr_section_expanded(collapsed: &BTreeSet<String>, section_key: &str, searchin
 }
 
 /// Drop hover state when its element is no longer mounted. Hover-leave is
-/// not guaranteed when filtering, changing view modes, or viewport culling
-/// removes the element under the pointer, so renderers reconcile against the
+/// not guaranteed when filtering or changing view modes removes the element
+/// under the pointer, so renderers reconcile against the
 /// ids they actually built this frame.
 fn reconcile_hovered_row(hovered: &mut Option<String>, mounted_ids: &[String]) -> bool {
     let stale = hovered
@@ -961,13 +959,7 @@ fn category_badge(row: &OverviewRow) -> Option<gpui::AnyElement> {
             .flex()
             .items_center()
             .gap(px(3.0))
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(5.0))
-                    .rounded_full()
-                    .bg(color),
-            )
+            .child(div().flex_none().size(px(5.0)).rounded_full().bg(color))
             .child(
                 div()
                     .text_size(crate::typography::ui_rems(9.0))
@@ -1690,7 +1682,7 @@ fn context_pct_label(pct: Option<f32>) -> String {
 }
 
 /// Whether a landed context fetch changes anything visible — only then may
-/// it dirty rows and drop the grouped layout. A first fetch that comes back
+/// it dirty rows. A first fetch that comes back
 /// null is no change (the row already rendered as null), and sub-percent
 /// drift on a live chat is no change either (see [`context_pct_percent`]).
 fn context_pct_changed(previous: Option<Option<f32>>, next: Option<f32>) -> bool {
@@ -2620,8 +2612,7 @@ impl Overview {
         cx.notify();
     }
 
-    /// Any repo-filter change: persist, and re-derive rows + grouped layout
-    /// (web `reflowLayout`).
+    /// Any repo-filter change: persist, and re-derive rows.
     fn repo_filter_changed(&mut self, cx: &mut Context<Self>) {
         self.save_string_set(
             overview_positions::HIDDEN_REPOS_FILE,
@@ -2703,11 +2694,10 @@ impl Overview {
     /// freshly-appeared chat (new import, new sidebar row) gets its lookups
     /// queued the same render it first appears in, not one frame later.
     fn rows(&mut self, cx: &mut Context<Self>) -> Vec<OverviewRow> {
-        // See `rows_dirty`'s doc comment: pan/zoom/drag call `cx.notify()`
+        // See `rows_dirty`'s doc comment: hover and scroll call `cx.notify()`
         // (hence `render()`, hence this) on every pointer-move, and without
         // this short-circuit every one of those frames re-walked `AppState`,
-        // cloned every `Chat`, and re-derived staleness for all 227+ rows —
-        // the confirmed primary cause of the reported sluggishness. A stale
+        // cloned every `Chat`, and re-derived staleness for all 227+ rows. A stale
         // cache is bounded by whatever next marks `rows_dirty` (any real
         // `AppState` change already does, via the `cx.observe` in `new`, so
         // this isn't "never refreshes" — it's "doesn't redundantly rebuild
@@ -3231,7 +3221,7 @@ impl Overview {
                         .map(|old| link_fingerprint(&old.status));
                     // `rows()`'s cache bakes ticket/PR number/PR title in
                     // (grouping key + search fields) — only a CHANGE to
-                    // those invalidates rows + the grouped layout; a
+                    // those invalidates rows; a
                     // same-data TTL refetch just repaints (badges/detail
                     // read `link_status` live).
                     if previous.as_ref() != Some(&fingerprint) {
@@ -3321,7 +3311,7 @@ impl Overview {
     }
 
     /// `SET_CHAT_LINK` (always a manual write; `value: None` unlinks). On
-    /// success: optimistic local update ([`apply_link_reply`]), rows/layout
+    /// success: optimistic local update ([`apply_link_reply`]), rows
     /// invalidated (ticket/PR feed grouping, search and the badge row), the
     /// entry's TTL expired and an immediate `CHAT_LINK_STATUS` refetch
     /// kicked (which [`merge_refetched_link`] keeps from blanking the
@@ -3514,7 +3504,7 @@ impl Overview {
                     );
                     // `category`/`origin` are baked into `OverviewRow` and
                     // used as grouping keys — only a CHANGE invalidates rows
-                    // + the grouped layout (tool/skill chips read
+                    // (tool/skill chips read
                     // `classification` live at render).
                     let changed =
                         previous.is_none_or(|old| old.category != category || old.origin != origin);
@@ -3991,13 +3981,7 @@ impl Overview {
                         this.open_subagent_peek(click_chat.clone(), &click_sub, window, cx);
                     }))
                     .tooltip(move |_, cx| cx.new(|_| LinkSourceTooltip(tooltip.clone())).into())
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(8.0))
-                            .rounded_full()
-                            .bg(color),
-                    )
+                    .child(div().flex_none().size(px(8.0)).rounded_full().bg(color))
                     .child(
                         div()
                             .flex_1()
@@ -6496,15 +6480,13 @@ impl Overview {
         let category_badge = category_badge(row);
         let model = model_badge(&row.chat, theme);
         let badges = self.badges_for(&chat_id, theme);
-        let archive =
-            (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx));
+        let archive = (!row.chat.archived).then(|| self.archive_button(chat_id.clone(), theme, cx));
         let open_button = self.open_chat_button(chat_id.clone(), theme, cx);
         let has_subagent_overflow = row.subagent_count > SUBAGENT_PREVIEW_LIMIT;
         let show_all_subagents =
             has_subagent_overflow && self.hovered_row.as_deref() == Some(chat_id.as_str());
         let subagent_tiles = self.subagent_tiles_for(&chat_id, theme, show_all_subagents, cx);
-        let detail = is_expanded
-            .then(|| self.expanded_detail_for(row, theme, chat_id.clone(), cx));
+        let detail = is_expanded.then(|| self.expanded_detail_for(row, theme, chat_id.clone(), cx));
         let toggle_id = chat_id.clone();
         let hover_id = chat_id.clone();
         div()
@@ -6622,10 +6604,12 @@ impl Overview {
                     )
                     // Same bar + label as the web's tile face, at a fixed width so
                     // the column lines up down the list.
-                    .child(div().flex_none().w(px(76.0)).child(context_meter(
-                        row.context_pct,
-                        theme,
-                    )))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(76.0))
+                            .child(context_meter(row.context_pct, theme)),
+                    )
                     .child(
                         div()
                             .flex_none()
@@ -10090,9 +10074,7 @@ mod logic_tests {
     }
 
     #[gpui::test]
-    fn list_multi_pr_and_ticket_badges_stay_on_a_single_line(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn list_multi_pr_and_ticket_badges_stay_on_a_single_line(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_base::init(cx);
             cx.set_global(Theme::default());
@@ -10143,9 +10125,7 @@ mod logic_tests {
         });
         vcx.run_until_parked();
 
-        let row = vcx
-            .debug_bounds("overview-list-row")
-            .expect("row rendered");
+        let row = vcx.debug_bounds("overview-list-row").expect("row rendered");
         let badges = vcx
             .debug_bounds("overview-row-badges")
             .expect("badge row rendered");
@@ -10250,9 +10230,7 @@ mod logic_tests {
             assert_eq!(overview.subagents.get("c1").map(Vec::len), Some(3));
             assert_eq!(overview.rows(cx)[0].subagent_count, 3);
         });
-        let row = vcx
-            .debug_bounds("overview-list-row")
-            .expect("row rendered");
+        let row = vcx.debug_bounds("overview-list-row").expect("row rendered");
         let block = vcx
             .debug_bounds("overview-list-subagents")
             .expect("subagent rows rendered in the row");
@@ -10361,9 +10339,7 @@ mod logic_tests {
             assert_eq!(row.subagent_count, 36);
         });
         vcx.run_until_parked();
-        let row = vcx
-            .debug_bounds("overview-list-row")
-            .expect("row rendered");
+        let row = vcx.debug_bounds("overview-list-row").expect("row rendered");
         assert!(
             vcx.debug_bounds("overview-card-model").is_some(),
             "row renders model metadata"
@@ -10382,8 +10358,7 @@ mod logic_tests {
         // The block carries the row's 8px bottom padding.
         let stack = |rows: f32| rows * SUBAGENT_TILE_H + (rows - 1.0) * SUBAGENT_TILE_GAP + 8.0;
         assert!(
-            (f32::from(block.size.height) - stack((SUBAGENT_PREVIEW_LIMIT + 1) as f32)).abs()
-                < 1.0,
+            (f32::from(block.size.height) - stack((SUBAGENT_PREVIEW_LIMIT + 1) as f32)).abs() < 1.0,
             "preview rows laid out at their fixed height: {block:?}"
         );
 
@@ -11805,7 +11780,8 @@ mod logic_tests {
         // The controls live in the header row, above the text, and the
         // short entry's controls are at the top of its entry too.
         for ix in 0..2 {
-            let mut named = |name: String| vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap();
+            let mut named =
+                |name: String| vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap();
             let header = named(format!("work-item-instruction-header-{ix}"));
             let text = named(format!("work-item-instruction-text-{ix}"));
             for control in ["edit", "archive"] {
@@ -11817,19 +11793,30 @@ mod logic_tests {
         // Collapsed to four lines: well short of the full text, and the
         // controls did not move down with the text.
         assert!(f32::from(collapsed.size.height) <= line * 4.0 + 1.0);
-        let edit_top = vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top();
+        let edit_top = vcx
+            .debug_bounds("work-item-instruction-edit-0")
+            .unwrap()
+            .top();
 
         // Show more expands, Show less collapses again.
-        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
+        let fold = vcx
+            .debug_bounds("work-item-instruction-fold-0")
+            .unwrap()
+            .center();
         vcx.simulate_click(fold, gpui::Modifiers::default());
         draw(vcx);
         let expanded = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
         assert!(f32::from(expanded.size.height) > f32::from(collapsed.size.height) * 1.5);
         assert_eq!(
-            vcx.debug_bounds("work-item-instruction-edit-0").unwrap().top(),
+            vcx.debug_bounds("work-item-instruction-edit-0")
+                .unwrap()
+                .top(),
             edit_top
         );
-        let fold = vcx.debug_bounds("work-item-instruction-fold-0").unwrap().center();
+        let fold = vcx
+            .debug_bounds("work-item-instruction-fold-0")
+            .unwrap()
+            .center();
         vcx.simulate_click(fold, gpui::Modifiers::default());
         draw(vcx);
         let again = vcx.debug_bounds("work-item-instruction-text-0").unwrap();
