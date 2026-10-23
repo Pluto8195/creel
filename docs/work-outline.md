@@ -474,9 +474,13 @@ automatically: items and links come only from the actions below.
   link**, which relinks it by the project's id (link anew, then remove the old
   link).
 - Retrying a create or link never duplicates it.
-- **Linked items.** Items linked to an issue show a small state dot and status
-  icon (done, canceled, started, backlog). Hover for the identifier, state,
-  priority, assignee and title; click to open the issue. Items linked to a
+- **Linked items.** Items linked to an issue show an icon cluster like a PR
+  row's: **assignee · needs you · status** (the state dot and a status icon:
+  done, canceled, started, backlog). The "N active · N user action required"
+  text, the chat count and the references icon move into the hover, which also
+  has the identifier, state, priority, assignee and title; click the status to
+  open the issue. On a narrow Outline the state dot drops first, then the
+  assignee; the attention dot and the status icon stay. Items linked to a
   project show a project chip. In Work Item Details, the **Linear** section has
   the full chip, ↻ (refresh every linked item in the project from Linear) and
   **Unlink**.
@@ -529,8 +533,9 @@ that owns the project, through that device's `gh` login.
   fixed-width icons on the right, in projects with the sync, so they line up
   as columns: **author · needs you · your review · CI · PR**.
   - *Author:* the PR author's GitHub login, shortened to 10 characters (full
-    login on hover). It always shows the plain login: Zeron doesn't know your
-    own GitHub login yet, so it can't say "you".
+    login on hover), or **you** when you wrote it. Zeron learns your login
+    once from `gh` (`gh api user`); until it has it, every author shows the
+    plain login. The chat's work-context strip says "you" the same way.
   - *Needs you:* the usual attention dot (and count). It replaces the "N active
     · N user action required" text on these rows; the chat count moves to the
     hover.
@@ -546,7 +551,9 @@ that owns the project, through that device's `gh` login.
   Open · CI failing · Re-review requested · by alex · 2 chats`). On a narrow
   Outline the title keeps at least about 120 px and the icons drop in this
   order: CI, review, author; the attention dot and the PR icon always stay.
-  The **?** reference has an icon legend. In Work Item Details, the **Pull
+  The **?** reference has an icon legend, lists the plan keys (⌥↑ / ⌥↓ section
+  jumps, ⌥⌘S for the section rail and its ↑ ↓ Home End, ⌘F / ⌘G / ⇧⌘G find)
+  and ⌘P, **Open the PR page**. In Work Item Details, the **Pull
   request** section shows the full text chip and title with **↻ Refresh**,
   **Review**, **Fix CI**, and **Open on GitHub**; it refreshes when Details
   open. A synced item also shows **Synced from GitHub · round N**.
@@ -557,8 +564,9 @@ that owns the project, through that device's `gh` login.
   Only PRs of the project's repositories; links are added, never removed or
   moved (a Chat moved to another item leaves its PR where it was), and a link
   you remove stays removed. The item's status is not changed when a PR
-  merges. An item with several PRs shows the icons for the first and a chip for each
-  further one. Details:
+  merges. An item with several PRs shows one PR icon for each (up to three, then
+  **+2** and so on, with the rest in its hover); the cluster's other slots
+  describe the first PR. Details:
   [PRs on work items](pr-review.md#prs-on-work-items).
 - **Review.** `⌘↩` (`Ctrl+Enter`) on a PR review item (a synced item, a child
   of the destination, or an item created from the GitHub section) starts a
