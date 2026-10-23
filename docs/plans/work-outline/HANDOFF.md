@@ -12,7 +12,8 @@ Prepared 2026-10-14. Read this first in a new chat picking up the Work Outline w
 - **Original spec:** `work-outline-implementation-specification.md` (copy of Mikey's spec, plus an
   "Implementation contract amendments" section). The binding contract is `m0-contract.md` in this
   folder; it wins where it differs from the spec.
-- **Installed build:** `/Applications/Zeron Dev.app`. Rollback binaries are in
+- **Installed build:** `/Applications/Creel.app` (since 2026-10-23; same bundle id `sh.zeron.app.dev`
+  and data `~/.zeron`, so `Zeron Dev.app` is a rollback only, never run both). Rollback binaries are in
   `~/zeron-dev-app-backups/` (one per install, named after the feature).
 
 ## Built and installed
@@ -254,11 +255,24 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     switches to the PR's review chat, else the selected chat, with the browser beside it; with
     neither, it opens externally.
   - ⌘-click, or "Open in External Browser" in the outline PR menu, always opens externally.
+- **Renamed to Creel, user-facing** (2026-10-23; decisions under Parked → "Rename the Zeron fork"):
+  - Name: about 190 visible strings, both plists ("Creel", `creel.icns`), packaging (`Creel.app`;
+    the dev script builds `Creel Dev.app`), user docs and the agent instructions' prose. The guard
+    test `crates/ui/tests/brand_name.rs` fails if a user-facing "Zeron" comes back.
+  - Logo: `dist/brand/` (generator, SVGs, PNGs) and `dist/macos/creel.icns`, with a simplified mark
+    at 16 and 32 px. The in-app logo is `icons::logo(appearance)`: steel on light, moss on dark.
+  - Left as Zeron on purpose: release file names (the update manifest matches on them), the
+    stored-instruction preamble (hashed), and every identifier, environment variable, data path,
+    bundle id, keychain entry, `zeron-artifact:` link and `zeron-agent` tool.
+  - The wordmark is live Copperplate text; outlining it waits on a licence check.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
   - Engine lib, flaky while Zeron itself is running (likely the live instance lock):
     `instance_lock::holder_probe_reports_pid_without_disturbing_the_lock`.
+  - Engine integration, flaky under parallel load (passes alone):
+    `local_first::headless_sign_out_closes_joined_edge_rooms_and_stops_daemon`,
+    `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send` (sometimes passes).
   - Engine integration, verified failing on `a3651a9d` before remove-canvas:
     - `e2e::generated_image_is_materialized_before_publication_and_survives_reopen`
     - `external_import_sync::sync_picks_up_a_closed_message_but_defers_the_new_open_reply`
@@ -325,8 +339,9 @@ status write-back, a "Waiting for input" group (declined), Tod-style action log 
   `m0-contract.md`; they are not regressions.
 - **Install:** `cargo build -p zeron`; back up the current binary to `~/zeron-dev-app-backups/`;
   `cp target/debug/zeron "$M/.zeron.installing" && mv -f` it to
-  `/Applications/Zeron Dev.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
-  sh.zeron.app.dev`; push `work-outline-implementation`.
+  `/Applications/Creel.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
+  sh.zeron.app.dev` (sign the bundle path); push `work-outline-implementation`. Before
+  2026-10-23 the app was `/Applications/Zeron Dev.app`, which is now kept only as a rollback.
 - **Never restart Zeron automatically.** Install, then tell Mikey what to restart and test.
   Restarting kills agents running inside Zeron, so commit WIP first.
 - **Xcode license prompts** after Xcode updates block git/cargo: Mikey accepts, or use
