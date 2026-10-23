@@ -294,7 +294,7 @@ mod tests {
                             status: Some(ChatLinkStatus {
                                 pr_links: vec![PrLinkStatus {
                                     url: "https://github.com/acme/app/pull/9".into(),
-                                    source: Some(ChatLinkSource::Manual),
+                                    source: Some(ChatLinkSource::ReviewLauncher),
                                     detail: None,
                                 }],
                                 ..ChatLinkStatus::default()

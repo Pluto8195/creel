@@ -170,7 +170,7 @@ fn a_synced_or_titled_item_is_a_review_item_without_a_destination() {
 #[test]
 fn a_launcher_review_without_an_item_shows_the_pr_it_was_created_for() {
     let snapshot = snapshot();
-    let launched = [link("app", 9, ChatLinkSource::Manual)];
+    let launched = [link("app", 9, ChatLinkSource::ReviewLauncher)];
     let context = resolve_for(&snapshot, CHAT_LOOSE_A, &launched, None).expect("strip");
     assert_eq!(context.item_id, None);
     assert_eq!(as_review(&context).prs, vec![pr_ref("app", 9)]);
@@ -184,6 +184,13 @@ fn a_launcher_review_without_an_item_shows_the_pr_it_was_created_for() {
     })
     .expect("strip");
     assert_eq!(as_review(&context).prs, vec![pr_ref("app", 9)]);
+}
+
+#[test]
+fn a_hand_linked_pr_is_not_a_launched_review() {
+    let snapshot = snapshot();
+    let manual = [link("app", 9, ChatLinkSource::Manual)];
+    assert!(resolve_for(&snapshot, CHAT_LOOSE_A, &manual, None).is_none());
 }
 
 #[test]

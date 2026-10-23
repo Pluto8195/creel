@@ -44,12 +44,11 @@ impl ChatPr {
         !matches!(self.source, Some(ChatLinkSource::Mentioned))
     }
 
-    /// The link the ⇧⌘P review launcher wrote for the Chat it created. The
-    /// launcher records its PR with the `Manual` source today; the
-    /// `review_launcher` source from pr-page-parity replaces this check (the
-    /// only place that decides it) when that branch merges.
+    /// The link the ⇧⌘P review launcher wrote for the Chat it created: its
+    /// `review_launcher` source (a PR linked by hand is `Manual`, not this).
+    /// The only place that decides it.
     fn launched_review(&self) -> bool {
-        self.source == Some(ChatLinkSource::Manual)
+        self.source == Some(ChatLinkSource::ReviewLauncher)
     }
 }
 
