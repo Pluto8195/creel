@@ -43,6 +43,14 @@ impl ChatPr {
     fn deliberate(&self) -> bool {
         !matches!(self.source, Some(ChatLinkSource::Mentioned))
     }
+
+    /// The link the ⇧⌘P review launcher wrote for the Chat it created. The
+    /// launcher records its PR with the `Manual` source today; the
+    /// `review_launcher` source from pr-page-parity replaces this check (the
+    /// only place that decides it) when that branch merges.
+    fn launched_review(&self) -> bool {
+        self.source == Some(ChatLinkSource::Manual)
+    }
 }
 
 /// The Chat's PR links from its link status (unparseable URLs dropped).
@@ -177,9 +185,6 @@ pub(crate) struct ResolveInput<'a> {
     pub chat_id: &'a str,
     pub snapshot: Option<&'a WorkOutlineSnapshot>,
     pub chat_prs: &'a [ChatPr],
-    /// The Chat is classified `pr_review` (the launcher pre-classifies the
-    /// Chats it creates).
-    pub review_classified: bool,
     pub artifacts: Option<&'a ArtifactsSnapshot>,
 }
 
@@ -309,7 +314,7 @@ pub(crate) fn resolve(input: &ResolveInput<'_>) -> Option<WorkContext> {
             ticket: item_ticket(linear),
         }));
     }
-    if input.review_classified && !deliberate.is_empty() {
+    if input.chat_prs.iter().any(ChatPr::launched_review) {
         return context(Variant::PrReview(PrReviewContext {
             pr_item_id: None,
             prs: deliberate.iter().map(|link| link.pr.clone()).collect(),

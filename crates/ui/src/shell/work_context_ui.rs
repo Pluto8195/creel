@@ -24,10 +24,6 @@ impl Shell {
             .and_then(|entry| entry.status.as_ref())
             .map(chat_work_context::chat_prs)
             .unwrap_or_default();
-        let review_classified = self
-            .chat_header_classification
-            .get(chat_id)
-            .is_some_and(|entry| entry.category_key.as_deref() == Some("pr_review"));
         let state = self.state.read(cx);
         let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
         let space_id = chat.space_id.as_deref();
@@ -37,7 +33,6 @@ impl Shell {
             chat_id,
             snapshot: snapshot.as_deref(),
             chat_prs: &links,
-            review_classified,
             artifacts: artifacts.as_deref(),
         })
     }
@@ -230,7 +225,7 @@ mod tests {
 
     /// A Shell with a `w-launch` > `w-api` review item (PR `acme/app#7`) and
     /// the chats of the store fixture; `launcher` also links `acme/app#9` to
-    /// `chat-loose-a` and classifies it `pr_review`.
+    /// `chat-loose-a`, as the review launcher does.
     fn mount<'a>(
         cx: &'a mut TestAppContext,
         chat_id: &'static str,
@@ -304,16 +299,6 @@ mod tests {
                                 }],
                                 ..ChatLinkStatus::default()
                             }),
-                            fetched_at: Instant::now(),
-                        },
-                    );
-                    shell.chat_header_classification.insert(
-                        CHAT_LOOSE_A.into(),
-                        ChatHeaderClassificationCache {
-                            category_key: Some("pr_review".into()),
-                            category: Some("PR review".into()),
-                            origin: None,
-                            manual: true,
                             fetched_at: Instant::now(),
                         },
                     );
