@@ -1043,23 +1043,145 @@ mod tests {
         });
     }
 
+    /// The authored tab with a review chat on #21 (row 0, CI failing); #22
+    /// (row 1, CI passing) has none.
+    fn authored_page_with_review_on_21(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (Calls, Entity<crate::chat_type_view::ChatTypeView>) {
+        let calls: Calls = Arc::default();
+        let sink = calls.clone();
+        let (_, rows) = script_dash(shell, cx);
+        rows.lock()
+            .unwrap()
+            .0
+            .iter_mut()
+            .find(|row| row.number == 21)
+            .unwrap()
+            .chats = vec![chat_link("chat-review-21", "Review flagship#21", false, true)];
+        let page = shell.update(cx, |shell, cx| {
+            shell.pr_review_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                Ok(reply("chat-started", 0))
+            }));
+            shell.open_pr_review_chats(cx);
+            shell.ensure_pr_review_chats_page(cx)
+        });
+        draw(cx);
+        page.update(cx, |page, cx| page.set_tab(PageTab::Dash(PrDashTab::Authored), cx));
+        draw(cx);
+        (calls, page)
+    }
+
     #[gpui::test]
-    fn authored_rows_only_offer_fix_ci_when_ci_is_failing(cx: &mut gpui::TestAppContext) {
+    fn authored_rows_offer_review_and_fix_ci_only_when_ci_is_failing(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let (calls, _page) = authored_page(&shell, cx);
+        // No row has a review chat: each offers Review, none Open review or
+        // the menu.
+        for ix in 0..4 {
+            assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_some());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-open-review-{ix}"))).is_none());
+            assert!(cx.debug_bounds(sel(format!("pr-dash-more-{ix}"))).is_none());
+        }
         // Row 0 is #21 (CI failing); #22 passes.
         assert!(cx.debug_bounds("pr-dash-fix-ci-0").is_some());
         assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
-        for ix in 0..4 {
-            assert!(cx.debug_bounds(sel(format!("pr-dash-review-{ix}"))).is_none());
-            assert!(cx.debug_bounds(sel(format!("pr-dash-open-review-{ix}"))).is_none());
-        }
         click(cx, "pr-dash-fix-ci-0");
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["number"], 21);
+            assert_eq!(calls[0]["action"], "fixCi");
+        }
+    }
+
+    #[gpui::test]
+    fn clicking_review_on_an_authored_row_starts_one_review(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = authored_page(&shell, cx);
+        click(cx, "pr-dash-review-1");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "one StartPrReview");
+        assert_eq!(calls[0]["repoOwner"], "acme");
+        assert_eq!(calls[0]["repoName"], "flagship");
+        assert_eq!(calls[0]["number"], 22);
+        assert_eq!(calls[0]["action"], "codeReview");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review"));
+        });
+    }
+
+    #[gpui::test]
+    fn an_authored_row_with_a_review_chat_offers_open_review_the_menu_and_fix_ci(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, _page) = authored_page_with_review_on_21(&shell, cx);
+        // #21: Open review replaces Review; Fix CI stays beside it (CI
+        // fails) and the menu is there.
+        assert!(cx.debug_bounds("pr-dash-open-review-0").is_some());
+        assert!(cx.debug_bounds("pr-dash-open-review-detail-0").is_some());
+        assert!(cx.debug_bounds("pr-dash-review-0").is_none());
+        assert!(cx.debug_bounds("pr-dash-fix-ci-0").is_some());
+        assert!(cx.debug_bounds("pr-dash-more-0").is_some());
+        // #22 has no chat and passing CI: Review only.
+        assert!(cx.debug_bounds("pr-dash-review-1").is_some());
+        assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
+        assert!(cx.debug_bounds("pr-dash-more-1").is_none());
+
+        click(cx, "pr-dash-open-review-0");
+        assert!(calls.lock().unwrap().is_empty(), "StartPrReview is never called");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review-21"));
+        });
+
+        // "Start another review" starts a code review of #21.
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        assert!(cx.debug_bounds("pr-dash-start-another-0").is_none(), "closed by default");
+        click(cx, "pr-dash-more-0");
+        click(cx, "pr-dash-start-another-0");
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 21);
-        assert_eq!(calls[0]["action"], "fixCi");
+        assert_eq!(calls[0]["action"], "codeReview");
+    }
+
+    #[gpui::test]
+    fn enter_on_an_authored_row_opens_the_review_chat_or_starts_a_review(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (calls, page) = authored_page_with_review_on_21(&shell, cx);
+        let focus = page.read_with(cx, |page, _| page.focus_handle());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        // Row 0 (#21) has a review chat: Enter opens it.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(calls.lock().unwrap().is_empty(), "no review was started");
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("chat-review-21"));
+        });
+        // Row 1 (#22) has none: Enter starts a review.
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.simulate_keystrokes("down enter");
+        draw(cx);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 22);
+        assert_eq!(calls[0]["action"], "codeReview");
     }
 
     #[gpui::test]
