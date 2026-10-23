@@ -660,6 +660,7 @@ mod generated_image_tests {
 /// engine that minted the token (never device-forwarded).
 pub mod agent_tools {
     use serde::{Deserialize, Serialize};
+    use serde_json::Value;
 
     /// Name of the injected MCP server (Claude tools surface as
     /// `mcp__zeron-agent__<tool>`). Distinct from a plain `zeron`, so a
@@ -679,7 +680,8 @@ pub mod agent_tools {
     /// Longest accepted `idempotencyKey`.
     pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 200;
 
-    /// Tool wire names. Every mutating tool requires an `idempotencyKey`.
+    /// Tool wire names. Every mutating tool takes an `idempotencyKey`; only the
+    /// naturally idempotent ones derive it when omitted ([`derived_idempotency_key`]).
     pub mod tools {
         /// The Chat's work item, its effective instructions, and the Space.
         pub const READ_CURRENT: &str = "work_outline_read_current";
@@ -731,7 +733,8 @@ pub mod agent_tools {
         pub const BIND_CHAT_WORKTREE: &str = "bind_chat_worktree";
 
         /// The planning artifact tools, in catalog order.
-        pub const ARTIFACTS: [&str; 3] = [ARTIFACT_PUBLISH, ARTIFACT_GET_PLAN, ARTIFACT_RENDER_CHECK];
+        pub const ARTIFACTS: [&str; 3] =
+            [ARTIFACT_PUBLISH, ARTIFACT_GET_PLAN, ARTIFACT_RENDER_CHECK];
 
         /// The Work Outline tools, in catalog order.
         pub const WORK_OUTLINE: [&str; 8] = [
@@ -836,6 +839,301 @@ pub mod agent_tools {
         Ok(key)
     }
 
+    /// Idempotency key for a naturally idempotent call whose caller omitted
+    /// one: `auto:` plus a [`derive_id`](crate::work_outline::derive_id) hash
+    /// (37 characters, so the registry operation id stays within its limit)
+    /// of the tool and the parts that identify the change. Include whatever
+    /// state the call depends on (for example the item's `updatedAt`) so a
+    /// later, different call never replays an older result.
+    pub fn derived_idempotency_key(tool: &str, parts: &[&str]) -> String {
+        format!(
+            "auto:{}",
+            crate::work_outline::derive_id(
+                &parts.join("\u{0}"),
+                &format!("derived-key\u{0}{tool}")
+            )
+        )
+    }
+
+    /// One parameter of a tool as shown in argument errors.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ParamUsage {
+        pub name: &'static str,
+        pub hint: &'static str,
+    }
+
+    /// What a tool accepts, for self-correcting argument errors.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ToolUsage {
+        pub tool: &'static str,
+        pub required: &'static [ParamUsage],
+        pub optional: &'static [ParamUsage],
+        pub example: &'static str,
+    }
+
+    const fn p(name: &'static str, hint: &'static str) -> ParamUsage {
+        ParamUsage { name, hint }
+    }
+
+    const KEY_DERIVED: ParamUsage = p("idempotencyKey", "derived when omitted");
+    const KEY_CREATE: ParamUsage = p(
+        "idempotencyKey",
+        "a stable string; reuse it only to retry the same call",
+    );
+
+    /// Usage of every engine-side agent tool and `create_chat`.
+    pub const USAGE: &[ToolUsage] = &[
+        ToolUsage {
+            tool: tools::READ_CURRENT,
+            required: &[],
+            optional: &[],
+            example: "{}",
+        },
+        ToolUsage {
+            tool: tools::READ_SUBTREE,
+            required: &[],
+            optional: &[
+                p("workItemId", "defaults to your chat's item"),
+                p("maxDepth", "0-8, default 4"),
+                p("includeArchived", "boolean"),
+            ],
+            example: r#"{"maxDepth": 2}"#,
+        },
+        ToolUsage {
+            tool: tools::CREATE_CHILD,
+            required: &[p("title", "string"), KEY_CREATE],
+            optional: &[
+                p("description", "string"),
+                p("parentWorkItemId", "defaults to your chat's item"),
+                p("status", "pending or active"),
+            ],
+            example: r#"{"title": "Fix the importer", "idempotencyKey": "create-fix-importer"}"#,
+        },
+        ToolUsage {
+            tool: tools::ASSOCIATE_CURRENT_CHAT,
+            required: &[p("workItemId", "id of the item to attach this chat to")],
+            optional: &[KEY_DERIVED],
+            example: r#"{"workItemId": "<item id>"}"#,
+        },
+        ToolUsage {
+            tool: tools::SET_STATUS,
+            required: &[p("status", "active or completed")],
+            optional: &[p("workItemId", "defaults to your chat's item"), KEY_DERIVED],
+            example: r#"{"status": "completed"}"#,
+        },
+        ToolUsage {
+            tool: tools::CREATE_USER_ACTION_REQUEST,
+            required: &[
+                p("request", "the one-line question or action"),
+                p("idempotencyKey", "or pass dedupeKey instead"),
+            ],
+            optional: &[
+                p("detail", "context for the user"),
+                p(
+                    "dedupeKey",
+                    "one per topic; open requests with the same key are not repeated",
+                ),
+                p("toolCallId", "string"),
+            ],
+            example: r#"{"request": "Which branch should this target?", "detail": "main or release?", "dedupeKey": "target-branch"}"#,
+        },
+        ToolUsage {
+            tool: tools::RESOLVE_USER_ACTION_REQUEST,
+            required: &[p(
+                "userActionRequestId",
+                "id from work_outline_read_current",
+            )],
+            optional: &[
+                p("resolution", "note recorded with the resolution"),
+                KEY_DERIVED,
+            ],
+            example: r#"{"userActionRequestId": "<request id>", "resolution": "Answered in chat"}"#,
+        },
+        ToolUsage {
+            tool: tools::PROPOSE_INSTRUCTION,
+            required: &[p("text", "the instruction"), KEY_CREATE],
+            optional: &[
+                p("target", "item (default), parent, or spaceRoot"),
+                p("toolCallId", "string"),
+            ],
+            example: r#"{"text": "Run cargo fmt before committing.", "idempotencyKey": "propose-fmt"}"#,
+        },
+        ToolUsage {
+            tool: tools::BIND_CHAT_WORKTREE,
+            required: &[p("path", "absolute top-level path of the worktree")],
+            optional: &[KEY_DERIVED],
+            example: r#"{"path": "/abs/path/to/worktree"}"#,
+        },
+        ToolUsage {
+            tool: tools::ARTIFACT_PUBLISH,
+            required: &[
+                p("path", "file you wrote"),
+                p("title", "human title"),
+                p("note", "one line: what changed"),
+                KEY_CREATE,
+            ],
+            optional: &[
+                p(
+                    "kind",
+                    "markdown, html-fragment, html-page, mermaid, image, or options",
+                ),
+                p("role", "plan, diagram, state-machine, comparison, or doc"),
+                p("pinAsPlan", "boolean"),
+            ],
+            example: r#"{"path": "plan.md", "title": "Importer plan", "note": "first draft", "idempotencyKey": "publish-plan-1"}"#,
+        },
+        ToolUsage {
+            tool: tools::ARTIFACT_GET_PLAN,
+            required: &[],
+            optional: &[],
+            example: "{}",
+        },
+        ToolUsage {
+            tool: tools::ARTIFACT_RENDER_CHECK,
+            required: &[p("artifactId", "or path, for an unpublished file")],
+            optional: &[
+                p("themes", r#"["light", "dark"]"#),
+                p("viewports", "list of {width, height, label}"),
+            ],
+            example: r#"{"artifactId": "<artifact id>", "themes": ["light", "dark"]}"#,
+        },
+        ToolUsage {
+            tool: "create_chat",
+            required: &[p("idempotencyKey", "inside a Zeron chat; a stable string")],
+            optional: &[
+                p("project", "project path or id"),
+                p("prompt", "first message (required with workItemId)"),
+                p("workItemId", "your item or a descendant"),
+                p("title", "string"),
+                p("harness", "see list_harnesses"),
+                p("model", "see list_models"),
+            ],
+            example: r#"{"workItemId": "<item id>", "prompt": "Do X, then finish with Ready to merge.", "idempotencyKey": "start-x", "wait": false}"#,
+        },
+    ];
+
+    /// The usage entry of `tool`, if it has one.
+    pub fn usage_of(tool: &str) -> Option<&'static ToolUsage> {
+        USAGE.iter().find(|usage| usage.tool == tool)
+    }
+
+    /// Multi-line text appended to an argument error: the tool's required and
+    /// optional parameters plus a minimal example call.
+    pub fn usage_text(tool: &str) -> Option<String> {
+        use std::fmt::Write as _;
+        let usage = usage_of(tool)?;
+        let list = |params: &[ParamUsage]| {
+            if params.is_empty() {
+                "none".to_owned()
+            } else {
+                params
+                    .iter()
+                    .map(|p| format!("{} ({})", p.name, p.hint))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        let mut out = format!("Usage of {}:", usage.tool);
+        let _ = write!(out, "\n  required: {}", list(usage.required));
+        let _ = write!(out, "\n  optional: {}", list(usage.optional));
+        let _ = write!(out, "\n  example: {}", usage.example);
+        Some(out)
+    }
+
+    /// Whether `tool`'s arguments are camelCase engine arguments (as opposed
+    /// to the snake_case chat tools served by the MCP process).
+    fn is_engine_tool(tool: &str) -> bool {
+        tools::WORK_OUTLINE.contains(&tool)
+            || tools::ARTIFACTS.contains(&tool)
+            || tool == tools::BIND_CHAT_WORKTREE
+    }
+
+    /// `snake_case` -> `camelCase`; other names unchanged.
+    fn camel_case(name: &str) -> String {
+        if !name.contains('_') {
+            return name.to_owned();
+        }
+        let mut out = String::with_capacity(name.len());
+        let mut upper = false;
+        for ch in name.chars() {
+            if ch == '_' {
+                upper = !out.is_empty();
+            } else if upper {
+                out.extend(ch.to_uppercase());
+                upper = false;
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    /// The parameter a guessed `name` stands for on `tool` (camelCase in,
+    /// canonical camelCase out), or `name` itself.
+    fn canonical_param(tool: &str, name: &str) -> &'static str {
+        match (tool, name) {
+            (tools::CREATE_USER_ACTION_REQUEST, "text" | "title" | "question") => "request",
+            (tools::RESOLVE_USER_ACTION_REQUEST, "id" | "requestId") => "userActionRequestId",
+            (
+                tools::CREATE_CHILD,
+                "workItemId" | "workItem" | "itemId" | "parentId" | "parentItemId" | "parent",
+            ) => "parentWorkItemId",
+            (_, "workItem" | "itemId") => "workItemId",
+            _ => "",
+        }
+    }
+
+    /// Normalise the arguments of an agent tool before they are parsed:
+    /// `snake_case` keys become `camelCase` (engine tools), and common
+    /// guessed names map to the real parameter (`text`/`title`/`question` ->
+    /// `request`, `id`/`requestId` -> `userActionRequestId`, `workItem`/
+    /// `itemId` -> `workItemId`). A parameter that is already present wins
+    /// over an alias. Other tools' arguments are returned unchanged.
+    pub fn normalize_arguments(tool: &str, arguments: &Value) -> Value {
+        let engine = is_engine_tool(tool);
+        if !engine && tool != "create_chat" {
+            return arguments.clone();
+        }
+        let object = match arguments {
+            Value::Null => return Value::Object(Default::default()),
+            Value::Object(object) => object,
+            other => return other.clone(),
+        };
+        let renamed = |key: &str| -> String {
+            let camel = if engine {
+                camel_case(key)
+            } else {
+                key.to_owned()
+            };
+            match canonical_param(tool, &camel) {
+                "" => camel,
+                canonical => canonical.to_owned(),
+            }
+        };
+        let mut out = serde_json::Map::new();
+        // Exact (already canonical) names first, so an alias never shadows one.
+        for (key, value) in object {
+            if renamed(key) == *key {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+        for (key, value) in object {
+            let target = renamed(key);
+            if target != *key && !out.contains_key(&target) {
+                out.insert(target, value.clone());
+            }
+        }
+        Value::Object(out)
+    }
+
+    /// `argument error + usage` for an `invalid` agent tool failure.
+    pub fn with_usage(tool: &str, message: &str) -> String {
+        match usage_text(tool) {
+            Some(usage) if !message.contains("\nUsage of ") => format!("{message}\n{usage}"),
+            _ => message.to_owned(),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -858,6 +1156,135 @@ pub mod agent_tools {
             assert_eq!(validate_idempotency_key(Some(" k ")).unwrap(), "k");
             let long = "x".repeat(MAX_IDEMPOTENCY_KEY_CHARS + 1);
             assert!(validate_idempotency_key(Some(&long)).is_err());
+        }
+
+        #[test]
+        fn derived_keys_are_stable_short_and_scoped_to_their_parts() {
+            let key = derived_idempotency_key("set", &["item", "completed", "7"]);
+            assert_eq!(
+                key,
+                derived_idempotency_key("set", &["item", "completed", "7"])
+            );
+            assert!(key.starts_with("auto:"));
+            // Long inputs still give a short key and a registry-sized operation id.
+            let long = "x".repeat(5000);
+            let long_key = derived_idempotency_key("set", &[&long, &long]);
+            assert_eq!(long_key.len(), key.len());
+            assert!(validate_idempotency_key(Some(&long_key)).is_ok());
+            assert!(operation_id("chat", &long_key).len() <= 64);
+            assert_ne!(
+                key,
+                derived_idempotency_key("set", &["item", "completed", "8"])
+            );
+            assert_ne!(
+                key,
+                derived_idempotency_key("other", &["item", "completed", "7"])
+            );
+            assert_ne!(
+                derived_idempotency_key("t", &["ab", "c"]),
+                derived_idempotency_key("t", &["a", "bc"])
+            );
+        }
+
+        #[test]
+        fn guessed_names_normalise_to_the_real_parameters() {
+            use serde_json::json;
+            let n = |tool: &str, args: Value| normalize_arguments(tool, &args);
+            assert_eq!(
+                n(
+                    tools::CREATE_USER_ACTION_REQUEST,
+                    json!({ "text": "Q?", "idempotency_key": "k" })
+                ),
+                json!({ "request": "Q?", "idempotencyKey": "k" })
+            );
+            for alias in ["title", "question", "text"] {
+                assert_eq!(
+                    n(tools::CREATE_USER_ACTION_REQUEST, json!({ alias: "Q?" })),
+                    json!({ "request": "Q?" }),
+                    "{alias}"
+                );
+            }
+            for alias in ["id", "requestId", "request_id", "user_action_request_id"] {
+                assert_eq!(
+                    n(tools::RESOLVE_USER_ACTION_REQUEST, json!({ alias: "r1" })),
+                    json!({ "userActionRequestId": "r1" }),
+                    "{alias}"
+                );
+            }
+            for alias in ["workItem", "itemId", "work_item_id"] {
+                assert_eq!(
+                    n(tools::SET_STATUS, json!({ alias: "w", "status": "active" })),
+                    json!({ "workItemId": "w", "status": "active" }),
+                    "{alias}"
+                );
+                assert_eq!(
+                    n(tools::ASSOCIATE_CURRENT_CHAT, json!({ alias: "w" })),
+                    json!({ "workItemId": "w" }),
+                    "{alias}"
+                );
+            }
+            assert_eq!(
+                n(
+                    tools::CREATE_CHILD,
+                    json!({ "title": "t", "workItemId": "p" })
+                ),
+                json!({ "title": "t", "parentWorkItemId": "p" })
+            );
+            // A canonical name wins over an alias, whatever the order.
+            assert_eq!(
+                n(
+                    tools::CREATE_USER_ACTION_REQUEST,
+                    json!({ "text": "alias", "request": "real" })
+                ),
+                json!({ "request": "real" })
+            );
+            // `text` is the real parameter of propose_instruction.
+            assert_eq!(
+                n(tools::PROPOSE_INSTRUCTION, json!({ "text": "t" })),
+                json!({ "text": "t" })
+            );
+            // create_chat keeps its snake_case names but takes the item aliases.
+            assert_eq!(
+                n(
+                    "create_chat",
+                    json!({ "workItem": "w", "idempotency_key": "k", "timeout_secs": 5 })
+                ),
+                json!({ "workItemId": "w", "idempotency_key": "k", "timeout_secs": 5 })
+            );
+            // Null arguments become an empty object; other tools are untouched.
+            assert_eq!(n(tools::READ_CURRENT, Value::Null), json!({}));
+            assert_eq!(
+                n("read_chat", json!({ "chat": "c", "text": "x" })),
+                json!({ "chat": "c", "text": "x" })
+            );
+        }
+
+        #[test]
+        fn every_engine_tool_has_usage_with_its_required_and_optional_parameters() {
+            let mut names: Vec<&str> = tools::WORK_OUTLINE.to_vec();
+            names.extend(tools::ARTIFACTS);
+            names.extend([tools::BIND_CHAT_WORKTREE, "create_chat"]);
+            for name in names {
+                let usage = usage_text(name).unwrap_or_else(|| panic!("no usage for {name}"));
+                assert!(usage.contains(&format!("Usage of {name}:")), "{usage}");
+                assert!(
+                    usage.contains("required:") && usage.contains("optional:"),
+                    "{usage}"
+                );
+                let example = usage_of(name).unwrap().example;
+                serde_json::from_str::<Value>(example)
+                    .unwrap_or_else(|e| panic!("{name} example is not JSON: {e}"));
+            }
+            let text = with_usage(
+                tools::SET_STATUS,
+                "invalid arguments: missing field `status`",
+            );
+            assert!(text.starts_with("invalid arguments: missing field `status`\nUsage of"));
+            assert!(text.contains("optional: workItemId (defaults to your chat's item), idempotencyKey (derived when omitted)"));
+            assert!(text.contains(r#"example: {"status": "completed"}"#));
+            // Not appended twice, and unknown tools pass through.
+            assert_eq!(with_usage(tools::SET_STATUS, &text), text);
+            assert_eq!(with_usage("nope", "x"), "x");
         }
 
         #[test]

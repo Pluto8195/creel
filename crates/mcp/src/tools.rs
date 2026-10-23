@@ -127,7 +127,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item or one of its descendants (see `work_outline_read_subtree`; create descendants with `work_outline_create_child`). A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item or one of its descendants (see `work_outline_read_subtree`; create descendants with `work_outline_create_child`). A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key (idempotencyKey also works) is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -209,6 +209,14 @@ fn catalog() -> Vec<ToolDef> {
     ]
 }
 
+/// For tools that derive a key when it is omitted (naturally idempotent).
+fn optional_idempotency_key_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Optional. Omit it and Zeron derives a key from the call's arguments. Pass your own to make a retry of this exact call replay the first result."
+    })
+}
+
 fn idempotency_key_schema() -> Value {
     json!({
         "type": "string",
@@ -240,7 +248,7 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::CREATE_CHILD,
-            description: "Create a work item under your chat's item (default) or one of its descendants. The item records your chat as its creator.",
+            description: "Create a work item under your chat's item (default) or one of its descendants. The item records your chat as its creator. Required: title and idempotencyKey. Optional: description, parentWorkItemId, status.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -255,60 +263,63 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ASSOCIATE_CURRENT_CHAT,
-            description: "Associate your own chat with a work item of its project (never another chat).",
+            description: "Associate your own chat with a work item of its project (never another chat). Required: workItemId. Optional: idempotencyKey (derived when omitted).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "workItemId": { "type": "string" },
-                    "idempotencyKey": idempotency_key_schema()
+                    "idempotencyKey": optional_idempotency_key_schema()
                 },
-                "required": ["workItemId", "idempotencyKey"]
+                "required": ["workItemId"]
             }),
         },
         ToolDef {
             name: agent_tool_names::SET_STATUS,
-            description: "Mark your chat's item (default) or one of its descendants active or completed. Completing an item with open user action requests fails; they are never resolved for you.",
+            description: "Mark your chat's item (default) or one of its descendants active or completed. Completing an item with open user action requests fails; they are never resolved for you. Required: status. Optional: workItemId (default your chat's item), idempotencyKey (derived when omitted).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "workItemId": { "type": "string" },
+                    "workItemId": { "type": "string", "description": "Defaults to your chat's item." },
                     "status": { "type": "string", "enum": ["active", "completed"] },
-                    "idempotencyKey": idempotency_key_schema()
+                    "idempotencyKey": optional_idempotency_key_schema()
                 },
-                "required": ["status", "idempotencyKey"]
+                "required": ["status"]
             }),
         },
         ToolDef {
             name: agent_tool_names::CREATE_USER_ACTION_REQUEST,
-            description: "Use this, alongside asking in chat and instead of relying only on your built-in ask-user prompt, whenever your chat's work item is blocked on a decision, approval, or missing information from the user; it stays open in Required Actions until resolved. Put a one-line question in `request`, context in `detail`, and a `dedupeKey` per topic. The user may answer via Required Actions' Reply & resolve, which arrives as a chat message starting `Re: \"…\"`; resolve the matching request when it does. Check that your chat has a work item with `work_outline_read_current`. Use your built-in quick question prompt only for small clarifications that do not block the work item.",
+            description: "Use this, alongside asking in chat and instead of relying only on your built-in ask-user prompt, whenever your chat's work item is blocked on a decision, approval, or missing information from the user; it stays open in Required Actions until resolved. Put a one-line question in `request`, context in `detail`, and a `dedupeKey` per topic. The user may answer via Required Actions' Reply & resolve, which arrives as a chat message starting `Re: \"…\"`; resolve the matching request when it does. Check that your chat has a work item with `work_outline_read_current`. Use your built-in quick question prompt only for small clarifications that do not block the work item. Required: request, and either idempotencyKey or dedupeKey (the dedupeKey stands in for the key). Optional: detail, dedupeKey, toolCallId.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "request": { "type": "string", "description": "The concise question or requested action." },
                     "detail": { "type": "string" },
-                    "dedupeKey": { "type": "string", "description": "Equivalent open requests with the same key are not repeated." },
+                    "dedupeKey": { "type": "string", "description": "Equivalent open requests with the same key are not repeated. With a dedupeKey, idempotencyKey is optional." },
                     "toolCallId": { "type": "string" },
-                    "idempotencyKey": idempotency_key_schema()
+                    "idempotencyKey": json!({
+                        "type": "string",
+                        "description": "Stable key for this change; required unless you pass dedupeKey. Reuse it when you retry the same call."
+                    })
                 },
-                "required": ["request", "idempotencyKey"]
+                "required": ["request"]
             }),
         },
         ToolDef {
             name: agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
-            description: "Resolve a user action request your chat, or a chat it created (a child started with `create_chat`), raised once the user has answered, in chat or via a chat message starting `Re: \"…\"` from Required Actions' Reply & resolve, if it is still open (see `work_outline_read_current`). Do not leave answered requests open.",
+            description: "Resolve a user action request your chat, or a chat it created (a child started with `create_chat`), raised once the user has answered, in chat or via a chat message starting `Re: \"…\"` from Required Actions' Reply & resolve, if it is still open (see `work_outline_read_current`). Do not leave answered requests open. Required: userActionRequestId. Optional: resolution (a note), idempotencyKey (derived when omitted).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "userActionRequestId": { "type": "string" },
                     "resolution": { "type": "string" },
-                    "idempotencyKey": idempotency_key_schema()
+                    "idempotencyKey": optional_idempotency_key_schema()
                 },
-                "required": ["userActionRequestId", "idempotencyKey"]
+                "required": ["userActionRequestId"]
             }),
         },
         ToolDef {
             name: agent_tool_names::PROPOSE_INSTRUCTION,
-            description: "Propose a durable instruction for your chat's item, its parent, or the project root. The user reviews it; nothing changes until they accept.",
+            description: "Propose a durable instruction for your chat's item, its parent, or the project root. The user reviews it; nothing changes until they accept. Required: text and idempotencyKey. Optional: target (item, parent, or spaceRoot).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -398,14 +409,14 @@ const DIFF_TARGET_TOOLS: [&str; 1] = [agent_tool_names::BIND_CHAT_WORKTREE];
 fn diff_target_catalog() -> Vec<ToolDef> {
     vec![ToolDef {
         name: agent_tool_names::BIND_CHAT_WORKTREE,
-        description: "Tell Zeron which git worktree this chat is working in, so the Changes pane shows that worktree instead of the folder the chat started in. Call it right after `git worktree add` (including worktrees of a submodule such as flagship, created under `.worktrees/`), and again when you resume an existing worktree for this chat's work. Call it once per worktree: a chat that works in several submodules binds each one. It only records the path; it does not create, switch, or modify anything. Pass the worktree's absolute top-level path (the output of `git rev-parse --show-toplevel` inside it); it must be a worktree of this chat's repository or of one of its submodules. Safe to retry with the same idempotencyKey; use a fresh key for a new worktree.",
+        description: "Tell Zeron which git worktree this chat is working in, so the Changes pane shows that worktree instead of the folder the chat started in. Call it right after `git worktree add` (including worktrees of a submodule such as flagship, created under `.worktrees/`), and again when you resume an existing worktree for this chat's work. Call it once per worktree: a chat that works in several submodules binds each one. It only records the path; it does not create, switch, or modify anything. Pass the worktree's absolute top-level path (the output of `git rev-parse --show-toplevel` inside it); it must be a worktree of this chat's repository or of one of its submodules. Required: path. Optional: idempotencyKey (not needed: binding the same path again just re-selects it).",
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "Absolute path of the worktree's top-level folder." },
-                "idempotencyKey": idempotency_key_schema()
+                "idempotencyKey": optional_idempotency_key_schema()
             },
-            "required": ["path", "idempotencyKey"]
+            "required": ["path"]
         }),
     }]
 }
@@ -696,7 +707,24 @@ impl Tools {
             .map(|value| (value, Vec::new()))
     }
 
+    /// Run one tool. Guessed argument names are normalised first (one place:
+    /// `agent_tools::normalize_arguments`), and an argument error from
+    /// `create_chat` lists its parameters and an example (engine tools add
+    /// theirs engine-side).
     async fn call_value(&self, name: &str, args: Value) -> Result<Value, String> {
+        let args = agent_tools::normalize_arguments(name, &args);
+        self.call_normalized(name, args).await.map_err(|error| {
+            let argument_error = error.starts_with("invalid arguments")
+                || error.contains("idempotencyKey is required");
+            if name == "create_chat" && argument_error {
+                agent_tools::with_usage(name, &error)
+            } else {
+                error
+            }
+        })
+    }
+
+    async fn call_normalized(&self, name: &str, args: Value) -> Result<Value, String> {
         // `AgentToolCall` authenticates the token itself: one round trip.
         if is_engine_agent_tool(name) {
             return self
@@ -1980,13 +2008,29 @@ mod tests {
             assert_eq!(def.input_schema["type"], "object", "{}", def.name);
             assert!(!def.description.is_empty());
         }
-        // Every mutating Work Outline tool demands an idempotency key.
+        // Every mutating Work Outline tool takes an idempotency key; only the
+        // create-style ones demand it (the rest derive one when omitted).
         for def in work_outline_catalog() {
             if def.name != agent_tool_names::READ_CURRENT
                 && def.name != agent_tool_names::READ_SUBTREE
             {
+                assert!(
+                    def.input_schema["properties"]["idempotencyKey"].is_object(),
+                    "{}",
+                    def.name
+                );
                 let required = def.input_schema["required"].as_array().unwrap();
-                assert!(required.contains(&json!("idempotencyKey")), "{}", def.name);
+                let demands_key = required.contains(&json!("idempotencyKey"));
+                assert_eq!(
+                    demands_key,
+                    [
+                        agent_tool_names::CREATE_CHILD,
+                        agent_tool_names::PROPOSE_INSTRUCTION
+                    ]
+                    .contains(&def.name),
+                    "{}",
+                    def.name
+                );
             }
         }
         let wire: Vec<&str> = work_outline_catalog().iter().map(|d| d.name).collect();
@@ -2005,7 +2049,9 @@ mod tests {
         assert_eq!(def.input_schema["type"], "object");
         let required = def.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("path")));
-        assert!(required.contains(&json!("idempotencyKey")));
+        // The key is optional: binding the same path again just re-selects it.
+        assert!(!required.contains(&json!("idempotencyKey")));
+        assert!(def.input_schema["properties"]["idempotencyKey"].is_object());
         assert!(def.input_schema["properties"].get("chatId").is_none());
         assert!(def.description.contains("git worktree add"));
         assert!(def.description.contains("resume"));
@@ -2407,6 +2453,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("idempotencyKey is required"), "{err}");
+        // The error lists the parameters and shows an example call.
+        assert!(err.contains("Usage of create_chat:"), "{err}");
+        assert!(err.contains("required: idempotencyKey"), "{err}");
+        assert!(err.contains("optional: project"), "{err}");
+        assert!(err.contains("example: {\"workItemId\""), "{err}");
 
         let args = json!({ "project": "/repo/comet", "title": "Child", "prompt": "go",
                            "idempotency_key": "spawn-reviewer" });
@@ -2650,6 +2701,67 @@ mod tests {
         assert_eq!(calls[0]["arguments"]["status"], "active");
         // The tool never sends a chat id: the engine derives it.
         assert!(calls[0]["arguments"].get("chatId").is_none());
+    }
+
+    /// Agents often call before the full schema has loaded and guess names:
+    /// the server maps the common guesses before the engine (or `create_chat`)
+    /// parses them, and an argument error says what to pass.
+    #[tokio::test]
+    async fn guessed_argument_names_are_normalised_before_dispatch() {
+        let world = Arc::new(World::default());
+        let agent = tools(world.clone(), Some(BETA_TOKEN));
+        agent
+            .call(
+                agent_tool_names::CREATE_USER_ACTION_REQUEST,
+                json!({ "question": "Which branch?", "dedupe_key": "branch" }),
+            )
+            .await
+            .unwrap();
+        agent
+            .call(
+                agent_tool_names::RESOLVE_USER_ACTION_REQUEST,
+                json!({ "id": "req-1" }),
+            )
+            .await
+            .unwrap();
+        agent
+            .call(
+                agent_tool_names::SET_STATUS,
+                json!({ "itemId": "item-1", "status": "completed" }),
+            )
+            .await
+            .unwrap();
+        let request = &world.agent_calls(agent_tool_names::CREATE_USER_ACTION_REQUEST)[0];
+        assert_eq!(request["arguments"]["request"], "Which branch?");
+        assert_eq!(request["arguments"]["dedupeKey"], "branch");
+        assert!(request["arguments"].get("question").is_none());
+        let resolve = &world.agent_calls(agent_tool_names::RESOLVE_USER_ACTION_REQUEST)[0];
+        assert_eq!(resolve["arguments"]["userActionRequestId"], "req-1");
+        let status = &world.agent_calls(agent_tool_names::SET_STATUS)[0];
+        assert_eq!(status["arguments"]["workItemId"], "item-1");
+
+        // create_chat: camelCase key and `workItem` reach the real fields.
+        let created = agent
+            .call(
+                "create_chat",
+                json!({ "idempotencyKey": "leaf-2", "workItem": "item-leaf", "prompt": "go" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["workItemId"], "item-leaf");
+        let launch = &world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT)[0];
+        assert_eq!(launch["arguments"]["idempotencyKey"], "leaf-2");
+
+        // A wrong value type is an argument error with the usage appended.
+        let err = agent
+            .call(
+                "create_chat",
+                json!({ "idempotency_key": "k", "wait": "yes" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("invalid arguments"), "{err}");
+        assert!(err.contains("Usage of create_chat:"), "{err}");
     }
 
     #[tokio::test]
