@@ -306,6 +306,15 @@ pub struct PrStatusParams {
     pub force_refresh: bool,
 }
 
+/// `PrViewer` (no params) → [`PrViewerReply`]: the GitHub login `gh` is
+/// signed in as, cached for the engine run. Rows use it to show "you" for
+/// the viewer's own PRs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrViewerReply {
+    pub login: String,
+}
+
 /// `PrReviewSyncNow {spaceId}` → [`PrReviewSyncNowReply`]: run the Space's
 /// sync now (bypassing caches). `github/invalid` when the Space has no
 /// destination, its destination is missing or archived, or the Space lives
