@@ -127,11 +127,11 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item or one of its descendants (see `work_outline_read_subtree`; create descendants with `work_outline_create_child`). A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Zeron chat, idempotency_key (idempotencyKey also works) is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item or one of its descendants (see `work_outline_read_subtree`; create descendants with `work_outline_create_child`). A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Creel chat, idempotency_key (idempotencyKey also works) is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "idempotency_key": { "type": "string", "description": "Stable key for this request (required inside a Zeron chat). The same key returns the same chat; a new chat needs a new key." },
+                    "idempotency_key": { "type": "string", "description": "Stable key for this request (required inside a Creel chat). The same key returns the same chat; a new chat needs a new key." },
                     "workItemId": { "type": "string", "description": "Start the child for this work item: your chat's item or one of its descendants. Requires prompt; incompatible with cwd and branch." },
                     "project": { "type": "string", "description": "Project id, path, or name. Required unless device is given." },
                     "device": { "type": "string", "description": "Host device (id or name) for a project-less chat; defaults to this device." },
@@ -213,7 +213,7 @@ fn catalog() -> Vec<ToolDef> {
 fn optional_idempotency_key_schema() -> Value {
     json!({
         "type": "string",
-        "description": "Optional. Omit it and Zeron derives a key from the call's arguments. Pass your own to make a retry of this exact call replay the first result."
+        "description": "Optional. Omit it and Creel derives a key from the call's arguments. Pass your own to make a retry of this exact call replay the first result."
     })
 }
 
@@ -341,7 +341,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: agent_tool_names::ARTIFACT_PUBLISH,
-            description: "Publish every file you wrote that the user should see (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Zeron copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
+            description: "Publish every file you wrote that the user should see (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Creel copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -363,7 +363,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ARTIFACT_RENDER_CHECK,
-            description: "Render an artifact exactly as Zeron shows it (same wrapper, sandbox, and theme) in the Zeron window on this device and return screenshots plus errors (console errors, blocked resources, Mermaid parse errors, empty render) and warnings (overflow, content outside the viewport, low contrast, and layout heuristics in layoutWarnings: clipped text, overlapping siblings, narrow text columns, elements wider than their parent, fixed widths wider than the viewport). By default it renders a narrow (800x800) and a wide (1440x900) viewport in the current theme; pass `themes: [\"light\", \"dark\"]` to check both themes (at most 4 images per call; each image comes with a label). Warnings are heuristics: always look at every screenshot. Run it after creating or changing any visual artifact, fix what is wrong, and check again. If it fails with renderUnavailable, say the artifact was not checked.",
+            description: "Render an artifact exactly as Creel shows it (same wrapper, sandbox, and theme) in the Creel window on this device and return screenshots plus errors (console errors, blocked resources, Mermaid parse errors, empty render) and warnings (overflow, content outside the viewport, low contrast, and layout heuristics in layoutWarnings: clipped text, overlapping siblings, narrow text columns, elements wider than their parent, fixed widths wider than the viewport). By default it renders a narrow (800x800) and a wide (1440x900) viewport in the current theme; pass `themes: [\"light\", \"dark\"]` to check both themes (at most 4 images per call; each image comes with a label). Warnings are heuristics: always look at every screenshot. Run it after creating or changing any visual artifact, fix what is wrong, and check again. If it fails with renderUnavailable, say the artifact was not checked.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -409,7 +409,7 @@ const DIFF_TARGET_TOOLS: [&str; 1] = [agent_tool_names::BIND_CHAT_WORKTREE];
 fn diff_target_catalog() -> Vec<ToolDef> {
     vec![ToolDef {
         name: agent_tool_names::BIND_CHAT_WORKTREE,
-        description: "Tell Zeron which git worktree this chat is working in, so the Changes pane shows that worktree instead of the folder the chat started in. Call it right after `git worktree add` (including worktrees of a submodule such as flagship, created under `.worktrees/`), and again when you resume an existing worktree for this chat's work. Call it once per worktree: a chat that works in several submodules binds each one. It only records the path; it does not create, switch, or modify anything. Pass the worktree's absolute top-level path (the output of `git rev-parse --show-toplevel` inside it); it must be a worktree of this chat's repository or of one of its submodules. Required: path. Optional: idempotencyKey (not needed: binding the same path again just re-selects it).",
+        description: "Tell Creel which git worktree this chat is working in, so the Changes pane shows that worktree instead of the folder the chat started in. Call it right after `git worktree add` (including worktrees of a submodule such as flagship, created under `.worktrees/`), and again when you resume an existing worktree for this chat's work. Call it once per worktree: a chat that works in several submodules binds each one. It only records the path; it does not create, switch, or modify anything. Pass the worktree's absolute top-level path (the output of `git rev-parse --show-toplevel` inside it); it must be a worktree of this chat's repository or of one of its submodules. Required: path. Optional: idempotencyKey (not needed: binding the same path again just re-selects it).",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1084,7 +1084,7 @@ impl Tools {
             .map(str::to_owned);
         if work_item_id.is_some() {
             if origin.is_none() {
-                anyhow::bail!("workItemId is only available inside a Zeron chat");
+                anyhow::bail!("workItemId is only available inside a Creel chat");
             }
             if args.prompt.as_deref().is_none_or(|p| p.trim().is_empty()) {
                 anyhow::bail!("workItemId needs a prompt: the child is started with it");
@@ -1562,7 +1562,7 @@ impl Tools {
             _ => short(origin_id).to_owned(),
         };
         format!(
-            "[Message from Zeron chat {label}. Reply to it with the Zeron `send_message` tool, chat {}.]\n\n{text}",
+            "[Message from Creel chat {label}. Reply to it with the Creel `send_message` tool, chat {}.]\n\n{text}",
             short(origin_id)
         )
     }
@@ -2242,7 +2242,7 @@ mod tests {
         assert_eq!(params["command"]["kind"], "run");
         let prompt = params["command"]["request"]["prompt"].as_str().unwrap();
         assert!(
-            prompt.starts_with("[Message from Zeron chat Beta (chat-bet)"),
+            prompt.starts_with("[Message from Creel chat Beta (chat-bet)"),
             "{prompt}"
         );
         assert!(prompt.ends_with("please review"));
@@ -2621,7 +2621,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.contains("only available inside a Zeron chat"), "{err}");
+        assert!(err.contains("only available inside a Creel chat"), "{err}");
     }
 
     #[tokio::test]

@@ -91,7 +91,7 @@ pub(crate) async fn start(
                 if text.contains("unknown method") {
                     PrReviewError::new(
                         PrReviewErrorCode::DeviceOffline,
-                        "This Zeron engine can't start PR reviews yet; restart Zeron to update it",
+                        "This Creel engine can't start PR reviews yet; restart Creel to update it",
                     )
                 } else {
                     PrReviewError::new(PrReviewErrorCode::DeviceOffline, text)

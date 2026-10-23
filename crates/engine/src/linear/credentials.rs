@@ -153,7 +153,7 @@ impl LinearKeyStore for KeychainKeyStore {
             "-a",
             KEYCHAIN_ACCOUNT,
             "-l",
-            "Zeron Linear API key",
+            "Creel Linear API key",
             "-w",
             key,
         ])?;

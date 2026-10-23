@@ -53,7 +53,7 @@ if [[ ! -f "$DAEMON_DIR/.demo-seeded" ]]; then
     fi
     probe Mutate "{\"op\":\"setChatActivity\",\"chatId\":\"$id\",\"lastMessageAt\":$(( ($(date +%s) - $4*3600) * 1000 ))}" >/dev/null
   }
-  seed "Native Zeron Rust Rewrite"    zeron zeron/main                 0  run
+  seed "Native Creel Rust Rewrite"    zeron zeron/main                 0  run
   seed "Rebalance Player Stats Caps"  soccertcg    zeron/rebalance-player-stat-caps  2  run
   seed "Craft Premium TCG Experience" soccertcg    zeron/craft-premium-tcg-exp       26 skip
   seed "Initial Context Exploration"  zeron        zeron/initial-context-exploration 14 skip

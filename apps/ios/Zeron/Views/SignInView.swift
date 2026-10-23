@@ -45,7 +45,7 @@ struct SignInView: View {
                     ZeronMark()
                         .frame(width: 72, height: 72)
                     VStack(spacing: 6) {
-                        Text("Zeron")
+                        Text("Creel")
                             .font(Theme.sans(28, weight: .semibold))
                             .kerning(-0.5)
                             .foregroundStyle(Theme.text)
@@ -64,7 +64,7 @@ struct SignInView: View {
                                 ProgressView()
                                     .tint(Theme.bg)
                             } else {
-                                Text("Log in to Zeron")
+                                Text("Log in to Creel")
                                     .font(Theme.sans(15, weight: .semibold))
                                     .foregroundStyle(Theme.bg)
                             }

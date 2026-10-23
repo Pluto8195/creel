@@ -1,16 +1,16 @@
 # Planning artifact conventions — v1.1
 
-The contract between agents (the planning skill) and Zeron for planning artifacts: plan documents,
-diagrams, state machines, and option comparisons. Zeron parses exactly what is described here;
+The contract between agents (the planning skill) and Creel for planning artifacts: plan documents,
+diagrams, state machines, and option comparisons. Creel parses exactly what is described here;
 anything else is shown as plain content. Design background: `plans/planning-artifacts-design.md`.
 
 Version: **v1.1** (2026-10-14). v1.1 is additive over v1: `artifact_render_check` gained
 `viewports`, `themes`, and layout warnings (section 3). Breaking changes bump the major version;
-Zeron keeps reading older versions.
+Creel keeps reading older versions.
 
 ## 1. Publishing an artifact
 
-Everything the user should see is published; Zeron never discovers artifacts by scanning folders.
+Everything the user should see is published; Creel never discovers artifacts by scanning folders.
 
 - **Write the file anywhere you can write** (your worktree, a temp folder).
   - Any regular file on this device can be published (it is copied), except credential
@@ -33,22 +33,22 @@ Everything the user should see is published; Zeron never discovers artifacts by 
   ```
 
   - `kind` defaults from the file extension.
-  - Zeron copies the file into the work item's artifact folder
+  - Creel copies the file into the work item's artifact folder
     (`<canonical checkout>/.zeron/artifacts/<work item>/`) and records a revision. Later publishes of
     the same `title` and `role` on the same work item add revisions to the same artifact.
   - `storedPath` is where the canonical copy lives; read it there in later chats instead of
     rebuilding the artifact.
 - **Link it** in your message with the returned URL: `[Receiving flow — plan](zeron-artifact:<artifactId>)`.
   Never link a bare file path.
-- **Without the tool** (harnesses that have no Zeron tools), link the file with
-  `[title](zeron-artifact:<path you wrote>)`; Zeron registers it on first sight.
+- **Without the tool** (harnesses that have no Creel tools), link the file with
+  `[title](zeron-artifact:<path you wrote>)`; Creel registers it on first sight.
 - **Existing files** (`work/`, `.local/`, earlier artifacts): publish them the same way; the first
   publish imports them as revision 1.
 
 ## 2. HTML
 
 - Write `<name>.fragment.html` containing body content only: no `<html>`, `<head>`, or `<body>`.
-  Zeron wraps it with its theme variables, a sandbox, and a content security policy.
+  Creel wraps it with its theme variables, a sandbox, and a content security policy.
 - Optionally also write `<name>.preview.html`, a standalone page for viewing in a browser.
 - Publish the **fragment**. A link to either file opens the rendered fragment.
 - Scripts are allowed inside the sandbox. Network access is limited to the CDNs allowed by Codex's
@@ -90,7 +90,7 @@ artifact_render_check {
   screenshot, whatever the warnings say.
 - Fix every error and every warning that is a real problem, call the check again, and look at the
   screenshots before you say the artifact is done.
-- If it returns `renderUnavailable` (no Zeron window on that device), say so instead of claiming
+- If it returns `renderUnavailable` (no Creel window on that device), say so instead of claiming
   the artifact was checked.
 
 ## 4. Open questions
@@ -114,11 +114,11 @@ One block per question:
   - `status: open|answered|resolved`
 - **Resolving:** when a question is settled, keep the block and set `status: resolved` with a
   `decision: <one line>` field. Do not delete resolved questions.
-- **Answers arrive as messages** like: `Answer to Q-3 in "Receiving flow — plan": <answer>`. Zeron
+- **Answers arrive as messages** like: `Answer to Q-3 in "Receiving flow — plan": <answer>`. Creel
   has already written the answer into the stored artifact as `status: resolved` with the decision.
   Read the current stored copy (`storedPath`), apply the decision to the rest of the document, and
   publish a new revision.
-- **In Zeron:** blocking questions each become a Required Action on the work item. Other open
+- **In Creel:** blocking questions each become a Required Action on the work item. Other open
   questions are summarised as one "N open questions" action per artifact.
 
 ### HTML
@@ -155,7 +155,7 @@ Every factual claim about the system cites a source and says how sure it is.
 - **Code locations** are `path:line` or `path:line-line`, relative to the repository root (for the
   Cofactr workspace: `ui/src/…`, `flagship/…`).
 
-Zeron recognises sources by URL: GitHub PRs, commits and files; Linear issues, comments and
+Creel recognises sources by URL: GitHub PRs, commits and files; Linear issues, comments and
 projects; Datadog, Sentry and Metabase; anything else is shown as a documentation link.
 
 ### HTML
@@ -196,8 +196,8 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 
   With no plan, `artifactId` is `null` and a `note` explains why. If a plan exists, work from it and update it (publish a new revision) rather than writing a new
   one.
-- Zeron shows the work item's linked Linear project next to the plan. Syncing plan content into
-  Linear is the skill's job (for example with the `linear` CLI); Zeron does not write to Linear.
+- Creel shows the work item's linked Linear project next to the plan. Syncing plan content into
+  Linear is the skill's job (for example with the `linear` CLI); Creel does not write to Linear.
 
 ## 8. Stable anchors
 

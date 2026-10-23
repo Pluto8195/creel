@@ -1214,7 +1214,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
     );
     assert_eq!(host_reason(&rejection), Reason::ZeronUpgradeRequired);
     assert!(
-        rejection.message.contains("Update Zeron on Studio"),
+        rejection.message.contains("Update Creel on Studio"),
         "{}",
         rejection.message
     );
