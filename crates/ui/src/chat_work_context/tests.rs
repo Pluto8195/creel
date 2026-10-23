@@ -400,7 +400,20 @@ fn ready(status: zeron_proto::PullRequestStatusSummary) -> PrEntry {
 
 fn fields(status: zeron_proto::PullRequestStatusSummary) -> PrFields {
     let pr = status.pr_ref.clone();
-    strip::pr_fields(&pr, Some(&ready(status)), now())
+    strip::pr_fields(&pr, Some(&ready(status)), None, now())
+}
+
+#[test]
+fn the_author_reads_you_for_the_viewers_own_pr() {
+    let status = gf::summary("app", 42, "Add auth");
+    let pr = status.pr_ref.clone();
+    let author = |viewer: Option<&str>| {
+        strip::pr_fields(&pr, Some(&ready(status.clone())), viewer, now()).author
+    };
+    assert_eq!(author(Some("octo")).as_deref(), Some("you"));
+    assert_eq!(author(Some("OCTO")).as_deref(), Some("you"));
+    assert_eq!(author(Some("sam")).as_deref(), Some("octo"));
+    assert_eq!(author(None).as_deref(), Some("octo"));
 }
 
 #[test]
@@ -484,11 +497,11 @@ fn fields_follow_each_of_my_review_states() {
 #[test]
 fn loading_and_failed_entries_keep_the_number_and_a_note() {
     let pr = pr_ref("app", 7);
-    let loading = strip::pr_fields(&pr, Some(&PrEntry::Loading), now());
+    let loading = strip::pr_fields(&pr, Some(&PrEntry::Loading), None, now());
     assert_eq!(loading.number, "app #7");
     assert_eq!(loading.title, None);
     assert!(loading.note.as_deref().unwrap().contains("Loading"));
-    assert_eq!(strip::pr_fields(&pr, None, now()), loading);
+    assert_eq!(strip::pr_fields(&pr, None, None, now()), loading);
     let failed = strip::pr_fields(
         &pr,
         Some(&PrEntry::Failed {
@@ -498,6 +511,7 @@ fn loading_and_failed_entries_keep_the_number_and_a_note() {
             ),
             at: Instant::now(),
         }),
+        None,
         now(),
     );
     assert_eq!(failed.note.as_deref(), Some("gh failed"));
@@ -617,6 +631,7 @@ fn data_for(statuses: &[zeron_proto::PullRequestStatusSummary]) -> StripData {
             .collect::<HashMap<_, _>>(),
         issue: None,
         project: None,
+        viewer: None,
         now: now(),
     }
 }
@@ -658,6 +673,33 @@ fn the_review_strip_shows_the_pr_fields_on_one_line(cx: &mut TestAppContext) {
     // One line: the strip is a single row tall.
     let strip = vcx.debug_bounds("work-context-strip").unwrap();
     assert!(strip.size.height <= px(24.0), "{:?}", strip.size);
+}
+
+#[gpui::test]
+fn the_strip_author_reads_you_for_the_viewers_own_pr(cx: &mut TestAppContext) {
+    let mut status = gf::summary("app", 42, "Add auth");
+    status.author = "alexander-the-great".into();
+    let mut data = data_for(&[status]);
+    let (host, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data.clone());
+    let width = |vcx: &mut VisualTestContext| {
+        f32::from(vcx.debug_bounds("work-context-pr-author").expect("author").size.width)
+    };
+    let login = width(vcx);
+    // Someone else is the viewer, or nobody known: still the login.
+    data.viewer = Some("sam".into());
+    host.update(vcx, |host, cx| {
+        host.data = data.clone();
+        cx.notify();
+    });
+    draw(vcx);
+    assert_eq!(width(vcx), login);
+    data.viewer = Some("Alexander-The-Great".into());
+    host.update(vcx, |host, cx| {
+        host.data = data.clone();
+        cx.notify();
+    });
+    draw(vcx);
+    assert!(width(vcx) < login, "\"you\" is shorter than the login");
 }
 
 #[gpui::test]
@@ -724,14 +766,14 @@ fn a_failed_refresh_keeps_the_last_status_in_the_store(cx: &mut TestAppContext) 
     cx.update(|cx| crate::github::store::request_status(&state, &pr, true, cx));
     cx.run_until_parked();
     let first = state.read_with(cx, |state, _| state.github.status(&pr).cloned());
-    let before = strip::pr_fields(&pr, first.as_ref(), now());
+    let before = strip::pr_fields(&pr, first.as_ref(), None, now());
     assert_eq!(before.title.as_deref(), Some("Add auth"));
 
     flag.store(true, Ordering::SeqCst);
     cx.update(|cx| crate::github::store::request_status(&state, &pr, true, cx));
     cx.run_until_parked();
     let after = state.read_with(cx, |state, _| state.github.status(&pr).cloned());
-    assert_eq!(strip::pr_fields(&pr, after.as_ref(), now()), before);
+    assert_eq!(strip::pr_fields(&pr, after.as_ref(), None, now()), before);
 }
 
 #[gpui::test]

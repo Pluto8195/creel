@@ -505,12 +505,12 @@ fn chips_details_sync_markers_and_menu(cx: &mut gpui::TestAppContext) {
     });
 }
 
-/// A Linear row shows the state dot and status icon in one fixed-width slot
-/// (no chip text); the identifier and assignee live in the tooltip. The
-/// Linear row keeps its other row elements, and the full chip stays in
-/// Details.
+/// A Linear row is an icon cluster like a PR row's (assignee, needs, status):
+/// the state dot and status icon share one fixed-width slot, and the totals
+/// text, chat count and references icon are folded into the tooltip. The
+/// full chip stays in Details; plain items keep their text.
 #[gpui::test]
-fn linear_rows_show_a_compact_state_slot(cx: &mut gpui::TestAppContext) {
+fn linear_rows_show_a_compact_icon_cluster(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (overview, _calls, vcx) =
         linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
@@ -519,10 +519,28 @@ fn linear_rows_show_a_compact_state_slot(cx: &mut gpui::TestAppContext) {
     let key = row_key::item("s1", API);
     let slot = row_bounds(vcx, format!("outline-linear-{key}")).expect("the Linear slot renders");
     assert_eq!(f32::from(slot.size.width), 28.0, "fixed width");
-    // No PR cluster on a Linear-only row; chats and references stay.
+    for selector in [
+        format!("outline-linear-slots-{key}"),
+        format!("outline-linear-assignee-{key}"),
+        format!("outline-linear-slot-needs-{key}"),
+        format!("outline-linear-slot-status-{key}"),
+    ] {
+        assert!(row_bounds(vcx, selector.clone()).is_some(), "{selector} renders");
+    }
+    // No PR cluster on a Linear-only row, and none of the text it replaces.
     assert!(row_bounds(vcx, format!("outline-pr-slots-{key}")).is_none());
-    assert!(row_bounds(vcx, format!("outline-chats-{key}")).is_some());
-    assert!(row_bounds(vcx, format!("outline-refs-{key}")).is_some());
+    for gone in ["outline-totals", "outline-chats", "outline-refs"] {
+        assert!(
+            row_bounds(vcx, format!("{gone}-{key}")).is_none(),
+            "{gone} is folded into the tooltip"
+        );
+    }
+    // The row has them to show: chats, references, and the parent's totals.
+    overview.read_with(vcx, |o, cx| {
+        let outline = o.outline.read(cx);
+        let item = outline.row_for_test(&key).unwrap().item().unwrap();
+        assert!(item.chat_count > 0 && item.has_references);
+    });
     // The row's state: loaded issue is In Progress (started).
     let state = overview.read_with(vcx, |o, _| o.state.clone());
     state.read_with(vcx, |state, _| {
@@ -534,8 +552,58 @@ fn linear_rows_show_a_compact_state_slot(cx: &mut gpui::TestAppContext) {
             crate::icons::CLOCK_CIRCLE
         );
     });
+    // Plain items (no issue) are unchanged: totals and chat count stay, and
+    // there is no cluster.
+    let plain = row_key::item("s1", LAUNCH);
+    assert!(row_bounds(vcx, format!("outline-totals-{plain}")).is_some());
+    assert!(row_bounds(vcx, format!("outline-linear-slots-{plain}")).is_none());
     open_details(&overview, vcx, API);
     assert!(vcx.debug_bounds("work-item-linear-chip").is_some());
+}
+
+/// Narrow Outline: the state dot drops first, then the assignee; the needs
+/// slot and the status icon never drop.
+#[gpui::test]
+fn narrow_widths_drop_the_dot_then_the_assignee(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) =
+        linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    let seen = |vcx: &mut gpui::VisualTestContext| {
+        (
+            row_bounds(vcx, format!("outline-linear-slot-assignee-{key}")).is_some(),
+            row_bounds(vcx, format!("outline-linear-slot-needs-{key}")).is_some(),
+            row_bounds(vcx, format!("outline-linear-{key}"))
+                .map(|bounds| f32::from(bounds.size.width)),
+        )
+    };
+    let mut states = Vec::new();
+    let mut width = 700.0;
+    while width >= 120.0 {
+        overview.update(vcx, |o, cx| {
+            o.outline
+                .update(cx, |outline, cx| outline.set_row_width_for_test(Some(width), cx))
+        });
+        draw(vcx);
+        let state = seen(vcx);
+        assert!(state.1 && state.2.is_some(), "needs and status stay at {width}");
+        if states.last() != Some(&state) {
+            states.push(state);
+        }
+        width -= 4.0;
+    }
+    // (assignee, needs, status width): the dot goes with 28 → 17, then the
+    // assignee.
+    assert_eq!(
+        states,
+        [
+            (true, true, Some(28.0)),
+            (true, true, Some(17.0)),
+            (false, true, Some(17.0)),
+        ]
+    );
 }
 
 /// A host without the Linear RPCs shows a calm "not available" state; a

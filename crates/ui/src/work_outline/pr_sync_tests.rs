@@ -1267,3 +1267,226 @@ fn plain_item_rows_are_unchanged(cx: &mut gpui::TestAppContext) {
     }
     assert!(!present(vcx, format!("outline-pr-slots-{api}")));
 }
+
+// ---- "you", several PRs, Linear + PR rows ---------------------------------
+
+/// The rendered width of an author cell (`None` when it isn't there). A
+/// truncated login and "you" differ in width, which is how a headless test
+/// tells them apart.
+fn author_width(vcx: &mut gpui::VisualTestContext, item: &str) -> Option<f32> {
+    row_bounds(vcx, format!("outline-pr-author-{}", row_key::item("s1", item)))
+        .map(|bounds| f32::from(bounds.size.width))
+}
+
+fn set_viewer(
+    overview: &Entity<Overview>,
+    vcx: &mut gpui::VisualTestContext,
+    login: &str,
+) {
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.update(vcx, |state, cx| {
+        state.github.set_viewer_for_test(login);
+        cx.notify();
+    });
+    draw(vcx);
+}
+
+/// The author slot reads "you" for the viewer's own PRs (any case) and the
+/// plain login for everyone else, or for everyone while the login is unknown.
+#[gpui::test]
+fn author_reads_you_only_for_the_viewers_own_prs(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    // `PrViewer` fails: the login stays unknown.
+    let (overview, calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), |method, params| {
+        if method == "PrViewer" {
+            return Err(zeron_rpc::RpcError::Failed("gh unavailable".into()));
+        }
+        icon_reply(method, params)
+    });
+    vcx.run_until_parked();
+    draw(vcx);
+    assert_eq!(calls_to(&calls, "PrViewer").len(), 1, "asked once, not per row");
+    let (octo, long) = (
+        author_width(vcx, API).expect("octo's PR shows its author"),
+        author_width(vcx, HOUSEKEEPING).expect("so does the long login"),
+    );
+    // Someone else is the viewer: nothing changes.
+    set_viewer(&overview, vcx, "sam");
+    assert_eq!(author_width(vcx, API), Some(octo));
+    assert_eq!(author_width(vcx, HOUSEKEEPING), Some(long));
+    // The long login is the viewer's (case differs): that row reads "you".
+    set_viewer(&overview, vcx, "Alexander-The-Great");
+    let you = author_width(vcx, HOUSEKEEPING).expect("still shown");
+    assert!(you < long, "\"you\" ({you}) is shorter than the truncated login ({long})");
+    assert_eq!(author_width(vcx, API), Some(octo), "other authors keep the login");
+    // The tooltip names both.
+    assert_eq!(
+        crate::github::row_icons::author_tooltip("alexander-the-great", Some("Alexander-The-Great")),
+        "Author: you (alexander-the-great)"
+    );
+}
+
+/// The viewer comes from one `PrViewer` call and lands in the store.
+#[gpui::test]
+fn the_viewer_login_is_fetched_once_into_the_store(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), |method, params| {
+        if method == "PrViewer" {
+            return Ok(serde_json::json!({"login": "alexander-the-great"}));
+        }
+        icon_reply(method, params)
+    });
+    vcx.run_until_parked();
+    draw(vcx);
+    draw(vcx);
+    assert_eq!(calls_to(&calls, "PrViewer").len(), 1);
+    let state = overview.read_with(vcx, |o, _| o.state.clone());
+    state.read_with(vcx, |state, _| {
+        assert_eq!(state.github.viewer(), Some("alexander-the-great"));
+    });
+}
+
+/// `icon_snapshot` with the PRs `launch#<extra>` also linked on the API item
+/// (it already links launch#42).
+fn many_pr_snapshot(extra: &[u64]) -> WorkOutlineSnapshot {
+    let mut snapshot = icon_snapshot();
+    let mut ids = Vec::new();
+    for (index, number) in extra.iter().enumerate() {
+        let id = format!("r-more-{number}");
+        let mut reference = gf::reference(&id, "s1", API, "launch", *number);
+        reference.created_at = 100 + index as i64;
+        snapshot.external_references.push(reference);
+        ids.push(id);
+    }
+    snapshot
+        .items
+        .iter_mut()
+        .find(|item| item.id == API)
+        .unwrap()
+        .external_reference_ids
+        .extend(ids);
+    snapshot
+}
+
+fn pr_icon_ids(vcx: &mut gpui::VisualTestContext, key: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if present(vcx, format!("outline-pr-{key}")) {
+        found.push(format!("outline-pr-{key}"));
+    }
+    for index in 1..10 {
+        let id = format!("outline-pr-{key}-{index}");
+        if present(vcx, id.clone()) {
+            found.push(id);
+        }
+    }
+    found
+}
+
+/// An item with several PRs shows an icon for each one in the PR slot, up to
+/// three, then "+N"; the extra icons take room from the droppable slots, the
+/// tooltip names every PR, and every icon opens its own PR.
+#[gpui::test]
+fn several_prs_show_an_icon_each_then_a_count(cx: &mut gpui::TestAppContext) {
+    let key = row_key::item("s1", API);
+    let more = format!("outline-pr-more-{key}");
+
+    // Two PRs: two icons, no count.
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, calls, vcx) =
+        pr_overview(cx, dir.path(), many_pr_snapshot(&[7]), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    assert_eq!(pr_icon_ids(vcx, &key).len(), 2);
+    assert!(!present(vcx, more.clone()));
+    let slot = row_bounds(vcx, slot_selector("pr", API)).unwrap();
+    assert_eq!(
+        f32::from(slot.size.width),
+        crate::github::row_icons::pr_slot_width(2)
+    );
+    for id in pr_icon_ids(vcx, &key) {
+        let icon = row_bounds(vcx, id.clone()).unwrap();
+        assert!(slot.contains(&icon.center()), "{id} sits in the PR slot");
+    }
+    // Every PR's status is fetched, and the first icon still comes first.
+    let asked: Vec<_> = calls_to(&calls, "PrStatus")
+        .iter()
+        .map(|p| p["number"].as_u64().unwrap())
+        .collect();
+    assert!(asked.contains(&42) && asked.contains(&7), "{asked:?}");
+    let first = row_bounds(vcx, format!("outline-pr-{key}")).unwrap();
+    let second = row_bounds(vcx, format!("outline-pr-{key}-1")).unwrap();
+    assert!(first.origin.x < second.origin.x);
+}
+
+#[gpui::test]
+fn more_than_three_prs_collapse_into_a_plus_count(cx: &mut gpui::TestAppContext) {
+    let key = row_key::item("s1", API);
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) =
+        pr_overview(cx, dir.path(), many_pr_snapshot(&[7, 8, 9, 10]), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    // Five PRs: three icons and "+2".
+    assert_eq!(pr_icon_ids(vcx, &key).len(), crate::github::row_icons::MAX_PR_ICONS);
+    assert!(present(vcx, format!("outline-pr-more-{key}")));
+    let slot = row_bounds(vcx, slot_selector("pr", API)).unwrap();
+    assert_eq!(
+        f32::from(slot.size.width),
+        crate::github::row_icons::pr_slot_width(5)
+    );
+    // A one-PR row (Housekeeping) is unchanged: one icon, no count.
+    let hk = row_key::item("s1", HOUSEKEEPING);
+    assert_eq!(pr_icon_ids(vcx, &hk), [format!("outline-pr-{hk}")]);
+    assert!(!present(vcx, format!("outline-pr-more-{hk}")));
+    let single = row_bounds(vcx, slot_selector("pr", HOUSEKEEPING)).unwrap();
+    assert_eq!(
+        f32::from(single.size.width),
+        crate::github::row_icons::pr_slot_width(1)
+    );
+}
+
+/// A Linear ticket that also links PRs: the PR cluster carries the row (its
+/// attention, tooltip totals and chat count), and the issue keeps just its
+/// status slot beside it.
+#[gpui::test]
+fn a_ticket_with_prs_keeps_one_cluster_and_a_linear_status_slot(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut snapshot = many_pr_snapshot(&[7]);
+    snapshot.space_settings.linear_enabled = true;
+    snapshot.external_references.push(crate::linear::fixture::reference(
+        "r-eng-1",
+        "s1",
+        API,
+        "issue",
+        "ENG-1",
+        "https://linear.app/acme/issue/eng-1/slug",
+    ));
+    snapshot
+        .items
+        .iter_mut()
+        .find(|item| item.id == API)
+        .unwrap()
+        .external_reference_ids
+        .push("r-eng-1".into());
+    let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), snapshot, |method, params| {
+        match method {
+            "LinearIssue" => Ok(serde_json::to_value(crate::linear::fixture::issue(
+                params["identifier"].as_str().unwrap_or("ENG-1"),
+                "Fix login",
+            ))
+            .unwrap()),
+            "LinearStatus" => Ok(serde_json::json!({"configured": true, "source": "keychain",
+                "viewer": {"id": "u", "name": "Mikey"}})),
+            _ => icon_reply(method, params),
+        }
+    });
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    assert!(present(vcx, format!("outline-pr-slots-{key}")));
+    assert!(present(vcx, format!("outline-linear-{key}")), "the issue's status slot");
+    assert!(!present(vcx, format!("outline-linear-slots-{key}")), "one cluster only");
+    for gone in ["outline-totals", "outline-chats", "outline-refs"] {
+        assert!(!present(vcx, format!("{gone}-{key}")), "{gone}");
+    }
+}

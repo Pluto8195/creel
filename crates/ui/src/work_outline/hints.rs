@@ -645,7 +645,8 @@ mod tests {
                 "Restructure",
                 "Commands",
                 "Linear",
-                "GitHub"
+                "GitHub",
+                "Plan"
             ]
         );
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
@@ -724,6 +725,69 @@ mod tests {
         assert_eq!(
             row(&groups, "Show Outline Shortcuts").keys.as_deref(),
             Some("Ctrl+Alt+/")
+        );
+    }
+
+    /// The reference lists the plan keys, with the same combos the Artifact
+    /// tab binds, and ⌘P as the PR page.
+    #[test]
+    fn reference_lists_the_plan_keys_and_the_pr_page() {
+        let keymap = KeymapConfig::default();
+        let keys = |groups: &[ShortcutGroup], title: &str, label: &str| {
+            groups
+                .iter()
+                .find(|group| group.title == title)
+                .unwrap_or_else(|| panic!("{title} group"))
+                .rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} row"))
+                .keys
+                .clone()
+        };
+        let mac = shortcut_reference_on(true, &keymap);
+        let plain = shortcut_reference_on(false, &keymap);
+        for (label, on_mac, elsewhere) in [
+            (
+                "Previous / next section",
+                "\u{2325}\u{2191} / \u{2325}\u{2193}",
+                "Alt+\u{2191} / Alt+\u{2193}",
+            ),
+            (
+                "Focus the section rail",
+                "\u{2325}\u{2318}S",
+                "Ctrl+Alt+S",
+            ),
+            (
+                "In the rail: previous / next / first / last section",
+                "\u{2191} \u{2193} Home End",
+                "\u{2191} \u{2193} Home End",
+            ),
+            ("Find in the plan", "\u{2318}F", "Ctrl+F"),
+            (
+                "Next / previous match",
+                "\u{2318}G / \u{21e7}\u{2318}G",
+                "Ctrl+G / Ctrl+Shift+G",
+            ),
+        ] {
+            assert_eq!(keys(&mac, "Plan", label).as_deref(), Some(on_mac), "{label}");
+            assert_eq!(keys(&plain, "Plan", label).as_deref(), Some(elsewhere), "{label}");
+        }
+        // The PR page row follows the live binding.
+        assert_eq!(
+            keys(&mac, "GitHub", "Open the PR page").as_deref(),
+            Some("\u{2318}P")
+        );
+        let mut rebound = KeymapConfig::default();
+        rebound.set(ShortcutId::OpenMyPrs, "mod-alt-p".into());
+        assert_eq!(
+            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page").as_deref(),
+            Some("\u{2325}\u{2318}P")
+        );
+        rebound.set(ShortcutId::OpenMyPrs, String::new());
+        assert_eq!(
+            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page"),
+            None
         );
     }
 

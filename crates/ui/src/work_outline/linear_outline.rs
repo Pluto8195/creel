@@ -687,4 +687,50 @@ mod tests {
             "ENG-1 \u{00b7} In Progress \u{00b7} Unassigned\nFix login"
         );
     }
+
+    #[test]
+    fn narrow_rows_drop_the_dot_then_the_assignee_and_never_needs_or_status() {
+        let all = LinearSlots::ALL;
+        assert_eq!(linear_visible_slots(all.width()), all);
+        assert_eq!(linear_visible_slots(1000.0), all);
+        let no_dot = LinearSlots { dot: false, ..all };
+        assert_eq!(linear_visible_slots(all.width() - 0.5), no_dot);
+        assert_eq!(linear_visible_slots(no_dot.width()), no_dot);
+        let minimal = LinearSlots {
+            assignee: false,
+            ..no_dot
+        };
+        assert_eq!(linear_visible_slots(no_dot.width() - 0.5), minimal);
+        assert_eq!(linear_visible_slots(-50.0), minimal);
+        assert!(minimal.width() > 0.0 && minimal.width() < no_dot.width());
+        assert!(no_dot.width() < all.width());
+    }
+
+    #[test]
+    fn group_tooltip_folds_in_the_chat_count_and_totals() {
+        let ticket = issue("ENG-1", "Fix login");
+        let entry = IssueEntry::Ready {
+            issue: ticket.clone(),
+            at: std::time::Instant::now(),
+        };
+        let base = issue_row_tooltip(&ticket);
+        assert_eq!(linear_group_line("ENG-1", Some(&entry), 0, None), base);
+        assert_eq!(
+            linear_group_line("ENG-1", Some(&entry), 1, None),
+            format!("{base}\n1 associated chat")
+        );
+        assert_eq!(
+            linear_group_line(
+                "ENG-1",
+                Some(&entry),
+                3,
+                Some("Including descendants: 2 active")
+            ),
+            format!("{base}\n3 associated chats\nIncluding descendants: 2 active")
+        );
+        assert_eq!(
+            linear_group_line("ENG-1", None, 0, None),
+            "ENG-1 (loading from Linear)"
+        );
+    }
 }
