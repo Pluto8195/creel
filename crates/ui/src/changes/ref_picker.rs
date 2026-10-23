@@ -12,7 +12,7 @@ use zeron_proto::{RefDiffCandidate, RefDiffKind};
 
 /// The open picker. Same keyboard shape as [`CheckoutMenu`].
 pub(super) struct RefTargetMenu {
-    search: Entity<ComposerInput>,
+    pub(super) search: Entity<ComposerInput>,
     /// Keyboard highlight within the filtered rows.
     active: usize,
     focus: FocusHandle,

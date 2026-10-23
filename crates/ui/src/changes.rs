@@ -5222,6 +5222,7 @@ impl Changes {
             (scope == DiffScope::History).then(|| self.history_view_button(cx));
         let scope_trigger = div()
             .id("changes-scope-trigger")
+            .debug_selector(|| "changes-scope-trigger".into())
             .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(8.0))
             .max_w(px(250.0))
@@ -7017,6 +7018,8 @@ impl Render for Changes {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    mod ref_targets;
 
     #[gpui::test]
     fn editing_staged_diff_comments_preserves_identity_and_cancellation(
