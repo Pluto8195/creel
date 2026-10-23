@@ -1,4 +1,4 @@
-//! Pure work-item facts for List/Canvas rows: the Chat → work item index
+//! Pure work-item facts for List rows: the Chat → work item index
 //! (path chip, User Action Required, instruction drift), and the work-item
 //! filter (subtree
 //! semantics, stale-filter reset, persistence through the Overview's

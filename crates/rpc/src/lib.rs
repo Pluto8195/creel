@@ -400,36 +400,13 @@ pub mod methods {
     /// re-run, only processes what `ScanExternalSessions` still finds.
     /// IPC-only, same reason as its sibling external-import methods.
     pub const BULK_IMPORT_SESSION_CANVAS_SESSIONS: &str = "BulkImportSessionCanvasSessions";
-    /// An already-imported chat's recorded task category / launch origin
-    /// (ticket 002 overview grouping/color-coding). `{chatId}` →
-    /// `{category, origin}` (each `null` for a chat with no import cursor,
-    /// i.e. never went through the external-import flow). Pure read of what
-    /// `ImportExternalSession` already computed and persisted at import
-    /// time — never re-parses the transcript. IPC-only, same reason as its
-    /// sibling external-import methods.
-    pub const CHAT_CLASSIFICATION: &str = "ChatClassification";
-    /// Persist or clear a user override for one chat's task category.
-    /// `{chatId, category}` where `category` is one of the seven known
-    /// categories, or `null` to return to automatic classification. Returns
-    /// the same payload as [`CHAT_CLASSIFICATION`]. Device-local because the
-    /// classification sidecars/cursors are device-local.
-    pub const SET_CHAT_CLASSIFICATION: &str = "SetChatClassification";
-    /// User-triggered re-run of the Jev-first classification on every
-    /// imported chat currently labeled `other` (ignores version/source stamps
-    /// and the boot pass's inconclusive park; capped at 50 Jev calls). No
-    /// params → `{examined, reclassified, unchanged, jevCalls, deferred}`
-    /// (`deferred` > 0: the cap or the circuit breaker stopped the run early —
-    /// run again). IPC-only, same reason as its sibling external-import
-    /// methods (classification state is this device's import cursors).
-    pub const RECLASSIFY_OTHER_CHATS: &str = "ReclassifyOtherChats";
     /// Context-window occupancy for the overview's tile sizing (session-
     /// canvas parity): `{chatId}` → `{contextPct: number | null}`, `0.0..=1.0`
     /// (the UI maps this to pixels). A separate lazy-per-chat method rather
-    /// than folding onto `ChatLinkStatus`/`ChatClassification` — this value
-    /// changes far more often (live while a chat is actively running) than
-    /// either of those, so it wants its own polling cadence rather than
-    /// riding piggyback on a cache tuned for GH/Linear TTLs or a one-time
-    /// import-time classification. IPC-only: the live source is this
+    /// than folding onto `ChatLinkStatus` — this value changes far more
+    /// often (live while a chat is actively running), so it wants its own
+    /// polling cadence rather than riding piggyback on a cache tuned for
+    /// GH/Linear TTLs. IPC-only: the live source is this
     /// engine's own doc store, and the fallback reads this machine's
     /// `~/.claude/projects` transcripts — neither makes sense forwarded to
     /// another device.
@@ -639,12 +616,6 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use std::sync::Mutex;
-
-    #[test]
-    fn reclassify_other_chats_wire_name_is_pinned() {
-        assert_eq!(methods::RECLASSIFY_OTHER_CHATS, "ReclassifyOtherChats");
-        assert_eq!(methods::SET_CHAT_CLASSIFICATION, "SetChatClassification");
-    }
 
     #[test]
     fn work_outline_wire_names_are_pinned() {

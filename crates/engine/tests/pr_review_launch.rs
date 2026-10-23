@@ -9,7 +9,7 @@
 //! - the behind-origin warning;
 //! - the seeded prompt is launch.sh's, verbatim, and the Run starts at the
 //!   workspace root;
-//! - the Chat is titled, PR-linked, classified `pr_review`, optionally
+//! - the Chat is titled, PR-linked, optionally
 //!   assigned to a work item, and a retry with the same `operationId` returns
 //!   the same Chat without touching git again.
 
@@ -308,7 +308,7 @@ async fn clean_main_checks_out_with_gh_and_starts_the_review_at_the_workspace_ro
     );
     assert_eq!(reply.prompt, expected);
 
-    // The Chat: at the workspace root, titled, PR-linked, classified.
+    // The Chat: at the workspace root, titled, PR-linked.
     let chat = rig.core.workspace.chat(&reply.chat_id).unwrap().unwrap();
     assert_eq!(chat.cwd.as_deref(), Some(rig.ws.to_str().unwrap()));
     assert_eq!(chat.space_id.as_deref(), Some(SPACE));
@@ -320,15 +320,6 @@ async fn clean_main_checks_out_with_gh_and_starts_the_review_at_the_workspace_ro
         chat.linked_pr_url.as_deref(),
         Some("https://github.com/acme/flagship/pull/7")
     );
-    let classification = rig
-        .client
-        .call(
-            methods::CHAT_CLASSIFICATION,
-            json!({ "chatId": reply.chat_id }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(classification["category"], "pr_review");
 
     // The first Turn runs the seeded prompt at the workspace root.
     wait_for(|| !rig.mock.runs().is_empty(), "the review Run starts").await;

@@ -1,5 +1,5 @@
 //! The Linear panel: the Overview's left column for Linear-enabled Spaces,
-//! beside the Outline/List/Canvas body and independent of the right slot
+//! beside the Outline/List body and independent of the right slot
 //! (chat panel, Work Item Details, Required Actions). The Overview owns the
 //! column (width, open state, overlay rule: `overview/linear_host.rs`).
 //!

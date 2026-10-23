@@ -1,7 +1,7 @@
 //! The chat close-out confirmation dialog (see [`crate::chat_closeout`]).
 //!
 //! Opened from the sidebar chat menu's "Close out worktree…" and the
-//! overview's expanded-tile detail. Fetches `PLAN_CHAT_CLOSEOUT`, then shows
+//! overview's expanded row detail. Fetches `PLAN_CHAT_CLOSEOUT`, then shows
 //! one of: loading, live-chat notice, not-a-worktree notice, default-branch
 //! notice, clean one-step confirm (`force: false`) or a two-step forced
 //! confirm with warnings (`force: true`). Live and plan-failed states offer
@@ -10,7 +10,7 @@
 //! still-open dialog, which then re-plans quietly so its buttons track the
 //! engine's current view. On success the engine archives the chat;
 //! the `WATCH_CHATS` stream carries that into `AppState`, which the overview
-//! observes, so the tile leaves the canvas with no extra refresh call.
+//! observes, so the row leaves the overview with no extra refresh call.
 
 use super::*;
 

@@ -3283,7 +3283,6 @@ fn item_body(
                 item.needs_user_action(),
                 item.unresolved_actions,
                 theme,
-                1.0,
             )
             .filter(|_| !compact_pr),
             |el, indicator| el.child(indicator),

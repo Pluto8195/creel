@@ -67,7 +67,9 @@ impl OutlineView {
 
     /// The width the rows lay out in; unlimited until it is measured.
     fn outline_width(&self) -> f32 {
-        let width = self.row_width_override.unwrap_or_else(|| self.row_width.get());
+        let width = self
+            .row_width_override
+            .unwrap_or_else(|| self.row_width.get());
         if width > 0.0 { width } else { f32::INFINITY }
     }
 
@@ -165,7 +167,6 @@ impl OutlineView {
                     item.needs_user_action(),
                     item.unresolved_actions,
                     theme,
-                    1.0,
                 ),
                 chat_count: item.chat_count,
                 totals_line: totals
@@ -245,7 +246,6 @@ impl OutlineView {
                     item.needs_user_action(),
                     item.unresolved_actions,
                     theme,
-                    1.0,
                 ),
                 chat_count: item.chat_count,
                 totals_line: totals

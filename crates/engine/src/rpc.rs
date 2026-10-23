@@ -178,14 +178,6 @@ struct SyncExternalSessionParams {
     chat_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetChatClassificationParams {
-    chat_id: String,
-    /// `None` clears the manual override and restores automatic classification.
-    category: Option<String>,
-}
-
 /// `READ_SUBAGENT_TRANSCRIPT` request: `{chatId, agentId}` — never a path;
 /// see `methods::READ_SUBAGENT_TRANSCRIPT`'s doc comment for why.
 #[derive(Debug, Deserialize)]
@@ -1557,17 +1549,10 @@ impl EngineRpc {
                     "The Space lives on another device",
                 )));
             }
-            let reply = self.forward_pr_review(&space.device_id, &p).await?;
-            self.classify_pr_review_chat(reply.chat_id.clone(), false)
-                .await;
-            return Ok(reply);
+            return self.forward_pr_review(&space.device_id, &p).await;
         }
         let local_error = match self.pr_review.start(&p).await {
-            Ok(reply) => {
-                self.classify_pr_review_chat(reply.chat_id.clone(), true)
-                    .await;
-                return Ok(reply);
-            }
+            Ok(reply) => return Ok(reply),
             // Only an unpinned start looks on other devices.
             Err(error)
                 if error.code == PrReviewErrorCode::RepoNotFound
@@ -1592,11 +1577,7 @@ impl EngineRpc {
         let mut unreachable = Vec::new();
         for device in devices {
             match self.forward_pr_review(&device, &p).await {
-                Ok(reply) => {
-                    self.classify_pr_review_chat(reply.chat_id.clone(), false)
-                        .await;
-                    return Ok(reply);
-                }
+                Ok(reply) => return Ok(reply),
                 Err(RpcError::Failed(message)) => {
                     match PrReviewError::from_wire_message(&message) {
                         Some(error) if error.code == PrReviewErrorCode::RepoNotFound => {}
@@ -1678,38 +1659,6 @@ impl EngineRpc {
             }
             Err(error) => Err(offline(error.to_string())),
         }
-    }
-
-    /// Pre-classify a review Chat `pr_review` in this device's classification
-    /// sidecar (what ⇧⌘P reads). `hosted_here`: the Chat row exists now;
-    /// otherwise (forwarded) retry in the background until it replicates.
-    async fn classify_pr_review_chat(&self, chat_id: String, hosted_here: bool) {
-        let (Some(importer), Some(context_usage)) =
-            (self.external_import.clone(), self.context_usage.clone())
-        else {
-            return;
-        };
-        let attempt =
-            move || importer.set_manual_classification(&context_usage, &chat_id, Some("pr_review"));
-        if hosted_here {
-            match tokio::task::spawn_blocking(attempt).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "pr review chat classification failed");
-                }
-                Err(error) => tracing::warn!(%error, "pr review classification task failed"),
-            }
-            return;
-        }
-        tokio::spawn(async move {
-            for _ in 0..20 {
-                let attempt = attempt.clone();
-                if let Ok(Ok(())) = tokio::task::spawn_blocking(attempt).await {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        });
     }
 
     async fn forward(
@@ -3429,72 +3378,6 @@ impl RpcService for EngineRpc {
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&*transcript)
             }
-            methods::CHAT_CLASSIFICATION => {
-                let p: ChatLinkStatusParams = parse_params(params)?;
-                let importer = self.external_importer()?.clone();
-                let context_usage = self.context_usage()?.clone();
-                let (classification, manual, tool_usage) = tokio::task::spawn_blocking(move || {
-                    importer.ensure_native_classification(&context_usage, &p.chat_id)?;
-                    let classification = importer.classification_for(&p.chat_id)?;
-                    let manual = importer.classification_is_manual(&p.chat_id)?;
-                    let tool_usage = importer.tool_usage_for(&p.chat_id)?;
-                    Ok::<_, crate::EngineError>((classification, manual, tool_usage))
-                })
-                .await
-                .map_err(|e| RpcError::Failed(e.to_string()))?
-                .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let (category, origin) = classification.unzip();
-                let (tool_counts, skills_loaded) = tool_usage.unzip();
-                RpcReply::value(&serde_json::json!({
-                    "category": category,
-                    "origin": origin,
-                    "manual": manual,
-                    "toolCounts": tool_counts,
-                    "skillsLoaded": skills_loaded,
-                }))
-            }
-            methods::SET_CHAT_CLASSIFICATION => {
-                let p: SetChatClassificationParams = parse_params(params)?;
-                let importer = self.external_importer()?.clone();
-                let context_usage = self.context_usage()?.clone();
-                let chat_id = p.chat_id;
-                let category = p.category;
-                let (classification, manual, tool_usage) = tokio::task::spawn_blocking(move || {
-                    importer.set_manual_classification(
-                        &context_usage,
-                        &chat_id,
-                        category.as_deref(),
-                    )?;
-                    let classification = importer.classification_for(&chat_id)?;
-                    let manual = importer.classification_is_manual(&chat_id)?;
-                    let tool_usage = importer.tool_usage_for(&chat_id)?;
-                    Ok::<_, crate::EngineError>((classification, manual, tool_usage))
-                })
-                .await
-                .map_err(|e| RpcError::Failed(e.to_string()))?
-                .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let (category, origin) = classification.unzip();
-                let (tool_counts, skills_loaded) = tool_usage.unzip();
-                RpcReply::value(&serde_json::json!({
-                    "category": category,
-                    "origin": origin,
-                    "manual": manual,
-                    "toolCounts": tool_counts,
-                    "skillsLoaded": skills_loaded,
-                }))
-            }
-            methods::RECLASSIFY_OTHER_CHATS => {
-                // Up to 50 blocking Jev HTTP calls: never on a runtime worker.
-                let importer = self.external_importer()?.clone();
-                let context_usage = self.context_usage()?.clone();
-                let report = tokio::task::spawn_blocking(move || {
-                    importer.reclassify_other_chats_with_context(&context_usage)
-                })
-                .await
-                .map_err(|e| RpcError::Failed(e.to_string()))?
-                .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&report)
-            }
             methods::CHAT_CONTEXT_USAGE => {
                 let p: ChatLinkStatusParams = parse_params(params)?;
                 let provider = self.context_usage()?.clone();
@@ -4968,37 +4851,6 @@ mod tests {
             assert!(!forwardable(method), "{method} is device-local");
             assert!(!is_stream_method(method));
         }
-    }
-
-    /// `RECLASSIFY_OTHER_CHATS` rewrites this device's import cursors and
-    /// calls TypeSafe with a local key: never relay-forwarded. Its reply
-    /// field names are the UI's contract.
-    #[test]
-    fn reclassify_other_chats_is_ipc_only_and_replies_camel_case() {
-        assert!(!forwardable(methods::RECLASSIFY_OTHER_CHATS));
-        let report = crate::external_import::ReclassifyOtherReport {
-            examined: 5,
-            reclassified: 2,
-            unchanged: 2,
-            confirmed_other: 1,
-            inconclusive: 1,
-            failed: 0,
-            jev_calls: 4,
-            deferred: 1,
-        };
-        assert_eq!(
-            serde_json::to_value(report).unwrap(),
-            serde_json::json!({
-                "examined": 5,
-                "reclassified": 2,
-                "unchanged": 2,
-                "confirmedOther": 1,
-                "inconclusive": 1,
-                "failed": 0,
-                "jevCalls": 4,
-                "deferred": 1,
-            })
-        );
     }
 
     /// `SCAN_CHAT_SUBAGENTS`/`READ_SUBAGENT_TRANSCRIPT` both read this

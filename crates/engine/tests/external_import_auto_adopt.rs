@@ -170,13 +170,6 @@ async fn auto_adopt_sweep_adopts_settled_external_sessions_only() {
             .is_some(),
         "adopted chat should have an import cursor"
     );
-    assert!(
-        core.external_import
-            .classification_for(&adopted_chat.id)
-            .unwrap()
-            .is_some(),
-        "adopted chat should carry classification"
-    );
     // The Zeron-launched chat is untouched, and no duplicate was made for it.
     let launched: Vec<_> = chats
         .iter()

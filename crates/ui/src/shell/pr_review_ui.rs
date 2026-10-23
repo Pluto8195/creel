@@ -521,10 +521,10 @@ mod tests {
 
     /// ⇧⌘P with a PR review sync destination in the current Space: the
     /// destination's PR items (chip, review Chats nested) replace the
-    /// classification list, and Review sends StartPrReview filed under the
+    /// launcher review chat list, and Review sends StartPrReview filed under the
     /// item (`spaceId` + `workItemId`).
     #[gpui::test]
-    fn destination_items_replace_the_classification_list(cx: &mut gpui::TestAppContext) {
+    fn destination_items_replace_the_launcher_review_chat_list(cx: &mut gpui::TestAppContext) {
         use crate::work_outline::store::fixture_ids::{API, CHAT_API, LAUNCH};
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -575,7 +575,7 @@ mod tests {
         }
         assert!(
             cx.debug_bounds("chat-type-rows").is_none(),
-            "the classification list is replaced"
+            "the launcher review chat list is replaced"
         );
         click(cx, "pr-destination-review-w-api");
         let calls = calls.lock().unwrap().clone();
@@ -588,14 +588,63 @@ mod tests {
         assert_eq!(calls[0]["workItemId"], API);
     }
 
-    /// Without a destination the classification-based list stays.
+    /// Without a destination the tab lists the chats the review launcher
+    /// started: the ones with a PR link whose source is `review_launcher`.
     #[gpui::test]
-    fn without_a_destination_the_classification_list_stays(cx: &mut gpui::TestAppContext) {
+    fn without_a_destination_the_list_shows_the_launcher_review_chats(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
-        let (_calls, _page) = open_page_on(&shell, cx, PageTab::Chats, |_| Ok(reply("chat", 0)));
+        let state = shell.read_with(cx, |shell, _| shell.state.clone());
+        state.update(cx, |state, _| {
+            state.chats = [
+                ("launched", "Review flagship#7", false),
+                ("hand-linked", "Hand linked", false),
+                ("archived-launch", "Old review", true),
+                ("unlinked", "No link", false),
+            ]
+            .into_iter()
+            .map(|(id, title, archived)| {
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "deviceId": "d", "title": title, "archived": archived,
+                    "createdAt": "2026-10-01T00:00:00Z"
+                }))
+                .unwrap()
+            })
+            .collect();
+        });
+        let (_calls, page) = open_page_on(&shell, cx, PageTab::Chats, |_| Ok(reply("chat", 0)));
+        let link_status = |source: &str| -> zeron_engine::pr_ticket_cache::ChatLinkStatus {
+            serde_json::from_value(serde_json::json!({
+                "pr": null,
+                "prLinks": [{
+                    "url": "https://github.com/acme/flagship/pull/7",
+                    "source": source,
+                    "detail": null
+                }],
+                "ticket": null, "isWorktree": false, "diffStat": null,
+                "prSource": null, "ticketSource": null
+            }))
+            .unwrap()
+        };
+        page.update(cx, |page, _| {
+            page.set_links_for_test("launched", link_status("review_launcher"));
+            page.set_links_for_test("hand-linked", link_status("manual"));
+            page.set_links_for_test("archived-launch", link_status("review_launcher"));
+        });
+        draw(cx);
         assert!(cx.debug_bounds("pr-destination-rows").is_none());
         assert!(cx.debug_bounds("chat-type-rows").is_some());
+        let listed = |cx: &mut gpui::VisualTestContext| {
+            page.update(cx, |page, cx| page.listed_chat_ids(cx))
+        };
+        assert_eq!(listed(cx), ["launched"]);
+        // The archived toggle adds the archived launcher chat.
+        click(cx, "chat-type-show-archived");
+        let mut with_archived = listed(cx);
+        with_archived.sort();
+        assert_eq!(with_archived, ["archived-launch", "launched"]);
     }
 
     // ---- the PR page's pr-dash tabs ----

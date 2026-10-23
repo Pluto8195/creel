@@ -26,7 +26,7 @@ pub(crate) type PrDashScript =
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageTab {
     Dash(PrDashTab),
-    /// The classification-based review chat table / destination list.
+    /// The launcher review chat table / destination list.
     Chats,
 }
 

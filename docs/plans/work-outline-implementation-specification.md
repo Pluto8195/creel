@@ -130,6 +130,8 @@ The Work Outline supplements Chats; it does not become the primary execution int
 
 ### Integrate with the existing overview
 
+> 2026-10-23: Canvas and chat classification were removed; stored positions and classification rows are kept but no longer read or written. See tag pre-canvas-removal. The Overview now has List and Outline only; a saved Canvas setting loads as Outline.
+
 Add **Outline** as a third overview presentation beside the existing **List** and **Canvas** presentations.
 
 - Persist the selected overview presentation as a tolerant enum or string and migrate the existing List/Canvas boolean without resetting user choice.

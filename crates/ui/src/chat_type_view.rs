@@ -8,8 +8,8 @@ use gpui::{
     Context, Entity, FocusHandle, MouseButton, Render, ScrollHandle, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrStatus};
-use zeron_proto::{Chat, ChatIndicator, PrDashTab, PrReference, PrReviewAction};
+use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus, PrStatus};
+use zeron_proto::{Chat, ChatIndicator, ChatLinkSource, PrDashTab, PrReference, PrReviewAction};
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -28,12 +28,6 @@ pub(crate) enum ChatViewKind {
 }
 
 impl ChatViewKind {
-    fn category(self) -> &'static str {
-        match self {
-            Self::PrReview => "pr_review",
-        }
-    }
-
     fn title(self) -> &'static str {
         match self {
             Self::PrReview => "Pull requests",
@@ -64,16 +58,15 @@ struct PrSummary {
 }
 
 impl PrSummary {
+    /// The PR the chat was launched to review, else its first linked PR, else
+    /// the legacy primary-PR mirror.
     fn from_status(status: &ChatLinkStatus) -> Option<Self> {
-        let detail = status
-            .pr_links
-            .first()
-            .and_then(|link| link.detail.as_ref())
-            .or(status.pr.as_ref());
-        if let Some(pr) = detail {
+        let Some(link) = launcher_link(status).or_else(|| status.pr_links.first()) else {
+            return status.pr.as_ref().map(Self::from_pr);
+        };
+        if let Some(pr) = &link.detail {
             return Some(Self::from_pr(pr));
         }
-        let link = status.pr_links.first()?;
         Some(Self {
             number: pr_number_from_url(&link.url),
             title: None,
@@ -94,6 +87,14 @@ impl PrSummary {
             branch: pr.branch.clone(),
         }
     }
+}
+
+/// The link the PR review launcher created for this chat, if any.
+fn launcher_link(status: &ChatLinkStatus) -> Option<&PrLinkStatus> {
+    status
+        .pr_links
+        .iter()
+        .find(|link| link.source == Some(ChatLinkSource::ReviewLauncher))
 }
 
 fn pr_number_from_url(url: &str) -> u64 {
@@ -134,15 +135,13 @@ fn row_matches(row: &TypeChatRow, query: &str) -> bool {
     query.split_whitespace().all(|word| haystack.contains(word))
 }
 
-fn chat_visible(
-    kind: ChatViewKind,
-    chat: &Chat,
-    category: Option<&str>,
-    show_archived: bool,
-) -> bool {
+/// Whether the inbox lists `chat` as a launcher review chat: a top-level chat
+/// (archived ones only when asked for) that has a PR link whose source is
+/// `review_launcher`. `links` is `None` until its link status has loaded.
+fn chat_visible(chat: &Chat, links: Option<&ChatLinkStatus>, show_archived: bool) -> bool {
     chat.parent_chat_id.is_none()
         && (show_archived || !chat.archived)
-        && category == Some(kind.category())
+        && links.is_some_and(|status| launcher_link(status).is_some())
 }
 
 fn sort_rows(rows: &mut [TypeChatRow]) {
@@ -189,8 +188,6 @@ pub(crate) struct ChatTypeView {
     scroll: ScrollHandle,
     show_archived: bool,
     active: usize,
-    classifications: HashMap<String, String>,
-    classification_pending: HashSet<String>,
     links: HashMap<String, ChatLinkStatus>,
     links_pending: HashSet<String>,
     /// The visible tab (default "Authored by me").
@@ -308,8 +305,6 @@ impl ChatTypeView {
             scroll: ScrollHandle::new(),
             show_archived: false,
             active: 0,
-            classifications: HashMap::new(),
-            classification_pending: HashSet::new(),
             links: HashMap::new(),
             links_pending: HashSet::new(),
             tab: PageTab::Dash(PrDashTab::Authored),
@@ -332,6 +327,18 @@ impl ChatTypeView {
             &gpui::Focusable::focus_handle(self.review_input.read(cx), cx),
             cx,
         );
+    }
+
+    /// Seed a chat's link status as if `CHAT_LINK_STATUS` had answered.
+    #[cfg(test)]
+    pub(crate) fn set_links_for_test(&mut self, chat_id: &str, status: ChatLinkStatus) {
+        self.links.insert(chat_id.to_string(), status);
+    }
+
+    /// The chat ids the launcher review chat list shows, in order.
+    #[cfg(test)]
+    pub(crate) fn listed_chat_ids(&mut self, cx: &mut Context<Self>) -> Vec<String> {
+        self.rows(cx).into_iter().map(|row| row.chat.id).collect()
     }
 
     #[cfg(test)]
@@ -439,55 +446,6 @@ impl ChatTypeView {
         self.focus.clone()
     }
 
-    pub(crate) fn classification_changed(
-        &mut self,
-        chat_id: &str,
-        value: &serde_json::Value,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(category) = value.get("category").and_then(|value| value.as_str()) {
-            self.classifications
-                .insert(chat_id.to_string(), category.to_string());
-        } else {
-            self.classifications.remove(chat_id);
-        }
-        self.active = 0;
-        cx.notify();
-    }
-
-    fn ensure_classification(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        if self.classifications.contains_key(&chat_id)
-            || self.classification_pending.contains(&chat_id)
-        {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.classification_pending.insert(chat_id.clone());
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::CHAT_CLASSIFICATION,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                this.classification_pending.remove(&chat_id);
-                if let Ok(value) = result
-                    && let Some(category) = value.get("category").and_then(|value| value.as_str())
-                {
-                    this.classifications
-                        .insert(chat_id.clone(), category.to_string());
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     fn ensure_links(&mut self, chat_id: String, cx: &mut Context<Self>) {
         if self.links.contains_key(&chat_id) || self.links_pending.contains(&chat_id) {
             return;
@@ -521,22 +479,19 @@ impl ChatTypeView {
     fn rows(&mut self, cx: &mut Context<Self>) -> Vec<TypeChatRow> {
         let now = Utc::now();
         let chats: Vec<Chat> = self.state.read(cx).chats.clone();
-        for chat in &chats {
-            self.ensure_classification(chat.id.clone(), cx);
-        }
 
         let query = self.search.read(cx).text().trim().to_lowercase();
         let mut rows = Vec::new();
         for chat in chats {
-            if !chat_visible(
-                self.kind,
-                &chat,
-                self.classifications.get(&chat.id).map(String::as_str),
-                self.show_archived,
-            ) {
+            // Whether a chat is a launcher review chat is only known from its
+            // link status, so fetch it for every chat the toggle could list.
+            if chat.parent_chat_id.is_some() || (chat.archived && !self.show_archived) {
                 continue;
             }
             self.ensure_links(chat.id.clone(), cx);
+            if !chat_visible(&chat, self.links.get(&chat.id), self.show_archived) {
+                continue;
+            }
             let state = self.state.read(cx);
             let row = TypeChatRow {
                 status: state.display_status_for(&chat, now),
@@ -854,7 +809,7 @@ impl Render for ChatTypeView {
         let now = Utc::now();
         let on_chats = matches!(self.tab, PageTab::Chats);
         // With a PR review sync destination in the current Space, its PR
-        // items replace the classification-based list.
+        // items replace the launcher review chat list.
         let destination = if on_chats { self.destination(cx) } else { None };
         let rows = if on_chats && destination.is_none() {
             self.rows(cx)
@@ -930,6 +885,7 @@ impl Render for ChatTypeView {
                                 .child(
                                     div()
                                         .id("chat-type-show-archived")
+                                        .debug_selector(|| "chat-type-show-archived".into())
                                         .px(px(9.0))
                                         .py(px(5.0))
                                         .rounded(px(6.0))
@@ -1058,39 +1014,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pr_review_kind_uses_authoritative_category_key() {
-        assert_eq!(ChatViewKind::PrReview.category(), "pr_review");
+    /// A link status with one PR link per `(number, source)`.
+    fn status_with(links: &[(u64, &str)]) -> ChatLinkStatus {
+        serde_json::from_value(serde_json::json!({
+            "pr": null,
+            "prLinks": links.iter().map(|(number, source)| serde_json::json!({
+                "url": format!("https://github.com/acme/app/pull/{number}"),
+                "source": source,
+                "detail": null
+            })).collect::<Vec<_>>(),
+            "ticket": null,
+            "isWorktree": false,
+            "diffStat": null,
+            "prSource": null,
+            "ticketSource": null
+        }))
+        .unwrap()
     }
 
     #[test]
-    fn filtering_uses_category_and_archived_toggle() {
+    fn only_chats_with_a_review_launcher_link_are_listed() {
+        let chat = chat("c", "Chat", 1, false);
+        let launched = status_with(&[(7, "review_launcher")]);
+        assert!(chat_visible(&chat, Some(&launched), false));
+        // The launcher link may sit next to other links.
+        let mixed = status_with(&[(5, "branch"), (7, "review_launcher")]);
+        assert!(chat_visible(&chat, Some(&mixed), false));
+        // A hand-linked or inferred PR is not a launcher review chat.
+        for source in ["manual", "branch", "mentioned", "created_in_chat", "ticket"] {
+            let other = status_with(&[(7, source)]);
+            assert!(!chat_visible(&chat, Some(&other), false), "{source}");
+        }
+        assert!(!chat_visible(&chat, Some(&status_with(&[])), false));
+        // Not known yet: not listed.
+        assert!(!chat_visible(&chat, None, false));
+    }
+
+    #[test]
+    fn filtering_uses_archived_toggle_and_skips_subagent_chats() {
+        let launched = status_with(&[(7, "review_launcher")]);
         let active = chat("active", "Active", 1, false);
         let archived = chat("archived", "Archived", 1, true);
-        assert!(chat_visible(
-            ChatViewKind::PrReview,
-            &active,
-            Some("pr_review"),
-            false
-        ));
-        assert!(!chat_visible(
-            ChatViewKind::PrReview,
-            &active,
-            Some("debug"),
-            false
-        ));
-        assert!(!chat_visible(
-            ChatViewKind::PrReview,
-            &archived,
-            Some("pr_review"),
-            false
-        ));
-        assert!(chat_visible(
-            ChatViewKind::PrReview,
-            &archived,
-            Some("pr_review"),
-            true
-        ));
+        let mut child = chat("child", "Child", 1, false);
+        child.parent_chat_id = Some("active".into());
+        assert!(chat_visible(&active, Some(&launched), false));
+        assert!(!chat_visible(&archived, Some(&launched), false));
+        assert!(chat_visible(&archived, Some(&launched), true));
+        assert!(!chat_visible(&child, Some(&launched), true));
+    }
+
+    #[test]
+    fn the_listed_pr_is_the_launched_one_even_when_another_link_comes_first() {
+        let status = status_with(&[(5, "branch"), (7, "review_launcher")]);
+        assert_eq!(PrSummary::from_status(&status).unwrap().number, 7);
+        let no_launcher = status_with(&[(5, "branch"), (6, "manual")]);
+        assert_eq!(PrSummary::from_status(&no_launcher).unwrap().number, 5);
     }
 
     #[test]

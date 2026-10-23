@@ -11,8 +11,7 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   palette's **My PRs** opens it too. The page is a port of pr-dash with three
   tabs: **Authored by me** (default) and **Review requested**, both fed by
   `PrDashboard` (see [pr-dash spec](plans/work-outline/pr-dash-spec.md)), and
-  **Review chats** (the classified review Chats, or the destination list
-  below). Each dash tab title carries its needs-you count (`urgent / total`,
+  **Review chats** (the destination list below, or the launcher review Chats). Each dash tab title carries its needs-you count (`urgent / total`,
   red when anything needs you, over rows that pass **hide drafts**); the page
   refetches the visible tab every minute and **Refresh** forces. A tab has
   bucket chips (multi-select), **hide drafts** (on), **group by status** (on)
@@ -76,9 +75,11 @@ Steps, on the device that owns the Space:
 6. **Chat.** Created at the Space root (launch.sh `cd "$ws"`) with the
    caller's agent config (the UI sends the composer's new-chat agent; the
    engine defaults to Claude Code), titled `Review <name>#<n>: <PR title>`
-   (`Fix CI …` for fix-ci), linked to the PR (manual `ChatPrLink`),
-   classified `pr_review` (manual), assigned to `workItemId` when given (the
-   item must be in the same Space), and the seeded prompt is queued last.
+   (`Fix CI …` for fix-ci), linked to the PR (a `ChatPrLink` with source `review_launcher`),
+   assigned to `workItemId` when given (the item must be in the same Space),
+   and the seeded prompt is queued last. The `review_launcher` PR link is what
+   marks the chat as a launcher-created review chat; there is no separate
+   classification.
 
 The prompts are launch.sh's, verbatim:
 
@@ -112,9 +113,7 @@ of the window, so double-clicks and retries land on the same chat.
 
 `StartPrReview` is forwardable. With `spaceId` on another device the engine
 forwards to that device; a forwarded call (it carries `targetDeviceId`) never
-fans out again. The caller also writes the `pr_review` classification into its
-own sidecar once the chat row replicates, so ⇧⌘P on the calling device lists
-it.
+fans out again.
 
 ## Differences from launch.sh
 
@@ -155,10 +154,10 @@ Failures read `github/<code>: …` (`ghMissing`, `unauthorized`, `rateLimited`,
 `notFound`, `network`, `invalid`); a host without the RPCs shows "PR review
 sync isn't available on this host yet".
 
-When the current project has a destination, the PR page's **Review chats** tab
-lists the destination's PR items with their review Chats nested instead of the
-`pr_review` classification; without one the classified list stays
-(classification is being retired).
+When the current project has a destination, the **Review chats** tab lists the
+destination's PR items (synced PR items) with their review Chats nested.
+Without one it lists the launcher review Chats: the Chats with a PR link whose
+source is `review_launcher`. Chat classification no longer exists.
 
 ## PRs on work items
 

@@ -5,8 +5,8 @@
 //! otherwise (rendered "New session" by every UI surface, never a literal
 //! stored placeholder — see the method's own doc comment in
 //! `crates/engine/src/external_import.rs`). This repair backfills those,
-//! without requiring a re-import, the same way its four siblings
-//! (`repair_missing_timestamps`/`_classification`/`_config`, `repair_junk_imports`)
+//! without requiring a re-import, the same way its three siblings
+//! (`repair_missing_timestamps`/`_config`, `repair_junk_imports`)
 //! do.
 
 use std::sync::Arc;

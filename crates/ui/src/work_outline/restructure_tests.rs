@@ -670,7 +670,7 @@ fn drag_onto_items_and_edges_sends_moves(cx: &mut gpui::TestAppContext) {
             HOUSEKEEPING.to_owned()
         )
     );
-    // Only moves: nothing else (Canvas positions included) is written.
+    // Only moves: nothing else is written.
     assert_eq!(ops(&calls), ["moveWorkItem"; 3]);
 }
 
@@ -1242,10 +1242,6 @@ fn a_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppConte
     assert_eq!(selected(&outline, vcx), Some(row_key::item("s1", UI)));
     assert!(outline.read_with(vcx, |o, _| o.error_notice().is_some()));
     assert_eq!(outline.read_with(vcx, |o, _| o.optimistic_len()), 0);
-    assert!(
-        !crate::overview_positions::path(dir.path()).exists(),
-        "canvas positions untouched"
-    );
 }
 
 /// Rapid Shift+Down presses while the first move is in flight all apply,
@@ -1586,10 +1582,6 @@ fn chat_rows_move_between_items_in_visual_order(cx: &mut gpui::TestAppContext) {
     let (op, _, _) = chat_call_at(&calls, 7);
     assert_eq!(op, "removeChatFromWorkItem");
     assert!(outline.read_with(vcx, |o, _| o.notice().is_none()));
-    assert!(
-        !crate::overview_positions::path(dir.path()).exists(),
-        "canvas positions untouched"
-    );
 }
 
 /// A Chat move that changes its effective instructions applies at once with

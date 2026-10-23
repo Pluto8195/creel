@@ -1,10 +1,9 @@
-//! Shared element builders for work-item metadata on List rows, Canvas
-//! cards, Outline rows, and Work Item Details.
+//! Shared element builders for work-item metadata on List rows,
+//! Outline rows, and Work Item Details.
 //!
 //! Attention ("User Action Required") uses the sidebar's theme vocabulary —
 //! `theme.accent`, the color the sidebar gives an Awaiting Input Chat — not
-//! the Overview's hardcoded critical red (m0-contract §7). Every size takes
-//! the caller's zoom so Canvas cards scale like the rest of the card face.
+//! the Overview's hardcoded critical red (m0-contract §7).
 use gpui::{AnyElement, Render, SharedString, Window, div, prelude::*, px};
 
 use super::filter::WorkItemPathLabel;
@@ -42,21 +41,20 @@ pub(crate) fn path_chip(
     id: impl Into<SharedString>,
     path: &WorkItemPathLabel,
     theme: &Theme,
-    zoom: f32,
 ) -> AnyElement {
     let tooltip: SharedString = format!("Work item: {}", path.full).into();
     div()
         .id(id.into())
         .debug_selector(|| "work-item-path-chip".into())
         .min_w_0()
-        .max_w(px(160.0 * zoom))
-        .px(px(5.0 * zoom))
-        .py(px(1.0 * zoom))
-        .rounded(px(4.0 * zoom))
+        .max_w(px(160.0))
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(4.0))
         .border_1()
         .border_color(theme.border)
         .truncate()
-        .text_size(crate::typography::ui_rems(9.0 * zoom))
+        .text_size(crate::typography::ui_rems(9.0))
         .text_color(theme.text_muted)
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(tooltip.clone())).into())
         .child(SharedString::from(path.short.clone()))
@@ -70,7 +68,6 @@ pub(crate) fn attention_indicator(
     required: bool,
     count: u32,
     theme: &Theme,
-    zoom: f32,
 ) -> Option<AnyElement> {
     if !required && count == 0 {
         return None;
@@ -88,17 +85,11 @@ pub(crate) fn attention_indicator(
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(3.0 * zoom))
-            .text_size(crate::typography::ui_rems(9.5 * zoom))
+            .gap(px(3.0))
+            .text_size(crate::typography::ui_rems(9.5))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(color)
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(6.0 * zoom))
-                    .rounded_full()
-                    .bg(color),
-            )
+            .child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
             .when(count > 1, |el| {
                 el.child(SharedString::from(count.to_string()))
             })
@@ -117,14 +108,13 @@ pub(crate) const INSTRUCTION_DRIFT_TOOLTIP: &str =
 /// "Instructions changed" mark for a drifted Chat: the warning triangle the
 /// Outline chip and chat header use, optionally with the label. `id` doubles
 /// as the debug selector (unique per frame). It sits on an
-/// existing line (title row), so it never changes a card's size. `on_click`
-/// opens Compare; the mark stops mouse-down propagation so a Canvas card does
-/// not start a drag or toggle under it.
+/// existing line (title row), so it never changes a row's size. `on_click`
+/// opens Compare; the mark stops mouse-down propagation so the List row does
+/// not toggle under it.
 pub(crate) fn instruction_drift_mark(
     id: impl Into<SharedString>,
     with_label: bool,
     theme: &Theme,
-    zoom: f32,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
@@ -135,16 +125,16 @@ pub(crate) fn instruction_drift_mark(
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(2.0 * zoom))
-        .px(px(2.0 * zoom))
-        .rounded(px(3.0 * zoom))
+        .gap(px(2.0))
+        .px(px(2.0))
+        .rounded(px(3.0))
         .cursor_pointer()
-        .text_size(crate::typography::ui_rems(10.0 * zoom))
+        .text_size(crate::typography::ui_rems(10.0))
         .text_color(theme.warning)
         .hover(|el| el.bg(theme.element_hover))
         .child(
             crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                .size(px(10.0 * zoom))
+                .size(px(10.0))
                 .text_color(theme.warning),
         )
         .when(with_label, |el| el.child("Instructions changed"))
@@ -158,14 +148,9 @@ pub(crate) fn instruction_drift_mark(
 }
 
 /// The execution-exception mark for a Chat running with a captured
-/// configuration that differs from its item's current one (List rows,
-/// Canvas cards). Compact (no label) so it shares the title line and never
-/// feeds `tile_size`.
-pub(crate) fn execution_exception_mark(
-    id: impl Into<SharedString>,
-    theme: &Theme,
-    zoom: f32,
-) -> AnyElement {
+/// configuration that differs from its item's current one (List rows).
+/// Compact (no label) so it shares the title line.
+pub(crate) fn execution_exception_mark(id: impl Into<SharedString>, theme: &Theme) -> AnyElement {
     let id: SharedString = id.into();
     let selector = id.to_string();
     div()
@@ -174,10 +159,10 @@ pub(crate) fn execution_exception_mark(
         .flex_none()
         .flex()
         .items_center()
-        .px(px(2.0 * zoom))
+        .px(px(2.0))
         .child(
             crate::icons::icon(crate::icons::FOLDER_WITH_FILES)
-                .size(px(10.0 * zoom))
+                .size(px(10.0))
                 .text_color(theme.accent),
         )
         .tooltip(|_, cx| {
