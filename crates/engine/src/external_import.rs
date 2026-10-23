@@ -1503,8 +1503,7 @@ impl ExternalSessionImporter {
             // Skip only a chat that already has a PR link: a chat that
             // merely mentioned a ticket early still needs its PR scan
             // (audit C.6; the ticket mirror is set by almost any chat).
-            if chat.linked_pr_url.is_some() || !self.workspace.chat_pr_links(&chat.id)?.is_empty()
-            {
+            if chat.linked_pr_url.is_some() || !self.workspace.chat_pr_links(&chat.id)?.is_empty() {
                 continue;
             }
             if self.link_scan_marker_path(&chat.id).is_file() {

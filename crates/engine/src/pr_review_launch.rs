@@ -754,6 +754,17 @@ impl PrReviewLauncher {
         // An existing live review Chat for this PR and action is reused:
         // no new Chat, checkout, `gh` call or Run.
         if let Some(reply) = self.reusable_review(p) {
+            if let Some(item) = &p.work_item_id {
+                match self.workspace.work_item_space(item) {
+                    Some(space) if space == reply.space_id => {}
+                    Some(_) => {
+                        return Err(invalid(
+                            "The work item belongs to another project than the PR's checkout",
+                        ));
+                    }
+                    None => return Err(invalid("Work item not found")),
+                }
+            }
             self.claim_inputs(op, &inputs_hash)?;
             if let Some(item) = &p.work_item_id {
                 self.ensure_assignment(&reply.chat_id, item, op)?;
@@ -986,14 +997,11 @@ impl PrReviewLauncher {
             {
                 continue;
             }
-            let linked = self
-                .workspace
-                .chat_pr_links(&chat.id)
-                .is_ok_and(|links| {
-                    links
-                        .iter()
-                        .any(|link| crate::chat_links::canonicalize_pr_url(&link.url) == target)
-                });
+            let linked = self.workspace.chat_pr_links(&chat.id).is_ok_and(|links| {
+                links
+                    .iter()
+                    .any(|link| crate::chat_links::canonicalize_pr_url(&link.url) == target)
+            });
             if !linked {
                 continue;
             }

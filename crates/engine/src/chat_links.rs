@@ -336,13 +336,18 @@ mod tests {
         let out = "https://github.com/Cofactr/flagship/pull/6487\nhttps://github.com/Cofactr/flagship/pull/6488\n";
         let links = tool_result_pr_links(true, false, out);
         assert_eq!(links.len(), 2);
-        assert!(links.iter().all(|(_, s)| *s == ChatLinkSource::CreatedInChat));
+        assert!(
+            links
+                .iter()
+                .all(|(_, s)| *s == ChatLinkSource::CreatedInChat)
+        );
         assert!(links[1].0.ends_with("/6488"));
     }
 
     #[test]
     fn tool_result_links_do_not_credit_a_failed_create() {
-        let out = "a pull request for branch \"x\" already exists:\nhttps://github.com/acme/ui/pull/4";
+        let out =
+            "a pull request for branch \"x\" already exists:\nhttps://github.com/acme/ui/pull/4";
         let links = tool_result_pr_links(true, true, out);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].1, ChatLinkSource::Mentioned);
@@ -357,5 +362,49 @@ mod tests {
             Some("ENG-2715".into())
         );
         assert_eq!(extract_ticket_mention("nothing here"), None);
+    }
+
+    #[tokio::test]
+    async fn the_live_tap_persists_every_created_url_and_ignores_a_failed_create() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap()),
+            crate::workspace_host::WorkspaceHostConfig {
+                device_id: "dev".into(),
+                device_name: "Dev".into(),
+                platform: "macos".into(),
+                org_id: "org".into(),
+                user_id: "user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        host.create_chat("c1", None, Some("dev"), None, None)
+            .unwrap();
+        mine_tool_result_links(
+            &host,
+            "c1",
+            true,
+            false,
+            "https://github.com/Cofactr/flagship/pull/6487\nhttps://github.com/Cofactr/flagship/pull/6488",
+        );
+        mine_tool_result_links(
+            &host,
+            "c1",
+            true,
+            true,
+            "already exists: https://github.com/Cofactr/flagship/pull/9",
+        );
+        let links = host.chat_pr_links("c1").unwrap();
+        let source_of = |n: u64| {
+            links
+                .iter()
+                .find(|l| l.url.ends_with(&format!("/{n}")))
+                .map(|l| l.source)
+        };
+        assert_eq!(source_of(6487), Some(ChatLinkSource::CreatedInChat));
+        assert_eq!(source_of(6488), Some(ChatLinkSource::CreatedInChat));
+        assert_eq!(source_of(9), Some(ChatLinkSource::Mentioned));
     }
 }

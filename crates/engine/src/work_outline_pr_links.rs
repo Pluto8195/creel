@@ -595,4 +595,29 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn every_url_of_a_create_output_counts_and_the_launcher_is_high_confidence() {
+        let entries = vec![entry(vec![tool(
+            "PR1=$(gh pr create --fill) && PR2=$(gh pr create --fill)",
+            Some("https://github.com/Acme/UI/pull/3\nhttps://github.com/Acme/UI/pull/4\n"),
+            false,
+        )])];
+        assert_eq!(
+            created_pr_urls(&entries),
+            vec![
+                "https://github.com/acme/ui/pull/3".to_owned(),
+                "https://github.com/acme/ui/pull/4".to_owned(),
+            ]
+        );
+        assert!(is_high_confidence(ChatLinkSource::ReviewLauncher));
+        for source in [
+            ChatLinkSource::Mentioned,
+            ChatLinkSource::Branch,
+            ChatLinkSource::DiffTarget,
+            ChatLinkSource::Ticket,
+        ] {
+            assert!(!is_high_confidence(source), "{source:?}");
+        }
+    }
 }

@@ -266,6 +266,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn link_sources_use_their_snake_case_wire_names_and_round_trip() {
+        use crate::ChatLinkSource::*;
+        for (source, wire) in [
+            (Manual, "manual"),
+            (ReviewLauncher, "review_launcher"),
+            (CreatedInChat, "created_in_chat"),
+            (Branch, "branch"),
+            (DiffTarget, "diff_target"),
+            (Ticket, "ticket"),
+            (Mentioned, "mentioned"),
+        ] {
+            let value = serde_json::to_value(source).unwrap();
+            assert_eq!(value, wire);
+            assert_eq!(
+                serde_json::from_value::<crate::ChatLinkSource>(value).unwrap(),
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn reply_reused_is_additive_and_omitted_when_false() {
+        let mut value = serde_json::json!({
+            "chatId": "c", "spaceId": "s", "deviceId": "d", "title": "t",
+            "prUrl": "u", "branch": "b", "checkoutPath": "/p",
+            "checkoutKind": "canonicalCheckout", "cwd": "/w", "prompt": "p"
+        });
+        let reply: StartPrReviewReply = serde_json::from_value(value.clone()).unwrap();
+        assert!(!reply.reused, "an old reply decodes with reused = false");
+        assert!(
+            serde_json::to_value(&reply)
+                .unwrap()
+                .get("reused")
+                .is_none()
+        );
+        value["reused"] = true.into();
+        let reused: StartPrReviewReply = serde_json::from_value(value).unwrap();
+        assert!(reused.reused);
+        assert_eq!(serde_json::to_value(&reused).unwrap()["reused"], true);
+    }
+
+    #[test]
     fn parses_urls_and_short_references() {
         let expected = PrReference {
             owner: "Cofactr".into(),

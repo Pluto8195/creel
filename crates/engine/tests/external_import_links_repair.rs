@@ -187,3 +187,95 @@ async fn repair_never_touches_a_chat_that_already_has_a_link() {
 
     core.shutdown().await;
 }
+
+/// One `gh pr create` call printing two PR URLs (stacked PRs), then a failed
+/// create whose error names an older PR.
+fn transcript_with_two_created_prs_and_a_failed_create() -> String {
+    [
+        r#"{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"ship both PRs"},"uuid":"u1","timestamp":"2026-01-01T00:00:01.000Z","cwd":"/work/project","sessionId":"sess-1"}"#,
+        r#"{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"model":"claude-x","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"PR1=$(gh pr create --fill) && echo \"$PR1\" && PR2=$(gh pr create --fill) && echo \"$PR2\""}}]},"uuid":"asst1","timestamp":"2026-01-01T00:00:02.000Z","cwd":"/work/project","sessionId":"sess-1"}"#,
+        r#"{"parentUuid":"asst1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":false,"content":"https://github.com/Acme/Widgets/pull/42\nhttps://github.com/Acme/Widgets/pull/43"}]},"uuid":"tr1","timestamp":"2026-01-01T00:00:02.500Z","cwd":"/work/project","sessionId":"sess-1"}"#,
+        r#"{"parentUuid":"tr1","isSidechain":false,"type":"assistant","message":{"model":"claude-x","content":[{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"gh pr create --fill"}}]},"uuid":"asst2","timestamp":"2026-01-01T00:00:03.000Z","cwd":"/work/project","sessionId":"sess-1"}"#,
+        r#"{"parentUuid":"asst2","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-2","is_error":true,"content":"a pull request already exists: https://github.com/Acme/Widgets/pull/7"}]},"uuid":"tr2","timestamp":"2026-01-01T00:00:03.500Z","cwd":"/work/project","sessionId":"sess-1"}"#,
+    ]
+    .join("\n")
+        + "\n"
+}
+
+#[tokio::test]
+async fn repair_credits_every_created_pr_and_a_failed_create_only_mentions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let core = assemble(EngineProfile::development(
+        dir.path(),
+        "dev-org",
+        "dev-user",
+    ));
+    let transcript_path = dir.path().join("external-session.jsonl");
+    std::fs::write(
+        &transcript_path,
+        transcript_with_two_created_prs_and_a_failed_create(),
+    )
+    .expect("write transcript");
+    let chat_id = "stacked-prs-chat";
+    core.external_import
+        .import(chat_id, "external-session-id-4", &transcript_path)
+        .expect("import");
+
+    core.external_import
+        .repair_missing_links(&core.context_usage)
+        .expect("repair pass");
+
+    let links = core.workspace.chat_pr_links(chat_id).expect("links");
+    let source_of = |n: u64| {
+        links
+            .iter()
+            .find(|l| l.url.ends_with(&format!("/pull/{n}")))
+            .map(|l| l.source)
+    };
+    assert_eq!(source_of(42), Some(ChatLinkSource::CreatedInChat));
+    assert_eq!(source_of(43), Some(ChatLinkSource::CreatedInChat));
+    assert_eq!(source_of(7), Some(ChatLinkSource::Mentioned));
+    assert_eq!(links.len(), 3);
+
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn repair_still_scans_a_chat_that_only_has_a_ticket() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let core = assemble(EngineProfile::development(
+        dir.path(),
+        "dev-org",
+        "dev-user",
+    ));
+    let transcript_path = dir.path().join("external-session.jsonl");
+    std::fs::write(&transcript_path, transcript_with_pr_mention()).expect("write transcript");
+    let chat_id = "ticket-only-chat";
+    core.external_import
+        .import(chat_id, "external-session-id-5", &transcript_path)
+        .expect("import");
+    // A ticket (as live mining stamps early) but no PR yet.
+    core.workspace
+        .set_chat_link(
+            chat_id,
+            zeron_engine::workspace_host::ChatLinkKind::Ticket,
+            Some("ENG-1"),
+            ChatLinkSource::Mentioned,
+        )
+        .expect("ticket link");
+
+    let repaired = core
+        .external_import
+        .repair_missing_links(&core.context_usage)
+        .expect("repair pass");
+    assert_eq!(repaired, 1);
+    let chat = core.workspace.chat(chat_id).unwrap().unwrap();
+    assert_eq!(
+        chat.linked_pr_url.as_deref(),
+        Some("https://github.com/acme/widgets/pull/42")
+    );
+    // The existing ticket is not overwritten by the transcript's.
+    assert_eq!(chat.linked_ticket_id.as_deref(), Some("ENG-1"));
+
+    core.shutdown().await;
+}

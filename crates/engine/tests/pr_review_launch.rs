@@ -643,3 +643,69 @@ async fn a_work_item_gets_the_review_chat() {
     let error = start(&rig, &missing).await.expect_err("unknown item");
     assert_eq!(error.code, PrReviewErrorCode::Invalid);
 }
+
+#[tokio::test]
+async fn a_second_start_for_the_same_pr_and_action_reuses_the_live_review_chat() {
+    let rig = rig().await;
+    let first = start(&rig, &params("op-first", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("start");
+    assert!(!first.reused);
+    let links = rig.core.workspace.chat_pr_links(&first.chat_id).unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].source, zeron_proto::ChatLinkSource::ReviewLauncher);
+    let calls = gh_calls(&rig);
+
+    // Another window / after a restart: a different operation id.
+    let second = start(&rig, &params("op-second", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("reuse");
+    assert!(second.reused);
+    assert_eq!(second.chat_id, first.chat_id);
+    assert_eq!(second.pr_url, first.pr_url);
+    assert_eq!(second.branch, first.branch);
+    assert_eq!(second.checkout_path, first.checkout_path);
+    assert_eq!(second.cwd, first.cwd);
+    assert_eq!(gh_calls(&rig), calls, "a reuse never runs gh or git");
+    let review_chats = || {
+        rig.core
+            .workspace
+            .read_chats()
+            .unwrap()
+            .into_iter()
+            .filter(|chat| chat.linked_pr_url.is_some())
+            .count()
+    };
+    assert_eq!(review_chats(), 1);
+
+    // The second operation id is idempotent too, and stays claimed.
+    let replay = start(&rig, &params("op-second", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("replay");
+    assert_eq!(replay, second);
+    let mut conflicting = params("op-second", 7, PrReviewAction::CodeReview);
+    conflicting.action = PrReviewAction::FixCi;
+    assert_eq!(
+        start(&rig, &conflicting).await.expect_err("conflict").code,
+        PrReviewErrorCode::OperationConflict
+    );
+
+    // The same PR with the other action is a different review.
+    let fix = start(&rig, &params("op-fix", 7, PrReviewAction::FixCi))
+        .await
+        .expect("other action");
+    assert!(!fix.reused);
+    assert_ne!(fix.chat_id, first.chat_id);
+    assert_eq!(review_chats(), 2);
+
+    // An archived review chat is not reused.
+    rig.core
+        .workspace
+        .set_chat_archived(&first.chat_id, true)
+        .unwrap();
+    let fresh = start(&rig, &params("op-fresh", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("fresh after archive");
+    assert!(!fresh.reused);
+    assert_ne!(fresh.chat_id, first.chat_id);
+}
