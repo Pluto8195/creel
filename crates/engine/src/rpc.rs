@@ -3738,12 +3738,26 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&reply)
             }
+            methods::LIST_CHAT_REF_DIFF_CANDIDATES => {
+                let p: zeron_proto::ListChatDiffCheckoutsParams = parse_params(params)?;
+                let targets = self.diff_targets.clone();
+                let reply =
+                    tokio::task::spawn_blocking(move || targets.list_ref_candidates(&p.chat_id))
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&reply)
+            }
             methods::SET_CHAT_DIFF_TARGET => {
                 let p: zeron_proto::SetChatDiffTargetParams = parse_params(params)?;
                 let targets = self.diff_targets.clone();
                 let chat_id = p.chat_id.clone();
                 let action = p.action;
                 let path = p.path.clone();
+                let input = p.input.clone();
+                let base_branch = p.base_branch.clone();
+                let repo_path = p.repo_path.clone();
+                let ref_id = p.ref_id.clone();
                 let reply = tokio::task::spawn_blocking(move || {
                     let need_path = |path: Option<String>| {
                         path.filter(|path| !path.trim().is_empty()).ok_or_else(|| {
@@ -3752,7 +3766,28 @@ impl RpcService for EngineRpc {
                             )
                         })
                     };
+                    let need_ref_id = |ref_id: Option<String>| {
+                        ref_id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                            crate::diff_targets::DiffTargetError::Invalid(
+                                "refId is required for selectRef and unbindRef.".into(),
+                            )
+                        })
+                    };
                     match action {
+                        zeron_proto::SetChatDiffTargetAction::BindRef => targets
+                            .bind_ref(
+                                &chat_id,
+                                input.as_deref().unwrap_or(""),
+                                base_branch.as_deref(),
+                                repo_path.as_deref(),
+                            )
+                            .map(|outcome| (outcome.reply, None)),
+                        zeron_proto::SetChatDiffTargetAction::SelectRef => targets
+                            .select_ref(&chat_id, &need_ref_id(ref_id)?)
+                            .map(|reply| (reply, None)),
+                        zeron_proto::SetChatDiffTargetAction::UnbindRef => targets
+                            .unbind_ref(&chat_id, &need_ref_id(ref_id)?)
+                            .map(|reply| (reply, None)),
                         zeron_proto::SetChatDiffTargetAction::Select => targets
                             .bind(
                                 &chat_id,
@@ -3842,6 +3877,7 @@ impl RpcService for EngineRpc {
                         base_ref: Option<String>,
                         chat_id: Option<String>,
                         commit_sha: Option<String>,
+                        head_ref: Option<String>,
                     }
                     let p: P = parse_params(params)?;
                     let identity = self
@@ -3877,6 +3913,26 @@ impl RpcService for EngineRpc {
                                 .as_deref()
                                 .ok_or_else(|| RpcError::Failed("commitSha required".into()))?;
                             crate::diff_sync::capture_commit_diff(&self.repos, root, sha).await
+                        }
+                        // Diff branch / PR…: merge-base(baseRef, headRef)...headRef
+                        // from refs only.
+                        "range" => {
+                            let base_ref = p
+                                .base_ref
+                                .as_deref()
+                                .ok_or_else(|| RpcError::Failed("baseRef required".into()))?;
+                            let head_ref = p
+                                .head_ref
+                                .as_deref()
+                                .ok_or_else(|| RpcError::Failed("headRef required".into()))?;
+                            crate::diff_sync::capture_range_diff(
+                                &self.repos,
+                                root,
+                                base_ref,
+                                head_ref,
+                            )
+                            .await
+                            .map(|(snapshot, _)| snapshot)
                         }
                         "turn" => {
                             let chat_id = p
@@ -3940,6 +3996,27 @@ impl RpcService for EngineRpc {
                             .await
                             .map_err(|error| RpcError::Failed(error.to_string()))?;
                             (snapshot, base, None)
+                        }
+                        "range" => {
+                            let base_ref = p
+                                .base_ref
+                                .as_deref()
+                                .ok_or_else(|| RpcError::Failed("baseRef required".into()))?;
+                            let head_ref = p
+                                .head_ref
+                                .as_deref()
+                                .ok_or_else(|| RpcError::Failed("headRef required".into()))?;
+                            let (snapshot, range) = Box::pin(
+                                crate::diff_sync::capture_range_diff(
+                                    &self.repos,
+                                    root,
+                                    base_ref,
+                                    head_ref,
+                                ),
+                            )
+                            .await
+                            .map_err(|error| RpcError::Failed(error.to_string()))?;
+                            (snapshot, range.merge_base, Some(range.head))
                         }
                         "commit" => {
                             let sha = p
@@ -4066,6 +4143,20 @@ impl RpcService for EngineRpc {
                                 sha,
                             ))
                             .await
+                        }
+                        // Already captured above (the pair is immutable refs):
+                        // re-resolve to detect a ref that moved meanwhile.
+                        "range" => {
+                            let base_ref = p.base_ref.as_deref().unwrap_or_default();
+                            let head_ref = p.head_ref.as_deref().unwrap_or_default();
+                            Box::pin(crate::diff_sync::capture_range_diff(
+                                &self.repos,
+                                root,
+                                base_ref,
+                                head_ref,
+                            ))
+                            .await
+                            .map(|(snapshot, _)| snapshot)
                         }
                         _ => Box::pin(crate::diff_sync::capture_diff(&self.repos, root)).await,
                     }

@@ -200,6 +200,11 @@ pub struct SetChatDiffTargetParams {
     /// `main`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// `bindRef`: the repository checkout (`RefDiffCandidate::path`) a branch
+    /// name belongs to, when the picker knows it. Without it the engine looks
+    /// for the branch in the chat's repository and its submodules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
     /// Required for `selectRef` and `unbindRef`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_id: Option<String>,
@@ -331,6 +336,8 @@ pub struct RefDiffCandidate {
     pub detail: String,
     /// What to pass as `bindRef` `input` (the PR URL or the branch name).
     pub input: String,
+    /// The repository checkout the candidate lives in (`bindRef` `repoPath`).
+    pub path: String,
     pub repo_name: String,
     /// A PR linked to this chat (`chatPrLinks`); these sort first.
     #[serde(default)]
