@@ -12,15 +12,7 @@ use zeron_proto::{
     ChatLinkSource, PrDashBucket, PrDashChat, PrDashReply, PrDashRow, PrDashTab, PrDashDiff,
 };
 
-// The shared pure functions of `zeron_proto::pr_dash`, reached only through
-// this wrapper. They are `todo!()` until the proto worker's branch merges;
-// tests use the spec-mirroring stand-ins below. TO SWITCH: delete the two
-// `use` lines and the `stub` module, and write
-// `use zeron_proto::{needs_you_count, ordered_rows};`.
-#[cfg(not(test))]
 use zeron_proto::{needs_you_count, ordered_rows};
-#[cfg(test)]
-use stub::{needs_you_count, ordered_rows};
 
 /// How often the visible tab refetches while the page is rendered.
 pub(crate) const DASH_REFRESH: Duration = Duration::from_secs(60);
@@ -494,53 +486,6 @@ pub(crate) fn link_source_text(source: ChatLinkSource) -> &'static str {
 /// best non-archived chat the review launcher started.
 pub(crate) fn review_chat(row: &PrDashRow) -> Option<&PrDashChat> {
     row.chats.iter().find(|chat| chat.is_review && !chat.archived)
-}
-
-/// Spec-mirroring stand-ins for `zeron_proto::{needs_you_count,
-/// ordered_rows}` (still `todo!()` on this branch).
-#[cfg(test)]
-mod stub {
-    use super::*;
-
-    fn at(row: &PrDashRow) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(&row.updated_at)
-            .map(|at| at.with_timezone(&Utc))
-            .unwrap_or_default()
-    }
-
-    pub(super) fn needs_you_count(tab: PrDashTab, rows: &[PrDashRow], hide_drafts: bool) -> usize {
-        rows.iter()
-            .filter(|row| !hide_drafts || !row.draft)
-            .filter(|row| tab.alert_buckets().contains(&row.bucket))
-            .count()
-    }
-
-    pub(super) fn ordered_rows(
-        tab: PrDashTab,
-        rows: &[PrDashRow],
-        hide_drafts: bool,
-        group_by_bucket: bool,
-    ) -> Vec<&PrDashRow> {
-        let admitted = |row: &&PrDashRow| !hide_drafts || !row.draft;
-        let newest_first = |rows: &mut Vec<&PrDashRow>| rows.sort_by_key(|row| std::cmp::Reverse(at(row)));
-        if !group_by_bucket {
-            let mut out: Vec<&PrDashRow> = rows.iter().filter(admitted).collect();
-            newest_first(&mut out);
-            return out;
-        }
-        tab.buckets()
-            .iter()
-            .flat_map(|bucket| {
-                let mut group: Vec<&PrDashRow> = rows
-                    .iter()
-                    .filter(admitted)
-                    .filter(|row| row.bucket == *bucket)
-                    .collect();
-                newest_first(&mut group);
-                group
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
