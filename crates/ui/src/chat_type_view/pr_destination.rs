@@ -1,9 +1,8 @@
 //! ⇧⌘P with a PR review sync destination: when the current Space (the
 //! composer's project) has one, the page lists the destination item's PR
 //! items (live PR chip, Review / Fix CI filed under the item, Open item)
-//! with their review Chats nested under each, instead of the
-//! classification-based Chat list (kept as the fallback while no
-//! destination is set; classification is being retired).
+//! with their review Chats nested under each, instead of the flat list of
+//! launcher review Chats (kept as the fallback while no destination is set).
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -160,7 +159,7 @@ impl ChatTypeView {
         });
     }
 
-    /// The destination list (replaces the classification table).
+    /// The destination list (replaces the launcher review chat table).
     pub(super) fn render_destination(
         &mut self,
         view: DestinationView,

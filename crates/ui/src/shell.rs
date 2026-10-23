@@ -541,7 +541,7 @@ pub enum Route {
     Overview,
     /// Workspace repository/submodule/worktree ownership graph.
     RepositoryTopology,
-    /// Dense inbox for chats whose authoritative category is PR review.
+    /// The PR page: dashboards plus the chats launched to review PRs.
     PrReviewChats,
 }
 

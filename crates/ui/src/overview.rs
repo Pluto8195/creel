@@ -493,8 +493,8 @@ fn reference_status_color(status: ChatIndicator) -> gpui::Hsla {
 /// - `blocked` ("✕"): Zeron's `Errored` (an unseen failed run) — labeled
 ///   "error", which is what it actually is.
 /// - `not_running` ("○"): no equivalent. It marked an externally imported
-///   session with no live run, which needed the import classification;
-///   without it every `Idle` chat is "idle" ("–").
+///   session with no live run, which needed its import classification;
+///   without that every `Idle` chat is "idle" ("–").
 /// - `running`/`unknown`: aliases/fallbacks with no distinct Zeron source.
 fn status_style(status: ChatIndicator) -> (&'static str, &'static str) {
     match status {
