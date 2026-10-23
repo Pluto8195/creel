@@ -482,12 +482,6 @@ pub(crate) fn link_source_text(source: ChatLinkSource) -> &'static str {
     }
 }
 
-/// The chat the Review button reopens instead of starting a new one: the
-/// best non-archived chat the review launcher started.
-pub(crate) fn review_chat(row: &PrDashRow) -> Option<&PrDashChat> {
-    row.chats.iter().find(|chat| chat.is_review && !chat.archived)
-}
-
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
@@ -731,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn review_chat_skips_archived_and_non_review_chats() {
+    fn chat_chip_labels_truncate_and_link_sources_have_text() {
         let chat = |id: &str, archived, is_review| PrDashChat {
             chat_id: id.into(),
             title: id.into(),
@@ -740,11 +734,6 @@ mod tests {
             is_review,
             updated_at: None,
         };
-        let mut r = row(1, PrDashBucket::ToReview, T1);
-        r.chats = vec![chat("work", false, false), chat("old", true, true)];
-        assert!(review_chat(&r).is_none());
-        r.chats.push(chat("rev", false, true));
-        assert_eq!(review_chat(&r).unwrap().chat_id, "rev");
         let long = PrDashChat { title: "x".repeat(40), ..chat("c", false, false) };
         assert_eq!(chat_chip_label(&long).chars().count(), 28);
         assert_eq!(link_source_text(ChatLinkSource::Branch), "The chat's branch is this PR's branch");
