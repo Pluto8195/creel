@@ -295,6 +295,11 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - uncommitted edits found in the `work-outline-boundary-moves` and `pr-sync-create-fix`
     worktrees (both branches were already merged, so the edits are probably abandoned);
   - the unpushed `pr-sidebar-removal-work` commit, which `d7a30add` already contains.
+- GitHub Actions are turned off on `Pluto8195/creel`. The workflows are upstream's release, deploy
+  and TestFlight jobs, which would fail without upstream's secrets.
+- The README (en and zh-CN) now describes Creel, with the lockup from `docs/media/readme/`. The
+  screenshot block is commented out until Mikey adds `outline.png`, `pr-page.png` and `plan.png`
+  there. `.github/FUNDING.yml` is gone.
 - `/Applications/Zeron.app` (upstream 0.2.59, bundle id `sh.zeron.app`) went to the Trash. Old
   backup binaries were pruned to the last three installs.
 
