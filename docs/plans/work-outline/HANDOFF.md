@@ -1,20 +1,25 @@
 # Work Outline — implementation handoff
 
-Prepared 2026-10-14. Read this first in a new chat picking up the Work Outline work.
+Prepared 2026-10-14, last updated 2026-10-25. Read this first in a new chat picking up the Work Outline work.
 
 ## Where things are
 
-- **Repository:** `/Users/mikey/Projects/agent-mode-tools/zeron` (fork `Pluto8195/zeron`).
-- **Integration branch:** `work-outline-implementation`, branched from `main` at `3801cb5b`. Pushed
-  to `origin` as a backup. **Not merged to `main`; ask before merging.**
+- **Repository:** `/Users/mikey/Projects/agent-mode-tools/zeron`, on GitHub as `Pluto8195/creel`
+  (renamed from the `Pluto8195/zeron` fork on 2026-10-25; the old URL redirects). `zeronsh/zeron`
+  stays as the `upstream` remote, but we no longer open PRs there. The folder and submodule path
+  are still `zeron/`, and so are all code identifiers.
+- **Integration branch:** `work-outline-implementation`, branched from `main` at `3801cb5b`. It is
+  the GitHub default branch. `main` is upstream's code at the fork point. **Never commit to
+  `main`.** `origin` carries only these two branches; delete each feature branch once it is merged.
 - **Parent repo:** `agent-mode-tools` branch `zeron-work-outline` pins the `zeron` submodule.
   Restore points: tag `pre-linear-integration` (`83f49b3d`) and parent commit `d9129f6`.
 - **Original spec:** `work-outline-implementation-specification.md` (copy of Mikey's spec, plus an
   "Implementation contract amendments" section). The binding contract is `m0-contract.md` in this
   folder; it wins where it differs from the spec.
-- **Installed build:** `/Applications/Creel.app` (since 2026-10-23; same bundle id `sh.zeron.app.dev`
-  and data `~/.zeron`, so `Zeron Dev.app` is a rollback only, never run both). Rollback binaries are in
-  `~/zeron-dev-app-backups/` (one per install, named after the feature).
+- **Installed build:** `/Applications/Creel.app`, installed 2026-10-23 and the app Mikey runs since
+  2026-10-25. The old `Zeron Dev.app` (same bundle id `sh.zeron.app.dev` and data `~/.zeron`) is now
+  `~/zeron-dev-app-backups/Zeron Dev.app`, a rollback only; never run both. Rollback binaries are
+  in `~/zeron-dev-app-backups/`, one per install, named after the feature. Keep only the last few.
 
 ## Built and installed
 
@@ -280,9 +285,22 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     - `m5c_accounts_uploads_titles::titling_e2e_names_chat_and_renames_worktree_branch`
     - `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send`
 
+## Housekeeping (2026-10-25)
+
+- All 80 feature worktrees under `.worktrees/zeron/` were removed and their local branches deleted.
+- The 26 merged feature branches and the 193 copies of upstream branches were deleted from
+  `origin`. Upstream's tags are still there, and so are ours (`pre-linear-integration`,
+  `pre-canvas-removal`).
+- Leftovers were saved to `~/zeron-dev-app-backups/leftover-patches-2026-10-25/`:
+  - uncommitted edits found in the `work-outline-boundary-moves` and `pr-sync-create-fix`
+    worktrees (both branches were already merged, so the edits are probably abandoned);
+  - the unpushed `pr-sidebar-removal-work` commit, which `d7a30add` already contains.
+- `/Applications/Zeron.app` (upstream 0.2.59, bundle id `sh.zeron.app`) went to the Trash. Old
+  backup binaries were pruned to the last three installs.
+
 ## Working model (since 2026-10-20)
 
-Zeron development is organised in the Work Outline under the root item "Zeron Dev"
+Creel development is organised in the Work Outline under the root item "Zeron Dev"
 (`48ef4b86c9967626ba1b6372e4cdfa66`, Space agent-mode-tools) with children Release, Bugs, Features,
 Parked. A coordinator chat on that root starts child chats on the right items with
 `create_chat { workItemId }`, polls `work_outline_read_subtree` for "Ready to merge" actions, and is
@@ -293,9 +311,12 @@ branch and raise "Ready to merge: <branch>".
 Coordinator tips:
 - Never block on a child with a foreground `wait_for_turn`, because Mikey keeps giving new work
   while children run. A child that runs its tests in the background goes idle before it is done,
-  so idle doesn't mean finished. The reliable "done" signal is its branch appearing on origin: in
-  a background shell, run `until git ls-remote origin <branch> | grep -q .; do sleep 60; done`,
-  then read the subtree for the Ready to merge action.
+  so idle doesn't mean finished. Children also push early checkpoints, so a push doesn't mean
+  finished either. In a background shell, watch the branch's sha on origin (`until git ls-remote
+  origin <branch> | grep -q -v <last-sha>; do sleep 60; done`), and on each change read the subtree
+  for the "Ready to merge" action. That action is the real done signal.
+- After a release, delete the merged branch from `origin`, then remove its worktree and local
+  branch.
 - `work_outline_read_subtree` cuts long action `detail`s short (`detailTruncated`). For the full
   text, `read_chat` the `originChatId`.
 
@@ -342,8 +363,8 @@ status write-back, a "Waiting for input" group (declined), Tod-style action log 
   `/Applications/Creel.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
   sh.zeron.app.dev` (sign the bundle path); push `work-outline-implementation`. Before
   2026-10-23 the app was `/Applications/Zeron Dev.app`, which is now kept only as a rollback.
-- **Never restart Zeron automatically.** Install, then tell Mikey what to restart and test.
-  Restarting kills agents running inside Zeron, so commit WIP first.
+- **Never restart Creel automatically.** Install, then tell Mikey what to restart and test.
+  Restarting kills agents running inside Creel, so commit WIP first.
 - **Xcode license prompts** after Xcode updates block git/cargo: Mikey accepts, or use
   `DEVELOPER_DIR=/Library/Developer/CommandLineTools`.
 
