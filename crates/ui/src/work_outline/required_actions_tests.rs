@@ -646,7 +646,7 @@ fn reply_send_rejections_keep_the_request_open(cx: &mut gpui::TestAppContext) {
             0 => Err(zeron_rpc::RpcError::Failed(
                 zeron_proto::WorkOutlineError::new(
                     zeron_proto::WorkOutlineErrorCode::Capability,
-                    "Update Creel on the Chat's device to deliver Work Outline instructions",
+                    "Update Mast on the Chat's device to deliver Work Outline instructions",
                 )
                 .to_wire_message(),
             )),

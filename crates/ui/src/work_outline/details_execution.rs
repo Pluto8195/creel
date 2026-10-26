@@ -617,7 +617,7 @@ impl WorkItemDetails {
                     ),
                     ValidationHeadline::HostUnsupported { device_id } => (
                         format!(
-                            "{} runs a Creel that can\u{2019}t validate execution",
+                            "{} runs a Mast that can\u{2019}t validate execution",
                             self.device_label(device_id, cx)
                         ),
                         theme.warning,

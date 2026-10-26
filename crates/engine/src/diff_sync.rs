@@ -2300,7 +2300,7 @@ pub async fn capture_diff_against(
     if tracked.truncated {
         let boundary = patch.rfind('\n').unwrap_or(0);
         patch.truncate(boundary);
-        patch.push_str("\n# Creel diff truncated\n");
+        patch.push_str("\n# Mast diff truncated\n");
     }
 
     // `?? path` records; rename records (`R  new\0old`) consume their extra field.
@@ -2780,7 +2780,7 @@ pub async fn capture_turn_diff(
     if tracked.truncated {
         let boundary = patch.rfind('\n').unwrap_or(0);
         patch.truncate(boundary);
-        patch.push_str("\n# Creel diff truncated\n");
+        patch.push_str("\n# Mast diff truncated\n");
     }
 
     let (submodules, submodules_truncated) = Box::pin(capture_submodule_sections(

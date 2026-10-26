@@ -89,7 +89,7 @@ impl AgentToolError {
     fn unauthenticated() -> Self {
         Self::refused(
             AgentToolErrorCode::Unauthenticated,
-            "this agent's Creel token is missing, unknown, or expired (it is only valid while \
+            "this agent's Mast token is missing, unknown, or expired (it is only valid while \
              the Run that received it is running)",
         )
     }

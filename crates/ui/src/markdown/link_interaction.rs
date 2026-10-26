@@ -329,7 +329,7 @@ impl Element for LinkRanges {
                         window.refresh();
                     });
                 for (action_ix, (action, label, icon)) in [
-                    (LinkAction::Internal, "Open in Creel", icons::GLOBE),
+                    (LinkAction::Internal, "Open in Mast", icons::GLOBE),
                     (
                         LinkAction::External,
                         "Open in external browser",
@@ -375,7 +375,7 @@ impl Element for LinkRanges {
                         false,
                         format!("{}-link-{index}-default-destination", self.id),
                     )
-                    .id("Open links in Creel")
+                    .id("Open links in Mast")
                     .child(div().w(px(16.)).flex_none().when(open_in_zeron, |el| {
                         el.child(
                             icons::icon(icons::CHECK)
@@ -383,13 +383,13 @@ impl Element for LinkRanges {
                                 .text_color(theme.text_muted),
                         )
                     }))
-                    .child("Open links in Creel")
+                    .child("Open links in Mast")
                     .track_focus(&state.menu_focus[3])
                     .role(Role::Button)
                     .aria_label(if open_in_zeron {
-                        "Open links in Creel, checked"
+                        "Open links in Mast, checked"
                     } else {
-                        "Open links in Creel, unchecked"
+                        "Open links in Mast, unchecked"
                     })
                     .focus_visible(|s| s.bg(crate::theme::card_selected_bg()))
                     .on_click(move |_, window, cx| {

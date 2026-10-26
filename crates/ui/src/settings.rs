@@ -321,7 +321,7 @@ pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Re
     let data_dir = cx
         .try_global::<SettingsStore>()
         .map(|store| store.data_dir.clone())
-        .ok_or_else(|| "Unable to save the image. Restart Creel and try again.".to_string())?;
+        .ok_or_else(|| "Unable to save the image. Restart Mast and try again.".to_string())?;
     let backgrounds_dir = data_dir.join(NEW_THREAD_BACKGROUND_DIR);
     std::fs::create_dir_all(&backgrounds_dir).map_err(|_| {
         "Unable to save the image. Check folder permissions and try again.".to_string()
@@ -374,7 +374,7 @@ pub fn remove_new_thread_composer_background(cx: &mut App) -> Result<(), String>
     let data_dir = cx
         .try_global::<SettingsStore>()
         .map(|store| store.data_dir.clone())
-        .ok_or_else(|| "Unable to remove the image. Restart Creel and try again.".to_string())?;
+        .ok_or_else(|| "Unable to remove the image. Restart Mast and try again.".to_string())?;
     let mut next = current(cx);
     let previous = next.new_thread_composer_background.take();
     if previous.is_none() {

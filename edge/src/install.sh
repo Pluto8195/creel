@@ -71,7 +71,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   mkdir -p "$HOME/.config/systemd/user"
   cat >"$HOME/.config/systemd/user/zeron.service" <<'UNIT'
 [Unit]
-Description=Creel native headless engine
+Description=Mast native headless engine
 After=network-online.target
 StartLimitIntervalSec=60
 StartLimitBurst=5

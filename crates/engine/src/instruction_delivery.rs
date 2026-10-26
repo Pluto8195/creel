@@ -330,7 +330,7 @@ pub fn remote_host_preflight(
             format!(
                 "The device hosting this chat ({host_id}) is unknown here, so Work Outline \
                  instructions cannot be sent to it. Wait for it to come online and sync, or \
-                 update Creel on it. Nothing was sent"
+                 update Mast on it. Nothing was sent"
             ),
         ));
     };
@@ -343,7 +343,7 @@ pub fn remote_host_preflight(
         return Err(reject(
             Reason::ZeronUpgradeRequired,
             format!(
-                "Update Creel on {}{running} to send Work Outline instructions to it. Nothing \
+                "Update Mast on {}{running} to send Work Outline instructions to it. Nothing \
                  was sent",
                 device.name
             ),
@@ -613,7 +613,7 @@ mod tests {
         assert!(
             rejection
                 .message
-                .starts_with("Update Creel on Studio (running 0.2.81) to send Work Outline"),
+                .starts_with("Update Mast on Studio (running 0.2.81) to send Work Outline"),
             "{}",
             rejection.message
         );

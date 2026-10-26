@@ -645,7 +645,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
         ..ImportReport::default()
     };
     report.fallbacks.push(
-        "surface treatment inferred as opaque because VS Code palettes target solid workbench backgrounds; the user's Creel surface preference can override it"
+        "surface treatment inferred as opaque because VS Code palettes target solid workbench backgrounds; the user's Mast surface preference can override it"
             .into(),
     );
     macro_rules! apply {
@@ -659,7 +659,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
                 });
             } else {
                 report.fallbacks.push(format!(
-                    "{} retained the Creel {} fallback",
+                    "{} retained the Mast {} fallback",
                     $role,
                     if options.appearance.is_dark() {
                         "dark"
@@ -838,7 +838,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
     } else {
         report
             .fallbacks
-            .push("accent.* retained the Creel fallback; curate a native accent".into());
+            .push("accent.* retained the Mast fallback; curate a native accent".into());
     }
 
     apply!(

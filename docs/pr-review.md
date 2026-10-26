@@ -1,6 +1,6 @@
 # Review PR launcher
 
-Creel can check out someone's pull request and start a review Chat the same
+Mast can check out someone's pull request and start a review Chat the same
 way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
 (the GitHub overlay's **Claude ▾ → code-review / fix-ci** menu).
 
@@ -17,7 +17,7 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   bucket chips (multi-select), **hide drafts** (on), **group by status** (on)
   and a text filter, each kept per tab. Rows list repo, `#number` (opens the
   PR in the browser), title with tags, churn, reviewers (or author), CI, open
-  comments and age, plus the Creel chats linked to the PR as chips (click
+  comments and age, plus the Mast chats linked to the PR as chips (click
   opens the chat). Review-requested rows have **Review** (`/code-review`) and
   **Fix CI** (`/fix-ci`). Authored rows offer **Fix CI** while CI fails.
   A PR's **review chat** is a live (not archived) chat that is assigned to the
@@ -40,7 +40,7 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   `StartPrReview` with the item's `spaceId` and `workItemId`, so the review
   Chat is filed under that item.
 
-After a start Creel opens the new chat. Refusals (fork, repository not in any
+After a start Mast opens the new chat. Refusals (fork, repository not in any
 project, occupied worktree path, `gh` missing, device offline) stay inline on
 the row or box with what to do next. A behind-origin warning shows in the
 sidebar notice and is also part of the seeded prompt.
@@ -112,7 +112,7 @@ The prompts are launch.sh's, verbatim:
 worktree `<path>` (`/workspace/.worktrees/<dir>` in the devcontainer)`` (under
 `<space>/.worktrees` or the worktrees root), ``the canonical checkout
 `<path>` `` (elsewhere inside the Space), or `` `<path>` ``, followed by `, N
-commit(s) behind origin/<b> — pull before you start` when behind. Creel adds
+commit(s) behind origin/<b> — pull before you start` when behind. Mast adds
 the devcontainer note only when the Space has a `.devcontainer` folder
 (Cofactr always does).
 

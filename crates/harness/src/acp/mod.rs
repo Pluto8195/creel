@@ -1945,7 +1945,7 @@ fn initialize_params(harness: HarnessId) -> Value {
         "protocolVersion": 1,
         "clientInfo": {
             "name": "zeron",
-            "title": "Creel",
+            "title": "Mast",
             "version": env!("CARGO_PKG_VERSION"),
         },
         // Declined: agents fall back to their own fs/terminal access, which

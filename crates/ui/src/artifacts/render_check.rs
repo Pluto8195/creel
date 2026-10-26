@@ -226,7 +226,7 @@ where
     let Some(renderer) = renderer else {
         return failed(wire_error(
             ArtifactErrorCode::RenderUnavailable,
-            "this Creel window cannot render artifacts offscreen on this platform",
+            "this Mast window cannot render artifacts offscreen on this platform",
         ));
     };
     let (plan, cap_warning) = request.renders();
@@ -249,7 +249,7 @@ where
                     request_id,
                     result: Some(ArtifactRenderCheckResult {
                         warnings: vec![
-                            "Markdown renders natively in Creel; there is no web render to check"
+                            "Markdown renders natively in Mast; there is no web render to check"
                                 .to_owned(),
                         ],
                         ..Default::default()

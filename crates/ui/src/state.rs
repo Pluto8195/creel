@@ -2310,7 +2310,7 @@ impl AppState {
             return Task::ready(fake(method, params));
         }
         let Some(engine) = self.engine.clone() else {
-            return Task::ready(Err("Creel is not connected to its engine.".to_owned()));
+            return Task::ready(Err("Mast is not connected to its engine.".to_owned()));
         };
         cx.spawn(async move |_, _| {
             engine

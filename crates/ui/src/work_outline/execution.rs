@@ -381,7 +381,7 @@ impl ExecutionDriftImpact {
         let items = plural(self.item_ids.len(), "work item", "work items");
         format!(
             "This changes the execution configuration of {items}. {chats} already running there \
-             keep their captured configuration; Creel does not retarget them. They will show as \
+             keep their captured configuration; Mast does not retarget them. They will show as \
              exceptions on the item."
         )
     }
@@ -795,7 +795,7 @@ pub(crate) fn execution_members(
             .map(|issue| format!("{}. {}", issue.message, issue.remediation))
     }) {
         Some(reason) => reason,
-        None => "Creel has not confirmed this checkout yet.".to_owned(),
+        None => "Mast has not confirmed this checkout yet.".to_owned(),
     };
     let mut members: Vec<ExecutionMember> = match reply.and_then(|r| r.validated.as_ref()) {
         Some(validated) => validated
@@ -1285,7 +1285,7 @@ mod tests {
         assert_eq!(members[0].checkout_id, None);
         assert_eq!(
             members[0].unconfirmed.as_deref(),
-            Some("Creel has not confirmed this checkout yet.")
+            Some("Mast has not confirmed this checkout yet.")
         );
         // A failed validation: unconfirmed with its message and remediation.
         let failed = ValidateExecutionConfigurationReply::from_result(

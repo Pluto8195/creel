@@ -42,7 +42,7 @@ struct HomeView: View {
             .scrollContentBackground(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .background(Theme.surface.ignoresSafeArea())
-            .navigationTitle("Creel")  // feeds the back menu; not displayed
+            .navigationTitle("Mast")  // feeds the back menu; not displayed
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .title)
             .navigationDestination(for: Route.self) { route in

@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Creel</string>
+    <string>Mast</string>
     <key>CFBundleExecutable</key>
     <string>zeron</string>
     <key>CFBundleIconFile</key>
-    <string>creel.icns</string>
+    <string>mast.icns</string>
     <key>CFBundleIdentifier</key>
     <string>sh.zeron.app.dev</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Creel</string>
+    <string>Mast</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

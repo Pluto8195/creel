@@ -378,7 +378,7 @@ fn open_main_window(
                 // Linux/Windows `appears_transparent` hides the system titlebar
                 // for our custom-drawn chrome; harmless where unsupported.
                 titlebar: Some(TitlebarOptions {
-                    title: cfg!(target_os = "windows").then(|| "Creel".into()),
+                    title: cfg!(target_os = "windows").then(|| "Mast".into()),
                     appears_transparent: true,
                     // Native lights are 14px tall: top 14 → center 21, matching
                     // the 38px titlebar row with 4px top-only content padding.
@@ -566,7 +566,7 @@ fn deliver_appshot(
             }
             tracing::warn!(
                 count,
-                "Appshot captured with no Creel window; preserving it for the next delivery"
+                "Appshot captured with no Mast window; preserving it for the next delivery"
             );
         }
         return;

@@ -1,7 +1,8 @@
-//! The app is called Creel. Internal identifiers keep the old name, but no
-//! user-facing string may bring "Zeron" back. This scans the Rust sources that
-//! feed the UI, engine messages, and agent instructions for a whole-word
-//! "Zeron" outside comments, and checks the macOS bundle templates.
+//! The app is called Mast. Internal identifiers keep the old name, but no
+//! user-facing string may bring "Zeron" or "Creel" back. This scans the Rust
+//! sources that feed the UI, engine messages, and agent instructions for a
+//! whole-word "Zeron" or "Creel" outside comments, and checks the macOS bundle
+//! templates.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,9 @@ const ALLOWED: &[&str] = &[
     // Part of the golden-hashed Work Outline envelope preamble.
     "the user in Zeron. They supplement",
 ];
+
+/// Names the app used to have; none may appear in a user-facing string.
+const OLD_NAMES: &[&str] = &["Zeron", "Creel"];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -104,7 +108,8 @@ fn user_facing_strings_do_not_use_the_old_app_name() {
             if trimmed.starts_with("//") || trimmed.starts_with('*') {
                 continue;
             }
-            if !has_whole_word(line, "Zeron") || ALLOWED.iter().any(|ok| line.contains(ok)) {
+            let old_name = OLD_NAMES.iter().any(|word| has_whole_word(line, word));
+            if !old_name || ALLOWED.iter().any(|ok| line.contains(ok)) {
                 continue;
             }
             offenders.push(format!(
@@ -117,13 +122,13 @@ fn user_facing_strings_do_not_use_the_old_app_name() {
     }
     assert!(
         offenders.is_empty(),
-        "user-facing \"Zeron\" found (use \"Creel\"; add a deliberate internal use to ALLOWED):\n{}",
+        "user-facing \"Zeron\" or \"Creel\" found (use \"Mast\"; add a deliberate internal use to ALLOWED):\n{}",
         offenders.join("\n")
     );
 }
 
 #[test]
-fn macos_bundle_templates_are_named_creel() {
+fn macos_bundle_templates_are_named_mast() {
     let root = workspace_root();
     for name in ["Info.plist", "Info-dev.plist"] {
         let plist = fs::read_to_string(root.join("dist/macos").join(name)).expect("read plist");
@@ -133,9 +138,9 @@ fn macos_bundle_templates_are_named_creel() {
                 .split("<string>")
                 .nth(1)
                 .and_then(|s| s.split("</string>").next());
-            assert_eq!(value, Some("Creel"), "{name} {key}");
+            assert_eq!(value, Some("Mast"), "{name} {key}");
         }
-        assert!(plist.contains("<string>creel.icns</string>"), "{name} icon");
+        assert!(plist.contains("<string>mast.icns</string>"), "{name} icon");
         // Internal identifiers stay put.
         assert!(plist.contains("<string>sh.zeron.app"), "{name} bundle id");
         assert!(plist.contains("<key>CFBundleExecutable</key>\n    <string>zeron</string>"));
