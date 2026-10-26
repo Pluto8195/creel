@@ -9708,7 +9708,7 @@ impl Shell {
                         .child(
                             div().opacity(0.09).child(
                                 icons::logo(theme.appearance)
-                                    .w(px(41.9))
+                                    .w(px(33.3))
                                     .h(px(48.0)),
                             ),
                         )
@@ -10474,7 +10474,7 @@ impl Shell {
             .text_center()
             .child(
                 icons::logo(theme.appearance)
-                    .w(px(31.4))
+                    .w(px(24.9))
                     .h(px(36.0)),
             )
             .child(
@@ -11128,7 +11128,7 @@ impl Shell {
                 .text_center()
                 .child(
                     icons::logo(theme.appearance)
-                        .w(px(31.4))
+                        .w(px(24.9))
                         .h(px(36.0)),
                 )
                 .child(
@@ -11313,7 +11313,7 @@ impl Shell {
             .flex_col()
             .child(
                 icons::logo(theme.appearance)
-                    .w(px(24.4))
+                    .w(px(19.4))
                     .h(px(28.0)),
             )
             .child(

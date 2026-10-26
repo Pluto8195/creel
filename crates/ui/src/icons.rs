@@ -206,10 +206,10 @@ icon_assets![
     // favorited state and the picker's favorites rail tab.
     (STAR, "star"),
     (STAR_BOLD, "star-bold"),
-    // The Creel mark in full colour, one file per appearance (see [`logo`]).
-    // These are drawn with `img()`, not `icon()`: the winding keeps its greens.
-    (CREEL_LOGO_LIGHT, "creel-logo-light"),
-    (CREEL_LOGO_DARK, "creel-logo-dark"),
+    // The Mast mark in full colour, one file per appearance (see [`logo`]).
+    // These are drawn with `img()`, not `icon()`: the lens keeps its aurora gradient.
+    (MAST_LOGO_LIGHT, "mast-logo-light"),
+    (MAST_LOGO_DARK, "mast-logo-dark"),
     // Harness brand marks (icons.tsx).
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),
@@ -247,17 +247,17 @@ pub fn claude_brand() -> Hsla {
     gpui::rgb(0xD97757).into()
 }
 
-/// The embedded Creel logo asset for a theme appearance: the steel mark on
+/// The embedded Mast logo asset for a theme appearance: the steel mark on
 /// light themes, the moss mark on dark ones.
 pub fn logo_asset(appearance: crate::theme::Appearance) -> &'static str {
     if appearance.is_dark() {
-        CREEL_LOGO_DARK
+        MAST_LOGO_DARK
     } else {
-        CREEL_LOGO_LIGHT
+        MAST_LOGO_LIGHT
     }
 }
 
-/// The Creel logo for a theme appearance. The mark is 152×174 (aspect ≈ 0.874);
+/// The Mast logo for a theme appearance. The mark is 140×202 (aspect ≈ 0.693);
 /// size it with `.w(..).h(..)` at that ratio. Use `div().opacity(..)` around it
 /// for a watermark, since the logo carries its own colours.
 pub fn logo(appearance: crate::theme::Appearance) -> gpui::Img {
@@ -292,14 +292,14 @@ mod tests {
     #[test]
     fn logo_follows_the_theme_appearance() {
         use crate::theme::Appearance;
-        assert_eq!(logo_asset(Appearance::Light), CREEL_LOGO_LIGHT);
-        assert_eq!(logo_asset(Appearance::Dark), CREEL_LOGO_DARK);
-        assert_ne!(CREEL_LOGO_LIGHT, CREEL_LOGO_DARK);
+        assert_eq!(logo_asset(Appearance::Light), MAST_LOGO_LIGHT);
+        assert_eq!(logo_asset(Appearance::Dark), MAST_LOGO_DARK);
+        assert_ne!(MAST_LOGO_LIGHT, MAST_LOGO_DARK);
     }
 
     #[test]
     fn logo_assets_exist_parse_and_stay_small() {
-        for (path, ink) in [(CREEL_LOGO_LIGHT, "#183028"), (CREEL_LOGO_DARK, "#D6F1DB")] {
+        for (path, ink) in [(MAST_LOGO_LIGHT, "#183028"), (MAST_LOGO_DARK, "#D6F1DB")] {
             let bytes = Assets.load(path).unwrap().expect("logo asset is embedded");
             assert!(bytes.len() < 4096, "{path} is {} bytes", bytes.len());
             let text = std::str::from_utf8(&bytes).unwrap();
@@ -308,14 +308,14 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{path} does not parse: {e}"));
             let size = tree.size();
             let aspect = size.width() / size.height();
-            assert!((aspect - 152.0 / 174.0).abs() < 0.01, "{path} aspect {aspect}");
+            assert!((aspect - 140.0 / 202.0).abs() < 0.01, "{path} aspect {aspect}");
         }
     }
 
     #[test]
-    fn logo_renders_in_colour_on_a_transparent_background() {
+    fn logo_renders_gradients_and_bloom_on_a_transparent_background() {
         let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(Assets));
-        for (path, ink) in [(CREEL_LOGO_LIGHT, [0x18, 0x30, 0x28]), (CREEL_LOGO_DARK, [0xD6, 0xF1, 0xDB])] {
+        for (path, ink) in [(MAST_LOGO_LIGHT, [0x18, 0x30, 0x28]), (MAST_LOGO_DARK, [0xD6, 0xF1, 0xDB])] {
             let bytes = Assets.load(path).unwrap().unwrap();
             let image = renderer.render_single_frame(&bytes, 2.0).expect("logo renders");
             let px = image.as_bytes(0).unwrap(); // premultiplied BGRA
@@ -324,10 +324,20 @@ mod tests {
                 p[3] == 255 && (0..3).all(|i| p[2 - i].abs_diff(rgb[i]) <= 6)
             };
             assert!(px.chunks_exact(4).any(|p| near(p, ink)), "{path}: has ink pixels");
-            assert!(
-                px.chunks_exact(4).any(|p| near(p, [0x38, 0xD0, 0x59])),
-                "{path}: keeps the clover winding colour"
-            );
+            // The lens is a moss -> clover -> cobalt gradient: it has green and blue ends.
+            let opaque = |p: &&[u8]| p[3] == 255;
+            let green = |p: &[u8]| p[1] as i32 > p[2] as i32 + 60 && p[1] as i32 > p[0] as i32 + 40;
+            let blue = |p: &[u8]| p[0] as i32 > p[1] as i32 + 50 && p[0] as i32 > p[2] as i32 + 80;
+            assert!(px.chunks_exact(4).filter(opaque).any(|p| green(p)), "{path}: lens has aurora green");
+            assert!(px.chunks_exact(4).filter(opaque).any(|p| blue(p)), "{path}: lens has aurora blue");
+            // The bloom behind the lens is a blurred gradient disc: a faint, partly
+            // transparent halo just outside the rim. The lens centre is (70, 46) in the
+            // 140-unit-wide viewBox; sample 33 units above it.
+            let width = image.size(0).width.0 as usize;
+            let scale = width as f32 / 140.0;
+            let (x, y) = ((70.0 * scale) as usize, ((46.0 - 33.0) * scale) as usize);
+            let halo = &px[(y * width + x) * 4..][..4];
+            assert!(halo[3] > 0 && halo[3] < 128, "{path}: blurred bloom halo, alpha {}", halo[3]);
         }
     }
 
