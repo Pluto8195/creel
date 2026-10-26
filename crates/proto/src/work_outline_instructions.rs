@@ -903,7 +903,7 @@ impl std::fmt::Display for IntegrityError {
         match self {
             Self::UnsupportedEnvelopeVersion(version) => write!(
                 f,
-                "Instruction envelope version {version} is not supported by this version of Creel"
+                "Instruction envelope version {version} is not supported by this version of Mast"
             ),
             Self::EntryOrder { index } => {
                 write!(f, "Instruction revision entry {index} is out of order")

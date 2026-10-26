@@ -2032,7 +2032,7 @@ impl Shell {
             Some("signin") => Some(GatePhase::SignIn),
             Some("org") => Some(GatePhase::OrgGate),
             Some("failed") => Some(GatePhase::Failed(
-                "Could not reach the Creel engine on port 27901".into(),
+                "Could not reach the Mast engine on port 27901".into(),
             )),
             _ => None,
         };
@@ -2505,7 +2505,7 @@ impl Shell {
                 {
                     let body = match connectivity {
                         zeron_proto::ConnectivityState::Offline => "Your device is offline",
-                        _ => "Creel is trying to reconnect",
+                        _ => "Mast is trying to reconnect",
                     };
                     crate::notify::post("Connection unavailable", body, None);
                 }
@@ -4278,7 +4278,7 @@ impl Shell {
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Creel conversation link copied".into());
+            self.sidebar_notice = Some("Mast conversation link copied".into());
         } else {
             self.sidebar_notice = Some("Conversation link is not ready yet".into());
         }
@@ -5895,7 +5895,7 @@ impl Shell {
                     },
                     Err(err) => {
                         shell.runtime_change_error = Some(format!(
-                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Creel."
+                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Mast."
                         ).into());
                         cx.notify();
                     }
@@ -8538,7 +8538,7 @@ impl Shell {
         } else if remote_engine {
             "Stop daemon and quit"
         } else {
-            "Quit Creel"
+            "Quit Mast"
         };
 
         if self.sync_flow == SyncFlow::Enabling && needs_org {
@@ -8563,7 +8563,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Finish signing in in your browser. Creel will keep using this local workspace until you quit and reopen.",
+                        "Finish signing in in your browser. Mast will keep using this local workspace until you quit and reopen.",
                     )),
                 )
                 .child(
@@ -8607,14 +8607,14 @@ impl Shell {
                     )
                     .into(),
                     (Some(email), None) => format!(
-                        "You're signed in as {email}. Creel can switch to your synced workspace now."
+                        "You're signed in as {email}. Mast can switch to your synced workspace now."
                     )
                     .into(),
                     (None, Some(phrase)) => format!(
                         "Bring {phrase} from this device into your synced workspace, or start it fresh."
                     )
                     .into(),
-                    (None, None) => "Creel can switch to your synced workspace now.".into(),
+                    (None, None) => "Mast can switch to your synced workspace now.".into(),
                 };
                 let mut actions = div()
                     .mt(px(16.0))
@@ -8803,9 +8803,9 @@ impl Shell {
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
                         if remote_engine {
-                            "Creel is using a background daemon. Stop it and quit Creel, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Mast is using a background daemon. Stop it and quit Mast, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         } else {
-                            "Quit and reopen Creel to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Quit and reopen Mast to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         },
                     )),
                 )
@@ -8850,7 +8850,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Creel will remove your credentials, close the synced workspace, and continue in local mode.",
+                        "Mast will remove your credentials, close the synced workspace, and continue in local mode.",
                     )),
                 )
                 .child(
@@ -9254,7 +9254,7 @@ impl Shell {
                                     .size(px(16.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from("Creel conversation link")),
+                            .child(SharedString::from("Mast conversation link")),
                     )
                     .when_some(harness_link, |menu, link| {
                         menu.child(
@@ -10493,7 +10493,7 @@ impl Shell {
                     .line_height(px(19.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
-                        "Creel removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
+                        "Mast removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
                     )),
             )
             .when_some(self.runtime_change_error.clone(), |card, error| {
@@ -11137,7 +11137,7 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(18.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text)
-                        .child(SharedString::from("Log in to Creel")),
+                        .child(SharedString::from("Log in to Mast")),
                 )
                 .child(
                     div()
@@ -11292,11 +11292,11 @@ impl Shell {
         // then existing memberships and the account escape hatch.
         let blurb: SharedString = match email {
             Some(email) => format!(
-                "Creel is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+                "Mast is organized around workspaces — create one for yourself or your team. Signed in as {email}."
             )
             .into(),
             None => {
-                "Creel is organized around workspaces — create one for yourself or your team."
+                "Mast is organized around workspaces — create one for yourself or your team."
                     .into()
             }
         };

@@ -1,4 +1,4 @@
-# Creel MCP server
+# Mast MCP server
 
 `zeron mcp` serves the Model Context Protocol on stdin/stdout and proxies every
 tool into the running engine's localhost IPC (`ws://127.0.0.1:$ZERON_IPC_PORT`,
@@ -28,7 +28,7 @@ terminal `zeron mcp`). It is launched with:
 Every tool call re-authenticates the token (`AgentAuthenticate`); the engine
 answers with the Chat the token was minted for. `ZERON_CHAT_ID` is no longer
 read: no self-declared origin is trusted. With a token, every `send_message` is
-prefixed with a `[Message from Creel chat <title> (<id8>) …]` line, the server
+prefixed with a `[Message from Mast chat <title> (<id8>) …]` line, the server
 refuses to message its own chat, and the Work Outline agent tools
 (`work_outline_*`, forwarded to `AgentToolCall`) are listed. The server
 instructions and the create/resolve tool descriptions tell agents to raise

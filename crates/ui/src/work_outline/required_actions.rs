@@ -101,7 +101,7 @@ fn actor_label(kind: WorkOutlineActorKind) -> &'static str {
     match kind {
         WorkOutlineActorKind::User => "you",
         WorkOutlineActorKind::Agent => "an agent",
-        WorkOutlineActorKind::System => "Creel",
+        WorkOutlineActorKind::System => "Mast",
     }
 }
 
@@ -234,7 +234,7 @@ fn row_for(
             let resolution = request.resolution.as_ref();
             ResolutionLine {
                 at: resolution.map_or(0, |r| r.at),
-                by: resolution.map_or("Creel", |r| actor_label(r.by.kind)),
+                by: resolution.map_or("Mast", |r| actor_label(r.by.kind)),
                 note: resolution
                     .and_then(|r| r.note.clone())
                     .filter(|note| !note.trim().is_empty()),

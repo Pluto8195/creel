@@ -134,7 +134,7 @@ impl Zeron {
         let value = self
             .call(agent_tools::AUTHENTICATE_METHOD, json!({ "token": token }))
             .await
-            .map_err(|e| anyhow!("Creel refused this agent's token: {e}"))?;
+            .map_err(|e| anyhow!("Mast refused this agent's token: {e}"))?;
         let origin =
             serde_json::from_value(value).context("AgentAuthenticate: unexpected shape")?;
         Ok(Some(origin))
@@ -144,7 +144,7 @@ impl Zeron {
     /// originating Chat from the token).
     pub async fn agent_tool(&self, tool: &str, arguments: Value) -> anyhow::Result<Value> {
         let token = self.token.as_deref().ok_or_else(|| {
-            anyhow!("{tool} is only available to agents Creel started in a project's chat")
+            anyhow!("{tool} is only available to agents Mast started in a project's chat")
         })?;
         self.call(
             agent_tools::TOOL_CALL_METHOD,
@@ -163,7 +163,7 @@ impl Zeron {
         }
         let client = connect_ws(&self.url).await.map_err(|e| {
             anyhow!(
-                "no Creel engine listening at {} ({e}) — is Creel running?",
+                "no Mast engine listening at {} ({e}) — is Mast running?",
                 self.url
             )
         })?;

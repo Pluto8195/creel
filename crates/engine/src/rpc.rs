@@ -1658,7 +1658,7 @@ impl EngineRpc {
         match known {
             None => return Err(offline("the device is not known to this engine".into())),
             Some(known) if !known.supports(zeron_proto::capabilities::PR_REVIEW_LAUNCH_V1) => {
-                return Err(offline("update Creel on that device".into()));
+                return Err(offline("update Mast on that device".into()));
             }
             Some(_) => {}
         }

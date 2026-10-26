@@ -74,7 +74,7 @@ impl AccentColor {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Zeron => "Creel",
+            Self::Zeron => "Mast",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",

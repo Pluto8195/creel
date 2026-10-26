@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/creel-lockup-dark.png">
-    <img src="docs/media/readme/creel-lockup-light.png" alt="Creel" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/mast-lockup-dark.png">
+    <img src="docs/media/readme/mast-lockup-light.png" alt="Mast" width="320">
   </picture>
 </p>
 
@@ -9,7 +9,7 @@
 
 Run a team of coding agents from one outline of your work.
 
-Creel is a native macOS app that runs Claude Code, Codex, Cursor and other coding agents (Devin, Grok, Hermes, Pi, Antigravity) in chats, and organises those chats around the work they belong to. Sessions are stored on your machine. There is no account and no network requirement.
+Mast is a native macOS app that runs Claude Code, Codex, Cursor and other coding agents (Devin, Grok, Hermes, Pi, Antigravity) in chats, and organises those chats around the work they belong to. Sessions are stored on your machine. There is no account and no network requirement.
 
 <!--
 ## Screenshots
@@ -29,14 +29,14 @@ Drop captures into docs/media/readme/ and uncomment:
 - **Item instructions.** Per-item directives, with revisions, delivered to Claude Code and Codex on every run. Skill autocomplete in the editor.
 - **PR review page.** Your authored PRs and review requests in one place, bucketed by what needs you, with CI, threads and conflicts. Start a review chat per PR, or open the one that exists. Synced PRs show up as outline items. The review launcher is described in [docs/pr-review.md](docs/pr-review.md).
 - **Planning artifacts.** Agents publish plans and diagrams (Markdown, HTML, Mermaid, images) that you read in the app. Revisions compare visually: side by side with synced scroll, pixel-diff highlights, onion skin, rendered Markdown with changed blocks tinted. Find, a section index, and question cards for open decisions. Conventions for agents are in [docs/planning-artifact-conventions.md](docs/planning-artifact-conventions.md).
-- **Linear.** Opt in per Space. An inbox lists your issues and projects, and you add the ones you want to the outline by hand. The full ticket goes to the agent. Creel never writes to Linear.
+- **Linear.** Opt in per Space. An inbox lists your issues and projects, and you add the ones you want to the outline by hand. The full ticket goes to the agent. Mast never writes to Linear.
 - **Per-chat diff targets.** The Changes pane follows the worktree an agent created (`bind_chat_worktree`), or a branch or PR you pick, so you review the agent's work and not the repo root.
 - **Agent tools.** Every chat gets the `zeron-agent` MCP server: read and update its work item, create children, ask for Required Actions, bind a worktree, publish artifacts, start and read other chats. See [docs/mcp.md](docs/mcp.md).
 - **Side browser.** Web and PR links open beside the chat.
 
 ## Build and run (macOS)
 
-Creel is built from source. You need macOS, Xcode command line tools, and Rust through [rustup](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml`).
+Mast is built from source. You need macOS, Xcode command line tools, and Rust through [rustup](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml`).
 
 ```bash
 git clone https://github.com/Pluto8195/creel.git
@@ -54,7 +54,7 @@ Run it as an isolated dev app:
 scripts/run-macos-dev.sh
 ```
 
-This builds the debug binary, wraps it in `target/macos-dev/Creel Dev.app`, signs it (with an Apple Development identity if you have one, ad-hoc otherwise) and opens it. The dev app has its own data directory (`target/macos-dev/data`), bundle id and engine port, so it can run next to an installed Creel. Set `ZERON_DEV_DATA_DIR` or `ZERON_DEV_IPC_PORT` to change them.
+This builds the debug binary, wraps it in `target/macos-dev/Mast Dev.app`, signs it (with an Apple Development identity if you have one, ad-hoc otherwise) and opens it. The dev app has its own data directory (`target/macos-dev/data`), bundle id and engine port, so it can run next to an installed Mast. Set `ZERON_DEV_DATA_DIR` or `ZERON_DEV_IPC_PORT` to change them.
 
 To build an app bundle and disk image:
 
@@ -62,9 +62,9 @@ To build an app bundle and disk image:
 scripts/package-macos.sh
 ```
 
-This builds a release binary and writes `target/package/Creel.app` plus a `.dmg` and an updater tarball next to it. The bundle is ad-hoc signed unless you set `CODESIGN_IDENTITY`. On first launch, right-click → Open. Release file names keep the `zeron-` prefix on purpose.
+This builds a release binary and writes `target/package/Mast.app` plus a `.dmg` and an updater tarball next to it. The bundle is ad-hoc signed unless you set `CODESIGN_IDENTITY`. On first launch, right-click → Open. Release file names keep the `zeron-` prefix on purpose.
 
-The engine and its sync code come from upstream and are still in the tree, but Creel is meant to be used local-only. Linux and Windows packaging scripts are still in `scripts/`, but Creel is developed and tested on macOS only.
+The engine and its sync code come from upstream and are still in the tree, but Mast is meant to be used local-only. Linux and Windows packaging scripts are still in `scripts/`, but Mast is developed and tested on macOS only.
 
 ## Docs
 
@@ -76,6 +76,6 @@ The engine and its sync code come from upstream and are still in the tree, but C
 
 ## Credits and licence
 
-Creel started as a fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) (MIT) and no longer tracks it. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Mast started as a fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) (MIT), was briefly called Creel, and no longer tracks upstream. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Licensed under the [MIT License](LICENSE).
