@@ -1,94 +1,87 @@
 #!/usr/bin/env python3
-"""Emit the Creel logo SVGs into dist/brand/.
+"""Emit the Mast logo SVGs into dist/brand/ (mark D, thin-rim aurora lens, Cofactr palette only).
 
-Geometry and colours come from the logo exploration (Y1 mark, Cofactr
-"Steel · greens" palette). Run `python3 dist/brand/generate.py`, then
-`dist/brand/build-assets.sh` to rasterise and build creel.icns.
+Run `python3 dist/brand/generate.py`, then `dist/brand/build-assets.sh` to rasterise and
+build dist/macos/mast.icns. build-assets.sh runs this script first, so running it alone is
+only needed to inspect the SVGs.
+
+Colours are Cofactr brand colours (ui/src/assets/scss/_themes-vars.module.scss); the only
+additions are white highlights and two shades of steel for the icon tile.
 
 Outputs (all standalone SVG):
-  creel-icon.svg            full app icon, 1024 canvas, macOS tile
-  creel-icon-small.svg      simplified icon for 32 px and below (solid orb)
-  creel-mark-{light,dark}.svg      flat mark, transparent background
-  creel-wordmark-{light,dark}.svg  oversized C + small capitals REEL
-  creel-lockup-{light,dark}.svg    mark + wordmark
+  mast-icon.svg                    full app icon, 1024 canvas, metal finish on a steel tile
+  mast-icon-small.svg              heavier strokes for 32 px and below
+  mast-mark-{light,dark}.svg       flat mark, transparent background (steel / moss ink)
+  mast-mark-mono.svg               single-colour mark (no gradients, filters or masks)
+  mast-wordmark-{light,dark}.svg   Copperplate "MAST": oversized M, small caps AST
+  mast-lockup-{light,dark}.svg     mark + wordmark
+  status/mast-icon-{idle,working,ready,input,error}.svg
+                                   the app icon with a lens gradient per status lamp
 
-The flat marks are transparent: the gaps that separate threads from the
-halo and the ball are cut with SVG masks rather than painted in a
-background colour, so they sit on any surface.
+The flat marks are transparent: the gaps that separate the rigging from the lens and the
+ring are cut with SVG masks rather than painted in a background colour, so they sit on any
+surface.
 """
 import math
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent
+FONT = "Copperplate,'Copperplate Gothic Bold',serif"
 
-CF = {"clover": "#38D059", "juniper": "#245F31", "fir": "#619C82", "moss": "#D6F1DB", "steel": "#183028"}
-STRANDS = [CF["clover"], CF["fir"], CF["juniper"], CF["fir"]]
-# On the dark theme the juniper strand would vanish into moss ink only if
-# it were dark; against moss ink it still reads, so both variants share it.
+COFACTR = {'clover': '#38D059', 'juniper': '#245F31', 'fir': '#619C82', 'moss': '#D6F1DB', 'steel': '#183028',
+           'silicon': '#B5B5B5', 'magnesium': '#F3F3F3', 'cobalt': '#3F69CC'}
+C = COFACTR
+TILE = [(0, '#24443A'), (1, '#0C1A15')]                       # steel, lightened and darkened
+AURORA = [(0, C['moss']), (.28, C['clover']), (1, C['cobalt'])]
+METAL = [(0, C['fir']), (.3, C['magnesium']), (.55, C['silicon']), (.8, C['moss']), (1, C['fir'])]
+METAL_BALL = [(0, '#FFFFFF'), (.35, C['magnesium']), (.75, C['silicon']), (1, C['fir'])]
 
-RING = [(0, "#5E6B78"), (.3, "#FFFFFF"), (.55, "#9AA7B4"), (.8, "#F1F5F9"), (1, "#4B5560")]
-BOB = [(0, "#FFFFFF"), (.35, "#C9D2DB"), (1, "#3D4650")]
-MOSSBALL = [(0, "#FFFFFF"), (.5, "#E8F7EB"), (1, "#9CC9A7")]
-TILE = [(0, "#24443A"), (1, "#0C1A15")]
-
-BOBS = [(50, 36), (100, 36), (150, 36)]
-CX, CY, R = 100, 160, 29
-FAMS = [(-32, [11, 22]), (48, [9, 19])]
-# the back halo is drawn as the full ellipse so the front arc hides the seam
-BACK = 'M32 112 A68 18 0 0 1 168 112 A68 18 0 0 1 32 112 Z'
-FRONT = 'M32 112 A68 18 0 0 0 168 112'
-# Tight crop of the 200-unit mark (ring stroke, bobbins, ball) with a little air.
-MARK_VIEWBOX = (24, 18, 152, 174)
-WM_X0, WM_Y0, WM_W, WM_H = 178, 72, 372, 76
+CX, CY, R = 100, 50, 27
+RCY, RRX, RRY = 96, 50, 13
+LINES = [(100, 60, 100, 172), (100, 62, 50, 150), (100, 62, 150, 150)]
+NODES = [(50, 156), (150, 156), (100, 178)]
+LENS, RIM_W, RIM_MID = .7 * R, .2 * R, .9 * R
 
 
 def stops(items):
     return ''.join(f'<stop offset="{o}" stop-color="{c}"/>' for o, c in items)
 
 
-def lin(i, items, x2=0, y2=1):
-    return f'<linearGradient id="{i}" x1="0" y1="0" x2="{x2}" y2="{y2}">{stops(items)}</linearGradient>'
+def lens(uid, rim_paint, mono=False):
+    if mono:
+        return (f'<circle cx="{CX}" cy="{CY}" r="{RIM_MID:.2f}" fill="none" stroke="{rim_paint}" stroke-width="{RIM_W:.2f}"/>'
+                f'<circle cx="{CX}" cy="{CY}" r="{LENS:.2f}" fill="{rim_paint}"/>')
+    r = LENS
+    cx_, cy_ = CX + r * .38, CY + r * .5
+    return (f'<linearGradient id="{uid}a" x1="0" y1="0" x2="1" y2="1">{stops(AURORA)}</linearGradient>'
+            f'<linearGradient id="{uid}r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".8"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>'
+            f'<filter id="{uid}b" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>'
+            f'<clipPath id="{uid}c"><circle cx="{CX}" cy="{CY}" r="{r:.2f}"/></clipPath>'
+            f'<circle cx="{CX}" cy="{CY}" r="{r + 6:.2f}" fill="url(#{uid}a)" opacity=".65" filter="url(#{uid}b)"/>'
+            f'<circle cx="{CX}" cy="{CY}" r="{RIM_MID:.2f}" fill="none" stroke="{rim_paint}" stroke-width="{RIM_W:.2f}"/>'
+            f'<circle cx="{CX}" cy="{CY}" r="{r:.2f}" fill="url(#{uid}a)"/>'
+            f'<g clip-path="url(#{uid}c)"><ellipse cx="{CX}" cy="{CY - r * .55:.2f}" rx="{r * .95:.2f}" ry="{r * .62:.2f}" fill="url(#{uid}r)"/>'
+            f'<ellipse cx="{cx_:.2f}" cy="{cy_:.2f}" rx="{r * .32:.2f}" ry="{r * .16:.2f}" fill="#fff" opacity=".55" transform="rotate(-35 {cx_:.2f} {cy_:.2f})"/></g>'
+            f'<circle cx="{CX}" cy="{CY}" r="{r - .9:.2f}" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="1.2"/>')
 
 
-def rad(i, items):
-    return f'<radialGradient id="{i}" cx=".35" cy=".3" r=".8">{stops(items)}</radialGradient>'
-
-
-def threads_lines(colors, sw=8):
-    return ''.join(
-        f'<line x1="{x}" y1="{y + 8}" x2="100" y2="152" stroke="{c}"/>' for (x, y), c in zip(BOBS, colors)
-    ).join([f'<g stroke-linecap="round" stroke-width="{sw}">', '</g>'])
-
-
-def winding(strands, sw=3.4):
-    parts = []
-    k = 0
-    for ang, rys in FAMS:
-        for ry in rys:
-            parts.append(
-                f'<ellipse cx="{CX}" cy="{CY}" rx="{R + 2}" ry="{ry}" transform="rotate({ang} {CX} {CY})" '
-                f'fill="none" stroke="{strands[k % len(strands)]}" stroke-width="{sw}"/>'
-            )
-            k += 1
-    return ''.join(parts)
-
-
-def icon_mark(ring, bob, ball, ids, strands=STRANDS, wound=True, heavy=False):
-    """The coloured mark drawn on the icon tile (no cutouts needed)."""
-    rw, tw, br = (14, 13, 18) if heavy else (9, 8, 15)
-    o = [f'<path d="{BACK}" fill="none" stroke="{ring}" stroke-width="{rw}"/>']
-    thread = [CF["clover"], CF["fir"], CF["moss"]]
-    o.append(threads_lines(thread, tw))
-    o.append(f'<path d="{FRONT}" fill="none" stroke="{ring}" stroke-width="{rw}"/>')
-    o.append(f'<g fill="{bob}">' + ''.join(f'<circle cx="{x}" cy="{y}" r="{br}"/>' for x, y in BOBS) + '</g>')
-    o.append(f'<circle cx="{CX}" cy="{CY}" r="{R}" fill="{ball}"/>')
-    if wound:
-        o.append(f'<clipPath id="{ids}clip"><circle cx="{CX}" cy="{CY}" r="{R}"/></clipPath>')
-        o.append(f'<g clip-path="url(#{ids}clip)">{winding(strands)}</g>')
-        o.append(f'<ellipse cx="{CX - 10}" cy="{CY - 14}" rx="8" ry="4.5" fill="#fff" opacity=".75"/>')
-    else:
-        o.append(f'<ellipse cx="{CX - 9}" cy="{CY - 11}" rx="9" ry="5.5" fill="#fff" opacity=".7"/>')
-    return ''.join(o)
+def mark(uid, ink, ball=None, small=False, mono=False):
+    """ink paints the rigging and rings; ball (default ink) paints the three agents."""
+    k = 1.35 if small else 1.0
+    lw, rw, nr = 8 * k, 8 * k, min(14 * k, 17)
+    back = f'M{CX - RRX} {RCY} A{RRX} {RRY} 0 0 1 {CX + RRX} {RCY}'
+    front = f'M{CX - RRX} {RCY} A{RRX} {RRY} 0 0 0 {CX + RRX} {RCY}'
+    lines = lambda col, w: ''.join(f'<line x1="{a}" y1="{b}" x2="{c}" y2="{d}" stroke="{col}" stroke-width="{w:.1f}" stroke-linecap="round"/>' for a, b, c, d in LINES)
+    hole = f'<circle cx="{CX}" cy="{CY}" r="{R + 4}" fill="#000"/>'
+    m = lambda i, cut: (f'<mask id="{uid}{i}" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="210">'
+                        f'<rect width="200" height="210" fill="#fff"/>{cut}</mask>')
+    defs = m('b', lines('#000', lw + 7) + hole) + m('l', f'<path d="{front}" fill="none" stroke="#000" stroke-width="{rw + 8:.1f}"/>' + hole)
+    return (f'<defs>{defs}</defs>'
+            f'<path d="{back}" fill="none" stroke="{ink}" stroke-width="{rw:.1f}" mask="url(#{uid}b)"/>'
+            f'<g mask="url(#{uid}l)">{lines(ink, lw)}</g>'
+            f'<path d="{front}" fill="none" stroke="{ink}" stroke-width="{rw:.1f}"/>'
+            f'<g fill="{ball or ink}">' + ''.join(f'<circle cx="{x}" cy="{y}" r="{nr:.1f}"/>' for x, y in NODES) + '</g>'
+            + lens(uid + 'z', ink, mono))
 
 
 def squircle(cx, cy, half, n=5.0, steps=360):
@@ -96,96 +89,61 @@ def squircle(cx, cy, half, n=5.0, steps=360):
     for i in range(steps):
         t = 2 * math.pi * i / steps
         c, s = math.cos(t), math.sin(t)
-        x = cx + half * math.copysign(abs(c) ** (2 / n), c)
-        y = cy + half * math.copysign(abs(s) ** (2 / n), s)
-        pts.append(f'{x:.2f} {y:.2f}')
+        pts.append(f'{cx + half * math.copysign(abs(c) ** (2 / n), c):.2f} {cy + half * math.copysign(abs(s) ** (2 / n), s):.2f}')
     return 'M' + ' L'.join(pts) + ' Z'
 
 
-def app_icon(small=False):
-    """1024 canvas; 824 tile centred (Apple's macOS icon grid, 100 px margins)."""
-    pid = 'sm' if small else 'lg'
-    defs = (lin(f'{pid}bg', TILE) + lin(f'{pid}ring', RING, 1, 0) + rad(f'{pid}bob', BOB) + rad(f'{pid}ball', MOSSBALL)
-            + '<filter id="drop" x="-10%" y="-10%" width="120%" height="125%">'
-              '<feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity=".32"/></filter>')
-    s = 3.937 if not small else 4.1
-    # centre the mark's bbox (x 27.5..172.5, y 21..189 → centre 100,105) on the tile
-    tx, ty = 512 - s * 100, 512 - s * 105
-    body = icon_mark(f'url(#{pid}ring)', f'url(#{pid}bob)', f'url(#{pid}ball)', pid,
-                     wound=not small, heavy=small)
-    highlight = ('<path d="' + squircle(512, 512, 412 - 2) + '" fill="none" stroke="#fff" stroke-opacity=".10" stroke-width="3"/>')
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">'
-            f'<defs>{defs}</defs>'
-            f'<path d="{squircle(512, 512, 412)}" fill="url(#{pid}bg)" filter="url(#drop)"/>{highlight}'
-            f'<g transform="translate({tx:.2f} {ty:.2f}) scale({s})">{body}</g></svg>\n')
+def svg(vb, body, w=None, h=None):
+    size = f' width="{w}" height="{h}"' if w else ''
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{" ".join(map(str, vb))}"{size}>{body}</svg>\n'
 
 
-def flat_mark(ink, strands=STRANDS, uid='m'):
-    """Flat mark with transparent gaps (masks), in `ink` with coloured winding."""
-    m = uid
-    w = 200
-    ring = lambda d, sw: f'<path d="{d}" fill="none" stroke="{ink}" stroke-width="{sw}"/>'
-    gap_lines = ''.join(f'<line x1="{x}" y1="{y + 8}" x2="100" y2="152"/>' for x, y in BOBS)
-    defs = (
-        # cut around the threads where they cross the back halo
-        f'<mask id="{m}a" maskUnits="userSpaceOnUse" x="0" y="0" width="{w}" height="{w}">'
-        f'<rect width="{w}" height="{w}" fill="#fff"/>'
-        f'<g stroke="#000" stroke-width="15" stroke-linecap="round">{gap_lines}</g></mask>'
-        # cut the back halo and threads around the front halo
-        f'<mask id="{m}b" maskUnits="userSpaceOnUse" x="0" y="0" width="{w}" height="{w}">'
-        f'<rect width="{w}" height="{w}" fill="#fff"/>'
-        f'<path d="{BACK}" fill="none" stroke="#000" stroke-width="17" clip-path="url(#{m}g)"/></mask>'
-        # cut everything but the ball around the ball
-        f'<mask id="{m}c" maskUnits="userSpaceOnUse" x="0" y="0" width="{w}" height="{w}">'
-        f'<rect width="{w}" height="{w}" fill="#fff"/>'
-        f'<circle cx="{CX}" cy="{CY}" r="{R + 3.5}" fill="#000"/></mask>'
-        # front halo = lower half of the ellipse; the cut starts 1.5 units below the
-        # ring so the two never meet on the same edge (that leaves a hairline seam)
-        f'<clipPath id="{m}g"><rect x="0" y="112.5" width="{w}" height="{w}"/></clipPath>'
-        f'<clipPath id="{m}f"><rect x="0" y="111" width="{w}" height="{w}"/></clipPath>'
-        f'<clipPath id="{m}k"><circle cx="{CX}" cy="{CY}" r="{R}"/></clipPath>'
-    )
-    thread_g = threads_lines([ink] * 3)
-    back = f'<g mask="url(#{m}a)">{ring(BACK, 9)}</g>'
-    behind = f'<g mask="url(#{m}b)">{back}{thread_g}</g>'
-    front = f'<g clip-path="url(#{m}f)">{ring(BACK, 9)}</g>'
-    bobs = f'<g fill="{ink}">' + ''.join(f'<circle cx="{x}" cy="{y}" r="15"/>' for x, y in BOBS) + '</g>'
-    upper = f'<g mask="url(#{m}c)">{behind}{front}{bobs}</g>'
-    ball = (f'<circle cx="{CX}" cy="{CY}" r="{R}" fill="{ink}"/>'
-            f'<g clip-path="url(#{m}k)">{winding(strands)}</g>')
-    return f'<defs>{defs}</defs>{upper}{ball}'
+def icon(small=False):
+    u = 'is' if small else 'il'
+    s = 4.1 if small else 3.75
+    tx, ty = 512 - s * CX, 512 - s * 104
+    defs = (f'<linearGradient id="{u}bg" x1="0" y1="0" x2="0" y2="1">{stops(TILE)}</linearGradient>'
+            f'<linearGradient id="{u}M" gradientUnits="userSpaceOnUse" x1="36" y1="0" x2="164" y2="0">{stops(METAL)}</linearGradient>'
+            f'<radialGradient id="{u}B" cx=".35" cy=".3" r=".8">{stops(METAL_BALL)}</radialGradient>'
+            '<filter id="drop" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity=".32"/></filter>')
+    return svg((0, 0, 1024, 1024),
+               f'<defs>{defs}</defs><path d="{squircle(512, 512, 412)}" fill="url(#{u}bg)" filter="url(#drop)"/>'
+               f'<path d="{squircle(512, 512, 410)}" fill="none" stroke="#fff" stroke-opacity=".10" stroke-width="3"/>'
+               f'<g transform="translate({tx:.1f} {ty:.1f}) scale({s})">{mark(u + "m", f"url(#{u}M)", f"url(#{u}B)", small)}</g>', 1024, 1024)
 
 
-def svg(viewbox, body, extra=''):
-    vb = ' '.join(str(v) for v in viewbox)
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}"{extra}>{body}</svg>\n'
+def wordmark(ink, x=145, y=134):
+    return (f'<text x="{x}" y="{y}" fill="{ink}" font-family="{FONT}" font-weight="700" font-size="92" '
+            f'transform="skewX(-12) scale(1.44 1)">M<tspan font-size="68">AST</tspan></text>')
 
 
-# Wordmark: Copperplate Bold (ships with macOS; Apple's font, not redistributed
-# here: the SVG names it as a font-family and falls back to serif), an
-# oversized C then small capitals REEL, stretched 1.44x (about 250 -> 360
-# units) and slanted -12 degrees. The stretch is an explicit scale() rather
-# than textLength so rsvg, WebKit and Chrome all draw the same shape.
-WORDMARK_STRETCH = 1.44
-WORDMARK_BOX = (WM_X0, WM_Y0, WM_W, WM_H)
-
-
-def wordmark_text(color, x=145, y=134):
-    return (f'<text x="{x}" y="{y}" fill="{color}" font-family="Copperplate,\'Copperplate Gothic Bold\',serif" '
-            f'font-weight="700" font-size="92" '
-            f'transform="skewX(-12) scale({WORDMARK_STRETCH} 1)">C<tspan font-size="68">REEL</tspan></text>')
+# Status lamp gradients (the lens colour is the only thing that changes).
+CADMIUM, BROMINE = '#FE4B25', '#DFBE1B'
+STATUS_LENS = {
+    'idle': [(0, C['magnesium']), (.5, C['silicon']), (1, '#7F8A85')],
+    'working': [(0, C['moss']), (.28, C['clover']), (1, C['fir'])],
+    'ready': [(0, C['moss']), (.3, '#6F92E0'), (1, C['cobalt'])],
+    'input': [(0, C['magnesium']), (.35, BROMINE), (1, CADMIUM)],
+    'error': [(0, BROMINE), (.3, CADMIUM), (1, '#B8321A')],
+}
 
 
 def main():
-    (OUT / 'creel-icon.svg').write_text(app_icon())
-    (OUT / 'creel-icon-small.svg').write_text(app_icon(small=True))
-    for name, ink, bg in (('light', CF['steel'], None), ('dark', CF['moss'], CF['steel'])):
-        (OUT / f'creel-mark-{name}.svg').write_text(svg(MARK_VIEWBOX, flat_mark(ink, uid=f'{name[0]}m')))
-        (OUT / f'creel-wordmark-{name}.svg').write_text(svg(WORDMARK_BOX, wordmark_text(ink)))
-        mark = flat_mark(ink, uid=f'{name[0]}l')
-        (OUT / f'creel-lockup-{name}.svg').write_text(
-            svg((10, 10, 540, 186),
-                f'<g transform="translate(0 6) scale(.94)">{mark}</g>{wordmark_text(ink)}'))
+    global AURORA
+    (OUT / 'status').mkdir(exist_ok=True)
+    (OUT / 'mast-icon.svg').write_text(icon())
+    (OUT / 'mast-icon-small.svg').write_text(icon(small=True))
+    MARK_VB, LOCK_VB, WM_VB = (30, 4, 140, 202), (20, 0, 500, 210), (172, 70, 340, 78)
+    for theme, ink in (('light', C['steel']), ('dark', C['moss'])):
+        (OUT / f'mast-mark-{theme}.svg').write_text(svg(MARK_VB, mark(f'm{theme[0]}', ink)))
+        (OUT / f'mast-wordmark-{theme}.svg').write_text(svg(WM_VB, wordmark(ink)))
+        (OUT / f'mast-lockup-{theme}.svg').write_text(svg(LOCK_VB, f'<g transform="translate(0 6) scale(.94)">{mark(f"l{theme[0]}", ink)}</g>{wordmark(ink)}'))
+    (OUT / 'mast-mark-mono.svg').write_text(svg(MARK_VB, mark('mm', '#000', small=True, mono=True)))
+    default = AURORA
+    for state, stops_ in STATUS_LENS.items():
+        AURORA = stops_
+        (OUT / 'status' / f'mast-icon-{state}.svg').write_text(icon())
+    AURORA = default
 
 
 if __name__ == '__main__':
