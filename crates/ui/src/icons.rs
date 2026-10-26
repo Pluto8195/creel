@@ -210,6 +210,17 @@ icon_assets![
     // These are drawn with `img()`, not `icon()`: the lens keeps its aurora gradient.
     (MAST_LOGO_LIGHT, "mast-logo-light"),
     (MAST_LOGO_DARK, "mast-logo-dark"),
+    // The same mark per status lamp (see `status_light`): only the lens gradient differs.
+    (MAST_LOGO_LIGHT_IDLE, "mast-logo-light-idle"),
+    (MAST_LOGO_LIGHT_WORKING, "mast-logo-light-working"),
+    (MAST_LOGO_LIGHT_READY, "mast-logo-light-ready"),
+    (MAST_LOGO_LIGHT_INPUT, "mast-logo-light-input"),
+    (MAST_LOGO_LIGHT_ERROR, "mast-logo-light-error"),
+    (MAST_LOGO_DARK_IDLE, "mast-logo-dark-idle"),
+    (MAST_LOGO_DARK_WORKING, "mast-logo-dark-working"),
+    (MAST_LOGO_DARK_READY, "mast-logo-dark-ready"),
+    (MAST_LOGO_DARK_INPUT, "mast-logo-dark-input"),
+    (MAST_LOGO_DARK_ERROR, "mast-logo-dark-error"),
     // Harness brand marks (icons.tsx).
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),
@@ -262,6 +273,17 @@ pub fn logo_asset(appearance: crate::theme::Appearance) -> &'static str {
 /// for a watermark, since the logo carries its own colours.
 pub fn logo(appearance: crate::theme::Appearance) -> gpui::Img {
     gpui::img(logo_asset(appearance)).flex_none()
+}
+
+/// [`logo`] showing a status lamp; `None` is the plain logo.
+pub fn logo_lit(
+    appearance: crate::theme::Appearance,
+    light: Option<crate::status_light::AppLight>,
+) -> gpui::Img {
+    match light {
+        Some(light) => gpui::img(light.logo_asset(appearance)).flex_none(),
+        None => logo(appearance),
+    }
 }
 
 /// An icon element for an embedded asset path. Size and colour are set by the

@@ -677,6 +677,9 @@ pub struct UiSettings {
     /// Suppress the banner while a Zeron window is focused (the chime covers
     /// the foreground case).
     pub notifications_background_only: bool,
+    /// Live status light: the Dock icon, Dock badge and in-app logo follow what
+    /// the agents are doing. Off restores the bundle icon and a static logo.
+    pub live_app_icon: bool,
     pub files_panel_width: f32,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
@@ -791,6 +794,7 @@ impl Default for UiSettings {
             sound_attention_enabled: true,
             notifications_enabled: true,
             notifications_background_only: true,
+            live_app_icon: true,
             files_panel_width: FILES_PANEL_DEFAULT,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
@@ -2290,6 +2294,7 @@ mod tests {
             sound_attention_enabled: false,
             notifications_enabled: false,
             notifications_background_only: false,
+            live_app_icon: false,
             files_panel_width: 310.0,
             right_pane_width: 700.0,
             right_pane_open: true,
@@ -2529,6 +2534,7 @@ mod tests {
             loaded.notifications_background_only,
             "pre-banner files default background-only on"
         );
+        assert!(loaded.live_app_icon, "pre-status-light files default the live icon on");
         assert!(
             !loaded.escape_stops_active_agent,
             "preference files default Escape stopping off"

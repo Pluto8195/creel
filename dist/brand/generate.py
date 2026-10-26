@@ -17,6 +17,9 @@ Outputs (all standalone SVG):
   mast-lockup-{light,dark}.svg     mark + wordmark
   status/mast-icon-{idle,working,ready,input,error}.svg
                                    the app icon with a lens gradient per status lamp
+  status/mast-logo-{light,dark}-{idle,working,ready,input,error}.svg
+                                   the flat mark with the same lens gradients (the in-app status light;
+                                   copy to crates/ui/assets/icons/ next to mast-logo-{light,dark}.svg)
 
 The flat marks are transparent: the gaps that separate the rigging from the lens and the
 ring are cut with SVG masks rather than painted in a background colour, so they sit on any
@@ -143,6 +146,8 @@ def main():
     for state, stops_ in STATUS_LENS.items():
         AURORA = stops_
         (OUT / 'status' / f'mast-icon-{state}.svg').write_text(icon())
+        for theme, ink in (('light', C['steel']), ('dark', C['moss'])):
+            (OUT / 'status' / f'mast-logo-{theme}-{state}.svg').write_text(svg(MARK_VB, mark(f'm{theme[0]}', ink)))
     AURORA = default
 
 

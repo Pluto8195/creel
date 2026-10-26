@@ -22,6 +22,7 @@ pub enum NotificationsEvent {
         attention_sound: bool,
         desktop: bool,
         background_only: bool,
+        live_app_icon: bool,
     },
 }
 
@@ -33,6 +34,7 @@ pub struct NotificationsPage {
     attention_sound: bool,
     desktop: bool,
     background_only: bool,
+    live_app_icon: bool,
 }
 
 impl EventEmitter<NotificationsEvent> for NotificationsPage {}
@@ -45,6 +47,7 @@ enum NotificationPreference {
     AttentionSound,
     Desktop,
     BackgroundOnly,
+    LiveAppIcon,
 }
 
 fn is_switch_activation(key: &str, is_held: bool) -> bool {
@@ -80,6 +83,7 @@ impl NotificationsPage {
         attention_sound: bool,
         desktop: bool,
         background_only: bool,
+        live_app_icon: bool,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -90,6 +94,7 @@ impl NotificationsPage {
             attention_sound,
             desktop,
             background_only,
+            live_app_icon,
         }
     }
 
@@ -101,6 +106,7 @@ impl NotificationsPage {
             attention_sound: self.attention_sound,
             desktop: self.desktop,
             background_only: self.background_only,
+            live_app_icon: self.live_app_icon,
         });
     }
 
@@ -112,6 +118,7 @@ impl NotificationsPage {
             NotificationPreference::AttentionSound => &mut self.attention_sound,
             NotificationPreference::Desktop => &mut self.desktop,
             NotificationPreference::BackgroundOnly => &mut self.background_only,
+            NotificationPreference::LiveAppIcon => &mut self.live_app_icon,
         };
         *value = !*value;
         self.emit(cx);
@@ -145,6 +152,7 @@ impl Render for NotificationsPage {
         let attention_sound = self.attention_sound;
         let desktop = self.desktop;
         let background_only = self.background_only;
+        let live_app_icon = self.live_app_icon;
         let toggle = |id: &'static str, label: &'static str, enabled: bool, interactive: bool| {
             // Keep the familiar 32×18 visual inside a 40×40 activation target.
             // Disabled subordinate controls remain named switches in the
@@ -385,6 +393,43 @@ impl Render for NotificationsPage {
                                 cx,
                             )
                         }),
+                    ),
+            )
+            .child(
+                widgets::card_row(&theme, false)
+                    .child(widgets::row_tile(&theme, icons::BELL))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(widgets::row_title(&theme, "Live app icon"))
+                            .child(widgets::meta_line(
+                                &theme,
+                                vec![
+                                    div()
+                                        .child(SharedString::from(
+                                            "Light the masthead in the Dock icon and the logo by what \
+                                             the agents are doing, and badge the Dock with how many \
+                                             things wait on you.",
+                                        ))
+                                        .into_any_element(),
+                                ],
+                            )),
+                    )
+                    .child(
+                        interactive_switch(
+                            toggle(
+                                "notifications-live-app-icon-toggle",
+                                "Live app icon",
+                                live_app_icon,
+                                true,
+                            ),
+                            accent,
+                            NotificationPreference::LiveAppIcon,
+                            cx,
+                        ),
                     ),
             );
 
