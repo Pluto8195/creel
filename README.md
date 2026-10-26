@@ -39,8 +39,8 @@ Drop captures into docs/media/readme/ and uncomment:
 Mast is built from source. You need macOS, Xcode command line tools, and Rust through [rustup](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml`).
 
 ```bash
-git clone https://github.com/Pluto8195/creel.git
-cd creel
+git clone https://github.com/Pluto8195/mast.git
+cd mast
 git checkout work-outline-implementation   # the default branch
 
 cargo build -p zeron                       # debug binary at target/debug/zeron

@@ -39,8 +39,8 @@ Mast 是一个原生 macOS 应用，在聊天里运行 Claude Code、Codex、Cur
 Mast 需要从源码构建。你需要 macOS、Xcode 命令行工具，以及通过 [rustup](https://rustup.rs) 安装的 Rust（工具链版本固定在 `rust-toolchain.toml`）。
 
 ```bash
-git clone https://github.com/Pluto8195/creel.git
-cd creel
+git clone https://github.com/Pluto8195/mast.git
+cd mast
 git checkout work-outline-implementation   # 默认分支
 
 cargo build -p zeron                       # 调试版二进制在 target/debug/zeron
