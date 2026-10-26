@@ -4,8 +4,9 @@ Prepared 2026-10-14, last updated 2026-10-25. Read this first in a new chat pick
 
 ## Where things are
 
-- **Repository:** `/Users/mikey/Projects/agent-mode-tools/zeron`, on GitHub as `Pluto8195/creel`
-  (renamed from the `Pluto8195/zeron` fork on 2026-10-25; the old URL redirects). `zeronsh/zeron`
+- **Repository:** `/Users/mikey/Projects/agent-mode-tools/zeron`, on GitHub as `Pluto8195/mast`
+  (renamed from the `Pluto8195/zeron` fork on 2026-10-25, then `creel` → `mast` on 2026-10-26; old
+  URLs redirect). `zeronsh/zeron`
   stays as the `upstream` remote, but we no longer open PRs there. The folder and submodule path
   are still `zeron/`, and so are all code identifiers.
 - **Integration branch:** `work-outline-implementation`, branched from `main` at `3801cb5b`. It is
@@ -16,9 +17,9 @@ Prepared 2026-10-14, last updated 2026-10-25. Read this first in a new chat pick
 - **Original spec:** `work-outline-implementation-specification.md` (copy of Mikey's spec, plus an
   "Implementation contract amendments" section). The binding contract is `m0-contract.md` in this
   folder; it wins where it differs from the spec.
-- **Installed build:** `/Applications/Creel.app`, installed 2026-10-23 and the app Mikey runs since
-  2026-10-25. The old `Zeron Dev.app` (same bundle id `sh.zeron.app.dev` and data `~/.zeron`) is now
-  `~/zeron-dev-app-backups/Zeron Dev.app`, a rollback only; never run both. Rollback binaries are
+- **Installed build:** `/Applications/Mast.app` (since 2026-10-26). It has the same bundle id
+  `sh.zeron.app.dev` and data `~/.zeron` as the earlier `Creel.app` and `Zeron Dev.app`, which are
+  rollbacks only (`Zeron Dev.app` is in `~/zeron-dev-app-backups/`); never run two at once. Rollback binaries are
   in `~/zeron-dev-app-backups/`, one per install, named after the feature. Keep only the last few.
 
 ## Built and installed
@@ -270,6 +271,18 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     stored-instruction preamble (hashed), and every identifier, environment variable, data path,
     bundle id, keychain entry, `zeron-artifact:` link and `zeron-agent` tool.
   - The wordmark is live Copperplate text; outlining it waits on a licence check.
+- **Renamed to Mast** (2026-10-26; Mikey disliked Creel because it sounds like "creole"):
+  - Name: about 330 more strings, both plists ("Mast", `mast.icns`), packaging (`Mast.app`, dev
+    script `Mast Dev.app`), docs and READMEs. `brand_name.rs` now fails on a user-facing "Creel" too.
+    The same identifiers as above stay "zeron".
+  - Mark: a masthead light on a pole with two shrouds, a crow's-nest ring and three agent nodes.
+    The light is a thin-rim glass lens with a moss → clover → cobalt gradient; the app icon has a
+    metal finish (silicon, magnesium, fir, moss) on a steel tile. Only Cofactr brand colours.
+    Generator: `dist/brand/generate.py` then `build-assets.sh`; the in-app marks are
+    `crates/ui/assets/icons/mast-logo-{light,dark}.svg`, rendered in colour through `img()`.
+  - `dist/brand/status/` holds five lens colours (idle, working, ready, input, error) for the
+    pending "Status light" feature (live Dock icon). Exploration pages and generators are in the
+    Zeron Dev item's artifacts (`sources/mast-final/`).
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -295,9 +308,9 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - uncommitted edits found in the `work-outline-boundary-moves` and `pr-sync-create-fix`
     worktrees (both branches were already merged, so the edits are probably abandoned);
   - the unpushed `pr-sidebar-removal-work` commit, which `d7a30add` already contains.
-- GitHub Actions are turned off on `Pluto8195/creel`. The workflows are upstream's release, deploy
+- GitHub Actions are turned off on the GitHub repo. The workflows are upstream's release, deploy
   and TestFlight jobs, which would fail without upstream's secrets.
-- The README (en and zh-CN) now describes Creel, with the lockup from `docs/media/readme/`. The
+- The README (en and zh-CN) now describes the app (Creel then, Mast now), with the lockup from `docs/media/readme/`. The
   screenshot block is commented out until Mikey adds `outline.png`, `pr-page.png` and `plan.png`
   there. `.github/FUNDING.yml` is gone.
 - `/Applications/Zeron.app` (upstream 0.2.59, bundle id `sh.zeron.app`) went to the Trash. Old
@@ -305,7 +318,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
 
 ## Working model (since 2026-10-20)
 
-Creel development is organised in the Work Outline under the root item "Zeron Dev"
+Mast development is organised in the Work Outline under the root item "Zeron Dev"
 (`48ef4b86c9967626ba1b6372e4cdfa66`, Space agent-mode-tools) with children Release, Bugs, Features,
 Parked. A coordinator chat on that root starts child chats on the right items with
 `create_chat { workItemId }`, polls `work_outline_read_subtree` for "Ready to merge" actions, and is
@@ -365,11 +378,11 @@ status write-back, a "Waiting for input" group (declined), Tod-style action log 
   `m0-contract.md`; they are not regressions.
 - **Install:** `cargo build -p zeron`; back up the current binary to `~/zeron-dev-app-backups/`;
   `cp target/debug/zeron "$M/.zeron.installing" && mv -f` it to
-  `/Applications/Creel.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
-  sh.zeron.app.dev` (sign the bundle path); push `work-outline-implementation`. Before
-  2026-10-23 the app was `/Applications/Zeron Dev.app`, which is now kept only as a rollback.
-- **Never restart Creel automatically.** Install, then tell Mikey what to restart and test.
-  Restarting kills agents running inside Creel, so commit WIP first.
+  `/Applications/Mast.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
+  sh.zeron.app.dev` (sign the bundle path); push `work-outline-implementation`. Earlier bundles:
+  `Zeron Dev.app` (until 2026-10-23) and `Creel.app` (until 2026-10-26), kept only as rollbacks.
+- **Never restart Mast automatically.** Install, then tell Mikey what to restart and test.
+  Restarting kills agents running inside Mast, so commit WIP first.
 - **Xcode license prompts** after Xcode updates block git/cargo: Mikey accepts, or use
   `DEVELOPER_DIR=/Library/Developer/CommandLineTools`.
 
