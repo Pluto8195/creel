@@ -5277,6 +5277,46 @@ mod tests {
         assert!(!totals.contains_key("s2"));
     }
 
+    #[test]
+    fn status_light_summarizes_chats_sessions_and_loaded_requests() {
+        use crate::status_light::{AppLight, summarize_state};
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.spaces = vec![space("s1", "dev", "/p", 0)];
+        state.chats = vec![chat("c-work", 0, None), chat("c-gone", 1, None)];
+        state.chats[1].archived = true;
+        assert_eq!(summarize_state(&state, now).light, AppLight::Idle);
+        state.sessions = vec![
+            session("c-work", SessionStatus::Working, 1, now),
+            // An archived chat's error never lights the app.
+            session("c-gone", SessionStatus::Errored, 1, now),
+        ];
+        assert_eq!(summarize_state(&state, now).light, AppLight::Working);
+        use crate::work_outline::required_actions::fixture::{request, resolve};
+        let mut snapshot = outline_snapshot("s1", 1, "A");
+        let mut resolved = request("r-done", "s1", "w-ui", "c-work", "Which colour?");
+        resolve(&mut resolved, 1, None);
+        let mut duplicate = request("r-dup", "s1", "w-ui", "c-work", "Which colour?");
+        duplicate.deduped = true;
+        snapshot.user_action_requests = vec![
+            request("r-ready", "s1", "w-ui", "c-work", "Ready to merge: x"),
+            resolved,
+            duplicate,
+        ];
+        state.record_work_outline_visible(vec!["s1".into()]);
+        state.apply_work_outline_frame("s1", snapshot.clone());
+        let summary = summarize_state(&state, now);
+        assert_eq!((summary.light, summary.badge), (AppLight::Ready, 1));
+        snapshot.user_action_requests.push(request("r-ask", "s1", "w-ui", "c-work", "Which colour?"));
+        snapshot.revision = 2;
+        state.apply_work_outline_frame("s1", snapshot);
+        let summary = summarize_state(&state, now);
+        assert_eq!((summary.light, summary.badge), (AppLight::Input, 2));
+        // An errored chat outranks the open requests.
+        state.sessions = vec![session("c-work", SessionStatus::Errored, 1, now)];
+        assert_eq!(summarize_state(&state, now).light, AppLight::Error);
+    }
+
     /// Answer every request the client has sent: `WatchWorkOutline` gets the
     /// scripted reply for its Space. Returns the Spaces asked for.
     fn answer_outline_watches(

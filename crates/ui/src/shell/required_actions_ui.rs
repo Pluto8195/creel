@@ -132,3 +132,102 @@ impl Shell {
         });
     }
 }
+
+#[cfg(test)]
+mod status_light_tests {
+    use super::*;
+    use crate::status_light::AppLight;
+    use zeron_proto::{SessionStatus, WorkspaceScope};
+
+    fn test_shell<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &std::path::Path,
+    ) -> (Entity<Shell>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let data_dir = dir.to_path_buf();
+        cx.add_window_view(move |_, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |state, _| {
+                state.connection = crate::state::ConnectionStatus::Ready;
+                state.workspace_scope = Some(WorkspaceScope::Local);
+                state.auth = Some(zeron_proto::AuthState::SignedOut);
+            });
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: data_dir.clone(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn the_logo_follows_the_light_and_the_setting_turns_it_off(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let state = shell.read_with(cx, |shell, _| shell.state.clone());
+        let light = |cx: &mut gpui::VisualTestContext| {
+            shell.update(cx, |shell, cx| {
+                shell.sync_status_light(cx);
+                shell.status_light.map(|summary| summary.light)
+            })
+        };
+        assert_eq!(light(cx), Some(AppLight::Idle), "on by default");
+
+        state.update(cx, |state, _| {
+            state.sessions = vec![zeron_proto::Session {
+                last_completed_turn: None,
+                chat_id: "c1".into(),
+                device_id: "d".into(),
+                status: SessionStatus::Errored,
+                started_at: None,
+                updated_at: chrono::Utc::now(),
+            }];
+            state.chats = vec![zeron_proto::Chat {
+                id: "c1".into(),
+                device_id: "d".into(),
+                title: None,
+                archived: false,
+                cwd: None,
+                branch: None,
+                checkout_id: None,
+                source_context: None,
+                config: None,
+                last_message_preview: None,
+                last_message_at: None,
+                created_at: chrono::Utc::now(),
+                harness_session_id: None,
+                harness_session_cwd: None,
+                parent_chat_id: None,
+                space_id: None,
+                last_seen_at: None,
+                room_gen: None,
+                linked_pr_url: None,
+                linked_pr_source: None,
+                linked_ticket_id: None,
+                linked_ticket_source: None,
+            }];
+        });
+        assert_eq!(light(cx), Some(AppLight::Error));
+
+        shell.update(cx, |shell, _| shell.settings.live_app_icon = false);
+        assert_eq!(light(cx), None, "off keeps the plain logo");
+        // Off restores the Dock at once: nothing is left pending.
+        shell.read_with(cx, |shell, _| assert!(!shell.dock_sync.has_pending()));
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+    }
+}

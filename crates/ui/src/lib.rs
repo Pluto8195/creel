@@ -67,6 +67,7 @@ pub mod settings;
 pub mod shell;
 pub mod sound;
 pub mod state;
+pub mod status_light;
 pub(crate) mod surface_chrome;
 pub mod syntax_cache;
 pub mod terminal;

@@ -1726,6 +1726,9 @@ pub struct Shell {
     /// Work Outline user action requests (Milestone 4): the per-work-item
     /// zero-to-nonzero detector, fed every watched Space's snapshot.
     user_action_notifier: crate::work_outline::required_actions::UserActionNotifier,
+    /// The status light the in-app logo shows; `None` while "Live app icon" is off.
+    status_light: Option<crate::status_light::LightSummary>,
+    dock_sync: crate::status_light::DockSync,
     /// Spaces this Shell asked `AppState` to watch (so notifications and
     /// Required Actions work before the Overview exists).
     user_action_watch: Option<Vec<String>>,
@@ -1979,6 +1982,9 @@ impl Shell {
                     if live || minute_changed {
                         cx.notify();
                     }
+                    // Staleness ages sessions out with no state change, and the
+                    // Dock debounce needs a clock: a once-a-second check does both.
+                    shell.sync_status_light(cx);
                 });
                 if alive.is_err() {
                     break;
@@ -2162,6 +2168,8 @@ impl Shell {
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             user_action_notifier: Default::default(),
+            status_light: None,
+            dock_sync: Default::default(),
             user_action_watch: None,
             connectivity_notifications: Default::default(),
             attention_sound_gate: Default::default(),
@@ -2315,6 +2323,7 @@ impl Shell {
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         self.prune_file_explorers(cx);
+        self.sync_status_light(cx);
         if let Some(notice) = state.update(cx, |state, _| state.take_deep_link_notice()) {
             self.sidebar_notice = Some(notice.into());
         }
@@ -4204,6 +4213,38 @@ impl Shell {
 
     /// Publish this view's working copy to the central settings store. The
     /// store owns the single debounce task and the only production writer.
+    /// Recompute the status light: the in-app logo follows it at once, the
+    /// Dock icon and badge only after the target holds for a second and only for
+    /// what changed. With "Live app icon" off the logo is plain and the Dock is
+    /// restored immediately.
+    fn sync_status_light(&mut self, cx: &mut Context<Self>) {
+        let shown = self
+            .settings
+            .live_app_icon
+            .then(|| crate::status_light::summarize_state(self.state.read(cx), Utc::now()));
+        if self.status_light != shown {
+            self.status_light = shown;
+            cx.notify();
+        }
+        let target = shown.map_or(
+            crate::status_light::DockTarget::Default,
+            crate::status_light::DockTarget::Live,
+        );
+        let now = std::time::Instant::now();
+        if let Some(ops) = self
+            .dock_sync
+            .observe(target, now)
+            .or_else(|| self.dock_sync.take_due(now))
+        {
+            crate::status_light::apply(ops);
+        }
+    }
+
+    /// The Mast logo, lit by the status light unless "Live app icon" is off.
+    fn logo(&self, appearance: crate::theme::Appearance) -> gpui::Img {
+        icons::logo_lit(appearance, self.status_light.map(|summary| summary.light))
+    }
+
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         self.settings.appearance = crate::appearance::mode(cx);
         self.settings.git_history_columns = crate::history::configured_columns(cx);
@@ -4831,6 +4872,7 @@ impl Shell {
                             self.settings.sound_attention_enabled,
                             self.settings.notifications_enabled,
                             self.settings.notifications_background_only,
+                            self.settings.live_app_icon,
                             cx,
                         )
                     });
@@ -4845,6 +4887,7 @@ impl Shell {
                                 attention_sound,
                                 desktop,
                                 background_only,
+                                live_app_icon,
                             } = *event;
                             this.settings.sound_enabled = sound;
                             this.settings.sound_completion_enabled = completion_sound;
@@ -4852,6 +4895,8 @@ impl Shell {
                             this.settings.sound_attention_enabled = attention_sound;
                             this.settings.notifications_enabled = desktop;
                             this.settings.notifications_background_only = background_only;
+                            this.settings.live_app_icon = live_app_icon;
+                            this.sync_status_light(cx);
                             this.schedule_save(cx);
                             cx.notify();
                         },
@@ -9707,7 +9752,7 @@ impl Shell {
                         .items_center()
                         .child(
                             div().opacity(0.09).child(
-                                icons::logo(theme.appearance)
+                                self.logo(theme.appearance)
                                     .w(px(33.3))
                                     .h(px(48.0)),
                             ),
@@ -10473,7 +10518,7 @@ impl Shell {
             .items_center()
             .text_center()
             .child(
-                icons::logo(theme.appearance)
+                self.logo(theme.appearance)
                     .w(px(24.9))
                     .h(px(36.0)),
             )
@@ -11127,7 +11172,7 @@ impl Shell {
                 .items_center()
                 .text_center()
                 .child(
-                    icons::logo(theme.appearance)
+                    self.logo(theme.appearance)
                         .w(px(24.9))
                         .h(px(36.0)),
                 )
@@ -11312,7 +11357,7 @@ impl Shell {
             .flex()
             .flex_col()
             .child(
-                icons::logo(theme.appearance)
+                self.logo(theme.appearance)
                     .w(px(19.4))
                     .h(px(28.0)),
             )
