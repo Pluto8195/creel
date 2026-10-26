@@ -261,7 +261,9 @@ pub fn apply(ops: DockOps) {
     }
 }
 
+// objc 0.2's `msg_send!` checks a `cfg(feature = "cargo-clippy")` this crate lacks.
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 mod dock {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
@@ -463,6 +465,37 @@ mod tests {
             for appearance in [Appearance::Light, Appearance::Dark] {
                 let asset = lamp.logo_asset(appearance);
                 assert!(gpui::AssetSource::load(&crate::icons::Assets, asset).unwrap().is_some(), "{asset}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_lamp_logo_renders_its_own_lens_colour() {
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(crate::icons::Assets));
+        // A strongly saturated lens pixel of each lamp's hue (Cofactr palette).
+        let hue: [(AppLight, fn(&[u8]) -> bool); 4] = [
+            // clover green
+            (AppLight::Working, |p| p[1] as i32 > p[0] as i32 + 60 && p[1] as i32 > p[2] as i32 + 40),
+            // cobalt blue
+            (AppLight::Ready, |p| p[0] as i32 > p[1] as i32 + 50 && p[0] as i32 > p[2] as i32 + 80),
+            // bromine amber
+            (AppLight::Input, |p| p[2] as i32 > 180 && p[1] as i32 > 150 && (p[0] as i32) < 90),
+            // cadmium orange-red
+            (AppLight::Error, |p| p[2] as i32 > 200 && (p[1] as i32) < 110 && (p[0] as i32) < 90),
+        ];
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            for (lamp, has_hue) in hue {
+                let asset = lamp.logo_asset(appearance);
+                let bytes = gpui::AssetSource::load(&crate::icons::Assets, asset).unwrap().unwrap();
+                assert!(bytes.len() < 4096 + 1024, "{asset} is {} bytes", bytes.len());
+                let image = renderer.render_single_frame(&bytes, 2.0).expect("logo renders");
+                let px = image.as_bytes(0).unwrap(); // premultiplied BGRA
+                assert_eq!(px[3], 0, "{asset}: top-left corner is transparent");
+                let found = px
+                    .chunks_exact(4)
+                    .filter(|p| p[3] == 255)
+                    .any(|p| has_hue(&[p[0], p[1], p[2]]));
+                assert!(found, "{asset}: lens shows its lamp colour");
             }
         }
     }
