@@ -139,6 +139,17 @@ nucleo-matcher = "0.3"
 lto = "thin"
 strip = "symbols"
 
+[profile.installed]
+# Locally installed Mast.app (cargo build --profile installed -p zeron): optimised
+# like release but with incremental builds, many codegen units and no LTO/strip so
+# rebuilds stay fast and backtraces keep line numbers.
+inherits = "release"
+incremental = true
+codegen-units = 256
+lto = false
+strip = "none"
+debug = "line-tables-only"
+
 [profile.dev]
 # gpui is slow unoptimized; match zed's approach for deps
 opt-level = 0
