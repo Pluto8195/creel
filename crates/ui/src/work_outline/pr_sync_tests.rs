@@ -1163,7 +1163,9 @@ fn pr_slots_line_up_across_rows(cx: &mut gpui::TestAppContext) {
         row_bounds(vcx, slot_selector("needs", HOUSEKEEPING)).is_some(),
         "an empty needs slot keeps its column"
     );
-    for slot in ["author", "needs", "review", "ci", "pr"] {
+    // The author slot sizes to its text, so only the icon slots share a
+    // column; they stay right-aligned either way.
+    for slot in ["needs", "review", "ci", "pr"] {
         let api = row_bounds(vcx, slot_selector(slot, API)).unwrap();
         let other = row_bounds(vcx, slot_selector(slot, HOUSEKEEPING)).unwrap();
         assert_eq!(api.size, other.size, "{slot} width");
@@ -1242,9 +1244,11 @@ fn unloaded_pr_shows_only_the_pr_icon(cx: &mut gpui::TestAppContext) {
     draw(vcx);
     let key = row_key::item("s1", API);
     assert!(present(vcx, format!("outline-pr-{key}")));
-    for slot in ["author", "review", "ci"] {
+    for slot in ["review", "ci"] {
         assert!(present(vcx, slot_selector(slot, API)), "{slot} keeps its column");
     }
+    // An empty author takes no width.
+    assert!(!present(vcx, slot_selector("author", API)));
     assert!(!present(vcx, format!("outline-pr-author-{key}")));
     assert!(!present(vcx, format!("outline-pr-review-{key}")));
     assert!(!present(vcx, format!("outline-pr-ci-{key}")));
@@ -1326,6 +1330,23 @@ fn author_reads_you_only_for_the_viewers_own_prs(cx: &mut gpui::TestAppContext) 
         crate::github::row_icons::author_tooltip("alexander-the-great", Some("Alexander-The-Great")),
         "Author: you (alexander-the-great)"
     );
+}
+
+/// The author slot is as wide as its text, so "you" leaves no dead gap, and a
+/// slot with no text takes no width at all.
+#[gpui::test]
+fn author_slot_hugs_its_text_and_empty_takes_no_width(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    set_viewer(&overview, vcx, "Alexander-The-Great");
+    let key = row_key::item("s1", HOUSEKEEPING);
+    let slot = row_bounds(vcx, format!("outline-pr-slot-author-{key}")).expect("slot");
+    let text = row_bounds(vcx, format!("outline-pr-author-{key}")).expect("text");
+    assert_eq!(slot.size.width, text.size.width, "\"you\" takes only its own width");
+    assert!(f32::from(slot.size.width) < 58.0);
+    assert!(crate::github::row_icons::text_slot("x".into(), 58.0, None).is_none());
 }
 
 /// The viewer comes from one `PrViewer` call and lands in the store.

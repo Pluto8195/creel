@@ -516,10 +516,9 @@ pub(crate) fn issue_row_slots(args: LinearRowArgs<'_>, theme: &Theme) -> AnyElem
         .items_center()
         .gap(px(SLOT_GAP))
         .when(visible.assignee, |el| {
-            el.child(crate::github::row_icons::slot(
+            el.children(crate::github::row_icons::text_slot(
                 format!("outline-linear-slot-assignee-{key}"),
                 ASSIGNEE_WIDTH,
-                true,
                 assignee,
             ))
         })

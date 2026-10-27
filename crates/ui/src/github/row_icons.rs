@@ -286,6 +286,29 @@ pub(crate) fn slot(
         .into_any_element()
 }
 
+/// A right-aligned text slot that is as wide as its text, up to `max_width`,
+/// and takes no width (and no gap) when there is no text. Unlike [`slot`] it
+/// doesn't reserve room for the longest name, so a short "you" or an empty
+/// author leaves no dead gap between the title and the icons.
+pub(crate) fn text_slot(
+    selector: String,
+    max_width: f32,
+    content: Option<AnyElement>,
+) -> Option<AnyElement> {
+    content.map(|content| {
+        div()
+            .debug_selector(move || selector.clone())
+            .flex_none()
+            .max_w(px(max_width))
+            .h(px(SLOT_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_end()
+            .child(content)
+            .into_any_element()
+    })
+}
+
 /// A tooltip-carrying icon (the child of a slot; also the chat work-context
 /// strip's icons).
 pub(crate) fn icon_mark(
@@ -552,10 +575,9 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
         .items_center()
         .gap(px(SLOT_GAP))
         .when(visible.author, |el| {
-            el.child(slot(
+            el.children(text_slot(
                 format!("outline-pr-slot-author-{key}"),
                 AUTHOR_WIDTH,
-                true,
                 author,
             ))
         })

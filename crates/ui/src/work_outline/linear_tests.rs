@@ -561,6 +561,22 @@ fn linear_rows_show_a_compact_icon_cluster(cx: &mut gpui::TestAppContext) {
     assert!(vcx.debug_bounds("work-item-linear-chip").is_some());
 }
 
+/// The assignee slot is as wide as the name it holds (no 58px reserve), so a
+/// short name leaves no dead gap before the icons.
+#[gpui::test]
+fn linear_assignee_slot_hugs_its_text(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) =
+        linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    let slot = row_bounds(vcx, format!("outline-linear-slot-assignee-{key}")).expect("slot");
+    let text = row_bounds(vcx, format!("outline-linear-assignee-{key}")).expect("text");
+    assert_eq!(slot.size.width, text.size.width, "the slot is exactly the text");
+    assert!(f32::from(slot.size.width) < 58.0, "no reserved width");
+}
+
 /// Narrow Outline: the state dot drops first, then the assignee; the needs
 /// slot and the status icon never drop.
 #[gpui::test]
