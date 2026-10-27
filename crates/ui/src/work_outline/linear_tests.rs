@@ -518,7 +518,7 @@ fn linear_rows_show_a_compact_icon_cluster(cx: &mut gpui::TestAppContext) {
     draw(vcx);
     let key = row_key::item("s1", API);
     let slot = row_bounds(vcx, format!("outline-linear-{key}")).expect("the Linear slot renders");
-    assert_eq!(f32::from(slot.size.width), 28.0, "fixed width");
+    assert!(f32::from(slot.size.width) > 28.0, "icons plus the identifier");
     for selector in [
         format!("outline-linear-slots-{key}"),
         format!("outline-linear-assignee-{key}"),
@@ -577,7 +577,8 @@ fn linear_assignee_slot_hugs_its_text(cx: &mut gpui::TestAppContext) {
     assert!(f32::from(slot.size.width) < 58.0, "no reserved width");
 }
 
-/// Narrow Outline: the state dot drops first, then the assignee; the needs
+/// Narrow Outline: the state dot drops first, then the assignee, then the
+/// ticket identifier; the needs
 /// slot and the status icon never drop.
 #[gpui::test]
 fn narrow_widths_drop_the_dot_then_the_assignee(cx: &mut gpui::TestAppContext) {
@@ -610,16 +611,14 @@ fn narrow_widths_drop_the_dot_then_the_assignee(cx: &mut gpui::TestAppContext) {
         }
         width -= 4.0;
     }
-    // (assignee, needs, status width): the dot goes with 28 → 17, then the
-    // assignee.
-    assert_eq!(
-        states,
-        [
-            (true, true, Some(28.0)),
-            (true, true, Some(17.0)),
-            (false, true, Some(17.0)),
-        ]
-    );
+    // The dot goes first, then the assignee, then the identifier.
+    let widths: Vec<_> = states.iter().map(|state| state.2.unwrap()).collect();
+    let assignee: Vec<_> = states.iter().map(|state| state.0).collect();
+    assert!(states.len() >= 4, "{states:?}");
+    assert!(widths.windows(2).all(|pair| pair[0] >= pair[1]), "{widths:?}");
+    assert_eq!(assignee.first(), Some(&true));
+    assert_eq!(assignee.last(), Some(&false));
+    assert_eq!(*widths.last().unwrap(), 17.0, "icon only once the identifier drops");
 }
 
 /// A host without the Linear RPCs shows a calm "not available" state; a
@@ -1452,4 +1451,60 @@ fn issue_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
     let after = shown_issue_text(&state, vcx);
     assert_ne!(after, before);
     assert!(after.starts_with("Done"), "{after}");
+}
+
+/// The ticket identifier sits inside the clickable status element: one hit
+/// target, so clicking the text fires the same open action as the icon.
+#[gpui::test]
+fn linear_row_shows_the_identifier_in_the_ticket_link(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) =
+        linear_overview(cx, dir.path(), linear_snapshot(true), default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let key = row_key::item("s1", API);
+    let link = row_bounds(vcx, format!("outline-linear-{key}")).expect("link");
+    let id = row_bounds(vcx, format!("outline-linear-{key}-id")).expect("identifier");
+    assert!(
+        id.left() >= link.left()
+            && id.right() <= link.right()
+            && id.top() >= link.top()
+            && id.bottom() <= link.bottom(),
+        "{id:?} inside {link:?}"
+    );
+    assert!(f32::from(id.size.width) > 0.0);
+    vcx.simulate_click(id.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        vcx.opened_url(),
+        Some("https://linear.app/acme/issue/eng-1/slug".to_string()),
+        "the identifier opens the ticket like the icon"
+    );
+}
+
+/// Nested rows show it too; an issue without an identifier takes no width.
+#[gpui::test]
+fn linear_identifier_shows_on_child_rows_and_is_absent_without_one(cx: &mut gpui::TestAppContext) {
+    let mut snapshot = linear_snapshot(true);
+    snapshot.external_references.push(lf::reference(
+        "r-eng-2",
+        "s1",
+        API_AUTH,
+        "issue",
+        "ENG-2",
+        "https://linear.app/acme/issue/eng-2/slug",
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, _calls, vcx) = linear_overview(cx, dir.path(), snapshot, default_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    let child = row_key::item("s1", API_AUTH);
+    assert!(row_bounds(vcx, format!("outline-linear-{child}-id")).is_some(), "child row");
+
+    let with_id = crate::work_outline::outline_view::linear_outline::LinearSlots {
+        id_width: crate::work_outline::outline_view::linear_outline::identifier_width("ENG-1"),
+        ..crate::work_outline::outline_view::linear_outline::LinearSlots::ALL
+    };
+    assert!(with_id.width() > crate::work_outline::outline_view::linear_outline::LinearSlots::ALL.width());
+    assert_eq!(crate::work_outline::outline_view::linear_outline::identifier_width(""), 0.0);
 }

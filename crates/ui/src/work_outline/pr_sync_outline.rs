@@ -113,7 +113,9 @@ impl OutlineView {
         // chips).
         let project_width = if linear.has_project_chip { 100.0 } else { 0.0 }
             + if linear.has_fix_chip { 56.0 } else { 0.0 };
-        let status_width = if linear.issue.is_some() { 30.0 } else { 0.0 };
+        let status_width = linear.issue.as_ref().map_or(0.0, |issue| {
+            30.0 + linear_outline::identifier_width(&issue.identifier)
+        });
         let (destination, pr_slots) = self.pr_sync_chips(
             key,
             item,
@@ -133,6 +135,7 @@ impl OutlineView {
                     issue.entry.as_ref(),
                     issue.url,
                     self.shell.clone(),
+                    true,
                     true,
                     theme,
                 )
@@ -158,6 +161,7 @@ impl OutlineView {
             super::OutlineView::indent(depth),
             other_width + project_width + if destination.is_some() { 28.0 } else { 0.0 },
         );
+        let id_width = linear_outline::identifier_width(&issue.identifier);
         let cluster = linear_outline::issue_row_slots(
             linear_outline::LinearRowArgs {
                 key,
@@ -172,7 +176,7 @@ impl OutlineView {
                 chat_count: item.chat_count,
                 totals_line: totals
                     .map(|totals| format!("Including descendants: {}", totals.label())),
-                visible: linear_outline::linear_visible_slots(room),
+                visible: linear_outline::linear_visible_slots(room, id_width),
             },
             theme,
         );
