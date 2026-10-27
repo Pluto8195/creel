@@ -1465,6 +1465,11 @@ pub struct Overview {
     /// nothing to scan retries on `SUBAGENTS_REFRESH` instead of on every
     /// row rebuild.
     subagents_fetched_at: HashMap<String, Instant>,
+    /// Per chat: whether it had a harness session when last checked, and the
+    /// earliest instant any of its row fetches (subagents, context usage,
+    /// link status) can be due again. `rows()` and the idle tick skip the
+    /// chat until then. Absent while a fetch is in flight or never landed.
+    row_fetch_due: HashMap<String, (bool, Instant)>,
     /// `CHAT_CONTEXT_USAGE` per chat id (`None` = engine had no usage).
     /// Refetched on `CONTEXT_USAGE_REFRESH`.
     context_usage: HashMap<String, Option<f32>>,
@@ -1794,6 +1799,7 @@ impl Overview {
             subagent_pending: HashSet::new(),
             hovered_row: None,
             subagents_fetched_at: HashMap::new(),
+            row_fetch_due: HashMap::new(),
             context_usage: HashMap::new(),
             context_usage_pending: HashSet::new(),
             context_usage_fetched_at: HashMap::new(),
@@ -2171,12 +2177,58 @@ impl Overview {
         has_harness_session: bool,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .row_fetch_due
+            .get(&chat_id)
+            .is_some_and(|(had_session, due)| {
+                *had_session == has_harness_session && Instant::now() < *due
+            })
+        {
+            return;
+        }
         self.perf.fetch_checks += 1;
         if has_harness_session {
             self.ensure_subagents(chat_id.clone(), cx);
         }
         self.ensure_context_usage(chat_id.clone(), cx);
-        self.ensure_link_status(chat_id, cx);
+        self.ensure_link_status(chat_id.clone(), cx);
+        match self.next_row_fetch_due(&chat_id, has_harness_session) {
+            Some(due) => {
+                self.row_fetch_due
+                    .insert(chat_id, (has_harness_session, due));
+            }
+            None => {
+                self.row_fetch_due.remove(&chat_id);
+            }
+        }
+    }
+
+    /// When the soonest of a chat's row fetches goes stale. `None` when any
+    /// is in flight or has no recorded result yet (so it must be re-checked
+    /// next time rather than skipped).
+    fn next_row_fetch_due(&self, chat_id: &str, has_harness_session: bool) -> Option<Instant> {
+        if self.link_status_pending.contains(chat_id)
+            || self.context_usage_pending.contains(chat_id)
+            || self.subagent_pending.contains(chat_id)
+        {
+            return None;
+        }
+        let link = self.link_status.get(chat_id)?.fetched_at + LINK_STATUS_REFRESH;
+        let context = *self.context_usage_fetched_at.get(chat_id)? + CONTEXT_USAGE_REFRESH;
+        let mut due = link.min(context);
+        if has_harness_session {
+            let ttl = if self
+                .subagents
+                .get(chat_id)
+                .is_some_and(|subs| subs.iter().any(|s| s.status == SubagentStatus::Running))
+            {
+                SUBAGENTS_RUNNING_REFRESH
+            } else {
+                SUBAGENTS_REFRESH
+            };
+            due = due.min(*self.subagents_fetched_at.get(chat_id)? + ttl);
+        }
+        Some(due)
     }
 
     fn toggle_group(&mut self, dim: GroupDimension, cx: &Context<Self>) {
@@ -2875,6 +2927,7 @@ impl Overview {
                         });
                         apply_link_reply(&mut entry.status, kind, &reply);
                         entry.fetched_at = expired;
+                        this.row_fetch_due.remove(&chat_id);
                         this.rows_dirty = true;
                         if this
                             .link_error
@@ -7979,6 +8032,26 @@ mod logic_tests {
                 window.draw(cx).clear();
             });
         };
+        draw(vcx);
+        // Steady state: every chat's fetches have already landed (no engine
+        // here to do it for real).
+        overview.update(vcx, |o, _| {
+            for name in 0..250 {
+                let id = format!("c{name}");
+                o.link_status.insert(
+                    id.clone(),
+                    LinkStatusEntry {
+                        status: OverviewLinkStatus::default(),
+                        diff_stat: None,
+                        is_worktree: None,
+                        fetched_at: Instant::now(),
+                    },
+                );
+                o.context_usage_fetched_at.insert(id.clone(), Instant::now());
+                o.subagents_fetched_at.insert(id, Instant::now());
+            }
+            o.rows_dirty = true;
+        });
         draw(vcx);
         let before = overview.read_with(vcx, |o, _| o.perf);
         let started = std::time::Instant::now();
