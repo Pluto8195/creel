@@ -50,6 +50,7 @@ pub mod repos;
 pub mod repository_topology;
 pub mod rpc;
 pub mod run_journal;
+pub mod swr;
 pub mod sessions;
 pub mod source_control;
 pub mod spaces;
@@ -456,6 +457,7 @@ impl EngineCore {
             store_for_import.clone(),
         ));
         let linear = linear::LinearService::default();
+        linear.set_cache_dir(&data_dir.join("cache"));
         linear::sync::spawn_sync_loop(
             linear.clone(),
             workspace.clone(),

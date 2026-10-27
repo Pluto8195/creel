@@ -40,7 +40,7 @@ use zeron_proto::{
 };
 
 use super::LinkedIndex;
-use super::client::LinearUiError;
+use super::client::{LinearUiError, ListRead};
 use super::prefs::{self, PanelSection};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::state::AppState;
@@ -267,6 +267,10 @@ pub(crate) enum Load<T> {
 }
 
 impl<T> Load<T> {
+    pub(crate) fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
     pub(crate) fn ready(&self) -> Option<&T> {
         match self {
             Self::Ready(value) => Some(value),
@@ -468,16 +472,60 @@ impl LinearPanel {
     // Loading
     // ----------------------------------------------------------------------
 
-    /// Re-fetch My issues, My projects, and every expanded project.
+    /// Open or retarget: show what is stored right away, and re-fetch only
+    /// what the engine's list cache no longer holds fresh.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load_lists(ListRead::Cached, cx);
+    }
+
+    /// The Refresh button: always asks Linear.
+    pub(crate) fn refresh_forced(&mut self, cx: &mut Context<Self>) {
+        self.load_lists(ListRead::Force, cx);
+    }
+
+    /// Load My issues, My projects, and every expanded project. Lists
+    /// already on screen stay there while the read runs; a list with
+    /// nothing yet first tries the engine's stored copy (last run's, too).
+    fn load_lists(&mut self, read: ListRead, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
         let actions = self.state.read(cx).work_outline_actions();
-        self.my_issues = Load::Loading;
-        self.my_projects = Load::Loading;
-        let issues = actions.linear_my_issues();
-        let projects = actions.linear_my_projects();
+        let stored_issues = (!self.my_issues.is_ready())
+            .then(|| actions.linear_my_issues(ListRead::Stored));
+        let stored_projects = (!self.my_projects.is_ready())
+            .then(|| actions.linear_my_projects(ListRead::Stored));
+        if !self.my_issues.is_ready() {
+            self.my_issues = Load::Loading;
+        }
+        if !self.my_projects.is_ready() {
+            self.my_projects = Load::Loading;
+        }
+        let issues = actions.linear_my_issues(read);
+        let projects = actions.linear_my_projects(read);
         cx.spawn(async move |this, cx| {
+            if let Some(stored) = stored_issues
+                && let Ok(stored) = stored.await
+            {
+                this.update(cx, |this, cx| {
+                    if this.generation == generation && matches!(this.my_issues, Load::Loading) {
+                        this.my_issues = Load::Ready(stored);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+            if let Some(stored) = stored_projects
+                && let Ok(stored) = stored.await
+            {
+                this.update(cx, |this, cx| {
+                    if this.generation == generation && matches!(this.my_projects, Load::Loading)
+                    {
+                        this.my_projects = Load::Ready(stored);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
             let issues = issues.await;
             this.update(cx, |this, cx| {
                 if this.generation != generation {
@@ -489,6 +537,8 @@ impl LinearPanel {
                 }
                 this.my_issues = match issues {
                     Ok(issues) => Load::Ready(issues),
+                    // A failed refresh keeps the list on screen.
+                    Err(_) if this.my_issues.is_ready() => return,
                     Err(error) => Load::Failed(error),
                 };
                 cx.notify();
@@ -517,6 +567,7 @@ impl LinearPanel {
                 }
                 this.my_projects = match projects {
                     Ok(projects) => Load::Ready(projects),
+                    Err(_) if this.my_projects.is_ready() => return,
                     Err(error) => Load::Failed(error),
                 };
                 cx.notify();
@@ -525,33 +576,53 @@ impl LinearPanel {
         })
         .detach();
         for project_id in self.expanded.clone() {
-            self.load_project(project_id, cx);
+            self.load_project(project_id, read, cx);
         }
         cx.notify();
     }
 
-    fn load_project(&mut self, project_id: String, cx: &mut Context<Self>) {
-        let task = self
-            .state
-            .read(cx)
-            .work_outline_actions()
-            .linear_project_issues(&project_id);
-        self.project_issues
-            .insert(project_id.clone(), Load::Loading);
+    fn load_project(&mut self, project_id: String, read: ListRead, cx: &mut Context<Self>) {
+        let actions = self.state.read(cx).work_outline_actions();
+        let has_list = self
+            .project_issues
+            .get(&project_id)
+            .is_some_and(Load::is_ready);
+        let stored = (!has_list).then(|| actions.linear_project_issues(&project_id, ListRead::Stored));
+        let task = actions.linear_project_issues(&project_id, read);
+        if !has_list {
+            self.project_issues
+                .insert(project_id.clone(), Load::Loading);
+        }
         cx.spawn(async move |this, cx| {
+            if let Some(stored) = stored
+                && let Ok(stored) = stored.await
+            {
+                this.update(cx, |this, cx| {
+                    if matches!(this.project_issues.get(&project_id), Some(Load::Loading)) {
+                        this.project_issues
+                            .insert(project_id.clone(), Load::Ready(stored));
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
             let result = task.await;
             this.update(cx, |this, cx| {
                 if let Ok(issues) = &result {
                     this.state
                         .update(cx, |state, _| state.linear.remember_issues(issues.iter()));
                 }
-                this.project_issues.insert(
-                    project_id,
-                    match result {
-                        Ok(issues) => Load::Ready(issues),
-                        Err(error) => Load::Failed(error),
-                    },
-                );
+                let keep = result.is_err()
+                    && this.project_issues.get(&project_id).is_some_and(Load::is_ready);
+                if !keep {
+                    this.project_issues.insert(
+                        project_id,
+                        match result {
+                            Ok(issues) => Load::Ready(issues),
+                            Err(error) => Load::Failed(error),
+                        },
+                    );
+                }
                 cx.notify();
             })
             .ok();
@@ -571,7 +642,7 @@ impl LinearPanel {
             self.project_issues.get(project_id),
             Some(Load::Ready(_) | Load::Loading)
         ) {
-            self.load_project(project_id.to_string(), cx);
+            self.load_project(project_id.to_string(), ListRead::Cached, cx);
         }
         cx.notify();
     }
@@ -1198,7 +1269,7 @@ impl LinearPanel {
             )
             .child(
                 Self::small_button(id, "Retry", theme)
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_forced(cx))),
             )
             .into_any_element()
     }
@@ -1790,7 +1861,7 @@ impl Render for LinearPanel {
                             .text_color(theme.text_muted),
                     )
                     .tooltip(|_, cx| cx.new(|_| TextTooltip("Refresh from Linear".into())).into())
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_forced(cx))),
             )
             .when(!self.embedded, |el| {
                 el.child(

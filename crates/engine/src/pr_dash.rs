@@ -18,10 +18,13 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::future::{BoxFuture, FutureExt, Shared};
+
+use crate::swr::{Entry, SwrStore};
+use futures::future::FutureExt;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeron_proto::{
     PrDashBucket, PrDashCheck, PrDashDiff, PrDashReply, PrDashReviewer, PrDashRow, PrDashTab,
@@ -1074,39 +1077,20 @@ pub fn is_stacked(row: &PrDashRow) -> bool {
 // Service: cache + shared in-flight fetch
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-struct Fetched {
+/// What one tab's fetch produced; stored (and persisted) per tab.
+#[derive(Clone, Serialize, Deserialize)]
+struct Cached {
     me: String,
     rows: Vec<PrDashRow>,
-    fetched_at: String,
-    error: Option<String>,
 }
 
-impl Fetched {
-    fn reply(&self) -> PrDashReply {
-        PrDashReply {
-            me: self.me.clone(),
-            rows: self.rows.clone(),
-            fetched_at: self.fetched_at.clone(),
-            error: self.error.clone(),
-        }
-    }
-}
-
-type InFlight = Shared<BoxFuture<'static, Fetched>>;
-
-#[derive(Default)]
-struct TabState {
-    last_good: Option<(Fetched, Instant)>,
-    inflight: Option<(u64, InFlight)>,
-}
+type Store = SwrStore<Cached, String>;
 
 struct Inner {
     gh: Arc<dyn GhRunner>,
     cfg: PrDashConfig,
     me: Mutex<Option<String>>,
-    tabs: Mutex<HashMap<PrDashTab, TabState>>,
-    next_id: Mutex<u64>,
+    store: Store,
 }
 
 /// The PR page's data service. Cheap to clone.
@@ -1115,19 +1099,33 @@ pub struct PrDash {
     inner: Arc<Inner>,
 }
 
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+fn tab_key(tab: PrDashTab) -> &'static str {
+    match tab {
+        PrDashTab::Authored => "authored",
+        PrDashTab::ReviewRequested => "review-requested",
+    }
+}
+
+fn reply_of(entry: Entry<Cached>, error: Option<String>) -> PrDashReply {
+    PrDashReply {
+        me: entry.value.me,
+        rows: entry.value.rows,
+        fetched_at: entry
+            .fetched_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        error,
+    }
 }
 
 impl PrDash {
     pub fn new(gh: Arc<dyn GhRunner>, cfg: PrDashConfig) -> Self {
+        let store = Store::new(cfg.cache_ttl);
         Self {
             inner: Arc::new(Inner {
                 gh,
                 cfg,
                 me: Mutex::new(None),
-                tabs: Mutex::new(HashMap::new()),
-                next_id: Mutex::new(0),
+                store,
             }),
         }
     }
@@ -1137,48 +1135,62 @@ impl PrDash {
         Self::new(Arc::new(RealGh), PrDashConfig::default())
     }
 
+    /// Persist the last good rows of each tab to `path` and load what an
+    /// earlier run left there, so a cold start has rows to show.
+    pub fn with_cache_file(self, path: std::path::PathBuf) -> Self {
+        self.inner.store.attach_file(path);
+        self
+    }
+
+    /// The last good rows of `tab`, however old; `None` before the first
+    /// success (this run or a persisted one). Never fetches.
+    pub fn peek(&self, tab: PrDashTab) -> Option<PrDashReply> {
+        self.inner
+            .store
+            .peek(tab_key(tab))
+            .map(|entry| reply_of(entry, None))
+    }
+
     /// Rows of `tab` (chat links not filled in). Cached per tab for the
     /// config's TTL unless `force`; concurrent callers share one fetch. On
     /// failure the last good rows come back with `error` set, or empty rows
     /// when there is nothing yet.
     pub async fn dashboard(&self, tab: PrDashTab, force: bool) -> PrDashReply {
-        let flight = {
-            let mut tabs = self.inner.tabs.lock().unwrap_or_else(|e| e.into_inner());
-            let state = tabs.entry(tab).or_default();
-            if !force {
-                if let Some((fetched, at)) = &state.last_good {
-                    if at.elapsed() < self.inner.cfg.cache_ttl {
-                        return fetched.reply();
-                    }
-                }
-            }
-            match &state.inflight {
-                Some((_, flight)) => flight.clone(),
-                None => {
-                    let id = {
-                        let mut next = self.inner.next_id.lock().unwrap_or_else(|e| e.into_inner());
-                        *next += 1;
-                        *next
-                    };
-                    let inner = self.inner.clone();
-                    let flight: InFlight = async move {
-                        let fetched = inner.run_fetch(tab).await;
-                        inner.finish(tab, id, &fetched);
-                        fetched
-                    }
-                    .boxed()
-                    .shared();
-                    state.inflight = Some((id, flight.clone()));
-                    flight
-                }
-            }
-        };
-        flight.await.reply()
+        let inner = self.inner.clone();
+        let result = self
+            .inner
+            .store
+            .get(tab_key(tab), force, move || {
+                async move { inner.run_fetch(tab).await }.boxed()
+            })
+            .await;
+        match result {
+            Ok(entry) => reply_of(entry, None),
+            Err(error) => match self.inner.store.peek(tab_key(tab)) {
+                Some(last) => reply_of(last, Some(error)),
+                None => PrDashReply {
+                    me: self
+                        .inner
+                        .me
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
+                        .unwrap_or_default(),
+                    rows: Vec::new(),
+                    fetched_at: now_rfc3339(),
+                    error: Some(error),
+                },
+            },
+        }
     }
 }
 
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 impl Inner {
-    async fn run_fetch(&self, tab: PrDashTab) -> Fetched {
+    async fn run_fetch(&self, tab: PrDashTab) -> Result<Cached, String> {
         let cached_me = self.me.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let me = match cached_me {
             Some(me) => me,
@@ -1190,45 +1202,8 @@ impl Inner {
                 me
             }
         };
-        match fetch_rows(self.gh.as_ref(), &self.cfg, tab, &me).await {
-            Ok(rows) => Fetched {
-                me,
-                rows,
-                fetched_at: now_rfc3339(),
-                error: None,
-            },
-            Err(error) => {
-                let last = self
-                    .tabs
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(&tab)
-                    .and_then(|s| s.last_good.as_ref().map(|(f, _)| f.clone()));
-                match last {
-                    Some(mut last) => {
-                        last.error = Some(error);
-                        last
-                    }
-                    None => Fetched {
-                        me,
-                        rows: Vec::new(),
-                        fetched_at: now_rfc3339(),
-                        error: Some(error),
-                    },
-                }
-            }
-        }
-    }
-
-    fn finish(&self, tab: PrDashTab, id: u64, fetched: &Fetched) {
-        let mut tabs = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
-        let state = tabs.entry(tab).or_default();
-        if state.inflight.as_ref().is_some_and(|(i, _)| *i == id) {
-            state.inflight = None;
-        }
-        if fetched.error.is_none() {
-            state.last_good = Some((fetched.clone(), Instant::now()));
-        }
+        let rows = fetch_rows(self.gh.as_ref(), &self.cfg, tab, &me).await?;
+        Ok(Cached { me, rows })
     }
 }
 

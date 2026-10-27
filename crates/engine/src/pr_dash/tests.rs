@@ -979,3 +979,28 @@ async fn concurrent_calls_share_one_fetch() {
     assert_eq!(b, c);
     assert_eq!(a.rows.len(), 2);
 }
+
+#[tokio::test]
+async fn a_cold_start_peeks_the_persisted_rows_without_gh() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pr-dash.json");
+    let first = dash_with(simple_gh(), cfg()).with_cache_file(path.clone());
+    assert!(first.peek(PrDashTab::Authored).is_none());
+    let reply = first.dashboard(PrDashTab::Authored, false).await;
+    assert_eq!(reply.rows.len(), 2);
+    for _ in 0..100 {
+        if path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // A new process: same file, a gh that was never told anything.
+    let gh = Arc::new(FakeGh::new());
+    let second = dash_with(gh.clone(), cfg()).with_cache_file(path);
+    let peeked = second.peek(PrDashTab::Authored).expect("persisted rows");
+    assert_eq!(peeked.rows.len(), 2);
+    assert_eq!(peeked.me, reply.me);
+    assert!(gh.calls().is_empty());
+    assert!(second.peek(PrDashTab::ReviewRequested).is_none());
+}

@@ -146,6 +146,28 @@ fn decode_mutate(value: serde_json::Value) -> Result<WorkOutlineMutateReply, Wor
     decode(value)
 }
 
+/// How a list read treats the engine's list cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListRead {
+    /// Served from the cache while it is fresh, else fetched.
+    Cached,
+    /// Always fetched (the Refresh button).
+    Force,
+    /// Whatever is stored, however old; an error when nothing is. Never
+    /// asks Linear.
+    Stored,
+}
+
+impl ListRead {
+    fn force(self) -> bool {
+        self == Self::Force
+    }
+
+    fn stored_only(self) -> bool {
+        self == Self::Stored
+    }
+}
+
 impl WorkOutlineActions {
     fn linear_call<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
@@ -208,22 +230,40 @@ impl WorkOutlineActions {
         )
     }
 
-    pub(crate) fn linear_my_issues(&self) -> LinearTask<Vec<LinearIssueSummary>> {
-        self.linear_call(methods::LINEAR_MY_ISSUES, LinearMyIssuesParams {})
+    pub(crate) fn linear_my_issues(&self, read: ListRead) -> LinearTask<Vec<LinearIssueSummary>> {
+        self.linear_call(
+            methods::LINEAR_MY_ISSUES,
+            LinearMyIssuesParams {
+                force: read.force(),
+                cached_only: read.stored_only(),
+            },
+        )
     }
 
-    pub(crate) fn linear_my_projects(&self) -> LinearTask<Vec<LinearProjectSummary>> {
-        self.linear_call(methods::LINEAR_MY_PROJECTS, LinearMyProjectsParams {})
+    pub(crate) fn linear_my_projects(
+        &self,
+        read: ListRead,
+    ) -> LinearTask<Vec<LinearProjectSummary>> {
+        self.linear_call(
+            methods::LINEAR_MY_PROJECTS,
+            LinearMyProjectsParams {
+                force: read.force(),
+                cached_only: read.stored_only(),
+            },
+        )
     }
 
     pub(crate) fn linear_project_issues(
         &self,
         project_id: &str,
+        read: ListRead,
     ) -> LinearTask<Vec<LinearIssueSummary>> {
         self.linear_call(
             methods::LINEAR_PROJECT_ISSUES,
             LinearProjectIssuesParams {
                 project_id: project_id.to_string(),
+                force: read.force(),
+                cached_only: read.stored_only(),
             },
         )
     }

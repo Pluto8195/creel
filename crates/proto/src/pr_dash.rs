@@ -251,6 +251,10 @@ pub struct PrDashParams {
     /// Skip the engine's short cache.
     #[serde(default)]
     pub force: bool,
+    /// Answer from the stored rows only, however old, and never fetch: an
+    /// empty `fetchedAt` means nothing is stored yet.
+    #[serde(default)]
+    pub cached_only: bool,
 }
 
 /// Reply of `PrDashboard`: rows already classified, in search order.

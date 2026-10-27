@@ -1347,4 +1347,101 @@ mod tests {
             Some("https://github.com/acme/flagship/pull/21")
         );
     }
+
+    /// `PrDashboard` fetches the script saw (cached-only reads excluded).
+    fn fetches(calls: &Calls) -> usize {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.get("tab").is_some() && call["cachedOnly"] != true)
+            .count()
+    }
+
+    #[gpui::test]
+    fn reopening_the_page_within_the_window_shows_rows_and_asks_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        let before = lines(&page, cx, PrDashTab::Authored);
+        assert!(!before.is_empty());
+        let (calls, _rows) = script_dash(&shell, cx);
+        shell.update(cx, |shell, cx| shell.open_overview(cx));
+        draw(cx);
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        // Rows are on screen at once, with no loading state and no request.
+        assert!(cx.debug_bounds("pr-dash-loading").is_none());
+        assert!(cx.debug_bounds("pr-dash-row-0").is_some());
+        assert_eq!(lines(&page, cx, PrDashTab::Authored), before);
+        assert!(calls.lock().unwrap().is_empty(), "no request at all");
+        assert!(cx.debug_bounds("pr-dash-updated").is_some());
+    }
+
+    #[gpui::test]
+    fn concurrent_fetches_of_one_tab_make_one_request(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let (_calls, page) = authored_page(&shell, cx);
+        let (calls, _rows) = script_dash(&shell, cx);
+        page.update(cx, |page, cx| {
+            page.fetch_dash(PrDashTab::ReviewRequested, false, cx);
+            page.fetch_dash(PrDashTab::ReviewRequested, false, cx);
+            page.fetch_dash(PrDashTab::ReviewRequested, true, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(fetches(&calls), 1);
+    }
+
+    #[gpui::test]
+    fn a_cold_start_shows_the_stored_rows_even_when_the_refresh_fails(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let stored = vec![row(1, PrDashBucket::InReview, T1)];
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(move |params| {
+                if params["cachedOnly"] == true {
+                    Ok(serde_json::json!({
+                        "me": "octo", "rows": stored, "fetchedAt": "2026-10-01T00:00:00Z",
+                    }))
+                } else {
+                    Err("gh: offline".into())
+                }
+            }));
+        });
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        assert!(cx.debug_bounds("pr-dash-loading").is_none());
+        assert!(cx.debug_bounds("pr-dash-row-0").is_some(), "stored rows render");
+        assert!(cx.debug_bounds("pr-dash-error").is_some(), "refresh failure shown inline");
+    }
+
+    #[gpui::test]
+    fn stale_rows_render_first_then_the_fetch_replaces_them(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let old = vec![row(1, PrDashBucket::InReview, T1)];
+        let new = vec![row(2, PrDashBucket::InReview, T2)];
+        shell.update(cx, |shell, _| {
+            shell.pr_dash_script = Some(Arc::new(move |params| {
+                let (rows, at) = if params["cachedOnly"] == true {
+                    (&old, "2026-10-01T00:00:00Z")
+                } else {
+                    (&new, "2026-10-27T00:00:00Z")
+                };
+                Ok(serde_json::json!({ "me": "octo", "rows": rows, "fetchedAt": at }))
+            }));
+        });
+        shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
+        draw(cx);
+        let page = shell.update(cx, |shell, cx| shell.ensure_pr_review_chats_page(cx));
+        assert_eq!(lines(&page, cx, PrDashTab::Authored), ["· In review · 1", "#2"]);
+    }
 }

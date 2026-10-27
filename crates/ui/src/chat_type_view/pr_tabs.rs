@@ -16,6 +16,7 @@ use crate::error_notice::ErrorNotice;
 use crate::review_chats::{self, ChatFact, EnterAction, ReviewChat};
 use crate::pr_page::{self, DashItem, Filters, PageTab, Tone, tab_index};
 use crate::popover;
+use crate::state::format_time_ago;
 use crate::theme::Theme;
 use crate::work_outline::chips::TextTooltip;
 
@@ -57,25 +58,41 @@ fn element_id(text: String) -> ElementId {
 impl ChatTypeView {
     /// Fetch `tab` through `PrDashboard`. A failed call keeps the last good
     /// rows and shows the error inline.
-    pub(super) fn fetch_dash(&mut self, tab: PrDashTab, force: bool, cx: &mut Context<Self>) {
+    pub(crate) fn fetch_dash(&mut self, tab: PrDashTab, force: bool, cx: &mut Context<Self>) {
         let ix = tab_index(tab);
-        if self.dash[ix].pending {
+        if self.dash[ix].pending || (!force && self.dash[ix].fresh()) {
             return;
         }
-        let params = PrDashParams { tab, force };
-        let params_json = serde_json::to_value(&params).map_err(|e| e.to_string());
+        // Nothing on screen yet: ask for the engine's stored rows first, so
+        // a reopened page or a cold start shows them while the fetch runs.
+        let peek = !self.dash[ix].loaded;
+        let params = move |cached_only| {
+            serde_json::to_value(PrDashParams {
+                tab,
+                force,
+                cached_only,
+            })
+            .map_err(|e| e.to_string())
+        };
+        let parse = move |value: serde_json::Value| {
+            serde_json::from_value::<PrDashReply>(value).map_err(|e| e.to_string())
+        };
         #[cfg(test)]
         if let Some(script) = self
             .shell
             .upgrade()
             .and_then(|shell| shell.read(cx).pr_dash_script.clone())
         {
-            let result = params_json.and_then(|value| script(&value)).and_then(|value| {
-                serde_json::from_value::<PrDashReply>(value).map_err(|e| e.to_string())
-            });
+            let stored = peek
+                .then(|| params(true).and_then(|v| script(&v)).and_then(parse).ok())
+                .flatten();
+            let result = params(false).and_then(|v| script(&v)).and_then(parse);
             self.dash[ix].pending = true;
             cx.spawn(async move |this, cx| {
                 this.update(cx, |this, cx| {
+                    if let Some(stored) = stored {
+                        this.dash[ix].apply_stored(stored);
+                    }
                     this.dash[ix].apply(result);
                     this.note_dash_links(ix, cx);
                     cx.notify();
@@ -90,15 +107,24 @@ impl ChatTypeView {
         };
         self.dash[ix].pending = true;
         cx.spawn(async move |this, cx| {
-            let result = match params_json {
+            if peek && let Ok(value) = params(true) {
+                let stored = engine.client().call(methods::PR_DASHBOARD, value).await;
+                if let Ok(stored) = stored.map_err(|e| e.to_string()).and_then(parse) {
+                    this.update(cx, |this, cx| {
+                        this.dash[ix].apply_stored(stored);
+                        this.note_dash_links(ix, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+            let result = match params(false) {
                 Ok(value) => engine
                     .client()
                     .call(methods::PR_DASHBOARD, value)
                     .await
                     .map_err(|e| e.to_string())
-                    .and_then(|value| {
-                        serde_json::from_value::<PrDashReply>(value).map_err(|e| e.to_string())
-                    }),
+                    .and_then(parse),
                 Err(error) => Err(error),
             };
             this.update(cx, |this, cx| {
@@ -219,6 +245,9 @@ impl ChatTypeView {
             return;
         }
         if let PageTab::Dash(tab) = self.tab {
+            // A minute passed: the engine decides whether its rows are
+            // still fresh, so the page's own window must not hold it back.
+            self.dash[tab_index(tab)].fetched_at = None;
             self.fetch_dash(tab, false, cx);
         }
         cx.notify();
@@ -332,9 +361,7 @@ impl ChatTypeView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ix = tab_index(tab);
-        if !self.dash[ix].fresh() && !self.dash[ix].pending {
-            self.fetch_dash(tab, false, cx);
-        }
+        self.fetch_dash(tab, false, cx);
         let (visible, total) = self.dash_visible(tab, cx);
         let state = &self.dash[ix];
         let items = pr_page::items(&visible, state.group);
@@ -431,6 +458,17 @@ impl ChatTypeView {
                         visible.len(),
                         total,
                     ))),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "pr-dash-updated".into())
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from(match (refreshing, state.updated) {
+                        (true, Some(_)) => "Refreshing…".to_string(),
+                        (false, Some(at)) => format!("Updated {}", format_time_ago(at, now)),
+                        _ => String::new(),
+                    })),
             )
             .child(
                 review_button(

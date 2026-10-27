@@ -2940,16 +2940,21 @@ impl RpcService for EngineRpc {
                 Self::linear_reply(self.linear.issue(&p.identifier, p.force_refresh).await).await
             }
             methods::LINEAR_MY_ISSUES => {
-                let _: zeron_proto::LinearMyIssuesParams = parse_params(params)?;
-                Self::linear_reply(self.linear.my_issues().await).await
+                let p: zeron_proto::LinearMyIssuesParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_issues(p.force, p.cached_only).await).await
             }
             methods::LINEAR_MY_PROJECTS => {
-                let _: zeron_proto::LinearMyProjectsParams = parse_params(params)?;
-                Self::linear_reply(self.linear.my_projects().await).await
+                let p: zeron_proto::LinearMyProjectsParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_projects(p.force, p.cached_only).await).await
             }
             methods::LINEAR_PROJECT_ISSUES => {
                 let p: zeron_proto::LinearProjectIssuesParams = parse_params(params)?;
-                Self::linear_reply(self.linear.project_issues(&p.project_id).await).await
+                Self::linear_reply(
+                    self.linear
+                        .project_issues(&p.project_id, p.force, p.cached_only)
+                        .await,
+                )
+                .await
             }
             methods::LINEAR_REFRESH_LINKED_ITEMS => {
                 let p: zeron_proto::LinearRefreshLinkedItemsParams = parse_params(params)?;
@@ -3417,10 +3422,15 @@ impl RpcService for EngineRpc {
             }
             methods::PR_DASHBOARD => {
                 let p: zeron_proto::PrDashParams = parse_params(params)?;
-                let dash = self
-                    .pr_dash
-                    .get_or_init(crate::pr_dash::PrDash::with_real_gh);
-                let mut reply = dash.dashboard(p.tab, p.force).await;
+                let dash = self.pr_dash.get_or_init(|| {
+                    crate::pr_dash::PrDash::with_real_gh()
+                        .with_cache_file(self.repos.data_dir().join("cache").join("pr-dash.json"))
+                });
+                let mut reply = if p.cached_only {
+                    dash.peek(p.tab).unwrap_or_default()
+                } else {
+                    dash.dashboard(p.tab, p.force).await
+                };
                 // Chat links change independently of the PR rows, so they are
                 // resolved on every call, cached rows or not.
                 let candidates: Vec<crate::pr_chat_links::PrLinkCandidate> = reply

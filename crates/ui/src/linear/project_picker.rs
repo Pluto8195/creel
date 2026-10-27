@@ -24,7 +24,7 @@ use zeron_proto::{
 };
 
 use super::LinkedIndex;
-use super::client::LinearUiError;
+use super::client::{LinearUiError, ListRead};
 use super::panel::{
     LinearPanel, LinearPanelEvent, Load, issue_checkbox, issue_matches, issue_summary,
 };
@@ -161,7 +161,7 @@ impl ProjectIssuePicker {
         let actions = self.state.read(cx).work_outline_actions();
         let cached = self.state.read(cx).linear.projects.clone();
         let lookup = (cached.is_none() && !looks_like_uuid(&self.reference.external_id))
-            .then(|| actions.linear_my_projects());
+            .then(|| actions.linear_my_projects(ListRead::Cached));
         let reference = self.reference.clone();
         self.issues = Load::Loading;
         cx.notify();
@@ -184,7 +184,7 @@ impl ProjectIssuePicker {
                             }
                         });
                     }
-                    actions.linear_project_issues(&project_id)
+                    actions.linear_project_issues(&project_id, ListRead::Cached)
                 })
                 .ok();
             let Some(task) = fetched else {

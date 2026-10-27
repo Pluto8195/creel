@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
+
+use crate::swr::SwrStore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use zeron_proto::linear::{
@@ -36,6 +38,9 @@ pub use credentials::{
 
 /// How long a fetched issue is served from the cache.
 pub const ISSUE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// How long a fetched list (my issues, my projects, a project's issues) is
+/// served without asking Linear again; an explicit refresh always asks.
+pub const LIST_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Most projects `LinearMyProjects` returns.
 const MAX_PROJECTS: usize = 250;
 
@@ -93,6 +98,10 @@ struct Inner {
     /// Per-identifier attachments, same TTL as `issues`.
     attachments: Mutex<HashMap<String, (Instant, Vec<queries::IssueAttachment>)>>,
     inflight: Mutex<HashMap<String, SharedCall>>,
+    /// Stale-while-revalidate stores for the panel's lists (persisted when a
+    /// cache directory is set). Keys: `my`, `project:<id>`.
+    issue_lists: SwrStore<Vec<LinearIssueSummary>, LinearError>,
+    project_lists: SwrStore<Vec<LinearProjectSummary>, LinearError>,
     /// Serializes key changes (set/clear/forget).
     key_change: tokio::sync::Mutex<()>,
 }
@@ -145,6 +154,8 @@ impl LinearService {
                 issues: Mutex::new(HashMap::new()),
                 attachments: Mutex::new(HashMap::new()),
                 inflight: Mutex::new(HashMap::new()),
+                issue_lists: SwrStore::new(LIST_CACHE_TTL),
+                project_lists: SwrStore::new(LIST_CACHE_TTL),
                 key_change: tokio::sync::Mutex::new(()),
             }),
         }
@@ -173,6 +184,19 @@ impl LinearService {
         *lock(&self.inner.verified) = None;
         lock(&self.inner.issues).clear();
         lock(&self.inner.attachments).clear();
+        self.inner.issue_lists.clear();
+        self.inner.project_lists.clear();
+    }
+
+    /// Keep the list caches under `dir` so a cold start can show the last
+    /// lists while a refresh runs.
+    pub fn set_cache_dir(&self, dir: &std::path::Path) {
+        self.inner
+            .issue_lists
+            .attach_file(dir.join("linear-issue-lists.json"));
+        self.inner
+            .project_lists
+            .attach_file(dir.join("linear-project-lists.json"));
     }
 
     /// The key and its source, reading the store once (off the async
@@ -469,76 +493,143 @@ impl LinearService {
         }
     }
 
-    /// `LinearMyIssues`.
-    pub async fn my_issues(&self) -> Result<Vec<LinearIssueSummary>, LinearError> {
-        let (nodes, _) = self
-            .paginate(
-                &queries::my_issues(),
-                json!({}),
-                "/viewer/assignedIssues",
-                MAX_LIST_ISSUES,
-            )
-            .await?;
-        let issues: Vec<LinearIssueSummary> = nodes
-            .iter()
-            .filter_map(queries::issue_summary)
-            .filter(|i| !i.state.state_type.is_closed())
-            .collect();
-        self.cache_issues(&issues);
-        Ok(issues)
+    /// `LinearMyIssues`: served from the list cache inside [`LIST_CACHE_TTL`]
+    /// unless `force`; `cached_only` answers from whatever is stored.
+    pub async fn my_issues(
+        &self,
+        force: bool,
+        cached_only: bool,
+    ) -> Result<Vec<LinearIssueSummary>, LinearError> {
+        let this = self.clone();
+        self.issue_list("my", force, cached_only, move || async move {
+            let (nodes, _) = this
+                .paginate(
+                    &queries::my_issues(),
+                    json!({}),
+                    "/viewer/assignedIssues",
+                    MAX_LIST_ISSUES,
+                )
+                .await?;
+            Ok(open_issues(&nodes))
+        })
+        .await
     }
 
-    /// `LinearMyProjects`.
-    pub async fn my_projects(&self) -> Result<Vec<LinearProjectSummary>, LinearError> {
-        let (nodes, _) = self
-            .paginate(
-                &queries::my_projects(),
-                json!({}),
-                "/projects",
-                MAX_PROJECTS,
-            )
+    /// `LinearMyProjects`; same caching as [`Self::my_issues`].
+    pub async fn my_projects(
+        &self,
+        force: bool,
+        cached_only: bool,
+    ) -> Result<Vec<LinearProjectSummary>, LinearError> {
+        let store = &self.inner.project_lists;
+        if cached_only {
+            return store
+                .peek("my")
+                .map(|entry| entry.value)
+                .ok_or_else(not_cached);
+        }
+        let this = self.clone();
+        let entry = store
+            .get("my", force, move || {
+                async move {
+                    let (nodes, _) = this
+                        .paginate(
+                            &queries::my_projects(),
+                            json!({}),
+                            "/projects",
+                            MAX_PROJECTS,
+                        )
+                        .await?;
+                    Ok(nodes
+                        .iter()
+                        .filter_map(queries::project_summary)
+                        .filter(|p| !queries::project_is_closed(p.state.as_deref()))
+                        .collect())
+                }
+                .boxed()
+            })
             .await?;
-        Ok(nodes
-            .iter()
-            .filter_map(queries::project_summary)
-            .filter(|p| !queries::project_is_closed(p.state.as_deref()))
-            .collect())
+        Ok(entry.value)
     }
 
-    /// `LinearProjectIssues`.
+    /// `LinearProjectIssues`; same caching as [`Self::my_issues`].
     pub async fn project_issues(
         &self,
         project_id: &str,
+        force: bool,
+        cached_only: bool,
     ) -> Result<Vec<LinearIssueSummary>, LinearError> {
-        let project_id = project_id.trim();
+        let project_id = project_id.trim().to_owned();
         if project_id.is_empty() {
             return Err(LinearError::new(
                 LinearErrorCode::Invalid,
                 "projectId is required",
             ));
         }
-        let (nodes, found) = self
-            .paginate(
-                &queries::project_issues(),
-                json!({ "id": project_id }),
-                "/project/issues",
-                MAX_LIST_ISSUES,
-            )
-            .await?;
-        if !found {
-            return Err(LinearError::new(
-                LinearErrorCode::NotFound,
-                "That Linear project was not found",
-            ));
-        }
-        let issues: Vec<LinearIssueSummary> = nodes
-            .iter()
-            .filter_map(queries::issue_summary)
-            .filter(|i| !i.state.state_type.is_closed())
-            .collect();
-        self.cache_issues(&issues);
-        Ok(issues)
+        let this = self.clone();
+        let id = project_id.clone();
+        self.issue_list(
+            &format!("project:{project_id}"),
+            force,
+            cached_only,
+            move || async move {
+                let (nodes, found) = this
+                    .paginate(
+                        &queries::project_issues(),
+                        json!({ "id": id }),
+                        "/project/issues",
+                        MAX_LIST_ISSUES,
+                    )
+                    .await?;
+                if !found {
+                    return Err(LinearError::new(
+                        LinearErrorCode::NotFound,
+                        "That Linear project was not found",
+                    ));
+                }
+                Ok(open_issues(&nodes))
+            },
+        )
+        .await
     }
+
+    async fn issue_list<F, Fut>(
+        &self,
+        key: &str,
+        force: bool,
+        cached_only: bool,
+        fetch: F,
+    ) -> Result<Vec<LinearIssueSummary>, LinearError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<LinearIssueSummary>, LinearError>>
+            + Send
+            + 'static,
+    {
+        let store = &self.inner.issue_lists;
+        if cached_only {
+            return store
+                .peek(key)
+                .map(|entry| entry.value)
+                .ok_or_else(not_cached);
+        }
+        let entry = store.get(key, force, || fetch().boxed()).await?;
+        // Remember the issues so chips and lookups see them, cached or not.
+        self.cache_issues(&entry.value);
+        Ok(entry.value)
+    }
+}
+
+fn not_cached() -> LinearError {
+    LinearError::new(LinearErrorCode::NotFound, "nothing cached yet")
+}
+
+fn open_issues(nodes: &[Value]) -> Vec<LinearIssueSummary> {
+    nodes
+        .iter()
+        .filter_map(queries::issue_summary)
+        .filter(|i| !i.state.state_type.is_closed())
+        .collect()
 }
 
 impl Default for LinearService {

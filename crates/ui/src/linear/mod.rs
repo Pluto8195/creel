@@ -34,7 +34,7 @@ use zeron_proto::WorkOutlineSnapshot;
 use zeron_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER};
 
 #[allow(unused_imports)]
-pub(crate) use client::{LinearFailure, LinearUiError};
+pub(crate) use client::{LinearFailure, LinearUiError, ListRead};
 
 /// What the Linear toggle says while no visible Space has Linear on.
 pub(crate) const LINEAR_OFF_NOTICE: &str =
