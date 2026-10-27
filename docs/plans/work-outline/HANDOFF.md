@@ -325,6 +325,17 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   target that opens the ticket) shows the identifier (e.g. `ENG-3190`, 10px mono, `text_faint`)
   before the state dot and icon; one hover, tooltip and click. Hugs its content; empty identifier
   adds no width; nested rows too. Narrow rows drop the dot, then the assignee, then the ID.
+- **Optimised install build** (2026-10-27): `[profile.installed]` in Cargo.toml (inherits release,
+  incremental, codegen-units 256, no LTO/strip, line-tables-only debug). Clean build ~170s,
+  rebuild after one UI file ~8s, binary 150 MB (debug was 286 MB), `target/installed` ~8 GB. Before
+  this the installed app was a debug build with workspace crates at opt-level 0, likely the main
+  cause of sluggishness. `debug_assert!` and overflow checks are off in it. Also: Overview `rows()`
+  returns `Rc<Vec<OverviewRow>>` so hover/scroll frames no longer deep-clone every row.
+  Perf findings not yet fixed (ranked): per-row fetch checks in `ensure_row_fetches` on every rows
+  rebuild (`overview.rs` ~2148); every `rows_dirty` rebuild clones all chats and rebuilds
+  `WorkItemIndex`; 29 `cx.observe(&state, notify)` sites; model discovery probes the binary ~16x per
+  session (cache with TTL); `backfill_actual_models` re-reads journals every boot for chats with no
+  model (persist a "none found" marker).
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -428,8 +439,9 @@ status write-back, a "Waiting for input" group (declined), Tod-style action log 
 - **Tests:** UI tests need `--test-threads=1`. Time-limit with `perl -e 'alarm N; exec @ARGV' cargo
   test …` (macOS has no `timeout`). Known pre-existing failures are listed in the memory notes and
   `m0-contract.md`; they are not regressions.
-- **Install:** `cargo build -p zeron`; back up the current binary to `~/zeron-dev-app-backups/`;
-  `cp target/debug/zeron "$M/.zeron.installing" && mv -f` it to
+- **Install:** `cargo build --profile installed -p zeron` (optimised; since 2026-10-27, replaces the
+  debug build); back up the current binary to `~/zeron-dev-app-backups/`;
+  `cp target/installed/zeron "$M/.zeron.installing" && mv -f` it to
   `/Applications/Mast.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
   sh.zeron.app.dev` (sign the bundle path); push `work-outline-implementation`. Earlier bundles:
   `Zeron Dev.app` (until 2026-10-23) and `Creel.app` (until 2026-10-26), kept only as rollbacks.
