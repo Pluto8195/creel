@@ -364,6 +364,23 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
   - Diffs of renders taller than 8000 CSS px are cut off without a notice.
   - Option revisions recorded before 2026-10-20 can't be compared across revisions.
 - Linear GraphQL (projects, attachments) unverified against the real API.
+- **To investigate first (usage, 2026-10-27):** Mikey keeps hitting his Claude limits. A 7-day
+  audit of `~/.claude/projects/*.jsonl` (read-only; script was `/tmp/usage_audit.py`) found:
+  - About 43% of usage came from three long-lived orchestrator/coordinator chats (the previous
+    Zeron Dev coordinator alone was about 16%). Opus requests carried a median context of 226K
+    tokens (p90 680K, 29% over 400K); Sonnet child chats stayed around 114K. Keep coordinators
+    thin, restart them often (this file holds the state), and keep screenshots and design rounds
+    in child chats.
+  - Unexpected **Fable** usage (about 18% of the week): ten Cofactr chats started 2026-10-26
+    17:55–23:41 (ENG-3190 orchestrator 64% of it, ENG-3189 20%, ENG-3106, ENG-3177, PR #6503
+    follow-up, and their review subagents) ran on `claude-fable-5`. That is the Claude Code
+    default in `~/.claude/settings.json` (`"model": "claude-fable-5"`, unchanged since Oct 3; Mikey
+    changes it himself, agents never edit `~/.claude`). No `create_chat` call asked for Fable, so
+    those chats were started without an explicit model and fell back to the CLI default, while
+    the Mast composer default is Opus. Find which Mast start path omits the model (suspects: Start
+    Chat on Linear/ticket items, `create_chat` without `model`, the "chat filled in" item launches)
+    and make every start path pass an explicit model (the composer default or the picker's
+    choice), with a test, so nothing silently inherits the CLI default.
 
 ## Next, agreed but not started
 
