@@ -321,6 +321,10 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   the PR author / Linear assignee slot to its text (max 58px) and omits it when empty, so synced
   Linear rows no longer show a ~40px dead gap before "you". Icon slots are unchanged. (That column
   held the Linear identifier/state chip until the compact-icon change `528856b1`.)
+- **Ticket ID in Linear rows' ticket link** (2026-10-27): the Linear status element (the one hit
+  target that opens the ticket) shows the identifier (e.g. `ENG-3190`, 10px mono, `text_faint`)
+  before the state dot and icon; one hover, tooltip and click. Hugs its content; empty identifier
+  adds no width; nested rows too. Narrow rows drop the dot, then the assignee, then the ID.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
