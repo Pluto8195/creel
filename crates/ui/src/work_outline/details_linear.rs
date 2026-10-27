@@ -27,6 +27,7 @@ use super::super::actions::{OperationSlot, new_operation_id};
 use super::super::chips::TextTooltip;
 use super::super::store::{WorkItemView, WorkOutlineSnapshot};
 use super::{ParsedReference, WorkItemDetails};
+use crate::linear::ListRead;
 use crate::linear::store::{self, IssueEntry};
 use crate::linear::{LinearUrl, parse_linear_url, project_short_id};
 use crate::theme::Theme;
@@ -117,7 +118,7 @@ impl WorkItemDetails {
         cx.spawn(async move |this, cx| {
             let projects = match cached {
                 Some(projects) => Some(projects),
-                None => actions.linear_my_projects().await.ok(),
+                None => actions.linear_my_projects(ListRead::Cached).await.ok(),
             };
             let short = project_short_id(&slug).map(str::to_owned);
             let matched = projects.and_then(|projects| {

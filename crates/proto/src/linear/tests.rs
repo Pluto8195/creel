@@ -183,6 +183,8 @@ fn rpc_params_field_names() {
     round_trip(
         &LinearProjectIssuesParams {
             project_id: "p-1".into(),
+            force: false,
+            cached_only: false,
         },
         json!({"projectId": "p-1"}),
     );

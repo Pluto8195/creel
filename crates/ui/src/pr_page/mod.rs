@@ -17,6 +17,10 @@ use zeron_proto::{needs_you_count, ordered_rows};
 /// How often the visible tab refetches while the page is rendered.
 pub(crate) const DASH_REFRESH: Duration = Duration::from_secs(60);
 
+/// Rows younger than this are shown as they are: opening or switching to the
+/// tab makes no request. The Refresh button always fetches.
+pub(crate) const DASH_FRESH_WINDOW: Duration = Duration::from_secs(60);
+
 /// Tests: answers `PrDashboard` params (as JSON) in place of the engine.
 #[cfg(test)]
 pub(crate) type PrDashScript =
@@ -77,6 +81,9 @@ pub(crate) struct DashTabState {
     pub loaded: bool,
     pub pending: bool,
     pub fetched_at: Option<Instant>,
+    /// When the rows on screen were fetched (a stored copy keeps its own
+    /// time), for the "updated … ago" hint.
+    pub updated: Option<DateTime<Utc>>,
     pub error: Option<String>,
     /// Chip selection (multi-select, OR). Empty = every bucket.
     pub active_buckets: Vec<PrDashBucket>,
@@ -92,6 +99,7 @@ impl Default for DashTabState {
             loaded: false,
             pending: false,
             fetched_at: None,
+            updated: None,
             error: None,
             active_buckets: Vec::new(),
             hide_drafts: true,
@@ -109,12 +117,36 @@ impl DashTabState {
         self.fetched_at = Some(Instant::now());
         match result {
             Ok(reply) => {
+                if reply.error.is_none() {
+                    self.updated = Some(Utc::now());
+                }
                 self.me = reply.me;
                 self.rows = reply.rows;
                 self.error = reply.error;
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    /// Rows the engine had stored (from this run or a previous one), shown
+    /// while the real fetch runs. Does nothing once rows are on screen, and
+    /// when the engine has nothing (empty `fetched_at`): the page then keeps
+    /// saying "loading".
+    pub(crate) fn apply_stored(&mut self, reply: PrDashReply) {
+        if self.loaded || reply.error.is_some() {
+            return;
+        }
+        let Ok(at) = DateTime::parse_from_rfc3339(&reply.fetched_at) else {
+            return;
+        };
+        let at = at.with_timezone(&Utc);
+        self.me = reply.me;
+        self.rows = reply.rows;
+        self.loaded = true;
+        self.updated = Some(at);
+        // A stored copy inside the window counts as a fetch just made.
+        let age = (Utc::now() - at).to_std().unwrap_or(Duration::MAX);
+        self.fetched_at = Instant::now().checked_sub(age);
     }
 
     pub(crate) fn toggle_bucket(&mut self, bucket: PrDashBucket) {
@@ -127,7 +159,7 @@ impl DashTabState {
 
     pub(crate) fn fresh(&self) -> bool {
         self.fetched_at
-            .is_some_and(|at| at.elapsed() < DASH_REFRESH - Duration::from_secs(5))
+            .is_some_and(|at| at.elapsed() < DASH_FRESH_WINDOW)
     }
 }
 
