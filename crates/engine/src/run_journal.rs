@@ -277,6 +277,31 @@ impl RunJournal {
         self.dir.join(format!("{}.resume", sanitize_id(chat_id)))
     }
 
+    fn model_checked_path(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.modelchecked", sanitize_id(chat_id)))
+    }
+
+    /// Journal size in bytes (append-only, so growth means new events).
+    pub fn byte_len(&self, chat_id: &str) -> u64 {
+        std::fs::metadata(self.path_for(chat_id)).map_or(0, |m| m.len())
+    }
+
+    /// Journal length at which the actual-model backfill last found no model.
+    pub fn model_checked_len(&self, chat_id: &str) -> Option<u64> {
+        std::fs::read_to_string(self.model_checked_path(chat_id))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Record "checked at this length, no model" in a sidecar (never the journal).
+    pub fn mark_model_checked(&self, chat_id: &str, len: u64) {
+        if let Err(err) = std::fs::write(self.model_checked_path(chat_id), len.to_string()) {
+            tracing::warn!(chat = %chat_id, error = %err, "model-checked marker write failed");
+        }
+    }
+
     fn graceful_restart_path(&self, chat_id: &str) -> PathBuf {
         self.dir.join(format!("{}.restart", sanitize_id(chat_id)))
     }
@@ -483,6 +508,7 @@ impl RunJournal {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
+        let _ = std::fs::remove_file(self.model_checked_path(chat_id));
         Ok(())
     }
 }

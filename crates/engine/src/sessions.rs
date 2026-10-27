@@ -225,7 +225,8 @@ fn reported_model(harness: HarnessId, model: &str) -> Option<&str> {
 impl SessionsEngine {
     /// Read-side backfill for chats that ran before `actual_model` existed:
     /// fill it from the `SessionStarted` events the run journal kept. Only
-    /// touches chats with no recorded model; returns how many were filled.
+    /// touches chats with no recorded model, and skips ones whose journal has not
+    /// grown since a pass found nothing; returns how many were filled.
     pub fn backfill_actual_models(&self) -> usize {
         let Some(ws) = self.inner.workspace() else {
             return 0;
@@ -238,9 +239,17 @@ impl SessionsEngine {
             if chat.actual_model.is_some() {
                 continue;
             }
+            // A journal that already answered "no model" is only reread once
+            // it has grown (a new run appended events).
+            let len = self.inner.journal.byte_len(&chat.id);
+            if self.inner.journal.model_checked_len(&chat.id) == Some(len) {
+                continue;
+            }
             if let Some(model) = self.inner.journal_actual_model(&chat.id) {
                 ws.set_chat_actual_model(&chat.id, &model);
                 filled += 1;
+            } else {
+                self.inner.journal.mark_model_checked(&chat.id, len);
             }
         }
         filled
