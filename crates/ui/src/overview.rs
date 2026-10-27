@@ -8166,6 +8166,12 @@ mod logic_tests {
             auto_approve: false,
         });
         assert_eq!(chat_model_label(&chat), "gpt-6-codex");
+        // What the harness reported wins over the stored pick, and a chat
+        // with no stored model shows what ran (the CLI default), not "default".
+        chat.actual_model = Some("claude-fable-5".into());
+        assert_eq!(chat_model_label(&chat), "claude-fable-5");
+        chat.config = None;
+        assert_eq!(chat_model_label(&chat), "claude-fable-5");
     }
 
     #[test]

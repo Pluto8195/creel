@@ -7511,6 +7511,88 @@ mod tests {
         });
     }
 
+    fn chip_test_chat(model: Option<&str>, actual: Option<&str>) -> zeron_proto::Chat {
+        zeron_proto::Chat {
+            id: "chat-chip".into(),
+            device_id: "d".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: Some(zeron_proto::ChatConfig {
+                harness: HarnessId::ClaudeCode,
+                model: model.map(str::to_owned),
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                auto_approve: false,
+            }),
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            actual_model: actual.map(str::to_owned),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            parent_chat_id: None,
+            linked_pr_url: None,
+            linked_pr_source: None,
+            linked_ticket_id: None,
+            linked_ticket_source: None,
+        }
+    }
+
+    /// An existing chat's chip is the choice for the NEXT turn: a chat that ran
+    /// on Fable (CLI default, no stored model) must not wear "Opus 5.5" as if
+    /// that were what it used.
+    #[gpui::test]
+    fn existing_chat_chip_marks_the_preselected_default_as_the_next_turn(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| AppState::new());
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        let catalog = Loadable::Ready(vec![
+            bare_model("claude-fable-5", "Fable 5"),
+            bare_model("claude-opus-5-5", "Opus 5.5"),
+        ]);
+        let cases = [
+            // No stored model, ran on Fable: default preselected for next turn.
+            (None, Some("claude-fable-5"), "Next: Opus 5.5"),
+            // No stored model, nothing reported (legacy chat): still next-turn.
+            (None, None, "Next: Opus 5.5"),
+            // Stored Opus but Fable actually ran: the chip stays a next-turn pick.
+            (Some("claude-opus-5-5"), Some("claude-fable-5"), "Next: Opus 5.5"),
+            // Stored and actual agree: plain label.
+            (Some("claude-fable-5"), Some("claude-fable-5"), "Fable 5"),
+            // Stored, not run yet: plain label.
+            (Some("claude-opus-5-5"), None, "Opus 5.5"),
+        ];
+        for (stored, actual, expected) in cases {
+            state.update(cx, |state, cx| {
+                state.apply_chats(vec![chip_test_chat(stored, actual)]);
+                state.select_chat(Some("chat-chip".into()), cx);
+            });
+            pickers.update(cx, |pickers, cx| {
+                pickers.models.insert(HarnessId::ClaudeCode, catalog.clone());
+                assert_eq!(
+                    pickers.chip_model_label(cx).as_deref(),
+                    Some(expected),
+                    "stored {stored:?}, actual {actual:?}"
+                );
+            });
+        }
+        // The new-chat canvas has no past turns: no prefix.
+        state.update(cx, |state, cx| state.select_chat(None, cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults.harness = Some(HarnessId::ClaudeCode);
+            assert_eq!(pickers.chip_model_label(cx).as_deref(), Some("Opus 5.5"));
+        });
+    }
+
     #[gpui::test]
     fn remembered_options_stay_valid_for_the_sent_model_without_a_catalog(
         cx: &mut gpui::TestAppContext,

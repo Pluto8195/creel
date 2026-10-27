@@ -429,6 +429,36 @@ mod tests {
     }
 
     #[test]
+    fn header_shows_the_model_that_ran_not_a_default() {
+        let model_item = |chat: &Chat| {
+            let items = metadata_items(chat, None, None);
+            let item = items.iter().find(|item| item.key == "model").unwrap();
+            (item.label.clone(), item.tooltip.clone())
+        };
+        // No configured model, init said Fable: the header says Fable.
+        let mut c = chat();
+        c.config = None;
+        c.actual_model = Some("claude-fable-5".into());
+        assert_eq!(model_item(&c).0, "Model claude-fable-5");
+        // Configured Opus but Fable ran: actual wins, configured is a hint.
+        let mut c = chat();
+        c.config = serde_json::from_value(serde_json::json!({
+            "harness": "claude-code", "model": "claude-opus-5-5", "reasoning": null,
+            "sandbox": "workspace-write"
+        }))
+        .unwrap();
+        c.actual_model = Some("claude-fable-5".into());
+        let (label, tooltip) = model_item(&c);
+        assert_eq!(label, "Model claude-fable-5");
+        assert!(tooltip.contains("configured claude-opus-5-5"), "{tooltip}");
+        // Nothing known: default, never a specific name.
+        let mut c = chat();
+        c.config = None;
+        c.actual_model = None;
+        assert_eq!(model_item(&c).0, "Model default");
+    }
+
+    #[test]
     fn ids_are_compact_but_copy_the_complete_value() {
         let items = metadata_items(&chat(), None, None);
         let chat_id = items.iter().find(|item| item.key == "chat-id").unwrap();

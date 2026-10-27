@@ -1325,6 +1325,72 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
+    fn bare_chat(model: Option<&str>, actual: Option<&str>) -> Chat {
+        Chat {
+            id: "c".into(),
+            device_id: "d".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: model.map(|m| ChatConfig {
+                harness: HarnessId::ClaudeCode,
+                model: Some(m.into()),
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                auto_approve: false,
+            }),
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc.timestamp_opt(0, 0).unwrap(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            actual_model: actual.map(str::to_owned),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            parent_chat_id: None,
+            linked_pr_url: None,
+            linked_pr_source: None,
+            linked_ticket_id: None,
+            linked_ticket_source: None,
+        }
+    }
+
+    #[test]
+    fn model_display_prefers_what_ran_and_never_invents_one() {
+        use ChatModelDisplay::*;
+        assert_eq!(bare_chat(None, None).model_display(), Default);
+        assert_eq!(
+            bare_chat(None, Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: None }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-opus-5-5"), Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: Some("claude-opus-5-5") }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-fable-5"), Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: None }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-opus-5-5"), None).model_display(),
+            Configured("claude-opus-5-5")
+        );
+        assert_eq!(bare_chat(Some("  "), Some(" ")).model_display(), Default);
+    }
+
+    #[test]
+    fn chat_actual_model_is_optional_on_the_wire() {
+        let mut value = serde_json::to_value(bare_chat(None, Some("m"))).unwrap();
+        assert_eq!(value["actualModel"], "m");
+        value.as_object_mut().unwrap().remove("actualModel");
+        assert_eq!(serde_json::from_value::<Chat>(value).unwrap().actual_model, None);
+    }
+
     #[test]
     fn chat_config_auto_approve_wire_name_is_pinned_and_defaults_to_ask() {
         let config = ChatConfig {
