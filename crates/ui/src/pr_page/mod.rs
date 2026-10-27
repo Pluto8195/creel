@@ -548,6 +548,51 @@ mod tests {
     const T2: &str = "2026-10-21T10:00:00Z";
     const T3: &str = "2026-10-22T10:00:00Z";
 
+    fn stored(fetched_at: String) -> PrDashReply {
+        PrDashReply {
+            me: "octo".into(),
+            rows: vec![row(1, PrDashBucket::InReview, T1)],
+            fetched_at,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn stored_rows_show_at_once_and_count_as_fresh_only_inside_the_window() {
+        let mut old = DashTabState::default();
+        old.apply_stored(stored(
+            (Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
+        ));
+        assert!(old.loaded, "no loading state with stored rows");
+        assert_eq!(old.rows.len(), 1);
+        assert!(!old.fresh(), "ten minutes old: refetch");
+        let mut recent = DashTabState::default();
+        recent.apply_stored(stored(
+            (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339(),
+        ));
+        assert!(recent.fresh(), "ten seconds old: no request");
+    }
+
+    #[test]
+    fn nothing_stored_keeps_the_loading_state() {
+        let mut state = DashTabState::default();
+        state.apply_stored(stored(String::new()));
+        assert!(!state.loaded && state.rows.is_empty());
+    }
+
+    #[test]
+    fn stored_rows_never_replace_fetched_ones() {
+        let mut state = DashTabState::default();
+        state.apply(Ok(PrDashReply {
+            me: "octo".into(),
+            rows: Vec::new(),
+            fetched_at: String::new(),
+            error: None,
+        }));
+        state.apply_stored(stored(Utc::now().to_rfc3339()));
+        assert!(state.rows.is_empty());
+    }
+
     #[test]
     fn compact_follows_the_spec() {
         assert_eq!(compact(7), "7");

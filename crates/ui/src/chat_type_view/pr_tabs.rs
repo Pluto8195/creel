@@ -58,7 +58,7 @@ fn element_id(text: String) -> ElementId {
 impl ChatTypeView {
     /// Fetch `tab` through `PrDashboard`. A failed call keeps the last good
     /// rows and shows the error inline.
-    pub(super) fn fetch_dash(&mut self, tab: PrDashTab, force: bool, cx: &mut Context<Self>) {
+    pub(crate) fn fetch_dash(&mut self, tab: PrDashTab, force: bool, cx: &mut Context<Self>) {
         let ix = tab_index(tab);
         if self.dash[ix].pending || (!force && self.dash[ix].fresh()) {
             return;
@@ -245,6 +245,9 @@ impl ChatTypeView {
             return;
         }
         if let PageTab::Dash(tab) = self.tab {
+            // A minute passed: the engine decides whether its rows are
+            // still fresh, so the page's own window must not hold it back.
+            self.dash[tab_index(tab)].fetched_at = None;
             self.fetch_dash(tab, false, cx);
         }
         cx.notify();

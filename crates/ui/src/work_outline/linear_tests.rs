@@ -127,7 +127,14 @@ fn mutations(calls: &LinearCalls, op: &str) -> Vec<serde_json::Value> {
 }
 
 fn called(calls: &LinearCalls, method: &str) -> usize {
-    calls.lock().unwrap().iter().filter(|(m, _)| m == method).count()
+    // A cached-only read answers from the engine's stored copy and never
+    // reaches Linear, so it is not a request.
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, params)| m == method && params["cachedOnly"] != true)
+        .count()
 }
 
 /// A snapshot that also shows the item a create produced.
@@ -1507,4 +1514,26 @@ fn linear_identifier_shows_on_child_rows_and_is_absent_without_one(cx: &mut gpui
     };
     assert!(with_id.width() > crate::work_outline::outline_view::linear_outline::LinearSlots::ALL.width());
     assert_eq!(crate::work_outline::outline_view::linear_outline::identifier_width(""), 0.0);
+}
+
+/// A reopened panel lists the engine's stored issues, and a refresh that
+/// fails keeps them on screen instead of replacing them with an error.
+#[gpui::test]
+fn stored_lists_show_and_survive_a_failed_refresh(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) = linear_overview(
+        cx,
+        dir.path(),
+        linear_snapshot(true),
+        |method, params| match method {
+            "LinearMyIssues" | "LinearMyProjects" if params["cachedOnly"] != true => Err(
+                zeron_rpc::RpcError::Failed("linear/network: offline".into()),
+            ),
+            _ => default_reply(method, params),
+        },
+    );
+    open_panel(&overview, vcx);
+    assert_eq!(called(&calls, "LinearMyIssues"), 1, "one real request");
+    assert!(vcx.debug_bounds("linear-issue-row-ENG-1").is_some(), "stored issues render");
+    assert!(vcx.debug_bounds("linear-project-row-p-launch").is_some());
 }
