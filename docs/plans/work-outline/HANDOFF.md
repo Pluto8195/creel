@@ -338,11 +338,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   this the installed app was a debug build with workspace crates at opt-level 0, likely the main
   cause of sluggishness. `debug_assert!` and overflow checks are off in it. Also: Overview `rows()`
   returns `Rc<Vec<OverviewRow>>` so hover/scroll frames no longer deep-clone every row.
-  Perf findings not yet fixed (ranked): per-row fetch checks in `ensure_row_fetches` on every rows
-  rebuild (`overview.rs` ~2148); every `rows_dirty` rebuild clones all chats and rebuilds
-  `WorkItemIndex`; 29 `cx.observe(&state, notify)` sites; model discovery probes the binary ~16x per
-  session (cache with TTL); `backfill_actual_models` re-reads journals every boot for chats with no
-  model (persist a "none found" marker).
+  Outline rebuilds (2026-10-27, `perf-outline-rebuilds`): `AppState::overview_fingerprint` gates the
+  Overview's state observer (rebuild + notify only when a row-relevant field changes);
+  `WorkItemIndex` rebuilt only when a snapshot Arc is replaced; per-chat `row_fetch_due` stops
+  `ensure_row_fetches` re-checking settled chats. 250 chats × 50 streaming updates: rebuilds and
+  repaints 50 → 1, fetch checks 12500 → 0 (`OverviewPerf` counters). Still open: the other 15
+  `AppState` observers (shell, transcript, composer, changes, terminal, files, history, pickers need
+  broad state; chat_type_view, repository_topology, context_usage, artifacts tab and settings pages
+  not audited; `chat_type_view` clones all chats every render). Model discovery cache and the
+  backfill "none found" marker: in progress (`perf-model-discovery-cache`).
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
