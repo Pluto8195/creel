@@ -457,6 +457,7 @@ impl EngineCore {
             store_for_import.clone(),
         ));
         let linear = linear::LinearService::default();
+        linear.set_cache_dir(&data_dir.join("cache"));
         linear::sync::spawn_sync_loop(
             linear.clone(),
             workspace.clone(),

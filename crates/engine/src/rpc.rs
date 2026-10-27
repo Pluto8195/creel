@@ -2940,16 +2940,21 @@ impl RpcService for EngineRpc {
                 Self::linear_reply(self.linear.issue(&p.identifier, p.force_refresh).await).await
             }
             methods::LINEAR_MY_ISSUES => {
-                let _: zeron_proto::LinearMyIssuesParams = parse_params(params)?;
-                Self::linear_reply(self.linear.my_issues().await).await
+                let p: zeron_proto::LinearMyIssuesParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_issues(p.force, p.cached_only).await).await
             }
             methods::LINEAR_MY_PROJECTS => {
-                let _: zeron_proto::LinearMyProjectsParams = parse_params(params)?;
-                Self::linear_reply(self.linear.my_projects().await).await
+                let p: zeron_proto::LinearMyProjectsParams = parse_params(params)?;
+                Self::linear_reply(self.linear.my_projects(p.force, p.cached_only).await).await
             }
             methods::LINEAR_PROJECT_ISSUES => {
                 let p: zeron_proto::LinearProjectIssuesParams = parse_params(params)?;
-                Self::linear_reply(self.linear.project_issues(&p.project_id).await).await
+                Self::linear_reply(
+                    self.linear
+                        .project_issues(&p.project_id, p.force, p.cached_only)
+                        .await,
+                )
+                .await
             }
             methods::LINEAR_REFRESH_LINKED_ITEMS => {
                 let p: zeron_proto::LinearRefreshLinkedItemsParams = parse_params(params)?;

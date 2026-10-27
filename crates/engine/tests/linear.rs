@@ -705,6 +705,41 @@ async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn lists_are_cached_peekable_and_refreshed_on_force() {
+    let rig = rig().await;
+    // Nothing stored yet: a cached-only call reports a miss and asks nothing.
+    let miss = rig
+        .linear_err(methods::LINEAR_MY_ISSUES, json!({ "cachedOnly": true }))
+        .await;
+    assert_eq!(miss.code, LinearErrorCode::NotFound);
+    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 0);
+
+    rig.mock.state.lock().unwrap().my_issue_pages =
+        vec![vec![issue_node("ENG-1", "One", None, "started")]];
+    for _ in 0..3 {
+        rig.call(methods::LINEAR_MY_ISSUES, json!({})).await.unwrap();
+    }
+    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 1, "window hit");
+
+    rig.mock.state.lock().unwrap().my_issue_pages = vec![vec![
+        issue_node("ENG-1", "One", None, "started"),
+        issue_node("ENG-2", "Two", None, "started"),
+    ]];
+    let peeked = rig
+        .call(methods::LINEAR_MY_ISSUES, json!({ "cachedOnly": true }))
+        .await
+        .unwrap();
+    assert_eq!(peeked.as_array().unwrap().len(), 1);
+    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 1, "peek never asks");
+    let forced = rig
+        .call(methods::LINEAR_MY_ISSUES, json!({ "force": true }))
+        .await
+        .unwrap();
+    assert_eq!(forced.as_array().unwrap().len(), 2);
+    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn identical_in_flight_requests_are_coalesced() {
     let rig = rig().await;
     rig.mock.state.lock().unwrap().delay = Duration::from_millis(300);

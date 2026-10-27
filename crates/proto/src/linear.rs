@@ -328,13 +328,25 @@ pub struct LinearIssueParams {
 /// first, at most [`MAX_LIST_ISSUES`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinearMyIssuesParams {}
+pub struct LinearMyIssuesParams {
+    /// Skip the engine's list cache.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+    /// Answer from the stored list only, however old (an error if none).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_only: bool,
+}
 
 /// `LinearMyProjects {}` → `[LinearProjectSummary]`: projects the viewer
 /// leads or is a member of that are not completed/canceled.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinearMyProjectsParams {}
+pub struct LinearMyProjectsParams {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_only: bool,
+}
 
 /// `LinearProjectIssues {projectId}` → `[LinearIssueSummary]`: the project's
 /// open issues (not completed/canceled), at most [`MAX_LIST_ISSUES`].
@@ -342,6 +354,10 @@ pub struct LinearMyProjectsParams {}
 #[serde(rename_all = "camelCase")]
 pub struct LinearProjectIssuesParams {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_only: bool,
 }
 
 /// `LinearRefreshLinkedItems {spaceId}` → [`LinearRefreshLinkedItemsReply`]:
