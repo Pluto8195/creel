@@ -3417,10 +3417,15 @@ impl RpcService for EngineRpc {
             }
             methods::PR_DASHBOARD => {
                 let p: zeron_proto::PrDashParams = parse_params(params)?;
-                let dash = self
-                    .pr_dash
-                    .get_or_init(crate::pr_dash::PrDash::with_real_gh);
-                let mut reply = dash.dashboard(p.tab, p.force).await;
+                let dash = self.pr_dash.get_or_init(|| {
+                    crate::pr_dash::PrDash::with_real_gh()
+                        .with_cache_file(self.repos.data_dir().join("cache").join("pr-dash.json"))
+                });
+                let mut reply = if p.cached_only {
+                    dash.peek(p.tab).unwrap_or_default()
+                } else {
+                    dash.dashboard(p.tab, p.force).await
+                };
                 // Chat links change independently of the PR rows, so they are
                 // resolved on every call, cached rows or not.
                 let candidates: Vec<crate::pr_chat_links::PrLinkCandidate> = reply

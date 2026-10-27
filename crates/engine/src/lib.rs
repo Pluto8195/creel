@@ -50,6 +50,7 @@ pub mod repos;
 pub mod repository_topology;
 pub mod rpc;
 pub mod run_journal;
+pub mod swr;
 pub mod sessions;
 pub mod source_control;
 pub mod spaces;
