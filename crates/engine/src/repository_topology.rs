@@ -758,6 +758,7 @@ mod tests {
             created_at: now,
             harness_session_id: None,
             harness_session_cwd: None,
+            actual_model: None,
             // The topology RPC intentionally admits same-device chats from a
             // worktree-specific Space and lets this checkout join scope them.
             space_id: Some("worktree-space".into()),

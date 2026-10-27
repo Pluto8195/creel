@@ -1322,6 +1322,13 @@ impl WorkspaceHost {
         }
     }
 
+    /// Stamp the model the harness reported it ran the chat on. Best-effort.
+    pub fn set_chat_actual_model(&self, chat_id: &str, model: &str) {
+        if let Err(err) = self.mutate(|doc| doc.set_chat_actual_model(chat_id, model)) {
+            tracing::warn!(chat = %chat_id, error = %err, "registry actual-model write failed");
+        }
+    }
+
     /// The chat row's stored harness session `(session_id, cwd)`, if stamped.
     /// The empty-string tombstone passes through — callers must treat it as
     /// "explicitly no resume" (and must NOT fall back to older sources).
@@ -1420,6 +1427,7 @@ impl WorkspaceHost {
                 // go through the seed+flip path (the host migration sweep).
                 room_gen: Some(2),
                 harness_session_cwd: None,
+                actual_model: None,
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
                 parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),

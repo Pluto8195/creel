@@ -8131,6 +8131,7 @@ mod logic_tests {
             created_at: Utc.timestamp_opt(0, 0).unwrap(),
             harness_session_id: None,
             harness_session_cwd: None,
+            actual_model: None,
             parent_chat_id: None,
             space_id: None,
             last_seen_at: None,

@@ -8098,6 +8098,7 @@ index 1111111..2222222 160000
             created_at: Utc::now(),
             harness_session_id: None,
             harness_session_cwd: None,
+            actual_model: None,
             parent_chat_id: None,
             space_id: None,
             last_seen_at: None,

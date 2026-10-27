@@ -4455,6 +4455,7 @@ mod tests {
             created_at: base + TimeDelta::minutes(created_min),
             harness_session_id: None,
             harness_session_cwd: None,
+            actual_model: None,
             parent_chat_id: None,
             space_id: None,
             last_seen_at: None,

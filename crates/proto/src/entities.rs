@@ -180,6 +180,39 @@ impl ChatConfig {
     }
 }
 
+/// What to say about the model a chat runs on. Never presents a configured or
+/// picker-default model as fact when the harness reported something else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatModelDisplay<'a> {
+    /// The harness reported this model; `configured` is the chat's stored pick
+    /// when it differs (a "configured X" hint).
+    Actual {
+        actual: &'a str,
+        configured: Option<&'a str>,
+    },
+    /// Nothing reported yet; this is only what the chat is configured to use.
+    Configured(&'a str),
+    /// Neither is known: the harness default decides.
+    Default,
+}
+
+impl Chat {
+    pub fn model_display(&self) -> ChatModelDisplay<'_> {
+        fn clean(m: &Option<String>) -> Option<&str> {
+            m.as_deref().map(str::trim).filter(|m| !m.is_empty())
+        }
+        let configured = self.config.as_ref().and_then(|c| clean(&c.model));
+        match (clean(&self.actual_model), configured) {
+            (Some(actual), configured) => ChatModelDisplay::Actual {
+                actual,
+                configured: configured.filter(|c| *c != actual),
+            },
+            (None, Some(configured)) => ChatModelDisplay::Configured(configured),
+            (None, None) => ChatModelDisplay::Default,
+        }
+    }
+}
+
 /// Provenance of a durable PR/ticket link stamped on a [`Chat`] row —
 /// write-time precedence, most-authoritative first: `Manual` (explicit user
 /// action via `SET_CHAT_LINK`) beats `CreatedInChat` (the engine watched this
@@ -303,6 +336,12 @@ pub struct Chat {
     /// is only injected when the next run launches from the same cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_session_cwd: Option<String>,
+    /// The model the harness reported it actually ran the chat's latest turn
+    /// on (Claude Code's `system`/`init` `model`). Engine-owned; independent
+    /// of `config.model`, which is only what Mast asked for. `None` = never
+    /// reported (no run yet, or a harness that doesn't say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model: Option<String>,
     /// The space this chat belongs to. Invariant: `Some` for every UI-created
     /// chat; rows with a missing/dangling space id are not rendered (the host
     /// device's repair sweep deletes its own danglers).
