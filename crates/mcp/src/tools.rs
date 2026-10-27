@@ -957,7 +957,7 @@ impl Tools {
             }
             None => default_harness(&harnesses)?,
         };
-        if let Some(model) = args.model.as_deref()
+        if let Some(model) = args.model.as_deref().filter(|m| !m.trim().is_empty())
             && let Ok(models) = self.zeron.models(harness).await
             && !models.is_empty()
             && !models.iter().any(|m| m.id == model)
@@ -2448,6 +2448,25 @@ mod tests {
         assert_eq!(writes[1].1["op"], "renameChat");
         assert_eq!(writes[2].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[2].1["command"]["request"]["prompt"], "go");
+    }
+
+    #[tokio::test]
+    async fn create_chat_without_a_model_resolves_to_the_mast_default() {
+        for blank in [None, Some(""), Some("  ")] {
+            let world = Arc::new(World::default());
+            let tools = tools(world.clone(), None);
+            let mut args = json!({ "project": "/repo/comet", "prompt": "go" });
+            if let Some(blank) = blank {
+                args["model"] = json!(blank);
+            }
+            let created = tools.call("create_chat", args).await.unwrap();
+            assert_eq!(created["model"], "claude-opus-5-5");
+            let writes = world.writes.lock().unwrap();
+            assert_eq!(writes[0].1["config"]["model"], "claude-opus-5-5");
+            let run = writes.last().unwrap();
+            assert_eq!(run.0, methods::QUEUE_COMMAND);
+            assert_eq!(run.1["command"]["request"]["model"], "claude-opus-5-5");
+        }
     }
 
     #[tokio::test]

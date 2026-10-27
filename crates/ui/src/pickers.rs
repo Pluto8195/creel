@@ -7440,6 +7440,43 @@ mod tests {
         }
     }
 
+    /// The Start Chat dialog and the PR review dialog send
+    /// `resolved(cx).chat_config()`: it must always carry a concrete model.
+    #[gpui::test]
+    fn a_fresh_new_chat_resolves_to_the_mast_default_model(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| AppState::new());
+        let pickers = cx.new(|cx| Pickers::new(state, cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults.harness = Some(HarnessId::ClaudeCode);
+            // Catalog not loaded, nothing remembered: still explicit.
+            for catalog in [Loadable::Idle, Loadable::Loading] {
+                pickers.models.insert(HarnessId::ClaudeCode, catalog);
+                let resolved = pickers.resolved(cx);
+                assert_eq!(resolved.model.as_deref(), Some("claude-opus-5-5"));
+                let config = resolved.chat_config().expect("harness known");
+                assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+            }
+            // Live catalog led by the CLI's own default (Fable): Mast's default wins.
+            pickers.models.insert(
+                HarnessId::ClaudeCode,
+                Loadable::Ready(vec![
+                    bare_model("claude-fable-5", "Fable 5"),
+                    bare_model("claude-opus-5-5", "Opus 5.5"),
+                ]),
+            );
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("claude-opus-5-5")
+            );
+            // An explicit pick is never overridden.
+            pickers.pick_model("claude-fable-5".into(), cx);
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("claude-fable-5")
+            );
+        });
+    }
+
     #[gpui::test]
     fn remembered_options_stay_valid_for_the_sent_model_without_a_catalog(
         cx: &mut gpui::TestAppContext,

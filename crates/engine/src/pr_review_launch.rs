@@ -1184,3 +1184,26 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod default_model_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_review_config_names_the_mast_default_model() {
+        let config = default_config();
+        assert_eq!(config.harness, HarnessId::ClaudeCode);
+        assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn a_caller_config_without_a_model_is_filled_in() {
+        let mut config = ChatConfig {
+            model: None,
+            ..default_config()
+        };
+        assert!(config.fill_default_model());
+        assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+        assert!(!config.fill_default_model(), "an explicit model is kept");
+    }
+}
