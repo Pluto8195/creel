@@ -294,6 +294,12 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Settings → Notifications → "Live app icon" (default on); off restores the bundle icon, clears
     the badge and shows the plain logo. No pulse while working (a repeating animation redraws
     every frame).
+- **PR chats start through the Start Chat dialog** (2026-10-27): every "start a review/fix-CI
+  chat" entry point (outline ⌘↩ / Start Chat, context menu, Details, GitHub pane, PR page, URL box,
+  palette) calls `Shell::open_start_pr_review`, which opens the Start Chat dialog in PR mode (PR,
+  prompt opening, link, root, model/reasoning/approval pickers). Start sends `StartPrReview` with
+  the picked config and `fresh: true` (new optional param; without it the engine reuses a live
+  review chat and ignores the pick). "Open review" stays a direct open.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
