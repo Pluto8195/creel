@@ -284,6 +284,22 @@ pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100)
 /// relative to the per-frame rebuild `rows_dirty` exists to avoid.
 const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
+/// Work counters for the perf regression test: what the Overview did in
+/// response to `AppState` changes. Plain increments, always on.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OverviewPerf {
+    /// `rows()` calls that rebuilt the row list.
+    rows_rebuilds: u64,
+    /// `AppState` observer callbacks delivered to the Overview.
+    observer_calls: u64,
+    /// Of those, the ones that went on to `cx.notify()`.
+    observer_notifies: u64,
+    /// Per-chat `ensure_row_fetches` evaluations.
+    fetch_checks: u64,
+    /// Engine requests actually spawned by the per-row fetches.
+    fetch_requests: u64,
+}
+
 /// One row's worth of what this pass can show.
 #[derive(Clone)]
 struct OverviewRow {
@@ -1449,6 +1465,11 @@ pub struct Overview {
     /// nothing to scan retries on `SUBAGENTS_REFRESH` instead of on every
     /// row rebuild.
     subagents_fetched_at: HashMap<String, Instant>,
+    /// Per chat: whether it had a harness session when last checked, and the
+    /// earliest instant any of its row fetches (subagents, context usage,
+    /// link status) can be due again. `rows()` and the idle tick skip the
+    /// chat until then. Absent while a fetch is in flight or never landed.
+    row_fetch_due: HashMap<String, (bool, Instant)>,
     /// `CHAT_CONTEXT_USAGE` per chat id (`None` = engine had no usage).
     /// Refetched on `CONTEXT_USAGE_REFRESH`.
     context_usage: HashMap<String, Option<f32>>,
@@ -1508,6 +1529,12 @@ pub struct Overview {
     /// `AppState`, cloning every `Chat`, re-deriving staleness) on a `false`
     /// read and returns the cache instead.
     rows_dirty: bool,
+    perf: OverviewPerf,
+    /// `AppState::overview_fingerprint` as of the last observed change.
+    state_fingerprint: Option<u64>,
+    /// The snapshots (in space order) `work_item_index` was built from; the
+    /// index is rebuilt only when one of them is replaced.
+    work_item_index_key: Option<Vec<std::sync::Arc<WorkOutlineSnapshot>>>,
     rows_cache: std::rc::Rc<Vec<OverviewRow>>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
@@ -1660,10 +1687,21 @@ impl Overview {
         composer: Entity<crate::composer::Composer>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let observe = cx.observe(&state, |this, _, cx| {
+        let observe = cx.observe(&state, |this, state, cx| {
+            this.perf.observer_calls += 1;
+            // Only a change to something the rows or render read marks them
+            // dirty and repaints; streaming transcript frames and the like
+            // leave the fingerprint alone.
+            let fingerprint = state.read(cx).overview_fingerprint(Utc::now());
+            if this.state_fingerprint == Some(fingerprint) {
+                return;
+            }
+            this.state_fingerprint = Some(fingerprint);
+            this.perf.observer_notifies += 1;
             this.rows_dirty = true;
             cx.notify();
         });
+        let initial_fingerprint = Some(state.read(cx).overview_fingerprint(Utc::now()));
         let search = cx.new(|cx| {
             // Must be `PALETTE_SEARCH_CONTEXT`: editing keys (backspace, ⌥⌫, ⌘⌫,
             // ⌘A/C/V/Z…) are bound only to the contexts `input_bindings`
@@ -1775,6 +1813,7 @@ impl Overview {
             subagent_pending: HashSet::new(),
             hovered_row: None,
             subagents_fetched_at: HashMap::new(),
+            row_fetch_due: HashMap::new(),
             context_usage: HashMap::new(),
             context_usage_pending: HashSet::new(),
             context_usage_fetched_at: HashMap::new(),
@@ -1794,6 +1833,9 @@ impl Overview {
             show_archived: false,
             focus_due: None,
             rows_dirty: true,
+            perf: OverviewPerf::default(),
+            state_fingerprint: initial_fingerprint,
+            work_item_index_key: None,
             rows_cache: std::rc::Rc::default(),
             search,
             chat_panel_open: false,
@@ -2151,11 +2193,58 @@ impl Overview {
         has_harness_session: bool,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .row_fetch_due
+            .get(&chat_id)
+            .is_some_and(|(had_session, due)| {
+                *had_session == has_harness_session && Instant::now() < *due
+            })
+        {
+            return;
+        }
+        self.perf.fetch_checks += 1;
         if has_harness_session {
             self.ensure_subagents(chat_id.clone(), cx);
         }
         self.ensure_context_usage(chat_id.clone(), cx);
-        self.ensure_link_status(chat_id, cx);
+        self.ensure_link_status(chat_id.clone(), cx);
+        match self.next_row_fetch_due(&chat_id, has_harness_session) {
+            Some(due) => {
+                self.row_fetch_due
+                    .insert(chat_id, (has_harness_session, due));
+            }
+            None => {
+                self.row_fetch_due.remove(&chat_id);
+            }
+        }
+    }
+
+    /// When the soonest of a chat's row fetches goes stale. `None` when any
+    /// is in flight or has no recorded result yet (so it must be re-checked
+    /// next time rather than skipped).
+    fn next_row_fetch_due(&self, chat_id: &str, has_harness_session: bool) -> Option<Instant> {
+        if self.link_status_pending.contains(chat_id)
+            || self.context_usage_pending.contains(chat_id)
+            || self.subagent_pending.contains(chat_id)
+        {
+            return None;
+        }
+        let link = self.link_status.get(chat_id)?.fetched_at + LINK_STATUS_REFRESH;
+        let context = *self.context_usage_fetched_at.get(chat_id)? + CONTEXT_USAGE_REFRESH;
+        let mut due = link.min(context);
+        if has_harness_session {
+            let ttl = if self
+                .subagents
+                .get(chat_id)
+                .is_some_and(|subs| subs.iter().any(|s| s.status == SubagentStatus::Running))
+            {
+                SUBAGENTS_RUNNING_REFRESH
+            } else {
+                SUBAGENTS_REFRESH
+            };
+            due = due.min(*self.subagents_fetched_at.get(chat_id)? + ttl);
+        }
+        Some(due)
     }
 
     fn toggle_group(&mut self, dim: GroupDimension, cx: &Context<Self>) {
@@ -2187,6 +2276,7 @@ impl Overview {
             return std::rc::Rc::clone(&self.rows_cache);
         }
 
+        self.perf.rows_rebuilds += 1;
         let now = Utc::now();
         // Work Outline facts for path chips, attention, and the work-item
         // filter.
@@ -2195,7 +2285,21 @@ impl Overview {
             .iter()
             .filter_map(|space| space.load.snapshot().cloned())
             .collect();
-        let work_item_index = WorkItemIndex::build(snapshots.iter().map(|s| s.as_ref()));
+        let index_is_current = self.work_item_index_key.as_ref().is_some_and(|key| {
+            key.len() == snapshots.len()
+                && key
+                    .iter()
+                    .zip(&snapshots)
+                    .all(|(built_from, now)| std::sync::Arc::ptr_eq(built_from, now))
+        });
+        let work_item_index = if index_is_current {
+            std::mem::take(&mut self.work_item_index)
+        } else {
+            WorkItemIndex::build(snapshots.iter().map(|s| s.as_ref()))
+        };
+        // Holding the Arcs keeps their addresses from being reused, so
+        // `ptr_eq` can't match a different snapshot.
+        self.work_item_index_key = Some(snapshots.clone());
         let outlines_loaded = outline_spaces
             .iter()
             .all(|space| !matches!(space.load, WorkOutlineLoad::Loading));
@@ -2654,6 +2758,7 @@ impl Overview {
             return;
         };
         self.link_status_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -2852,6 +2957,7 @@ impl Overview {
                         });
                         apply_link_reply(&mut entry.status, kind, &reply);
                         entry.fetched_at = expired;
+                        this.row_fetch_due.remove(&chat_id);
                         this.rows_dirty = true;
                         if this
                             .link_error
@@ -2903,6 +3009,7 @@ impl Overview {
             return;
         };
         self.subagent_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -2955,6 +3062,7 @@ impl Overview {
             return;
         };
         self.context_usage_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -7937,6 +8045,87 @@ mod logic_tests {
             o.rows_dirty = true;
             assert!(!std::rc::Rc::ptr_eq(&first, &o.rows(cx)));
         });
+    }
+
+    /// Synthetic busy session: 250 chats, one of them streaming. Counts what
+    /// the Overview does per `AppState` change; prints the counts (run with
+    /// `--nocapture`) and pins the post-fix bounds.
+    #[gpui::test]
+    fn streaming_one_chat_among_many_does_little_overview_work(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..250).map(|i| format!("repo{i}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let state = state_with_repos(cx, dir.path(), &name_refs);
+        let (overview, vcx) = overview_over(cx, &state);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                window.draw(cx).clear();
+            });
+        };
+        draw(vcx);
+        // Steady state: every chat's fetches have already landed (no engine
+        // here to do it for real).
+        overview.update(vcx, |o, _| {
+            for name in 0..250 {
+                let id = format!("c{name}");
+                o.link_status.insert(
+                    id.clone(),
+                    LinkStatusEntry {
+                        status: OverviewLinkStatus::default(),
+                        diff_stat: None,
+                        is_worktree: None,
+                        fetched_at: Instant::now(),
+                    },
+                );
+                o.context_usage_fetched_at.insert(id.clone(), Instant::now());
+                o.subagents_fetched_at.insert(id, Instant::now());
+            }
+            o.rows_dirty = true;
+        });
+        draw(vcx);
+        let before = overview.read_with(vcx, |o, _| o.perf);
+        let started = std::time::Instant::now();
+        for i in 0..50 {
+            // A streaming frame: the selected chat's transcript changes, no
+            // chat/space/session field does.
+            state.update(vcx, |state, cx| {
+                state.selected_chat = Some("c0".into());
+                state.transcript.clear();
+                state.queue.clear();
+                let _ = i;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            draw(vcx);
+        }
+        let elapsed = started.elapsed();
+        let after = overview.read_with(vcx, |o, _| o.perf);
+        let delta = OverviewPerf {
+            rows_rebuilds: after.rows_rebuilds - before.rows_rebuilds,
+            observer_calls: after.observer_calls - before.observer_calls,
+            observer_notifies: after.observer_notifies - before.observer_notifies,
+            fetch_checks: after.fetch_checks - before.fetch_checks,
+            fetch_requests: after.fetch_requests - before.fetch_requests,
+        };
+        eprintln!("PERF 250 chats x 50 streaming updates: {delta:?} in {elapsed:?}");
+        // Before the fingerprint gate, the row-list gate and the fetch-due
+        // gate: 50 rebuilds, 50 notifies, 12500 fetch checks. Only the first
+        // update (it changes the selection) may rebuild or repaint.
+        assert_eq!(delta.observer_calls, 50);
+        assert!(delta.rows_rebuilds <= 1, "{delta:?}");
+        assert!(delta.observer_notifies <= 1, "{delta:?}");
+        assert_eq!(delta.fetch_checks, 0, "{delta:?}");
+
+        // A real change to the streaming chat's row still gets through.
+        state.update(vcx, |state, cx| {
+            state.chats[0].last_message_preview = Some("new preview".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        let rows = overview.update(vcx, |o, cx| o.rows(cx));
+        let row = rows.iter().find(|r| r.chat.id == "c0").unwrap();
+        assert_eq!(row.chat.last_message_preview.as_deref(), Some("new preview"));
     }
 
     #[gpui::test]

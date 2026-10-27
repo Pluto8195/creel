@@ -1933,6 +1933,102 @@ impl AppState {
             .change_request_for_chat(chat, &self.spaces)
     }
 
+    /// Cheap hash of everything the Overview's row list and render read from
+    /// state: every chat and space field, each chat's derived status (which
+    /// folds in the session row, pending sends and connectivity), the Work
+    /// Outline loads, and the selection. Streaming transcript frames and
+    /// other changes to unrelated fields leave it unchanged, so the Overview
+    /// can skip its rebuild and repaint for them. Hashing in place (no clones)
+    /// keeps this far cheaper than the rebuild it gates.
+    pub(crate) fn overview_fingerprint(&self, now: DateTime<Utc>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::mem::discriminant;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.chats.len().hash(&mut h);
+        for chat in &self.chats {
+            chat.id.hash(&mut h);
+            chat.device_id.hash(&mut h);
+            chat.title.hash(&mut h);
+            chat.archived.hash(&mut h);
+            chat.cwd.hash(&mut h);
+            chat.branch.hash(&mut h);
+            chat.checkout_id.hash(&mut h);
+            if let Some(ctx) = &chat.source_context {
+                (
+                    &ctx.checkout_id,
+                    &ctx.repo_root,
+                    &ctx.cwd,
+                    &ctx.branch,
+                    &ctx.head_sha,
+                    ctx.observed_at,
+                )
+                    .hash(&mut h);
+            } else {
+                0u8.hash(&mut h);
+            }
+            match &chat.config {
+                Some(config) => {
+                    1u8.hash(&mut h);
+                    config.harness.hash(&mut h);
+                    config.model.hash(&mut h);
+                    config.reasoning.map(|r| discriminant(&r)).hash(&mut h);
+                    if !config.model_options.is_empty() {
+                        serde_json::Value::Object(config.model_options.clone())
+                            .to_string()
+                            .hash(&mut h);
+                    }
+                    discriminant(&config.sandbox).hash(&mut h);
+                    config.auto_approve.hash(&mut h);
+                }
+                None => 0u8.hash(&mut h),
+            }
+            chat.last_message_preview.hash(&mut h);
+            chat.last_message_at.hash(&mut h);
+            chat.created_at.hash(&mut h);
+            chat.harness_session_id.hash(&mut h);
+            chat.harness_session_cwd.hash(&mut h);
+            chat.actual_model.hash(&mut h);
+            chat.space_id.hash(&mut h);
+            chat.last_seen_at.hash(&mut h);
+            chat.room_gen.hash(&mut h);
+            chat.parent_chat_id.hash(&mut h);
+            chat.linked_pr_url.hash(&mut h);
+            chat.linked_pr_source.map(|s| discriminant(&s)).hash(&mut h);
+            chat.linked_ticket_id.hash(&mut h);
+            chat.linked_ticket_source
+                .map(|s| discriminant(&s))
+                .hash(&mut h);
+            discriminant(&self.display_status_for(chat, now)).hash(&mut h);
+        }
+        self.spaces.len().hash(&mut h);
+        for space in &self.spaces {
+            space.id.hash(&mut h);
+            space.device_id.hash(&mut h);
+            space.path.hash(&mut h);
+            space.name.hash(&mut h);
+            space.git_detected.hash(&mut h);
+            space.git_checked_at.hash(&mut h);
+            space.checkout_id.hash(&mut h);
+            space.created_at.hash(&mut h);
+            match self.work_outline(&space.id) {
+                crate::work_outline::WorkOutlineLoad::Loading => 0u8.hash(&mut h),
+                crate::work_outline::WorkOutlineLoad::Ready(snapshot) => {
+                    1u8.hash(&mut h);
+                    (Arc::as_ptr(&snapshot) as usize).hash(&mut h);
+                }
+                crate::work_outline::WorkOutlineLoad::Unsupported => 2u8.hash(&mut h),
+                crate::work_outline::WorkOutlineLoad::Failed(reason) => {
+                    3u8.hash(&mut h);
+                    reason.hash(&mut h);
+                }
+            }
+        }
+        self.selected_chat.hash(&mut h);
+        self.engine.is_some().hash(&mut h);
+        self.data_dir.hash(&mut h);
+        h.finish()
+    }
+
     /// Current Work Outline load state for one Space.
     pub(crate) fn work_outline(&self, space_id: &str) -> crate::work_outline::WorkOutlineLoad {
         self.work_outlines.load(space_id)
