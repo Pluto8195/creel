@@ -309,6 +309,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   debug log). Most likely cause of the 2026-10-26 Fable chats: agents calling `create_chat`
   without `model`. Saved per-chat/remembered picks are untouched. Codex has no built-in default.
   Mikey switched the CLI default in `~/.claude/settings.json` to Opus 5.5 the same day.
+- **Chats show the model they actually ran on** (2026-10-27): new `Chat.actual_model`
+  (serde-default, no migration), stamped from Claude Code's init event (`SessionStarted.model`); a
+  boot-time pass (`SessionsEngine::backfill_actual_models`) fills it read-only from each chat's run
+  journal. `Chat::model_display()` (proto) drives the header, card/outline badge and tooltip
+  ("configured X" when different, "default" when unknown). The composer chip on an existing chat
+  reads "Next: <model>" when that is only the next turn's pick. MCP `get_chat`/`list_chats`: `model`
+  is the actual model (else configured, else null) plus `modelIsActual`, `actualModel`,
+  `configuredModel`. Claude Code only; Codex/ACP/OpenCode just echo the request, Cursor untouched.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -317,6 +325,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Engine integration, flaky under parallel load (passes alone):
     `local_first::headless_sign_out_closes_joined_edge_rooms_and_stops_daemon`,
     `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send` (sometimes passes).
+  - Flaky under full parallel load (pass alone): engine `work_outline_rpc::mutations_stay_fast_on_a_large_local_registry`,
+    harness `opencode::tests::stalled_prompt_post_has_a_bounded_timeout`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
