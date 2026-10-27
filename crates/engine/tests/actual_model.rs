@@ -220,3 +220,49 @@ async fn echoed_request_models_are_not_recorded_as_actual() {
     assert_eq!(actual_model(&core), None);
     core.shutdown().await;
 }
+
+#[tokio::test]
+async fn backfill_marks_checked_journals_and_rechecks_only_after_growth() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    {
+        let core = assemble(&dir);
+        make_chat(&core);
+        core.shutdown().await;
+    }
+    let journals = dir.join("orgs/dev-org/dev-user/journals");
+    let started = |harness, model: &str| AgentEvent::SessionStarted {
+        harness,
+        model: model.into(),
+        tools: vec![],
+        cwd: "/tmp".into(),
+        session_id: "hs".into(),
+        assistant_message_id: "a".into(),
+    };
+    let journal = RunJournal::open(&journals).unwrap();
+    journal.append(CHAT, &started(HarnessId::Codex, "echo")).unwrap();
+    let core = assemble(&dir);
+    // Let the boot pass settle, then run ours: no model, so the journal is marked.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(core.sessions.backfill_actual_models(), 0);
+    let len = journal.byte_len(CHAT);
+    assert_eq!(journal.model_checked_len(CHAT), Some(len));
+    let before = std::fs::read(journals.join(format!("{CHAT}.jsonl"))).unwrap();
+
+    // Same length: skipped even though a model has appeared (planted via a
+    // marker matching the grown length), proving the journal is not reread.
+    journal.append(CHAT, &started(HarnessId::ClaudeCode, "claude-fable-5")).unwrap();
+    journal.mark_model_checked(CHAT, journal.byte_len(CHAT));
+    assert_eq!(core.sessions.backfill_actual_models(), 0, "marked chat skipped");
+    assert_eq!(actual_model(&core), None);
+
+    // Growth past the marker triggers a recheck, which finds the model.
+    journal.append(CHAT, &started(HarnessId::Codex, "echo")).unwrap();
+    assert_eq!(core.sessions.backfill_actual_models(), 1);
+    assert_eq!(actual_model(&core).as_deref(), Some("claude-fable-5"));
+    // Found: no longer rechecked, and the pass only ever read the journal.
+    assert_eq!(core.sessions.backfill_actual_models(), 0);
+    let after = std::fs::read(journals.join(format!("{CHAT}.jsonl"))).unwrap();
+    assert!(after.starts_with(&before));
+    core.shutdown().await;
+}

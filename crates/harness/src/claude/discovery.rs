@@ -1,9 +1,11 @@
-//! One initialize response feeds both picker catalogs for two minutes.
+//! One initialize response feeds both picker catalogs for 30 minutes.
 use crate::HarnessError;
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::time::Instant;
 use zeron_proto::SlashCommand;
+
+const FORCED_MAX_AGE: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 pub(super) struct InitializeCache {
@@ -18,6 +20,7 @@ struct State {
 impl InitializeCache {
     pub(super) async fn get<F, Fut>(
         &self,
+        force: bool,
         context: impl Fn() -> Result<[u8; 32], HarnessError>,
         probe: F,
     ) -> Result<Value, HarnessError>
@@ -25,6 +28,13 @@ impl InitializeCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, HarnessError>>,
     {
+        // An explicit refresh only reuses a response from the last two minutes
+        // (the probe is shared with the catalog refresh that triggers it).
+        let max_age = if force {
+            FORCED_MAX_AGE
+        } else {
+            crate::catalog::CATALOG_TTL
+        };
         let requested_at = Instant::now();
         let mut state = self.state.lock().await;
         let key = context()?;
@@ -35,7 +45,7 @@ impl InitializeCache {
             };
         }
         if let (Some(at), Some(response)) = (state.completed_at, &state.response)
-            && (at >= requested_at || (response.is_ok() && at.elapsed() < Duration::from_secs(120)))
+            && (at >= requested_at || (response.is_ok() && at.elapsed() < max_age))
         {
             return response.clone().map_err(HarnessError::Protocol);
         }
@@ -125,17 +135,36 @@ mod tests {
             Ok(serde_json::json!({"models":[],"commands":[]}))
         };
         let results =
-            futures::future::join_all((0..10).map(|_| cache.get(|| Ok([1; 32]), probe))).await;
+            futures::future::join_all((0..10).map(|_| cache.get(false, || Ok([1; 32]), probe)))
+                .await;
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(calls.load(Relaxed), 1);
-        tokio::time::advance(Duration::from_secs(119)).await;
-        cache.get(|| Ok([1; 32]), probe).await.unwrap();
+        tokio::time::advance(Duration::from_secs(30 * 60 - 1)).await;
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        cache.get(|| Ok([1; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 2);
-        cache.get(|| Ok([2; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([2; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 3);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn force_only_reuses_a_response_from_the_last_two_minutes() {
+        let cache = InitializeCache::default();
+        let calls = AtomicUsize::new(0);
+        let probe = || async {
+            calls.fetch_add(1, Relaxed);
+            Ok(serde_json::json!({}))
+        };
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
+        cache.get(true, || Ok([1; 32]), probe).await.unwrap();
+        assert_eq!(calls.load(Relaxed), 1);
+        tokio::time::advance(Duration::from_secs(121)).await;
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
+        assert_eq!(calls.load(Relaxed), 1);
+        cache.get(true, || Ok([1; 32]), probe).await.unwrap();
+        assert_eq!(calls.load(Relaxed), 2);
     }
     #[tokio::test]
     async fn failed_initialize_retries_and_raced_login_is_not_cached() {
@@ -143,6 +172,7 @@ mod tests {
         assert!(
             cache
                 .get(
+                    false,
                     || Ok([1; 32]),
                     || async { Err(HarnessError::Protocol("offline".into())) }
                 )
@@ -151,7 +181,7 @@ mod tests {
         );
         assert!(
             cache
-                .get(|| Ok([1; 32]), || async { Ok(Value::Null) })
+                .get(false, || Ok([1; 32]), || async { Ok(Value::Null) })
                 .await
                 .is_ok()
         );
@@ -159,6 +189,7 @@ mod tests {
         assert!(
             cache
                 .get(
+                    false,
                     || Ok([key.load(Relaxed) as u8; 32]),
                     || async {
                         key.store(3, Relaxed);

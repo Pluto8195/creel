@@ -7,6 +7,11 @@ use std::{
 };
 use zeron_proto::Model;
 
+/// A successful catalog is reused this long for the same binary and credentials;
+/// a changed binary or login changes the context key and bypasses it, and
+/// `force` skips it explicitly.
+pub(crate) const CATALOG_TTL: Duration = Duration::from_secs(30 * 60);
+
 #[derive(Default)]
 pub(crate) struct Catalog {
     pub(crate) state: tokio::sync::Mutex<State>,
@@ -130,7 +135,7 @@ impl Catalog {
             Ok(models) => {
                 state.models = Some(models);
                 state.error = None;
-                state.retry_at = Some(Instant::now() + Duration::from_secs(60));
+                state.retry_at = Some(Instant::now() + CATALOG_TTL);
             }
             Err(error) => {
                 if !error.code.allows_stale() {
@@ -198,6 +203,54 @@ mod tests {
     }
     async fn expire(catalog: &Catalog) {
         catalog.state.lock().await.retry_at = None;
+    }
+
+    #[tokio::test]
+    async fn success_is_reused_for_the_ttl_shared_and_invalidated_by_context() {
+        let cache = Catalog::default();
+        let calls = AtomicUsize::new(0);
+        let discover = || async {
+            calls.fetch_add(1, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(models("live"))
+        };
+        // Concurrent callers share one probe.
+        let results = futures::future::join_all(
+            (0..8).map(|_| cache.get_with(false, || Ok([1; 32]), discover)),
+        )
+        .await;
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        // Repeats inside the TTL do not probe; the deadline is ~30 minutes out.
+        for _ in 0..5 {
+            let hit = cache
+                .get_with(false, || Ok([1; 32]), discover)
+                .await
+                .unwrap();
+            assert_eq!(hit.source, "cache");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let left = cache.state.lock().await.retry_at.unwrap() - Instant::now();
+        assert!(left > Duration::from_secs(29 * 60));
+        // A different binary/credential context invalidates immediately.
+        cache
+            .get_with(false, || Ok([2; 32]), discover)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // Explicit refresh bypasses the TTL.
+        cache
+            .get_with(true, || Ok([2; 32]), discover)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        // Past the TTL it probes again.
+        expire(&cache).await;
+        cache
+            .get_with(false, || Ok([2; 32]), discover)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
     }
 
     #[tokio::test]
