@@ -309,9 +309,13 @@ pub(crate) fn issue_row_icons(
     url: String,
     shell: Option<WeakEntity<crate::shell::Shell>>,
     show_dot: bool,
+    show_identifier: bool,
     theme: &Theme,
 ) -> AnyElement {
     let selector = id.clone();
+    let id_selector = format!("{id}-id");
+    let identifier_text =
+        (show_identifier && !identifier.is_empty()).then(|| SharedString::from(identifier.to_string()));
     let (color, icon, tip): (gpui::Hsla, Option<&'static str>, String) = match entry {
         Some(IssueEntry::Ready { issue, .. }) => (
             crate::linear::hex_color(&issue.state.color, theme.text_muted),
@@ -334,14 +338,22 @@ pub(crate) fn issue_row_icons(
         .id(SharedString::from(id))
         .debug_selector(move || selector.clone())
         .flex_none()
-        .w(px(status_width(show_dot)))
         .flex()
         .items_center()
-        .justify_between()
+        .gap(px(ID_GAP))
         .px(px(3.0))
         .rounded(px(3.0))
         .cursor_pointer()
         .hover(|el| el.bg(theme.element_hover))
+        .children(identifier_text.map(|text| {
+            div()
+                .debug_selector(move || id_selector.clone())
+                .flex_none()
+                .font_family(theme.font_mono.clone())
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.text_faint)
+                .child(text)
+        }))
         .when(show_dot, |el| {
             el.child(div().flex_none().size(px(6.0)).rounded_full().bg(color))
         })
@@ -364,6 +376,16 @@ pub(crate) fn issue_row_icons(
         .into_any_element()
 }
 
+/// Estimated width of the ticket identifier plus its gap (10px monospace),
+/// or 0 without one; the element itself hugs the real text.
+pub(crate) fn identifier_width(identifier: &str) -> f32 {
+    if identifier.is_empty() {
+        0.0
+    } else {
+        identifier.chars().count() as f32 * ID_CHAR_WIDTH + ID_GAP
+    }
+}
+
 /// Fixed width of the status slot (dot, gap, icon, padding; just the icon
 /// and padding when the dot is dropped) so the slots line up across rows.
 fn status_width(show_dot: bool) -> f32 {
@@ -374,6 +396,9 @@ fn status_width(show_dot: bool) -> f32 {
     }
 }
 
+const STATUS_MAX_WIDTH: f32 = 160.0;
+const ID_CHAR_WIDTH: f32 = 6.0;
+const ID_GAP: f32 = 5.0;
 const STATUS_WIDTH: f32 = 28.0;
 const STATUS_ICON_WIDTH: f32 = 17.0;
 const ASSIGNEE_WIDTH: f32 = 58.0;
@@ -382,21 +407,24 @@ const SLOT_GAP: f32 = 4.0;
 
 /// Which droppable slots of a Linear row cluster are shown (the needs slot
 /// and the status icon never drop).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LinearSlots {
     pub assignee: bool,
     pub dot: bool,
+    /// Width of the shown ticket identifier; 0 when absent or dropped.
+    pub id_width: f32,
 }
 
 impl LinearSlots {
     pub(crate) const ALL: Self = Self {
         assignee: true,
         dot: true,
+        id_width: 0.0,
     };
 
     /// The width of the cluster with these slots.
     pub(crate) fn width(self) -> f32 {
-        let mut widths = vec![NEEDS_WIDTH, status_width(self.dot)];
+        let mut widths = vec![NEEDS_WIDTH, status_width(self.dot) + self.id_width];
         if self.assignee {
             widths.push(ASSIGNEE_WIDTH);
         }
@@ -405,14 +433,21 @@ impl LinearSlots {
 }
 
 /// The slots that fit in `room` pixels: the state dot drops first (the icon
-/// carries the state's color), then the assignee.
-pub(crate) fn linear_visible_slots(room: f32) -> LinearSlots {
-    let mut slots = LinearSlots::ALL;
+/// carries the state's color), then the assignee, then the ticket identifier
+/// (`id_width`, 0 without one).
+pub(crate) fn linear_visible_slots(room: f32, id_width: f32) -> LinearSlots {
+    let mut slots = LinearSlots {
+        id_width,
+        ..LinearSlots::ALL
+    };
     if slots.width() > room {
         slots.dot = false;
     }
     if slots.width() > room {
         slots.assignee = false;
+    }
+    if slots.width() > room {
+        slots.id_width = 0.0;
     }
     slots
 }
@@ -505,6 +540,7 @@ pub(crate) fn issue_row_slots(args: LinearRowArgs<'_>, theme: &Theme) -> AnyElem
         issue.url.clone(),
         shell,
         visible.dot,
+        visible.id_width > 0.0,
         theme,
     );
     let group_selector = format!("outline-linear-slots-{key}");
@@ -535,10 +571,9 @@ pub(crate) fn issue_row_slots(args: LinearRowArgs<'_>, theme: &Theme) -> AnyElem
                     .into_any_element()
             }),
         ))
-        .child(crate::github::row_icons::slot(
+        .children(crate::github::row_icons::text_slot(
             format!("outline-linear-slot-status-{key}"),
-            status_width(visible.dot),
-            false,
+            STATUS_MAX_WIDTH,
             Some(status),
         ))
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(line.clone())).into())
@@ -685,19 +720,25 @@ mod tests {
     #[test]
     fn narrow_rows_drop_the_dot_then_the_assignee_and_never_needs_or_status() {
         let all = LinearSlots::ALL;
-        assert_eq!(linear_visible_slots(all.width()), all);
-        assert_eq!(linear_visible_slots(1000.0), all);
+        assert_eq!(linear_visible_slots(all.width(), 0.0), all);
+        assert_eq!(linear_visible_slots(1000.0, 0.0), all);
         let no_dot = LinearSlots { dot: false, ..all };
-        assert_eq!(linear_visible_slots(all.width() - 0.5), no_dot);
-        assert_eq!(linear_visible_slots(no_dot.width()), no_dot);
+        assert_eq!(linear_visible_slots(all.width() - 0.5, 0.0), no_dot);
+        assert_eq!(linear_visible_slots(no_dot.width(), 0.0), no_dot);
         let minimal = LinearSlots {
             assignee: false,
             ..no_dot
         };
-        assert_eq!(linear_visible_slots(no_dot.width() - 0.5), minimal);
-        assert_eq!(linear_visible_slots(-50.0), minimal);
+        assert_eq!(linear_visible_slots(no_dot.width() - 0.5, 0.0), minimal);
+        assert_eq!(linear_visible_slots(-50.0, 0.0), minimal);
         assert!(minimal.width() > 0.0 && minimal.width() < no_dot.width());
         assert!(no_dot.width() < all.width());
+        // The identifier drops last.
+        let id = identifier_width("ENG-3190");
+        let with_id = linear_visible_slots(1000.0, id);
+        assert_eq!(with_id.id_width, id);
+        assert_eq!(linear_visible_slots(minimal.width() + id, id).id_width, id);
+        assert_eq!(linear_visible_slots(minimal.width() + id - 0.5, id).id_width, 0.0);
     }
 
     #[test]
