@@ -2733,9 +2733,16 @@ impl OutlineView {
                     let artifacts = self.artifact_count_chip(&key, item, theme, cx);
                     // Rough widths of the chips that share the row with the
                     // PR icon cluster (they size to their content).
-                    let other_width = if item.pending_proposals > 0 { 56.0 } else { 0.0 }
-                        + if artifacts.is_some() { 34.0 } else { 0.0 }
-                        + if item.execution_exceptions > 0 { 28.0 } else { 0.0 };
+                    let other_width = if item.pending_proposals > 0 {
+                        56.0
+                    } else {
+                        0.0
+                    } + if artifacts.is_some() { 34.0 } else { 0.0 }
+                        + if item.execution_exceptions > 0 {
+                            28.0
+                        } else {
+                            0.0
+                        };
                     let external =
                         self.external_chips(&key, item, row.depth, other_width, theme, cx);
                     item_body(

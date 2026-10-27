@@ -40,6 +40,8 @@ mod compare_tests;
 mod find_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod zoom_tests;
 
 pub(crate) use actions::ArtifactActions;
 pub(crate) use store::{ArtifactStore, ArtifactsLoad};

@@ -127,11 +127,15 @@ pub(crate) fn classify_free_text(query: &str) -> Option<FreeText> {
         return None;
     }
     let pr = |number: &str| {
-        number.parse::<u64>().ok().filter(|n| *n > 0).map(|n| FreeText {
-            input: input.to_owned(),
-            kind: RefDiffKind::Pr,
-            label: format!("PR #{n}"),
-        })
+        number
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .map(|n| FreeText {
+                input: input.to_owned(),
+                kind: RefDiffKind::Pr,
+                label: format!("PR #{n}"),
+            })
     };
     if input.to_ascii_lowercase().contains("github.com/") {
         let after = input.split_once("/pull/")?.1;
@@ -291,7 +295,12 @@ mod tests {
         assert_eq!(short_path("/a/b"), "/a/b");
     }
 
-    fn ref_candidate(kind: RefDiffKind, label: &str, input: &str, linked: bool) -> RefDiffCandidate {
+    fn ref_candidate(
+        kind: RefDiffKind,
+        label: &str,
+        input: &str,
+        linked: bool,
+    ) -> RefDiffCandidate {
         RefDiffCandidate {
             kind,
             label: label.into(),
@@ -354,7 +363,11 @@ mod tests {
         // No query: the engine's order, no free-text row.
         assert_eq!(
             ref_rows(&candidates, ""),
-            vec![RefRow::Candidate(0), RefRow::Candidate(1), RefRow::Candidate(2)]
+            vec![
+                RefRow::Candidate(0),
+                RefRow::Candidate(1),
+                RefRow::Candidate(2)
+            ]
         );
         // A query that matches a candidate does not add a duplicate row.
         assert_eq!(ref_rows(&candidates, "6488"), vec![RefRow::Candidate(1)]);

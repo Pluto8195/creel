@@ -30,7 +30,13 @@ pub enum AppLight {
 }
 
 impl AppLight {
-    pub const ALL: [Self; 5] = [Self::Idle, Self::Working, Self::Ready, Self::Input, Self::Error];
+    pub const ALL: [Self; 5] = [
+        Self::Idle,
+        Self::Working,
+        Self::Ready,
+        Self::Input,
+        Self::Error,
+    ];
 
     /// The 512 px Dock icon for this lamp.
     pub fn dock_png(self) -> &'static [u8] {
@@ -334,19 +340,37 @@ mod tests {
 
     #[test]
     fn nothing_going_on_is_idle() {
-        assert_eq!(light(&[], &[]), LightSummary { light: AppLight::Idle, badge: 0 });
+        assert_eq!(
+            light(&[], &[]),
+            LightSummary {
+                light: AppLight::Idle,
+                badge: 0
+            }
+        );
         assert_eq!(light(&[Quiet, Quiet], &[]).light, AppLight::Idle);
     }
 
     #[test]
     fn working_alone_is_working_with_no_badge() {
-        assert_eq!(light(&[Working, Quiet], &[]), LightSummary { light: AppLight::Working, badge: 0 });
+        assert_eq!(
+            light(&[Working, Quiet], &[]),
+            LightSummary {
+                light: AppLight::Working,
+                badge: 0
+            }
+        );
     }
 
     #[test]
     fn a_ready_to_merge_request_is_ready_and_beats_working() {
         let summary = light(&[Working], &["Ready to merge: status-light"]);
-        assert_eq!(summary, LightSummary { light: AppLight::Ready, badge: 1 });
+        assert_eq!(
+            summary,
+            LightSummary {
+                light: AppLight::Ready,
+                badge: 1
+            }
+        );
         assert!(is_ready_to_merge("  Ready to merge: x"));
         assert!(!is_ready_to_merge("Is this Ready to merge?"));
     }
@@ -354,19 +378,40 @@ mod tests {
     #[test]
     fn awaiting_input_is_input_and_beats_ready_and_working() {
         let summary = light(&[Working, AwaitingInput], &["Ready to merge: a"]);
-        assert_eq!(summary, LightSummary { light: AppLight::Input, badge: 2 });
+        assert_eq!(
+            summary,
+            LightSummary {
+                light: AppLight::Input,
+                badge: 2
+            }
+        );
     }
 
     #[test]
     fn any_other_open_request_is_input_even_without_a_waiting_chat() {
         let summary = light(&[Quiet], &["Which colour?", "Ready to merge: a"]);
-        assert_eq!(summary, LightSummary { light: AppLight::Input, badge: 2 });
+        assert_eq!(
+            summary,
+            LightSummary {
+                light: AppLight::Input,
+                badge: 2
+            }
+        );
     }
 
     #[test]
     fn an_errored_chat_beats_everything() {
-        let summary = light(&[Working, AwaitingInput, Errored], &["Which colour?", "Ready to merge: a"]);
-        assert_eq!(summary, LightSummary { light: AppLight::Error, badge: 4 });
+        let summary = light(
+            &[Working, AwaitingInput, Errored],
+            &["Which colour?", "Ready to merge: a"],
+        );
+        assert_eq!(
+            summary,
+            LightSummary {
+                light: AppLight::Error,
+                badge: 4
+            }
+        );
     }
 
     #[test]
@@ -385,22 +430,40 @@ mod tests {
     #[test]
     fn plan_touches_only_what_changed() {
         let a = live(AppLight::Working, 0);
-        assert_eq!(plan(a, a), DockOps { icon: None, badge: None });
+        assert_eq!(
+            plan(a, a),
+            DockOps {
+                icon: None,
+                badge: None
+            }
+        );
         assert_eq!(
             plan(a, live(AppLight::Working, 3)),
-            DockOps { icon: None, badge: Some(3) }
+            DockOps {
+                icon: None,
+                badge: Some(3)
+            }
         );
         assert_eq!(
             plan(a, live(AppLight::Input, 0)),
-            DockOps { icon: Some(Some(AppLight::Input)), badge: None }
+            DockOps {
+                icon: Some(Some(AppLight::Input)),
+                badge: None
+            }
         );
         assert_eq!(
             plan(live(AppLight::Error, 2), DockTarget::Default),
-            DockOps { icon: Some(None), badge: Some(0) }
+            DockOps {
+                icon: Some(None),
+                badge: Some(0)
+            }
         );
         assert_eq!(
             plan(DockTarget::Default, live(AppLight::Idle, 0)),
-            DockOps { icon: Some(Some(AppLight::Idle)), badge: None }
+            DockOps {
+                icon: Some(Some(AppLight::Idle)),
+                badge: None
+            }
         );
     }
 
@@ -412,7 +475,9 @@ mod tests {
         assert_eq!(sync.observe(target, t0), None);
         assert!(sync.has_pending());
         assert_eq!(sync.take_due(t0 + Duration::from_millis(900)), None);
-        let ops = sync.take_due(t0 + DEBOUNCE).expect("due after the debounce");
+        let ops = sync
+            .take_due(t0 + DEBOUNCE)
+            .expect("due after the debounce");
         assert_eq!(ops.icon, Some(Some(AppLight::Working)));
         assert!(!sync.has_pending());
         assert_eq!(sync.observe(target, t0 + DEBOUNCE), None);
@@ -426,7 +491,10 @@ mod tests {
         sync.observe(live(AppLight::Idle, 0), t0);
         sync.take_due(t0 + DEBOUNCE);
         sync.observe(live(AppLight::Error, 1), t0 + DEBOUNCE);
-        sync.observe(live(AppLight::Idle, 0), t0 + DEBOUNCE + Duration::from_millis(200));
+        sync.observe(
+            live(AppLight::Idle, 0),
+            t0 + DEBOUNCE + Duration::from_millis(200),
+        );
         assert!(!sync.has_pending());
         assert_eq!(sync.take_due(t0 + DEBOUNCE * 4), None);
     }
@@ -437,11 +505,23 @@ mod tests {
         let mut sync = DockSync::default();
         sync.observe(live(AppLight::Working, 0), t0);
         sync.observe(live(AppLight::Working, 0), t0 + Duration::from_millis(600));
-        assert!(sync.take_due(t0 + DEBOUNCE).is_some(), "same target keeps its clock");
+        assert!(
+            sync.take_due(t0 + DEBOUNCE).is_some(),
+            "same target keeps its clock"
+        );
         sync.observe(live(AppLight::Input, 1), t0 + DEBOUNCE);
-        sync.observe(live(AppLight::Input, 2), t0 + DEBOUNCE + Duration::from_millis(600));
-        assert_eq!(sync.take_due(t0 + DEBOUNCE + DEBOUNCE), None, "new target restarted");
-        let ops = sync.take_due(t0 + DEBOUNCE * 2 + Duration::from_millis(600)).unwrap();
+        sync.observe(
+            live(AppLight::Input, 2),
+            t0 + DEBOUNCE + Duration::from_millis(600),
+        );
+        assert_eq!(
+            sync.take_due(t0 + DEBOUNCE + DEBOUNCE),
+            None,
+            "new target restarted"
+        );
+        let ops = sync
+            .take_due(t0 + DEBOUNCE * 2 + Duration::from_millis(600))
+            .unwrap();
         assert_eq!(ops.badge, Some(2));
     }
 
@@ -452,8 +532,16 @@ mod tests {
         sync.observe(live(AppLight::Input, 2), t0);
         sync.take_due(t0 + DEBOUNCE);
         sync.observe(live(AppLight::Error, 3), t0 + DEBOUNCE);
-        let ops = sync.observe(DockTarget::Default, t0 + DEBOUNCE).expect("immediate");
-        assert_eq!(ops, DockOps { icon: Some(None), badge: Some(0) });
+        let ops = sync
+            .observe(DockTarget::Default, t0 + DEBOUNCE)
+            .expect("immediate");
+        assert_eq!(
+            ops,
+            DockOps {
+                icon: Some(None),
+                badge: Some(0)
+            }
+        );
         assert!(!sync.has_pending());
         assert_eq!(sync.observe(DockTarget::Default, t0 + DEBOUNCE), None);
     }
@@ -464,7 +552,12 @@ mod tests {
             assert_eq!(&lamp.dock_png()[1..4], b"PNG");
             for appearance in [Appearance::Light, Appearance::Dark] {
                 let asset = lamp.logo_asset(appearance);
-                assert!(gpui::AssetSource::load(&crate::icons::Assets, asset).unwrap().is_some(), "{asset}");
+                assert!(
+                    gpui::AssetSource::load(&crate::icons::Assets, asset)
+                        .unwrap()
+                        .is_some(),
+                    "{asset}"
+                );
             }
         }
     }
@@ -475,20 +568,36 @@ mod tests {
         // A strongly saturated lens pixel of each lamp's hue (Cofactr palette).
         let hue: [(AppLight, fn(&[u8]) -> bool); 4] = [
             // clover green
-            (AppLight::Working, |p| p[1] as i32 > p[0] as i32 + 60 && p[1] as i32 > p[2] as i32 + 40),
+            (AppLight::Working, |p| {
+                p[1] as i32 > p[0] as i32 + 60 && p[1] as i32 > p[2] as i32 + 40
+            }),
             // cobalt blue
-            (AppLight::Ready, |p| p[0] as i32 > p[1] as i32 + 50 && p[0] as i32 > p[2] as i32 + 80),
+            (AppLight::Ready, |p| {
+                p[0] as i32 > p[1] as i32 + 50 && p[0] as i32 > p[2] as i32 + 80
+            }),
             // bromine amber
-            (AppLight::Input, |p| p[2] as i32 > 180 && p[1] as i32 > 150 && (p[0] as i32) < 90),
+            (AppLight::Input, |p| {
+                p[2] as i32 > 180 && p[1] as i32 > 150 && (p[0] as i32) < 90
+            }),
             // cadmium orange-red
-            (AppLight::Error, |p| p[2] as i32 > 200 && (p[1] as i32) < 110 && (p[0] as i32) < 90),
+            (AppLight::Error, |p| {
+                p[2] as i32 > 200 && (p[1] as i32) < 110 && (p[0] as i32) < 90
+            }),
         ];
         for appearance in [Appearance::Light, Appearance::Dark] {
             for (lamp, has_hue) in hue {
                 let asset = lamp.logo_asset(appearance);
-                let bytes = gpui::AssetSource::load(&crate::icons::Assets, asset).unwrap().unwrap();
-                assert!(bytes.len() < 4096 + 1024, "{asset} is {} bytes", bytes.len());
-                let image = renderer.render_single_frame(&bytes, 2.0).expect("logo renders");
+                let bytes = gpui::AssetSource::load(&crate::icons::Assets, asset)
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    bytes.len() < 4096 + 1024,
+                    "{asset} is {} bytes",
+                    bytes.len()
+                );
+                let image = renderer
+                    .render_single_frame(&bytes, 2.0)
+                    .expect("logo renders");
                 let px = image.as_bytes(0).unwrap(); // premultiplied BGRA
                 assert_eq!(px[3], 0, "{asset}: top-left corner is transparent");
                 let found = px

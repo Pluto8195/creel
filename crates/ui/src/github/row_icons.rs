@@ -479,8 +479,7 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
         });
     let review = status
         .and_then(|status| {
-            review_icon(status.my_review_state)
-                .zip(chip::my_review_label(status.my_review_state))
+            review_icon(status.my_review_state).zip(chip::my_review_label(status.my_review_state))
         })
         .map(|((path, tone), label)| {
             icon_mark(
@@ -502,12 +501,7 @@ pub(crate) fn pr_row_slots(args: PrRowArgs<'_>, theme: &Theme) -> AnyElement {
                 .flex_none()
                 .size(px(CI_WIDTH))
                 .p(px(1.0))
-                .child(
-                    div()
-                        .size_full()
-                        .rounded_full()
-                        .bg(tone_color(tone, theme)),
-                )
+                .child(div().size_full().rounded_full().bg(tone_color(tone, theme)))
                 .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
                 .into_any_element()
         });
@@ -683,10 +677,7 @@ pub(crate) fn legend_rows() -> Vec<LegendRow> {
             label: "Needs your action (count when several)",
         },
         review(PullRequestMyReviewState::Requested, "Review requested"),
-        review(
-            PullRequestMyReviewState::ReRequested,
-            "Re-review requested",
-        ),
+        review(PullRequestMyReviewState::ReRequested, "Re-review requested"),
         review(PullRequestMyReviewState::Approved, "You approved"),
         review(
             PullRequestMyReviewState::ChangesRequested,
@@ -781,7 +772,10 @@ mod tests {
             author_text("exactly-ten", None).as_deref(),
             Some("exactly-t\u{2026}")
         );
-        assert_eq!(author_text("tenletters", None).as_deref(), Some("tenletters"));
+        assert_eq!(
+            author_text("tenletters", None).as_deref(),
+            Some("tenletters")
+        );
         let long = author_text("alexander-the-great", None).unwrap();
         assert_eq!(long, "alexander\u{2026}");
         assert_eq!(long.chars().count(), AUTHOR_MAX_CHARS);
@@ -817,7 +811,10 @@ mod tests {
             "#42 \u{00b7} Open \u{00b7} Approved \u{00b7} by alex"
         );
         status.state = PullRequestState::Merged;
-        assert_eq!(group_line(&status, 0, None), "#42 \u{00b7} Merged \u{00b7} by alex");
+        assert_eq!(
+            group_line(&status, 0, None),
+            "#42 \u{00b7} Merged \u{00b7} by alex"
+        );
         assert!(pr_tooltip(&status).contains("acme/app#42 \u{00b7} Merged"));
         assert!(pr_tooltip(&status).ends_with("Click to open on GitHub"));
     }
@@ -854,7 +851,10 @@ mod tests {
         // cluster keeps every slot; one pixel less drops CI.
         let indent = 8.0;
         let width = ROW_CHROME + indent + TITLE_MIN_WIDTH + VisibleSlots::ALL.width();
-        assert_eq!(visible_slots(slot_room(width, indent, 0.0)), VisibleSlots::ALL);
+        assert_eq!(
+            visible_slots(slot_room(width, indent, 0.0)),
+            VisibleSlots::ALL
+        );
         assert!(!visible_slots(slot_room(width - 1.0, indent, 0.0)).ci);
         // Other chips on the row take from the same room.
         assert!(!visible_slots(slot_room(width, indent, 30.0)).ci);

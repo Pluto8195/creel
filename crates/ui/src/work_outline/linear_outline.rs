@@ -314,8 +314,8 @@ pub(crate) fn issue_row_icons(
 ) -> AnyElement {
     let selector = id.clone();
     let id_selector = format!("{id}-id");
-    let identifier_text =
-        (show_identifier && !identifier.is_empty()).then(|| SharedString::from(identifier.to_string()));
+    let identifier_text = (show_identifier && !identifier.is_empty())
+        .then(|| SharedString::from(identifier.to_string()));
     let (color, icon, tip): (gpui::Hsla, Option<&'static str>, String) = match entry {
         Some(IssueEntry::Ready { issue, .. }) => (
             crate::linear::hex_color(&issue.state.color, theme.text_muted),
@@ -364,11 +364,9 @@ pub(crate) fn issue_row_icons(
                 .flex()
                 .items_center()
                 .justify_center()
-                .children(icon.map(|path| {
-                    crate::icons::icon(path)
-                        .size(px(11.0))
-                        .text_color(color)
-                })),
+                .children(
+                    icon.map(|path| crate::icons::icon(path).size(px(11.0)).text_color(color)),
+                ),
         )
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -515,10 +513,12 @@ pub(crate) fn issue_row_slots(args: LinearRowArgs<'_>, theme: &Theme) -> AnyElem
         totals_line.as_deref(),
     )
     .into();
-    let assignee = ready.and_then(|ready| ready.assignee.as_ref()).and_then(|user| {
-        let name = crate::linear::user_name(user);
-        crate::github::row_icons::author_text(&name, None).map(|text| (text, name))
-    });
+    let assignee = ready
+        .and_then(|ready| ready.assignee.as_ref())
+        .and_then(|user| {
+            let name = crate::linear::user_name(user);
+            crate::github::row_icons::author_text(&name, None).map(|text| (text, name))
+        });
     let assignee = assignee.map(|(text, name)| {
         let selector = format!("outline-linear-assignee-{key}");
         let tip: SharedString = format!("Assigned to {name}").into();
@@ -591,13 +591,11 @@ pub(crate) fn issue_chip(
 ) -> AnyElement {
     let selector = id.clone();
     let (dot, text, tip): (gpui::Hsla, String, String) = match entry {
-        Some(IssueEntry::Ready { issue, .. }) => {
-            (
-                crate::linear::hex_color(&issue.state.color, theme.text_muted),
-                issue_chip_text(issue),
-                format!("{} \u{00b7} {}", issue.identifier, issue.title),
-            )
-        }
+        Some(IssueEntry::Ready { issue, .. }) => (
+            crate::linear::hex_color(&issue.state.color, theme.text_muted),
+            issue_chip_text(issue),
+            format!("{} \u{00b7} {}", issue.identifier, issue.title),
+        ),
         Some(IssueEntry::Failed { error, .. }) => (
             theme.warning,
             identifier.to_string(),
@@ -738,7 +736,10 @@ mod tests {
         let with_id = linear_visible_slots(1000.0, id);
         assert_eq!(with_id.id_width, id);
         assert_eq!(linear_visible_slots(minimal.width() + id, id).id_width, id);
-        assert_eq!(linear_visible_slots(minimal.width() + id - 0.5, id).id_width, 0.0);
+        assert_eq!(
+            linear_visible_slots(minimal.width() + id - 0.5, id).id_width,
+            0.0
+        );
     }
 
     #[test]

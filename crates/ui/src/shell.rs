@@ -9751,11 +9751,9 @@ impl Shell {
                         .flex_col()
                         .items_center()
                         .child(
-                            div().opacity(0.09).child(
-                                self.logo(theme.appearance)
-                                    .w(px(33.3))
-                                    .h(px(48.0)),
-                            ),
+                            div()
+                                .opacity(0.09)
+                                .child(self.logo(theme.appearance).w(px(33.3)).h(px(48.0))),
                         )
                         .child(
                             div()
@@ -11356,11 +11354,7 @@ impl Shell {
             .shadow_lg()
             .flex()
             .flex_col()
-            .child(
-                self.logo(theme.appearance)
-                    .w(px(19.4))
-                    .h(px(28.0)),
-            )
+            .child(self.logo(theme.appearance).w(px(19.4)).h(px(28.0)))
             .child(
                 div()
                     .mt(px(20.0))

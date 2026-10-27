@@ -49,6 +49,13 @@ pub(crate) fn image_display_size(
 }
 
 impl ArtifactTab {
+    #[cfg(test)]
+    pub(crate) fn markdown_zoom_for_tests(&self, cx: &gpui::App) -> f32 {
+        self.markdown
+            .as_ref()
+            .map_or(0.0, |preview| preview.read(cx).zoom())
+    }
+
     pub(crate) fn zoom_level(&self) -> f32 {
         self.zoom
     }
@@ -176,13 +183,16 @@ impl ArtifactTab {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let viewport = self.image_scroll.bounds().size;
-        let display = self.image_size.filter(|_| viewport.width > px(1.0)).map(|natural| {
-            image_display_size(
-                natural,
-                (f32::from(viewport.width), f32::from(viewport.height)),
-                self.zoom,
-            )
-        });
+        let display = self
+            .image_size
+            .filter(|_| viewport.width > px(1.0))
+            .map(|natural| {
+                image_display_size(
+                    natural,
+                    (f32::from(viewport.width), f32::from(viewport.height)),
+                    self.zoom,
+                )
+            });
         if display.is_none() && !zoom::is_default(self.zoom) {
             // The scroll area hasn't been measured yet: draw once more.
             let entity = cx.entity();
@@ -279,10 +289,14 @@ impl ArtifactTab {
                 .gap(px(1.0))
                 .mr(px(4.0))
                 .child(
-                    button("artifact-zoom-out", "\u{2212}".into(), level > zoom::MIN_ZOOM)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.zoom_step(-1, cx);
-                        })),
+                    button(
+                        "artifact-zoom-out",
+                        "\u{2212}".into(),
+                        level > zoom::MIN_ZOOM,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.zoom_step(-1, cx);
+                    })),
                 )
                 .child(
                     button("artifact-zoom-reset", zoom::label(level).into(), !default)
@@ -310,9 +324,21 @@ mod tests {
 
     #[test]
     fn images_fit_but_never_grow_past_natural_size() {
-        assert_eq!(image_display_size((200.0, 100.0), (800.0, 600.0), 1.0), (200.0, 100.0));
-        assert_eq!(image_display_size((1600.0, 800.0), (800.0, 600.0), 1.0), (800.0, 400.0));
-        assert_eq!(image_display_size((1600.0, 800.0), (800.0, 600.0), 2.0), (1600.0, 800.0));
-        assert_eq!(image_display_size((200.0, 100.0), (800.0, 600.0), 0.5), (100.0, 50.0));
+        assert_eq!(
+            image_display_size((200.0, 100.0), (800.0, 600.0), 1.0),
+            (200.0, 100.0)
+        );
+        assert_eq!(
+            image_display_size((1600.0, 800.0), (800.0, 600.0), 1.0),
+            (800.0, 400.0)
+        );
+        assert_eq!(
+            image_display_size((1600.0, 800.0), (800.0, 600.0), 2.0),
+            (1600.0, 800.0)
+        );
+        assert_eq!(
+            image_display_size((200.0, 100.0), (800.0, 600.0), 0.5),
+            (100.0, 50.0)
+        );
     }
 }

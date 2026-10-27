@@ -222,9 +222,8 @@ impl OutlineView {
         };
         other_width += if review_label.is_some() { 20.0 } else { 0.0 };
         let destination = join_chips(
-            review_label.map(|label| {
-                review_marker(format!("outline-pr-reviewing-{key}"), label, theme)
-            }),
+            review_label
+                .map(|label| review_marker(format!("outline-pr-reviewing-{key}"), label, theme)),
             destination,
         );
         store::request_viewer(&self.state, cx);

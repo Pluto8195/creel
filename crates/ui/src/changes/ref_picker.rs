@@ -37,11 +37,7 @@ impl Changes {
             return;
         };
         let search = cx.new(|cx| {
-            ComposerInput::with_context(
-                "PR number, PR URL or branch\u{2026}",
-                "PaletteSearch",
-                cx,
-            )
+            ComposerInput::with_context("PR number, PR URL or branch\u{2026}", "PaletteSearch", cx)
         });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
@@ -95,7 +91,11 @@ impl Changes {
         ref_rows(candidates, &query)
     }
 
-    pub(super) fn ref_target_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+    pub(super) fn ref_target_menu_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
         if !self.ref_target_menu.is_open() {
             return;
         }
@@ -162,9 +162,7 @@ impl Changes {
                     (candidate.kind == RefDiffKind::Branch).then(|| candidate.path.clone()),
                 )
             }
-            RefRow::FreeText(FreeText { input, label, .. }) => {
-                (label.clone(), input.clone(), None)
-            }
+            RefRow::FreeText(FreeText { input, label, .. }) => (label.clone(), input.clone(), None),
         };
         if let Some(menu) = self.ref_target_menu.open_mut() {
             menu.busy = Some(format!("Fetching {label}\u{2026}").into());
@@ -296,9 +294,9 @@ impl Changes {
                         message,
                     ))
                     .into_any_element(),
-                popover::Loadable::Ready(_) => note(
-                    "Type a PR number, a PR URL or a branch name to diff it".into(),
-                ),
+                popover::Loadable::Ready(_) => {
+                    note("Type a PR number, a PR URL or a branch name to diff it".into())
+                }
             }
         } else {
             let candidates: Vec<RefDiffCandidate> = state.ready().cloned().unwrap_or_default();

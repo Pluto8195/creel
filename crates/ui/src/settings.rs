@@ -2534,7 +2534,10 @@ mod tests {
             loaded.notifications_background_only,
             "pre-banner files default background-only on"
         );
-        assert!(loaded.live_app_icon, "pre-status-light files default the live icon on");
+        assert!(
+            loaded.live_app_icon,
+            "pre-status-light files default the live icon on"
+        );
         assert!(
             !loaded.escape_stops_active_agent,
             "preference files default Escape stopping off"

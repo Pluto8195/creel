@@ -188,7 +188,10 @@ pub(crate) struct ResolveInput<'a> {
 }
 
 /// The work item a Chat is associated with (dangling assignments excluded).
-pub(crate) fn assigned_item<'a>(snapshot: &'a WorkOutlineSnapshot, chat_id: &str) -> Option<&'a str> {
+pub(crate) fn assigned_item<'a>(
+    snapshot: &'a WorkOutlineSnapshot,
+    chat_id: &str,
+) -> Option<&'a str> {
     let dangling = snapshot.assignments.iter().any(|assignment| {
         assignment.chat_id == chat_id
             && assignment.state == WorkItemChatAssignmentState::DanglingChat
@@ -223,7 +226,11 @@ fn lineage<'a>(snapshot: &'a WorkOutlineSnapshot, item_id: &str) -> Vec<&'a Work
 /// Whether `item` is a PR review item. Like `github::pr_review_item`, but an
 /// archived item still counts: merged and closed PRs auto-archive their item
 /// while the review Chat stays open.
-pub(crate) fn is_review_item(snapshot: &WorkOutlineSnapshot, item: &WorkItemView, pr: &PullRequestRef) -> bool {
+pub(crate) fn is_review_item(
+    snapshot: &WorkOutlineSnapshot,
+    item: &WorkItemView,
+    pr: &PullRequestRef,
+) -> bool {
     let synced = item
         .external_sync_state
         .as_ref()
@@ -278,7 +285,11 @@ fn push_unique(prs: &mut Vec<PullRequestRef>, pr: PullRequestRef) {
 
 /// Which strip, if any, the Chat shows. Pure.
 pub(crate) fn resolve(input: &ResolveInput<'_>) -> Option<WorkContext> {
-    let deliberate: Vec<&ChatPr> = input.chat_prs.iter().filter(|link| link.deliberate()).collect();
+    let deliberate: Vec<&ChatPr> = input
+        .chat_prs
+        .iter()
+        .filter(|link| link.deliberate())
+        .collect();
     let item_id = input
         .snapshot
         .and_then(|snapshot| assigned_item(snapshot, input.chat_id));
@@ -286,7 +297,9 @@ pub(crate) fn resolve(input: &ResolveInput<'_>) -> Option<WorkContext> {
         (Some(snapshot), Some(id)) => lineage(snapshot, id),
         _ => Vec::new(),
     };
-    let linear = input.snapshot.filter(|s| crate::linear::space_enabled(Some(s)));
+    let linear = input
+        .snapshot
+        .filter(|s| crate::linear::space_enabled(Some(s)));
     let item_ticket = |snapshot: Option<&WorkOutlineSnapshot>| {
         item_id
             .zip(snapshot)

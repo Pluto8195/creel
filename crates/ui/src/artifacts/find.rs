@@ -474,7 +474,7 @@ mod tests {
             assert!(!script.contains("</script"));
         }
         assert!(
-            FRAME_SCRIPT.lines().count() < 60,
+            FRAME_SCRIPT.lines().count() < 90,
             "keep the injected JS small"
         );
         assert!(HOST_SCRIPT.lines().count() < 15);

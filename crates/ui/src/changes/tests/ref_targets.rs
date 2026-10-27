@@ -114,7 +114,9 @@ fn target_rpc(calls: RpcCalls, bind_error: Option<&'static str>) -> crate::diff_
             .unwrap()),
             zeron_rpc::methods::SET_CHAT_DIFF_TARGET => match bind_error {
                 Some(message) => Err(message.to_owned()),
-                None => Ok(serde_json::to_value(zeron_proto::ChatDiffTargetsReply::default()).unwrap()),
+                None => {
+                    Ok(serde_json::to_value(zeron_proto::ChatDiffTargetsReply::default()).unwrap())
+                }
             },
             other => Err(format!("unexpected {other}")),
         }
@@ -276,9 +278,17 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, calls, vcx, frames: _frames, .. } = open(cx, None, None);
+    let Opened {
+        changes,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, None, None);
     draw(vcx);
-    let checkout = vcx.debug_bounds("changes-checkout-trigger").expect("Diff checkout…");
+    let checkout = vcx
+        .debug_bounds("changes-checkout-trigger")
+        .expect("Diff checkout…");
     let branch_or_pr = vcx
         .debug_bounds("changes-ref-target-trigger")
         .expect("Diff branch / PR…");
@@ -293,7 +303,11 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
     );
     assert_eq!(
         rows(&changes, vcx),
-        vec![RefRow::Candidate(0), RefRow::Candidate(1), RefRow::Candidate(2)]
+        vec![
+            RefRow::Candidate(0),
+            RefRow::Candidate(1),
+            RefRow::Candidate(2)
+        ]
     );
     draw(vcx);
     assert!(vcx.debug_bounds("changes-ref-target-row-0").is_some());
@@ -301,18 +315,30 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
     // Escape closes it first.
     changes.update(vcx, |changes, cx| assert!(changes.handle_escape(cx)));
     vcx.run_until_parked();
-    changes.read_with(vcx, |changes, _| assert!(!changes.ref_target_menu.is_open()));
+    changes.read_with(vcx, |changes, _| {
+        assert!(!changes.ref_target_menu.is_open())
+    });
 }
 
 #[gpui::test]
 fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, state, calls, vcx, frames: _frames, .. } = open(cx, None, None);
+    let Opened {
+        changes,
+        state,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, None, None);
     open_ref_picker(&changes, &calls, vcx);
     draw(vcx);
     // A real click on the first row: the linked PR (by URL, no repo hint).
-    let row = vcx.debug_bounds("changes-ref-target-row-0").unwrap().center();
+    let row = vcx
+        .debug_bounds("changes-ref-target-row-0")
+        .unwrap()
+        .center();
     vcx.simulate_click(row, gpui::Modifiers::default());
     settle(vcx, |_| {
         !rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
@@ -353,7 +379,13 @@ fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
 fn free_text_accepts_a_pr_number_a_pr_url_and_a_branch_name(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, calls, vcx, frames: _frames, .. } = open(cx, None, None);
+    let Opened {
+        changes,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, None, None);
     open_ref_picker(&changes, &calls, vcx);
 
     // A PR that is not linked: offered as typed.
@@ -369,13 +401,19 @@ fn free_text_accepts_a_pr_number_a_pr_url_and_a_branch_name(cx: &mut gpui::TestA
     assert_eq!(rows(&changes, vcx), vec![RefRow::Candidate(1)]);
 
     // A PR URL that is not linked.
-    type_query(&changes, vcx, "https://github.com/cofactr/flagship/pull/7001");
+    type_query(
+        &changes,
+        vcx,
+        "https://github.com/cofactr/flagship/pull/7001",
+    );
     let typed = rows(&changes, vcx);
     assert!(matches!(&typed[0], RefRow::FreeText(f) if f.label == "PR #7001"));
 
     // A branch name: no hint (the engine looks for it).
     type_query(&changes, vcx, "origin/feature/x");
-    changes.update(vcx, |changes, cx| changes.ref_target_menu_key(&key("enter"), cx));
+    changes.update(vcx, |changes, cx| {
+        changes.ref_target_menu_key(&key("enter"), cx)
+    });
     settle(vcx, |_| {
         !rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
     });
@@ -392,12 +430,23 @@ fn a_refused_bind_shows_the_engines_message_and_closes_the_picker(cx: &mut gpui:
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
     let message = "Branch nope was not found in ws, flagship (git fetch said: not found).";
-    let Opened { changes, state, calls, vcx, frames: _frames, .. } = open(cx, None, Some(message));
+    let Opened {
+        changes,
+        state,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, None, Some(message));
     open_ref_picker(&changes, &calls, vcx);
     type_query(&changes, vcx, "nope");
-    changes.update(vcx, |changes, cx| changes.ref_target_menu_key(&key("enter"), cx));
+    changes.update(vcx, |changes, cx| {
+        changes.ref_target_menu_key(&key("enter"), cx)
+    });
     settle(vcx, |vcx| {
-        state.read_with(vcx, |state, _| state.chat_diff_target_error("chat-wt").is_some())
+        state.read_with(vcx, |state, _| {
+            state.chat_diff_target_error("chat-wt").is_some()
+        })
     });
     state.read_with(vcx, |state, _| {
         assert!(
@@ -420,7 +469,12 @@ fn a_refused_bind_shows_the_engines_message_and_closes_the_picker(cx: &mut gpui:
 fn pills_are_labelled_pr_n_and_branch_name_beside_the_own_checkout(cx: &mut gpui::TestAppContext) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { state, vcx, frames: _frames, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
+    let Opened {
+        state,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, Some(ref_frame(two_refs(true, false))), None);
     state.read_with(vcx, |state, _| {
         let labels: Vec<String> = state
             .chat_execution_members("chat-wt")
@@ -435,7 +489,10 @@ fn pills_are_labelled_pr_n_and_branch_name_beside_the_own_checkout(cx: &mut gpui
         let selected = state.selected_execution_member("chat-wt").unwrap();
         assert_eq!(selected.label(), "PR #6487");
         assert_eq!(
-            selected.range.as_ref().map(|r| (r.base_branch.as_str(), r.head_branch.as_str())),
+            selected
+                .range
+                .as_ref()
+                .map(|r| (r.base_branch.as_str(), r.head_branch.as_str())),
             Some(("main", TICKET_BRANCH))
         );
     });
@@ -447,7 +504,13 @@ fn a_selected_ref_target_puts_the_pane_in_range_scope_with_no_working_tree_or_tu
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { changes, state, vcx, frames: _frames, .. } = open(cx, None, None);
+    let Opened {
+        changes,
+        state,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, None, None);
     // Before: the chat's own checkout, the normal scopes.
     draw(vcx);
     changes.read_with(vcx, |changes, _| {
@@ -473,7 +536,10 @@ fn a_selected_ref_target_puts_the_pane_in_range_scope_with_no_working_tree_or_tu
         let range = owner.range.as_ref().unwrap();
         assert_eq!(range.label, "PR #6487");
         assert_eq!(range.base_ref, "refs/remotes/origin/main");
-        assert_eq!(range.head_ref, format!("refs/remotes/origin/{TICKET_BRANCH}"));
+        assert_eq!(
+            range.head_ref,
+            format!("refs/remotes/origin/{TICKET_BRANCH}")
+        );
     });
     // Working tree and Latest turn are gone: no scope menu, a fixed title.
     assert!(vcx.debug_bounds("changes-scope-trigger").is_none());
@@ -485,7 +551,9 @@ fn a_selected_ref_target_puts_the_pane_in_range_scope_with_no_working_tree_or_tu
 
     // Picking the chat's own checkout pill restores the normal scopes.
     let own = crate::work_outline::execution::own_member_id("chat-wt");
-    state.update(vcx, |state, cx| state.select_chat_execution_member("chat-wt", &own, cx));
+    state.update(vcx, |state, cx| {
+        state.select_chat_execution_member("chat-wt", &own, cx)
+    });
     vcx.run_until_parked();
     draw(vcx);
     changes.read_with(vcx, |changes, _| {
@@ -502,7 +570,13 @@ fn picking_a_ref_pill_persists_select_ref_and_a_vanished_ref_drops_the_pick(
 ) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    let Opened { state, calls, vcx, frames: _frames, .. } = open(cx, Some(ref_frame(two_refs(true, false))), None);
+    let Opened {
+        state,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = open(cx, Some(ref_frame(two_refs(true, false))), None);
     // The second pill is the branch target.
     state.update(vcx, |state, cx| {
         state.select_chat_execution_member("chat-wt", "ref:br-1", cx)
@@ -604,7 +678,10 @@ fn the_range_capture_sends_both_refs_only_and_shows_the_files(cx: &mut gpui::Tes
     });
     for _ in 0..50 {
         vcx.run_until_parked();
-        if opened.changes.read_with(vcx, |changes, _| changes.parsed.is_some()) {
+        if opened
+            .changes
+            .read_with(vcx, |changes, _| changes.parsed.is_some())
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -618,7 +695,10 @@ fn the_range_capture_sends_both_refs_only_and_shows_the_files(cx: &mut gpui::Tes
         scope_label(DiffScope::Range, 1, Some("main")),
         "1 Changed file vs main"
     );
-    assert_eq!(clean_message(DiffScope::Range, Some("main")), "No changes vs main");
+    assert_eq!(
+        clean_message(DiffScope::Range, Some("main")),
+        "No changes vs main"
+    );
 }
 
 #[gpui::test]
@@ -627,7 +707,14 @@ fn chats_without_ref_targets_are_unchanged(cx: &mut gpui::TestAppContext) {
     let _guard = runtime.enter();
     let mut opened = open(cx, None, None);
     let requests = opened.engine_requests();
-    let Opened { changes, state, calls, vcx, frames: _frames, .. } = opened;
+    let Opened {
+        changes,
+        state,
+        calls,
+        vcx,
+        frames: _frames,
+        ..
+    } = opened;
     draw(vcx);
     state.read_with(vcx, |state, _| {
         assert!(state.chat_execution_members("chat-wt").is_empty());

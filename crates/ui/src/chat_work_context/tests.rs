@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use chrono::{TimeZone, Utc};
 use gpui::{
-    AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
-    Window, div, px,
+    AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext,
+    VisualTestContext, Window, div, px,
 };
 use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus};
 use zeron_proto::{
@@ -214,7 +214,10 @@ fn several_prs_keep_the_earliest_first_and_the_rest_follow() {
     with_review_item(&mut snapshot, &[("app", 8), ("ui", 5), ("app", 8)]);
     let context = resolve_for(&snapshot, CHAT_API, &[], None).expect("strip");
     // The duplicate reference collapses; `+1` is what the strip shows.
-    assert_eq!(as_review(&context).prs, vec![pr_ref("app", 8), pr_ref("ui", 5)]);
+    assert_eq!(
+        as_review(&context).prs,
+        vec![pr_ref("app", 8), pr_ref("ui", 5)]
+    );
 }
 
 #[test]
@@ -247,7 +250,9 @@ fn implementation_prs_come_from_the_item_and_deliberate_chat_links() {
     assert_eq!(implementation.prs, vec![pr_ref("ui", 3), pr_ref("app", 4)]);
     assert_eq!(implementation.pr_item_id.as_deref(), Some(UI));
     // The ticket and PRs come from a chat link alone, too.
-    snapshot.external_references.retain(|r| r.provider == "linear");
+    snapshot
+        .external_references
+        .retain(|r| r.provider == "linear");
     let context = resolve_for(&snapshot, CHAT_UI, &chat_links, None).expect("strip");
     assert_eq!(
         implementation_prs(&context),
@@ -275,16 +280,23 @@ fn precedence_is_review_then_issue_then_project_or_plan() {
         "https://linear.app/acme/project/launch-abc",
     ));
     let context = resolve_for(&snapshot, CHAT_API, &[], None).expect("strip");
-    assert_eq!(as_review(&context).ticket.as_ref().unwrap().identifier, "ENG-1");
+    assert_eq!(
+        as_review(&context).ticket.as_ref().unwrap().identifier,
+        "ENG-1"
+    );
 
     // Issue + project (no PR): implementation wins.
     snapshot.space_settings.pr_review_sync_work_item_id = None;
-    snapshot.external_references.retain(|r| r.provider == "linear");
+    snapshot
+        .external_references
+        .retain(|r| r.provider == "linear");
     let context = resolve_for(&snapshot, CHAT_API, &[], None).expect("strip");
     assert!(matches!(context.variant, Variant::Implementation(_)));
 
     // Project only: planning.
-    snapshot.external_references.retain(|r| r.reference_type == "project");
+    snapshot
+        .external_references
+        .retain(|r| r.reference_type == "project");
     let context = resolve_for(&snapshot, CHAT_API, &[], None).expect("strip");
     assert!(matches!(context.variant, Variant::Planning(_)));
 }
@@ -319,7 +331,11 @@ fn a_project_or_pinned_plan_makes_a_planning_chat() {
     assert_eq!(planning.project, None);
     assert_eq!(planning.plan.as_ref().unwrap().title, "Launch plan");
     assert_eq!(planning.plan.as_ref().unwrap().revision, 2);
-    let titles: Vec<&str> = planning.artifacts.iter().map(|a| a.title.as_str()).collect();
+    let titles: Vec<&str> = planning
+        .artifacts
+        .iter()
+        .map(|a| a.title.as_str())
+        .collect();
     // Plan first (from the ancestor), then the subtree of `w-api`: UI mocks
     // belongs to a sibling and is left out.
     assert_eq!(titles, ["Launch plan", "Auth options"]);
@@ -452,9 +468,18 @@ fn fields_follow_each_pr_state() {
 #[test]
 fn fields_follow_each_ci_state() {
     for (ci, expected) in [
-        (PullRequestCiStatus::Passing, Some((Tone::Success, "CI passing"))),
-        (PullRequestCiStatus::Failing, Some((Tone::Danger, "CI failing"))),
-        (PullRequestCiStatus::Pending, Some((Tone::Warning, "CI pending"))),
+        (
+            PullRequestCiStatus::Passing,
+            Some((Tone::Success, "CI passing")),
+        ),
+        (
+            PullRequestCiStatus::Failing,
+            Some((Tone::Danger, "CI failing")),
+        ),
+        (
+            PullRequestCiStatus::Pending,
+            Some((Tone::Warning, "CI pending")),
+        ),
         (PullRequestCiStatus::None, None),
     ] {
         let mut status = gf::summary("app", 1, "T");
@@ -522,9 +547,15 @@ fn loading_and_failed_entries_keep_the_number_and_a_note() {
 fn reviewers_and_excerpts_are_cut_for_the_line() {
     let names: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
     assert_eq!(strip::reviewers_text(&names, 2).as_deref(), Some("a, b +2"));
-    assert_eq!(strip::reviewers_text(&names[..2], 2).as_deref(), Some("a, b"));
+    assert_eq!(
+        strip::reviewers_text(&names[..2], 2).as_deref(),
+        Some("a, b")
+    );
     assert_eq!(strip::reviewers_text(&[], 2), None);
-    assert_eq!(strip::description_excerpt("\n\none\ntwo\nthree\nfour", 3), "one\ntwo\nthree\u{2026}");
+    assert_eq!(
+        strip::description_excerpt("\n\none\ntwo\nthree\nfour", 3),
+        "one\ntwo\nthree\u{2026}"
+    );
     assert_eq!(strip::description_excerpt("one\n\n", 3), "one");
 }
 
@@ -539,7 +570,10 @@ fn revision_text_names_the_revision_and_age() {
         pinned: true,
     };
     assert_eq!(strip::revision_text(&brief, now()), "r3 \u{00b7} 2d ago");
-    let unrevised = ArtifactBrief { revision: 0, ..brief };
+    let unrevised = ArtifactBrief {
+        revision: 0,
+        ..brief
+    };
     assert_eq!(strip::revision_text(&unrevised, now()), "2d ago");
 }
 
@@ -585,9 +619,13 @@ impl Render for Host {
             open_chat: Rc::new(move |id, _, _| chats.borrow_mut().chats.push(id)),
             shell: None,
         };
-        div()
-            .w(px(900.0))
-            .child(strip::render(&self.context, &self.data, self.expanded, &actions, &theme))
+        div().w(px(900.0)).child(strip::render(
+            &self.context,
+            &self.data,
+            self.expanded,
+            &actions,
+            &theme,
+        ))
     }
 }
 
@@ -659,7 +697,11 @@ fn review_context(prs: &[PullRequestRef]) -> WorkContext {
 #[gpui::test]
 fn the_review_strip_shows_the_pr_fields_on_one_line(cx: &mut TestAppContext) {
     let status = gf::summary("app", 42, "Add auth");
-    let (_, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data_for(&[status]));
+    let (_, _, vcx) = mount(
+        cx,
+        review_context(&[pr_ref("app", 42)]),
+        data_for(&[status]),
+    );
     for selector in [
         "work-context-strip",
         "work-context-line",
@@ -691,7 +733,12 @@ fn the_strip_author_reads_you_for_the_viewers_own_pr(cx: &mut TestAppContext) {
     let mut data = data_for(&[status]);
     let (host, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data.clone());
     let width = |vcx: &mut VisualTestContext| {
-        f32::from(vcx.debug_bounds("work-context-pr-author").expect("author").size.width)
+        f32::from(
+            vcx.debug_bounds("work-context-pr-author")
+                .expect("author")
+                .size
+                .width,
+        )
     };
     let login = width(vcx);
     // Someone else is the viewer, or nobody known: still the login.
@@ -719,7 +766,11 @@ fn the_strip_omits_fields_a_pr_does_not_have(cx: &mut TestAppContext) {
     status.my_review_state = PullRequestMyReviewState::None;
     status.requested_reviewers.clear();
     status.head_ref_name = None;
-    let (_, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data_for(&[status]));
+    let (_, _, vcx) = mount(
+        cx,
+        review_context(&[pr_ref("app", 42)]),
+        data_for(&[status]),
+    );
     for selector in [
         "work-context-pr-ci",
         "work-context-pr-my-review",
@@ -788,7 +839,11 @@ fn a_failed_refresh_keeps_the_last_status_in_the_store(cx: &mut TestAppContext) 
 #[gpui::test]
 fn expanding_and_collapsing_toggles_the_details_panel(cx: &mut TestAppContext) {
     let status = gf::summary("app", 42, "Add auth");
-    let (host, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data_for(&[status]));
+    let (host, _, vcx) = mount(
+        cx,
+        review_context(&[pr_ref("app", 42)]),
+        data_for(&[status]),
+    );
     click(vcx, "work-context-chevron");
     assert!(host.read_with(vcx, |host, _| host.expanded));
     assert!(present(vcx, "work-context-panel"));
@@ -839,10 +894,17 @@ fn several_prs_show_the_first_with_a_badge_and_all_in_the_panel(cx: &mut TestApp
 #[gpui::test]
 fn clicking_the_number_opens_the_pr_without_toggling(cx: &mut TestAppContext) {
     let status = gf::summary("app", 42, "Add auth");
-    let (host, log, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data_for(&[status]));
+    let (host, log, vcx) = mount(
+        cx,
+        review_context(&[pr_ref("app", 42)]),
+        data_for(&[status]),
+    );
     click(vcx, "work-context-pr-number");
     assert_eq!(log.borrow().urls, ["https://github.com/acme/app/pull/42"]);
-    assert!(!host.read_with(vcx, |host, _| host.expanded), "link click is not a toggle");
+    assert!(
+        !host.read_with(vcx, |host, _| host.expanded),
+        "link click is not a toggle"
+    );
     // The panel's number and the outline link route too.
     click(vcx, "work-context-chevron");
     click(vcx, "work-context-panel-pr-0-number");
@@ -874,7 +936,11 @@ fn the_review_strip_shows_the_linked_ticket_chip(cx: &mut TestAppContext) {
     assert_eq!(log.borrow().urls, ["https://linear.app/acme/issue/eng-7/x"]);
 }
 
-fn review_chat(id: &str, title: &str, state: zeron_proto::ChatIndicator) -> crate::review_chats::ReviewChat {
+fn review_chat(
+    id: &str,
+    title: &str,
+    state: zeron_proto::ChatIndicator,
+) -> crate::review_chats::ReviewChat {
     crate::review_chats::ReviewChat {
         chat_id: id.into(),
         title: title.into(),
@@ -888,10 +954,17 @@ fn review_chat(id: &str, title: &str, state: zeron_proto::ChatIndicator) -> crat
 fn a_pr_with_a_review_chat_shows_the_being_reviewed_marker(cx: &mut TestAppContext) {
     let mut data = data_for(&[gf::summary("app", 42, "Add auth")]);
     let (_, _, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data.clone());
-    assert!(!present(vcx, "work-context-reviewing"), "no review chat, no marker");
+    assert!(
+        !present(vcx, "work-context-reviewing"),
+        "no review chat, no marker"
+    );
 
     data.review_chats = vec![
-        review_chat("chat-new", "Review app#42", zeron_proto::ChatIndicator::Working),
+        review_chat(
+            "chat-new",
+            "Review app#42",
+            zeron_proto::ChatIndicator::Working,
+        ),
         review_chat("chat-old", "Earlier", zeron_proto::ChatIndicator::Idle),
     ];
     let (_, log, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data);
@@ -1001,7 +1074,11 @@ fn the_planning_strip_shows_project_plan_and_other_artifacts(cx: &mut TestAppCon
     let context = planning_context(
         true,
         Some(plan.clone()),
-        vec![plan, brief("a-2", "Auth options", false), brief("a-3", "Mocks", false)],
+        vec![
+            plan,
+            brief("a-2", "Auth options", false),
+            brief("a-3", "Mocks", false),
+        ],
     );
     let mut data = data_for(&[]);
     data.project = Some(lf::project("p-launch", "Launch"));
@@ -1031,7 +1108,10 @@ fn the_planning_strip_shows_project_plan_and_other_artifacts(cx: &mut TestAppCon
     click(vcx, "work-context-panel-artifact-2");
     assert_eq!(log.borrow().artifacts, ["plan-1", "a-3"]);
     click(vcx, "work-context-panel-project-link");
-    assert_eq!(log.borrow().urls, ["https://linear.app/acme/project/launch-abc"]);
+    assert_eq!(
+        log.borrow().urls,
+        ["https://linear.app/acme/project/launch-abc"]
+    );
 }
 
 #[gpui::test]

@@ -198,7 +198,9 @@ impl Shell {
     ) {
         self.open_overview(cx);
         let page = self.ensure_overview_page(cx);
-        page.update(cx, |overview, cx| overview.focus_outline_on_chat(None, window, cx));
+        page.update(cx, |overview, cx| {
+            overview.focus_outline_on_chat(None, window, cx)
+        });
         let key = crate::work_outline::model::row_key::item(space_id, item_id);
         let outline = page.read(cx).outline_entity();
         outline.update(cx, |outline, cx| outline.reveal(&key, cx));
@@ -229,9 +231,9 @@ mod tests {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let theme = Theme::default();
             let chat_id = self.chat_id;
-            let strip = self
-                .shell
-                .update(cx, |shell, cx| shell.render_chat_work_context(chat_id, &theme, cx));
+            let strip = self.shell.update(cx, |shell, cx| {
+                shell.render_chat_work_context(chat_id, &theme, cx)
+            });
             div().w(px(900.0)).children(strip)
         }
     }
@@ -296,8 +298,7 @@ mod tests {
                 state.update(cx, |state, _| {
                     let mut snapshot = fixture_snapshot("s1");
                     snapshot.space_settings.pr_review_sync_work_item_id = Some(LAUNCH.into());
-                    snapshot.external_references =
-                        vec![gf::reference("r1", "s1", API, "app", 7)];
+                    snapshot.external_references = vec![gf::reference("r1", "s1", API, "app", 7)];
                     state.set_work_outline_for_test(snapshot);
                     state.chats = [CHAT_API, CHAT_LOOSE_A, CHAT_UI]
                         .iter()
@@ -396,7 +397,10 @@ mod tests {
         assert!(vcx.debug_bounds("work-context-pr-title").is_some());
         assert!(vcx.debug_bounds("work-context-pr-note").is_none());
         shell.read_with(vcx, |shell, _| {
-            assert_eq!(shell.chat_header_extra_clearance, CHAT_WORK_CONTEXT_CLEARANCE);
+            assert_eq!(
+                shell.chat_header_extra_clearance,
+                CHAT_WORK_CONTEXT_CLEARANCE
+            );
         });
     }
 
@@ -411,7 +415,9 @@ mod tests {
             Some("https://github.com/acme/app/pull/7")
         );
         // Not a toggle.
-        shell.read_with(vcx, |shell, _| assert!(shell.chat_work_context_open.is_empty()));
+        shell.read_with(vcx, |shell, _| {
+            assert!(shell.chat_work_context_open.is_empty())
+        });
         // The chevron toggles the Shell's per-chat state and shows the panel.
         let at = vcx.debug_bounds("work-context-chevron").unwrap().center();
         vcx.simulate_click(at, gpui::Modifiers::default());
@@ -439,9 +445,14 @@ mod tests {
     fn chats_with_no_pr_are_unchanged(cx: &mut TestAppContext) {
         for chat_id in [CHAT_LOOSE_A, CHAT_UI] {
             let (shell, calls, vcx) = mount(cx, chat_id, false);
-            assert!(vcx.debug_bounds("work-context-strip").is_none(), "{chat_id}");
+            assert!(
+                vcx.debug_bounds("work-context-strip").is_none(),
+                "{chat_id}"
+            );
             assert!(calls.lock().unwrap().is_empty(), "no fetch for {chat_id}");
-            shell.read_with(vcx, |shell, _| assert_eq!(shell.chat_header_extra_clearance, 0.0));
+            shell.read_with(vcx, |shell, _| {
+                assert_eq!(shell.chat_header_extra_clearance, 0.0)
+            });
         }
     }
 
@@ -457,12 +468,7 @@ mod tests {
         const PR_7: &str = "https://github.com/acme/app/pull/7";
         const PR_99: &str = "https://github.com/acme/app/pull/99";
 
-        fn open(
-            shell: &Entity<Shell>,
-            vcx: &mut VisualTestContext,
-            url: &str,
-            external: bool,
-        ) {
+        fn open(shell: &Entity<Shell>, vcx: &mut VisualTestContext, url: &str, external: bool) {
             vcx.update(|window, cx| {
                 shell.update(cx, |shell, cx| {
                     shell.open_web_reference(url, external, window, cx)
@@ -535,7 +541,10 @@ mod tests {
             shell.read_with(vcx, |shell, cx| {
                 assert!(shell.right_pane_open(cx));
                 let first = shell.browser_seq;
-                assert_eq!(shell.resolved_right_active(cx), RightSurface::Browser(first));
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(first)
+                );
             });
             // Another page opens a second tab; the PR again focuses the first.
             open(&shell, vcx, "https://example.com/docs", false);
@@ -546,7 +555,10 @@ mod tests {
             assert_eq!(tabs(&shell, vcx), [PR_7, "https://example.com/docs"]);
             shell.read_with(vcx, |shell, cx| {
                 let first = *shell.browsers.keys().min().unwrap();
-                assert_eq!(shell.resolved_right_active(cx), RightSurface::Browser(first));
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(first)
+                );
             });
         }
 
@@ -562,7 +574,10 @@ mod tests {
             assert!(tabs(&shell, vcx).is_empty());
             // The explicit external entry (context menu).
             open(&shell, vcx, "https://example.com/menu", true);
-            assert_eq!(vcx.opened_url().as_deref(), Some("https://example.com/menu"));
+            assert_eq!(
+                vcx.opened_url().as_deref(),
+                Some("https://example.com/menu")
+            );
             // With the setting off nothing changes.
             set_open_in_zeron(vcx, false);
             open(&shell, vcx, "https://example.com/off", false);
@@ -637,8 +652,14 @@ mod tests {
             shell.read_with(vcx, |shell, cx| {
                 assert!(matches!(shell.route, Route::Chat));
                 assert_eq!(shell.active_chat, CHAT_API);
-                assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some(CHAT_API));
-                assert!(shell.right_pane_open(cx), "the browser sits beside the chat");
+                assert_eq!(
+                    shell.state.read(cx).selected_chat.as_deref(),
+                    Some(CHAT_API)
+                );
+                assert!(
+                    shell.right_pane_open(cx),
+                    "the browser sits beside the chat"
+                );
             });
             assert_eq!(tabs(&shell, vcx), [PR_7]);
             assert!(vcx.opened_url().is_none());
@@ -658,7 +679,10 @@ mod tests {
             open(&shell, vcx, PR_99, false);
             assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
             assert!(tabs(&shell, vcx).is_empty());
-            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::Overview));
+            assert!(matches!(
+                shell.read_with(vcx, |s, _| s.route),
+                Route::Overview
+            ));
             // The Overview previews CHAT_UI: the tab opens beside it.
             select(&shell, vcx, CHAT_UI, Route::Overview);
             open(&shell, vcx, PR_99, false);
@@ -681,12 +705,18 @@ mod tests {
             select(&shell, vcx, CHAT_API, Route::PrReviewChats);
             open(&shell, vcx, PR_7, true);
             assert_eq!(vcx.opened_url().as_deref(), Some(PR_7));
-            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::PrReviewChats));
+            assert!(matches!(
+                shell.read_with(vcx, |s, _| s.route),
+                Route::PrReviewChats
+            ));
             set_open_in_zeron(vcx, false);
             open(&shell, vcx, PR_99, false);
             assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
             assert!(tabs(&shell, vcx).is_empty());
-            assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::PrReviewChats));
+            assert!(matches!(
+                shell.read_with(vcx, |s, _| s.route),
+                Route::PrReviewChats
+            ));
         }
 
         #[gpui::test]

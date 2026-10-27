@@ -33,10 +33,18 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some(super::tab::KEY_CONTEXT);
     let mut bindings = Vec::new();
     for combo in ZOOM_IN_COMBOS {
-        bindings.push(gpui::KeyBinding::new(&platform_combo(combo), ZoomIn, context));
+        bindings.push(gpui::KeyBinding::new(
+            &platform_combo(combo),
+            ZoomIn,
+            context,
+        ));
     }
     for combo in ZOOM_OUT_COMBOS {
-        bindings.push(gpui::KeyBinding::new(&platform_combo(combo), ZoomOut, context));
+        bindings.push(gpui::KeyBinding::new(
+            &platform_combo(combo),
+            ZoomOut,
+            context,
+        ));
     }
     bindings.push(gpui::KeyBinding::new(
         &platform_combo(ZOOM_RESET_COMBO),

@@ -65,8 +65,16 @@ pub(crate) const RAIL_COMBOS: [&str; 4] = ["up", "down", "home", "end"];
 pub(crate) fn bind_keys(cx: &mut App) {
     use crate::settings::platform_combo;
     cx.bind_keys([
-        KeyBinding::new(&platform_combo(FIND_OPEN_COMBO), FindOpen, Some(KEY_CONTEXT)),
-        KeyBinding::new(&platform_combo(FIND_NEXT_COMBO), FindNext, Some(KEY_CONTEXT)),
+        KeyBinding::new(
+            &platform_combo(FIND_OPEN_COMBO),
+            FindOpen,
+            Some(KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            &platform_combo(FIND_NEXT_COMBO),
+            FindNext,
+            Some(KEY_CONTEXT),
+        ),
         KeyBinding::new(
             &platform_combo(FIND_PREVIOUS_COMBO),
             FindPrevious,

@@ -490,10 +490,10 @@ impl LinearPanel {
         self.generation += 1;
         let generation = self.generation;
         let actions = self.state.read(cx).work_outline_actions();
-        let stored_issues = (!self.my_issues.is_ready())
-            .then(|| actions.linear_my_issues(ListRead::Stored));
-        let stored_projects = (!self.my_projects.is_ready())
-            .then(|| actions.linear_my_projects(ListRead::Stored));
+        let stored_issues =
+            (!self.my_issues.is_ready()).then(|| actions.linear_my_issues(ListRead::Stored));
+        let stored_projects =
+            (!self.my_projects.is_ready()).then(|| actions.linear_my_projects(ListRead::Stored));
         if !self.my_issues.is_ready() {
             self.my_issues = Load::Loading;
         }
@@ -518,8 +518,7 @@ impl LinearPanel {
                 && let Ok(stored) = stored.await
             {
                 this.update(cx, |this, cx| {
-                    if this.generation == generation && matches!(this.my_projects, Load::Loading)
-                    {
+                    if this.generation == generation && matches!(this.my_projects, Load::Loading) {
                         this.my_projects = Load::Ready(stored);
                         cx.notify();
                     }
@@ -587,7 +586,8 @@ impl LinearPanel {
             .project_issues
             .get(&project_id)
             .is_some_and(Load::is_ready);
-        let stored = (!has_list).then(|| actions.linear_project_issues(&project_id, ListRead::Stored));
+        let stored =
+            (!has_list).then(|| actions.linear_project_issues(&project_id, ListRead::Stored));
         let task = actions.linear_project_issues(&project_id, read);
         if !has_list {
             self.project_issues
@@ -613,7 +613,10 @@ impl LinearPanel {
                         .update(cx, |state, _| state.linear.remember_issues(issues.iter()));
                 }
                 let keep = result.is_err()
-                    && this.project_issues.get(&project_id).is_some_and(Load::is_ready);
+                    && this
+                        .project_issues
+                        .get(&project_id)
+                        .is_some_and(Load::is_ready);
                 if !keep {
                     this.project_issues.insert(
                         project_id,

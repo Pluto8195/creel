@@ -2497,14 +2497,20 @@ mod tests {
                 panic!("dialog");
             };
             let pr = dialog.pr.as_ref().expect("PR mode");
-            assert_eq!(pr.reference.url(), "https://github.com/acme/flagship/pull/7");
+            assert_eq!(
+                pr.reference.url(),
+                "https://github.com/acme/flagship/pull/7"
+            );
             assert_eq!(
                 crate::pr_review_launch::prompt_preview(pr.action, &pr.reference.url()),
                 "/code-review https://github.com/acme/flagship/pull/7"
             );
             assert_eq!(pr.item, Some(("s1".to_string(), HOUSEKEEPING.to_string())));
         });
-        assert!(pr_calls.lock().unwrap().is_empty(), "opening starts nothing");
+        assert!(
+            pr_calls.lock().unwrap().is_empty(),
+            "opening starts nothing"
+        );
         assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
 
         // Starts from the composer's remembered Opus; pick Sonnet by keyboard
