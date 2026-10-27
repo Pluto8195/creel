@@ -308,7 +308,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   catalog all fill it in, and the claude command builder always emits `--model` (empty → default,
   debug log). Most likely cause of the 2026-10-26 Fable chats: agents calling `create_chat`
   without `model`. Saved per-chat/remembered picks are untouched. Codex has no built-in default.
-  `~/.claude/settings.json` still says Fable for chats started outside Mast; Mikey changes that.
+  Mikey switched the CLI default in `~/.claude/settings.json` to Opus 5.5 the same day.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
