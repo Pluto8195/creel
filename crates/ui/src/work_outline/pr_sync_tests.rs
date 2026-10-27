@@ -1163,7 +1163,9 @@ fn pr_slots_line_up_across_rows(cx: &mut gpui::TestAppContext) {
         row_bounds(vcx, slot_selector("needs", HOUSEKEEPING)).is_some(),
         "an empty needs slot keeps its column"
     );
-    for slot in ["author", "needs", "review", "ci", "pr"] {
+    // The author slot sizes to its text, so only the icon slots share a
+    // column; they stay right-aligned either way.
+    for slot in ["needs", "review", "ci", "pr"] {
         let api = row_bounds(vcx, slot_selector(slot, API)).unwrap();
         let other = row_bounds(vcx, slot_selector(slot, HOUSEKEEPING)).unwrap();
         assert_eq!(api.size, other.size, "{slot} width");
@@ -1242,9 +1244,11 @@ fn unloaded_pr_shows_only_the_pr_icon(cx: &mut gpui::TestAppContext) {
     draw(vcx);
     let key = row_key::item("s1", API);
     assert!(present(vcx, format!("outline-pr-{key}")));
-    for slot in ["author", "review", "ci"] {
+    for slot in ["review", "ci"] {
         assert!(present(vcx, slot_selector(slot, API)), "{slot} keeps its column");
     }
+    // An empty author takes no width.
+    assert!(!present(vcx, slot_selector("author", API)));
     assert!(!present(vcx, format!("outline-pr-author-{key}")));
     assert!(!present(vcx, format!("outline-pr-review-{key}")));
     assert!(!present(vcx, format!("outline-pr-ci-{key}")));
