@@ -32,6 +32,7 @@ pub(crate) mod question_html;
 pub(crate) mod render_check;
 pub(crate) mod store;
 pub(crate) mod tab;
+pub(crate) mod zoom;
 
 #[cfg(test)]
 mod compare_tests;

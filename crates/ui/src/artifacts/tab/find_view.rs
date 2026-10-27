@@ -80,6 +80,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
             Some(KEY_CONTEXT),
         ),
     ]);
+    crate::artifacts::zoom::bind_keys(cx);
 }
 
 /// What find and the index talk to right now.
@@ -403,6 +404,7 @@ impl ArtifactTab {
         let Some(state) = json.as_deref().and_then(FrameState::parse) else {
             return;
         };
+        self.adopt_web_zoom(state.zoom, cx);
         let mut changed = false;
         if state.heads != self.nav.live_heads {
             self.nav.live_heads = state.heads.clone();

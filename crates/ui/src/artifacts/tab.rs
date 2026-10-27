@@ -29,8 +29,9 @@ use zeron_proto::{
 
 pub(crate) mod compare_view;
 pub(crate) mod find_view;
+mod zoom_view;
 pub(crate) use compare_view::CompareView;
-pub(crate) use find_view::bind_keys;
+pub(crate) use find_view::{KEY_CONTEXT, bind_keys};
 
 use super::actions::ArtifactUiError;
 use super::compare;
@@ -102,9 +103,28 @@ pub(crate) struct BrowserWebHost {
 /// (section jumps), Escape while the find bar is open.
 pub(crate) fn page_forwarded_keys(escape: bool) -> &'static [&'static str] {
     if escape {
-        &["alt-up", "alt-down", "escape"]
+        &[
+            "alt-up",
+            "alt-down",
+            "escape",
+            "cmd-=",
+            "cmd-+",
+            "cmd-shift-=",
+            "cmd-shift-+",
+            "cmd--",
+            "cmd-0",
+        ]
     } else {
-        &["alt-up", "alt-down"]
+        &[
+            "alt-up",
+            "alt-down",
+            "cmd-=",
+            "cmd-+",
+            "cmd-shift-=",
+            "cmd-shift-+",
+            "cmd--",
+            "cmd-0",
+        ]
     }
 }
 
@@ -266,6 +286,15 @@ pub(crate) struct ArtifactTab {
     /// ⌘F find and the section index (`tab/find_view.rs`).
     focus: FocusHandle,
     nav: find_view::FindNav,
+    /// Zoom (1.0 = 100%, fit for images), remembered per artifact.
+    zoom: f32,
+    /// The zoom the web page last reported (per mille), and whether the
+    /// current document has been brought to `zoom`.
+    zoom_reported: Option<u32>,
+    zoom_synced: bool,
+    image_scroll: gpui::ScrollHandle,
+    /// The image's natural size, from its header.
+    image_size: Option<(f32, f32)>,
     _load: Option<Task<()>>,
     _compare: Option<Task<()>>,
     _compare_render: Option<Task<()>>,
@@ -300,6 +329,7 @@ impl ArtifactTab {
             }
         });
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let remembered_zoom = super::zoom::ZoomMemory::recall(cx, &artifact_id);
         let mut tab = Self {
             state,
             shell,
@@ -323,6 +353,11 @@ impl ArtifactTab {
             renderer: default_renderer(),
             focus: cx.focus_handle(),
             nav: find_view::FindNav::new(cx),
+            zoom: remembered_zoom,
+            zoom_reported: None,
+            zoom_synced: false,
+            image_scroll: gpui::ScrollHandle::new(),
+            image_size: None,
             _load: None,
             _compare: None,
             _compare_render: None,
@@ -493,6 +528,7 @@ impl ArtifactTab {
             ArtifactBody::Markdown(text) => {
                 let preview = self.markdown_preview(cx);
                 preview.update(cx, |preview, cx| preview.set_source(text, false, cx));
+                self.apply_zoom_to_new_surface(cx);
             }
             ArtifactBody::Web { kind, source } => {
                 let mime = self
@@ -504,6 +540,7 @@ impl ArtifactTab {
                 self.show_web(kind, &source, &mime, window, cx);
             }
             ArtifactBody::Image { bytes, mime_type } => {
+                self.image_size = zoom_view::natural_size(&bytes);
                 self.image = Some(Arc::new(gpui::Image::from_bytes(
                     image_format(&mime_type),
                     bytes,
@@ -534,6 +571,7 @@ impl ArtifactTab {
         if let Some(web) = &mut self.web {
             web.show(&title, html, window, cx);
         }
+        self.apply_zoom_to_new_surface(cx);
     }
 
     fn markdown_preview(
@@ -948,6 +986,7 @@ impl ArtifactTab {
                 }
             })
             .child(div().flex_1())
+            .children(self.render_zoom_control(theme, cx))
             .child(
                 button(
                     "artifact-standalone",
@@ -1114,7 +1153,12 @@ impl ArtifactTab {
             .into_any_element()
     }
 
-    fn render_body(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let message = |text: String| {
             div()
                 .size_full()
@@ -1135,11 +1179,20 @@ impl ArtifactTab {
                 .markdown
                 .clone()
                 .map(|preview| {
-                    div()
-                        .debug_selector(|| "artifact-markdown".into())
-                        .size_full()
-                        .child(preview)
-                        .into_any_element()
+                    let weak = cx.weak_entity();
+                    super::zoom::zoom_surface(
+                        self.zoom,
+                        true,
+                        move |input, _, cx| {
+                            weak.update(cx, |this, cx| this.apply_zoom_input(input, cx))
+                                .ok();
+                        },
+                        div()
+                            .debug_selector(|| "artifact-markdown".into())
+                            .size_full()
+                            .child(preview),
+                    )
+                    .into_any_element()
                 })
                 .unwrap_or_else(|| message("Loading\u{2026}".into())),
             Presenter::Web(_) => {
@@ -1175,21 +1228,8 @@ impl ArtifactTab {
                     )
                     .into_any_element()
             }
-            Presenter::Image => match &self.image {
-                Some(image) => div()
-                    .debug_selector(|| "artifact-image".into())
-                    .size_full()
-                    .p(px(12.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        gpui::img(image.clone())
-                            .max_w_full()
-                            .max_h_full()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
-                    .into_any_element(),
+            Presenter::Image => match self.image.clone() {
+                Some(image) => self.render_image_body(&image, window, cx),
                 None => message("Loading\u{2026}".into()),
             },
             Presenter::Options => {
@@ -1354,10 +1394,25 @@ impl gpui::Render for ArtifactTab {
                         })),
                 )
         });
-        let body = self.render_body(&theme, cx);
+        let body = self.render_body(&theme, window, cx);
         let find_bar = self.render_find_bar(&theme, cx);
         let body = self.with_section_index(body, &theme, window, cx);
         self.with_find_keys(root, cx)
+            .on_action(cx.listener(|this, _: &super::zoom::ZoomIn, _, cx| {
+                if !this.zoom_step(1, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &super::zoom::ZoomOut, _, cx| {
+                if !this.zoom_step(-1, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &super::zoom::ZoomReset, _, cx| {
+                if !this.zoom_reset(cx) {
+                    cx.propagate();
+                }
+            }))
             .child(header)
             .child(toolbar)
             .children(picker)
