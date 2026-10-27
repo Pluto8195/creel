@@ -166,6 +166,20 @@ pub struct ChatConfig {
     pub auto_approve: bool,
 }
 
+impl ChatConfig {
+    /// Fill an empty `model` with the harness's built-in default (see
+    /// [`crate::resolve_model`]) so a start path never leaves the harness CLI
+    /// to pick. Returns true when it filled one in (callers log at debug).
+    pub fn fill_default_model(&mut self) -> bool {
+        let empty = self.model.as_deref().is_none_or(|m| m.trim().is_empty());
+        if empty && let Some(model) = crate::resolve_model(self.harness, None) {
+            self.model = Some(model);
+            return true;
+        }
+        false
+    }
+}
+
 /// Provenance of a durable PR/ticket link stamped on a [`Chat`] row —
 /// write-time precedence, most-authoritative first: `Manual` (explicit user
 /// action via `SET_CHAT_LINK`) beats `CreatedInChat` (the engine watched this

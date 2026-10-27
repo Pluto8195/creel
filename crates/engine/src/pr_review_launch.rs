@@ -547,11 +547,11 @@ pub fn chat_title(action: PrReviewAction, repo_name: &str, number: u64, pr_title
 }
 
 /// The config a review Chat runs with when the caller sends none: Claude
-/// Code with the host's defaults.
+/// Code with Mast's default model (never the CLI's own default).
 pub fn default_config() -> ChatConfig {
     ChatConfig {
         harness: HarnessId::ClaudeCode,
-        model: None,
+        model: zeron_proto::resolve_model(HarnessId::ClaudeCode, None),
         reasoning: None,
         model_options: Default::default(),
         sandbox: SandboxLevel::WorkspaceWrite,
@@ -926,7 +926,10 @@ impl PrReviewLauncher {
             head.title.as_deref().unwrap_or(""),
         );
         let cwd = found.space.path.clone();
-        let config = p.config.clone().unwrap_or_else(default_config);
+        let mut config = p.config.clone().unwrap_or_else(default_config);
+        if config.fill_default_model() {
+            tracing::debug!(chat = %chat_id, "review chat config had no model; filled in the Mast default");
+        }
         let engine = |e: crate::EngineError| invalid(e.to_string());
         let existing = self.workspace.chat(&chat_id).map_err(engine)?;
         if existing.is_none() {
@@ -1179,5 +1182,28 @@ mod tests {
             chat_title(PrReviewAction::FixCi, "ui", 3, ""),
             "Fix CI ui#3"
         );
+    }
+}
+
+#[cfg(test)]
+mod default_model_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_review_config_names_the_mast_default_model() {
+        let config = default_config();
+        assert_eq!(config.harness, HarnessId::ClaudeCode);
+        assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn a_caller_config_without_a_model_is_filled_in() {
+        let mut config = ChatConfig {
+            model: None,
+            ..default_config()
+        };
+        assert!(config.fill_default_model());
+        assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+        assert!(!config.fill_default_model(), "an explicit model is kept");
     }
 }

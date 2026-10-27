@@ -295,6 +295,11 @@ impl WorkItemLaunchService {
             worktree_choice: &p.worktree_choice,
             parent_chat_id: &p.parent_chat_id,
         });
+        // The hash above covers what the caller sent; from here on the chat
+        // always carries a concrete model, so the harness never inherits its
+        // CLI default (a retry derives the same fill).
+        let filled = with_default_model(p, self.doc_host.harness_for(&chat_id), &chat_id);
+        let p = &filled;
 
         // Ownership: the Space must live on this device (the RPC layer
         // forwards everything else to the owner).
@@ -990,6 +995,12 @@ impl WorkItemLaunchService {
         if request.harness.is_none() {
             request.harness = Some(self.doc_host.harness_for(&p.chat_id));
         }
+        if let Some(harness) = request.harness
+            && request.model.as_deref().is_none_or(|m| m.trim().is_empty())
+        {
+            request.model = zeron_proto::resolve_model(harness, None);
+            tracing::debug!(chat = %p.chat_id, model = ?request.model, "continued turn had no model; filled in the Mast default");
+        }
         let payload = SessionCommandPayload::Run {
             request,
             message_id: message_id.clone(),
@@ -1111,6 +1122,30 @@ impl WorkItemLaunchService {
     }
 }
 
+/// `p` with an explicit model: an absent config becomes the host's default
+/// harness with default options, and an empty model becomes that harness's
+/// built-in default.
+fn with_default_model(
+    p: &CreateChatForWorkItemParams,
+    default_harness: zeron_proto::HarnessId,
+    chat_id: &str,
+) -> CreateChatForWorkItemParams {
+    let mut p = p.clone();
+    let mut config = p.config.take().unwrap_or_else(|| ChatConfig {
+        harness: default_harness,
+        model: None,
+        reasoning: None,
+        model_options: Default::default(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: false,
+    });
+    if config.fill_default_model() {
+        tracing::debug!(chat = %chat_id, "work item launch had no model; filled in the Mast default");
+    }
+    p.config = Some(config);
+    p
+}
+
 /// A Turn's request from a prompt, a chat config, and a cwd.
 fn prompt_request(prompt: &WorkItemPrompt, config: Option<&ChatConfig>, cwd: &str) -> RunRequest {
     RunRequest {
@@ -1137,5 +1172,57 @@ fn command_prompt(payload: &SessionCommandPayload) -> Option<&str> {
         | SessionCommandPayload::RunWithInstructions { request, .. } => Some(&request.prompt),
         SessionCommandPayload::Steer { prompt, .. } => Some(prompt),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod default_model_tests {
+    use super::*;
+    use zeron_proto::HarnessId;
+
+    fn params(config: Option<ChatConfig>) -> CreateChatForWorkItemParams {
+        CreateChatForWorkItemParams {
+            work_item_id: "item".into(),
+            initial_prompt: WorkItemPrompt {
+                text: "go".into(),
+                attachments: Vec::new(),
+            },
+            config,
+            execution_override: None,
+            worktree_choice: None,
+            operation_id: "op".into(),
+            parent_chat_id: None,
+            target_device_id: None,
+        }
+    }
+
+    #[test]
+    fn a_launch_without_a_config_carries_the_default_model() {
+        let p = with_default_model(&params(None), HarnessId::ClaudeCode, "chat");
+        let config = p.config.expect("config filled in");
+        assert_eq!(config.harness, HarnessId::ClaudeCode);
+        assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+        let request = prompt_request(&p.initial_prompt, Some(&config), "/w");
+        assert_eq!(request.model.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn a_launch_keeps_an_explicit_model_and_fills_an_empty_one() {
+        let config = |model: Option<&str>| ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: model.map(str::to_owned),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+        };
+        let kept = with_default_model(
+            &params(Some(config(Some("claude-sonnet-5")))),
+            HarnessId::ClaudeCode,
+            "c",
+        );
+        assert_eq!(kept.config.unwrap().model.as_deref(), Some("claude-sonnet-5"));
+        let filled = with_default_model(&params(Some(config(None))), HarnessId::ClaudeCode, "c");
+        assert_eq!(filled.config.unwrap().model.as_deref(), Some("claude-opus-5-5"));
     }
 }

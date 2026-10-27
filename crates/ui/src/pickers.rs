@@ -219,11 +219,14 @@ impl ResolvedRunConfig {
 // Pure: default resolution (no "Default" placeholders — a concrete pick always)
 // ---------------------------------------------------------------------------
 
-/// The harness's default model: the first catalog row (both curated catalogs
-/// lead with the flagship — zeron's `pickDefaultModel` Opus preference maps to
-/// the same row here).
+/// The harness's default model: Mast's built-in default when the catalog
+/// offers it (Claude Code's Opus 5.5, never the CLI's own settings default),
+/// else the first catalog row.
 pub fn default_model(models: &[Model]) -> Option<&Model> {
-    models.first()
+    models
+        .iter()
+        .find(|m| HarnessId::ClaudeCode.default_model() == Some(m.id.as_str()))
+        .or_else(|| models.first())
 }
 
 /// An explicit selection never silently becomes a different model after refresh.
@@ -1212,7 +1215,13 @@ impl Pickers {
                 .selected_model(cx)
                 .map(|m| m.id.clone())
                 // Catalog not loaded (offline): still send the id we know.
-                .or_else(|| self.effective_model_id(cx).map(str::to_string)),
+                .or_else(|| self.effective_model_id(cx).map(str::to_string))
+                // Nothing known at all: Mast's built-in default, never "let
+                // the CLI decide".
+                .or_else(|| {
+                    self.effective_harness(cx)
+                        .and_then(|h| zeron_proto::resolve_model(h, None))
+                }),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
             auto_approve: self.effective_auto_approve(cx),
@@ -7431,6 +7440,43 @@ mod tests {
         }
     }
 
+    /// The Start Chat dialog and the PR review dialog send
+    /// `resolved(cx).chat_config()`: it must always carry a concrete model.
+    #[gpui::test]
+    fn a_fresh_new_chat_resolves_to_the_mast_default_model(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| AppState::new());
+        let pickers = cx.new(|cx| Pickers::new(state, cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults.harness = Some(HarnessId::ClaudeCode);
+            // Catalog not loaded, nothing remembered: still explicit.
+            for catalog in [Loadable::Idle, Loadable::Loading] {
+                pickers.models.insert(HarnessId::ClaudeCode, catalog);
+                let resolved = pickers.resolved(cx);
+                assert_eq!(resolved.model.as_deref(), Some("claude-opus-5-5"));
+                let config = resolved.chat_config().expect("harness known");
+                assert_eq!(config.model.as_deref(), Some("claude-opus-5-5"));
+            }
+            // Live catalog led by the CLI's own default (Fable): Mast's default wins.
+            pickers.models.insert(
+                HarnessId::ClaudeCode,
+                Loadable::Ready(vec![
+                    bare_model("claude-fable-5", "Fable 5"),
+                    bare_model("claude-opus-5-5", "Opus 5.5"),
+                ]),
+            );
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("claude-opus-5-5")
+            );
+            // An explicit pick is never overridden.
+            pickers.pick_model("claude-fable-5".into(), cx);
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("claude-fable-5")
+            );
+        });
+    }
+
     #[gpui::test]
     fn remembered_options_stay_valid_for_the_sent_model_without_a_catalog(
         cx: &mut gpui::TestAppContext,
@@ -7681,7 +7727,7 @@ mod tests {
         );
         assert_eq!(
             models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
-            vec!["Opus 5", "Fable 5", "Sonnet 5", "Haiku 4.5", "Nova 1"]
+            vec!["Opus 5.5", "Fable 5", "Sonnet 5", "Haiku 4.5", "Nova 1"]
         );
         assert_eq!(
             models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
@@ -7941,6 +7987,24 @@ mod tests {
         ];
         assert_eq!(default_model(&models).map(|m| &*m.id), Some("flagship"));
         assert!(default_model(&[]).is_none());
+    }
+
+    #[test]
+    fn default_model_prefers_the_mast_default_over_a_cli_default_row() {
+        let row = |id: &str| Model {
+            id: id.into(),
+            label: id.into(),
+            description: None,
+            reasoning_levels: vec![],
+            options: vec![],
+        };
+        // The live catalog leads with the CLI's own default (Fable here).
+        let models = vec![row("claude-fable-5"), row("claude-opus-5-5"), row("haiku")];
+        assert_eq!(
+            default_model(&models).map(|m| &*m.id),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(zeron_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
     }
 
     #[test]

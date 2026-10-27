@@ -137,7 +137,7 @@ fn catalog() -> Vec<ToolDef> {
                     "device": { "type": "string", "description": "Host device (id or name) for a project-less chat; defaults to this device." },
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
                     "harness": { "type": "string", "description": "Harness id (see list_harnesses). Defaults to claude-code when available." },
-                    "model": { "type": "string", "description": "Model id from list_models. Omit for the harness default." },
+                    "model": { "type": "string", "description": "Model id from list_models. Omit for Mast's default for the harness (Claude Code: claude-opus-5-5)." },
                     "reasoning": { "type": "string", "description": "Reasoning level the model supports (e.g. low, medium, high, max)." },
                     "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "default": "workspace-write" },
                     "title": { "type": "string", "description": "Sidebar title. Otherwise the engine titles it from the first exchange." },
@@ -957,7 +957,7 @@ impl Tools {
             }
             None => default_harness(&harnesses)?,
         };
-        if let Some(model) = args.model.as_deref()
+        if let Some(model) = args.model.as_deref().filter(|m| !m.trim().is_empty())
             && let Ok(models) = self.zeron.models(harness).await
             && !models.is_empty()
             && !models.iter().any(|m| m.id == model)
@@ -1014,9 +1014,15 @@ impl Tools {
             }
             None => requested_sandbox.unwrap_or(SandboxLevel::WorkspaceWrite),
         };
+        // Never leave the model empty: the harness CLI would fall back to its
+        // own default (e.g. `~/.claude/settings.json`), not the composer's.
+        let model = zeron_proto::resolve_model(harness, args.model.as_deref());
+        if args.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
+            tracing::debug!(?harness, model = ?model, "create_chat had no model; filled in the Mast default");
+        }
         let config = ChatConfig {
             harness,
-            model: args.model.clone(),
+            model: model.clone(),
             reasoning,
             model_options: Default::default(),
             sandbox,
@@ -1242,7 +1248,7 @@ impl Tools {
             "deviceId": device_id,
             "project": space.as_ref().map(|s| json!({ "id": s.id, "name": s.display_name(), "path": s.path })),
             "harness": harness,
-            "model": args.model,
+            "model": model,
             "reasoning": reasoning,
             "title": args.title,
             "parentChatId": parent_chat_id,
@@ -2442,6 +2448,25 @@ mod tests {
         assert_eq!(writes[1].1["op"], "renameChat");
         assert_eq!(writes[2].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[2].1["command"]["request"]["prompt"], "go");
+    }
+
+    #[tokio::test]
+    async fn create_chat_without_a_model_resolves_to_the_mast_default() {
+        for blank in [None, Some(""), Some("  ")] {
+            let world = Arc::new(World::default());
+            let tools = tools(world.clone(), None);
+            let mut args = json!({ "project": "/repo/comet", "prompt": "go" });
+            if let Some(blank) = blank {
+                args["model"] = json!(blank);
+            }
+            let created = tools.call("create_chat", args).await.unwrap();
+            assert_eq!(created["model"], "claude-opus-5-5");
+            let writes = world.writes.lock().unwrap();
+            assert_eq!(writes[0].1["config"]["model"], "claude-opus-5-5");
+            let run = writes.last().unwrap();
+            assert_eq!(run.0, methods::QUEUE_COMMAND);
+            assert_eq!(run.1["command"]["request"]["model"], "claude-opus-5-5");
+        }
     }
 
     #[tokio::test]

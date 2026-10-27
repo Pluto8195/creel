@@ -329,6 +329,13 @@ pub fn static_models() -> Vec<Model> {
             vec![context_window()],
         ),
         model(
+            "claude-opus-5-5",
+            "Opus 5.5",
+            "Powerful model for complex work",
+            FULL_LADDER,
+            vec![context_window(), toggle("fastMode", "Fast Mode")],
+        ),
+        model(
             "claude-opus-5",
             "Opus 5",
             "Powerful model for complex work",
@@ -369,6 +376,13 @@ pub fn static_models() -> Vec<Model> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_curated_catalog_offers_the_mast_default() {
+        let id = zeron_proto::HarnessId::ClaudeCode.default_model().unwrap();
+        assert_eq!(id, "claude-opus-5-5");
+        assert!(static_models().iter().any(|m| m.id == id));
+    }
 
     #[test]
     fn effort_maps_special_modes() {
