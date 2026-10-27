@@ -1508,7 +1508,7 @@ pub struct Overview {
     /// `AppState`, cloning every `Chat`, re-deriving staleness) on a `false`
     /// read and returns the cache instead.
     rows_dirty: bool,
-    rows_cache: Vec<OverviewRow>,
+    rows_cache: std::rc::Rc<Vec<OverviewRow>>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
     /// set before this. Same `ComposerInput` pattern `pickers.rs` already
@@ -1794,7 +1794,7 @@ impl Overview {
             show_archived: false,
             focus_due: None,
             rows_dirty: true,
-            rows_cache: Vec::new(),
+            rows_cache: std::rc::Rc::default(),
             search,
             chat_panel_open: false,
             outline_chat_return: None,
@@ -2174,7 +2174,7 @@ impl Overview {
     /// Combined into one pass rather than a separate "ensure" sweep so a
     /// freshly-appeared chat (new import, new sidebar row) gets its lookups
     /// queued the same render it first appears in, not one frame later.
-    fn rows(&mut self, cx: &mut Context<Self>) -> Vec<OverviewRow> {
+    fn rows(&mut self, cx: &mut Context<Self>) -> std::rc::Rc<Vec<OverviewRow>> {
         // See `rows_dirty`'s doc comment: hover and scroll call `cx.notify()`
         // (hence `render()`, hence this) on every pointer-move, and without
         // this short-circuit every one of those frames re-walked `AppState`,
@@ -2184,7 +2184,7 @@ impl Overview {
         // this isn't "never refreshes" — it's "doesn't redundantly rebuild
         // on frames where nothing relevant changed").
         if !self.rows_dirty {
-            return self.rows_cache.clone();
+            return std::rc::Rc::clone(&self.rows_cache);
         }
 
         let now = Utc::now();
@@ -2355,7 +2355,8 @@ impl Overview {
             })
             .collect();
         self.work_item_index = work_item_index;
-        self.rows_cache = rows.clone();
+        let rows = std::rc::Rc::new(rows);
+        self.rows_cache = std::rc::Rc::clone(&rows);
         self.rows_dirty = false;
         rows
     }
@@ -7922,6 +7923,23 @@ mod logic_tests {
     /// the reset persisted); a filter naming only vanished repos is inert; a
     /// partial filter is kept.
     #[gpui::test]
+    fn clean_frames_share_the_cached_rows(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with_repos(cx, dir.path(), &["alpha", "beta"]);
+        let (overview, vcx) = overview_over(cx, &state);
+        overview.update(vcx, |o, cx| {
+            let first = o.rows(cx);
+            let second = o.rows(cx);
+            assert!(
+                std::rc::Rc::ptr_eq(&first, &second),
+                "hover/scroll frames must not rebuild or deep-clone rows"
+            );
+            o.rows_dirty = true;
+            assert!(!std::rc::Rc::ptr_eq(&first, &o.rows(cx)));
+        });
+    }
+
+    #[gpui::test]
     fn restored_stale_repo_filter_degrades_gracefully(cx: &mut gpui::TestAppContext) {
         let save = |dir: &std::path::Path, keys: &[&str]| {
             let set: BTreeSet<String> = keys.iter().map(|k| k.to_string()).collect();
@@ -9157,8 +9175,8 @@ mod logic_tests {
     fn work_item_filter_keeps_subtrees_and_resets_a_stale_restore(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (overview, _state, vcx) = outline_overview(cx, dir.path());
-        let ids = |rows: Vec<OverviewRow>| {
-            let mut ids: Vec<String> = rows.into_iter().map(|r| r.chat.id).collect();
+        let ids = |rows: std::rc::Rc<Vec<OverviewRow>>| {
+            let mut ids: Vec<String> = rows.iter().map(|r| r.chat.id.clone()).collect();
             ids.sort();
             ids
         };
