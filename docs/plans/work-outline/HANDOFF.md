@@ -1,6 +1,6 @@
 # Work Outline — implementation handoff
 
-Prepared 2026-10-14, last updated 2026-10-25. Read this first in a new chat picking up the Work Outline work.
+Prepared 2026-10-14, last updated 2026-10-27. Read this first in a new chat picking up the Work Outline work.
 
 ## Where things are
 
@@ -300,6 +300,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   prompt opening, link, root, model/reasoning/approval pickers). Start sends `StartPrReview` with
   the picked config and `fresh: true` (new optional param; without it the engine reuses a live
   review chat and ignores the pick). "Open review" stays a direct open.
+- **Every chat start passes an explicit model; the default is Opus 5.5** (2026-10-27): the
+  built-in Claude Code default is `zeron_proto::DEFAULT_CLAUDE_MODEL` = `claude-opus-5-5` (added to
+  the curated catalog; the `opus` alias labels as Opus 5.5; the picker prefers it over the live
+  catalog's first row, which is the CLI default). MCP `create_chat` without `model`, work-item
+  Start Chat/continue with no model, the PR review default config and `Pickers::resolved` without a
+  catalog all fill it in, and the claude command builder always emits `--model` (empty → default,
+  debug log). Most likely cause of the 2026-10-26 Fable chats: agents calling `create_chat`
+  without `model`. Saved per-chat/remembered picks are untouched. Codex has no built-in default.
+  `~/.claude/settings.json` still says Fable for chats started outside Mast; Mikey changes that.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -308,6 +317,9 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Engine integration, flaky under parallel load (passes alone):
     `local_first::headless_sign_out_closes_joined_edge_rooms_and_stops_daemon`,
     `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send` (sometimes passes).
+  - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
+    (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
+    (flaky on the integration head too).
   - Engine integration, verified failing on `a3651a9d` before remove-canvas:
     - `e2e::generated_image_is_materialized_before_publication_and_survives_reopen`
     - `external_import_sync::sync_picks_up_a_closed_message_but_defers_the_new_open_reply`
@@ -364,23 +376,11 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
   - Diffs of renders taller than 8000 CSS px are cut off without a notice.
   - Option revisions recorded before 2026-10-20 can't be compared across revisions.
 - Linear GraphQL (projects, attachments) unverified against the real API.
-- **To investigate first (usage, 2026-10-27):** Mikey keeps hitting his Claude limits. A 7-day
-  audit of `~/.claude/projects/*.jsonl` (read-only; script was `/tmp/usage_audit.py`) found:
-  - About 43% of usage came from three long-lived orchestrator/coordinator chats (the previous
-    Zeron Dev coordinator alone was about 16%). Opus requests carried a median context of 226K
-    tokens (p90 680K, 29% over 400K); Sonnet child chats stayed around 114K. Keep coordinators
-    thin, restart them often (this file holds the state), and keep screenshots and design rounds
-    in child chats.
-  - Unexpected **Fable** usage (about 18% of the week): ten Cofactr chats started 2026-10-26
-    17:55–23:41 (ENG-3190 orchestrator 64% of it, ENG-3189 20%, ENG-3106, ENG-3177, PR #6503
-    follow-up, and their review subagents) ran on `claude-fable-5`. That is the Claude Code
-    default in `~/.claude/settings.json` (`"model": "claude-fable-5"`, unchanged since Oct 3; Mikey
-    changes it himself, agents never edit `~/.claude`). No `create_chat` call asked for Fable, so
-    those chats were started without an explicit model and fell back to the CLI default, while
-    the Mast composer default is Opus. Find which Mast start path omits the model (suspects: Start
-    Chat on Linear/ticket items, `create_chat` without `model`, the "chat filled in" item launches)
-    and make every start path pass an explicit model (the composer default or the picker's
-    choice), with a test, so nothing silently inherits the CLI default.
+- **Usage (2026-10-27):** a 7-day audit of `~/.claude/projects/*.jsonl` found about 43% of usage
+  in three long-lived coordinator chats (Opus median context 226K tokens, p90 680K). Keep
+  coordinators thin, restart them often (this file holds the state), and keep screenshots and
+  design rounds in child chats. The unexpected Fable usage (about 18%) is fixed: see "Every chat
+  start passes an explicit model" above.
 
 ## Next, agreed but not started
 
