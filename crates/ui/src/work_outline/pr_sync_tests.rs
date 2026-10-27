@@ -1328,6 +1328,23 @@ fn author_reads_you_only_for_the_viewers_own_prs(cx: &mut gpui::TestAppContext) 
     );
 }
 
+/// The author slot is as wide as its text, so "you" leaves no dead gap, and a
+/// slot with no text takes no width at all.
+#[gpui::test]
+fn author_slot_hugs_its_text_and_empty_takes_no_width(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), icon_reply);
+    vcx.run_until_parked();
+    draw(vcx);
+    set_viewer(&overview, vcx, "Alexander-The-Great");
+    let key = row_key::item("s1", HOUSEKEEPING);
+    let slot = row_bounds(vcx, format!("outline-pr-slot-author-{key}")).expect("slot");
+    let text = row_bounds(vcx, format!("outline-pr-author-{key}")).expect("text");
+    assert_eq!(slot.size.width, text.size.width, "\"you\" takes only its own width");
+    assert!(f32::from(slot.size.width) < 58.0);
+    assert!(crate::github::row_icons::text_slot("x".into(), 58.0, None).is_none());
+}
+
 /// The viewer comes from one `PrViewer` call and lands in the store.
 #[gpui::test]
 fn the_viewer_login_is_fetched_once_into_the_store(cx: &mut gpui::TestAppContext) {
