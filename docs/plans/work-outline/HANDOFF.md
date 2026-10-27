@@ -317,6 +317,10 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   reads "Next: <model>" when that is only the next turn's pick. MCP `get_chat`/`list_chats`: `model`
   is the actual model (else configured, else null) plus `modelIsActual`, `actualModel`,
   `configuredModel`. Claude Code only; Codex/ACP/OpenCode just echo the request, Cursor untouched.
+- **Outline row author/assignee slots hug their text** (2026-10-27): `row_icons::text_slot` sizes
+  the PR author / Linear assignee slot to its text (max 58px) and omits it when empty, so synced
+  Linear rows no longer show a ~40px dead gap before "you". Icon slots are unchanged. (That column
+  held the Linear identifier/state chip until the compact-icon change `528856b1`.)
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
