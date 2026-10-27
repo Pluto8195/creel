@@ -2557,7 +2557,7 @@ mod tests {
         assert_eq!(sent[0]["spaceId"], "s1");
         assert_eq!(sent[0]["workItemId"], HOUSEKEEPING);
         assert_eq!(sent[0]["fresh"], true);
-        assert_eq!(sent[0]["config"]["harness"], "claude_code");
+        assert_eq!(sent[0]["config"]["harness"], "claude-code");
         assert_eq!(sent[0]["config"]["model"], "sonnet");
         shell.read_with(cx, |shell, cx| {
             assert!(shell.work_outline_modal.is_none(), "the dialog closed");
