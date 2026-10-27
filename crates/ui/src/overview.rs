@@ -1530,6 +1530,11 @@ pub struct Overview {
     /// read and returns the cache instead.
     rows_dirty: bool,
     perf: OverviewPerf,
+    /// `AppState::overview_fingerprint` as of the last observed change.
+    state_fingerprint: Option<u64>,
+    /// The snapshots (in space order) `work_item_index` was built from; the
+    /// index is rebuilt only when one of them is replaced.
+    work_item_index_key: Option<Vec<std::sync::Arc<WorkOutlineSnapshot>>>,
     rows_cache: std::rc::Rc<Vec<OverviewRow>>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
@@ -1682,12 +1687,21 @@ impl Overview {
         composer: Entity<crate::composer::Composer>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let observe = cx.observe(&state, |this, _, cx| {
+        let observe = cx.observe(&state, |this, state, cx| {
             this.perf.observer_calls += 1;
+            // Only a change to something the rows or render read marks them
+            // dirty and repaints; streaming transcript frames and the like
+            // leave the fingerprint alone.
+            let fingerprint = state.read(cx).overview_fingerprint(Utc::now());
+            if this.state_fingerprint == Some(fingerprint) {
+                return;
+            }
+            this.state_fingerprint = Some(fingerprint);
             this.perf.observer_notifies += 1;
             this.rows_dirty = true;
             cx.notify();
         });
+        let initial_fingerprint = Some(state.read(cx).overview_fingerprint(Utc::now()));
         let search = cx.new(|cx| {
             // Must be `PALETTE_SEARCH_CONTEXT`: editing keys (backspace, ⌥⌫, ⌘⌫,
             // ⌘A/C/V/Z…) are bound only to the contexts `input_bindings`
@@ -1820,6 +1834,8 @@ impl Overview {
             focus_due: None,
             rows_dirty: true,
             perf: OverviewPerf::default(),
+            state_fingerprint: initial_fingerprint,
+            work_item_index_key: None,
             rows_cache: std::rc::Rc::default(),
             search,
             chat_panel_open: false,
@@ -2269,7 +2285,21 @@ impl Overview {
             .iter()
             .filter_map(|space| space.load.snapshot().cloned())
             .collect();
-        let work_item_index = WorkItemIndex::build(snapshots.iter().map(|s| s.as_ref()));
+        let index_is_current = self.work_item_index_key.as_ref().is_some_and(|key| {
+            key.len() == snapshots.len()
+                && key
+                    .iter()
+                    .zip(&snapshots)
+                    .all(|(built_from, now)| std::sync::Arc::ptr_eq(built_from, now))
+        });
+        let work_item_index = if index_is_current {
+            std::mem::take(&mut self.work_item_index)
+        } else {
+            WorkItemIndex::build(snapshots.iter().map(|s| s.as_ref()))
+        };
+        // Holding the Arcs keeps their addresses from being reused, so
+        // `ptr_eq` can't match a different snapshot.
+        self.work_item_index_key = Some(snapshots.clone());
         let outlines_loaded = outline_spaces
             .iter()
             .all(|space| !matches!(space.load, WorkOutlineLoad::Loading));
@@ -8078,6 +8108,24 @@ mod logic_tests {
             fetch_requests: after.fetch_requests - before.fetch_requests,
         };
         eprintln!("PERF 250 chats x 50 streaming updates: {delta:?} in {elapsed:?}");
+        // Before the fingerprint gate, the row-list gate and the fetch-due
+        // gate: 50 rebuilds, 50 notifies, 12500 fetch checks. Only the first
+        // update (it changes the selection) may rebuild or repaint.
+        assert_eq!(delta.observer_calls, 50);
+        assert!(delta.rows_rebuilds <= 1, "{delta:?}");
+        assert!(delta.observer_notifies <= 1, "{delta:?}");
+        assert_eq!(delta.fetch_checks, 0, "{delta:?}");
+
+        // A real change to the streaming chat's row still gets through.
+        state.update(vcx, |state, cx| {
+            state.chats[0].last_message_preview = Some("new preview".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        draw(vcx);
+        let rows = overview.update(vcx, |o, cx| o.rows(cx));
+        let row = rows.iter().find(|r| r.chat.id == "c0").unwrap();
+        assert_eq!(row.chat.last_message_preview.as_deref(), Some("new preview"));
     }
 
     #[gpui::test]
