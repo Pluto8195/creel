@@ -345,8 +345,12 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   repaints 50 → 1, fetch checks 12500 → 0 (`OverviewPerf` counters). Still open: the other 15
   `AppState` observers (shell, transcript, composer, changes, terminal, files, history, pickers need
   broad state; chat_type_view, repository_topology, context_usage, artifacts tab and settings pages
-  not audited; `chat_type_view` clones all chats every render). Model discovery cache and the
-  backfill "none found" marker: in progress (`perf-model-discovery-cache`).
+  not audited; `chat_type_view` clones all chats every render).
+  Model discovery (2026-10-27, `perf-model-discovery-cache`): harness `Catalog` success TTL is 30
+  min (`CATALOG_TTL`, keyed on binary path/version/mtime/credentials); claude `InitializeCache`
+  reused 30 min, a forced refresh reuses one from the last 120s, then re-probes.
+  `backfill_actual_models` writes a `<chat>.modelchecked` sidecar (journal byte length) when no
+  model is found and skips the chat until the journal grows.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
