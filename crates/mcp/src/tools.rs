@@ -32,8 +32,8 @@ use serde_json::{Value, json};
 use zeron_doc::SessionCommandPayload;
 use zeron_proto::agent_tools::{self, AgentOrigin, tools as agent_tool_names};
 use zeron_proto::{
-    Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session, SessionStatus,
-    Space, UserInputAnswer,
+    Chat, ChatConfig, ChatModelDisplay, HarnessId, ReasoningLevel, RunRequest, SandboxLevel,
+    Session, SessionStatus, Space, UserInputAnswer,
 };
 
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
@@ -108,7 +108,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_chats",
-            description: "Chats with their project, host device, harness/model, live status, and last activity. Newest activity first.",
+            description: "Chats with their project, host device, harness, model (the model that actually ran when the harness reported it: see modelIsActual, actualModel, configuredModel), live status, and last activity. Newest activity first.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -637,7 +637,17 @@ fn summarize_chat(chat: &Chat, spaces: &[Space], sessions: &[Session]) -> Value 
         "cwd": chat.cwd.clone().or_else(|| space.map(|s| s.path.clone())),
         "branch": chat.branch,
         "harness": chat.config.as_ref().map(|c| c.harness),
-        "model": chat.config.as_ref().and_then(|c| c.model.clone()),
+        // `model` is what ran when the harness reported it, else what the chat
+        // is configured to use (`modelIsActual` says which); null = harness
+        // default decides.
+        "model": match chat.model_display() {
+            ChatModelDisplay::Actual { actual, .. } => Some(actual),
+            ChatModelDisplay::Configured(model) => Some(model),
+            ChatModelDisplay::Default => None,
+        },
+        "modelIsActual": matches!(chat.model_display(), ChatModelDisplay::Actual { .. }),
+        "actualModel": chat.actual_model,
+        "configuredModel": chat.config.as_ref().and_then(|c| c.model.clone()),
         "reasoning": chat.config.as_ref().and_then(|c| c.reasoning),
         "archived": chat.archived,
         "parentChatId": chat.parent_chat_id,
@@ -1276,6 +1286,7 @@ impl Tools {
                 created_at: chrono::Utc::now(),
                 harness_session_id: None,
                 harness_session_cwd: None,
+                actual_model: None,
                 parent_chat_id: parent_chat_id.clone(),
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,

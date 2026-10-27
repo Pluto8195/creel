@@ -273,6 +273,7 @@ pub(super) fn chat(id: &str, device_id: &str) -> Chat {
         created_at: ts(2_000),
         harness_session_id: None,
         harness_session_cwd: None,
+        actual_model: None,
         parent_chat_id: Some("parent-chat".into()),
         space_id: None,
         last_seen_at: None,

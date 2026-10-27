@@ -180,6 +180,39 @@ impl ChatConfig {
     }
 }
 
+/// What to say about the model a chat runs on. Never presents a configured or
+/// picker-default model as fact when the harness reported something else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatModelDisplay<'a> {
+    /// The harness reported this model; `configured` is the chat's stored pick
+    /// when it differs (a "configured X" hint).
+    Actual {
+        actual: &'a str,
+        configured: Option<&'a str>,
+    },
+    /// Nothing reported yet; this is only what the chat is configured to use.
+    Configured(&'a str),
+    /// Neither is known: the harness default decides.
+    Default,
+}
+
+impl Chat {
+    pub fn model_display(&self) -> ChatModelDisplay<'_> {
+        fn clean(m: &Option<String>) -> Option<&str> {
+            m.as_deref().map(str::trim).filter(|m| !m.is_empty())
+        }
+        let configured = self.config.as_ref().and_then(|c| clean(&c.model));
+        match (clean(&self.actual_model), configured) {
+            (Some(actual), configured) => ChatModelDisplay::Actual {
+                actual,
+                configured: configured.filter(|c| *c != actual),
+            },
+            (None, Some(configured)) => ChatModelDisplay::Configured(configured),
+            (None, None) => ChatModelDisplay::Default,
+        }
+    }
+}
+
 /// Provenance of a durable PR/ticket link stamped on a [`Chat`] row —
 /// write-time precedence, most-authoritative first: `Manual` (explicit user
 /// action via `SET_CHAT_LINK`) beats `CreatedInChat` (the engine watched this
@@ -303,6 +336,12 @@ pub struct Chat {
     /// is only injected when the next run launches from the same cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_session_cwd: Option<String>,
+    /// The model the harness reported it actually ran the chat's latest turn
+    /// on (Claude Code's `system`/`init` `model`). Engine-owned; independent
+    /// of `config.model`, which is only what Mast asked for. `None` = never
+    /// reported (no run yet, or a harness that doesn't say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model: Option<String>,
     /// The space this chat belongs to. Invariant: `Some` for every UI-created
     /// chat; rows with a missing/dangling space id are not rendered (the host
     /// device's repair sweep deletes its own danglers).
@@ -1285,6 +1324,72 @@ pub struct ChatConnectivity {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn bare_chat(model: Option<&str>, actual: Option<&str>) -> Chat {
+        Chat {
+            id: "c".into(),
+            device_id: "d".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: model.map(|m| ChatConfig {
+                harness: HarnessId::ClaudeCode,
+                model: Some(m.into()),
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                auto_approve: false,
+            }),
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc.timestamp_opt(0, 0).unwrap(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            actual_model: actual.map(str::to_owned),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            parent_chat_id: None,
+            linked_pr_url: None,
+            linked_pr_source: None,
+            linked_ticket_id: None,
+            linked_ticket_source: None,
+        }
+    }
+
+    #[test]
+    fn model_display_prefers_what_ran_and_never_invents_one() {
+        use ChatModelDisplay::*;
+        assert_eq!(bare_chat(None, None).model_display(), Default);
+        assert_eq!(
+            bare_chat(None, Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: None }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-opus-5-5"), Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: Some("claude-opus-5-5") }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-fable-5"), Some("claude-fable-5")).model_display(),
+            Actual { actual: "claude-fable-5", configured: None }
+        );
+        assert_eq!(
+            bare_chat(Some("claude-opus-5-5"), None).model_display(),
+            Configured("claude-opus-5-5")
+        );
+        assert_eq!(bare_chat(Some("  "), Some(" ")).model_display(), Default);
+    }
+
+    #[test]
+    fn chat_actual_model_is_optional_on_the_wire() {
+        let mut value = serde_json::to_value(bare_chat(None, Some("m"))).unwrap();
+        assert_eq!(value["actualModel"], "m");
+        value.as_object_mut().unwrap().remove("actualModel");
+        assert_eq!(serde_json::from_value::<Chat>(value).unwrap().actual_model, None);
+    }
 
     #[test]
     fn chat_config_auto_approve_wire_name_is_pinned_and_defaults_to_ask() {

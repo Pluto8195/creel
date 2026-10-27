@@ -685,26 +685,18 @@ fn cwd_is_worktree(cwd: Option<&str>) -> bool {
     cwd.is_some_and(|c| c.contains("/.worktrees/") || c.contains("/.agent-worktrees/"))
 }
 
-/// Compact, always-visible model metadata for chat cards. A missing explicit
-/// id means the harness chose its configured default; say that plainly
-/// instead of omitting the field and making the card look unfinished.
-fn chat_model_label(chat: &Chat) -> &str {
-    chat.config
-        .as_ref()
-        .and_then(|config| config.model.as_deref())
-        .filter(|model| !model.trim().is_empty())
-        .unwrap_or("default model")
+/// Compact, always-visible model metadata for chat cards: the model that
+/// actually ran when the harness reported it, else the configured one, else
+/// an honest "default model" (the harness decides) — never the picker default.
+fn chat_model_label(chat: &Chat) -> String {
+    crate::chat_metadata::chat_model_summary(chat)
+        .0
+        .unwrap_or_else(|| "default model".to_string())
 }
 
 fn model_badge(chat: &Chat, theme: &Theme) -> gpui::AnyElement {
-    let model = chat_model_label(chat);
-    let label: SharedString = model.to_string().into();
-    let tooltip: SharedString = if model == "default model" {
-        "Model: harness default".to_string()
-    } else {
-        format!("Model: {model}")
-    }
-    .into();
+    let label: SharedString = chat_model_label(chat).into();
+    let tooltip: SharedString = crate::chat_metadata::chat_model_summary(chat).1.into();
     div()
         .id(SharedString::from(format!("overview-model-{}", chat.id)))
         .debug_selector(|| "overview-card-model".into())
@@ -2426,7 +2418,7 @@ impl Overview {
                     archived: chat.archived,
                     stale,
                     branch: chat.branch.clone(),
-                    harness: Some(chat_model_label(chat).to_string()),
+                    harness: Some(chat_model_label(chat)),
                     pr_number,
                     visible,
                     activity: chat
@@ -8131,6 +8123,7 @@ mod logic_tests {
             created_at: Utc.timestamp_opt(0, 0).unwrap(),
             harness_session_id: None,
             harness_session_cwd: None,
+            actual_model: None,
             parent_chat_id: None,
             space_id: None,
             last_seen_at: None,
@@ -8173,6 +8166,12 @@ mod logic_tests {
             auto_approve: false,
         });
         assert_eq!(chat_model_label(&chat), "gpt-6-codex");
+        // What the harness reported wins over the stored pick, and a chat
+        // with no stored model shows what ran (the CLI default), not "default".
+        chat.actual_model = Some("claude-fable-5".into());
+        assert_eq!(chat_model_label(&chat), "claude-fable-5");
+        chat.config = None;
+        assert_eq!(chat_model_label(&chat), "claude-fable-5");
     }
 
     #[test]

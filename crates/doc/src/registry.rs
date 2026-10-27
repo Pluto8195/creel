@@ -1210,6 +1210,7 @@ impl RegistryDoc {
                 "harnessSessionCwd",
                 opt_str(chat.harness_session_cwd.as_deref()),
             ),
+            ("actualModel", opt_str(chat.actual_model.as_deref())),
             ("spaceId", opt_str(chat.space_id.as_deref())),
             ("lastSeenAt", opt_ms(chat.last_seen_at)),
             (
@@ -1468,6 +1469,20 @@ impl RegistryDoc {
                 ("harnessSessionId", json!(session_id)),
                 ("harnessSessionCwd", json!(cwd)),
             ]),
+        );
+        Ok(true)
+    }
+
+    /// Engine-owned: the model the harness reported for the latest run.
+    pub fn set_chat_actual_model(&mut self, chat_id: &str, model: &str) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("actualModel", json!(model))]),
         );
         Ok(true)
     }
@@ -1802,6 +1817,7 @@ impl RegistryDoc {
                         "harnessSessionCwd",
                         opt_str(chat.harness_session_cwd.as_deref()),
                     ),
+                    ("actualModel", opt_str(chat.actual_model.as_deref())),
                     ("spaceId", opt_str(chat.space_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),

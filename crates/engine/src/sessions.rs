@@ -212,7 +212,40 @@ pub struct SessionsEngine {
     inner: Arc<Inner>,
 }
 
+/// The model a harness actually reported in `SessionStarted`. Claude Code's
+/// `system`/`init` names the model it ran; Codex/ACP/OpenCode just echo the
+/// request's model back, which says nothing about what ran, so they are not
+/// recorded.
+fn reported_model(harness: HarnessId, model: &str) -> Option<&str> {
+    let model = model.trim();
+    (matches!(harness, HarnessId::ClaudeCode | HarnessId::Mock) && !model.is_empty())
+        .then_some(model)
+}
+
 impl SessionsEngine {
+    /// Read-side backfill for chats that ran before `actual_model` existed:
+    /// fill it from the `SessionStarted` events the run journal kept. Only
+    /// touches chats with no recorded model; returns how many were filled.
+    pub fn backfill_actual_models(&self) -> usize {
+        let Some(ws) = self.inner.workspace() else {
+            return 0;
+        };
+        let Ok(chats) = ws.read_chats() else {
+            return 0;
+        };
+        let mut filled = 0;
+        for chat in chats {
+            if chat.actual_model.is_some() {
+                continue;
+            }
+            if let Some(model) = self.inner.journal_actual_model(&chat.id) {
+                ws.set_chat_actual_model(&chat.id, &model);
+                filled += 1;
+            }
+        }
+        filled
+    }
+
     pub fn new(
         device_id: String,
         journal: Arc<RunJournal>,
@@ -1624,6 +1657,26 @@ impl Inner {
         if let Some(ws) = self.workspace() {
             ws.set_chat_harness_session(chat_id, session_id, cwd);
         }
+    }
+
+    /// Stamp the model the harness reported on the chat row, so the UI and MCP
+    /// can show what actually ran (not what the picker defaulted to).
+    fn remember_actual_model(&self, chat_id: &str, model: &str) {
+        if let Some(ws) = self.workspace() {
+            ws.set_chat_actual_model(chat_id, model);
+        }
+    }
+
+    /// The model of the newest `SessionStarted` in the chat's journal that
+    /// reported one.
+    fn journal_actual_model(&self, chat_id: &str) -> Option<String> {
+        let events = self.journal.replay(chat_id, 0).ok()?;
+        events.into_iter().rev().find_map(|(_, event)| match event {
+            AgentEvent::SessionStarted { harness, model, .. } => {
+                reported_model(harness, &model).map(str::to_owned)
+            }
+            _ => None,
+        })
     }
 
     // NB: there is deliberately no `forget_harness_session` anymore. The old
@@ -3104,9 +3157,16 @@ async fn drive_run(
 
         match &event {
             AgentEvent::SessionStarted {
-                session_id, cwd, ..
+                session_id,
+                cwd,
+                harness,
+                model,
+                ..
             } => {
                 saw_session_started = true;
+                if let Some(model) = reported_model(*harness, model) {
+                    inner.remember_actual_model(&chat_id, model);
+                }
                 // The event's own cwd (where the harness actually created the
                 // session) scopes the stored id, not the request's.
                 inner.remember_harness_session(&chat_id, session_id, cwd);

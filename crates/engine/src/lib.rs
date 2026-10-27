@@ -437,6 +437,15 @@ impl EngineCore {
                 }
             });
         }
+        // Chats that ran before `Chat.actual_model` existed: recover the model
+        // the harness reported from the run journal (read-only on the journal).
+        {
+            let sessions = sessions.clone();
+            tokio::task::spawn_blocking(move || match sessions.backfill_actual_models() {
+                0 => {}
+                n => tracing::info!(count = n, "backfilled actual model from run journals"),
+            });
+        }
         let pr_review_sync = pr_review_sync::PrReviewSyncService::new(
             workspace.clone(),
             repos.clone(),
