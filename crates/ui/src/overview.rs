@@ -284,6 +284,22 @@ pub(crate) const OUTLINE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(100)
 /// relative to the per-frame rebuild `rows_dirty` exists to avoid.
 const STALENESS_REDERIVE_EVERY_TICKS: u32 = 4;
 
+/// Work counters for the perf regression test: what the Overview did in
+/// response to `AppState` changes. Plain increments, always on.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OverviewPerf {
+    /// `rows()` calls that rebuilt the row list.
+    rows_rebuilds: u64,
+    /// `AppState` observer callbacks delivered to the Overview.
+    observer_calls: u64,
+    /// Of those, the ones that went on to `cx.notify()`.
+    observer_notifies: u64,
+    /// Per-chat `ensure_row_fetches` evaluations.
+    fetch_checks: u64,
+    /// Engine requests actually spawned by the per-row fetches.
+    fetch_requests: u64,
+}
+
 /// One row's worth of what this pass can show.
 #[derive(Clone)]
 struct OverviewRow {
@@ -1508,6 +1524,7 @@ pub struct Overview {
     /// `AppState`, cloning every `Chat`, re-deriving staleness) on a `false`
     /// read and returns the cache instead.
     rows_dirty: bool,
+    perf: OverviewPerf,
     rows_cache: std::rc::Rc<Vec<OverviewRow>>,
     /// Filters `rows()` by title/cwd/preview substring (case-insensitive) —
     /// there was no way at all to search/filter across a real 227+-chat
@@ -1661,6 +1678,8 @@ impl Overview {
         cx: &mut Context<Self>,
     ) -> Self {
         let observe = cx.observe(&state, |this, _, cx| {
+            this.perf.observer_calls += 1;
+            this.perf.observer_notifies += 1;
             this.rows_dirty = true;
             cx.notify();
         });
@@ -1794,6 +1813,7 @@ impl Overview {
             show_archived: false,
             focus_due: None,
             rows_dirty: true,
+            perf: OverviewPerf::default(),
             rows_cache: std::rc::Rc::default(),
             search,
             chat_panel_open: false,
@@ -2151,6 +2171,7 @@ impl Overview {
         has_harness_session: bool,
         cx: &mut Context<Self>,
     ) {
+        self.perf.fetch_checks += 1;
         if has_harness_session {
             self.ensure_subagents(chat_id.clone(), cx);
         }
@@ -2187,6 +2208,7 @@ impl Overview {
             return std::rc::Rc::clone(&self.rows_cache);
         }
 
+        self.perf.rows_rebuilds += 1;
         let now = Utc::now();
         // Work Outline facts for path chips, attention, and the work-item
         // filter.
@@ -2654,6 +2676,7 @@ impl Overview {
             return;
         };
         self.link_status_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -2903,6 +2926,7 @@ impl Overview {
             return;
         };
         self.subagent_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -2955,6 +2979,7 @@ impl Overview {
             return;
         };
         self.context_usage_pending.insert(chat_id.clone());
+        self.perf.fetch_requests += 1;
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -7937,6 +7962,49 @@ mod logic_tests {
             o.rows_dirty = true;
             assert!(!std::rc::Rc::ptr_eq(&first, &o.rows(cx)));
         });
+    }
+
+    /// Synthetic busy session: 250 chats, one of them streaming. Counts what
+    /// the Overview does per `AppState` change; prints the counts (run with
+    /// `--nocapture`) and pins the post-fix bounds.
+    #[gpui::test]
+    fn streaming_one_chat_among_many_does_little_overview_work(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..250).map(|i| format!("repo{i}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let state = state_with_repos(cx, dir.path(), &name_refs);
+        let (overview, vcx) = overview_over(cx, &state);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                window.draw(cx).clear();
+            });
+        };
+        draw(vcx);
+        let before = overview.read_with(vcx, |o, _| o.perf);
+        let started = std::time::Instant::now();
+        for i in 0..50 {
+            // A streaming frame: the selected chat's transcript changes, no
+            // chat/space/session field does.
+            state.update(vcx, |state, cx| {
+                state.selected_chat = Some("c0".into());
+                state.transcript.clear();
+                state.queue.clear();
+                let _ = i;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            draw(vcx);
+        }
+        let elapsed = started.elapsed();
+        let after = overview.read_with(vcx, |o, _| o.perf);
+        let delta = OverviewPerf {
+            rows_rebuilds: after.rows_rebuilds - before.rows_rebuilds,
+            observer_calls: after.observer_calls - before.observer_calls,
+            observer_notifies: after.observer_notifies - before.observer_notifies,
+            fetch_checks: after.fetch_checks - before.fetch_checks,
+            fetch_requests: after.fetch_requests - before.fetch_requests,
+        };
+        eprintln!("PERF 250 chats x 50 streaming updates: {delta:?} in {elapsed:?}");
     }
 
     #[gpui::test]
