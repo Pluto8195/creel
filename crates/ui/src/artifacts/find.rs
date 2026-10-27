@@ -145,6 +145,8 @@ pub(crate) enum FrameCommand<'a> {
     Clear,
     /// Scroll to the `n`th `h1`–`h3` (document order, counting empty ones).
     Scroll(usize),
+    /// Zoom the page to this level, around the middle of the view.
+    Zoom(f32),
 }
 
 /// The script that sends `command` to the frame through the outer document.
@@ -154,6 +156,7 @@ pub(crate) fn command_script(command: &FrameCommand) -> String {
         FrameCommand::Goto(n) => serde_json::json!({ "zeronGoto": n }),
         FrameCommand::Clear => serde_json::json!({ "zeronClear": true }),
         FrameCommand::Scroll(n) => serde_json::json!({ "zeronScroll": n }),
+        FrameCommand::Zoom(level) => serde_json::json!({ "zeronZoom": level }),
     };
     // JSON is valid JS except U+2028 / U+2029 in old engines; escape them.
     let json = message
@@ -185,6 +188,10 @@ pub(crate) struct FrameState {
     /// The page's live headings, `(level, text)`.
     #[serde(default)]
     pub(crate) heads: Vec<(u8, String)>,
+    /// The page's zoom (set by keys from the host, or by pinch and
+    /// ⌘-scroll inside the page).
+    #[serde(default)]
+    pub(crate) zoom: Option<u32>,
 }
 
 impl FrameState {
@@ -244,16 +251,42 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
     const se = document.scrollingElement || document.documentElement;
     send({ active, atBottom: se.scrollTop + se.clientHeight >= se.scrollHeight - 2, heads: hs.map((h) => [Number(h.tagName[1]), (h.textContent || "").trim().slice(0, 160)]) });
   };
+  // Zoom: CSS zoom on the page root (text stays sharp, content reflows).
+  // Pinch (WebKit gesture events) and ⌘ / Ctrl-scroll zoom around the
+  // pointer; the host's keys zoom around the middle of the view. Keep in
+  // step with `zoom::anchor_offset`.
+  let zoom = 1, pinchFrom = 1;
+  const setZoom = (to, ax, ay) => {
+    to = Math.round(Math.min(8, Math.max(0.25, to)) * 10000) / 10000;
+    if (!(to > 0) || to === zoom) return;
+    const se = document.scrollingElement || document.documentElement;
+    const x = ax == null ? window.innerWidth / 2 : ax, y = ay == null ? window.innerHeight / 2 : ay;
+    const k = to / zoom;
+    const left = Math.max(0, (se.scrollLeft + x) * k - x), top = Math.max(0, (se.scrollTop + y) * k - y);
+    zoom = to;
+    document.documentElement.style.zoom = String(to);
+    se.scrollLeft = left; se.scrollTop = top;
+    send({ zoom: Math.round(zoom * 1000) });
+  };
+  window.addEventListener("wheel", (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    setZoom(zoom * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+  }, { passive: false });
+  window.addEventListener("gesturestart", (e) => { e.preventDefault(); pinchFrom = zoom; }, { passive: false });
+  window.addEventListener("gesturechange", (e) => { e.preventDefault(); setZoom(pinchFrom * e.scale, e.clientX, e.clientY); }, { passive: false });
+  window.addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if ("zeronFind" in d) find(String(d.zeronFind));
+    if ("zeronZoom" in d) setZoom(Number(d.zeronZoom));
+    else if ("zeronFind" in d) find(String(d.zeronFind));
     else if ("zeronGoto" in d) goto(d.zeronGoto);
     else if ("zeronClear" in d) clear();
     else if ("zeronScroll" in d) { const h = heads()[d.zeronScroll]; if (h) h.scrollIntoView({ block: "start" }); }
   });
   let t = 0;
   window.addEventListener("scroll", () => { clearTimeout(t); t = setTimeout(report, 80); }, { passive: true, capture: true });
-  window.addEventListener("load", () => setTimeout(report, 50));
+  window.addEventListener("load", () => setTimeout(() => { report(); send({ zoom: Math.round(zoom * 1000) }); }, 50));
 })();
 "##;
 
@@ -441,7 +474,7 @@ mod tests {
             assert!(!script.contains("</script"));
         }
         assert!(
-            FRAME_SCRIPT.lines().count() < 60,
+            FRAME_SCRIPT.lines().count() < 90,
             "keep the injected JS small"
         );
         assert!(HOST_SCRIPT.lines().count() < 15);

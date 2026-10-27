@@ -330,28 +330,45 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{path} does not parse: {e}"));
             let size = tree.size();
             let aspect = size.width() / size.height();
-            assert!((aspect - 140.0 / 202.0).abs() < 0.01, "{path} aspect {aspect}");
+            assert!(
+                (aspect - 140.0 / 202.0).abs() < 0.01,
+                "{path} aspect {aspect}"
+            );
         }
     }
 
     #[test]
     fn logo_renders_gradients_and_bloom_on_a_transparent_background() {
         let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(Assets));
-        for (path, ink) in [(MAST_LOGO_LIGHT, [0x18, 0x30, 0x28]), (MAST_LOGO_DARK, [0xD6, 0xF1, 0xDB])] {
+        for (path, ink) in [
+            (MAST_LOGO_LIGHT, [0x18, 0x30, 0x28]),
+            (MAST_LOGO_DARK, [0xD6, 0xF1, 0xDB]),
+        ] {
             let bytes = Assets.load(path).unwrap().unwrap();
-            let image = renderer.render_single_frame(&bytes, 2.0).expect("logo renders");
+            let image = renderer
+                .render_single_frame(&bytes, 2.0)
+                .expect("logo renders");
             let px = image.as_bytes(0).unwrap(); // premultiplied BGRA
             assert_eq!(px[3], 0, "{path}: top-left corner is transparent");
             let near = |p: &[u8], rgb: [u8; 3]| {
                 p[3] == 255 && (0..3).all(|i| p[2 - i].abs_diff(rgb[i]) <= 6)
             };
-            assert!(px.chunks_exact(4).any(|p| near(p, ink)), "{path}: has ink pixels");
+            assert!(
+                px.chunks_exact(4).any(|p| near(p, ink)),
+                "{path}: has ink pixels"
+            );
             // The lens is a moss -> clover -> cobalt gradient: it has green and blue ends.
             let opaque = |p: &&[u8]| p[3] == 255;
             let green = |p: &[u8]| p[1] as i32 > p[2] as i32 + 60 && p[1] as i32 > p[0] as i32 + 40;
             let blue = |p: &[u8]| p[0] as i32 > p[1] as i32 + 50 && p[0] as i32 > p[2] as i32 + 80;
-            assert!(px.chunks_exact(4).filter(opaque).any(|p| green(p)), "{path}: lens has aurora green");
-            assert!(px.chunks_exact(4).filter(opaque).any(|p| blue(p)), "{path}: lens has aurora blue");
+            assert!(
+                px.chunks_exact(4).filter(opaque).any(|p| green(p)),
+                "{path}: lens has aurora green"
+            );
+            assert!(
+                px.chunks_exact(4).filter(opaque).any(|p| blue(p)),
+                "{path}: lens has aurora blue"
+            );
             // The bloom behind the lens is a blurred gradient disc: a faint, partly
             // transparent halo just outside the rim. The lens centre is (70, 46) in the
             // 140-unit-wide viewBox; sample 33 units above it.
@@ -359,7 +376,11 @@ mod tests {
             let scale = width as f32 / 140.0;
             let (x, y) = ((70.0 * scale) as usize, ((46.0 - 33.0) * scale) as usize);
             let halo = &px[(y * width + x) * 4..][..4];
-            assert!(halo[3] > 0 && halo[3] < 128, "{path}: blurred bloom halo, alpha {}", halo[3]);
+            assert!(
+                halo[3] > 0 && halo[3] < 128,
+                "{path}: blurred bloom halo, alpha {}",
+                halo[3]
+            );
         }
     }
 

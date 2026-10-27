@@ -753,11 +753,7 @@ mod tests {
                 "\u{2325}\u{2191} / \u{2325}\u{2193}",
                 "Alt+\u{2191} / Alt+\u{2193}",
             ),
-            (
-                "Focus the section rail",
-                "\u{2325}\u{2318}S",
-                "Ctrl+Alt+S",
-            ),
+            ("Focus the section rail", "\u{2325}\u{2318}S", "Ctrl+Alt+S"),
             (
                 "In the rail: previous / next / first / last section",
                 "\u{2191} \u{2193} Home End",
@@ -770,8 +766,16 @@ mod tests {
                 "Ctrl+G / Ctrl+Shift+G",
             ),
         ] {
-            assert_eq!(keys(&mac, "Plan", label).as_deref(), Some(on_mac), "{label}");
-            assert_eq!(keys(&plain, "Plan", label).as_deref(), Some(elsewhere), "{label}");
+            assert_eq!(
+                keys(&mac, "Plan", label).as_deref(),
+                Some(on_mac),
+                "{label}"
+            );
+            assert_eq!(
+                keys(&plain, "Plan", label).as_deref(),
+                Some(elsewhere),
+                "{label}"
+            );
         }
         // The PR page row follows the live binding.
         assert_eq!(
@@ -781,12 +785,21 @@ mod tests {
         let mut rebound = KeymapConfig::default();
         rebound.set(ShortcutId::OpenMyPrs, "mod-alt-p".into());
         assert_eq!(
-            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page").as_deref(),
+            keys(
+                &shortcut_reference_on(true, &rebound),
+                "GitHub",
+                "Open the PR page"
+            )
+            .as_deref(),
             Some("\u{2325}\u{2318}P")
         );
         rebound.set(ShortcutId::OpenMyPrs, String::new());
         assert_eq!(
-            keys(&shortcut_reference_on(true, &rebound), "GitHub", "Open the PR page"),
+            keys(
+                &shortcut_reference_on(true, &rebound),
+                "GitHub",
+                "Open the PR page"
+            ),
             None
         );
     }

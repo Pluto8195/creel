@@ -5,17 +5,17 @@
 
 use chrono::{DateTime, Utc};
 use gpui::{AnyElement, Context, ElementId, Hsla, MouseButton, SharedString, div, prelude::*, px};
-use zeron_proto::{PrDashBucket, PrDashParams, PrDashReply, PrDashRow, PrDashTab, PrReference};
 use zeron_proto::PrReviewAction;
+use zeron_proto::{PrDashBucket, PrDashParams, PrDashReply, PrDashRow, PrDashTab, PrReference};
 use zeron_rpc::methods;
 
 use zeron_proto::ChatIndicator;
 
 use super::{ChatTypeView, review_button, status_line};
 use crate::error_notice::ErrorNotice;
-use crate::review_chats::{self, ChatFact, EnterAction, ReviewChat};
-use crate::pr_page::{self, DashItem, Filters, PageTab, Tone, tab_index};
 use crate::popover;
+use crate::pr_page::{self, DashItem, Filters, PageTab, Tone, tab_index};
+use crate::review_chats::{self, ChatFact, EnterAction, ReviewChat};
 use crate::state::format_time_ago;
 use crate::theme::Theme;
 use crate::work_outline::chips::TextTooltip;
@@ -314,7 +314,11 @@ impl ChatTypeView {
                 } else {
                     gpui::FontWeight::NORMAL
                 })
-                .text_color(if selected { theme.text } else { theme.text_muted })
+                .text_color(if selected {
+                    theme.text
+                } else {
+                    theme.text_muted
+                })
                 .hover(|el| el.bg(theme.element_hover))
                 .on_click(cx.listener(move |this, _, _, cx| this.select_tab(page_tab, cx)))
                 .child(page_tab.label())
@@ -384,7 +388,9 @@ impl ChatTypeView {
                 } else {
                     theme.border
                 })
-                .when(active, |el| el.bg(bucket_color(theme, bucket).opacity(0.14)))
+                .when(active, |el| {
+                    el.bg(bucket_color(theme, bucket).opacity(0.14))
+                })
                 .cursor_pointer()
                 .hover(|el| el.bg(theme.element_hover))
                 .text_size(crate::typography::ui_rems(11.0))
@@ -473,7 +479,11 @@ impl ChatTypeView {
             .child(
                 review_button(
                     "pr-dash-refresh".into(),
-                    if refreshing { "Refreshing…" } else { "Refresh" },
+                    if refreshing {
+                        "Refreshing…"
+                    } else {
+                        "Refresh"
+                    },
                     false,
                     refreshing,
                     theme,
@@ -801,9 +811,9 @@ impl ChatTypeView {
         let open_review = primary
             .as_ref()
             .map(|chat| self.open_review_button(ix, chat, theme, cx));
-        let overflow = primary.is_some().then(|| {
-            self.review_overflow(ix, row, &review_chats, reference.clone(), theme, cx)
-        });
+        let overflow = primary
+            .is_some()
+            .then(|| self.review_overflow(ix, row, &review_chats, reference.clone(), theme, cx));
         // Actions: Review / Open review on every row; Fix CI always on review
         // rows, only while CI fails on an authored PR.
         let start = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
@@ -878,11 +888,11 @@ impl ChatTypeView {
                     .child(actions),
             )
             .when_some(status, |el, status| {
-                el.child(
-                    div()
-                        .px(px(14.0))
-                        .child(status_line(format!("pr-dash-status-{ix}"), &status, theme)),
-                )
+                el.child(div().px(px(14.0)).child(status_line(
+                    format!("pr-dash-status-{ix}"),
+                    &status,
+                    theme,
+                )))
             })
             .into_any_element()
     }
@@ -1010,22 +1020,25 @@ impl ChatTypeView {
                     }
                 }))
         };
-        let others = review_chats::others(review_chats).iter().enumerate().map(|(j, chat)| {
-            let id = format!("pr-dash-review-other-{ix}-{j}");
-            let chat_id = chat.chat_id.clone();
-            popover::menu_row(theme, false, id.clone())
-                .id(element_id(id.clone()))
-                .debug_selector(move || id.clone())
-                .child(SharedString::from(format!(
-                    "Open {}",
-                    review_chats::open_review_detail(chat)
-                )))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.close_review_menu(cx);
-                    this.open_chat(chat_id.clone(), cx);
-                }))
-        });
+        let others = review_chats::others(review_chats)
+            .iter()
+            .enumerate()
+            .map(|(j, chat)| {
+                let id = format!("pr-dash-review-other-{ix}-{j}");
+                let chat_id = chat.chat_id.clone();
+                popover::menu_row(theme, false, id.clone())
+                    .id(element_id(id.clone()))
+                    .debug_selector(move || id.clone())
+                    .child(SharedString::from(format!(
+                        "Open {}",
+                        review_chats::open_review_detail(chat)
+                    )))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_review_menu(cx);
+                        this.open_chat(chat_id.clone(), cx);
+                    }))
+            });
         let has_others = review_chats.len() > 1;
         let card = popover::popover_card(theme)
             .id(element_id(format!("pr-dash-menu-{ix}")))
@@ -1091,7 +1104,10 @@ impl ChatTypeView {
     }
 
     #[cfg(test)]
-    pub(crate) fn dash_search_input(&self, tab: PrDashTab) -> gpui::Entity<crate::composer::ComposerInput> {
+    pub(crate) fn dash_search_input(
+        &self,
+        tab: PrDashTab,
+    ) -> gpui::Entity<crate::composer::ComposerInput> {
         self.dash_search[tab_index(tab)].clone()
     }
 }

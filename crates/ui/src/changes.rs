@@ -2375,7 +2375,7 @@ impl Changes {
                 Some(ChangesTarget {
                     unconfirmed: None,
                     exact_checkout: false,
-            range: None,
+                    range: None,
                     chat_id,
                     device_id: String::new(),
                     cwd: None,
@@ -2593,7 +2593,10 @@ impl Changes {
     /// pill is a branch / PR target. Leaving one restores the working tree
     /// scope; History and commit panes never change.
     fn sync_scope_with_owner(&mut self) {
-        let ranged = self.owner.as_ref().is_some_and(|owner| owner.range.is_some());
+        let ranged = self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.range.is_some());
         if ranged {
             if matches!(
                 self.scope,
@@ -4304,11 +4307,13 @@ impl Changes {
         let target = self.desired_target(cx);
         let chat_id = self.owner_chat_id_owned();
         let mode = self.scope.mode().to_string();
-        let (base_ref, head_ref) = match (self.scope, self.owner.as_ref().and_then(|o| o.range.as_ref())) {
-            (DiffScope::Range, Some(range)) => (
-                Some(range.base_ref.clone()),
-                Some(range.head_ref.clone()),
-            ),
+        let (base_ref, head_ref) = match (
+            self.scope,
+            self.owner.as_ref().and_then(|o| o.range.as_ref()),
+        ) {
+            (DiffScope::Range, Some(range)) => {
+                (Some(range.base_ref.clone()), Some(range.head_ref.clone()))
+            }
             _ => (self.base_ref.clone(), None),
         };
         let commit_sha = (self.scope == DiffScope::Commit)
@@ -5989,7 +5994,7 @@ impl Changes {
             let target = ChangesTarget {
                 unconfirmed: None,
                 exact_checkout: false,
-            range: None,
+                range: None,
                 chat_id: String::new(),
                 device_id: String::new(),
                 cwd: Some(cwd.clone()),

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use zeron_proto::{
-    ChatLinkSource, PrDashBucket, PrDashChat, PrDashReply, PrDashRow, PrDashTab, PrDashDiff,
+    ChatLinkSource, PrDashBucket, PrDashChat, PrDashDiff, PrDashReply, PrDashRow, PrDashTab,
 };
 
 use zeron_proto::{needs_you_count, ordered_rows};
@@ -340,7 +340,10 @@ pub(crate) fn churn(diff: &PrDashDiff) -> (String, Option<String>) {
         compact(diff.code_churn)
     };
     let excluded = diff.test_lines + diff.generated_lines + diff.docs_lines;
-    (main, (excluded > 0).then(|| format!("+{}", compact(excluded))))
+    (
+        main,
+        (excluded > 0).then(|| format!("+{}", compact(excluded))),
+    )
 }
 
 /// Spec §5 `rel()`: `now|{m}m|{h}h|{d}d|{n}mo`, negative clamps to 0.
@@ -429,7 +432,8 @@ impl Tag {
 }
 
 fn stacked(row: &PrDashRow) -> bool {
-    !row.base_ref.is_empty() && !["main", "master", "develop", "dev"].contains(&row.base_ref.as_str())
+    !row.base_ref.is_empty()
+        && !["main", "master", "develop", "dev"].contains(&row.base_ref.as_str())
 }
 
 /// Spec §5 title tags in order.
@@ -452,14 +456,12 @@ pub(crate) fn title_tags(row: &PrDashRow) -> Vec<Tag> {
     if pure_addition(&row.diff) {
         tags.push(Tag::new("all new files", Tone::Plain));
     }
-    let shown_reasons: &[String] = if matches!(
-        row.bucket,
-        PrDashBucket::NeedsYou | PrDashBucket::Comments
-    ) {
-        &row.reasons
-    } else {
-        &[]
-    };
+    let shown_reasons: &[String] =
+        if matches!(row.bucket, PrDashBucket::NeedsYou | PrDashBucket::Comments) {
+            &row.reasons
+        } else {
+            &[]
+        };
     for reason in shown_reasons {
         tags.push(Tag::new(reason.clone(), Tone::Warn));
     }
@@ -495,7 +497,11 @@ pub(crate) fn title_tags(row: &PrDashRow) -> Vec<Tag> {
 pub(crate) fn chat_chip_label(chat: &PrDashChat) -> String {
     const MAX: usize = 28;
     let title = chat.title.trim();
-    let title = if title.is_empty() { "Untitled chat" } else { title };
+    let title = if title.is_empty() {
+        "Untitled chat"
+    } else {
+        title
+    };
     if title.chars().count() > MAX {
         let cut: String = title.chars().take(MAX - 1).collect();
         format!("{}…", cut.trim_end())
@@ -641,11 +647,29 @@ mod tests {
             draft,
         ];
         let hidden = badge(PrDashTab::Authored, &rows, true);
-        assert_eq!(hidden, Badge { text: "1 / 2".into(), alert: true });
+        assert_eq!(
+            hidden,
+            Badge {
+                text: "1 / 2".into(),
+                alert: true
+            }
+        );
         let shown = badge(PrDashTab::Authored, &rows, false);
-        assert_eq!(shown, Badge { text: "2 / 3".into(), alert: true });
+        assert_eq!(
+            shown,
+            Badge {
+                text: "2 / 3".into(),
+                alert: true
+            }
+        );
         let calm = badge(PrDashTab::Authored, &rows[1..2], true);
-        assert_eq!(calm, Badge { text: "1".into(), alert: false });
+        assert_eq!(
+            calm,
+            Badge {
+                text: "1".into(),
+                alert: false
+            }
+        );
         // The review tab alerts on to-review and re-review.
         let review = vec![
             row(4, PrDashBucket::ReReview, T1),
@@ -653,7 +677,10 @@ mod tests {
         ];
         assert_eq!(
             badge(PrDashTab::ReviewRequested, &review, true),
-            Badge { text: "1 / 2".into(), alert: true }
+            Badge {
+                text: "1 / 2".into(),
+                alert: true
+            }
         );
     }
 
@@ -686,11 +713,19 @@ mod tests {
         };
         let numbers = |rows: Vec<&PrDashRow>| rows.iter().map(|r| r.number).collect::<Vec<_>>();
         assert_eq!(
-            numbers(visible_rows(PrDashTab::Authored, &rows, &filters(true, &[], ""))),
+            numbers(visible_rows(
+                PrDashTab::Authored,
+                &rows,
+                &filters(true, &[], "")
+            )),
             vec![3, 2, 4, 1]
         );
         assert_eq!(
-            numbers(visible_rows(PrDashTab::Authored, &rows, &filters(false, &[], ""))),
+            numbers(visible_rows(
+                PrDashTab::Authored,
+                &rows,
+                &filters(false, &[], "")
+            )),
             vec![1, 4, 3, 2]
         );
         assert_eq!(
@@ -726,11 +761,17 @@ mod tests {
         assert_eq!(grouped.len(), 5);
         assert!(matches!(
             grouped[0],
-            DashItem::Header { bucket: PrDashBucket::NeedsYou, count: 2 }
+            DashItem::Header {
+                bucket: PrDashBucket::NeedsYou,
+                count: 2
+            }
         ));
         assert!(matches!(
             grouped[3],
-            DashItem::Header { bucket: PrDashBucket::Ready, count: 1 }
+            DashItem::Header {
+                bucket: PrDashBucket::Ready,
+                count: 1
+            }
         ));
         assert_eq!(items(&refs, false).len(), 3);
         assert_eq!(header_text(PrDashBucket::NeedsYou, 2), "● Needs you · 2");
@@ -743,8 +784,21 @@ mod tests {
         r.title = "Add pricing cache".into();
         r.ticket = Some("ENG-12".into());
         r.labels = vec!["backend".into()];
-        r.reviewers = vec![PrDashReviewer { login: "alice".into(), state: "APPROVED".into() }];
-        for hit in ["pricing", "flagship", "feature-77", "eng-12", "#77", "OCTO", "alice", "backend", "pricing alice"] {
+        r.reviewers = vec![PrDashReviewer {
+            login: "alice".into(),
+            state: "APPROVED".into(),
+        }];
+        for hit in [
+            "pricing",
+            "flagship",
+            "feature-77",
+            "eng-12",
+            "#77",
+            "OCTO",
+            "alice",
+            "backend",
+            "pricing alice",
+        ] {
             assert!(matches_search(&r, hit), "{hit}");
         }
         assert!(!matches_search(&r, "pricing bob"));
@@ -762,16 +816,33 @@ mod tests {
         r.reasons = vec!["2 checks failing".into()];
         r.mergeable = Some("CONFLICTING".into());
         r.failing_checks = (1..=4)
-            .map(|n| PrDashCheck { name: format!("check-{n}"), url: Some(format!("https://ci/{n}")) })
+            .map(|n| PrDashCheck {
+                name: format!("check-{n}"),
+                url: Some(format!("https://ci/{n}")),
+            })
             .collect();
-        r.cancelled_checks = vec![PrDashCheck { name: "slow".into(), url: None }];
+        r.cancelled_checks = vec![PrDashCheck {
+            name: "slow".into(),
+            url: None,
+        }];
         r.labels = (1..=5).map(|n| format!("l{n}")).collect();
         let texts: Vec<String> = title_tags(&r).into_iter().map(|t| t.text).collect();
         assert_eq!(
             texts,
             [
-                "draft", "2/3", "ENG-9", "all new files", "2 checks failing", "conflict",
-                "check-1", "check-2", "check-3", "1 cancelled", "l1", "l2", "l3"
+                "draft",
+                "2/3",
+                "ENG-9",
+                "all new files",
+                "2 checks failing",
+                "conflict",
+                "check-1",
+                "check-2",
+                "check-3",
+                "1 cancelled",
+                "l1",
+                "l2",
+                "l3"
             ]
         );
         // A reason that already mentions the conflict suppresses the tag, and
@@ -811,9 +882,15 @@ mod tests {
             is_review,
             updated_at: None,
         };
-        let long = PrDashChat { title: "x".repeat(40), ..chat("c", false, false) };
+        let long = PrDashChat {
+            title: "x".repeat(40),
+            ..chat("c", false, false)
+        };
         assert_eq!(chat_chip_label(&long).chars().count(), 28);
-        assert_eq!(link_source_text(ChatLinkSource::Branch), "The chat's branch is this PR's branch");
+        assert_eq!(
+            link_source_text(ChatLinkSource::Branch),
+            "The chat's branch is this PR's branch"
+        );
         assert_eq!(link_source_text(ChatLinkSource::Manual), "Linked manually");
     }
 
@@ -830,7 +907,12 @@ mod tests {
         state.apply(Err("boom".into()));
         assert_eq!(state.error.as_deref(), Some("boom"));
         assert_eq!(state.rows.len(), 1);
-        state.apply(Ok(PrDashReply { me: "me".into(), rows: Vec::new(), fetched_at: T2.into(), error: Some("rate limited".into()) }));
+        state.apply(Ok(PrDashReply {
+            me: "me".into(),
+            rows: Vec::new(),
+            fetched_at: T2.into(),
+            error: Some("rate limited".into()),
+        }));
         assert_eq!(state.error.as_deref(), Some("rate limited"));
     }
 }

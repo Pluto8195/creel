@@ -745,14 +745,8 @@ impl ChatTypeView {
                     )),
             )
             .child(
-                review_button(
-                    "pr-review-url-submit".into(),
-                    "Review",
-                    true,
-                    false,
-                    theme,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.submit_review_input(cx))),
+                review_button("pr-review-url-submit".into(), "Review", true, false, theme)
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_review_input(cx))),
             );
         div()
             .id("pr-review-box")

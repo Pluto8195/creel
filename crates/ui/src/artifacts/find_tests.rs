@@ -878,8 +878,14 @@ fn find_keys_still_work_with_the_section_keys_around(cx: &mut TestAppContext) {
 #[test]
 fn the_page_hands_over_the_section_keys_and_escape_only_with_find_open() {
     use super::tab::page_forwarded_keys;
-    assert_eq!(page_forwarded_keys(false), ["alt-up", "alt-down"]);
-    assert_eq!(page_forwarded_keys(true), ["alt-up", "alt-down", "escape"]);
+    let without = page_forwarded_keys(false);
+    let with = page_forwarded_keys(true);
+    assert_eq!(&without[..2], ["alt-up", "alt-down"]);
+    assert!(!without.contains(&"escape") && with.contains(&"escape"));
+    // The zoom keys always reach the tab.
+    for key in super::zoom::PAGE_FORWARDED_KEYS {
+        assert!(without.contains(&key) && with.contains(&key), "{key}");
+    }
     // Plain arrows are never handed over: they scroll the page.
     assert!(
         !page_forwarded_keys(true)

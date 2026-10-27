@@ -156,6 +156,9 @@ pub(crate) struct MarkdownPreview {
     visible_rows: HashSet<gpui::SharedString>,
     code_fences: HashMap<SharedString, render::CodeFenceRuntime>,
     code_fences_generation: u64,
+    /// Artifact zoom (1.0 = 100%): code text and the column width scale
+    /// here; rem-sized text scales in the host's `ZoomSurface`.
+    zoom: f32,
     copied_code: Option<(SharedString, usize)>,
     copied_clear: Option<Task<()>>,
     needs_focus: bool,
@@ -391,6 +394,7 @@ impl MarkdownPreview {
             visible_rows: HashSet::new(),
             code_fences: HashMap::new(),
             code_fences_generation: crate::settings::code_fences_generation(cx),
+            zoom: 1.0,
             copied_code: None,
             copied_clear: None,
             needs_focus: true,
@@ -1023,6 +1027,18 @@ impl MarkdownPreview {
     /// Tint top-level blocks (index = block index in this preview's parse).
     /// The block list's scroll state (a shared handle), for hosts that keep
     /// two previews scrolled together.
+    pub(crate) fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        if (self.zoom - zoom).abs() > f32::EPSILON {
+            self.zoom = zoom;
+            self.list.remeasure();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
     pub(crate) fn list_state(&self) -> ListState {
         self.list.clone()
     }
@@ -1192,7 +1208,9 @@ impl MarkdownPreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let theme = Theme::of(cx).clone();
+        let mut theme = Theme::of(cx).clone();
+        theme.code_font_size *= self.zoom;
+        let zoom = self.zoom;
         let link = self.link_ui(cx);
         let find = (!self.find_query.is_empty()).then(|| {
             Rc::new(render::FindHighlight {
@@ -1404,7 +1422,7 @@ impl MarkdownPreview {
                             div().w_full().flex().justify_center().px(px(24.0)).child(
                                 div()
                                     .w_full()
-                                    .max_w(px(MAX_PREVIEW_CONTENT_WIDTH))
+                                    .max_w(px(MAX_PREVIEW_CONTENT_WIDTH * zoom))
                                     .min_w_0()
                                     .relative()
                                     .when_some(comment_line, |el, line| {

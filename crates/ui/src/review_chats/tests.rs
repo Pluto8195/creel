@@ -32,7 +32,11 @@ fn ids(chats: &[ReviewChat]) -> Vec<&str> {
 
 #[test]
 fn a_chat_assigned_to_the_item_is_a_review_chat() {
-    let chats = resolve(&["a".into()], &[], &[fact("a", "Review it", 5), fact("b", "Other", 9)]);
+    let chats = resolve(
+        &["a".into()],
+        &[],
+        &[fact("a", "Review it", 5), fact("b", "Other", 9)],
+    );
     assert_eq!(ids(&chats), ["a"]);
     assert_eq!(chats[0].reason, ReviewReason::Assigned);
     assert_eq!(chats[0].title, "Review it");
@@ -47,8 +51,14 @@ fn manual_and_launcher_links_count() {
     ];
     let chats = resolve(&[], &links, &facts);
     assert_eq!(ids(&chats), ["l", "m"]);
-    assert_eq!(chats[0].reason, ReviewReason::Linked(ChatLinkSource::ReviewLauncher));
-    assert_eq!(chats[1].reason, ReviewReason::Linked(ChatLinkSource::Manual));
+    assert_eq!(
+        chats[0].reason,
+        ReviewReason::Linked(ChatLinkSource::ReviewLauncher)
+    );
+    assert_eq!(
+        chats[1].reason,
+        ReviewReason::Linked(ChatLinkSource::Manual)
+    );
 }
 
 #[test]
@@ -60,7 +70,9 @@ fn mention_branch_ticket_diff_target_and_created_in_chat_links_do_not_count() {
         ChatLinkSource::DiffTarget,
         ChatLinkSource::CreatedInChat,
     ];
-    let facts: Vec<ChatFact> = (0..sources.len()).map(|i| fact(&format!("c{i}"), "c", 1)).collect();
+    let facts: Vec<ChatFact> = (0..sources.len())
+        .map(|i| fact(&format!("c{i}"), "c", 1))
+        .collect();
     let links: Vec<_> = sources
         .iter()
         .enumerate()
@@ -76,7 +88,10 @@ fn archived_and_unknown_chats_are_excluded() {
     let facts = [archived, fact("live", "Live review", 2)];
     let chats = resolve(
         &["old".into(), "gone".into()],
-        &[link("live", ChatLinkSource::Manual), link("gone", ChatLinkSource::Manual)],
+        &[
+            link("live", ChatLinkSource::Manual),
+            link("gone", ChatLinkSource::Manual),
+        ],
         &facts,
     );
     assert_eq!(ids(&chats), ["live"]);
@@ -108,7 +123,11 @@ fn several_review_chats_sort_most_recent_first_and_assignment_wins_the_reason() 
 fn a_finished_or_idle_review_chat_still_counts() {
     let mut finished = fact("f", "Done", 1);
     finished.state = ChatIndicator::Completed;
-    let chats = resolve(&["f".into(), "i".into()], &[], &[finished, fact("i", "Idle", 2)]);
+    let chats = resolve(
+        &["f".into(), "i".into()],
+        &[],
+        &[finished, fact("i", "Idle", 2)],
+    );
     assert_eq!(ids(&chats), ["i", "f"]);
 }
 
@@ -153,10 +172,7 @@ fn state_labels_and_the_marker_text() {
         marker_label(&chats).as_deref(),
         Some("Being reviewed · Review flagship#9 · working +1")
     );
-    assert_eq!(
-        open_review_detail(&chats[0]),
-        "Review flagship#9 · working"
-    );
+    assert_eq!(open_review_detail(&chats[0]), "Review flagship#9 · working");
 }
 
 #[test]

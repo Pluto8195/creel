@@ -5404,7 +5404,13 @@ mod tests {
         state.apply_work_outline_frame("s1", snapshot.clone());
         let summary = summarize_state(&state, now);
         assert_eq!((summary.light, summary.badge), (AppLight::Ready, 1));
-        snapshot.user_action_requests.push(request("r-ask", "s1", "w-ui", "c-work", "Which colour?"));
+        snapshot.user_action_requests.push(request(
+            "r-ask",
+            "s1",
+            "w-ui",
+            "c-work",
+            "Which colour?",
+        ));
         snapshot.revision = 2;
         state.apply_work_outline_frame("s1", snapshot);
         let summary = summarize_state(&state, now);

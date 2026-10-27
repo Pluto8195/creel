@@ -10,8 +10,9 @@ use gpui::Task;
 use zeron_proto::{
     CreateWorkItemExternalReferenceParams, CreateWorkItemParams, GithubError, GithubErrorCode,
     PrMyOpenParams, PrReviewRequestedParams, PrReviewSyncNowParams, PrReviewSyncNowReply,
-    PrStatusParams, PrViewerReply, PullRequestRef, PullRequestStatusSummary, SetPrReviewSyncDestinationParams,
-    WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply, WorkOutlineMutation,
+    PrStatusParams, PrViewerReply, PullRequestRef, PullRequestStatusSummary,
+    SetPrReviewSyncDestinationParams, WorkOutlineError, WorkOutlineErrorCode,
+    WorkOutlineMutateReply, WorkOutlineMutation,
 };
 use zeron_rpc::methods;
 

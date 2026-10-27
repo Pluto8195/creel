@@ -120,10 +120,9 @@ pub(crate) fn pr_fields(
                 author: row_icons::author_text(&status.author, viewer),
                 icon: row_icons::pr_icon(status.state),
                 state: Some(chip::state_label(status.state)),
-                my_review: row_icons::review_icon(status.my_review_state).zip(
-                    chip::my_review_label(status.my_review_state),
-                )
-                .map(|((path, tone), label)| (path, tone, label)),
+                my_review: row_icons::review_icon(status.my_review_state)
+                    .zip(chip::my_review_label(status.my_review_state))
+                    .map(|((path, tone), label)| (path, tone, label)),
                 ci: row_icons::ci_dot(status.ci_status).zip(chip::ci_label(status.ci_status)),
                 decision: (!status.state.is_finished())
                     .then(|| chip::review_decision_label(status.review_decision))
@@ -216,9 +215,7 @@ fn tooltip(el: Stateful<gpui::Div>, text: impl Into<SharedString>) -> Stateful<g
 fn base(id: impl Into<SharedString>) -> Stateful<gpui::Div> {
     let id: SharedString = id.into();
     let key = id.clone();
-    div()
-        .id(id)
-        .debug_selector(move || key.to_string())
+    div().id(id).debug_selector(move || key.to_string())
 }
 
 fn text_cell(id: &str, text: impl Into<SharedString>, color: Hsla) -> Stateful<gpui::Div> {
@@ -267,10 +264,7 @@ fn pr_icon_mark(
     theme: &Theme,
 ) -> AnyElement {
     let (path, tone) = fields.icon;
-    let tip = status.map_or_else(
-        || fields.number.clone(),
-        row_icons::pr_tooltip,
-    );
+    let tip = status.map_or_else(|| fields.number.clone(), row_icons::pr_tooltip);
     row_icons::icon_mark(id.to_owned(), path, tone_color(tone, theme), tip).into_any_element()
 }
 
@@ -323,17 +317,20 @@ fn pr_segments(
         actions,
         theme,
     );
-    out.push(
-        tooltip(number, format!("Open {} on GitHub", pr.external_id())).into_any_element(),
-    );
+    out.push(tooltip(number, format!("Open {} on GitHub", pr.external_id())).into_any_element());
     if let Some(note) = &fields.note {
-        out.push(text_cell(&format!("{prefix}-pr-note"), note.clone(), theme.text_faint).into_any_element());
+        out.push(
+            text_cell(&format!("{prefix}-pr-note"), note.clone(), theme.text_faint)
+                .into_any_element(),
+        );
         return out;
     }
     if density == Density::Compact
         && let Some(state) = fields.state
     {
-        out.push(text_cell(&format!("{prefix}-pr-state"), state, theme.text_muted).into_any_element());
+        out.push(
+            text_cell(&format!("{prefix}-pr-state"), state, theme.text_muted).into_any_element(),
+        );
     }
     if density == Density::Full {
         if let Some(title) = &fields.title {
@@ -353,7 +350,11 @@ fn pr_segments(
                 .unwrap_or_default();
             out.push(
                 tooltip(
-                    text_cell(&format!("{prefix}-pr-author"), author.clone(), theme.text_muted),
+                    text_cell(
+                        &format!("{prefix}-pr-author"),
+                        author.clone(),
+                        theme.text_muted,
+                    ),
                     tip,
                 )
                 .into_any_element(),
@@ -408,9 +409,13 @@ fn pr_segments(
         }
         if let Some(branches) = &fields.branches {
             out.push(
-                text_cell(&format!("{prefix}-pr-branches"), branches.clone(), theme.text_faint)
-                    .max_w(px(220.0))
-                    .into_any_element(),
+                text_cell(
+                    &format!("{prefix}-pr-branches"),
+                    branches.clone(),
+                    theme.text_faint,
+                )
+                .max_w(px(220.0))
+                .into_any_element(),
             );
         }
         if let Some(updated) = &fields.updated {
@@ -443,9 +448,10 @@ fn review_marker(data: &StripData, actions: &Actions, theme: &Theme) -> Option<A
     let label = review_chats::marker_label(&data.review_chats)?;
     let chat_id = review_chats::primary(&data.review_chats)?.chat_id.clone();
     let open = actions.open_chat.clone();
-    let tip = format!("Open the review chat: {}", review_chats::open_review_detail(
-        review_chats::primary(&data.review_chats)?,
-    ));
+    let tip = format!(
+        "Open the review chat: {}",
+        review_chats::open_review_detail(review_chats::primary(&data.review_chats)?,)
+    );
     let cell = base("work-context-reviewing")
         .flex_none()
         .flex()
@@ -455,8 +461,13 @@ fn review_marker(data: &StripData, actions: &Actions, theme: &Theme) -> Option<A
         .child(icon(icons::EYE).size(px(11.0)).text_color(theme.accent))
         .child(SharedString::from(label));
     Some(
-        tooltip(link(cell, theme, move |window, cx| open(chat_id.clone(), window, cx)), tip)
-            .into_any_element(),
+        tooltip(
+            link(cell, theme, move |window, cx| {
+                open(chat_id.clone(), window, cx)
+            }),
+            tip,
+        )
+        .into_any_element(),
     )
 }
 
@@ -507,7 +518,14 @@ fn review_line(
 ) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if let Some(first) = review.prs.first() {
-        out.extend(pr_segments("work-context", first, data, Density::Full, actions, theme));
+        out.extend(pr_segments(
+            "work-context",
+            first,
+            data,
+            Density::Full,
+            actions,
+            theme,
+        ));
     }
     out.extend(more_badge(
         "work-context-more",
@@ -587,7 +605,9 @@ fn planning_line(
             ),
         );
         if let Some(state) = data.project.as_ref().and_then(|p| p.state.clone()) {
-            out.push(text_cell("work-context-project-state", state, theme.text_muted).into_any_element());
+            out.push(
+                text_cell("work-context-project-state", state, theme.text_muted).into_any_element(),
+            );
         }
         out.push(separator(theme));
     }
@@ -670,12 +690,7 @@ impl StripData {
 // The details panel
 // ----------------------------------------------------------------------
 
-fn panel_row(
-    id: String,
-    label: &'static str,
-    value: AnyElement,
-    theme: &Theme,
-) -> AnyElement {
+fn panel_row(id: String, label: &'static str, value: AnyElement, theme: &Theme) -> AnyElement {
     div()
         .flex()
         .items_baseline()
@@ -708,7 +723,9 @@ fn panel_link(
     handler: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     link(
-        base(id.to_owned()).text_color(theme.accent).child(text.into()),
+        base(id.to_owned())
+            .text_color(theme.accent)
+            .child(text.into()),
         theme,
         handler,
     )
@@ -753,35 +770,56 @@ fn pr_panel(
             .into_any_element(),
     );
     if let Some(note) = &fields.note {
-        rows.push(panel_row(format!("{key}-note"), "Status", panel_text(note.clone()), theme));
+        rows.push(panel_row(
+            format!("{key}-note"),
+            "Status",
+            panel_text(note.clone()),
+            theme,
+        ));
     } else {
         let mut line = |label: &'static str, id: &str, value: Option<String>| {
             if let Some(value) = value {
-                rows.push(panel_row(format!("{key}-{id}"), label, panel_text(value), theme));
+                rows.push(panel_row(
+                    format!("{key}-{id}"),
+                    label,
+                    panel_text(value),
+                    theme,
+                ));
             }
         };
         line("State", "state", fields.state.map(str::to_owned));
         line(
             "Author",
             "author",
-            status.map(|s| s.author.clone()).filter(|a| !a.is_empty()).map(|author| {
-                if fields.author.as_deref() == Some("you") {
-                    format!("{author} (you)")
-                } else {
-                    author
-                }
-            }),
+            status
+                .map(|s| s.author.clone())
+                .filter(|a| !a.is_empty())
+                .map(|author| {
+                    if fields.author.as_deref() == Some("you") {
+                        format!("{author} (you)")
+                    } else {
+                        author
+                    }
+                }),
         );
         line("CI", "ci", fields.ci.map(|(_, label)| label.to_owned()));
         line("Decision", "decision", fields.decision.map(str::to_owned));
-        line("Your review", "my-review", fields.my_review.map(|(_, _, label)| label.to_owned()));
+        line(
+            "Your review",
+            "my-review",
+            fields.my_review.map(|(_, _, label)| label.to_owned()),
+        );
         line(
             "Reviewers",
             "reviewers",
             (!fields.reviewers.is_empty()).then(|| fields.reviewers.join(", ")),
         );
         line("Branches", "branches", fields.branches.clone());
-        line("Updated", "updated", fields.updated.clone().map(|ago| format!("{ago} ago")));
+        line(
+            "Updated",
+            "updated",
+            fields.updated.clone().map(|ago| format!("{ago} ago")),
+        );
     }
     if let Some(item_id) = pr_item_id {
         let open_item = actions.open_item.clone();
@@ -827,7 +865,10 @@ fn ticket_panel(
             theme,
         ));
         if with_description
-            && let Some(description) = issue.description.as_deref().filter(|d| !d.trim().is_empty())
+            && let Some(description) = issue
+                .description
+                .as_deref()
+                .filter(|d| !d.trim().is_empty())
         {
             rows.push(panel_row(
                 "work-context-panel-ticket-description".into(),
@@ -890,17 +931,16 @@ fn artifact_row(
             div()
                 .flex_none()
                 .text_color(theme.text_faint)
-                .child(format!("{} \u{00b7} {}", artifact.kind, revision_text(artifact, data.now))),
+                .child(format!(
+                    "{} \u{00b7} {}",
+                    artifact.kind,
+                    revision_text(artifact, data.now)
+                )),
         )
         .into_any_element()
 }
 
-fn panel(
-    context: &WorkContext,
-    data: &StripData,
-    actions: &Actions,
-    theme: &Theme,
-) -> AnyElement {
+fn panel(context: &WorkContext, data: &StripData, actions: &Actions, theme: &Theme) -> AnyElement {
     let mut sections: Vec<AnyElement> = Vec::new();
     match &context.variant {
         Variant::PrReview(review) => {
@@ -959,7 +999,14 @@ fn panel(
                         theme,
                     ));
                 }
-                sections.push(div().flex().flex_col().gap(px(2.0)).children(rows).into_any_element());
+                sections.push(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .children(rows)
+                        .into_any_element(),
+                );
             }
             if planning.artifacts.is_empty() {
                 sections.push(panel_text("No plan yet"));
@@ -970,9 +1017,15 @@ fn panel(
                         .flex_col()
                         .gap(px(2.0))
                         .child(div().text_color(theme.text_faint).child("Artifacts"))
-                        .children(planning.artifacts.iter().enumerate().map(|(index, artifact)| {
-                            artifact_row(index, artifact, data, actions, theme)
-                        }))
+                        .children(
+                            planning
+                                .artifacts
+                                .iter()
+                                .enumerate()
+                                .map(|(index, artifact)| {
+                                    artifact_row(index, artifact, data, actions, theme)
+                                }),
+                        )
                         .into_any_element(),
                 );
             }
@@ -1023,16 +1076,18 @@ pub(crate) fn render(
         .text_size(crate::typography::ui_rems(11.0))
         .text_color(theme.text_muted)
         .on_click(move |_, window, cx| toggle(window, cx))
-        .child(
-            tooltip(
-                base("work-context-chevron")
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .child(icon(chevron).size(px(10.0)).text_color(theme.text_faint)),
-                if expanded { "Hide details" } else { "Show details" },
-            ),
-        )
+        .child(tooltip(
+            base("work-context-chevron")
+                .flex_none()
+                .flex()
+                .items_center()
+                .child(icon(chevron).size(px(10.0)).text_color(theme.text_faint)),
+            if expanded {
+                "Hide details"
+            } else {
+                "Show details"
+            },
+        ))
         .children(collapsed_children(context, data, actions, theme));
     div()
         .id("work-context-strip")
@@ -1041,6 +1096,8 @@ pub(crate) fn render(
         .flex()
         .flex_col()
         .child(line)
-        .when(expanded, |el| el.child(panel(context, data, actions, theme)))
+        .when(expanded, |el| {
+            el.child(panel(context, data, actions, theme))
+        })
         .into_any_element()
 }

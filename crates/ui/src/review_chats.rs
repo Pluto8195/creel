@@ -261,7 +261,8 @@ pub(crate) fn note_chat_links(
     chat_id: &str,
     links: &[(String, ChatLinkSource)],
 ) {
-    cx.default_global::<PrChatLinkIndex>().set_chat(chat_id, links);
+    cx.default_global::<PrChatLinkIndex>()
+        .set_chat(chat_id, links);
 }
 
 /// The PR links (canonical URL, source) of a link status reply.
@@ -310,10 +311,7 @@ pub(crate) fn for_pr(
 }
 
 /// The fact about `chat_id` from the app state.
-pub(crate) fn fact_from_state(
-    state: &crate::state::AppState,
-    chat_id: &str,
-) -> Option<ChatFact> {
+pub(crate) fn fact_from_state(state: &crate::state::AppState, chat_id: &str) -> Option<ChatFact> {
     let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
     Some(ChatFact {
         id: chat.id.clone(),

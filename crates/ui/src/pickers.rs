@@ -7565,7 +7565,11 @@ mod tests {
             // No stored model, nothing reported (legacy chat): still next-turn.
             (None, None, "Next: Opus 5.5"),
             // Stored Opus but Fable actually ran: the chip stays a next-turn pick.
-            (Some("claude-opus-5-5"), Some("claude-fable-5"), "Next: Opus 5.5"),
+            (
+                Some("claude-opus-5-5"),
+                Some("claude-fable-5"),
+                "Next: Opus 5.5",
+            ),
             // Stored and actual agree: plain label.
             (Some("claude-fable-5"), Some("claude-fable-5"), "Fable 5"),
             // Stored, not run yet: plain label.
@@ -7577,7 +7581,9 @@ mod tests {
                 state.select_chat(Some("chat-chip".into()), cx);
             });
             pickers.update(cx, |pickers, cx| {
-                pickers.models.insert(HarnessId::ClaudeCode, catalog.clone());
+                pickers
+                    .models
+                    .insert(HarnessId::ClaudeCode, catalog.clone());
                 assert_eq!(
                     pickers.chip_model_label(cx).as_deref(),
                     Some(expected),
