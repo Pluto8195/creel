@@ -1219,22 +1219,6 @@ impl Pickers {
         }
     }
 
-    /// The `ChatConfig` a brand-new regular chat would start with right now
-    /// (the new-chat canvas's resolution: sticky last-used harness, model,
-    /// reasoning, options; Ask) — independent of the selected chat. For
-    /// launchers without a picker of their own (Review PR).
-    pub(crate) fn new_chat_config(seed: &Entity<Pickers>, cx: &mut App) -> Option<ChatConfig> {
-        let device_id = {
-            let seed = seed.read(cx);
-            seed.launcher
-                .as_ref()
-                .map(|launcher| launcher.device_id.clone())
-                .unwrap_or_else(|| seed.state.read(cx).effective_device_id())
-        };
-        let launcher = cx.new(|cx| Pickers::new_chat_launcher(seed, device_id, cx));
-        launcher.read(cx).resolved(cx).chat_config()
-    }
-
     // ---- the per-chat approval chip (see [`approval`]) ----
 
     /// The approval flag the next send carries (and the chip shows).

@@ -12,39 +12,42 @@ pub(crate) type PrReviewScript =
     std::sync::Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
 impl Shell {
-    /// Start reviewing `reference` (`action`): the host checks the PR out like
-    /// the Cofactr launcher and creates a `pr_review` Chat at the workspace
-    /// root. On success the Chat opens and any behind-origin warning shows in
-    /// the sidebar notice; the returned task carries the outcome so the
-    /// calling surface can show refusals inline.
-    pub(crate) fn start_pr_review(
-        &mut self,
-        reference: PrReference,
-        action: PrReviewAction,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
-        self.start_pr_review_in_item(reference, action, None, cx)
-    }
-
-    /// [`Self::start_pr_review`] filed under work item `item` (`(spaceId,
-    /// workItemId)`): the new Chat is associated with that item (PR review
-    /// sync: ⌘↩ on a PR item, the GitHub panel's Review).
-    pub(crate) fn start_pr_review_in_item(
+    /// Every PR entry point (outline ⌘↩, the context menu, Details, the PR
+    /// page's Review / Fix CI, the palette's Review PR) opens the Start Chat
+    /// dialog in PR mode: the review prompt, the PR link and the checkout
+    /// setup the host chooses, with the real model picker. Nothing starts
+    /// until the dialog's Start; see [`Self::launch_pr_review`]. `item`
+    /// (`(spaceId, workItemId)`) files the new Chat under that work item.
+    /// Opening an existing review Chat never comes through here.
+    pub(crate) fn open_start_pr_review(
         &mut self,
         reference: PrReference,
         action: PrReviewAction,
         item: Option<(String, String)>,
         cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        self.open_start_chat_for_pr(reference, action, item, cx)
+    }
+
+    /// `StartPrReview` for `reference` with the agent picked in the dialog:
+    /// the host checks the PR out like the Cofactr launcher and creates a
+    /// `pr_review` Chat. On success the Chat opens and any behind-origin
+    /// warning shows in the sidebar notice; the returned task carries the
+    /// outcome so the dialog can show refusals.
+    pub(super) fn launch_pr_review(
+        &mut self,
+        reference: PrReference,
+        action: PrReviewAction,
+        item: Option<(String, String)>,
+        config: Option<zeron_proto::ChatConfig>,
+        cx: &mut Context<Self>,
     ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
-        // The composer's agent for new chats: exactly what a brand-new
-        // regular chat would start with (sticky harness, model, reasoning,
-        // options) — never the selected chat's config. The host defaults to
-        // Claude Code when nothing resolves.
-        let pickers = self.composer.read(cx).pickers().clone();
-        let config = crate::pickers::Pickers::new_chat_config(&pickers, cx);
-        let params = self
+        let mut params = self
             .pr_review_ops
             .params_in_item(&reference, action, config, item);
+        // The user confirmed this start with an agent pick: not the live
+        // review Chat of the same PR, which would ignore it.
+        params.fresh = true;
 
         #[cfg(test)]
         if let Some(script) = self.pr_review_script.clone() {

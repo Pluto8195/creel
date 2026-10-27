@@ -30,7 +30,8 @@ impl Overview {
     }
 
     /// Start a review of item `item_id`'s PR (`action`), filed under that
-    /// item. The Shell opens the new Chat; a refusal shows in the Outline.
+    /// item: opens the Start Chat dialog (agent picker, review prompt);
+    /// the Shell opens the new Chat once Start is confirmed there.
     pub(crate) fn start_pr_review_for_item(
         &mut self,
         space_id: String,
@@ -46,7 +47,7 @@ impl Overview {
         self.start_pr_review_filed(pr, Some((space_id, item_id)), action, cx)
     }
 
-    /// `StartPrReview` for `pr`, filed under `item` when given.
+    /// Start Chat in PR mode for `pr`, filed under `item` when given.
     pub(crate) fn start_pr_review_filed(
         &mut self,
         pr: PullRequestRef,
@@ -63,26 +64,16 @@ impl Overview {
             .shell
             .upgrade()
             .ok_or("Starting a review needs the app window")?;
-        let outline = self.outline.clone();
         let reference = crate::github::launch_reference(&pr);
         // Deferred: the menu and palette paths run inside a Shell update.
+        // The Start Chat dialog opens; nothing starts until its Start.
         cx.defer(move |cx| {
-            let task = shell.update(cx, |shell, cx| {
-                shell.start_pr_review_in_item(reference, action, item, cx)
-            });
-            cx.spawn(async move |cx| {
-                if let Err(error) = task.await {
-                    let text = crate::pr_review_launch::failure_text(&error);
-                    outline.update(cx, |outline, cx| {
-                        outline.show_error_titled(
-                            crate::chat_type_view::REVIEW_FAILURE_TITLE,
-                            text,
-                            cx,
-                        )
-                    });
+            shell.update(cx, |shell, cx| {
+                if let Err(notice) = shell.open_start_pr_review(reference, action, item, cx) {
+                    shell.set_sidebar_error(notice);
+                    cx.notify();
                 }
-            })
-            .detach();
+            });
         });
         Ok(())
     }

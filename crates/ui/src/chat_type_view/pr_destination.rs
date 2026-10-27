@@ -74,7 +74,8 @@ impl ChatTypeView {
         destination_view(&snapshot, &state.chats, self.show_archived)
     }
 
-    /// Review / Fix CI of a destination item's PR, filed under the item.
+    /// Review / Fix CI of a destination item's PR, filed under the item:
+    /// opens the Start Chat dialog; a refusal to open shows on the row.
     pub(super) fn start_item_review(
         &mut self,
         space_id: String,
@@ -84,40 +85,22 @@ impl ChatTypeView {
         cx: &mut Context<Self>,
     ) {
         let url = pr.url.clone();
-        if matches!(
-            self.review_status.get(&url),
-            Some(ReviewStatus::Starting(_))
-        ) {
-            return;
-        }
         let reference = crate::github::launch_reference(&pr);
-        let Ok(task) = self.shell.update(cx, |shell, cx| {
-            shell.start_pr_review_in_item(reference, action, Some((space_id, item_id)), cx)
+        let Ok(opened) = self.shell.update(cx, |shell, cx| {
+            shell.open_start_pr_review(reference, action, Some((space_id, item_id)), cx)
         }) else {
             return;
         };
-        self.review_status
-            .insert(url.clone(), ReviewStatus::Starting(action));
+        match opened {
+            Ok(()) => {
+                self.review_status.remove(&url);
+            }
+            Err(notice) => {
+                self.review_status
+                    .insert(url, ReviewStatus::Failed(notice.to_owned()));
+            }
+        }
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(_) => {
-                        this.review_status.remove(&url);
-                    }
-                    Err(error) => {
-                        this.review_status.insert(
-                            url,
-                            ReviewStatus::Failed(crate::pr_review_launch::failure_text(&error)),
-                        );
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// ↑/↓ move over the PR items; ↩ opens the item's newest review Chat,
@@ -233,7 +216,6 @@ impl ChatTypeView {
             theme,
         );
         let review_status = self.review_status.get(&pr.url).cloned();
-        let busy = matches!(review_status, Some(ReviewStatus::Starting(_)));
         let action = |label: &'static str, kind: &'static str, action: PrReviewAction, primary| {
             let space_id = space_id.to_string();
             let item_id = item.id.clone();
@@ -242,7 +224,7 @@ impl ChatTypeView {
                 format!("pr-destination-{kind}-{}", item.id).into(),
                 label,
                 primary,
-                busy,
+                false,
                 theme,
             )
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())

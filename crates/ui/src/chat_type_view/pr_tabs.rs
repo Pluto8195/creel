@@ -11,7 +11,7 @@ use zeron_rpc::methods;
 
 use zeron_proto::ChatIndicator;
 
-use super::{ChatTypeView, ReviewStatus, review_button, status_line};
+use super::{ChatTypeView, review_button, status_line};
 use crate::error_notice::ErrorNotice;
 use crate::review_chats::{self, ChatFact, EnterAction, ReviewChat};
 use crate::pr_page::{self, DashItem, Filters, PageTab, Tone, tab_index};
@@ -578,7 +578,6 @@ impl ChatTypeView {
             .as_ref()
             .and_then(|reference| self.review_status.get(&reference.url()))
             .cloned();
-        let busy = matches!(status, Some(ReviewStatus::Starting(_)));
 
         // Dot, repo, number.
         let dot_tip: SharedString = row.bucket.label().into();
@@ -765,7 +764,7 @@ impl ChatTypeView {
             .as_ref()
             .map(|chat| self.open_review_button(ix, chat, theme, cx));
         let overflow = primary.is_some().then(|| {
-            self.review_overflow(ix, row, &review_chats, reference.clone(), busy, theme, cx)
+            self.review_overflow(ix, row, &review_chats, reference.clone(), theme, cx)
         });
         // Actions: Review / Open review on every row; Fix CI always on review
         // rows, only while CI fails on an authored PR.
@@ -775,7 +774,7 @@ impl ChatTypeView {
                 format!("pr-dash-{kind}-{ix}").into(),
                 label,
                 primary,
-                busy || reference.is_none(),
+                reference.is_none(),
                 theme,
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -915,7 +914,6 @@ impl ChatTypeView {
         row: &PrDashRow,
         review_chats: &[ReviewChat],
         reference: Option<PrReference>,
-        busy: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -964,7 +962,7 @@ impl ChatTypeView {
             popover::menu_row(theme, false, id.clone())
                 .id(element_id(id.clone()))
                 .debug_selector(move || id.clone())
-                .when(busy || reference.is_none(), |el| el.opacity(0.5))
+                .when(reference.is_none(), |el| el.opacity(0.5))
                 .child("Start another review")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();

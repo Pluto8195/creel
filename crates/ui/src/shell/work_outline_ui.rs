@@ -1049,7 +1049,7 @@ impl Shell {
         if let Some(WorkOutlineModal::StartChat(dialog)) = self.work_outline_modal.as_mut()
             && std::mem::take(&mut dialog.focus_prompt_pending)
         {
-            let handle = dialog.input_focus(cx);
+            let handle = dialog.initial_focus(&self.work_outline_modal_focus, cx);
             window.focus(&handle, cx);
         }
         let modal = self.work_outline_modal.as_ref()?;
@@ -1067,7 +1067,7 @@ impl Shell {
                     window.focus(&handle, cx);
                 }
                 WorkOutlineModal::StartChat(dialog) => {
-                    let handle = dialog.input_focus(cx);
+                    let handle = dialog.initial_focus(&self.work_outline_modal_focus, cx);
                     window.focus(&handle, cx);
                 }
                 _ => window.focus(&self.work_outline_modal_focus, cx),

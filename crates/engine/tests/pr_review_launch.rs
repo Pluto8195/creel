@@ -233,6 +233,7 @@ fn params(op: &str, number: u64, action: PrReviewAction) -> StartPrReviewParams 
             sandbox: SandboxLevel::WorkspaceWrite,
             auto_approve: true,
         }),
+        fresh: false,
         operation_id: op.into(),
         target_device_id: None,
     }
@@ -722,6 +723,28 @@ async fn a_second_start_for_the_same_pr_and_action_reuses_the_live_review_chat()
         .expect("fresh after archive");
     assert!(!fresh.reused);
     assert_ne!(fresh.chat_id, first.chat_id);
+}
+
+#[tokio::test]
+async fn a_fresh_start_skips_the_live_review_chat_and_runs_with_its_own_config() {
+    let rig = rig().await;
+    let first = start(&rig, &params("op-first", 7, PrReviewAction::CodeReview))
+        .await
+        .expect("start");
+    let mut again = params("op-again", 7, PrReviewAction::CodeReview);
+    again.fresh = true;
+    again.config.as_mut().unwrap().model = Some("other-model".into());
+    let second = start(&rig, &again).await.expect("fresh start");
+    assert!(!second.reused);
+    assert_ne!(second.chat_id, first.chat_id);
+    // Idempotent per operation id, and the flag is part of the inputs.
+    assert_eq!(start(&rig, &again).await.expect("replay"), second);
+    let mut reused = params("op-again", 7, PrReviewAction::CodeReview);
+    reused.config = again.config.clone();
+    assert_eq!(
+        start(&rig, &reused).await.expect_err("conflict").code,
+        PrReviewErrorCode::OperationConflict
+    );
 }
 
 #[tokio::test]
