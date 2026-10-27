@@ -65,6 +65,7 @@ impl PrReviewOperations {
             space_id,
             work_item_id,
             config,
+            fresh: false,
             operation_id,
             target_device_id: None,
         }
@@ -104,6 +105,20 @@ pub(crate) async fn start(
 /// What the URL box says about unparseable input.
 pub(crate) const REFERENCE_HINT: &str =
     "Enter a PR URL (https://github.com/owner/repo/pull/123) or owner/repo#123";
+
+/// The prompt's opening in the Start Chat dialog: the slash command and the
+/// PR link. The host appends the rest (reviewer or author wording, the
+/// branch and where it is checked out) once it has checked the PR out.
+pub(crate) fn prompt_preview(action: PrReviewAction, url: &str) -> String {
+    let command = match action {
+        PrReviewAction::CodeReview => "/code-review",
+        PrReviewAction::FixCi => "/fix-ci",
+    };
+    format!("{command} {url}")
+}
+
+/// Where the host runs a PR chat, as the Start Chat dialog describes it.
+pub(crate) const RUNS_IN: &str = "The PR's branch checkout: where it is already checked out, else the canonical checkout (on main, no changes), else a new <repo>-pr-<number> worktree.";
 
 /// A refusal as one actionable sentence.
 pub(crate) fn failure_text(error: &PrReviewError) -> String {

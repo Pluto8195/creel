@@ -12,39 +12,42 @@ pub(crate) type PrReviewScript =
     std::sync::Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
 impl Shell {
-    /// Start reviewing `reference` (`action`): the host checks the PR out like
-    /// the Cofactr launcher and creates a `pr_review` Chat at the workspace
-    /// root. On success the Chat opens and any behind-origin warning shows in
-    /// the sidebar notice; the returned task carries the outcome so the
-    /// calling surface can show refusals inline.
-    pub(crate) fn start_pr_review(
-        &mut self,
-        reference: PrReference,
-        action: PrReviewAction,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
-        self.start_pr_review_in_item(reference, action, None, cx)
-    }
-
-    /// [`Self::start_pr_review`] filed under work item `item` (`(spaceId,
-    /// workItemId)`): the new Chat is associated with that item (PR review
-    /// sync: ⌘↩ on a PR item, the GitHub panel's Review).
-    pub(crate) fn start_pr_review_in_item(
+    /// Every PR entry point (outline ⌘↩, the context menu, Details, the PR
+    /// page's Review / Fix CI, the palette's Review PR) opens the Start Chat
+    /// dialog in PR mode: the review prompt, the PR link and the checkout
+    /// setup the host chooses, with the real model picker. Nothing starts
+    /// until the dialog's Start; see [`Self::launch_pr_review`]. `item`
+    /// (`(spaceId, workItemId)`) files the new Chat under that work item.
+    /// Opening an existing review Chat never comes through here.
+    pub(crate) fn open_start_pr_review(
         &mut self,
         reference: PrReference,
         action: PrReviewAction,
         item: Option<(String, String)>,
         cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        self.open_start_chat_for_pr(reference, action, item, cx)
+    }
+
+    /// `StartPrReview` for `reference` with the agent picked in the dialog:
+    /// the host checks the PR out like the Cofactr launcher and creates a
+    /// `pr_review` Chat. On success the Chat opens and any behind-origin
+    /// warning shows in the sidebar notice; the returned task carries the
+    /// outcome so the dialog can show refusals.
+    pub(super) fn launch_pr_review(
+        &mut self,
+        reference: PrReference,
+        action: PrReviewAction,
+        item: Option<(String, String)>,
+        config: Option<zeron_proto::ChatConfig>,
+        cx: &mut Context<Self>,
     ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
-        // The composer's agent for new chats: exactly what a brand-new
-        // regular chat would start with (sticky harness, model, reasoning,
-        // options) — never the selected chat's config. The host defaults to
-        // Claude Code when nothing resolves.
-        let pickers = self.composer.read(cx).pickers().clone();
-        let config = crate::pickers::Pickers::new_chat_config(&pickers, cx);
-        let params = self
+        let mut params = self
             .pr_review_ops
             .params_in_item(&reference, action, config, item);
+        // The user confirmed this start with an agent pick: not the live
+        // review Chat of the same PR, which would ignore it.
+        params.fresh = true;
 
         #[cfg(test)]
         if let Some(script) = self.pr_review_script.clone() {
@@ -162,6 +165,16 @@ mod tests {
             .center();
         cx.simulate_click(at, gpui::Modifiers::default());
         draw(cx);
+    }
+
+    /// Every PR start opens the Start Chat dialog first: nothing has been
+    /// sent to the host yet. Confirm it with Start.
+    fn confirm_start(cx: &mut gpui::VisualTestContext) {
+        assert!(
+            cx.debug_bounds("start-chat-pr-prompt").is_some(),
+            "the Start Chat dialog opens in PR mode"
+        );
+        click(cx, "start-chat-start");
     }
 
     fn reply(chat: &str, behind: u64) -> serde_json::Value {
@@ -317,6 +330,11 @@ mod tests {
         }
 
         click(cx, "pr-dash-review-0");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "Review opens the dialog and starts nothing"
+        );
+        confirm_start(cx);
         let first = calls.lock().unwrap()[0].clone();
         assert_eq!(first["repoOwner"], "acme");
         assert_eq!(first["repoName"], "flagship");
@@ -342,9 +360,11 @@ mod tests {
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-review-0");
+        confirm_start(cx);
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-fix-ci-0");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1]["operationId"], op.as_str());
@@ -352,31 +372,42 @@ mod tests {
         assert_ne!(calls[2]["operationId"], op.as_str());
     }
 
+    /// The open Start Chat dialog's failure message.
+    fn dialog_failure(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Option<String> {
+        shell.read_with(cx, |shell, _| match &shell.work_outline_modal {
+            Some(crate::shell::work_outline_ui::WorkOutlineModal::StartChat(dialog)) => {
+                dialog.failure.as_ref().map(|failure| failure.message.clone())
+            }
+            _ => None,
+        })
+    }
+
     #[gpui::test]
-    fn refusals_stay_inline_on_the_row(cx: &mut gpui::TestAppContext) {
+    fn refusals_stay_in_the_dialog(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let (_calls, page) = open_page(&shell, cx, |_| {
             Err("pr-review/fork: PR 8 comes from a fork; check it out by hand".into())
         });
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         shell.read_with(cx, |shell, _| {
             assert!(
                 matches!(shell.route, Route::PrReviewChats),
                 "stays on the page"
             );
         });
-        let status = page.read_with(cx, |page, _| {
-            page.review_status("https://github.com/acme/flagship/pull/8")
-        });
-        match status {
-            Some(ReviewStatus::Failed(text)) => {
-                assert!(text.contains("comes from a fork"), "{text}");
-                assert!(text.contains("check the branch out by hand"), "{text}");
-            }
-            other => panic!("expected an inline failure, got {other:?}"),
-        }
-        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
+        // The refusal shows in the dialog, which stays open for a retry.
+        let text = dialog_failure(&shell, cx).expect("the dialog shows the refusal");
+        assert!(text.contains("comes from a fork"), "{text}");
+        assert!(text.contains("check the branch out by hand"), "{text}");
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
+        assert!(
+            page.read_with(cx, |page, _| {
+                page.review_status("https://github.com/acme/flagship/pull/8")
+            })
+            .is_none()
+        );
     }
 
     /// The git worktree failure Mikey hit, verbatim: multi-line stderr.
@@ -388,14 +419,10 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
-        let (_calls, page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
+        let (_calls, _page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
         click(cx, "pr-dash-review-1");
-        let text = match page.read_with(cx, |page, _| {
-            page.review_status("https://github.com/acme/flagship/pull/8")
-        }) {
-            Some(ReviewStatus::Failed(text)) => text,
-            other => panic!("expected a failure, got {other:?}"),
-        };
+        confirm_start(cx);
+        let text = dialog_failure(&shell, cx).expect("the dialog shows the failure");
         // Nothing is truncated in the model: every stderr line is there.
         for line in [
             "git worktree add /work/ws/.wt/pr-8 failed",
@@ -406,12 +433,9 @@ mod tests {
             assert!(text.contains(line), "{line} in {text}");
         }
         // Rendered as the shared error card, with its Copy button.
-        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
-        assert!(
-            cx.debug_bounds("pr-dash-status-1-error")
-                .is_some()
-        );
-        click(cx, "pr-dash-status-1-error-copy");
+        assert!(cx.debug_bounds("start-chat-failure").is_some());
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
+        click(cx, "start-chat-failure-message-copy");
         let copied = cx
             .read_from_clipboard()
             .and_then(|item| item.text())
@@ -423,10 +447,7 @@ mod tests {
         assert!(copied.contains("hung up unexpectedly"));
         // It stays: a later frame does not clear it.
         draw(cx);
-        assert!(
-            cx.debug_bounds("pr-dash-status-1-error")
-                .is_some()
-        );
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
     }
 
     #[gpui::test]
@@ -455,6 +476,7 @@ mod tests {
             draw(cx);
             input.update(cx, |input, cx| input.set_text(text, cx));
             click(cx, "pr-review-url-submit");
+            confirm_start(cx);
             let last = calls.lock().unwrap().last().cloned().unwrap();
             assert_eq!(
                 (
@@ -536,6 +558,7 @@ mod tests {
             "the launcher review chat list is replaced"
         );
         click(cx, "pr-destination-review-w-api");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["repoOwner"], "acme");
@@ -544,6 +567,45 @@ mod tests {
         assert_eq!(calls[0]["action"], "codeReview");
         assert_eq!(calls[0]["spaceId"], "s1");
         assert_eq!(calls[0]["workItemId"], API);
+    }
+
+    /// The Outline's entry points (⌘↩ on a PR item, the context menu,
+    /// Details, the GitHub panel) all end in `start_pr_review_filed`: it
+    /// opens the PR-mode Start Chat dialog and sends nothing until Start.
+    #[gpui::test]
+    fn the_outline_entry_points_open_the_dialog_and_start_filed_under_the_item(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink = calls.clone();
+        shell.update(cx, |shell, _| {
+            shell.pr_review_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                Ok(reply("chat-item-review", 0))
+            }));
+        });
+        let overview = shell.update(cx, |shell, cx| shell.ensure_overview_page(cx));
+        overview
+            .update(cx, |overview, cx| {
+                overview.start_pr_review_filed(
+                    zeron_proto::PullRequestRef::new("acme", "flagship", 7),
+                    Some(("s1".into(), "w-pr".into())),
+                    PrReviewAction::FixCi,
+                    cx,
+                )
+            })
+            .unwrap();
+        draw(cx);
+        assert!(calls.lock().unwrap().is_empty(), "nothing starts yet");
+        confirm_start(cx);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 7);
+        assert_eq!(calls[0]["action"], "fixCi");
+        assert_eq!(calls[0]["spaceId"], "s1");
+        assert_eq!(calls[0]["workItemId"], "w-pr");
     }
 
     /// Without a destination the tab lists the chats the review launcher
@@ -923,6 +985,7 @@ mod tests {
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 8);
@@ -940,6 +1003,7 @@ mod tests {
         click(cx, "pr-dash-more-2");
         assert!(cx.debug_bounds("pr-dash-start-another-2").is_some());
         click(cx, "pr-dash-start-another-2");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 9);
@@ -1024,6 +1088,7 @@ mod tests {
         // Row 0 (#7) has no review chat: Enter starts a review.
         cx.simulate_keystrokes("enter");
         draw(cx);
+        confirm_start(cx);
         {
             let calls = calls.lock().unwrap();
             assert_eq!(calls.len(), 1);
@@ -1091,6 +1156,7 @@ mod tests {
         assert!(cx.debug_bounds("pr-dash-fix-ci-0").is_some());
         assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
         click(cx, "pr-dash-fix-ci-0");
+        confirm_start(cx);
         {
             let calls = calls.lock().unwrap();
             assert_eq!(calls.len(), 1);
@@ -1105,6 +1171,7 @@ mod tests {
         let (shell, cx) = test_shell(cx, dir.path());
         let (calls, _page) = authored_page(&shell, cx);
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1, "one StartPrReview");
         assert_eq!(calls[0]["repoOwner"], "acme");
@@ -1149,6 +1216,7 @@ mod tests {
         assert!(cx.debug_bounds("pr-dash-start-another-0").is_none(), "closed by default");
         click(cx, "pr-dash-more-0");
         click(cx, "pr-dash-start-another-0");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 21);
@@ -1178,6 +1246,7 @@ mod tests {
         cx.update(|window, cx| window.focus(&focus, cx));
         cx.simulate_keystrokes("down enter");
         draw(cx);
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 22);

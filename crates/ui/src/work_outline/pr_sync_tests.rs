@@ -275,9 +275,10 @@ fn pr_chips_from_pr_status_and_the_destination_marker(cx: &mut gpui::TestAppCont
     assert_eq!(forced(&calls), 2);
 }
 
-/// ⌘↩ on a PR review item (a child of the destination) starts a code review
-/// filed under that item instead of the Start Chat dialog; a feature item
-/// that merely links its PR keeps the generic Start Chat.
+/// ⌘↩ on a PR review item (a child of the destination) opens Start Chat in PR
+/// mode for a code review filed under that item (captured here before the
+/// Shell opens the dialog); a feature item that merely links its PR keeps the
+/// generic Start Chat.
 #[gpui::test]
 fn cmd_enter_on_a_pr_item_starts_a_review_filed_under_it(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
@@ -297,7 +298,7 @@ fn cmd_enter_on_a_pr_item_starts_a_review_filed_under_it(cx: &mut gpui::TestAppC
     overview.update(vcx, |o, _| {
         assert!(
             o.captured_start_chat.take().is_none(),
-            "no Start Chat dialog"
+            "not the work-item Start Chat dialog"
         );
         let (pr, item, action) = o.captured_pr_review.take().expect("StartPrReview");
         assert_eq!(pr.external_id(), "acme/launch#42");

@@ -571,6 +571,9 @@ struct LaunchInputs<'a> {
     space_id: &'a Option<String>,
     work_item_id: &'a Option<String>,
     config: &'a Option<ChatConfig>,
+    /// Only serialized when set, so earlier starts keep their inputs hash.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    fresh: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -786,6 +789,7 @@ impl PrReviewLauncher {
             space_id: &p.space_id,
             work_item_id: &p.work_item_id,
             config: &p.config,
+            fresh: p.fresh,
         });
         let chat_id = derive_id(op, roles::CHAT);
         let message_id = derive_id(op, roles::MESSAGE);
@@ -801,8 +805,9 @@ impl PrReviewLauncher {
             return Ok(stored.reply);
         }
         // An existing live review Chat for this PR and action is reused:
-        // no new Chat, checkout, `gh` call or Run.
-        if let Some(reply) = self.reusable_review(p) {
+        // no new Chat, checkout, `gh` call or Run. A confirmed Start with an
+        // agent pick (`fresh`) always starts a new one.
+        if let Some(reply) = self.reusable_review(p).filter(|_| !p.fresh) {
             if let Some(item) = &p.work_item_id {
                 match self.workspace.work_item_space(item) {
                     Some(space) if space == reply.space_id => {}

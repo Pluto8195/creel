@@ -21,9 +21,9 @@ use super::*;
 use std::sync::Arc;
 
 use zeron_proto::{
-    CreateChatForWorkItemParams, EffectiveInstructions, ExecutionScope, ExecutionWorktreeIdentity,
-    ResolvedExecutionConfiguration, ValidateExecutionConfigurationParams, WorkItemLaunchState,
-    WorkItemPrompt, WorkOutlineSnapshot,
+    CreateChatForWorkItemParams, EffectiveInstructionEntry, ExecutionScope,
+    ExecutionWorktreeIdentity, PrReference, PrReviewAction, ResolvedExecutionConfiguration,
+    ValidateExecutionConfigurationParams, WorkItemLaunchState, WorkItemPrompt, WorkOutlineSnapshot,
 };
 
 use crate::composer::skill_completion::{SkillCompletion, SkillInsertion, SkillSource};
@@ -33,10 +33,24 @@ use crate::work_outline::execution::{self as exec, ValidationHeadline, Validatio
 use crate::work_outline::launch::{self, LaunchFailure, WorktreePick, WorktreeTarget};
 use crate::work_outline::model;
 
+/// What a PR-mode Start Chat will launch.
+#[derive(Clone)]
+pub(super) struct PrLaunch {
+    pub(super) reference: PrReference,
+    pub(super) action: PrReviewAction,
+    /// `(spaceId, workItemId)` the new Chat is filed under.
+    pub(super) item: Option<(String, String)>,
+}
+
 pub(super) struct StartChatDialog {
     pub(super) space_id: String,
+    /// Empty in PR mode without a work item.
     pub(super) item_id: String,
     item_path: String,
+    /// PR mode: a review of this PR instead of a work-item launch. The
+    /// prompt, the checkout and the PR link come from the host's
+    /// `StartPrReview` when Start is confirmed; the dialog adds the agent.
+    pub(super) pr: Option<PrLaunch>,
     /// The Space's owning device.
     device_id: String,
     pub(super) input: Entity<ComposerInput>,
@@ -62,7 +76,7 @@ pub(super) struct StartChatDialog {
     pub(super) worktrees: Option<Result<Vec<ExecutionWorktreeIdentity>, String>>,
     pub(super) pick: WorktreePick,
     pub(super) validation: ValidationState,
-    effective: EffectiveInstructions,
+    effective: Vec<EffectiveInstructionEntry>,
     pub(super) instructions_changed: bool,
     pub(super) instructions_open: bool,
     /// Why Start cannot work at all (the owner lacks the capability).
@@ -81,6 +95,16 @@ pub(super) struct StartChatDialog {
 impl StartChatDialog {
     pub(super) fn input_focus(&self, cx: &App) -> FocusHandle {
         self.input.read(cx).focus_handle(cx)
+    }
+
+    /// Where focus starts and returns to: the prompt, or in PR mode (which
+    /// has no prompt box) the modal itself so Enter starts.
+    pub(super) fn initial_focus(&self, modal: &FocusHandle, cx: &App) -> FocusHandle {
+        if self.pr.is_some() {
+            modal.clone()
+        } else {
+            self.input_focus(cx)
+        }
     }
 
     /// Whether validation lets the launch proceed.
@@ -102,6 +126,9 @@ impl StartChatDialog {
     }
 
     pub(super) fn can_start(&self, cx: &App) -> bool {
+        if self.pr.is_some() {
+            return !self.starting;
+        }
         !self.starting
             && self.launch_blocker.is_none()
             && self.validated()
@@ -254,6 +281,7 @@ impl Shell {
             space_id: space_id.to_owned(),
             item_id: item_id.to_owned(),
             item_path,
+            pr: None,
             device_id,
             input,
             skills,
@@ -267,7 +295,7 @@ impl Shell {
             worktrees: None,
             pick: WorktreePick::SpaceWorkspace,
             validation: ValidationState::Idle,
-            effective,
+            effective: effective.entries,
             instructions_changed,
             instructions_open: instructions_changed,
             launch_blocker,
@@ -302,6 +330,175 @@ impl Shell {
             self.set_sidebar_error(notice);
             cx.notify();
         }
+    }
+
+    /// Open Start Chat in PR mode (see [`StartChatDialog::pr`]): the agent
+    /// picker starts from the composer's sticky new-chat defaults like the
+    /// work-item dialog, on the device that owns the item's Space.
+    pub(super) fn open_start_chat_for_pr(
+        &mut self,
+        reference: PrReference,
+        action: PrReviewAction,
+        item: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let (space_id, item_id) = item.clone().unwrap_or_default();
+        let item_path = item
+            .as_ref()
+            .and_then(|(space, item)| {
+                let state = self.state.read(cx);
+                let snapshot = state.work_outline(space).snapshot()?.clone();
+                Some(model::path_label(
+                    model::item_path(&snapshot, item)
+                        .iter()
+                        .map(|item| item.title.as_str()),
+                ))
+            })
+            .unwrap_or_default();
+        let device_id = self
+            .state
+            .read(cx)
+            .space_row(&space_id)
+            .map(|space| space.device_id.clone())
+            .or_else(|| self.state.read(cx).effective_device_id())
+            .unwrap_or_default();
+        let composer_pickers = self.composer.read(cx).pickers().clone();
+        let picker_device = Some(device_id.clone()).filter(|device| !device.is_empty());
+        let pickers = cx.new(|cx| Pickers::new_chat_launcher(&composer_pickers, picker_device, cx));
+        let key = (reference.url(), action);
+        let picker_events = cx.subscribe(
+            &pickers,
+            move |this: &mut Shell, _, _: &ReturnComposerFocus, cx| {
+                if let Some(dialog) = this.start_chat_dialog().filter(|dialog| {
+                    dialog
+                        .pr
+                        .as_ref()
+                        .is_some_and(|pr| (pr.reference.url(), pr.action) == key)
+                }) {
+                    dialog.focus_prompt_pending = true;
+                    cx.notify();
+                }
+            },
+        );
+        let picker_observe = cx.observe(&pickers, |_, _, cx| cx.notify());
+        // The prompt, skills and worktree inputs belong to the work-item
+        // launch; PR mode never shows them.
+        let input = cx.new(|cx| ComposerInput::new("", cx));
+        let skills = cx.new(|cx| {
+            SkillCompletion::new(
+                self.state.clone(),
+                input.clone(),
+                SkillInsertion::SlashCommand,
+                cx,
+            )
+            .over_modal()
+        });
+        let worktree_name = cx.new(|cx| {
+            ComposerInput::with_context(
+                "Worktree name",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+        });
+        let input_events = cx.subscribe(&input, |_, _, _, _| {});
+        let dialog = StartChatDialog {
+            space_id,
+            item_id,
+            item_path,
+            pr: Some(PrLaunch {
+                reference,
+                action,
+                item,
+            }),
+            device_id,
+            input,
+            skills,
+            skill_root: String::new(),
+            fallback_harness: self.skill_harness(cx),
+            worktree_name,
+            pickers,
+            focus_prompt_pending: false,
+            resolved: None,
+            target: WorktreeTarget::None,
+            worktrees: None,
+            pick: WorktreePick::SpaceWorkspace,
+            validation: ValidationState::Idle,
+            effective: Vec::new(),
+            instructions_changed: false,
+            instructions_open: false,
+            launch_blocker: None,
+            op: OperationSlot::default(),
+            starting: false,
+            failure: None,
+            rejected: None,
+            _input_events: input_events,
+            _picker_events: picker_events,
+            _picker_observe: picker_observe,
+        };
+        self.begin_work_outline_modal(WorkOutlineModal::StartChat(dialog), cx);
+        Ok(())
+    }
+
+    /// Start in PR mode: `StartPrReview` with the dialog's agent pick, then
+    /// open the new Chat. A refusal stays in the dialog.
+    fn submit_start_pr_review(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.start_chat_dialog() else {
+            return;
+        };
+        let Some(pr) = dialog.pr.clone() else {
+            return;
+        };
+        if dialog.starting {
+            return;
+        }
+        let config = dialog.pickers.read(cx).resolved(cx).chat_config();
+        let pickers = dialog.pickers.clone();
+        dialog.starting = true;
+        dialog.failure = None;
+        let key = (pr.reference.url(), pr.action);
+        let task = self.launch_pr_review(pr.reference, pr.action, pr.item, config, cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                let same = |dialog: &StartChatDialog| {
+                    dialog
+                        .pr
+                        .as_ref()
+                        .is_some_and(|pr| (pr.reference.url(), pr.action) == key)
+                };
+                let Some(dialog) = this.start_chat_dialog().filter(|d| same(d)) else {
+                    return;
+                };
+                dialog.starting = false;
+                match result {
+                    Ok(_) => {
+                        // A chat started with these picks: they become the
+                        // composer's last-used new-chat selection.
+                        let picks = pickers.read(cx).new_chat_defaults().clone();
+                        let composer_pickers = this.composer.read(cx).pickers().clone();
+                        composer_pickers.update(cx, |composer_pickers, cx| {
+                            composer_pickers.adopt_new_chat_picks(&picks, cx)
+                        });
+                        this.work_outline_modal = None;
+                        this.work_outline_modal_focus_pending = false;
+                        this.work_outline_prior_focus = None;
+                    }
+                    Err(error) => {
+                        dialog.failure = Some(LaunchFailure {
+                            code: None,
+                            message: crate::pr_review_launch::failure_text(&error),
+                            remediation: None,
+                            unknown_outcome: false,
+                        });
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Validate the item's configuration on its owning device (the engine
@@ -423,13 +620,30 @@ impl Shell {
     /// Tab / Shift+Tab walk prompt → model chip → approval chip (cycling).
     /// Keys inside the open picker, the worktree name, or an open `/` list
     /// are left alone.
-    fn start_chat_tab(
+    pub(super) fn start_chat_tab(
         &mut self,
         event: &gpui::KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let modifiers = event.keystroke.modifiers;
+        let modal_focus = self.work_outline_modal_focus.clone();
+        // PR mode has no prompt box to press Enter in: Enter on the dialog
+        // itself, or ⌘↩ from a chip, starts.
+        if event.keystroke.key == "enter"
+            && !modifiers.shift
+            && !modifiers.alt
+            && !modifiers.control
+            && self.start_chat_dialog().is_some_and(|dialog| {
+                dialog.pr.is_some()
+                    && !dialog.pickers.read(cx).is_open()
+                    && (modifiers.platform || modal_focus.is_focused(window))
+            })
+        {
+            self.submit_start_chat(cx);
+            cx.stop_propagation();
+            return;
+        }
         if event.keystroke.key != "tab" || modifiers.control || modifiers.alt || modifiers.platform
         {
             return;
@@ -445,7 +659,7 @@ impl Shell {
             return;
         }
         let order = [
-            dialog.input_focus(cx),
+            dialog.initial_focus(&modal_focus, cx),
             pickers.model_chip_focus().clone(),
             pickers.approval_chip_focus().clone(),
         ];
@@ -471,6 +685,12 @@ impl Shell {
 
     /// Start (explicit): `CreateChatForWorkItem`, then open the new Chat.
     pub(super) fn submit_start_chat(&mut self, cx: &mut Context<Self>) {
+        if self
+            .start_chat_dialog()
+            .is_some_and(|dialog| dialog.pr.is_some())
+        {
+            return self.submit_start_pr_review(cx);
+        }
         let actions = self.state.read(cx).work_outline_actions();
         let Some(dialog) = self.start_chat_dialog() else {
             return;
@@ -663,6 +883,9 @@ pub(super) fn start_chat_card(
     cx: &mut Context<Shell>,
 ) -> AnyElement {
     let can_start = dialog.can_start(cx);
+    if let Some(pr) = &dialog.pr {
+        return pr_start_chat_card(dialog, pr, can_start, viewport_height, theme, cx);
+    }
     // Agent: the composer's own model chip (harness/model/traits popover)
     // and Ask/Auto chip, hosted in launcher mode.
     let agents = div()
@@ -890,7 +1113,7 @@ pub(super) fn start_chat_card(
         });
 
     // Effective Instructions.
-    let count = dialog.effective.entries.len();
+    let count = dialog.effective.len();
     let instructions = div()
         .flex()
         .flex_col()
@@ -943,7 +1166,7 @@ pub(super) fn start_chat_card(
                             theme.text_faint,
                         ))
                     })
-                    .children(dialog.effective.entries.iter().map(|entry| {
+                    .children(dialog.effective.iter().map(|entry| {
                         div()
                             .flex()
                             .flex_col()
@@ -1067,6 +1290,139 @@ pub(super) fn start_chat_card(
                 })
                 .when_some(failure, |el, failure| el.child(failure))
                 .when_some(rejected, |el, rejected| el.child(rejected)),
+        )
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(theme, "Cancel", "start-chat-cancel")
+                        .id("start-chat-cancel")
+                        .debug_selector(|| "start-chat-cancel".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.resolve_work_outline_modal(false, window, cx);
+                        })),
+                )
+                .child(
+                    popover::btn_primary(theme, start_label)
+                        .id("start-chat-start")
+                        .debug_selector(|| "start-chat-start".into())
+                        .when(!can_start, |el| el.opacity(0.5))
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_start_chat(cx))),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The PR-mode Start Chat card: what will run (the review prompt, the PR
+/// link, where the host checks the branch out) is shown as a summary; the
+/// agent picker is the work-item dialog's own.
+fn pr_start_chat_card(
+    dialog: &StartChatDialog,
+    pr: &PrLaunch,
+    can_start: bool,
+    viewport_height: f32,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let url = pr.reference.url();
+    let label = format!(
+        "{}/{}#{}",
+        pr.reference.owner, pr.reference.name, pr.reference.number
+    );
+    let title = match pr.action {
+        PrReviewAction::CodeReview => "Review PR",
+        PrReviewAction::FixCi => "Fix CI",
+    };
+    let header = if dialog.item_path.is_empty() {
+        label.clone()
+    } else {
+        format!("{label} \u{b7} {}", dialog.item_path)
+    };
+    let monospace_line = |selector: &'static str, text: String| {
+        div()
+            .debug_selector(move || selector.into())
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.input_bg)
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text)
+            .child(SharedString::from(text))
+    };
+    let agents = div()
+        .debug_selector(|| "start-chat-agent".into())
+        .mt(px(4.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .child(dialog.pickers.clone());
+    let failure = dialog.failure.clone().map(|failure| {
+        div()
+            .debug_selector(|| "start-chat-failure".into())
+            .mt(px(8.0))
+            .flex()
+            .flex_col()
+            .child(error_card(
+                "start-chat-failure-message",
+                theme,
+                crate::chat_type_view::REVIEW_FAILURE_TITLE,
+                failure.message,
+            ))
+    });
+    let start_label = if dialog.starting {
+        "Starting\u{2026}"
+    } else if dialog.failure.is_some() {
+        "Retry"
+    } else {
+        "Start Chat"
+    };
+    popover::dialog_card(theme)
+        .w(px(520.0))
+        .debug_selector(|| "start-chat".into())
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            this.start_chat_tab(event, window, cx)
+        }))
+        .child(popover::dialog_title(theme, title))
+        .child(note("start-chat-item", header, theme.text_muted))
+        .child(
+            div()
+                .id("start-chat-body")
+                .max_h(px(start_chat_body_max_height(viewport_height)))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .child(section_label("Prompt", theme))
+                .child(div().mt(px(4.0)).child(monospace_line(
+                    "start-chat-pr-prompt",
+                    crate::pr_review_launch::prompt_preview(pr.action, &url),
+                )))
+                .child(
+                    note(
+                        "start-chat-pr-prompt-note",
+                        "The review instructions are added when the Chat starts.",
+                        theme.text_faint,
+                    )
+                    .mt(px(2.0)),
+                )
+                .child(section_label("Linked to", theme))
+                .child(note("start-chat-pr-link", url, theme.text).mt(px(2.0)))
+                .child(section_label("Agent", theme))
+                .child(agents)
+                .child(section_label("Runs in", theme))
+                .child(
+                    note(
+                        "start-chat-pr-root",
+                        crate::pr_review_launch::RUNS_IN,
+                        theme.text,
+                    )
+                    .mt(px(2.0)),
+                )
+                .when_some(failure, |el, failure| el.child(failure)),
         )
         .child(
             div()
@@ -2051,6 +2407,234 @@ mod tests {
             assert_eq!(defaults.reasoning, Some(zeron_proto::ReasoningLevel::High));
         });
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    type PrCalls = Arc<Mutex<Vec<serde_json::Value>>>;
+
+    /// Answer `StartPrReview` from `answer`, recording every request.
+    fn script_pr_review(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        answer: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
+    ) -> PrCalls {
+        let calls: PrCalls = Arc::default();
+        let sink = calls.clone();
+        shell.update(cx, |shell, _| {
+            shell.pr_review_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                answer(params)
+            }));
+        });
+        calls
+    }
+
+    fn pr_reply(chat: &str) -> serde_json::Value {
+        serde_json::json!({
+            "chatId": chat, "spaceId": "s1", "deviceId": "d",
+            "title": "Review flagship#7: Add X",
+            "prUrl": "https://github.com/acme/flagship/pull/7",
+            "branch": "feature-x", "checkoutPath": "/work/alpha",
+            "checkoutKind": "canonicalCheckout", "cwd": "/work/alpha",
+            "behindBy": 0, "prompt": "/code-review …",
+        })
+    }
+
+    fn open_pr_dialog(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        action: PrReviewAction,
+    ) {
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_pr_review(
+                    PrReference::parse("acme/flagship#7").unwrap(),
+                    action,
+                    Some(("s1".into(), HOUSEKEEPING.into())),
+                    cx,
+                )
+            })
+            .unwrap();
+        draw(cx);
+    }
+
+    /// A PR start opens the regular dialog, pre-filled with the review
+    /// prompt, the PR link and where it runs, and the composer's model
+    /// picker; nothing reaches the host until Start, which sends the picked
+    /// model with the same item filing.
+    #[gpui::test]
+    fn a_pr_start_opens_the_dialog_and_starts_with_the_picked_model(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("unused"),
+        );
+        seed_composer_picker(&shell, cx);
+        let pr_calls = script_pr_review(&shell, cx, |_| Ok(pr_reply("chat-review")));
+        open_pr_dialog(&shell, cx, PrReviewAction::CodeReview);
+
+        for selector in [
+            "start-chat",
+            "start-chat-pr-prompt",
+            "start-chat-pr-link",
+            "start-chat-pr-root",
+            "start-chat-agent",
+            "picker-model",
+            "picker-approval-mode",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector} renders");
+        }
+        assert!(
+            cx.debug_bounds("start-chat-prompt").is_none(),
+            "no work-item prompt box"
+        );
+        shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            let pr = dialog.pr.as_ref().expect("PR mode");
+            assert_eq!(pr.reference.url(), "https://github.com/acme/flagship/pull/7");
+            assert_eq!(
+                crate::pr_review_launch::prompt_preview(pr.action, &pr.reference.url()),
+                "/code-review https://github.com/acme/flagship/pull/7"
+            );
+            assert_eq!(pr.item, Some(("s1".to_string(), HOUSEKEEPING.to_string())));
+        });
+        assert!(pr_calls.lock().unwrap().is_empty(), "opening starts nothing");
+        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+
+        // Starts from the composer's remembered Opus; pick Sonnet by keyboard
+        // (focus starts on the dialog, Tab walks to the model chip).
+        let pickers = dialog_pickers(&shell, cx);
+        assert_eq!(
+            pickers
+                .read_with(cx, |pickers, cx| pickers.resolved(cx).model)
+                .as_deref(),
+            Some("opus")
+        );
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let model_chip = pickers.read_with(cx, |pickers, _| pickers.model_chip_focus().clone());
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(focused(cx, &model_chip), "Tab reaches the model chip");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        cx.simulate_input("sonnet");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            pickers
+                .read_with(cx, |pickers, cx| pickers.resolved(cx).model)
+                .as_deref(),
+            Some("sonnet")
+        );
+        assert!(
+            pr_calls.lock().unwrap().is_empty(),
+            "picking a model starts nothing"
+        );
+
+        // Esc closes the picker only; the dialog stays open and Start sends.
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        assert!(cx.debug_bounds("start-chat").is_some(), "dialog stays open");
+        // Focus is back on the dialog, so Enter starts.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let sent = pr_calls.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["repoOwner"], "acme");
+        assert_eq!(sent[0]["repoName"], "flagship");
+        assert_eq!(sent[0]["number"], 7);
+        assert_eq!(sent[0]["action"], "codeReview");
+        assert_eq!(sent[0]["spaceId"], "s1");
+        assert_eq!(sent[0]["workItemId"], HOUSEKEEPING);
+        assert_eq!(sent[0]["fresh"], true);
+        assert_eq!(sent[0]["config"]["harness"], "claude-code");
+        assert_eq!(sent[0]["config"]["model"], "sonnet");
+        shell.read_with(cx, |shell, cx| {
+            assert!(shell.work_outline_modal.is_none(), "the dialog closed");
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("chat-review")
+            );
+        });
+        // The picks are the composer's last-used selection.
+        let composer_pickers =
+            shell.update(cx, |shell, cx| shell.composer.read(cx).pickers().clone());
+        composer_pickers.read_with(cx, |pickers, _| {
+            assert_eq!(
+                pickers
+                    .new_chat_defaults()
+                    .model_for(zeron_proto::HarnessId::ClaudeCode)
+                    .map(|m| m.id.as_str()),
+                Some("sonnet")
+            );
+        });
+    }
+
+    /// Enter on the dialog starts, Escape cancels without starting, and a
+    /// refusal keeps the dialog so Retry reuses the same operation id.
+    #[gpui::test]
+    fn a_pr_dialog_starts_on_enter_cancels_on_escape_and_retries_after_a_refusal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("unused"),
+        );
+        seed_composer_picker(&shell, cx);
+        let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = refuse.clone();
+        let pr_calls = script_pr_review(&shell, cx, move |_| {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("pr-review/fork: PR 7 comes from a fork".into())
+            } else {
+                Ok(pr_reply("chat-fixed"))
+            }
+        });
+        cx.update(|window, _| window.activate_window());
+
+        open_pr_dialog(&shell, cx, PrReviewAction::FixCi);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat").is_none(), "Escape cancels");
+        assert!(pr_calls.lock().unwrap().is_empty());
+
+        open_pr_dialog(&shell, cx, PrReviewAction::FixCi);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(pr_calls.lock().unwrap().len(), 1, "Enter starts");
+        assert!(
+            cx.debug_bounds("start-chat-failure-message").is_some(),
+            "the refusal shows in the dialog, which stays open"
+        );
+        refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        click(cx, "start-chat-start");
+        let sent = pr_calls.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["action"], "fixCi");
+        assert_eq!(sent[0]["operationId"], sent[1]["operationId"]);
+        shell.read_with(cx, |shell, cx| {
+            assert!(shell.work_outline_modal.is_none());
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("chat-fixed")
+            );
+        });
     }
 
     /// Esc closes an open picker first, then the dialog.

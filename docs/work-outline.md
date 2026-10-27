@@ -569,11 +569,14 @@ that owns the project, through that device's `gh` login.
   describe the first PR. Details:
   [PRs on work items](pr-review.md#prs-on-work-items).
 - **Review.** `⌘↩` (`Ctrl+Enter`) on a PR review item (a synced item, a child
-  of the destination, or an item created from the GitHub section) starts a
-  code review Chat of its PR, filed under the item, instead of the Start Chat
-  dialog (see [Review PR launcher](pr-review.md)). Other items that merely
+  of the destination, or an item created from the GitHub section) opens Start
+  Chat for a code review of its PR, filed under the item. The dialog shows the
+  review prompt, the PR link and where the branch is checked out, with the
+  regular model / reasoning / approval picker; nothing starts until **Start
+  Chat** (see [Review PR launcher](pr-review.md)). Other items that merely
   link a PR keep the normal Start Chat. Right-click any PR-linked item for
-  **Review**, **Fix CI**, **Open on GitHub**, and **Refresh PR Status**.
+  **Review**, **Fix CI**, **Open on GitHub**, and **Refresh PR Status**; they
+  open the same dialog.
 - **GitHub section.** The **Inbox** column (`⌥⌘L`, the toolbar's **Inbox**)
   shows a **GitHub** section for the project under its Linear panel: the sync
   bar (above), then **Review requested** and **My open PRs**, each foldable

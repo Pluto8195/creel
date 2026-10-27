@@ -49,10 +49,19 @@ pub struct StartPrReviewParams {
     /// Harness/model/etc. `None` = Claude Code with the host's defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ChatConfig>,
+    /// Start a new Chat even when a live review Chat for this PR and action
+    /// exists (the user confirmed Start in the dialog, picking an agent for
+    /// it). Absent/false reuses that Chat.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
     pub operation_id: String,
     /// Routing hint set by the forwarding engine. Callers leave it unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_device_id: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Where the PR's branch ended up (launch.sh's three cases).
@@ -365,6 +374,7 @@ mod tests {
             space_id: None,
             work_item_id: None,
             config: None,
+            fresh: false,
             operation_id: "op".into(),
             target_device_id: None,
         };
@@ -375,5 +385,10 @@ mod tests {
                 "action": "fixCi", "operationId": "op"
             })
         );
+        let fresh = StartPrReviewParams {
+            fresh: true,
+            ..params
+        };
+        assert_eq!(serde_json::to_value(&fresh).unwrap()["fresh"], true);
     }
 }
