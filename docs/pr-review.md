@@ -40,15 +40,23 @@ way the Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` does
   `StartPrReview` with the item's `spaceId` and `workItemId`, so the review
   Chat is filed under that item.
 
-After a start Mast opens the new chat. Refusals (fork, repository not in any
-project, occupied worktree path, `gh` missing, device offline) stay inline on
-the row or box with what to do next. A behind-origin warning shows in the
+Every one of these opens the Start Chat dialog in PR mode instead of starting:
+the review prompt (`/code-review <url>` or `/fix-ci <url>`; the host adds the
+reviewer or author wording, the branch and its location), the PR link, where
+it runs (the checkout the host picks, below), and the composer's own model /
+reasoning / approval picker, seeded with the sticky new-chat defaults.
+**Start Chat** (Enter, or ⌘↩ from a chip) sends `StartPrReview` with the picked
+agent; Esc cancels and nothing is sent. **Open review** on a PR that already
+has a review chat stays a direct open with no dialog. After a start Mast opens
+the new chat. Refusals (fork, repository not in any project, occupied worktree
+path, `gh` missing, device offline) show in the dialog with what to do next,
+and **Retry** reuses the same operation id. A behind-origin warning shows in the
 sidebar notice and is also part of the seeded prompt.
 
 ## `StartPrReview`
 
 `{repoOwner, repoName, number, action: codeReview|fixCi, spaceId?,
-workItemId?, config?, operationId}` → `{chatId, spaceId, deviceId, title,
+workItemId?, config?, fresh?, operationId}` → `{chatId, spaceId, deviceId, title,
 prUrl, branch, checkoutPath, checkoutKind: existing|canonicalCheckout|
 newWorktree, cwd, behindBy, prompt, notes[]}`. Errors are
 `pr-review/<code>: <message>` with codes `invalid`, `fork`, `prNotFound`,
@@ -117,6 +125,11 @@ the devcontainer note only when the Space has a `.devcontainer` folder
 (Cofactr always does).
 
 Nothing is posted to GitHub.
+
+A start with `fresh: true` (what the dialog's Start sends, since the user just
+picked an agent for it) never reuses a live review chat for the same PR and
+action: without it the host returns that chat (`reused`) and the pick would be
+ignored. `fresh` is part of the inputs hash; an old host ignores the field.
 
 ### Idempotency
 

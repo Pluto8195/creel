@@ -569,6 +569,45 @@ mod tests {
         assert_eq!(calls[0]["workItemId"], API);
     }
 
+    /// The Outline's entry points (⌘↩ on a PR item, the context menu,
+    /// Details, the GitHub panel) all end in `start_pr_review_filed`: it
+    /// opens the PR-mode Start Chat dialog and sends nothing until Start.
+    #[gpui::test]
+    fn the_outline_entry_points_open_the_dialog_and_start_filed_under_the_item(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink = calls.clone();
+        shell.update(cx, |shell, _| {
+            shell.pr_review_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                Ok(reply("chat-item-review", 0))
+            }));
+        });
+        let overview = shell.update(cx, |shell, cx| shell.ensure_overview_page(cx));
+        overview
+            .update(cx, |overview, cx| {
+                overview.start_pr_review_filed(
+                    zeron_proto::PullRequestRef::new("acme", "flagship", 7),
+                    Some(("s1".into(), "w-pr".into())),
+                    PrReviewAction::FixCi,
+                    cx,
+                )
+            })
+            .unwrap();
+        draw(cx);
+        assert!(calls.lock().unwrap().is_empty(), "nothing starts yet");
+        confirm_start(cx);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["number"], 7);
+        assert_eq!(calls[0]["action"], "fixCi");
+        assert_eq!(calls[0]["spaceId"], "s1");
+        assert_eq!(calls[0]["workItemId"], "w-pr");
+    }
+
     /// Without a destination the tab lists the chats the review launcher
     /// started: the ones with a PR link whose source is `review_launcher`.
     #[gpui::test]
