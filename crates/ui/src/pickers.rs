@@ -1163,6 +1163,40 @@ impl Pickers {
             })
     }
 
+    /// The chip's text. On an existing chat the chip is the choice for the
+    /// NEXT turn, not a record of past ones: when the chat stores no model of
+    /// its own (the preselected default would otherwise read as fact) or the
+    /// harness reported running a different model, it says "Next: …".
+    fn chip_model_label(&self, cx: &App) -> Option<String> {
+        let label = self.selected_model_label(cx)?;
+        let Some(chat) = self.chat_row(cx) else {
+            return Some(label);
+        };
+        let nonempty =
+            |m: &Option<String>| m.as_deref().map(str::trim).is_some_and(|m| !m.is_empty());
+        let stored = chat.config.as_ref().is_some_and(|c| nonempty(&c.model));
+        let actual = chat
+            .actual_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty());
+        let actual_label = actual.map(|id| {
+            self.effective_harness(cx)
+                .and_then(|h| self.models.get(&h))
+                .and_then(Loadable::ready)
+                .and_then(|models| models.iter().find(|m| m.id == id))
+                .map(|m| m.label.clone())
+                .unwrap_or_else(|| id.to_owned())
+        });
+        let differs = actual_label.is_some_and(|a| a != label);
+        let implicit = self.config.model.is_none() && !stored;
+        Some(if differs || implicit {
+            format!("Next: {label}")
+        } else {
+            label
+        })
+    }
+
     /// The explicit (non-default) option picks: the chat's persisted
     /// selections for existing chats, the remembered picks for the model the
     /// new-chat canvas resolves to (same id [`Self::resolved`] sends).
@@ -6120,7 +6154,7 @@ impl Render for Pickers {
         let model_label: SharedString = if no_agents {
             SharedString::from("No agents available")
         } else {
-            let label = self.selected_model_label(cx);
+            let label = self.chip_model_label(cx);
             label.map(SharedString::from).unwrap_or_default()
         };
         let catalog_loading = matches!(self.harnesses, Loadable::Idle | Loadable::Loading);

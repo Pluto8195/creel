@@ -10,7 +10,7 @@ use gpui::{
     SharedString, Styled as _, div, prelude::*, px,
 };
 use zeron_engine::pr_ticket_cache::ChatLinkStatus;
-use zeron_proto::{Chat, ChatLinkSource, Space};
+use zeron_proto::{Chat, ChatLinkSource, ChatModelDisplay, Space};
 
 use crate::theme::Theme;
 
@@ -136,6 +136,31 @@ fn compact_id(value: &str) -> String {
     }
 }
 
+/// The model a chat ran on, for read-only surfaces (header, cards): the
+/// harness-reported model when known (with a "configured X" hint when the
+/// stored pick differs), else the configured model, else `None` (the harness
+/// default decides). Never the composer picker's default.
+pub(crate) fn chat_model_summary(chat: &Chat) -> (Option<String>, String) {
+    match chat.model_display() {
+        ChatModelDisplay::Actual {
+            actual,
+            configured: Some(configured),
+        } => (
+            Some(actual.to_string()),
+            format!("Model: {actual} (ran on this; configured {configured})"),
+        ),
+        ChatModelDisplay::Actual {
+            actual,
+            configured: None,
+        } => (Some(actual.to_string()), format!("Model: {actual}")),
+        ChatModelDisplay::Configured(model) => (
+            Some(model.to_string()),
+            format!("Model: {model} (configured; the harness hasn't reported what ran)"),
+        ),
+        ChatModelDisplay::Default => (None, "Model: harness default (nothing reported yet)".into()),
+    }
+}
+
 /// Stable, compact item list shared by both header surfaces. Optional values
 /// are omitted, except model: a missing explicit model is shown honestly as
 /// the harness default instead of guessed.
@@ -177,20 +202,12 @@ pub(crate) fn metadata_items(
         }
     }
 
-    let (model, model_tooltip) = chat
-        .config
-        .as_ref()
-        .and_then(|config| config.model.as_deref())
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(|model| (model.to_string(), format!("Model: {model}")))
-        .unwrap_or_else(|| {
-            (
-                "default".into(),
-                "Model: harness default (not explicitly set)".into(),
-            )
-        });
-    items.push(item("model", format!("Model {model}"), model_tooltip));
+    let (model, model_tooltip) = chat_model_summary(chat);
+    items.push(item(
+        "model",
+        format!("Model {}", model.as_deref().unwrap_or("default")),
+        model_tooltip,
+    ));
 
     if let Some(branch) = chat
         .source_context
