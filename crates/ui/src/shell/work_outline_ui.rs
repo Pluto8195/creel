@@ -1333,8 +1333,14 @@ impl Shell {
                 .into_any_element()
             }
         };
+        // Start Chat's PR mode has no prompt box: focus rests on this wrapper,
+        // so its Enter / Tab keys are handled here (the card's own handler
+        // only sees keys from inside it).
         let card = div()
             .track_focus(&self.work_outline_modal_focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.start_chat_tab(event, window, cx)
+            }))
             .child(card)
             .into_any_element();
         Some(popover::modal("work-outline-modal", viewport, card))

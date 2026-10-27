@@ -167,6 +167,16 @@ mod tests {
         draw(cx);
     }
 
+    /// Every PR start opens the Start Chat dialog first: nothing has been
+    /// sent to the host yet. Confirm it with Start.
+    fn confirm_start(cx: &mut gpui::VisualTestContext) {
+        assert!(
+            cx.debug_bounds("start-chat-pr-prompt").is_some(),
+            "the Start Chat dialog opens in PR mode"
+        );
+        click(cx, "start-chat-start");
+    }
+
     fn reply(chat: &str, behind: u64) -> serde_json::Value {
         serde_json::json!({
             "chatId": chat, "spaceId": "s1", "deviceId": "d",
@@ -320,6 +330,11 @@ mod tests {
         }
 
         click(cx, "pr-dash-review-0");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "Review opens the dialog and starts nothing"
+        );
+        confirm_start(cx);
         let first = calls.lock().unwrap()[0].clone();
         assert_eq!(first["repoOwner"], "acme");
         assert_eq!(first["repoName"], "flagship");
@@ -345,9 +360,11 @@ mod tests {
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-review-0");
+        confirm_start(cx);
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-fix-ci-0");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1]["operationId"], op.as_str());
@@ -355,31 +372,42 @@ mod tests {
         assert_ne!(calls[2]["operationId"], op.as_str());
     }
 
+    /// The open Start Chat dialog's failure message.
+    fn dialog_failure(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> Option<String> {
+        shell.read_with(cx, |shell, _| match &shell.work_outline_modal {
+            Some(crate::shell::work_outline_ui::WorkOutlineModal::StartChat(dialog)) => {
+                dialog.failure.as_ref().map(|failure| failure.message.clone())
+            }
+            _ => None,
+        })
+    }
+
     #[gpui::test]
-    fn refusals_stay_inline_on_the_row(cx: &mut gpui::TestAppContext) {
+    fn refusals_stay_in_the_dialog(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let (_calls, page) = open_page(&shell, cx, |_| {
             Err("pr-review/fork: PR 8 comes from a fork; check it out by hand".into())
         });
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         shell.read_with(cx, |shell, _| {
             assert!(
                 matches!(shell.route, Route::PrReviewChats),
                 "stays on the page"
             );
         });
-        let status = page.read_with(cx, |page, _| {
-            page.review_status("https://github.com/acme/flagship/pull/8")
-        });
-        match status {
-            Some(ReviewStatus::Failed(text)) => {
-                assert!(text.contains("comes from a fork"), "{text}");
-                assert!(text.contains("check the branch out by hand"), "{text}");
-            }
-            other => panic!("expected an inline failure, got {other:?}"),
-        }
-        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
+        // The refusal shows in the dialog, which stays open for a retry.
+        let text = dialog_failure(&shell, cx).expect("the dialog shows the refusal");
+        assert!(text.contains("comes from a fork"), "{text}");
+        assert!(text.contains("check the branch out by hand"), "{text}");
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
+        assert!(
+            page.read_with(cx, |page, _| {
+                page.review_status("https://github.com/acme/flagship/pull/8")
+            })
+            .is_none()
+        );
     }
 
     /// The git worktree failure Mikey hit, verbatim: multi-line stderr.
@@ -391,14 +419,10 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
-        let (_calls, page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
+        let (_calls, _page) = open_page(&shell, cx, |_| Err(WORKTREE_FAILURE.into()));
         click(cx, "pr-dash-review-1");
-        let text = match page.read_with(cx, |page, _| {
-            page.review_status("https://github.com/acme/flagship/pull/8")
-        }) {
-            Some(ReviewStatus::Failed(text)) => text,
-            other => panic!("expected a failure, got {other:?}"),
-        };
+        confirm_start(cx);
+        let text = dialog_failure(&shell, cx).expect("the dialog shows the failure");
         // Nothing is truncated in the model: every stderr line is there.
         for line in [
             "git worktree add /work/ws/.wt/pr-8 failed",
@@ -409,12 +433,9 @@ mod tests {
             assert!(text.contains(line), "{line} in {text}");
         }
         // Rendered as the shared error card, with its Copy button.
-        assert!(cx.debug_bounds("pr-dash-status-1").is_some());
-        assert!(
-            cx.debug_bounds("pr-dash-status-1-error")
-                .is_some()
-        );
-        click(cx, "pr-dash-status-1-error-copy");
+        assert!(cx.debug_bounds("start-chat-failure").is_some());
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
+        click(cx, "start-chat-failure-message-copy");
         let copied = cx
             .read_from_clipboard()
             .and_then(|item| item.text())
@@ -426,10 +447,7 @@ mod tests {
         assert!(copied.contains("hung up unexpectedly"));
         // It stays: a later frame does not clear it.
         draw(cx);
-        assert!(
-            cx.debug_bounds("pr-dash-status-1-error")
-                .is_some()
-        );
+        assert!(cx.debug_bounds("start-chat-failure-message").is_some());
     }
 
     #[gpui::test]
@@ -458,6 +476,7 @@ mod tests {
             draw(cx);
             input.update(cx, |input, cx| input.set_text(text, cx));
             click(cx, "pr-review-url-submit");
+            confirm_start(cx);
             let last = calls.lock().unwrap().last().cloned().unwrap();
             assert_eq!(
                 (
@@ -539,6 +558,7 @@ mod tests {
             "the launcher review chat list is replaced"
         );
         click(cx, "pr-destination-review-w-api");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["repoOwner"], "acme");
@@ -926,6 +946,7 @@ mod tests {
         shell.update(cx, |shell, cx| shell.open_pr_review_chats(cx));
         draw(cx);
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 8);
@@ -943,6 +964,7 @@ mod tests {
         click(cx, "pr-dash-more-2");
         assert!(cx.debug_bounds("pr-dash-start-another-2").is_some());
         click(cx, "pr-dash-start-another-2");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 9);
@@ -1027,6 +1049,7 @@ mod tests {
         // Row 0 (#7) has no review chat: Enter starts a review.
         cx.simulate_keystrokes("enter");
         draw(cx);
+        confirm_start(cx);
         {
             let calls = calls.lock().unwrap();
             assert_eq!(calls.len(), 1);
@@ -1094,6 +1117,7 @@ mod tests {
         assert!(cx.debug_bounds("pr-dash-fix-ci-0").is_some());
         assert!(cx.debug_bounds("pr-dash-fix-ci-1").is_none());
         click(cx, "pr-dash-fix-ci-0");
+        confirm_start(cx);
         {
             let calls = calls.lock().unwrap();
             assert_eq!(calls.len(), 1);
@@ -1108,6 +1132,7 @@ mod tests {
         let (shell, cx) = test_shell(cx, dir.path());
         let (calls, _page) = authored_page(&shell, cx);
         click(cx, "pr-dash-review-1");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1, "one StartPrReview");
         assert_eq!(calls[0]["repoOwner"], "acme");
@@ -1152,6 +1177,7 @@ mod tests {
         assert!(cx.debug_bounds("pr-dash-start-another-0").is_none(), "closed by default");
         click(cx, "pr-dash-more-0");
         click(cx, "pr-dash-start-another-0");
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 21);
@@ -1181,6 +1207,7 @@ mod tests {
         cx.update(|window, cx| window.focus(&focus, cx));
         cx.simulate_keystrokes("down enter");
         draw(cx);
+        confirm_start(cx);
         let calls = calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["number"], 22);

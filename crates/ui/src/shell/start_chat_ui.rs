@@ -620,7 +620,7 @@ impl Shell {
     /// Tab / Shift+Tab walk prompt → model chip → approval chip (cycling).
     /// Keys inside the open picker, the worktree name, or an open `/` list
     /// are left alone.
-    fn start_chat_tab(
+    pub(super) fn start_chat_tab(
         &mut self,
         event: &gpui::KeyDownEvent,
         window: &mut Window,
@@ -1370,8 +1370,8 @@ fn pr_start_chat_card(
             .child(error_card(
                 "start-chat-failure-message",
                 theme,
+                crate::chat_type_view::REVIEW_FAILURE_TITLE,
                 failure.message,
-                failure.remediation.unwrap_or_default(),
             ))
     });
     let start_label = if dialog.starting {
@@ -2407,6 +2407,234 @@ mod tests {
             assert_eq!(defaults.reasoning, Some(zeron_proto::ReasoningLevel::High));
         });
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    type PrCalls = Arc<Mutex<Vec<serde_json::Value>>>;
+
+    /// Answer `StartPrReview` from `answer`, recording every request.
+    fn script_pr_review(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        answer: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
+    ) -> PrCalls {
+        let calls: PrCalls = Arc::default();
+        let sink = calls.clone();
+        shell.update(cx, |shell, _| {
+            shell.pr_review_script = Some(Arc::new(move |params| {
+                sink.lock().unwrap().push(params.clone());
+                answer(params)
+            }));
+        });
+        calls
+    }
+
+    fn pr_reply(chat: &str) -> serde_json::Value {
+        serde_json::json!({
+            "chatId": chat, "spaceId": "s1", "deviceId": "d",
+            "title": "Review flagship#7: Add X",
+            "prUrl": "https://github.com/acme/flagship/pull/7",
+            "branch": "feature-x", "checkoutPath": "/work/alpha",
+            "checkoutKind": "canonicalCheckout", "cwd": "/work/alpha",
+            "behindBy": 0, "prompt": "/code-review …",
+        })
+    }
+
+    fn open_pr_dialog(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        action: PrReviewAction,
+    ) {
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_pr_review(
+                    PrReference::parse("acme/flagship#7").unwrap(),
+                    action,
+                    Some(("s1".into(), HOUSEKEEPING.into())),
+                    cx,
+                )
+            })
+            .unwrap();
+        draw(cx);
+    }
+
+    /// A PR start opens the regular dialog, pre-filled with the review
+    /// prompt, the PR link and where it runs, and the composer's model
+    /// picker; nothing reaches the host until Start, which sends the picked
+    /// model with the same item filing.
+    #[gpui::test]
+    fn a_pr_start_opens_the_dialog_and_starts_with_the_picked_model(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("unused"),
+        );
+        seed_composer_picker(&shell, cx);
+        let pr_calls = script_pr_review(&shell, cx, |_| Ok(pr_reply("chat-review")));
+        open_pr_dialog(&shell, cx, PrReviewAction::CodeReview);
+
+        for selector in [
+            "start-chat",
+            "start-chat-pr-prompt",
+            "start-chat-pr-link",
+            "start-chat-pr-root",
+            "start-chat-agent",
+            "picker-model",
+            "picker-approval-mode",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector} renders");
+        }
+        assert!(
+            cx.debug_bounds("start-chat-prompt").is_none(),
+            "no work-item prompt box"
+        );
+        shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            let pr = dialog.pr.as_ref().expect("PR mode");
+            assert_eq!(pr.reference.url(), "https://github.com/acme/flagship/pull/7");
+            assert_eq!(
+                crate::pr_review_launch::prompt_preview(pr.action, &pr.reference.url()),
+                "/code-review https://github.com/acme/flagship/pull/7"
+            );
+            assert_eq!(pr.item, Some(("s1".to_string(), HOUSEKEEPING.to_string())));
+        });
+        assert!(pr_calls.lock().unwrap().is_empty(), "opening starts nothing");
+        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+
+        // Starts from the composer's remembered Opus; pick Sonnet by keyboard
+        // (focus starts on the dialog, Tab walks to the model chip).
+        let pickers = dialog_pickers(&shell, cx);
+        assert_eq!(
+            pickers
+                .read_with(cx, |pickers, cx| pickers.resolved(cx).model)
+                .as_deref(),
+            Some("opus")
+        );
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let model_chip = pickers.read_with(cx, |pickers, _| pickers.model_chip_focus().clone());
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(focused(cx, &model_chip), "Tab reaches the model chip");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        cx.simulate_input("sonnet");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            pickers
+                .read_with(cx, |pickers, cx| pickers.resolved(cx).model)
+                .as_deref(),
+            Some("sonnet")
+        );
+        assert!(
+            pr_calls.lock().unwrap().is_empty(),
+            "picking a model starts nothing"
+        );
+
+        // Esc closes the picker only; the dialog stays open and Start sends.
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!pickers.read_with(cx, |pickers, _| pickers.is_open()));
+        assert!(cx.debug_bounds("start-chat").is_some(), "dialog stays open");
+        // Focus is back on the dialog, so Enter starts.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let sent = pr_calls.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["repoOwner"], "acme");
+        assert_eq!(sent[0]["repoName"], "flagship");
+        assert_eq!(sent[0]["number"], 7);
+        assert_eq!(sent[0]["action"], "codeReview");
+        assert_eq!(sent[0]["spaceId"], "s1");
+        assert_eq!(sent[0]["workItemId"], HOUSEKEEPING);
+        assert_eq!(sent[0]["fresh"], true);
+        assert_eq!(sent[0]["config"]["harness"], "claude_code");
+        assert_eq!(sent[0]["config"]["model"], "sonnet");
+        shell.read_with(cx, |shell, cx| {
+            assert!(shell.work_outline_modal.is_none(), "the dialog closed");
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("chat-review")
+            );
+        });
+        // The picks are the composer's last-used selection.
+        let composer_pickers =
+            shell.update(cx, |shell, cx| shell.composer.read(cx).pickers().clone());
+        composer_pickers.read_with(cx, |pickers, _| {
+            assert_eq!(
+                pickers
+                    .new_chat_defaults()
+                    .model_for(zeron_proto::HarnessId::ClaudeCode)
+                    .map(|m| m.id.as_str()),
+                Some("sonnet")
+            );
+        });
+    }
+
+    /// Enter on the dialog starts, Escape cancels without starting, and a
+    /// refusal keeps the dialog so Retry reuses the same operation id.
+    #[gpui::test]
+    fn a_pr_dialog_starts_on_enter_cancels_on_escape_and_retries_after_a_refusal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("unused"),
+        );
+        seed_composer_picker(&shell, cx);
+        let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = refuse.clone();
+        let pr_calls = script_pr_review(&shell, cx, move |_| {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("pr-review/fork: PR 7 comes from a fork".into())
+            } else {
+                Ok(pr_reply("chat-fixed"))
+            }
+        });
+        cx.update(|window, _| window.activate_window());
+
+        open_pr_dialog(&shell, cx, PrReviewAction::FixCi);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat").is_none(), "Escape cancels");
+        assert!(pr_calls.lock().unwrap().is_empty());
+
+        open_pr_dialog(&shell, cx, PrReviewAction::FixCi);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(pr_calls.lock().unwrap().len(), 1, "Enter starts");
+        assert!(
+            cx.debug_bounds("start-chat-failure-message").is_some(),
+            "the refusal shows in the dialog, which stays open"
+        );
+        refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        click(cx, "start-chat-start");
+        let sent = pr_calls.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["action"], "fixCi");
+        assert_eq!(sent[0]["operationId"], sent[1]["operationId"]);
+        shell.read_with(cx, |shell, cx| {
+            assert!(shell.work_outline_modal.is_none());
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("chat-fixed")
+            );
+        });
     }
 
     /// Esc closes an open picker first, then the dialog.
