@@ -547,11 +547,11 @@ pub fn chat_title(action: PrReviewAction, repo_name: &str, number: u64, pr_title
 }
 
 /// The config a review Chat runs with when the caller sends none: Claude
-/// Code with the host's defaults.
+/// Code with Mast's default model (never the CLI's own default).
 pub fn default_config() -> ChatConfig {
     ChatConfig {
         harness: HarnessId::ClaudeCode,
-        model: None,
+        model: zeron_proto::resolve_model(HarnessId::ClaudeCode, None),
         reasoning: None,
         model_options: Default::default(),
         sandbox: SandboxLevel::WorkspaceWrite,
@@ -926,7 +926,10 @@ impl PrReviewLauncher {
             head.title.as_deref().unwrap_or(""),
         );
         let cwd = found.space.path.clone();
-        let config = p.config.clone().unwrap_or_else(default_config);
+        let mut config = p.config.clone().unwrap_or_else(default_config);
+        if config.fill_default_model() {
+            tracing::debug!(chat = %chat_id, "review chat config had no model; filled in the Mast default");
+        }
         let engine = |e: crate::EngineError| invalid(e.to_string());
         let existing = self.workspace.chat(&chat_id).map_err(engine)?;
         if existing.is_none() {

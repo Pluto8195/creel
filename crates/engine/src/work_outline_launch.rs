@@ -295,6 +295,11 @@ impl WorkItemLaunchService {
             worktree_choice: &p.worktree_choice,
             parent_chat_id: &p.parent_chat_id,
         });
+        // The hash above covers what the caller sent; from here on the chat
+        // always carries a concrete model, so the harness never inherits its
+        // CLI default (a retry derives the same fill).
+        let filled = self.with_default_model(p, &chat_id);
+        let p = &filled;
 
         // Ownership: the Space must live on this device (the RPC layer
         // forwards everything else to the owner).
@@ -741,6 +746,30 @@ impl WorkItemLaunchService {
         ))
     }
 
+    /// `p` with an explicit model: an absent config becomes the host's
+    /// default harness with default options, and an empty model becomes that
+    /// harness's built-in default.
+    fn with_default_model(
+        &self,
+        p: &CreateChatForWorkItemParams,
+        chat_id: &str,
+    ) -> CreateChatForWorkItemParams {
+        let mut p = p.clone();
+        let mut config = p.config.take().unwrap_or_else(|| ChatConfig {
+            harness: self.doc_host.harness_for(chat_id),
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+        });
+        if config.fill_default_model() {
+            tracing::debug!(chat = %chat_id, "work item launch had no model; filled in the Mast default");
+        }
+        p.config = Some(config);
+        p
+    }
+
     /// The first Turn's request: the visible prompt (attachment refs ride the
     /// text exactly as a composer `Run` sends them), the picked config, and
     /// the validated execution root. No worktree directive, no envelope (the
@@ -989,6 +1018,12 @@ impl WorkItemLaunchService {
         // text (`operationConflict`).
         if request.harness.is_none() {
             request.harness = Some(self.doc_host.harness_for(&p.chat_id));
+        }
+        if let Some(harness) = request.harness
+            && request.model.as_deref().is_none_or(|m| m.trim().is_empty())
+        {
+            request.model = zeron_proto::resolve_model(harness, None);
+            tracing::debug!(chat = %p.chat_id, model = ?request.model, "continued turn had no model; filled in the Mast default");
         }
         let payload = SessionCommandPayload::Run {
             request,

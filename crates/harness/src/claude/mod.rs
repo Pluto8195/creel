@@ -270,7 +270,16 @@ impl ClaudeHarness {
         // The 1M context window is selected via a model-id suffix
         // (`sonnet[1m]`), exactly how the CLI itself does it; fast mode and
         // always-on thinking are settings overrides.
-        if let Some(model) = &request.model {
+        // Never leave the model to the CLI: an empty model resolves to
+        // Mast's default so `~/.claude/settings.json` cannot pick it silently.
+        let model = zeron_proto::resolve_model(HarnessId::ClaudeCode, request.model.as_deref());
+        if request.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
+            tracing::debug!(
+                model = model.as_deref().unwrap_or_default(),
+                "claude run had no model; filled in the Mast default"
+            );
+        }
+        if let Some(model) = &model {
             let one_m = request
                 .model_options
                 .get("contextWindow")
@@ -283,7 +292,7 @@ impl ClaudeHarness {
                 model.clone()
             });
         }
-        if let Some(effort) = to_effort(request.reasoning, request.model.as_deref()) {
+        if let Some(effort) = to_effort(request.reasoning, model.as_deref()) {
             cmd.args(["--effort", effort]);
         }
         if request.auto_approve {
@@ -1159,6 +1168,35 @@ mod tests {
             "sandbox": "workspace-write", "resume": null
         }))
         .unwrap()
+    }
+
+    fn model_arg(args: &[String]) -> Option<&str> {
+        let i = args.iter().position(|a| a == "--model")?;
+        args.get(i + 1).map(String::as_str)
+    }
+
+    #[test]
+    fn a_missing_or_empty_model_resolves_to_the_mast_default() {
+        let harness = ClaudeHarness::new();
+        for model in [json!(null), json!(""), json!("  ")] {
+            let mut request = plain_request();
+            request.model = serde_json::from_value(model).unwrap();
+            assert_eq!(
+                model_arg(&argv(&harness, &request)),
+                Some("claude-opus-5-5")
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_model_is_passed_through_unchanged() {
+        let harness = ClaudeHarness::new();
+        let mut request = plain_request();
+        request.model = Some("claude-sonnet-5".into());
+        assert_eq!(
+            model_arg(&argv(&harness, &request)),
+            Some("claude-sonnet-5")
+        );
     }
 
     fn tools_injection() -> crate::AgentToolsInjection {

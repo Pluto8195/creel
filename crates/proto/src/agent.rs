@@ -27,6 +27,34 @@ pub enum HarnessId {
     Mock,
 }
 
+/// Mast's built-in default Claude Code model: the composer default for a new
+/// chat and the fallback wherever a start path carries no model. Saved
+/// per-project / per-chat choices always win over it.
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+
+impl HarnessId {
+    /// The model Mast passes explicitly when nothing was picked, so a harness
+    /// never silently inherits its own CLI default (Claude Code reads
+    /// `~/.claude/settings.json`). `None` for harnesses without a built-in
+    /// default (their catalogs are discovered live).
+    pub fn default_model(self) -> Option<&'static str> {
+        match self {
+            HarnessId::ClaudeCode => Some(DEFAULT_CLAUDE_MODEL),
+            _ => None,
+        }
+    }
+}
+
+/// A non-empty model id for a start path: the given one (trimmed), else the
+/// harness default. `None` only when the harness has no built-in default.
+pub fn resolve_model(harness: HarnessId, model: Option<&str>) -> Option<String> {
+    model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .or_else(|| harness.default_model())
+        .map(str::to_owned)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningLevel {
@@ -472,6 +500,33 @@ pub enum AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_claude_default_is_opus_5_5() {
+        assert_eq!(DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
+        assert_eq!(
+            HarnessId::ClaudeCode.default_model(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(HarnessId::Codex.default_model(), None);
+    }
+
+    #[test]
+    fn resolve_model_keeps_a_pick_and_fills_empty() {
+        let c = HarnessId::ClaudeCode;
+        assert_eq!(
+            resolve_model(c, Some("claude-sonnet-5")).as_deref(),
+            Some("claude-sonnet-5")
+        );
+        for empty in [None, Some(""), Some("  ")] {
+            assert_eq!(resolve_model(c, empty).as_deref(), Some("claude-opus-5-5"));
+        }
+        assert_eq!(resolve_model(HarnessId::Codex, None), None);
+        assert_eq!(
+            resolve_model(HarnessId::Codex, Some("gpt-x")).as_deref(),
+            Some("gpt-x")
+        );
+    }
 
     #[test]
     fn agent_event_round_trips() {

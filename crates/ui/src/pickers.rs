@@ -219,11 +219,14 @@ impl ResolvedRunConfig {
 // Pure: default resolution (no "Default" placeholders — a concrete pick always)
 // ---------------------------------------------------------------------------
 
-/// The harness's default model: the first catalog row (both curated catalogs
-/// lead with the flagship — zeron's `pickDefaultModel` Opus preference maps to
-/// the same row here).
+/// The harness's default model: Mast's built-in default when the catalog
+/// offers it (Claude Code's Opus 5.5, never the CLI's own settings default),
+/// else the first catalog row.
 pub fn default_model(models: &[Model]) -> Option<&Model> {
-    models.first()
+    models
+        .iter()
+        .find(|m| HarnessId::ClaudeCode.default_model() == Some(m.id.as_str()))
+        .or_else(|| models.first())
 }
 
 /// An explicit selection never silently becomes a different model after refresh.
@@ -1212,7 +1215,13 @@ impl Pickers {
                 .selected_model(cx)
                 .map(|m| m.id.clone())
                 // Catalog not loaded (offline): still send the id we know.
-                .or_else(|| self.effective_model_id(cx).map(str::to_string)),
+                .or_else(|| self.effective_model_id(cx).map(str::to_string))
+                // Nothing known at all: Mast's built-in default, never "let
+                // the CLI decide".
+                .or_else(|| {
+                    self.effective_harness(cx)
+                        .and_then(|h| zeron_proto::resolve_model(h, None))
+                }),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
             auto_approve: self.effective_auto_approve(cx),
@@ -7941,6 +7950,24 @@ mod tests {
         ];
         assert_eq!(default_model(&models).map(|m| &*m.id), Some("flagship"));
         assert!(default_model(&[]).is_none());
+    }
+
+    #[test]
+    fn default_model_prefers_the_mast_default_over_a_cli_default_row() {
+        let row = |id: &str| Model {
+            id: id.into(),
+            label: id.into(),
+            description: None,
+            reasoning_levels: vec![],
+            options: vec![],
+        };
+        // The live catalog leads with the CLI's own default (Fable here).
+        let models = vec![row("claude-fable-5"), row("claude-opus-5-5"), row("haiku")];
+        assert_eq!(
+            default_model(&models).map(|m| &*m.id),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(zeron_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
     }
 
     #[test]
