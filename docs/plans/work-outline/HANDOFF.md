@@ -325,6 +325,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   target that opens the ticket) shows the identifier (e.g. `ENG-3190`, 10px mono, `text_faint`)
   before the state dot and icon; one hover, tooltip and click. Hugs its content; empty identifier
   adds no width; nested rows too. Narrow rows drop the dot, then the assignee, then the ID.
+- **PR page and Linear lists cache and revalidate** (2026-10-27): `engine/src/swr.rs` `SwrStore`
+  (last good value per key, wall-clock freshness, one shared in-flight fetch per key, force
+  bypass, optional persisted JSON with atomic writes off the async worker). The PR page persists to
+  `<data_dir>/cache/pr-dash.json`; `PrDashboard` has `cachedOnly` (stored rows, never fetches), so a
+  tab with no rows shows the stored copy at once, then fetches. Linear my-issues/my-projects/
+  project-issues lists use the same store, and the Linear panel no longer resets to Loading on
+  every open. A spinner shows only when nothing is cached; explicit refresh bypasses freshness.
 - **Optimised install build** (2026-10-27): `[profile.installed]` in Cargo.toml (inherits release,
   incremental, codegen-units 256, no LTO/strip, line-tables-only debug). Clean build ~170s,
   rebuild after one UI file ~8s, binary 150 MB (debug was 286 MB), `target/installed` ~8 GB. Before
