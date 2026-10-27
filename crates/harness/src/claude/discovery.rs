@@ -1,4 +1,4 @@
-//! One initialize response feeds both picker catalogs for two minutes.
+//! One initialize response feeds both picker catalogs for 30 minutes.
 use crate::HarnessError;
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, time::Duration};
@@ -18,6 +18,7 @@ struct State {
 impl InitializeCache {
     pub(super) async fn get<F, Fut>(
         &self,
+        force: bool,
         context: impl Fn() -> Result<[u8; 32], HarnessError>,
         probe: F,
     ) -> Result<Value, HarnessError>
@@ -35,7 +36,7 @@ impl InitializeCache {
             };
         }
         if let (Some(at), Some(response)) = (state.completed_at, &state.response)
-            && (at >= requested_at || (response.is_ok() && at.elapsed() < Duration::from_secs(120)))
+            && (at >= requested_at || (!force && response.is_ok() && at.elapsed() < crate::catalog::CATALOG_TTL))
         {
             return response.clone().map_err(HarnessError::Protocol);
         }
@@ -125,17 +126,31 @@ mod tests {
             Ok(serde_json::json!({"models":[],"commands":[]}))
         };
         let results =
-            futures::future::join_all((0..10).map(|_| cache.get(|| Ok([1; 32]), probe))).await;
+            futures::future::join_all((0..10).map(|_| cache.get(false, || Ok([1; 32]), probe))).await;
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(calls.load(Relaxed), 1);
-        tokio::time::advance(Duration::from_secs(119)).await;
-        cache.get(|| Ok([1; 32]), probe).await.unwrap();
+        tokio::time::advance(Duration::from_secs(30 * 60 - 1)).await;
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        cache.get(|| Ok([1; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 2);
-        cache.get(|| Ok([2; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([2; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 3);
+    }
+    #[tokio::test]
+    async fn force_bypasses_a_fresh_initialize_response() {
+        let cache = InitializeCache::default();
+        let calls = AtomicUsize::new(0);
+        let probe = || async {
+            calls.fetch_add(1, Relaxed);
+            Ok(serde_json::json!({}))
+        };
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
+        cache.get(false, || Ok([1; 32]), probe).await.unwrap();
+        assert_eq!(calls.load(Relaxed), 1);
+        cache.get(true, || Ok([1; 32]), probe).await.unwrap();
+        assert_eq!(calls.load(Relaxed), 2);
     }
     #[tokio::test]
     async fn failed_initialize_retries_and_raced_login_is_not_cached() {
@@ -143,6 +158,7 @@ mod tests {
         assert!(
             cache
                 .get(
+                    false,
                     || Ok([1; 32]),
                     || async { Err(HarnessError::Protocol("offline".into())) }
                 )
@@ -151,7 +167,7 @@ mod tests {
         );
         assert!(
             cache
-                .get(|| Ok([1; 32]), || async { Ok(Value::Null) })
+                .get(false, || Ok([1; 32]), || async { Ok(Value::Null) })
                 .await
                 .is_ok()
         );
@@ -159,6 +175,7 @@ mod tests {
         assert!(
             cache
                 .get(
+                    false,
                     || Ok([key.load(Relaxed) as u8; 32]),
                     || async {
                         key.store(3, Relaxed);

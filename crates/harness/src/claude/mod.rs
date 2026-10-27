@@ -338,9 +338,10 @@ impl ClaudeHarness {
     /// initialize. Command discovery uses its own per-cwd probe/cache
     /// instead (see [`Self::discover_commands`]) since project-scoped
     /// commands/skills depend on the cwd the CLI is handed.
-    async fn initialize(&self) -> Result<Value, HarnessError> {
+    async fn initialize(&self, force: bool) -> Result<Value, HarnessError> {
         self.initialize
             .get(
+                force,
                 || self.model_context().map(|c| c.unwrap().key()),
                 || self.probe_initialize(None),
             )
@@ -364,7 +365,7 @@ impl ClaudeHarness {
         // project-scoped command requests need the per-cwd cache below.
         if cwd.is_empty() {
             return self
-                .initialize()
+                .initialize(false)
                 .await
                 .map(|response| parse_initialize_commands(&response));
         }
@@ -550,7 +551,7 @@ impl Harness for ClaudeHarness {
                 Duration::from_secs(35),
                 || self.model_context().map(|c| c.unwrap().key()),
                 || async {
-                    let response = self.initialize().await?;
+                    let response = self.initialize(force).await?;
                     catalog::with_discovered_models(catalog::configured_models(), &response)
                 },
             )
