@@ -75,6 +75,8 @@ pub(crate) enum MenuAction {
     CopyPath(String),
     Archive,
     Restore,
+    /// Open Work Item Details (a compact row's Enter opens its Chat).
+    OpenDetails,
     SpaceInstructions,
     ExecutionSetup,
     RemoveFromWorkItem(String),
@@ -130,6 +132,7 @@ impl MenuAction {
             | Self::AddInstruction
             | Self::CopyPath(_)
             | Self::Restore
+            | Self::OpenDetails
             | Self::SpaceInstructions
             | Self::ExecutionSetup
             | Self::RemoveFromWorkItem(_)
@@ -475,13 +478,24 @@ impl OutlineView {
                 )
             })
             .unwrap_or_else(|| item.title.clone());
-        let entries = vec![
-            MenuEntry::new(
-                "open-details",
-                "Open Details",
-                icons::EYE,
-                MenuAction::Outline(OutlineNavKey::OpenSelected),
-            ),
+        let compact_chat = item.compact_chat.as_ref();
+        let mut entries = vec![
+            // A compact row opens its Chat on Enter / click, so the item's
+            // details need their own entry.
+            match compact_chat {
+                Some(_) => MenuEntry::new(
+                    "open-details",
+                    "Open Details",
+                    icons::EYE,
+                    MenuAction::OpenDetails,
+                ),
+                None => MenuEntry::new(
+                    "open-details",
+                    "Open Details",
+                    icons::EYE,
+                    MenuAction::Outline(OutlineNavKey::OpenSelected),
+                ),
+            },
             MenuEntry::new(
                 "start-chat",
                 "Start Chat",
@@ -596,6 +610,33 @@ impl OutlineView {
             )
             .disabled((!archived).then_some("This work item is not archived")),
         ];
+        if let Some(chat) = compact_chat {
+            let mut chat_entries = vec![
+                MenuEntry::new(
+                    "open-chat",
+                    "Open Chat",
+                    icons::CHAT_ROUND_LINE,
+                    MenuAction::Outline(OutlineNavKey::OpenSelected),
+                ),
+                MenuEntry::new(
+                    "open-full-chat",
+                    "Open Full Chat",
+                    icons::WINDOW_MAXIMIZE,
+                    MenuAction::Command(WorkOutlineCommand::OpenFullChat),
+                ),
+                MenuEntry::new(
+                    "archive-chat",
+                    "Archive Chat",
+                    icons::ARCHIVE_MINIMALISTIC,
+                    MenuAction::ArchiveChat(chat.chat.id.clone()),
+                ),
+            ];
+            // The Archive shortcut stays the item's; this one is the Chat's.
+            chat_entries[2].hint = HintKey::None;
+            chat_entries[0].separator_before = true;
+            let at = entries.iter().position(|e| e.id == "start-chat").unwrap_or(1);
+            entries.splice(at..at, chat_entries);
+        }
         let status = |id: &'static str, status: WorkItemStatus| {
             // No glyph: the current status carries the check mark.
             MenuEntry::new(

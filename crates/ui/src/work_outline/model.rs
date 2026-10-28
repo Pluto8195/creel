@@ -105,6 +105,9 @@ pub(crate) struct OutlineOptions {
     pub all_spaces: bool,
     /// Show hidden Spaces as bare, dimmed root rows (to unhide them).
     pub show_hidden_spaces: bool,
+    /// Fold an item's only live Chat into the item's row. The Outline view
+    /// turns it on; model-level callers get the plain item + Chat rows.
+    pub compact_single_chat: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -648,7 +651,10 @@ fn item_node<'s>(
         }
         return None;
     }
-    let compact_chat = compactable_chat(&children, &chat_nodes);
+    let compact_chat = options
+        .compact_single_chat
+        .then(|| compactable_chat(&children, &chat_nodes))
+        .flatten();
     if compact_chat.is_some() {
         chat_nodes.clear();
     }

@@ -462,6 +462,8 @@ pub(crate) struct OutlineView {
     hidden_spaces: std::collections::BTreeSet<String>,
     /// "Hidden projects (N)" is on: hidden Spaces show as dimmed roots.
     show_hidden_spaces: bool,
+    /// Fold a single-chat item's Chat into its row (on in the app).
+    compact_single_chat: bool,
     _editor_events: Subscription,
     /// Focus gained / lost diagnostics (registered on first render, which
     /// has the window).
@@ -517,6 +519,7 @@ impl OutlineView {
             notice_seq: 0,
             move_toast: None,
             move_toast_seq: 0,
+            compact_single_chat: true,
             details_key: None,
             panel_chat: None,
             shell: None,
@@ -546,6 +549,14 @@ impl OutlineView {
     // ----------------------------------------------------------------------
     // Inputs and model
     // ----------------------------------------------------------------------
+
+    pub(crate) fn set_compact_single_chat(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.compact_single_chat != on {
+            self.compact_single_chat = on;
+            self.reflatten();
+            cx.notify();
+        }
+    }
 
     pub(crate) fn set_inputs(&mut self, inputs: OutlineInputs, cx: &mut Context<Self>) {
         self.ensure_collapsed_loaded(cx);
@@ -726,6 +737,7 @@ impl OutlineView {
     fn flatten_inputs(&self, collapsed: &HashSet<String>) -> OutlineModel {
         let options = OutlineOptions {
             show_hidden_spaces: self.show_hidden_spaces,
+            compact_single_chat: self.compact_single_chat,
             ..self.inputs.options.clone()
         };
         model::flatten(
@@ -955,6 +967,16 @@ impl OutlineView {
             return;
         };
         self.open_row(&row, cx);
+    }
+
+    /// Open Work Item Details for an item (a compact row's menu entry).
+    pub(crate) fn open_item_details(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(OutlineEvent::OpenDetails { space_id, item_id });
     }
 
     fn open_row(&mut self, row: &OutlineRow, cx: &mut Context<Self>) {

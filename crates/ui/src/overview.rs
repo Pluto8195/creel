@@ -5860,6 +5860,8 @@ impl Overview {
                 all_spaces: true,
                 // The Outline owns the reveal (`OutlineView`).
                 show_hidden_spaces: false,
+                // Likewise: the view compacts single-chat items itself.
+                compact_single_chat: false,
             },
         };
         self.outline
@@ -6614,7 +6616,7 @@ impl Overview {
             (self.view_mode == OverviewMode::Outline)
                 .then(|| self.outline.read(cx).selected_row())
                 .flatten()
-                .and_then(|row| row.chat())
+                .and_then(|row| row.open_chat())
                 .filter(|row| !row.dangling)
                 .map(|row| row.chat.id.clone())
         };
