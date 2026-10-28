@@ -172,7 +172,7 @@ pub(crate) fn instruction_host_blocker(state: &AppState, chat_id: &str) -> Optio
             "This Chat\u{2019}s host hasn\u{2019}t synced to this workspace yet, so it can\u{2019}t \
              take Work Outline instructions. Open Mast on {host} to apply them."
         ),
-        InstructionHostSupport::ZeronUpgradeRequired => format!(
+        InstructionHostSupport::MastUpgradeRequired => format!(
             "This Chat\u{2019}s host can\u{2019}t deliver Work Outline instructions. \
              Update Mast on {host} to apply them."
         ),

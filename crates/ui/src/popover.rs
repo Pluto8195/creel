@@ -21,7 +21,7 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::motion::{self, ZERON_PULSE};
+use crate::motion::{self, MAST_PULSE};
 use crate::theme::{Theme, hairline, ink};
 
 // ---------------------------------------------------------------------------
@@ -1222,7 +1222,7 @@ pub fn skeleton_rows(
     cx: &mut gpui::App,
 ) -> AnyElement {
     let wash = ink(0.04);
-    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    let delta = motion::pulse_delta(&MAST_PULSE, view, cx);
     div()
         .flex()
         .flex_col()
@@ -1243,7 +1243,7 @@ pub fn skeleton_rows(
 /// selected model still resolves (a chip collapsing to its bare icon read
 /// as broken; user report).
 pub fn skeleton_bar(width: f32, view: gpui::EntityId, cx: &mut gpui::App) -> AnyElement {
-    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    let delta = motion::pulse_delta(&MAST_PULSE, view, cx);
     div()
         .w(px(width))
         .h(px(11.0))
@@ -1267,7 +1267,7 @@ pub fn skeleton_menu_rows(
 ) -> AnyElement {
     const WIDTHS: [f32; 4] = [0.42, 0.58, 0.48, 0.66];
     let wash = ink(0.05);
-    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    let delta = motion::pulse_delta(&MAST_PULSE, view, cx);
     div()
         .flex()
         .flex_col()

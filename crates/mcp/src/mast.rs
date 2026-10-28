@@ -29,11 +29,11 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(15);
 /// boundary (chat2 cutover etc.) — the same contract the UI follows.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_millis(300);
 
-/// The per-Run capability token the engine injected (`ZERON_AGENT_TOKEN`),
-/// if any. A self-declared origin (the old `ZERON_CHAT_ID`) is never read:
+/// The per-Run capability token the engine injected (`MAST_AGENT_TOKEN`),
+/// if any. A self-declared origin (the old `MAST_CHAT_ID`) is never read:
 /// who this server speaks for is whatever the engine says the token is.
 pub fn token_from_env() -> Option<String> {
-    std::env::var(agent_tools::TOKEN_ENV)
+    mast_proto::env::var(agent_tools::TOKEN_ENV)
         .ok()
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())

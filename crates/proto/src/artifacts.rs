@@ -5,18 +5,18 @@
 //! `docs/plans/planning-artifacts-design.md`.
 //!
 //! - An artifact is a file Mast owns under the work item's canonical
-//!   checkout: `<canonical>/.zeron/artifacts/<folder>/<file>` (chats without a
-//!   work item: `<canonical>/.zeron/artifacts/_chats/<chatId>/`). The
+//!   checkout: `<canonical>/.mast/artifacts/<folder>/<file>` (chats without a
+//!   work item: `<canonical>/.mast/artifacts/_chats/<chatId>/`). The
 //!   canonical checkout is the main checkout of the item's primary
-//!   repository, never a worktree. `.zeron/` is excluded through the repo's
+//!   repository, never a worktree. `.mast/` (and the legacy `.zeron/`) is excluded through the repo's
 //!   `info/exclude`, never `.gitignore`.
 //! - The registry row (kind [`KIND_ARTIFACTS`]) holds metadata only
 //!   ([`ArtifactView`]); content snapshots live in the owning device's profile
 //!   store, addressed by SHA-256. Other devices read content with the
 //!   forwardable [`methods`] `ArtifactContent`.
-//! - Agents publish through the `zeron-agent` MCP tools
+//! - Agents publish through the `mast-agent` MCP tools
 //!   ([`crate::agent_tools::tools::ARTIFACTS`]); harnesses without tools link
-//!   `[title](zeron-artifact:<path>)` and Mast imports the file once.
+//!   `[title](mast-artifact:<path>)` and Mast imports the file once.
 //! - Render checks are served by a headed UI on the owning device: the UI
 //!   subscribes to `WatchArtifactRenderRequests`, renders each
 //!   [`ArtifactRenderRequest`] offscreen, and answers with
@@ -37,12 +37,29 @@ pub const KIND_ARTIFACTS: &str = "artifacts";
 /// The capability a device advertises when it serves the artifact RPCs and
 /// the artifact agent tools.
 pub const ARTIFACTS_CAPABILITY_V1: &str = "artifacts-v1";
-/// Link scheme: `zeron-artifact:<artifactId>` or `zeron-artifact:<path>`.
-pub const ARTIFACT_URL_SCHEME: &str = "zeron-artifact:";
+/// Link scheme: `mast-artifact:<artifactId>` or `mast-artifact:<path>`.
+pub const ARTIFACT_URL_SCHEME: &str = "mast-artifact:";
+/// The pre-rename link scheme. Still accepted wherever links are read
+/// (old transcripts and artifact Markdown contain it); never generated.
+pub const LEGACY_ARTIFACT_URL_SCHEME: &str = "zeron-artifact:";
 /// Mast's folder in a canonical checkout (listed in `info/exclude`).
-pub const ZERON_DIR: &str = ".zeron";
+pub const MAST_DIR: &str = ".mast";
+/// The pre-rename folder. Existing artifacts live under it; it is still
+/// read, watched and served, and still written when a work item's folder
+/// already exists there.
+pub const LEGACY_ZERON_DIR: &str = ".zeron";
 /// Artifact root, relative to the canonical checkout.
-pub const ARTIFACTS_DIR: &str = ".zeron/artifacts";
+pub const ARTIFACTS_DIR: &str = ".mast/artifacts";
+/// Pre-rename artifact root, relative to the canonical checkout.
+pub const LEGACY_ARTIFACTS_DIR: &str = ".zeron/artifacts";
+/// Both artifact roots, new first.
+pub const ALL_ARTIFACTS_DIRS: [&str; 2] = [ARTIFACTS_DIR, LEGACY_ARTIFACTS_DIR];
+
+/// Strip an artifact link scheme (new or legacy) from the start of `url`.
+pub fn strip_artifact_scheme(url: &str) -> Option<&str> {
+    url.strip_prefix(ARTIFACT_URL_SCHEME)
+        .or_else(|| url.strip_prefix(LEGACY_ARTIFACT_URL_SCHEME))
+}
 /// Folder of chats without a work item: `_chats/<chatId>`.
 pub const CHATS_FOLDER: &str = "_chats";
 /// Folder of artifacts registered with neither a work item nor a chat.
@@ -262,7 +279,7 @@ pub struct ArtifactView {
     pub kind: ArtifactKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Folder name under `.zeron/artifacts/` (`<slug>-<id8>` for a work
+    /// Folder name under `.mast/artifacts/` (`<slug>-<id8>` for a work
     /// item, `_chats/<chatId>` for a chat). Fixed at creation: renaming the
     /// item never moves files.
     #[serde(default)]
@@ -311,7 +328,7 @@ pub struct ArtifactView {
 }
 
 impl ArtifactView {
-    /// `zeron-artifact:<id>`.
+    /// `mast-artifact:<id>`.
     pub fn url(&self) -> String {
         format!("{ARTIFACT_URL_SCHEME}{}", self.id)
     }
@@ -490,7 +507,7 @@ pub struct ArtifactRegisterParams {
 pub struct ArtifactPublishReply {
     pub artifact_id: String,
     pub revision: u32,
-    /// `zeron-artifact:<artifactId>`.
+    /// `mast-artifact:<artifactId>`.
     pub url: String,
     pub stored_path: String,
     /// `false` when the content was unchanged (no new revision).
@@ -1092,7 +1109,7 @@ pub fn tagged_file_name(name: &str, tag: &str) -> String {
     format!("{stem}-{tag}{suffix}")
 }
 
-/// One `[label](zeron-artifact:<target>)` link in assistant text.
+/// One `[label](mast-artifact:<target>)` link in assistant text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactLink {
     pub label: String,
@@ -1116,16 +1133,26 @@ pub fn is_artifact_id(text: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Every Markdown link whose target uses the `zeron-artifact:` scheme, in
+/// Every Markdown link whose target uses the `mast-artifact:` (or legacy `zeron-artifact:`) scheme, in
 /// order, de-duplicated by target. Targets may be wrapped in `<…>`; a link
 /// title (`"…"`) after the target is ignored.
 pub fn artifact_links(text: &str) -> Vec<ArtifactLink> {
     let mut out: Vec<ArtifactLink> = Vec::new();
-    let needle = format!("]({ARTIFACT_URL_SCHEME}");
+    let needles = [
+        format!("]({ARTIFACT_URL_SCHEME}"),
+        format!("]({LEGACY_ARTIFACT_URL_SCHEME}"),
+    ];
     let mut from = 0;
-    while let Some(rel) = text[from..].find(&needle) {
+    loop {
+        let Some((rel, needle_len)) = needles
+            .iter()
+            .filter_map(|n| text[from..].find(n.as_str()).map(|r| (r, n.len())))
+            .min_by_key(|(r, _)| *r)
+        else {
+            break;
+        };
         let close = from + rel;
-        let target_start = close + needle.len();
+        let target_start = close + needle_len;
         from = target_start;
         // The label: back to the matching `[` on the same line.
         let before = &text[..close];
@@ -1253,9 +1280,21 @@ pub fn is_safe_relative_path(path: &str) -> bool {
             .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
+/// HTML attribute marking a question element; the legacy spelling is still
+/// read from artifacts agents wrote before the rename.
+pub const QUESTION_ATTR: &str = "data-mast-question";
+pub const LEGACY_QUESTION_ATTR: &str = "data-zeron-question";
+const QUESTION_ATTR_EQ: [&str; 2] = ["data-mast-question=", "data-zeron-question="];
+
+/// Byte offset of the earliest occurrence of any needle.
+pub(crate) fn find_first_of(text: &str, needles: &[&str]) -> Option<usize> {
+    needles.iter().filter_map(|n| text.find(n)).min()
+}
+
 /// Open questions (conventions section 4): `> [!question] Q-n` blocks whose
 /// `status:` is not `resolved` (absent = open), plus HTML
-/// `data-zeron-question` elements without `data-status="resolved"`.
+/// `data-mast-question` (legacy `data-zeron-question`) elements without
+/// `data-status="resolved"`.
 /// Phase 1 counts; the questions panel (phase 3) parses fully.
 pub fn count_open_questions(text: &str) -> u32 {
     let mut count = 0u32;
@@ -1287,7 +1326,7 @@ pub fn count_open_questions(text: &str) -> u32 {
     close(&mut in_block, &mut resolved, &mut count);
     // HTML questions.
     let mut from = 0;
-    while let Some(rel) = text[from..].find("data-zeron-question=") {
+    while let Some(rel) = find_first_of(&text[from..], &QUESTION_ATTR_EQ) {
         let start = from + rel;
         let tag_end = text[start..].find('>').map_or(text.len(), |e| start + e);
         let tag = &text[start..tag_end];

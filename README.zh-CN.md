@@ -31,7 +31,7 @@ Mast 是一个原生 macOS 应用，在聊天里运行 Claude Code、Codex、Cur
 - **计划产物（Planning artifacts）。** agent 发布计划和图表（Markdown、HTML、Mermaid、图片），你在应用里阅读。修订之间可以做可视化对比：左右并排同步滚动、像素差异高亮、叠影，Markdown 则渲染后并排，并给改动的块上色。还有查找、章节索引，以及用来记录待决事项的问题卡片。给 agent 的约定见 [docs/planning-artifact-conventions.md](docs/planning-artifact-conventions.md)。
 - **Linear。** 按 Space 单独开启。收件箱列出你的 issue 和 project，想要哪个就手动加进大纲。完整的工单会交给 agent。Mast 不会往 Linear 写任何东西。
 - **按聊天指定的 diff 目标。** Changes 面板跟着 agent 建的 worktree（`bind_chat_worktree`），或者你选的分支、PR 走，这样你审的是 agent 的改动，而不是仓库根目录的 diff。
-- **agent 工具。** 每个聊天都带有 `zeron-agent` MCP 服务：读取和更新自己的工作项、创建子项、提 Required Action、绑定 worktree、发布产物、启动和读取其他聊天。详见 [docs/mcp.md](docs/mcp.md)。
+- **agent 工具。** 每个聊天都带有 `mast-agent` MCP 服务：读取和更新自己的工作项、创建子项、提 Required Action、绑定 worktree、发布产物、启动和读取其他聊天。详见 [docs/mcp.md](docs/mcp.md)。
 - **侧边浏览器。** 网页和 PR 链接在聊天旁边打开。
 
 ## 构建和运行（macOS）
@@ -54,7 +54,7 @@ cargo build -p mast                       # 调试版二进制在 target/debug/z
 scripts/run-macos-dev.sh
 ```
 
-脚本会构建调试版二进制，打包成 `target/macos-dev/Mast Dev.app`，签名（有 Apple Development 证书就用它，否则用 ad-hoc 签名）并打开。开发版有自己的数据目录（`target/macos-dev/data`）、bundle id 和引擎端口，所以可以和已安装的 Mast 同时运行。设置 `ZERON_DEV_DATA_DIR` 或 `ZERON_DEV_IPC_PORT` 可以修改它们。
+脚本会构建调试版二进制，打包成 `target/macos-dev/Mast Dev.app`，签名（有 Apple Development 证书就用它，否则用 ad-hoc 签名）并打开。开发版有自己的数据目录（`target/macos-dev/data`）、bundle id 和引擎端口，所以可以和已安装的 Mast 同时运行。设置 `MAST_DEV_DATA_DIR` 或 `MAST_DEV_IPC_PORT` 可以修改它们。
 
 构建应用包和磁盘镜像：
 

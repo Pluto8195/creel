@@ -94,9 +94,9 @@ jobs:
           # Exercise real path resolution without touching the runner's account.
           # Port zero cannot connect to another running engine.
           $env:HOME = $null
-          $env:ZERON_DATA_DIR = $null
-          $env:ZERON_EDGE_TOKEN = $null
-          $env:ZERON_IPC_PORT = '0'
+          $env:MAST_DATA_DIR = $null
+          $env:MAST_EDGE_TOKEN = $null
+          $env:MAST_IPC_PORT = '0'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "zeron smoke O'Brien 日本語"
           $expected = Join-Path $env:LOCALAPPDATA 'Zeron'
           $probe = [Diagnostics.ProcessStartInfo]::new()

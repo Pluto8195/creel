@@ -5031,6 +5031,7 @@ dependencies = [
  "libc",
  "mast-engine",
  "mast-mcp",
+ "mast-proto",
  "mast-rpc",
  "mast-ui",
  "mast-update",
@@ -5347,6 +5348,7 @@ version = "0.2.82"
 dependencies = [
  "anyhow",
  "futures",
+ "mast-proto",
  "reqwest",
  "serde",
  "serde_json",

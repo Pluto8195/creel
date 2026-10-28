@@ -162,7 +162,7 @@ fn compare_picks_the_mode_and_flavor_per_kind(cx: &mut TestAppContext) {
             let doc = &documents.last().unwrap().1;
             assert_eq!(doc.matches("<iframe").count(), 2, "{kind:?}");
             assert_eq!(doc.matches("sandbox=\"allow-scripts\"").count(), 2);
-            assert!(doc.contains("zeronSyncTo"));
+            assert!(doc.contains("mastSyncTo"));
         } else {
             assert_eq!(documents.len(), before, "markdown renders natively");
             assert!(tab.read_with(vcx, |tab, _| tab.compare_view().unwrap().blocks().is_some()));
@@ -335,7 +335,7 @@ fn highlight_changes_diffs_two_offscreen_renders(cx: &mut TestAppContext) {
     });
     // The overlay is in the right pane's frame, not the left's.
     let doc = shown.borrow().last().unwrap().1.clone();
-    assert_eq!(doc.matches("data-zeron-changes").count(), 1);
+    assert_eq!(doc.matches("data-mast-changes").count(), 1);
     assert!(vcx.debug_bounds("artifact-compare-result").is_some());
 }
 
@@ -520,7 +520,7 @@ fn identical_renders_read_as_no_visual_change(cx: &mut TestAppContext) {
             .last()
             .unwrap()
             .1
-            .matches("data-zeron-changes")
+            .matches("data-mast-changes")
             .count(),
         0
     );
@@ -814,13 +814,13 @@ fn web_compare_zoom_goes_through_the_host_to_both_frames(cx: &mut TestAppContext
     assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
     // The page script zooms (⌘-wheel, pinch) and asks the host to mirror it.
     let doc = shown.borrow().last().unwrap().1.clone();
-    assert!(doc.contains("zeronSyncZoomTo") && doc.contains("zeronSyncZoom:"));
+    assert!(doc.contains("mastSyncZoomTo") && doc.contains("mastSyncZoom:"));
     // The tab's level is adopted from the host's report and reaches both
     // frames through the same entry point as a single page.
     tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1000), cx));
     tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1800), cx));
     assert!((tab.read_with(vcx, |tab, _| tab.zoom_level()) - 1.8).abs() < 1e-3);
-    assert!(super::compare::SYNC_HOST_SCRIPT.contains("__zeronFrameCmd"));
+    assert!(super::compare::SYNC_HOST_SCRIPT.contains("__mastFrameCmd"));
 }
 
 #[test]

@@ -247,7 +247,7 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
   addEventListener("scroll", () => {
     if (following) return;
     const max = range();
-    try { parent.postMessage({ zeronSync: { ratio: max > 0 ? root().scrollTop / max : 0 } }, "*"); } catch (_) {}
+    try { parent.postMessage({ mastSync: { ratio: max > 0 ? root().scrollTop / max : 0 } }, "*"); } catch (_) {}
   }, { passive: true });
   // Zoom: CSS zoom on the page root, mirrored in the other pane by the host.
   // Keep the maths in step with `find::FRAME_SCRIPT` / `zoom::anchor_offset`.
@@ -264,7 +264,7 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
     following = true;
     se.scrollLeft = left; se.scrollTop = top;
     requestAnimationFrame(() => { following = false; });
-    if (relay) try { parent.postMessage({ zeronSyncZoom: { level: to, x, y } }, "*"); } catch (_) {}
+    if (relay) try { parent.postMessage({ mastSyncZoom: { level: to, x, y } }, "*"); } catch (_) {}
   };
   addEventListener("wheel", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -275,9 +275,9 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
   addEventListener("gesturechange", (e) => { e.preventDefault(); setZoom(pinchFrom * e.scale, e.clientX, e.clientY, true); }, { passive: false });
   addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
   addEventListener("message", (event) => {
-    const z = event.data && event.data.zeronSyncZoomTo;
+    const z = event.data && event.data.mastSyncZoomTo;
     if (z && typeof z.level === "number") return setZoom(z.level, z.x, z.y, false);
-    const to = event.data && event.data.zeronSyncTo;
+    const to = event.data && event.data.mastSyncTo;
     if (!to || typeof to.ratio !== "number") return;
     following = true;
     root().scrollTop = to.ratio * range();
@@ -287,29 +287,29 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
 "##;
 
 /// In the host: relay one frame's scroll and zoom to the other, take zoom
-/// commands from the tab (`__zeronFrameCmd`, the same entry point as a
+/// commands from the tab (`__mastFrameCmd`, the same entry point as a
 /// single page) and report the zoom where the tab polls for it.
-pub(crate) const SYNC_HOST_SCRIPT: &str = r##"window.__zeronFrame = { zoom: 1000 };
-const zeronFrames = () => Array.from(document.querySelectorAll("iframe"));
-window.__zeronFrameCmd = (o) => {
-  if (!o || typeof o.zeronZoom !== "number") return;
-  window.__zeronFrame = Object.assign({}, window.__zeronFrame, { zoom: Math.round(o.zeronZoom * 1000) });
-  zeronFrames().forEach((frame) => frame.contentWindow && frame.contentWindow.postMessage({ zeronSyncZoomTo: { level: o.zeronZoom } }, "*"));
+pub(crate) const SYNC_HOST_SCRIPT: &str = r##"window.__mastFrame = { zoom: 1000 };
+const mastFrames = () => Array.from(document.querySelectorAll("iframe"));
+window.__mastFrameCmd = (o) => {
+  if (!o || typeof o.mastZoom !== "number") return;
+  window.__mastFrame = Object.assign({}, window.__mastFrame, { zoom: Math.round(o.mastZoom * 1000) });
+  mastFrames().forEach((frame) => frame.contentWindow && frame.contentWindow.postMessage({ mastSyncZoomTo: { level: o.mastZoom } }, "*"));
 };
 addEventListener("message", (event) => {
-  const frames = zeronFrames();
+  const frames = mastFrames();
   const from = frames.findIndex((frame) => frame.contentWindow === event.source);
   if (from < 0) return;
   const others = frames.filter((_, i) => i !== from);
-  const zoom = event.data && event.data.zeronSyncZoom;
+  const zoom = event.data && event.data.mastSyncZoom;
   if (zoom && typeof zoom.level === "number") {
-    window.__zeronFrame = Object.assign({}, window.__zeronFrame, { zoom: Math.round(zoom.level * 1000) });
-    others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ zeronSyncZoomTo: zoom }, "*"));
+    window.__mastFrame = Object.assign({}, window.__mastFrame, { zoom: Math.round(zoom.level * 1000) });
+    others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ mastSyncZoomTo: zoom }, "*"));
     return;
   }
-  const ratio = event.data && event.data.zeronSync && event.data.zeronSync.ratio;
+  const ratio = event.data && event.data.mastSync && event.data.mastSync.ratio;
   if (typeof ratio !== "number") return;
-  others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*"));
+  others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ mastSyncTo: { ratio } }, "*"));
 });"##;
 
 /// The CSS height of an onion-skin stack for renders `width` x `height`
@@ -351,7 +351,7 @@ pub(crate) fn overlay_html(
             let bottom = up(region.y + region.height);
             (right > left && bottom > top).then(|| {
                 format!(
-                    "<div data-zeron-change style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;\
+                    "<div data-mast-change style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;\
 background:rgba(255,64,64,.22);outline:2px solid rgba(255,64,64,.85);border-radius:2px\"></div>",
                     left - origin.0,
                     top - origin.1,
@@ -365,7 +365,7 @@ background:rgba(255,64,64,.22);outline:2px solid rgba(255,64,64,.85);border-radi
         String::new()
     } else {
         format!(
-            "<div data-zeron-changes style=\"position:absolute;left:0;top:0;width:0;height:0;\
+            "<div data-mast-changes style=\"position:absolute;left:0;top:0;width:0;height:0;\
 z-index:2147483647;pointer-events:none\">{boxes}</div>"
         )
     }
@@ -533,7 +533,7 @@ mod tests {
             html.contains("left:0px;top:4px;width:14px;height:10px"),
             "{html}"
         );
-        assert_eq!(html.matches("data-zeron-change ").count(), 2);
+        assert_eq!(html.matches("data-mast-change ").count(), 2);
         assert_eq!(overlay_html(&[], 1.0, (16, 16), 488), "");
         // A Retina snapshot (2 pixels per CSS pixel).
         let retina = [Region {
@@ -565,7 +565,7 @@ mod tests {
         );
         assert_eq!(doc.matches("sandbox=\"allow-scripts\"").count(), 2);
         assert_eq!(doc.matches("<iframe").count(), 2);
-        assert!(doc.contains("zeronSyncTo"));
+        assert!(doc.contains("mastSyncTo"));
         assert!(doc.contains("r2 &lt;now&gt;"));
         assert!(doc.contains("&lt;p&gt;a&lt;/p&gt;"));
     }

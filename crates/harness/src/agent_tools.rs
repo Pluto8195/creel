@@ -176,12 +176,12 @@ mod tests {
 
     fn injection() -> AgentToolsInjection {
         AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
             env: BTreeMap::from([
-                ("ZERON_AGENT_TOKEN".into(), "secret-token".into()),
-                ("ZERON_IPC_PORT".into(), "27654".into()),
+                ("MAST_AGENT_TOKEN".into(), "secret-token".into()),
+                ("MAST_IPC_PORT".into(), "27654".into()),
             ]),
         }
     }
@@ -215,11 +215,11 @@ mod tests {
         drop(second);
         let body: Value =
             serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
-        let server = &body["mcpServers"]["zeron-agent"];
+        let server = &body["mcpServers"]["mast-agent"];
         assert_eq!(server["type"], "stdio");
         assert_eq!(server["command"], "/opt/zeron/bin/zeron");
         assert_eq!(server["args"], json!(["mcp"]));
-        assert_eq!(server["env"]["ZERON_AGENT_TOKEN"], "secret-token");
+        assert_eq!(server["env"]["MAST_AGENT_TOKEN"], "secret-token");
         let path = file.path().to_owned();
         drop(file);
         assert!(!path.exists());
@@ -275,19 +275,19 @@ mod tests {
     fn codex_overrides_name_one_server() {
         let overrides = injection().codex_config_overrides();
         assert_eq!(
-            overrides["mcp_servers.zeron-agent.command"],
+            overrides["mcp_servers.mast-agent.command"],
             "/opt/zeron/bin/zeron"
         );
-        assert_eq!(overrides["mcp_servers.zeron-agent.args"], json!(["mcp"]));
+        assert_eq!(overrides["mcp_servers.mast-agent.args"], json!(["mcp"]));
         assert_eq!(
-            overrides["mcp_servers.zeron-agent.env"]["ZERON_AGENT_TOKEN"],
+            overrides["mcp_servers.mast-agent.env"]["MAST_AGENT_TOKEN"],
             "secret-token"
         );
-        assert_eq!(overrides["mcp_servers.zeron-agent.enabled"], true);
+        assert_eq!(overrides["mcp_servers.mast-agent.enabled"], true);
         assert!(
             overrides
                 .keys()
-                .all(|k| k.starts_with("mcp_servers.zeron-agent."))
+                .all(|k| k.starts_with("mcp_servers.mast-agent."))
         );
     }
 }

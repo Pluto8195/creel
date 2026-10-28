@@ -1632,7 +1632,7 @@ mod tests {
         // SAFETY: test-only env mutation, serialized by this test's own scope
         // (no other test in this module reads this var concurrently in a way
         // that would race observably — matches `worktree_on_run.rs`'s own
-        // `ZERON_WORKTREES_DIR` precedent).
+        // `MAST_WORKTREES_DIR` precedent).
         unsafe { std::env::set_var("WORKSPACE_WORKTREES_DIR", &override_dir) };
         let result = create_chat_worktree(&root, "eng-42-do-a-thing");
         unsafe { std::env::remove_var("WORKSPACE_WORKTREES_DIR") };

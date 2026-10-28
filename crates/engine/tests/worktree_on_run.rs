@@ -156,7 +156,7 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool) {
     // macOS tempdirs live behind the /var → /private/var symlink.
     let tmp_path = tmp.path().canonicalize().unwrap();
     let worktrees_root = tmp_path.join("worktrees");
-    unsafe { std::env::set_var("ZERON_WORKTREES_DIR", &worktrees_root) };
+    unsafe { std::env::set_var("MAST_WORKTREES_DIR", &worktrees_root) };
 
     let repo_dir = tmp_path.join("repo");
     std::fs::create_dir_all(&repo_dir).unwrap();
@@ -294,7 +294,7 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool) {
     assert_eq!(chat.cwd.as_deref(), Some(first_cwd.as_str()));
     let branch = chat.branch.expect("branch stamped");
     assert!(
-        branch.starts_with("zeron/"),
+        branch.starts_with("mast/"),
         "stamped branch is the worktree's own: {branch}"
     );
 

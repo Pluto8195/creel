@@ -367,7 +367,7 @@ impl Element for LinkRanges {
                         }),
                     );
                 }
-                let open_in_mast = crate::settings::current(cx).open_web_links_in_zeron;
+                let open_in_mast = crate::settings::current(cx).open_web_links_in_mast;
                 let menu = state.menu.clone();
                 card = card.child(popover::menu_separator()).child(
                     popover::menu_row(
@@ -397,7 +397,7 @@ impl Element for LinkRanges {
                             crate::settings::SavePolicy::Immediate,
                             cx,
                             |settings| {
-                                settings.open_web_links_in_zeron = !open_in_mast;
+                                settings.open_web_links_in_mast = !open_in_mast;
                             },
                         );
                         menu.borrow_mut().take();
@@ -894,13 +894,13 @@ mod rendered_tests {
                                 !draw_has_tooltip(window, cx),
                                 "pending hover must not appear over the menu"
                             );
-                            let before = crate::settings::current(cx).open_web_links_in_zeron;
+                            let before = crate::settings::current(cx).open_web_links_in_mast;
                             key(window, "down", cx);
                             key(window, "down", cx);
                             key(window, "down", cx);
                             key(window, "enter", cx);
                             assert_ne!(
-                                crate::settings::current(cx).open_web_links_in_zeron,
+                                crate::settings::current(cx).open_web_links_in_mast,
                                 before,
                                 "the fourth menu row toggles the default destination"
                             );

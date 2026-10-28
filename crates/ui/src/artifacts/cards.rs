@@ -1,4 +1,4 @@
-//! Transcript artifact cards: each `[label](zeron-artifact:…)` link of a
+//! Transcript artifact cards: each `[label](mast-artifact:…)` link of a
 //! settled assistant message gets a card (kind icon, title, role, revision,
 //! Open) resolved against the watched snapshots at render time. Activation
 //! goes through the chat's link handler, so it opens the Artifact tab (and
@@ -18,7 +18,7 @@ pub(crate) struct CardModel {
     pub(crate) icon: &'static str,
     /// "Plan · plan · r3", or the path for a not-yet-registered file.
     pub(crate) detail: String,
-    /// The link the card activates (`zeron-artifact:<target>`).
+    /// The link the card activates (`mast-artifact:<target>`).
     pub(crate) url: String,
     pub(crate) registered: bool,
 }

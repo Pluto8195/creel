@@ -12,7 +12,7 @@
 //!
 //! Render checks add a probe ([`PROBE_SCRIPT`]) inside the frame and a
 //! collector in the outer document; the native side reads the collector's
-//! `window.__zeronProbe` once the probe has posted its report.
+//! `window.__mastProbe` once the probe has posted its report.
 use crate::browser::fragment::{self, FragmentTheme, escape_attr, escape_text};
 
 use super::bridge::HOST_SCRIPT as BRIDGE_HOST_SCRIPT;
@@ -249,8 +249,8 @@ pub(crate) fn compare_frame(
 /// `about:srcdoc` base cannot resolve relative links like `ui/foo.tsx:120`,
 /// so the page's own `href` text is what the host needs.
 pub(crate) const LINK_FRAME_SCRIPT: &str = r##"(() => {
-  if (window.__zeronLinksInstalled) return;
-  window.__zeronLinksInstalled = true;
+  if (window.__mastLinksInstalled) return;
+  window.__mastLinksInstalled = true;
   const handle = (event) => {
     const node = event.target;
     const a = node && node.closest ? node.closest("a, area") : null;
@@ -260,7 +260,7 @@ pub(crate) const LINK_FRAME_SCRIPT: &str = r##"(() => {
     event.preventDefault();
     event.stopPropagation();
     if (event.type === "click" && href) {
-      try { parent.postMessage({ zeronLink: href }, "*"); } catch (_) {}
+      try { parent.postMessage({ mastLink: href }, "*"); } catch (_) {}
     }
   };
   document.addEventListener("click", handle, true);
@@ -269,15 +269,15 @@ pub(crate) const LINK_FRAME_SCRIPT: &str = r##"(() => {
 "##;
 
 /// In the outer document: turns the frame's link message into a navigation
-/// the native delegate recognises (`zeron-link:<encoded href>`, see
+/// the native delegate recognises (`mast-link:<encoded href>`, see
 /// `browser::document_view`), and cancels.
 pub(crate) const LINK_HOST_SCRIPT: &str = r##"window.addEventListener("message", (event) => {
   const frame = document.querySelector("iframe");
   if (!frame || event.source !== frame.contentWindow) return;
-  const href = event.data && event.data.zeronLink;
+  const href = event.data && event.data.mastLink;
   if (typeof href !== "string" || href.length > 4096) return;
   const a = document.createElement("a");
-  a.href = "zeron-link:" + encodeURIComponent(href);
+  a.href = "mast-link:" + encodeURIComponent(href);
   a.rel = "noreferrer";
   a.style.display = "none";
   document.body.appendChild(a);
@@ -307,13 +307,13 @@ fn with_probe_prefix(body: &str, probe: Option<&str>) -> String {
 pub(crate) fn mermaid_fragment(source: &str, dark: bool) -> String {
     let theme = if dark { "dark" } else { "default" };
     format!(
-        "<div class=\"zeron-mermaid\" style=\"display:flex;justify-content:center\">\
+        "<div class=\"mast-mermaid\" style=\"display:flex;justify-content:center\">\
 <pre class=\"mermaid\">{source}</pre></div>\n\
 <script src=\"{MERMAID_SRC}\"></script>\n\
 <script>(() => {{\n\
   const fail = (message) => {{\n\
     console.error(\"Mermaid: \" + message);\n\
-    document.querySelectorAll(\"pre.mermaid\").forEach((el) => el.setAttribute(\"data-zeron-error\", message));\n\
+    document.querySelectorAll(\"pre.mermaid\").forEach((el) => el.setAttribute(\"data-mast-error\", message));\n\
   }};\n\
   if (!globalThis.mermaid) {{ fail(\"the Mermaid library could not load\"); return; }}\n\
   mermaid.initialize({{ startOnLoad: false, securityLevel: \"strict\", theme: \"{theme}\" }});\n\
@@ -378,7 +378,7 @@ pub(crate) fn inject_head_script(page: &str, script: &str) -> String {
     inject_head_markup(page, &format!("<script>{script}</script>"))
 }
 
-/// The stylesheet for `data-zeron-question` cards, as a `<style>` element.
+/// The stylesheet for `data-mast-question` cards, as a `<style>` element.
 fn question_style() -> String {
     format!("<style>{QUESTION_CSS}</style>")
 }
@@ -404,10 +404,10 @@ fn inject_head_markup(page: &str, tag: &str) -> String {
 }
 
 /// The outer document's collector: keeps the frame's report where the
-/// native side can read it (`window.__zeronProbe`).
-pub(crate) const COLLECTOR_SCRIPT: &str = "window.__zeronProbe = null;\
+/// native side can read it (`window.__mastProbe`).
+pub(crate) const COLLECTOR_SCRIPT: &str = "window.__mastProbe = null;\
 window.addEventListener(\"message\", (event) => {\
- if (event.data && event.data.zeronRenderProbe) window.__zeronProbe = event.data.zeronRenderProbe;\
+ if (event.data && event.data.mastRenderProbe) window.__mastProbe = event.data.mastRenderProbe;\
 });";
 
 fn with_collector(document: &str) -> String {
@@ -420,14 +420,14 @@ fn with_collector(document: &str) -> String {
 
 /// What the native side evaluates to read the report (`null` until ready).
 pub(crate) const READ_PROBE_SCRIPT: &str =
-    "window.__zeronProbe ? JSON.stringify(window.__zeronProbe) : null";
+    "window.__mastProbe ? JSON.stringify(window.__mastProbe) : null";
 
 /// The in-frame probe: console errors, uncaught errors and rejections, CSP
 /// violations, failed resource loads, Mermaid errors, empty render, and
 /// layout warnings (horizontal overflow, elements outside the viewport, low
 /// contrast text), plus per-element metrics the native side classifies into
 /// the layout heuristics ([`super::layout_heuristics`]). Posts
-/// `{zeronRenderProbe: {errors, warnings, metrics}}` to the parent once the
+/// `{mastRenderProbe: {errors, warnings, metrics}}` to the parent once the
 /// page has loaded and settled.
 pub(crate) fn probe_script() -> String {
     PROBE_TEMPLATE
@@ -436,8 +436,8 @@ pub(crate) fn probe_script() -> String {
 }
 
 const PROBE_TEMPLATE: &str = r##"(() => {
-  if (window.__zeronProbeInstalled) return;
-  window.__zeronProbeInstalled = true;
+  if (window.__mastProbeInstalled) return;
+  window.__mastProbeInstalled = true;
   const errors = [], warnings = [];
   const push = (list, text) => {
     text = String(text).slice(0, 400);
@@ -491,7 +491,7 @@ const PROBE_TEMPLATE: &str = r##"(() => {
   };
   const report = () => {
     document.querySelectorAll("pre.mermaid, div.mermaid").forEach((el) => {
-      const failed = el.getAttribute("data-zeron-error");
+      const failed = el.getAttribute("data-mast-error");
       if (failed) push(errors, "Mermaid: " + failed);
       else if (/syntax error|parse error/i.test(el.textContent || "")) push(errors, "Mermaid: " + (el.textContent || "").trim().slice(0, 200));
     });
@@ -534,11 +534,11 @@ const PROBE_TEMPLATE: &str = r##"(() => {
     const contentHeight = Math.ceil(Math.max(
       document.documentElement ? document.documentElement.scrollHeight : 0,
       document.body ? document.body.scrollHeight : 0));
-    try { parent.postMessage({ zeronRenderProbe: { errors, warnings, metrics, contentHeight } }, "*"); } catch (_) {}
+    try { parent.postMessage({ mastRenderProbe: { errors, warnings, metrics, contentHeight } }, "*"); } catch (_) {}
   };
   const waitMermaid = (deadline) => {
     const pending = Array.from(document.querySelectorAll("pre.mermaid, div.mermaid")).some((el) =>
-      !el.querySelector("svg") && !el.getAttribute("data-zeron-error") && !el.getAttribute("data-processed"));
+      !el.querySelector("svg") && !el.getAttribute("data-mast-error") && !el.getAttribute("data-processed"));
     if (pending && Date.now() < deadline) { setTimeout(() => waitMermaid(deadline), 100); return; }
     report();
   };

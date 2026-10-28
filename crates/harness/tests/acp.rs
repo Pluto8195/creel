@@ -1282,7 +1282,7 @@ fn antigravity_sign_in_preserves_relative_home_auth_in_a_separate_process() {
         .current_dir(parent_cwd.path())
         .env("HOME", child_home.path())
         .env("GEMINI_HOME", "relative-gemini-home")
-        .env("ZERON_TEST_EXPECTED_GEMINI_HOME", &gemini_home)
+        .env("MAST_TEST_EXPECTED_GEMINI_HOME", &gemini_home)
         .output()
         .unwrap();
     assert!(
@@ -1295,7 +1295,7 @@ fn antigravity_sign_in_preserves_relative_home_auth_in_a_separate_process() {
 
 #[tokio::test]
 async fn antigravity_auth_path_subprocess() {
-    if std::env::var_os("ZERON_TEST_EXPECTED_GEMINI_HOME").is_none() {
+    if mast_proto::env::var_os("MAST_TEST_EXPECTED_GEMINI_HOME").is_none() {
         return;
     }
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1923,8 +1923,8 @@ fn antigravity_detection_and_missing_server_never_install() {
             .env("HOME", dir.path())
             .env("PATH", &bin)
             .env("SHELL", "/nonexistent-shell")
-            .env("ZERON_ADAPTERS_DIR", &adapters)
-            .env("ZERON_TEST_DETECTION", scenario)
+            .env("MAST_ADAPTERS_DIR", &adapters)
+            .env("MAST_TEST_DETECTION", scenario)
             .env_remove("ANTIGRAVITY_ACP_EXECUTABLE");
         if scenario == "override" {
             child.env("ANTIGRAVITY_ACP_EXECUTABLE", &exe);
@@ -1945,7 +1945,7 @@ fn antigravity_detection_and_missing_server_never_install() {
 
 #[tokio::test]
 async fn antigravity_detection_subprocess() {
-    let Ok(scenario) = std::env::var("ZERON_TEST_DETECTION") else {
+    let Ok(scenario) = mast_proto::env::var("MAST_TEST_DETECTION") else {
         return;
     };
     let harness = AcpHarness::antigravity();
@@ -1980,7 +1980,7 @@ async fn antigravity_detection_subprocess() {
         harness.run(request("hello"), ctl).await,
         Err(HarnessError::NotInstalled(_))
     ));
-    let adapters = PathBuf::from(std::env::var_os("ZERON_ADAPTERS_DIR").unwrap());
+    let adapters = PathBuf::from(mast_proto::env::var_os("MAST_ADAPTERS_DIR").unwrap());
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         std::fs::read_dir(adapters)

@@ -149,7 +149,7 @@ pub struct EngineConfig {
     pub ipc_port: u16,
     /// Harness for doc-command runs on chats without a workspace `config` row.
     pub default_harness: HarnessId,
-    /// Workspace-doc org (`ws/{orgId}` room). `None` = `$ZERON_ORG_ID` or the dev default.
+    /// Workspace-doc org (`ws/{orgId}` room). `None` = `$MAST_ORG_ID` or the dev default.
     /// In WorkOS mode the signed-in session's org wins.
     pub org_id: Option<String>,
     /// WorkOS client id — enables real auth; `None` = dev mode (bearer = `edge_token`).
@@ -220,7 +220,7 @@ pub struct EngineCore {
 impl EngineCore {
     /// Open stores under `data_dir`, wire sessions ⇄ doc host ⇄ workspace host, and
     /// recover stale journals from a previous crash. Identity comes from
-    /// `$ZERON_ORG_ID` / `$ZERON_USER_ID` (dev defaults `dev-org` / `dev-user`);
+    /// `$MAST_ORG_ID` / `$MAST_USER_ID` (dev defaults `dev-org` / `dev-user`);
     /// use [`Self::assemble_with_identity`] to pass one explicitly.
     pub fn assemble(
         data_dir: &Path,
@@ -228,8 +228,8 @@ impl EngineCore {
         default_harness: HarnessId,
         edge: Option<EdgeConfig>,
     ) -> Result<Self, EngineError> {
-        let org_id = env_or("ZERON_ORG_ID", DEFAULT_ORG_ID);
-        let user_id = env_or("ZERON_USER_ID", DEFAULT_USER_ID);
+        let org_id = env_or("MAST_ORG_ID", DEFAULT_ORG_ID);
+        let user_id = env_or("MAST_USER_ID", DEFAULT_USER_ID);
         let profile = EngineProfile::development(data_dir, &org_id, &user_id);
         Self::assemble_with_profile(profile, registry, default_harness, edge)
     }
@@ -389,7 +389,7 @@ impl EngineCore {
         // `repair_junk_imports`'s doc comment) — hard-deletes the junk chats
         // a bulk import from before this fix left behind. Also purges chats
         // adopted from Mast's own title-generator runs (first message =
-        // `TITLE_INSTRUCTIONS`; see `ZERON_TITLE_PROMPT_PREFIX`), since the
+        // `TITLE_INSTRUCTIONS`; see `MAST_TITLE_PROMPT_PREFIX`), since the
         // pass keys off `is_synthetic_prompt`.
         {
             let importer = external_import.clone();
@@ -526,7 +526,7 @@ impl EngineCore {
         }
         // Auto-adopt externally started sessions: once at boot (queued after
         // the stale-sync pass on the blocking pool) and then every 5 minutes
-        // for the engine's lifetime. Kill switch: ZERON_DISABLE_AUTO_ADOPT.
+        // for the engine's lifetime. Kill switch: MAST_DISABLE_AUTO_ADOPT.
         // Skipped for the Development scope (test/dev harness profiles) so
         // synthetic-HOME tests aren't raced by a background adopter.
         if profile.scope() != WorkspaceScope::Development {
@@ -637,7 +637,7 @@ impl EngineCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.get_or_insert_with(|| {
-            let dev_user = std::env::var("ZERON_EDGE_TOKEN")
+            let dev_user = mast_proto::env::var("MAST_EDGE_TOKEN")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "dev-user".into());
@@ -902,13 +902,13 @@ impl Engine {
     pub async fn build_auth(config: &EngineConfig) -> Auth {
         let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
         auth_config.workos_client_id = config.workos_client_id.clone();
-        if let Ok(base) = std::env::var("ZERON_WORKOS_API_BASE")
+        if let Ok(base) = mast_proto::env::var("MAST_WORKOS_API_BASE")
             && !base.trim().is_empty()
         {
             auth_config.workos_api_base = base;
         }
         auth_config.callback_port = Some(
-            std::env::var("ZERON_CALLBACK_PORT")
+            mast_proto::env::var("MAST_CALLBACK_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(27641),
@@ -949,10 +949,10 @@ impl Engine {
                     .filter(|org| !org.is_empty());
                 let org_id = dev_token_org
                     .or(config.org_id.clone())
-                    .unwrap_or_else(|| env_or("ZERON_ORG_ID", DEFAULT_ORG_ID));
+                    .unwrap_or_else(|| env_or("MAST_ORG_ID", DEFAULT_ORG_ID));
                 let user_id = auth
                     .user_id()
-                    .unwrap_or_else(|| env_or("ZERON_USER_ID", DEFAULT_USER_ID));
+                    .unwrap_or_else(|| env_or("MAST_USER_ID", DEFAULT_USER_ID));
                 Ok(Some(EngineProfile::development(
                     &config.data_dir,
                     &org_id,
@@ -1041,7 +1041,7 @@ impl Engine {
             }
             // Dev Auth always exposes `dev_user_id` as its synthetic access
             // token, including when WorkOS was merely disabled with
-            // ZERON_WORKOS_CLIENT_ID="". Only an explicitly configured,
+            // MAST_WORKOS_CLIENT_ID="". Only an explicitly configured,
             // non-empty bearer opts this runtime into Edge rooms and relays.
             WorkspaceScope::Development => config
                 .edge_token
@@ -1119,7 +1119,7 @@ impl Engine {
             );
         if check_updates {
             // Release checker: polls {edge}/releases on a 6h cadence; headless
-            // installs with ZERON_AUTO_UPDATE=1 apply + restart themselves — gated
+            // installs with MAST_AUTO_UPDATE=1 apply + restart themselves — gated
             // on quiescence so a restart never lands under a live run or open PTY.
             let quiescent: mast_update::QuiescentCheck = {
                 let sessions = core.sessions.clone();
@@ -1464,7 +1464,7 @@ async fn run_org_onboarding(auth: Auth) {
 fn local_device_name(device_id: &str) -> String {
     select_local_device_name(
         [
-            std::env::var("ZERON_DEVICE_NAME").ok(),
+            mast_proto::env::var("MAST_DEVICE_NAME").ok(),
             native_friendly_device_name(),
             std::env::var("HOSTNAME").ok(),
             gethostname::gethostname().into_string().ok(),
@@ -1596,7 +1596,7 @@ mod device_name_tests {
 
 /// Trimmed env var or the given default.
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key)
+    mast_proto::env::var(key)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

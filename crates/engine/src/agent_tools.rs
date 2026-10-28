@@ -322,7 +322,7 @@ impl Drop for AgentTokenLease {
 static BOUND_IPC_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// Record the port `serve_ipc` bound, so injected servers dial this engine
-/// rather than whatever `ZERON_IPC_PORT` / the default names. One engine
+/// rather than whatever `MAST_IPC_PORT` / the default names. One engine
 /// serves IPC per process; the latest bind wins.
 pub fn note_bound_ipc_port(port: u16) {
     BOUND_IPC_PORT.store(port, Ordering::Relaxed);
@@ -370,6 +370,12 @@ impl AgentToolsLaunch {
             env: [
                 (agent_tools::TOKEN_ENV.to_owned(), token.to_owned()),
                 (agent_tools::IPC_PORT_ENV.to_owned(), ipc_port.to_string()),
+                // Older `zeron mcp` binaries read the old names.
+                (agent_tools::LEGACY_TOKEN_ENV.to_owned(), token.to_owned()),
+                (
+                    agent_tools::LEGACY_IPC_PORT_ENV.to_owned(),
+                    ipc_port.to_string(),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -1764,10 +1770,16 @@ mod tests {
             ipc_port: Some(27655),
         };
         let injection = launch.injection("zat_secret").unwrap();
-        assert_eq!(injection.server_name, "zeron-agent");
+        assert_eq!(injection.server_name, "mast-agent");
         assert_eq!(injection.args, vec!["mcp".to_owned()]);
+        assert_eq!(injection.env["MAST_AGENT_TOKEN"], "zat_secret");
+        assert_eq!(injection.env["MAST_IPC_PORT"], "27655");
+        // An older `zeron mcp` binary reads the old names; both are exported.
         assert_eq!(injection.env["ZERON_AGENT_TOKEN"], "zat_secret");
         assert_eq!(injection.env["ZERON_IPC_PORT"], "27655");
+        assert!(mast_proto::agent_tools::is_server_name("zeron-agent"));
+        assert!(mast_proto::agent_tools::is_server_name("mast-agent"));
+        assert!(!mast_proto::agent_tools::is_server_name("zeron"));
         assert!(!injection.args.iter().any(|a| a.contains("zat_secret")));
         assert!(!injection.command.to_string_lossy().contains("zat_secret"));
     }
@@ -1787,7 +1799,7 @@ mod tests {
         );
         note_bound_ipc_port(41234);
         assert_eq!(
-            launch.injection("zat_x").unwrap().env["ZERON_IPC_PORT"],
+            launch.injection("zat_x").unwrap().env["MAST_IPC_PORT"],
             "41234"
         );
         note_bound_ipc_port(0);

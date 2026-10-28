@@ -1212,7 +1212,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
             .queue_command(CHAT, plain("hello", "m-1"))
             .unwrap_err(),
     );
-    assert_eq!(host_reason(&rejection), Reason::ZeronUpgradeRequired);
+    assert_eq!(host_reason(&rejection), Reason::MastUpgradeRequired);
     assert!(
         rejection.message.contains("Update Mast on Studio"),
         "{}",

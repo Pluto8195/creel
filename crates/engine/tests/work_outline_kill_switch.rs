@@ -1,4 +1,4 @@
-//! `ZERON_DISABLE_WORK_OUTLINE_WRITES` turns every Work Outline mutation into
+//! `MAST_DISABLE_WORK_OUTLINE_WRITES` turns every Work Outline mutation into
 //! `writesDisabled` while reads keep working. Its own test binary: the env
 //! var is process-wide.
 

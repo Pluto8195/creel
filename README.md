@@ -31,7 +31,7 @@ Drop captures into docs/media/readme/ and uncomment:
 - **Planning artifacts.** Agents publish plans and diagrams (Markdown, HTML, Mermaid, images) that you read in the app. Revisions compare visually: side by side with synced scroll, pixel-diff highlights, onion skin, rendered Markdown with changed blocks tinted. Find, a section index, and question cards for open decisions. Conventions for agents are in [docs/planning-artifact-conventions.md](docs/planning-artifact-conventions.md).
 - **Linear.** Opt in per Space. An inbox lists your issues and projects, and you add the ones you want to the outline by hand. The full ticket goes to the agent. Mast never writes to Linear.
 - **Per-chat diff targets.** The Changes pane follows the worktree an agent created (`bind_chat_worktree`), or a branch or PR you pick, so you review the agent's work and not the repo root.
-- **Agent tools.** Every chat gets the `zeron-agent` MCP server: read and update its work item, create children, ask for Required Actions, bind a worktree, publish artifacts, start and read other chats. See [docs/mcp.md](docs/mcp.md).
+- **Agent tools.** Every chat gets the `mast-agent` MCP server: read and update its work item, create children, ask for Required Actions, bind a worktree, publish artifacts, start and read other chats. See [docs/mcp.md](docs/mcp.md).
 - **Side browser.** Web and PR links open beside the chat.
 
 ## Build and run (macOS)
@@ -54,7 +54,7 @@ Run it as an isolated dev app:
 scripts/run-macos-dev.sh
 ```
 
-This builds the debug binary, wraps it in `target/macos-dev/Mast Dev.app`, signs it (with an Apple Development identity if you have one, ad-hoc otherwise) and opens it. The dev app has its own data directory (`target/macos-dev/data`), bundle id and engine port, so it can run next to an installed Mast. Set `ZERON_DEV_DATA_DIR` or `ZERON_DEV_IPC_PORT` to change them.
+This builds the debug binary, wraps it in `target/macos-dev/Mast Dev.app`, signs it (with an Apple Development identity if you have one, ad-hoc otherwise) and opens it. The dev app has its own data directory (`target/macos-dev/data`), bundle id and engine port, so it can run next to an installed Mast. Set `MAST_DEV_DATA_DIR` or `MAST_DEV_IPC_PORT` to change them.
 
 To build an app bundle and disk image:
 

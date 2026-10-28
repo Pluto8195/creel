@@ -15,7 +15,7 @@ pub struct MockHarness {
     pub script: Vec<AgentEvent>,
 }
 
-/// The scripted question set for the `ZERON_MOCK_QUESTION` variant (exercises
+/// The scripted question set for the `MAST_MOCK_QUESTION` variant (exercises
 /// the QuestionPanel end-to-end: single-select page, multi-select page).
 fn question_script() -> Vec<UserInputQuestion> {
     vec![
@@ -105,22 +105,22 @@ impl Harness for MockHarness {
         // anything streams (acceptance 12). `InstructionMockHarness` is the
         // instruction-aware test double.
         crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
-        // Optional pacing knob for demos/manual testing: `ZERON_MOCK_DELAY_MS`
+        // Optional pacing knob for demos/manual testing: `MAST_MOCK_DELAY_MS`
         // spaces the scripted events out so live-run UI states (working
         // indicator, streaming fade, trailing tool-group auto-open) are
         // observable. Unset (the default, and in tests) streams instantly.
-        let delay_ms = std::env::var("ZERON_MOCK_DELAY_MS")
+        let delay_ms = mast_proto::env::var("MAST_MOCK_DELAY_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
         let delay = std::time::Duration::from_millis(delay_ms);
 
-        // Dev/testing knob: `ZERON_MOCK_QUESTION=1` swaps in a run that asks
+        // Dev/testing knob: `MAST_MOCK_QUESTION=1` swaps in a run that asks
         // the user questions mid-stream via `controls.request_input` (the
         // engine mints the request id, emits `InputRequested`, and resolves it
         // from the `RespondInput` doc command) — the only data-side way to put
         // the QuestionPanel on screen.
-        let question_mode = std::env::var("ZERON_MOCK_QUESTION")
+        let question_mode = mast_proto::env::var("MAST_MOCK_QUESTION")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         if question_mode {
@@ -168,26 +168,26 @@ impl Harness for MockHarness {
             return Ok(stream.boxed());
         }
 
-        // Dev/testing knob: `ZERON_MOCK_REPEAT=N` loops the script body N times
+        // Dev/testing knob: `MAST_MOCK_REPEAT=N` loops the script body N times
         // before the final Done — long single-reply streams for frame-cost /
         // smoothness measurement (the terminal `Done` is emitted exactly once,
         // at the very end).
-        let repeat = std::env::var("ZERON_MOCK_REPEAT")
+        let repeat = mast_proto::env::var("MAST_MOCK_REPEAT")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(1)
             .max(1);
-        // Dev/testing knob: `ZERON_MOCK_ERROR=1` appends a scripted error
+        // Dev/testing knob: `MAST_MOCK_ERROR=1` appends a scripted error
         // before the terminal Done — the only data-side way to put the
         // transcript ErrorChip on screen with the mock harness.
-        let mock_error = std::env::var("ZERON_MOCK_ERROR")
+        let mock_error = mast_proto::env::var("MAST_MOCK_ERROR")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
-        // Dev/testing knob: `ZERON_MOCK_TABLE=1` appends scripted GFM tables
+        // Dev/testing knob: `MAST_MOCK_TABLE=1` appends scripted GFM tables
         // before the terminal Done — a plain 3-column grid plus a wide/uneven
         // one (long prose cell beside short cells, mixed alignment) for
         // table-styling checks against the reference app.
-        let mock_table = std::env::var("ZERON_MOCK_TABLE")
+        let mock_table = mast_proto::env::var("MAST_MOCK_TABLE")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         let done_ix = self
@@ -199,10 +199,10 @@ impl Harness for MockHarness {
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
         });
-        // Dev/testing knob: `ZERON_MOCK_CODE=1` appends rust + ts code blocks
+        // Dev/testing knob: `MAST_MOCK_CODE=1` appends rust + ts code blocks
         // (keywords, strings, numbers, comments) plus inline code — for
         // syntax-palette and inline-code styling checks against the reference.
-        let mock_code = std::env::var("ZERON_MOCK_CODE")
+        let mock_code = mast_proto::env::var("MAST_MOCK_CODE")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         let code_event = mock_code.then(|| AgentEvent::TextDelta {
@@ -242,11 +242,11 @@ impl Harness for MockHarness {
                 | Sync | Session-room fan-out | 18ms |\n\n"
                 .into(),
         });
-        // Dev/testing knob: `ZERON_MOCK_MEND=1` appends a link/list-heavy
+        // Dev/testing knob: `MAST_MOCK_MEND=1` appends a link/list-heavy
         // passage — bold-led list items, inline links, emphasis, strikethrough
         // — the shapes whose half-streamed markers the display mend
         // (crates/ui markdown/mend.rs) must hold steady while streaming.
-        let mock_mend = std::env::var("ZERON_MOCK_MEND")
+        let mock_mend = mast_proto::env::var("MAST_MOCK_MEND")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         let mend_event = mock_mend.then(|| AgentEvent::TextDelta {
@@ -261,11 +261,11 @@ impl Harness for MockHarness {
             )
             .into(),
         });
-        // Dev/testing knob: `ZERON_MOCK_THINKING=1` appends a markdown-heavy
+        // Dev/testing knob: `MAST_MOCK_THINKING=1` appends a markdown-heavy
         // reasoning stream plus a command — the thought-process chip inside a
         // tool-group accordion, for checking that thinking renders styled
         // (bold/lists/inline code) instead of literal `**` markers.
-        let mock_thinking = std::env::var("ZERON_MOCK_THINKING")
+        let mock_thinking = mast_proto::env::var("MAST_MOCK_THINKING")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         let thinking_events = mock_thinking
@@ -304,14 +304,14 @@ impl Harness for MockHarness {
             })
             .into_iter()
             .flatten();
-        // Dev/testing knob: `ZERON_MOCK_SUBAGENT=1` appends two spawn chips
+        // Dev/testing knob: `MAST_MOCK_SUBAGENT=1` appends two spawn chips
         // whose nested traffic arrives as tagged `AgentEvent::Subagent`
         // events — the only data-side way to put spawn chips (running → done)
         // AND their openable subagent docs on screen with the mock harness.
         // The second subagent finishes after a beat of nested activity, so a
-        // paced run (`ZERON_MOCK_DELAY_MS`) holds a Running chip long enough
+        // paced run (`MAST_MOCK_DELAY_MS`) holds a Running chip long enough
         // to observe.
-        let mock_subagent = std::env::var("ZERON_MOCK_SUBAGENT")
+        let mock_subagent = mast_proto::env::var("MAST_MOCK_SUBAGENT")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
         let subagent_events = mock_subagent
@@ -522,12 +522,12 @@ impl Harness for MockHarness {
             .chain(tail.iter().cloned())
             .map(Ok)
             .collect();
-        // Dev/testing knob: `ZERON_MOCK_CHARS=N` re-chunks every TextDelta
-        // into N-char deltas, so `ZERON_MOCK_DELAY_MS` paces *characters*
+        // Dev/testing knob: `MAST_MOCK_CHARS=N` re-chunks every TextDelta
+        // into N-char deltas, so `MAST_MOCK_DELAY_MS` paces *characters*
         // instead of whole scripted blocks — delta boundaries then land inside
         // inline markers and links, which is the streaming shape real
         // harnesses produce and the display mend exists for.
-        let chunk_chars = std::env::var("ZERON_MOCK_CHARS")
+        let chunk_chars = mast_proto::env::var("MAST_MOCK_CHARS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&n| n > 0);
@@ -565,13 +565,13 @@ impl Harness for MockHarness {
                 })
                 .collect(),
         };
-        // Dev/testing knob: `ZERON_MOCK_SUBAGENT_DELAY_MS` paces TAGGED
+        // Dev/testing knob: `MAST_MOCK_SUBAGENT_DELAY_MS` paces TAGGED
         // (subagent) events on their own clock — the parent turn settles at
-        // `ZERON_MOCK_DELAY_MS` speed while the background subagents stream
+        // `MAST_MOCK_DELAY_MS` speed while the background subagents stream
         // on slowly, which is exactly the eager-done shape live tabs are
         // observed under (and the only way a rig click can reliably land
         // inside a subagent's streaming window).
-        let sub_delay_ms = std::env::var("ZERON_MOCK_SUBAGENT_DELAY_MS")
+        let sub_delay_ms = mast_proto::env::var("MAST_MOCK_SUBAGENT_DELAY_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok());
         if delay_ms == 0 && sub_delay_ms.is_none() {

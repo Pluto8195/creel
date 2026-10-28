@@ -186,10 +186,10 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
         };
     }
     match operation {
-        "ZeronLinearViewer" => Reply::ok(json!({ "viewer": {
+        "MastLinearViewer" => Reply::ok(json!({ "viewer": {
             "id": "u-1", "name": "Ada Lovelace", "displayName": "ada", "email": "ada@example.com"
         }})),
-        "ZeronLinearIssue" => {
+        "MastLinearIssue" => {
             let id = variables["id"].as_str().unwrap_or_default();
             match state.issues.get(id) {
                 Some(node) => Reply::ok(json!({ "issue": node })),
@@ -201,7 +201,7 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
                 },
             }
         }
-        "ZeronLinearMyIssues" => {
+        "MastLinearMyIssues" => {
             let index = match variables["after"].as_str() {
                 None => 0,
                 Some(cursor) => cursor.trim_start_matches('c').parse().unwrap_or(0),
@@ -210,7 +210,7 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
             let next = (index + 1 < state.my_issue_pages.len()).then(|| format!("c{}", index + 1));
             Reply::ok(json!({ "viewer": { "assignedIssues": page(nodes, next.as_deref()) } }))
         }
-        "ZeronLinearIssueAttachments" => {
+        "MastLinearIssueAttachments" => {
             if state.attachments_error {
                 return Reply {
                     status: 400,
@@ -223,10 +223,10 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
             let nodes = state.attachments.get(id).cloned().unwrap_or_default();
             Reply::ok(json!({ "issue": { "identifier": id, "attachments": { "nodes": nodes } } }))
         }
-        "ZeronLinearMyProjects" => {
+        "MastLinearMyProjects" => {
             Reply::ok(json!({ "projects": page(state.projects.clone(), None) }))
         }
-        "ZeronLinearProjectIssues" => {
+        "MastLinearProjectIssues" => {
             let id = variables["id"].as_str().unwrap_or_default();
             match state.project_issues.get(id) {
                 Some(nodes) => {
@@ -235,7 +235,7 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
                 None => Reply::ok(json!({ "project": null })),
             }
         }
-        "ZeronLinearProjectDetail" => {
+        "MastLinearProjectDetail" => {
             if variables["id"].as_str() != Some("p-1") {
                 return Reply::ok(json!({ "project": null }));
             }
@@ -500,7 +500,7 @@ async fn set_key_validates_with_viewer_and_sends_a_bare_authorization_header() {
 
     let recorded = rig.mock.recorded();
     let last = recorded.last().unwrap();
-    assert_eq!(last.operation, "ZeronLinearViewer");
+    assert_eq!(last.operation, "MastLinearViewer");
     assert_eq!(last.authorization.as_deref(), Some(KEY));
     assert!(recorded.iter().all(|r| {
         !r.authorization
@@ -570,7 +570,7 @@ async fn rate_limits_retry_with_a_capped_wait_then_give_up() {
             "extensions": { "code": "RATELIMITED" } }] }),
     });
     rig.mock.script(limited("1"));
-    let before = rig.mock.count("ZeronLinearIssue");
+    let before = rig.mock.count("MastLinearIssue");
     let err = rig
         .linear_err(
             methods::LINEAR_ISSUE,
@@ -579,7 +579,7 @@ async fn rate_limits_retry_with_a_capped_wait_then_give_up() {
         .await;
     assert_eq!(err.code, LinearErrorCode::RateLimited);
     assert_eq!(
-        rig.mock.count("ZeronLinearIssue") - before,
+        rig.mock.count("MastLinearIssue") - before,
         client::MAX_ATTEMPTS
     );
     let sleeps = rig.sleeps.lock().unwrap().clone();
@@ -625,7 +625,7 @@ async fn list_queries_paginate_and_parse() {
         .map(|i| i["identifier"].as_str().unwrap())
         .collect();
     assert_eq!(ids, ["ENG-1", "ENG-2", "ENG-3"]);
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 2, "two pages");
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 2, "two pages");
     let first = &issues[0];
     assert_eq!(first["state"]["type"], json!("started"));
     assert_eq!(first["assignee"]["displayName"], json!("ada"));
@@ -688,7 +688,7 @@ async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
             .await
             .unwrap();
     }
-    assert_eq!(rig.mock.count("ZeronLinearIssue"), 1);
+    assert_eq!(rig.mock.count("MastLinearIssue"), 1);
     rig.mock
         .set_issue(issue_node("ENG-1", "One v2", None, "started"));
     let cached = rig
@@ -704,7 +704,7 @@ async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
         .await
         .unwrap();
     assert_eq!(fresh["title"], json!("One v2"));
-    assert_eq!(rig.mock.count("ZeronLinearIssue"), 2);
+    assert_eq!(rig.mock.count("MastLinearIssue"), 2);
 
     // A zero TTL refetches every time.
     let short = rig_with(MemoryKeyStore::with_key(KEY), Duration::ZERO).await;
@@ -717,7 +717,7 @@ async fn issues_are_cached_until_the_ttl_or_a_forced_refresh() {
             .await
             .unwrap();
     }
-    assert_eq!(short.mock.count("ZeronLinearIssue"), 2);
+    assert_eq!(short.mock.count("MastLinearIssue"), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -728,14 +728,14 @@ async fn lists_are_cached_peekable_and_refreshed_on_force() {
         .linear_err(methods::LINEAR_MY_ISSUES, json!({ "cachedOnly": true }))
         .await;
     assert_eq!(miss.code, LinearErrorCode::NotFound);
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 0);
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 0);
 
     rig.mock.state.lock().unwrap().my_issue_pages =
         vec![vec![issue_node("ENG-1", "One", None, "started")]];
     for _ in 0..3 {
         rig.call(methods::LINEAR_MY_ISSUES, json!({})).await.unwrap();
     }
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 1, "window hit");
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 1, "window hit");
 
     rig.mock.state.lock().unwrap().my_issue_pages = vec![vec![
         issue_node("ENG-1", "One", None, "started"),
@@ -746,13 +746,13 @@ async fn lists_are_cached_peekable_and_refreshed_on_force() {
         .await
         .unwrap();
     assert_eq!(peeked.as_array().unwrap().len(), 1);
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 1, "peek never asks");
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 1, "peek never asks");
     let forced = rig
         .call(methods::LINEAR_MY_ISSUES, json!({ "force": true }))
         .await
         .unwrap();
     assert_eq!(forced.as_array().unwrap().len(), 2);
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 2);
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -764,7 +764,7 @@ async fn identical_in_flight_requests_are_coalesced() {
     let calls = (0..4).map(|_| rig.call(methods::LINEAR_MY_ISSUES, json!({})));
     let results = futures::future::join_all(calls).await;
     assert!(results.iter().all(Result::is_ok));
-    assert_eq!(rig.mock.count("ZeronLinearMyIssues"), 1);
+    assert_eq!(rig.mock.count("MastLinearMyIssues"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1222,7 +1222,7 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         "ENG-2690",
         vec![json!({ "url": "https://github.com/acme/ui/pull/11", "sourceType": "github" })],
     );
-    let asked = rig.mock.count("ZeronLinearIssueAttachments");
+    let asked = rig.mock.count("MastLinearIssueAttachments");
     let error = rig
         .linear_err(
             methods::LINEAR_REFRESH_LINKED_ITEMS,
@@ -1230,7 +1230,7 @@ async fn github_pr_attachments_become_references_on_the_linked_item() {
         )
         .await;
     assert_eq!(error.code, LinearErrorCode::DisabledForSpace);
-    assert_eq!(rig.mock.count("ZeronLinearIssueAttachments"), asked);
+    assert_eq!(rig.mock.count("MastLinearIssueAttachments"), asked);
     assert_eq!(item_prs(&rig, &item).len(), 1);
 }
 
@@ -1277,7 +1277,7 @@ async fn project_detail_is_read_only_cached_and_served_stored() {
         )
         .await;
     assert_eq!(stored.code, LinearErrorCode::NotFound);
-    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 0, "stored-only never asks Linear");
+    assert_eq!(rig.mock.count("MastLinearProjectDetail"), 0, "stored-only never asks Linear");
 
     let detail = rig
         .call(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "p-1" }))
@@ -1303,14 +1303,14 @@ async fn project_detail_is_read_only_cached_and_served_stored() {
         .await
         .unwrap();
     assert_eq!(again["name"], json!("Auth"));
-    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 1);
+    assert_eq!(rig.mock.count("MastLinearProjectDetail"), 1);
     rig.call(
         methods::LINEAR_PROJECT_DETAIL,
         json!({ "projectId": "p-1", "force": true }),
     )
     .await
     .unwrap();
-    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 2);
+    assert_eq!(rig.mock.count("MastLinearProjectDetail"), 2);
 
     let missing = rig
         .linear_err(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "nope" }))

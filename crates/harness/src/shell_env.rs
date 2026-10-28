@@ -20,7 +20,7 @@
 //!   printing (or grandchildren inheriting the pipe) can't wedge us.
 //! - A hard per-attempt timeout kills the shell.
 //!
-//! Set `ZERON_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
+//! Set `MAST_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
 
 use std::ffi::{OsStr, OsString};
 use std::sync::OnceLock;
@@ -73,7 +73,7 @@ mod unix {
     const EXIT_FLUSH_GRACE: Duration = Duration::from_millis(250);
 
     pub(super) fn capture() -> Option<OsString> {
-        if std::env::var_os("ZERON_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
+        if mast_proto::env::var_os("MAST_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
             return None;
         }
         let shell = user_shell()?;
@@ -162,7 +162,7 @@ mod unix {
             .stderr(Stdio::null())
             // Let rc files detect (and skip work for) this probe, mirroring
             // VSCODE_RESOLVING_ENVIRONMENT; TERM=dumb quiets fancy prompts.
-            .env("ZERON_RESOLVING_ENVIRONMENT", "1")
+            .env("MAST_RESOLVING_ENVIRONMENT", "1")
             .env("TERM", "dumb");
         let Ok(mut child) = cmd.spawn() else {
             return Vec::new();

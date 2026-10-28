@@ -341,7 +341,7 @@ pub fn remote_host_preflight(
         .unwrap_or_default();
     if !device.supports(mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
         return Err(reject(
-            Reason::ZeronUpgradeRequired,
+            Reason::MastUpgradeRequired,
             format!(
                 "Update Mast on {}{running} to send Work Outline instructions to it. Nothing \
                  was sent",
@@ -623,7 +623,7 @@ mod tests {
                 host_device_id: "d2".into(),
                 harness: HarnessId::Codex,
                 required_capability: "work-outline-instruction-envelope-v1/codex".into(),
-                reason: mast_proto::InstructionHostUnsupportedReason::ZeronUpgradeRequired,
+                reason: mast_proto::InstructionHostUnsupportedReason::MastUpgradeRequired,
                 device_name: Some("Studio".into()),
                 device_version: Some("0.2.81".into()),
             }

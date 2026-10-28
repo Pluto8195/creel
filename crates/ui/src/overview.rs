@@ -9000,7 +9000,7 @@ mod logic_tests {
         let (actions, calls) = scripted(std::sync::Arc::new(|method, _| {
             Ok(match method {
                 mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
-                    "artifactId": id(4), "revision": 1, "url": "zeron-artifact:x",
+                    "artifactId": id(4), "revision": 1, "url": "mast-artifact:x",
                     "storedPath": "/work/alpha/.zeron/artifacts/api/plan.md", "changed": true
                 }),
                 _ => serde_json::json!({ "artifactId": id(1), "pinned": true, "unpinned": [] }),

@@ -1080,7 +1080,7 @@ impl RequiredActionsList {
             .into_any_element()
     }
 
-    /// `zeron-artifact:` links in a request's text or detail, as chips that
+    /// `mast-artifact:` links in a request's text or detail, as chips that
     /// open the Artifact tab.
     fn render_artifact_links(
         &self,

@@ -916,7 +916,10 @@ fn normalize_watch_path_including_temp(root: &Path, path: &Path) -> Option<Strin
 fn is_internal_temp_wire_path(path: &str) -> bool {
     path.rsplit('/')
         .next()
-        .is_some_and(|name| name.starts_with(".zeron-save-") && name.ends_with(".tmp"))
+        .is_some_and(|name| {
+            (name.starts_with(".mast-save-") || name.starts_with(".zeron-save-"))
+                && name.ends_with(".tmp")
+        })
 }
 
 fn exceeds_watch_budget(root: &Path) -> bool {
@@ -1662,7 +1665,7 @@ fn write_file_blocking(
     let parent = target
         .parent()
         .ok_or_else(|| WorkspaceFilesError::Io("file has no parent directory".into()))?;
-    let temp_path = parent.join(format!(".zeron-save-{}.tmp", uuid::Uuid::new_v4()));
+    let temp_path = parent.join(format!(".mast-save-{}.tmp", uuid::Uuid::new_v4()));
     let mut temp = TempFileGuard::new(temp_path.clone());
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -2423,8 +2426,16 @@ mod tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".zeron-save-")
+                .starts_with(".mast-save-")
         }));
+    }
+
+    #[test]
+    fn both_save_temp_prefixes_are_internal() {
+        assert!(is_internal_temp_wire_path("src/.mast-save-1.tmp"));
+        assert!(is_internal_temp_wire_path("src/.zeron-save-1.tmp"));
+        assert!(!is_internal_temp_wire_path("src/.mast-save-1.rs"));
+        assert!(!is_internal_temp_wire_path("src/other.tmp"));
     }
 
     #[test]

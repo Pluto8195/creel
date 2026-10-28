@@ -373,7 +373,7 @@ const RUNTIME_SCRIPT: &str = r#"(() => {
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
   const icons = () => globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
   if (globalThis.lucide) icons();
-  else document.getElementById("zeron-visualization-lucide")?.addEventListener("load", icons, { once: true });
+  else document.getElementById("mast-visualization-lucide")?.addEventListener("load", icons, { once: true });
 })();"#;
 
 /// The sandboxed frame's document: policy, base styles, bridge, fragment,
@@ -391,7 +391,7 @@ pub fn frame_document(
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n\
 <title>{title}</title>\n<style>\n{style}</style>\n</head>\n<body>\n\
 <script>{bridge}</script>\n{fragment}\n\
-<script id=\"zeron-visualization-lucide\" async src=\"{LUCIDE_SRC}\"></script>\n\
+<script id=\"mast-visualization-lucide\" async src=\"{LUCIDE_SRC}\"></script>\n\
 <script>{RUNTIME_SCRIPT}</script>\n</body>\n</html>\n",
         scheme = if theme.dark { "dark" } else { "light" },
         csp = escape_attr(&frame_csp()),

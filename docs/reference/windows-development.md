@@ -21,8 +21,8 @@ set `GPUI_FXC_PATH` to the Windows SDK's `fxc.exe`.
 
 | Setting | Behavior |
 | --- | --- |
-| Application data | `%LOCALAPPDATA%\Zeron`, falling back to `%USERPROFILE%\AppData\Local\Zeron`. Override with `ZERON_DATA_DIR`. |
-| Managed adapters | `ZERON_ADAPTERS_DIR`, then `ZERON_DATA_DIR/adapters`, then the default application's `adapters` directory. |
+| Application data | `%LOCALAPPDATA%\Zeron`, falling back to `%USERPROFILE%\AppData\Local\Zeron`. Override with `MAST_DATA_DIR`. |
+| Managed adapters | `MAST_ADAPTERS_DIR`, then `MAST_DATA_DIR/adapters`, then the default application's `adapters` directory. |
 | Provider credentials | Keep their provider-owned locations; changing Mast's data root does not migrate them. |
 | `CODEX_EXECUTABLE` | Executable override. `.exe` (and `.com`) launch directly; `.cmd`/`.bat` shims launch through a wrapped `cmd.exe` with literal, individually escaped arguments. The override must exist on disk. |
 

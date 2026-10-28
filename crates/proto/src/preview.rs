@@ -20,7 +20,10 @@ pub struct PreviewService {
     pub cwd: String,
     /// Process creation time, milliseconds since the Unix epoch.
     pub started_at: u64,
-    pub zeron_owned: bool,
+    /// Wire name stays `zeronOwned`: the edge worker validates it and older
+    /// devices read it. `mastOwned` is also accepted on read.
+    #[serde(rename = "zeronOwned", alias = "mastOwned")]
+    pub mast_owned: bool,
 }
 
 impl PreviewService {
@@ -57,4 +60,29 @@ impl Default for PreviewSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct WatchPreviewsParams {
     pub chat_id: String,
+}
+
+#[cfg(test)]
+mod wire_name_tests {
+    use super::*;
+
+    /// `zeronOwned` is validated by the deployed edge worker and read by older
+    /// devices, so it stays the written name; `mastOwned` is also accepted.
+    #[test]
+    fn mast_owned_is_written_as_zeron_owned_and_reads_both() {
+        let base = serde_json::json!({
+            "id": "s", "projectId": "p", "projectName": "n", "projectCwd": "/c",
+            "deviceId": "d", "deviceName": "D", "hostname": "h", "name": "Vite",
+            "cwd": "/c", "port": 1, "pid": 2, "startedAt": 3,
+        });
+        for key in ["zeronOwned", "mastOwned"] {
+            let mut value = base.clone();
+            value[key] = true.into();
+            let service: PreviewService = serde_json::from_value(value).unwrap();
+            assert!(service.mast_owned);
+            let written = serde_json::to_value(&service).unwrap();
+            assert_eq!(written["zeronOwned"], true);
+            assert!(written.get("mastOwned").is_none());
+        }
+    }
 }

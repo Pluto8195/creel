@@ -43,7 +43,7 @@ fn init_quiesce_env() {
     ONCE.call_once(|| {
         // SAFETY: called before any engine (and thus any reader of the var)
         // exists in this test process; all tests share the one value.
-        unsafe { std::env::set_var("ZERON_TURN_QUIESCE_MS", QUIESCE_MS.to_string()) };
+        unsafe { std::env::set_var("MAST_TURN_QUIESCE_MS", QUIESCE_MS.to_string()) };
     });
 }
 

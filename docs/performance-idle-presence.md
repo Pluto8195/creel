@@ -173,9 +173,9 @@ Separate process memory peaks need not occur at the same instant.
 
 ```sh
 CLAUDE_CODE_EXECUTABLE="$PWD/scripts/replay-claude.py" \
-ZERON_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
-ZERON_PROFILE_BACKGROUND_CHATS=50 ZERON_PROFILE_SUBMIT_UI=1 \
-ZERON_PROFILE_PROMPT='Replay fixture.' ZERON_PROFILE_IDLE_MS=10000 \
-ZERON_FRAME_STATS=0 node scripts/resource-profile.mjs \
+MAST_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
+MAST_PROFILE_BACKGROUND_CHATS=50 MAST_PROFILE_SUBMIT_UI=1 \
+MAST_PROFILE_PROMPT='Replay fixture.' MAST_PROFILE_IDLE_MS=10000 \
+MAST_FRAME_STATS=0 node scripts/resource-profile.mjs \
   /path/to/immutable/zeron /tmp/fresh-replay-profile claude-code
 ```

@@ -1017,7 +1017,7 @@ fn thread_start_params(request: &RunRequest, title_only: bool) -> serde_json::Ma
 }
 
 /// Add the Mast MCP server to one thread through the `config` override
-/// layer (dotted `mcp_servers.zeron-agent.*` keys), leaving the user's
+/// layer (dotted `mcp_servers.mast-agent.*` keys), leaving the user's
 /// `~/.codex/config.toml` servers untouched. A no-op without an injection.
 fn with_agent_tools(
     params: &mut serde_json::Map<String, Value>,
@@ -2121,10 +2121,10 @@ mod tests {
     #[test]
     fn agent_tools_ride_thread_start_and_resume_config() {
         let tools = crate::AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: std::path::PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
-            env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok".into())]),
+            env: std::collections::BTreeMap::from([("MAST_AGENT_TOKEN".into(), "tok".into())]),
         };
         let mut request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         request.instructions = None;
@@ -2133,12 +2133,12 @@ mod tests {
         assert!(start.get("config").is_none());
         with_agent_tools(&mut start, Some(&tools));
         assert_eq!(
-            start["config"]["mcp_servers.zeron-agent.command"],
+            start["config"]["mcp_servers.mast-agent.command"],
             json!("/opt/zeron/bin/zeron")
         );
         let resumed = thread_resume_params(&start, "th-1");
         assert_eq!(
-            resumed["config"]["mcp_servers.zeron-agent.env"]["ZERON_AGENT_TOKEN"],
+            resumed["config"]["mcp_servers.mast-agent.env"]["MAST_AGENT_TOKEN"],
             json!("tok")
         );
     }

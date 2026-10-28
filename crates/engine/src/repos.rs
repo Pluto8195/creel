@@ -6,7 +6,7 @@
 //! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
 //! created under `~/.zeron/worktrees/<repoName>/<worktreeName>` (NOT the data
 //! dir — worktrees are user-facing working checkouts), with an auto-generated name +
-//! matching `zeron/<name>` branch. `ZERON_WORKTREES_DIR` overrides the root.
+//! matching `zeron/<name>` branch. `MAST_WORKTREES_DIR` overrides the root.
 //!
 //! All git access is via subprocess (`tokio::process`) — never libgit2.
 
@@ -47,6 +47,24 @@ const FILE_INDEX_MAX_ENTRIES: usize = 250_000;
 const RANK_BUFFER: usize = 1_024;
 pub const GIT_HISTORY_DEFAULT_LIMIT: usize = 100;
 pub const GIT_HISTORY_MAX_LIMIT: usize = 200;
+
+/// Branch prefix of worktrees Mast creates (`mast/<name>`). Worktrees made
+/// before the rename carry `zeron/<name>` and are still recognised as ours:
+/// they are renamed from the chat title and deleted with their worktree.
+pub(crate) const BRANCH_PREFIX: &str = "mast/";
+pub(crate) const LEGACY_BRANCH_PREFIX: &str = "zeron/";
+
+/// A branch this app created for a worktree, under either spelling.
+pub(crate) fn is_owned_branch(branch: &str) -> bool {
+    branch.starts_with(BRANCH_PREFIX) || branch.starts_with(LEGACY_BRANCH_PREFIX)
+}
+
+/// Whether `branch` is the original auto-created branch of the worktree
+/// folder `folder` (either prefix).
+pub(crate) fn is_owned_branch_of(branch: &str, folder: &str) -> bool {
+    branch.strip_prefix(BRANCH_PREFIX) == Some(folder)
+        || branch.strip_prefix(LEGACY_BRANCH_PREFIX) == Some(folder)
+}
 
 const ADJECTIVES: &[&str] = &[
     "swift", "calm", "bright", "bold", "keen", "brave", "clever", "lucky", "quiet", "warm", "cool",
@@ -148,10 +166,10 @@ fn is_protected_home_child_with_home(target: &Path, name: &str, home: &Path) -> 
 }
 
 /// Where new worktrees live. Deliberately NOT under the backend data dir —
-/// worktrees are user-facing working checkouts. `ZERON_WORKTREES_DIR` overrides
+/// worktrees are user-facing working checkouts. `MAST_WORKTREES_DIR` overrides
 /// (test isolation); empty reads as unset.
 fn default_worktrees_root() -> PathBuf {
-    std::env::var_os("ZERON_WORKTREES_DIR")
+    mast_proto::env::var_os("MAST_WORKTREES_DIR")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir().join(".zeron").join("worktrees"))
@@ -192,7 +210,7 @@ impl Repos {
     }
 
     /// `data_dir` holds `repos.json` + cloned/created repos; the worktree root
-    /// comes from `$ZERON_WORKTREES_DIR` or `~/.zeron/worktrees`.
+    /// comes from `$MAST_WORKTREES_DIR` or `~/.zeron/worktrees`.
     pub fn new(data_dir: &Path, device_id: &str) -> Self {
         Self::with_worktrees_root(data_dir, device_id, default_worktrees_root())
     }
@@ -1154,7 +1172,9 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&format!("zeron/{candidate}"))
+            if !base.join(&candidate).exists()
+                && !existing.contains(&format!("{BRANCH_PREFIX}{candidate}"))
+                && !existing.contains(&format!("{LEGACY_BRANCH_PREFIX}{candidate}"))
             {
                 name = Some(candidate);
                 break;
@@ -1163,7 +1183,7 @@ impl Repos {
         let name =
             name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
         let path = base.join(&name);
-        let branch_name = format!("zeron/{name}");
+        let branch_name = format!("{BRANCH_PREFIX}{name}");
         self.git(
             &[
                 "worktree",
@@ -1220,7 +1240,7 @@ impl Repos {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        if current != expected_branch || expected_branch != format!("zeron/{folder}") {
+        if current != expected_branch || !is_owned_branch_of(expected_branch, &folder) {
             return Ok(current);
         }
         let preferred = worktree_branch_from_title(title);
@@ -1279,7 +1299,7 @@ impl Repos {
             }
         }
         let _ = self.git(&["worktree", "prune"], Some(repo_path)).await;
-        if branch.starts_with("zeron/") {
+        if is_owned_branch(&branch) {
             let _ = self.git(&["branch", "-D", &branch], Some(repo_path)).await;
         }
         Ok(())
@@ -2072,7 +2092,10 @@ pub fn worktree_branch_from_title(title: &str) -> String {
     }
     slug.truncate(48);
     let slug = slug.trim_matches('-');
-    format!("zeron/{}", if slug.is_empty() { "update" } else { slug })
+    format!(
+        "{BRANCH_PREFIX}{}",
+        if slug.is_empty() { "update" } else { slug }
+    )
 }
 
 fn bounded_field(value: &str, max_chars: usize) -> String {
@@ -2238,6 +2261,17 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_branches_are_created_as_mast_and_both_prefixes_are_ours() {
+        assert_eq!(worktree_branch_from_title("Fix login flow"), "mast/fix-login-flow");
+        assert!(is_owned_branch("mast/swift-otter"));
+        assert!(is_owned_branch("zeron/swift-otter"));
+        assert!(!is_owned_branch("feature/zeron/x"));
+        assert!(is_owned_branch_of("zeron/swift-otter", "swift-otter"));
+        assert!(is_owned_branch_of("mast/swift-otter", "swift-otter"));
+        assert!(!is_owned_branch_of("mast/other", "swift-otter"));
+    }
 
     #[test]
     fn broad_workspace_roots_stop_at_home_but_keep_projects_and_volumes() {

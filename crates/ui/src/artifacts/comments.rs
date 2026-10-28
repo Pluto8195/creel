@@ -12,8 +12,8 @@
 //! `mast_proto::artifacts::visible_text` / `find_quote`; where they differ the marker is
 //! simply missing, never wrong.
 //!
-//! Messages in: `zeronComments {items: [{id, anchor}]}`, `zeronCommentMode`,
-//! `zeronCommentFocus`. Messages out (see `bridge::FrameMessage`): `ready`,
+//! Messages in: `mastComments {items: [{id, anchor}]}`, `mastCommentMode`,
+//! `mastCommentFocus`. Messages out (see `bridge::FrameMessage`): `ready`,
 //! `selection`, `selection-clear`, `draft`, `focus`.
 
 use serde_json::json;
@@ -99,15 +99,15 @@ pub(crate) fn markers_script(rows: &[CommentRow]) -> String {
         .filter(|row| row.state == CommentState::Open)
         .map(|row| json!({ "id": row.comment.id, "anchor": row.comment.anchor }))
         .collect();
-    frame_command_script(&json!({ "zeronComments": { "items": items } }))
+    frame_command_script(&json!({ "mastComments": { "items": items } }))
 }
 
 pub(crate) fn mode_script(on: bool) -> String {
-    frame_command_script(&json!({ "zeronCommentMode": on }))
+    frame_command_script(&json!({ "mastCommentMode": on }))
 }
 
 pub(crate) fn focus_script(id: &str) -> String {
-    frame_command_script(&json!({ "zeronCommentFocus": id }))
+    frame_command_script(&json!({ "mastCommentFocus": id }))
 }
 
 /// Whether the tab can show the comments affordances for this artifact.
@@ -117,18 +117,18 @@ pub(crate) fn applies(artifact: &ArtifactView) -> bool {
 
 /// In the frame. Installs once.
 pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
-  if (window.__zeronCommentsInstalled) return;
-  window.__zeronCommentsInstalled = true;
-  window.__zeronAnswerable = true;
+  if (window.__mastCommentsInstalled) return;
+  window.__mastCommentsInstalled = true;
+  window.__mastAnswerable = true;
   const H = window.CSS && CSS.highlights;
-  const post = (o) => { try { parent.postMessage({ zeronMsg: o }, "*"); } catch (_) {} };
+  const post = (o) => { try { parent.postMessage({ mastMsg: o }, "*"); } catch (_) {} };
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    "::highlight(zeron-comment){background:rgba(79,70,229,.22);background:color-mix(in srgb,var(--primary,#4f46e5) 26%,transparent);text-decoration:underline dotted}" +
-    "::highlight(zeron-comment-cur){background:rgba(217,119,6,.35);background:color-mix(in srgb,var(--orange,#d97706) 38%,transparent)}" +
-    "[data-zeron-commented]{outline:2px dotted var(--primary,#4f46e5)!important;outline-offset:2px}" +
-    "[data-zeron-commented-cur]{outline:2px solid var(--orange,#d97706)!important}" +
-    "[data-zeron-pick]{outline:2px solid var(--primary,#4f46e5)!important;outline-offset:2px;cursor:crosshair!important}"
+    "::highlight(mast-comment){background:rgba(79,70,229,.22);background:color-mix(in srgb,var(--primary,#4f46e5) 26%,transparent);text-decoration:underline dotted}" +
+    "::highlight(mast-comment-cur){background:rgba(217,119,6,.35);background:color-mix(in srgb,var(--orange,#d97706) 38%,transparent)}" +
+    "[data-mast-commented]{outline:2px dotted var(--primary,#4f46e5)!important;outline-offset:2px}" +
+    "[data-mast-commented-cur]{outline:2px solid var(--orange,#d97706)!important}" +
+    "[data-mast-pick]{outline:2px solid var(--primary,#4f46e5)!important;outline-offset:2px;cursor:crosshair!important}"
   );
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
@@ -199,17 +199,20 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
       suffix: x.text.slice(a + exact.length, a + exact.length + 40),
     };
   };
+  // `data-zeron-anchor` / `data-zeron-question` are the pre-rename spellings;
+  // artifacts agents wrote earlier still carry them.
+  const anchorAttr = (n) => (n.getAttribute && (n.getAttribute("data-mast-anchor") || n.getAttribute("data-zeron-anchor"))) || null;
   const nodeId = (el) => {
     const m = /^(?:flowchart|state|class|er|requirement)-(.+)-\d+$/.exec(el.id || "");
     return m ? "mermaid:" + m[1] : null;
   };
   const idOf = (el) => {
     for (let n = el && el.nodeType === 1 ? el : el && el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
-      const d = n.getAttribute && n.getAttribute("data-zeron-anchor");
+      const d = anchorAttr(n);
       if (d) return d;
       const m = nodeId(n);
       if (m) return m;
-      if (n.id && !/^mermaid-|^zeron-|^zq-/.test(n.id)) return n.id;
+      if (n.id && !/^mermaid-|^mast-|^zeron-|^zq-/.test(n.id)) return n.id;
     }
     return null;
   };
@@ -227,7 +230,7 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
       const n = id.slice(8), e = CSS.escape(n);
       return document.querySelector('[id^="flowchart-' + e + '-"],[id^="state-' + e + '-"],[id^="class-' + e + '-"],[id="' + e + '"]');
     }
-    return document.getElementById(id) || document.querySelector('[data-zeron-anchor="' + CSS.escape(id) + '"]');
+    return document.getElementById(id) || document.querySelector('[data-mast-anchor="' + CSS.escape(id) + '"],[data-zeron-anchor="' + CSS.escape(id) + '"]');
   };
   const rangeForQuote = (a) => {
     if (!a || !a.exact) return null;
@@ -248,8 +251,8 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
   // ---- markers --------------------------------------------------------
   let items = [], marked = [], hits = [];
   const clearMarks = () => {
-    if (H) { H.delete("zeron-comment"); H.delete("zeron-comment-cur"); }
-    marked.forEach((e) => { e.removeAttribute("data-zeron-commented"); e.removeAttribute("data-zeron-commented-cur"); e.removeAttribute("data-zeron-comment-ids"); });
+    if (H) { H.delete("mast-comment"); H.delete("mast-comment-cur"); }
+    marked.forEach((e) => { e.removeAttribute("data-mast-commented"); e.removeAttribute("data-mast-commented-cur"); e.removeAttribute("data-mast-comment-ids"); });
     marked = []; hits = [];
   };
   const draw = () => {
@@ -260,20 +263,20 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
       if (r) { ranges.push(r); hits.push({ id: it.id, range: r }); continue; }
       const el = byId(it.anchor && it.anchor.id);
       if (el) {
-        el.setAttribute("data-zeron-commented", "");
-        el.setAttribute("data-zeron-comment-ids", ((el.getAttribute("data-zeron-comment-ids") || "") + " " + it.id).trim());
+        el.setAttribute("data-mast-commented", "");
+        el.setAttribute("data-mast-comment-ids", ((el.getAttribute("data-mast-comment-ids") || "") + " " + it.id).trim());
         marked.push(el); hits.push({ id: it.id, el });
       }
     }
-    if (H && ranges.length) H.set("zeron-comment", new Highlight(...ranges));
+    if (H && ranges.length) H.set("mast-comment", new Highlight(...ranges));
   };
   const focus = (id) => {
     const h = hits.find((x) => x.id === id);
     if (!h) return;
-    marked.forEach((e) => e.removeAttribute("data-zeron-commented-cur"));
-    if (H) H.delete("zeron-comment-cur");
-    if (h.range) { if (H) H.set("zeron-comment-cur", new Highlight(h.range)); const e = h.range.startContainer.parentElement; if (e) e.scrollIntoView({ block: "center" }); }
-    else if (h.el) { h.el.setAttribute("data-zeron-commented-cur", ""); h.el.scrollIntoView({ block: "center" }); }
+    marked.forEach((e) => e.removeAttribute("data-mast-commented-cur"));
+    if (H) H.delete("mast-comment-cur");
+    if (h.range) { if (H) H.set("mast-comment-cur", new Highlight(h.range)); const e = h.range.startContainer.parentElement; if (e) e.scrollIntoView({ block: "center" }); }
+    else if (h.el) { h.el.setAttribute("data-mast-commented-cur", ""); h.el.scrollIntoView({ block: "center" }); }
   };
 
   // ---- reporting the selection ---------------------------------------
@@ -283,7 +286,7 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
     if (!s || s.isCollapsed || !s.rangeCount) { if (sent) { sent = ""; post({ t: "selection-clear" }); } return; }
     const r = s.getRangeAt(0);
     const host = r.commonAncestorContainer.nodeType === 1 ? r.commonAncestorContainer : r.commonAncestorContainer.parentElement;
-    if (!host || host.closest(SKIP + ",textarea,input,[data-zeron-question] .zq-answer")) return;
+    if (!host || host.closest(SKIP + ",textarea,input,[data-mast-question] .zq-answer,[data-zeron-question] .zq-answer")) return;
     invalidate();
     const i0 = posOf(r.startContainer, r.startOffset, false), i1 = posOf(r.endContainer, r.endOffset, true);
     if (i0 == null || i1 == null || i1 - i0 < 2) { if (sent) { sent = ""; post({ t: "selection-clear" }); } return; }
@@ -301,19 +304,19 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
   const COMMENTABLE = /^(h[1-6]|p|li|tr|td|th|pre|blockquote|figure|figcaption|section|article|dt|dd|summary|button|img|svg|table)$/;
   const target = (e) => {
     for (let n = e; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
-      if (n.closest && n.closest("[data-zeron-question]") && n.matches && !n.hasAttribute("data-zeron-question")) continue;
+      if (n.closest && n.closest("[data-mast-question],[data-zeron-question]") && n.matches && !n.hasAttribute("data-mast-question") && !n.hasAttribute("data-zeron-question")) continue;
       const cls = n.classList;
-      if (n.id || (n.hasAttribute && n.hasAttribute("data-zeron-anchor")) || COMMENTABLE.test(n.localName) || (cls && (cls.contains("node") || cls.contains("cluster") || cls.contains("actor") || cls.contains("note")))) return n;
+      if (n.id || (n.hasAttribute && (n.hasAttribute("data-mast-anchor") || n.hasAttribute("data-zeron-anchor"))) || COMMENTABLE.test(n.localName) || (cls && (cls.contains("node") || cls.contains("cluster") || cls.contains("actor") || cls.contains("note")))) return n;
     }
     return null;
   };
-  const unhot = () => { if (hot) { hot.removeAttribute("data-zeron-pick"); hot = null; } };
+  const unhot = () => { if (hot) { hot.removeAttribute("data-mast-pick"); hot = null; } };
   window.addEventListener("mouseover", (e) => {
     if (!mode) return;
     const t = target(e.target);
     if (t === hot) return;
     unhot();
-    if (t) { hot = t; t.setAttribute("data-zeron-pick", ""); }
+    if (t) { hot = t; t.setAttribute("data-mast-pick", ""); }
   }, true);
   window.addEventListener("mouseleave", unhot);
   window.addEventListener("click", (e) => {
@@ -330,7 +333,7 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
       let anchor;
       if (a) anchor = anchorFor(x.first.get(a), x.first.get(z) + countChars(z, z.data.length), t);
       else anchor = { id: idOf(t) || undefined, selector: pathOf(t) || undefined, exact: norm(t.textContent).slice(0, 240), prefix: "", suffix: "" };
-      anchor.id = (t.getAttribute("data-zeron-anchor") || nodeId(t) || (t.id && !/^mermaid-/.test(t.id) ? t.id : "")) || idOf(t) || undefined;
+      anchor.id = (anchorAttr(t) || nodeId(t) || (t.id && !/^mermaid-/.test(t.id) ? t.id : "")) || idOf(t) || undefined;
       if (!anchor.exact && !anchor.id) return;
       post({ t: "draft", anchor, quote: anchor.exact });
       return;
@@ -343,14 +346,14 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
 
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if ("zeronComments" in d) {
-      items = (d.zeronComments && d.zeronComments.items) || [];
+    if ("mastComments" in d) {
+      items = (d.mastComments && d.mastComments.items) || [];
       draw();
       // Diagrams render after load: try again for anchors not found yet.
       if (hits.length < items.length) { setTimeout(draw, 800); setTimeout(draw, 2500); }
     }
-    else if ("zeronCommentMode" in d) { mode = !!d.zeronCommentMode; if (!mode) unhot(); document.documentElement.style.cursor = mode ? "crosshair" : ""; }
-    else if ("zeronCommentFocus" in d) focus(String(d.zeronCommentFocus));
+    else if ("mastCommentMode" in d) { mode = !!d.mastCommentMode; if (!mode) unhot(); document.documentElement.style.cursor = mode ? "crosshair" : ""; }
+    else if ("mastCommentFocus" in d) focus(String(d.mastCommentFocus));
   });
   window.addEventListener("load", () => setTimeout(() => post({ t: "ready" }), 60));
   if (document.readyState === "complete") setTimeout(() => post({ t: "ready" }), 60);
@@ -418,20 +421,25 @@ mod tests {
         assert!(script.contains("\"C-1\""));
         assert!(!script.contains("\"C-2\""));
         assert!(!script.contains("\"C-3\""));
-        assert!(
-            script.starts_with("window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronComments\"")
-        );
-        assert!(mode_script(true).contains("\"zeronCommentMode\":true"));
-        assert!(focus_script("C-1").contains("\"zeronCommentFocus\":\"C-1\""));
+        assert!(script.starts_with("window.__mastFrameCmd&&window.__mastFrameCmd({\"mastComments\""));
+        assert!(mode_script(true).contains("\"mastCommentMode\":true"));
+        assert!(focus_script("C-1").contains("\"mastCommentFocus\":\"C-1\""));
+    }
+
+    #[test]
+    fn frame_script_reads_both_anchor_and_question_spellings() {
+        for name in ["data-mast-anchor", "data-zeron-anchor", "data-mast-question", "data-zeron-question"] {
+            assert!(FRAME_SCRIPT.contains(name), "{name}");
+        }
+        // Everything the script writes uses the new names only.
+        assert!(!FRAME_SCRIPT.contains("setAttribute(\"data-zeron"));
+        assert!(!FRAME_SCRIPT.contains("__zeron"));
     }
 
     #[test]
     fn frame_script_is_self_contained_and_guarded() {
-        assert!(FRAME_SCRIPT.contains("__zeronCommentsInstalled"));
-        assert!(
-            !FRAME_SCRIPT.contains("</script"),
-            "would end the inline script"
-        );
+        assert!(FRAME_SCRIPT.contains("__mastCommentsInstalled"));
+        assert!(!FRAME_SCRIPT.contains("</script"), "would end the inline script");
         // Messages out match `bridge::FrameMessage`.
         for kind in ["ready", "selection", "selection-clear", "draft", "focus"] {
             assert!(FRAME_SCRIPT.contains(&format!("t: \"{kind}\"")), "{kind}");

@@ -12,7 +12,7 @@ pub fn builtin_registry() -> &'static ThemeRegistry {
     static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| ThemeRegistry {
         families: vec![
-            family("zeron", "Mast", vec![zeron_light(), zeron_dark()]),
+            family("mast", "Mast", vec![zeron_light(), zeron_dark()]),
             family(
                 "vscode-default",
                 "VS Code Default",
@@ -238,8 +238,8 @@ const ANSI_LIGHT: [&str; 16] = [
 
 fn zeron_dark() -> ThemeVariant {
     variant(Seeds {
-        id: "zeron-dark",
-        family_id: "zeron",
+        id: "mast-dark",
+        family_id: "mast",
         name: "Mast Dark",
         appearance: Appearance::Dark,
         treatment: SurfaceTreatment::Frosted,
@@ -261,7 +261,7 @@ fn zeron_dark() -> ThemeVariant {
             "#a1a1aa", "#f472b6", "#22d3ee", "#f87171",
         ],
         source: source(
-            "zeron-dark",
+            "mast-dark",
             "native",
             "https://github.com/zeronsh/comet",
             "d138049",
@@ -272,8 +272,8 @@ fn zeron_dark() -> ThemeVariant {
 
 fn zeron_light() -> ThemeVariant {
     variant(Seeds {
-        id: "zeron-light",
-        family_id: "zeron",
+        id: "mast-light",
+        family_id: "mast",
         name: "Mast Light",
         appearance: Appearance::Light,
         treatment: SurfaceTreatment::Frosted,
@@ -295,7 +295,7 @@ fn zeron_light() -> ThemeVariant {
             "#52525b", "#be185d", "#0e7490", "#b91c1c",
         ],
         source: source(
-            "zeron-light",
+            "mast-light",
             "native",
             "https://github.com/zeronsh/comet",
             "d138049",

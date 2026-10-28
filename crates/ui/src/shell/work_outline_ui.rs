@@ -140,14 +140,14 @@ pub(super) enum SurfaceHost {
 pub(super) fn reference_open(
     url: &str,
     host: &SurfaceHost,
-    open_web_links_in_zeron: bool,
+    open_web_links_in_mast: bool,
     embedded_platform: bool,
     force_external: bool,
 ) -> ReferenceOpen {
     match LinkTarget::new(url, url).navigation {
         Err(_) => ReferenceOpen::Rejected,
         Ok(navigation) => {
-            if force_external || !open_web_links_in_zeron || !embedded_platform {
+            if force_external || !open_web_links_in_mast || !embedded_platform {
                 return ReferenceOpen::External(navigation);
             }
             match host {
@@ -700,7 +700,7 @@ impl Shell {
             return;
         }
         let host = self.reference_host(url, cx);
-        let in_app = crate::settings::current(cx).open_web_links_in_zeron;
+        let in_app = crate::settings::current(cx).open_web_links_in_mast;
         match reference_open(
             url,
             &host,

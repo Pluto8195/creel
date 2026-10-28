@@ -604,7 +604,7 @@ that owns the project, through that device's `gh` login.
 
 ## Agent tools
 
-Claude Code and Codex Chats that belong to a project get a `zeron-agent` MCP
+Claude Code and Codex Chats that belong to a project get a `mast-agent` MCP
 server for the duration of each run. These are the Work Outline tools:
 
 | Tool | Does |

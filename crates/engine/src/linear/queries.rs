@@ -33,16 +33,16 @@ team { id key name } project { id name url } labels(first: 20) { nodes { name co
 const USER_FIELDS: &str = "id name displayName email";
 
 pub fn viewer() -> String {
-    format!("query ZeronLinearViewer {{ viewer {{ {USER_FIELDS} }} }}")
+    format!("query MastLinearViewer {{ viewer {{ {USER_FIELDS} }} }}")
 }
 
 pub fn issue() -> String {
-    format!("query ZeronLinearIssue($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} }} }}")
+    format!("query MastLinearIssue($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} }} }}")
 }
 
 pub fn my_issues() -> String {
     format!(
-        "query ZeronLinearMyIssues($first: Int!, $after: String) {{ viewer {{ \
+        "query MastLinearMyIssues($first: Int!, $after: String) {{ viewer {{ \
          assignedIssues(first: $first, after: $after, orderBy: updatedAt, \
          filter: {{ state: {{ type: {{ nin: [\"completed\", \"canceled\"] }} }} }}) {{ \
          nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
@@ -53,7 +53,7 @@ pub fn my_issues() -> String {
 /// and in no project (the linked Linear item). Read-only.
 pub fn assigned_unstarted_issues() -> String {
     format!(
-        "query ZeronLinearAssignedUnstarted($first: Int!, $after: String) {{ viewer {{ \
+        "query MastLinearAssignedUnstarted($first: Int!, $after: String) {{ viewer {{ \
          assignedIssues(first: $first, after: $after, orderBy: updatedAt, \
          filter: {{ state: {{ type: {{ in: [\"backlog\", \"unstarted\", \"triage\"] }} }}, \
          project: {{ null: true }} }}) {{ \
@@ -63,7 +63,7 @@ pub fn assigned_unstarted_issues() -> String {
 
 pub fn my_projects() -> String {
     format!(
-        "query ZeronLinearMyProjects($first: Int!, $after: String) {{ \
+        "query MastLinearMyProjects($first: Int!, $after: String) {{ \
          projects(first: $first, after: $after, orderBy: updatedAt, \
          filter: {{ or: [{{ lead: {{ isMe: {{ eq: true }} }} }}, \
          {{ members: {{ some: {{ isMe: {{ eq: true }} }} }} }}] }}) {{ \
@@ -74,7 +74,7 @@ pub fn my_projects() -> String {
 
 pub fn project_issues() -> String {
     format!(
-        "query ZeronLinearProjectIssues($id: String!, $first: Int!, $after: String) {{ \
+        "query MastLinearProjectIssues($id: String!, $first: Int!, $after: String) {{ \
          project(id: $id) {{ issues(first: $first, after: $after, orderBy: updatedAt, \
          filter: {{ state: {{ type: {{ nin: [\"completed\", \"canceled\"] }} }} }}) {{ \
          nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
@@ -84,7 +84,7 @@ pub fn project_issues() -> String {
 /// One project with its progress, target date, lead and latest updates.
 pub fn project_detail() -> String {
     format!(
-        "query ZeronLinearProjectDetail($id: String!, $updates: Int!) {{ \
+        "query MastLinearProjectDetail($id: String!, $updates: Int!) {{ \
          project(id: $id) {{ id name url state progress targetDate updatedAt \
          lead {{ {USER_FIELDS} }} \
          projectUpdates(first: $updates) {{ nodes {{ id body health createdAt \
@@ -141,7 +141,7 @@ pub const MAX_ATTACHMENTS: usize = 50;
 /// were not verified against the real API, and the parser is lenient.
 pub fn issue_attachments() -> String {
     format!(
-        "query ZeronLinearIssueAttachments($id: String!) {{ issue(id: $id) {{ identifier \
+        "query MastLinearIssueAttachments($id: String!) {{ issue(id: $id) {{ identifier \
          attachments(first: {MAX_ATTACHMENTS}) {{ nodes {{ url title subtitle sourceType \
          metadata updatedAt }} }} }} }}"
     )
@@ -340,7 +340,7 @@ mod tests {
             project_issues(),
             project_detail(),
         ] {
-            assert!(doc.starts_with("query ZeronLinear"), "{doc}");
+            assert!(doc.starts_with("query MastLinear"), "{doc}");
             assert!(!doc.contains("mutation"), "{doc}");
             assert_eq!(doc.matches('{').count(), doc.matches('}').count(), "{doc}");
         }

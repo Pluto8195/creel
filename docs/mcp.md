@@ -1,7 +1,7 @@
 # Mast MCP server
 
 `zeron mcp` serves the Model Context Protocol on stdin/stdout and proxies every
-tool into the running engine's localhost IPC (`ws://127.0.0.1:$ZERON_IPC_PORT`,
+tool into the running engine's localhost IPC (`ws://127.0.0.1:$MAST_IPC_PORT`,
 default 27654) — the same `mast_rpc` surface the headed app and `zeron sync`
 dial. It is a subcommand of the one `zeron` binary: no Node runtime, no extra
 install, a few MB resident.
@@ -14,19 +14,24 @@ the stdio tool-server subset is tiny, so no SDK dependency was taken.
 ## Identity
 
 The engine injects this server into Claude Code and Codex Runs of Chats that
-belong to a project under the server name `zeron-agent` (Claude: `--mcp-config
-<owner-only file>`, tools surface as `mcp__zeron-agent__<tool>`; Codex: per-thread
-`mcp_servers.zeron-agent.*` config overrides). The distinct name keeps it from
-colliding with a `zeron` server the user configured themselves (for example a
-terminal `zeron mcp`). It is launched with:
+belong to a project under the server name `mast-agent` (Claude: `--mcp-config
+<owner-only file>`, tools surface as `mcp__mast-agent__<tool>`; Codex: per-thread
+`mcp_servers.mast-agent.*` config overrides). The distinct name keeps it from
+colliding with a server the user configured themselves (for example a
+terminal `zeron mcp`). Before the rename the server was called `zeron-agent`:
+only new Runs get the new name (a Run already in progress keeps its tools), the
+engine never matches on the name, and old transcripts that mention
+`mcp__zeron-agent__<tool>` still render. The token and port reach the child as
+`MAST_AGENT_TOKEN` / `MAST_IPC_PORT`, and the old `ZERON_*` names are exported
+alongside and still read. It is launched with:
 
 | Variable            | Meaning                                                     |
 | ------------------- | ----------------------------------------------------------- |
-| `ZERON_IPC_PORT`    | Engine to proxy (default 27654).                            |
-| `ZERON_AGENT_TOKEN` | Engine-minted per-Run capability token (revoked at Run end). |
+| `MAST_IPC_PORT`    | Engine to proxy (default 27654).                            |
+| `MAST_AGENT_TOKEN` | Engine-minted per-Run capability token (revoked at Run end). |
 
 Every tool call re-authenticates the token (`AgentAuthenticate`); the engine
-answers with the Chat the token was minted for. `ZERON_CHAT_ID` is no longer
+answers with the Chat the token was minted for. `MAST_CHAT_ID` is no longer
 read: no self-declared origin is trusted. With a token, every `send_message` is
 prefixed with a `[Message from Mast chat <title> (<id8>) …]` line, the server
 refuses to message its own chat, and the Work Outline agent tools
@@ -123,7 +128,7 @@ done (this was the one bug the first live run found).
 BIN=target/debug/zeron
 { echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
   echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_chats","arguments":{"limit":5}}}'
-  sleep 5; } | ZERON_IPC_PORT=27655 $BIN mcp
+  sleep 5; } | MAST_IPC_PORT=27655 $BIN mcp
 ```
 
 `create_chat` with `"prompt": "Reply with exactly the word pong", "wait": true`

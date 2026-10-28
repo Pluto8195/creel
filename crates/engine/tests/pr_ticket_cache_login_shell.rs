@@ -90,7 +90,7 @@ esac
         std::env::set_var("SHELL", &fake_shell);
         std::env::set_var("HOME", dir.path());
         std::env::set_var("PATH", ".");
-        std::env::remove_var("ZERON_NO_LOGIN_SHELL");
+        std::env::remove_var("MAST_NO_LOGIN_SHELL");
     }
 
     let cache = PrTicketCache::new();

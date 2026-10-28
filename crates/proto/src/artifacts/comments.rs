@@ -2,7 +2,7 @@
 //!
 //! A comment is stored on the artifact row (like phase 3's answers) and never
 //! edits the document. It is anchored to something in the rendered page:
-//! an `id` / `data-zeron-anchor` value first (stable across revisions), then
+//! an `id` / `data-mast-anchor` (legacy `data-zeron-anchor`) value first (stable across revisions), then
 //! a text-quote selector (prefix / exact / suffix over the page's visible
 //! text). [`resolve_anchor`] re-finds the anchor in any revision's source; a
 //! comment it cannot find is *outdated*, shown in a list rather than dropped.
@@ -38,7 +38,7 @@ pub enum CommentStatus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommentAnchor {
-    /// An element's `id` or `data-zeron-anchor` value. Mermaid nodes use
+    /// An element's `id` or `data-mast-anchor` (legacy `data-zeron-anchor`) value. Mermaid nodes use
     /// `mermaid:<node id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -119,7 +119,7 @@ impl ArtifactComment {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorStatus {
-    /// Found by its `id` / `data-zeron-anchor`.
+    /// Found by its `id` / `data-mast-anchor` (legacy `data-zeron-anchor`).
     FoundById,
     /// Found by its quoted text.
     FoundByQuote,
@@ -305,9 +305,9 @@ fn contains_word(source: &str, word: &str) -> bool {
     false
 }
 
-/// Whether some element carries `id="<value>"` or `data-zeron-anchor="<value>"`.
+/// Whether some element carries `id="<value>"` or `data-mast-anchor="<value>"`.
 fn has_anchor_attr(html: &str, value: &str) -> bool {
-    ["id", "data-zeron-anchor"].iter().any(|name| {
+    ["id", "data-mast-anchor", "data-zeron-anchor"].iter().any(|name| {
         ['"', '\''].iter().any(|quote| {
             let needle = format!("{name}={quote}{value}{quote}");
             let mut from = 0;
@@ -380,7 +380,7 @@ mod tests {
     const R1: &str = r#"<html><head><style>.a{}</style></head><body>
 <h2 id="intake">Receiving intake</h2>
 <p>Parts arrive at the <b>dock</b> and are scanned.</p>
-<p data-zeron-anchor="qa-step">Inspection happens next.</p>
+<p data-mast-anchor="qa-step">Inspection happens next.</p>
 <script>var hidden = "Inspection happens next.";</script></body></html>"#;
 
     fn quote(prefix: &str, exact: &str, suffix: &str) -> CommentAnchor {
@@ -402,6 +402,9 @@ mod tests {
         assert_eq!(resolve_anchor(ArtifactKind::HtmlPage, R1, &by_id), AnchorStatus::FoundById);
         let by_data = CommentAnchor { id: Some("qa-step".into()), ..Default::default() };
         assert_eq!(resolve_anchor(ArtifactKind::HtmlFragment, R1, &by_data), AnchorStatus::FoundById);
+        // The pre-rename attribute still resolves.
+        let legacy = R1.replace("data-mast-anchor", "data-zeron-anchor");
+        assert_eq!(resolve_anchor(ArtifactKind::HtmlFragment, &legacy, &by_data), AnchorStatus::FoundById);
         // The id is gone but the text survived: found by quote.
         let r2 = R1.replace("id=\"intake\"", "");
         assert_eq!(resolve_anchor(ArtifactKind::HtmlPage, &r2, &by_id), AnchorStatus::FoundByQuote);

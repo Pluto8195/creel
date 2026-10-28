@@ -718,13 +718,26 @@ pub mod agent_tools {
     use serde_json::Value;
 
     /// Name of the injected MCP server (Claude tools surface as
-    /// `mcp__zeron-agent__<tool>`). Distinct from a plain `zeron`, so a
-    /// user-defined `zeron` server (a terminal `zeron mcp`) never collides.
-    pub const SERVER_NAME: &str = "zeron-agent";
+    /// `mcp__mast-agent__<tool>`). Distinct from a plain `mast`/`zeron`, so a
+    /// user-defined server (a terminal `zeron mcp`) never collides.
+    pub const SERVER_NAME: &str = "mast-agent";
+    /// The server's name before the rename. Only a config key: the engine never
+    /// matches on it, so chats whose history mentions `mcp__zeron-agent__<tool>`
+    /// keep rendering, and a run already started under it keeps its tools.
+    /// Anything that recognises the server by name must accept both.
+    pub const LEGACY_SERVER_NAME: &str = "zeron-agent";
+    /// True for either spelling of the injected server's name.
+    pub fn is_server_name(name: &str) -> bool {
+        name == SERVER_NAME || name == LEGACY_SERVER_NAME
+    }
     /// Environment variable carrying the per-Run capability token.
-    pub const TOKEN_ENV: &str = "ZERON_AGENT_TOKEN";
+    pub const TOKEN_ENV: &str = "MAST_AGENT_TOKEN";
     /// Environment variable naming the engine's loopback IPC port.
-    pub const IPC_PORT_ENV: &str = "ZERON_IPC_PORT";
+    pub const IPC_PORT_ENV: &str = "MAST_IPC_PORT";
+    /// The old spellings of [`TOKEN_ENV`] and [`IPC_PORT_ENV`]. The engine still
+    /// exports both to the MCP child, so an older `zeron mcp` binary keeps working.
+    pub const LEGACY_TOKEN_ENV: &str = "ZERON_AGENT_TOKEN";
+    pub const LEGACY_IPC_PORT_ENV: &str = "ZERON_IPC_PORT";
     /// `{token}` → [`AgentOrigin`]. Fails with `agent-tools/unauthenticated`
     /// for an unknown, revoked, or expired token.
     pub const AUTHENTICATE_METHOD: &str = "AgentAuthenticate";

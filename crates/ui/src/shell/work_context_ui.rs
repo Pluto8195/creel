@@ -516,7 +516,7 @@ mod tests {
         fn set_open_in_mast(vcx: &mut VisualTestContext, on: bool) {
             vcx.update(|_, cx| {
                 crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.open_web_links_in_zeron = on
+                    settings.open_web_links_in_mast = on
                 })
             });
         }

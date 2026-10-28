@@ -147,12 +147,12 @@ impl TitleGenerator {
         }
 
         // Rename the worktree branch when the chat still sits on its original
-        // zeron/<name> branch (guards live inside rename_worktree_branch).
+        // mast/<name> (or legacy zeron/<name>) branch (guards live inside rename_worktree_branch).
         // Never for a Chat with a Work Outline execution binding: its
         // checkout (and any `expectedRef`) was captured at launch, and Mast
         // does not rename or switch its branches (contract 6.3).
         if let (Some(chat_cwd), Some(branch)) = (&latest.cwd, &latest.branch)
-            && branch.starts_with("zeron/")
+            && crate::repos::is_owned_branch(branch)
             && !branch_rename_blocked(&self.inner.workspace, chat_id)
         {
             match self

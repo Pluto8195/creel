@@ -126,8 +126,23 @@ fn links_resolve_by_id_and_by_stored_origin_or_preview_path() {
         resolve("notes/new.md"),
         LinkResolution::Register("notes/new.md".into())
     );
+    assert_eq!(model::link_target("mast-artifact:abc"), Some("abc"));
     assert_eq!(model::link_target("zeron-artifact:abc"), Some("abc"));
+    assert_eq!(model::link_target("mast-file:abc"), None);
     assert_eq!(model::link_target("zeron-file:abc"), None);
+}
+
+#[test]
+fn both_artifact_roots_give_a_canonical_root_and_document_path() {
+    for root in [".mast", ".zeron"] {
+        let stored = format!("/repo/{root}/artifacts/item-1/plan.md");
+        assert_eq!(model::canonical_root(&stored), Some("/repo"));
+        assert_eq!(
+            model::markdown_document_path(&stored),
+            format!("{root}/artifacts/item-1/plan.md")
+        );
+    }
+    assert_eq!(model::canonical_root("/repo/other/plan.md"), None);
 }
 
 // --------------------------------------------------------------------------
@@ -622,7 +637,7 @@ fn render_check_returns_screenshot_errors_and_warnings(cx: &mut TestAppContext) 
     // its collector; the viewport is clamped.
     let (document, viewport) = renderer.documents.borrow()[0].clone();
     assert!(document.contains("sandbox=\"allow-scripts\""));
-    assert!(document.contains("window.__zeronProbe"));
+    assert!(document.contains("window.__mastProbe"));
     assert!(document.contains("securitypolicyviolation"));
     assert!(document.contains("&lt;div&gt;flow&lt;/div&gt;"));
     assert_eq!(

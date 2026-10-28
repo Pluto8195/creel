@@ -1,5 +1,5 @@
 //! Exercise the explorer and editors against an isolated real workspace/RPC.
-//! Set ZERON_FILES_CAPTURES to a directory to run on X11 and capture the fixture.
+//! Set MAST_FILES_CAPTURES to a directory to run on X11 and capture the fixture.
 use super::*;
 use gpui::{AppContext, AsyncApp, WindowHandle};
 use std::{path::Path, sync::Arc};
@@ -146,7 +146,7 @@ fn files_panel_workspace_navigation_and_external_updates() {
     let _ipc = runtime
         .block_on(mast_engine::serve_ipc(port, core.rpc_service()))
         .unwrap();
-    let output = std::env::var_os("ZERON_FILES_CAPTURES").map(PathBuf::from);
+    let output = mast_proto::env::var_os("MAST_FILES_CAPTURES").map(PathBuf::from);
     let application = if output.is_some() {
         gpui_platform::application()
     } else {

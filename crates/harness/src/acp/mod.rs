@@ -3172,8 +3172,8 @@ async fn run_session(session: Session) {
     let mut prompt_seq: u64 = 1;
     let mut current_prompt_id = prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
     let mut completed_prompts: VecDeque<String> = VecDeque::new();
-    // `ZERON_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
-    let prompt_stall: Option<Duration> = match std::env::var("ZERON_ACP_PROMPT_STALL_MS")
+    // `MAST_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
+    let prompt_stall: Option<Duration> = match mast_proto::env::var("MAST_ACP_PROMPT_STALL_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
@@ -3227,7 +3227,7 @@ async fn run_session(session: Session) {
     // Silence is not a turn boundary: completed tools, text, and usage may
     // all precede a slow model request. Keep the prompt future alive until
     // its response (or an authoritative completion extension) arrives.
-    // ZERON_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
+    // MAST_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
     let mut last_update_at = tokio::time::Instant::now();
     let mut open_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     // PREVENTION, ahead of all the recovery above: never send a

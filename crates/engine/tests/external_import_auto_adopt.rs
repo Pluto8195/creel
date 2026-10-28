@@ -1,6 +1,6 @@
 //! Background auto-adopt sweep (`auto_adopt_external_sessions`). One test
 //! function because it redirects the process-global `$HOME` and sets
-//! `ZERON_DISABLE_AUTO_ADOPT` (same convention as the other external_import
+//! `MAST_DISABLE_AUTO_ADOPT` (same convention as the other external_import
 //! files). The Development profile never spawns the background loop, so the
 //! sweeps here are only the explicit calls.
 //!
@@ -54,11 +54,11 @@ const DAY: Duration = Duration::from_secs(24 * 3600);
 async fn auto_adopt_sweep_adopts_settled_external_sessions_only() {
     let fake_home = tempfile::tempdir().expect("fake home");
     let previous_home = std::env::var_os("HOME");
-    let previous_switch = std::env::var_os("ZERON_DISABLE_AUTO_ADOPT");
+    let previous_switch = mast_proto::env::var_os("MAST_DISABLE_AUTO_ADOPT");
     // SAFETY: test-only, single test function in this binary; restored below.
     unsafe {
         std::env::set_var("HOME", fake_home.path());
-        std::env::remove_var("ZERON_DISABLE_AUTO_ADOPT");
+        std::env::remove_var("MAST_DISABLE_AUTO_ADOPT");
     }
     let proj = fake_home
         .path()
@@ -134,7 +134,7 @@ async fn auto_adopt_sweep_adopts_settled_external_sessions_only() {
         .set_chat_harness_session(zeron_chat, "sess-zeron-launched", "/work/zeron");
 
     // Kill switch respected.
-    unsafe { std::env::set_var("ZERON_DISABLE_AUTO_ADOPT", "1") };
+    unsafe { std::env::set_var("MAST_DISABLE_AUTO_ADOPT", "1") };
     assert_eq!(
         core.external_import.auto_adopt_external_sessions().unwrap(),
         0
@@ -144,7 +144,7 @@ async fn auto_adopt_sweep_adopts_settled_external_sessions_only() {
         1,
         "disabled sweep must not adopt"
     );
-    unsafe { std::env::remove_var("ZERON_DISABLE_AUTO_ADOPT") };
+    unsafe { std::env::remove_var("MAST_DISABLE_AUTO_ADOPT") };
 
     // Real sweep: only the settled, recent, non-junk, unclaimed session.
     let adopted = core
@@ -218,8 +218,8 @@ async fn auto_adopt_sweep_adopts_settled_external_sessions_only() {
             None => std::env::remove_var("HOME"),
         }
         match previous_switch {
-            Some(v) => std::env::set_var("ZERON_DISABLE_AUTO_ADOPT", v),
-            None => std::env::remove_var("ZERON_DISABLE_AUTO_ADOPT"),
+            Some(v) => std::env::set_var("MAST_DISABLE_AUTO_ADOPT", v),
+            None => std::env::remove_var("MAST_DISABLE_AUTO_ADOPT"),
         }
     }
 }

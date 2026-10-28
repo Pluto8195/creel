@@ -1,5 +1,5 @@
 //! Opt-in production engine + Cursor SDK checks. Uses real account quota.
-//! ZERON_CURSOR_STATE_DIR=$(mktemp -d) cargo test -p mast-engine --test cursor_live -- --ignored --nocapture --test-threads=1
+//! MAST_CURSOR_STATE_DIR=$(mktemp -d) cargo test -p mast-engine --test cursor_live -- --ignored --nocapture --test-threads=1
 use std::{sync::Arc, time::Duration};
 use mast_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry,
@@ -11,7 +11,7 @@ use mast_proto::{HarnessId, RunRequest, SandboxLevel};
 const CHAT: &str = "cursor-live-audit";
 fn setup(path: &std::path::Path) -> EngineCore {
     assert!(
-        std::env::var_os("ZERON_CURSOR_STATE_DIR").is_some(),
+        mast_proto::env::var_os("MAST_CURSOR_STATE_DIR").is_some(),
         "use isolated Cursor state"
     );
     let registry = HarnessRegistry::new();
@@ -190,7 +190,7 @@ async fn send_now_keeps_the_interrupted_user_message() {
 #[tokio::test]
 #[ignore = "real authenticated Muse Spark; consumes quota"]
 async fn send_now_during_startup_keeps_the_interrupted_user_message() {
-    let rounds = std::env::var("ZERON_CURSOR_EARLY_ROUNDS")
+    let rounds = mast_proto::env::var("MAST_CURSOR_EARLY_ROUNDS")
         .ok()
         .map(|v| v.parse::<usize>().unwrap())
         .unwrap_or(1);

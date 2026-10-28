@@ -285,7 +285,7 @@ mod tests {
             args: vec!["node".into()],
             started_at: 1_000,
             address: ([127, 0, 0, 1], port).into(),
-            zeron_owned: false,
+            mast_owned: false,
         }
     }
     #[test]

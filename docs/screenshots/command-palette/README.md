@@ -3,7 +3,7 @@ These screenshots show the real GPUI shell with isolated sample chats from
 storage and does not start an engine or connect to an account.
 
 Run `cargo run -p mast-ui --example command-palette-fixture` on a desktop, then
-press Cmd+K (Ctrl+K on Linux/Windows). Set `ZERON_PALETTE_LIGHT=1` for light mode.
+press Cmd+K (Ctrl+K on Linux/Windows). Set `MAST_PALETTE_LIGHT=1` for light mode.
 
 Verified interactively on Linux/X11:
 

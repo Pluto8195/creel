@@ -23,7 +23,7 @@ The fixture uses synthetic chat data, temporary app storage, and a local HTTP se
 cargo test -p mast-ui
 cargo build -p mast
 cargo build -p mast-ui --example browser-fixture --features browser-fixture
-ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
+MAST_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
   BROWSER_FIXTURE_BINARY=target/debug/examples/browser-fixture \
   scripts/test-linux-browser.sh /tmp/zeron-transcript-links
 ```
@@ -35,12 +35,12 @@ The Linux runner exercises X11 and nested Wayland with native pointer input. It 
 On macOS, build the same example and run it with the release application's Info.plist:
 
 ```sh
-ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
+MAST_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
   scripts/run-macos-browser-fixture.sh target/debug/examples/browser-fixture \
   /tmp/zeron-transcript-links-macos
 ```
 
-Native runtime-failure validation can be run on Linux by placing an empty `libwebkit2gtk-4.1.so.0` in a temporary directory, setting `LD_LIBRARY_PATH` to that directory, and setting `ZERON_LINK_FIXTURE_MISSING_RUNTIME=1` for the fixture. This simulates the dynamic loader's failure without changing installed packages. The main application must remain usable and expose the error and external-browser control.
+Native runtime-failure validation can be run on Linux by placing an empty `libwebkit2gtk-4.1.so.0` in a temporary directory, setting `LD_LIBRARY_PATH` to that directory, and setting `MAST_LINK_FIXTURE_MISSING_RUNTIME=1` for the fixture. This simulates the dynamic loader's failure without changing installed packages. The main application must remain usable and expose the error and external-browser control.
 
 ## Validation recorded for this change
 

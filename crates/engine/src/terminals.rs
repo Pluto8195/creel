@@ -246,8 +246,8 @@ impl Terminals {
         #[cfg(not(windows))]
         let (initial_script, bootstrap) = if let Some(command) = command {
             let (suffix, source) = match shell_name.as_str() {
-                "fish" => (".fish", "source \"$ZERON_ACTION_SCRIPT\"\r"),
-                _ => (".sh", ". \"$ZERON_ACTION_SCRIPT\"\r"),
+                "fish" => (".fish", "source \"$MAST_ACTION_SCRIPT\"\r"),
+                _ => (".sh", ". \"$MAST_ACTION_SCRIPT\"\r"),
             };
             let mut script = tempfile::Builder::new()
                 .prefix("zeron-action-")
@@ -282,7 +282,7 @@ impl Terminals {
                 cmd.env(name, value);
             }
             if let Some(script) = initial_script.as_ref() {
-                cmd.env("ZERON_ACTION_SCRIPT", script.path());
+                cmd.env("MAST_ACTION_SCRIPT", script.path());
             }
             let child = pair
                 .slave

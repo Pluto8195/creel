@@ -10,6 +10,7 @@ name = "zeron"
 path = "src/main.rs"
 
 [dependencies]
+mast-proto.workspace = true
 mast-engine.workspace = true
 mast-rpc.workspace = true
 mast-ui.workspace = true

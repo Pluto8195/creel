@@ -181,7 +181,7 @@ impl ArtifactTab {
                 self.questions.html_answers = answers.clone();
                 if in_place {
                     let script = crate::artifacts::bridge::frame_command_script(
-                        &serde_json::json!({ "zeronAnswers": answers }),
+                        &serde_json::json!({ "mastAnswers": answers }),
                     );
                     if let Some(web) = &mut self.web {
                         web.run_script(&script, cx);

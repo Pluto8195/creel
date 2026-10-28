@@ -2,20 +2,22 @@
 //! header line, row labels, and which component renders a content reply.
 //! GUI-free and unit tested.
 use mast_proto::artifacts::{
-    ARTIFACT_URL_SCHEME, EDITED_WITHOUT_NOTE, OptionsManifest, is_artifact_id,
+    ALL_ARTIFACTS_DIRS, EDITED_WITHOUT_NOTE, OptionsManifest, is_artifact_id,
+    strip_artifact_scheme,
 };
 use mast_proto::{ArtifactContentEncoding, ArtifactContentReply, ArtifactKind, ArtifactView};
 
 use super::store::ArtifactStore;
 
-/// The target of a `zeron-artifact:` link (`None` for any other link).
+/// The target of a `mast-artifact:` (or legacy `zeron-artifact:`) link
+/// (`None` for any other link).
 pub(crate) fn link_target(url: &str) -> Option<&str> {
-    let target = url.trim().strip_prefix(ARTIFACT_URL_SCHEME)?.trim();
+    let target = strip_artifact_scheme(url.trim())?.trim();
     let target = target.trim_start_matches('<').trim_end_matches('>');
     (!target.is_empty()).then_some(target)
 }
 
-/// What clicking a `zeron-artifact:` link does.
+/// What clicking a `mast-artifact:` link does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LinkResolution {
     /// Open this registered artifact.
@@ -288,11 +290,11 @@ pub(crate) fn source_text(reply: &ArtifactContentReply) -> Option<String> {
 }
 
 /// The checkout-relative path Markdown links resolve against:
-/// `.zeron/artifacts/<folder>/<file>` (so `zeron-file:` and repo-relative
-/// links resolve from the canonical checkout's root), else the file name.
+/// `.mast/artifacts/<folder>/<file>` (or the legacy `.zeron/artifacts/...`;
+/// so `mast-file:` and repo-relative links resolve from the canonical
+/// checkout's root), else the file name.
 pub(crate) fn markdown_document_path(stored_path: &str) -> String {
-    let marker = format!("/{}/", mast_proto::artifacts::ARTIFACTS_DIR);
-    match stored_path.find(&marker) {
+    match artifacts_marker(stored_path) {
         Some(at) => stored_path[at + 1..].to_owned(),
         None => stored_path
             .rsplit('/')
@@ -303,8 +305,16 @@ pub(crate) fn markdown_document_path(stored_path: &str) -> String {
 }
 
 /// The canonical checkout root of a stored path (the part before
-/// `/.zeron/artifacts/`).
+/// `/.mast/artifacts/`, or the legacy `/.zeron/artifacts/`).
 pub(crate) fn canonical_root(stored_path: &str) -> Option<&str> {
-    let marker = format!("/{}/", mast_proto::artifacts::ARTIFACTS_DIR);
-    stored_path.find(&marker).map(|at| &stored_path[..at])
+    artifacts_marker(stored_path).map(|at| &stored_path[..at])
+}
+
+/// Byte offset of the leading `/` of the first `/<artifacts dir>/` marker
+/// (new or legacy root) in `stored_path`.
+fn artifacts_marker(stored_path: &str) -> Option<usize> {
+    ALL_ARTIFACTS_DIRS
+        .iter()
+        .filter_map(|dir| stored_path.find(&format!("/{dir}/")))
+        .min()
 }

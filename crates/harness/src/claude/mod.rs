@@ -1315,11 +1315,11 @@ mod tests {
 
     fn tools_injection() -> crate::AgentToolsInjection {
         crate::AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
             env: std::collections::BTreeMap::from([(
-                "ZERON_AGENT_TOKEN".into(),
+                "MAST_AGENT_TOKEN".into(),
                 "secret-token".into(),
             )]),
         }
@@ -1357,9 +1357,9 @@ mod tests {
         assert!(!args.iter().any(|a| a.contains("secret-token")), "{args:?}");
         let body: Value =
             serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
-        assert_eq!(body["mcpServers"]["zeron-agent"]["args"], json!(["mcp"]));
+        assert_eq!(body["mcpServers"]["mast-agent"]["args"], json!(["mcp"]));
         assert_eq!(
-            body["mcpServers"]["zeron-agent"]["env"]["ZERON_AGENT_TOKEN"],
+            body["mcpServers"]["mast-agent"]["env"]["MAST_AGENT_TOKEN"],
             "secret-token"
         );
         assert!(harness.supports_agent_tools());

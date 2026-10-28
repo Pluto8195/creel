@@ -1,5 +1,5 @@
 //! Shell-owned planning artifact surfaces: the Artifact pane tab
-//! (`RightSurface::Artifact`), `zeron-artifact:` link activation from
+//! (`RightSurface::Artifact`), `mast-artifact:` link activation from
 //! transcripts, Details, and Required Actions, and registering unknown paths.
 use super::*;
 
@@ -66,7 +66,7 @@ impl Shell {
         self.artifact_tabs.subs.remove(&id);
     }
 
-    /// Activate a `zeron-artifact:` link (an artifact id or a path). Returns
+    /// Activate a `mast-artifact:` link (an artifact id or a path). Returns
     /// `false` for any other link.
     pub(crate) fn open_artifact_link(
         &mut self,
@@ -269,7 +269,7 @@ impl Shell {
         }
     }
 
-    /// `zeron-artifact:<path>` that no artifact covers: register the file
+    /// `mast-artifact:<path>` that no artifact covers: register the file
     /// into the chat's scope, then open it. A host without the artifact RPCs
     /// opens the file as an ordinary workspace link instead.
     fn register_and_open_artifact(
@@ -462,7 +462,7 @@ mod tests {
             Ok(match method {
                 mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
                     "artifactId": id(2), "revision": 1,
-                    "url": format!("zeron-artifact:{}", id(2)),
+                    "url": format!("mast-artifact:{}", id(2)),
                     "storedPath": "/work/alpha/.zeron/artifacts/_chats/c1/new.md",
                     "changed": true
                 }),
@@ -478,9 +478,9 @@ mod tests {
 
         // An id link opens (and a second click reuses) the tab.
         shell.update_in(vcx, |shell, window, cx| {
-            assert!(shell.open_artifact_link(&format!("zeron-artifact:{}", id(1)), window, cx));
-            assert!(shell.open_artifact_link(&format!("zeron-artifact:{}", id(1)), window, cx));
-            assert!(!shell.open_artifact_link("zeron-file:src/a.rs", window, cx));
+            assert!(shell.open_artifact_link(&format!("mast-artifact:{}", id(1)), window, cx));
+            assert!(shell.open_artifact_link(&format!("mast-artifact:{}", id(1)), window, cx));
+            assert!(!shell.open_artifact_link("mast-file:src/a.rs", window, cx));
         });
         vcx.run_until_parked();
         assert_eq!(open_artifact_ids(&shell, vcx), [id(1)]);
@@ -501,7 +501,7 @@ mod tests {
                 both.artifacts = vec![plan];
                 state.set_test_artifacts(both);
             });
-            shell.open_artifact_link("zeron-artifact:notes/new.md", window, cx);
+            shell.open_artifact_link("mast-artifact:notes/new.md", window, cx);
         });
         // The engine registered it; its next frame names the new artifact.
         shell.update(vcx, |shell, cx| {
@@ -539,7 +539,7 @@ mod tests {
                 .count()
         };
         shell.update_in(vcx, |shell, window, cx| {
-            shell.open_artifact_link("zeron-artifact:notes/new.md", window, cx);
+            shell.open_artifact_link("mast-artifact:notes/new.md", window, cx);
         });
         vcx.run_until_parked();
         assert_eq!(registers(&calls), 1);
@@ -572,7 +572,7 @@ mod tests {
             )
         });
         shell.update_in(vcx, |shell, window, cx| {
-            assert!(shell.open_artifact_link(&format!("zeron-artifact:{}", id(1)), window, cx));
+            assert!(shell.open_artifact_link(&format!("mast-artifact:{}", id(1)), window, cx));
         });
         vcx.run_until_parked();
         // The Markdown preview parses after a short debounce.
@@ -673,7 +673,7 @@ mod tests {
             let activation = crate::markdown::render::LinkActivation {
                 target: crate::markdown::render::LinkTarget::new(
                     "Plan",
-                    &format!("zeron-artifact:{}", id(1)),
+                    &format!("mast-artifact:{}", id(1)),
                 ),
                 action: crate::markdown::render::LinkAction::Primary,
                 source_session: Some("c1".into()),
@@ -714,7 +714,7 @@ mod tests {
             Ok(match method {
                 mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
                     "artifactId": id(2), "revision": 1,
-                    "url": format!("zeron-artifact:{}", id(2)),
+                    "url": format!("mast-artifact:{}", id(2)),
                     "storedPath": "/work/alpha/.zeron/artifacts/_chats/c1/doc.md",
                     "changed": true
                 }),

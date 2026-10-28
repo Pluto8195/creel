@@ -1473,7 +1473,7 @@ mod tests {
         // Setting off: a plain click is external too.
         cx.update(|_, cx| {
             crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
-                settings.open_web_links_in_zeron = false
+                settings.open_web_links_in_mast = false
             })
         });
         click(cx, "pr-dash-number-1");

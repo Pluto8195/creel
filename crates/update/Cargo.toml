@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mast-proto.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 reqwest.workspace = true

@@ -5,7 +5,7 @@
 //!
 //! `cargo run -p mast-ui --example outline-fixture`
 //!
-//! ZERON_PALETTE_LIGHT selects the light appearance; ZERON_SIDEBAR_COMPACT the
+//! MAST_PALETTE_LIGHT selects the light appearance; MAST_SIDEBAR_COMPACT the
 //! compact row density.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 use mast_ui::*;
@@ -32,14 +32,14 @@ fn main() -> anyhow::Result<()> {
         gpui_tokio::init(cx);
         gpui_base::init(cx);
         let mut settings = settings::UiSettings::default();
-        settings.sidebar_compact = std::env::var_os("ZERON_SIDEBAR_COMPACT").is_some();
+        settings.sidebar_compact = mast_proto::env::var_os("MAST_SIDEBAR_COMPACT").is_some();
         settings.surface = mast_theme::SurfacePreference::Frosted;
         settings.save(&data).unwrap();
         settings::init(settings.clone(), data.clone(), cx);
         let fonts = typography::register_fonts(cx);
         typography::init(settings.ui_font_family.clone(), settings.ui_font_size, settings.terminal_font_family.clone(), settings.terminal_font_size, settings.code_font_family.clone(), settings.code_font_size, fonts, cx);
         theme_library::init(data.clone(), cx);
-        appearance::init(if std::env::var_os("ZERON_PALETTE_LIGHT").is_some() { appearance::AppearanceMode::Light } else { appearance::AppearanceMode::Dark }, settings.theme_selection, settings.accent, settings.surface, cx);
+        appearance::init(if mast_proto::env::var_os("MAST_PALETTE_LIGHT").is_some() { appearance::AppearanceMode::Light } else { appearance::AppearanceMode::Dark }, settings.theme_selection, settings.accent, settings.surface, cx);
         history::init(settings.git_history_columns, settings.git_history_column_widths,
             settings.git_history_column_order, settings.git_history_author_display, cx);
         composer::init(cx, settings.composer_send_behavior);

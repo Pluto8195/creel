@@ -5112,7 +5112,7 @@ mod tests {
         use std::io::Write;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use mast_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
-        if std::env::var_os("ZERON_INSTALL_RPC_TEST").is_none() {
+        if mast_proto::env::var_os("MAST_INSTALL_RPC_TEST").is_none() {
             let root = tempfile::tempdir().unwrap();
             let output = tokio::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -5120,8 +5120,8 @@ mod tests {
                     "rpc::tests::explicit_install_rpc_verifies_archive_and_refreshes_descriptors",
                     "--nocapture",
                 ])
-                .env("ZERON_INSTALL_RPC_TEST", "1")
-                .env("ZERON_ADAPTERS_DIR", root.path())
+                .env("MAST_INSTALL_RPC_TEST", "1")
+                .env("MAST_ADAPTERS_DIR", root.path())
                 .output()
                 .await
                 .unwrap();

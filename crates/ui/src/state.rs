@@ -1258,7 +1258,7 @@ impl AppState {
             return InstructionHostSupport::UnknownDevice;
         };
         if !device.supports(WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
-            return InstructionHostSupport::ZeronUpgradeRequired;
+            return InstructionHostSupport::MastUpgradeRequired;
         }
         match chat.config.as_ref().map(|config| config.harness) {
             Some(harness) if !device.supports(&work_outline_instruction_envelope_for(harness)) => {
@@ -3487,7 +3487,7 @@ pub(crate) enum InstructionHostSupport {
     /// The host's device row is not synced (or the Chat is unknown).
     UnknownDevice,
     /// The host's Mast predates instruction delivery.
-    ZeronUpgradeRequired,
+    MastUpgradeRequired,
     /// The host delivers instructions, but not for this harness.
     HarnessUnsupported(mast_proto::HarnessId),
 }

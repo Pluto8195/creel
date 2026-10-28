@@ -7,6 +7,7 @@ pub mod agent;
 pub mod artifacts;
 pub mod chat_diff_target;
 pub mod entities;
+pub mod env;
 pub mod linear;
 pub mod motion;
 pub mod pr_dash;

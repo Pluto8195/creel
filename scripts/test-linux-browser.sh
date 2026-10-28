@@ -34,7 +34,7 @@ if [[ ! "$display_number" =~ ^[0-9]+$ ]]; then
 fi
 export DISPLAY=":$display_number"
 export XDG_RUNTIME_DIR="$runtime"
-export ZERON_BROWSER_NATIVE_POINTER=1
+export MAST_BROWSER_NATIVE_POINTER=1
 openbox >"$output/openbox.log" 2>&1 &
 processes+=("$!")
 record_fixture() {
@@ -84,5 +84,5 @@ for _ in $(seq 1 100); do
   [ -S "$runtime/$WAYLAND_DISPLAY" ] && break
   sleep .1
 done
-export ZERON_BROWSER_CAPTURE_WINDOW="$(xdotool search --class weston | head -1)"
-record_fixture wayland "$ZERON_BROWSER_CAPTURE_WINDOW"
+export MAST_BROWSER_CAPTURE_WINDOW="$(xdotool search --class weston | head -1)"
+record_fixture wayland "$MAST_BROWSER_CAPTURE_WINDOW"

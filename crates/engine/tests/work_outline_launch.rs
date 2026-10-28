@@ -895,7 +895,7 @@ async fn branch_auto_rename_is_skipped_for_bound_chats() {
         rig.repo.join(".worktrees"),
     );
     let worktree = repos.create_worktree(&rig.repo, "main").await.expect("wt");
-    assert!(worktree.branch.starts_with("zeron/"));
+    assert!(worktree.branch.starts_with("mast/"));
     let wt_path = std::fs::canonicalize(&worktree.path).unwrap();
     let identity = describe(&rig, &wt_path).await;
     let mut p = params(&rig, "op-title", "launch title [hold]");

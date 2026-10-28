@@ -19,12 +19,12 @@
 //!   desktop).
 //! - Windows: no-op for now — toasts require a registered AppUserModelID
 //!   (an installer concern); the chime still covers it.
-//! - `ZERON_DISABLE_NOTIFICATIONS` env kill-switch + the
+//! - `MAST_DISABLE_NOTIFICATIONS` env kill-switch + the
 //!   `notificationsEnabled` ui-setting (checked by the caller);
 //! - failures are logged and swallowed — a missing notifier must never
 //!   bother the session flow.
 
-const DISABLE_ENV: &str = "ZERON_DISABLE_NOTIFICATIONS";
+const DISABLE_ENV: &str = "MAST_DISABLE_NOTIFICATIONS";
 
 /// Post a desktop banner, optionally linked to `chat_id`'s session. Call from the main thread
 /// (the macOS native path talks to AppKit); slow paths (spawning a CLI) hop to

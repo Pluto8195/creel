@@ -13,13 +13,13 @@ use gpui::{
     PathBuilder, Render, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 
-use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, ZERON_PULSE};
+use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, MAST_PULSE};
 use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`mast_proto::motion`) so both animate the
 // same loaders from the same numbers.
 pub use mast_proto::motion::{
-    MARK_CELLS, MARK_SPREAD, MATRIX_SIDE, ZERON_CELLS, mark_cell_stagger,
+    MARK_CELLS, MARK_SPREAD, MATRIX_SIDE, MAST_CELLS, mark_cell_stagger,
 };
 
 /// The animated zeron mark (zeron-loader.tsx `ZeronLoader`): the full logo
@@ -37,7 +37,7 @@ pub fn mast_mark_loader(
     let color = theme.text;
     let scale = height_px / 940.0;
     let cell = 100.0 * scale;
-    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    let delta = motion::pulse_delta(&MAST_PULSE, view, cx);
     div()
         .relative()
         .w(px(820.0 * scale))
@@ -80,13 +80,13 @@ pub fn mast_loader(
 ) -> impl IntoElement {
     let color = theme.text;
     let slot = cell_px;
-    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    let delta = motion::pulse_delta(&MAST_PULSE, view, cx);
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(slot / 2.0))
-        .children((0..ZERON_CELLS).map(move |i| {
+        .children((0..MAST_CELLS).map(move |i| {
             // Fixed slot; the animated cell breathes inside it.
             div()
                 .size(px(slot))
@@ -377,7 +377,7 @@ pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App)
 // Compile-time proof the specs referenced here stay wired to the catalog.
 const _: () = {
     assert!(SPLASH_OUT.delay_ms == 150);
-    assert!(ZERON_PULSE.duration_ms == 2400);
+    assert!(MAST_PULSE.duration_ms == 2400);
     assert!(GRADIENT_SPIN.duration_ms == 750);
 };
 

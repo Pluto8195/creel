@@ -5,7 +5,8 @@
 //! - **Location.** [`ArtifactsService::canonical_root`]: the main checkout of
 //!   the work item's resolved primary repository (never a worktree), else the
 //!   Space folder's repository main checkout, else the Space folder. Files
-//!   live in `<canonical>/.zeron/artifacts/<folder>/`; `.zeron/` is appended
+//!   live in `<canonical>/.mast/artifacts/<folder>/` (or the legacy
+//!   `.zeron/artifacts/<folder>/` when that folder already exists); both are appended
 //!   once to `git rev-parse --git-path info/exclude`.
 //! - **Registry.** One `artifacts` row per artifact (metadata only); every
 //!   revision's bytes go to `<profile store>/artifacts/<id>/<sha256>`.
@@ -35,13 +36,13 @@ use mast_proto::artifacts::{
     ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentStatus, MAX_COMMENTS,
     MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, kind_supports_comments, next_comment_id,
     normalize_comment_id, resolve_anchor,
-    ARTIFACTS_DIR, ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply,
+    ARTIFACTS_DIR, LEGACY_ARTIFACTS_DIR, LEGACY_ARTIFACT_URL_SCHEME, LEGACY_ZERON_DIR, ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply,
     ArtifactError, ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply,
     ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
     ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
     ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
     ArtifactsSnapshot, EDITED_WITHOUT_NOTE, IMPORTED_NOTE, OptionsManifest, PROMOTE_DIR, PlanScope,
-    SPACE_FOLDER, ZERON_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
+    SPACE_FOLDER, MAST_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
     clean_title, content_hash, count_open_questions, count_unverified_claims,
     is_safe_relative_path, mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
 };
@@ -126,9 +127,23 @@ pub fn main_checkout(path: &Path) -> Option<PathBuf> {
     git(path, &["rev-parse", "--show-toplevel"]).map(|top| canonical(Path::new(&top)))
 }
 
-/// Append `.zeron/` to the checkout's `info/exclude` (resolved with `git
+/// Whether an `info/exclude` line already lists `dir` (`.mast`, `.zeron`).
+fn exclude_lists(line: &str, dir: &str) -> bool {
+    [
+        dir.to_owned(),
+        format!("{dir}/"),
+        format!("/{dir}"),
+        format!("/{dir}/"),
+        format!("{dir}/*"),
+        format!("/{dir}/*"),
+    ]
+    .iter()
+    .any(|candidate| candidate == line)
+}
+
+/// Append `.mast/` and the legacy `.zeron/` to the checkout's `info/exclude` (resolved with `git
 /// rev-parse --git-path`, so submodules get their module's file) unless it
-/// is already listed. Never touches `.gitignore`. `Ok(false)` when nothing
+/// is already listed (each entry separately). Never touches `.gitignore`. `Ok(false)` when nothing
 /// was written (already listed, or not a git checkout).
 pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
     let Some(raw) = git(
@@ -147,13 +162,16 @@ pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
         exclude = checkout.join(exclude);
     }
     let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    let listed = existing.lines().map(str::trim).any(|line| {
-        matches!(
-            line,
-            ".zeron" | ".zeron/" | "/.zeron" | "/.zeron/" | ".zeron/*" | "/.zeron/*"
-        )
-    });
-    if listed {
+    let missing: Vec<&str> = [MAST_DIR, LEGACY_ZERON_DIR]
+        .into_iter()
+        .filter(|dir| {
+            !existing
+                .lines()
+                .map(str::trim)
+                .any(|line| exclude_lists(line, dir))
+        })
+        .collect();
+    if missing.is_empty() {
         return Ok(false);
     }
     if let Some(parent) = exclude.parent() {
@@ -163,7 +181,9 @@ pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("{ZERON_DIR}/\n"));
+    for dir in missing {
+        text.push_str(&format!("{dir}/\n"));
+    }
     std::fs::write(&exclude, text).map_err(|e| io_error("write", &exclude, e))?;
     Ok(true)
 }
@@ -175,7 +195,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Outcome<()> {
         .ok_or_else(|| ArtifactError::invalid(format!("{} has no parent", path.display())))?;
     std::fs::create_dir_all(parent).map_err(|e| io_error("create", parent, e))?;
     let tmp = parent.join(format!(
-        ".{}.zeron-tmp-{}",
+        ".{}.mast-tmp-{}",
         path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("artifact"),
@@ -244,11 +264,11 @@ fn default_title_for(path: &Path) -> String {
 }
 
 /// The canonical checkout an artifact's stored file lives in (the ancestor
-/// that holds `.zeron/artifacts`).
+/// that holds `.mast/artifacts`, or the legacy `.zeron/artifacts`).
 fn canonical_of_stored(stored: &Path) -> Option<PathBuf> {
     stored
         .ancestors()
-        .find(|a| a.ends_with(ARTIFACTS_DIR))
+        .find(|a| a.ends_with(ARTIFACTS_DIR) || a.ends_with(LEGACY_ARTIFACTS_DIR))
         .and_then(|a| a.parent())
         .and_then(|a| a.parent())
         .map(Path::to_path_buf)
@@ -809,7 +829,30 @@ impl ArtifactsService {
         main_checkout(&start).unwrap_or_else(|| canonical(&start))
     }
 
-    /// The folder (under `.zeron/artifacts/`) of a scope: reuses the folder
+    /// The directory a new artifact of `folder` is written to: `.mast/` by
+    /// default, but the legacy `.zeron/artifacts/<folder>` when that folder
+    /// already exists (on disk or through a registered sibling) so one work
+    /// item's artifacts never split across two roots.
+    fn artifact_dir(&self, space_id: &str, canonical: &Path, folder: &str) -> PathBuf {
+        let new = canonical.join(ARTIFACTS_DIR).join(folder);
+        if new.exists() {
+            return new;
+        }
+        let legacy = canonical.join(LEGACY_ARTIFACTS_DIR).join(folder);
+        let legacy_root = canonical.join(LEGACY_ARTIFACTS_DIR);
+        let sibling_in_legacy = self
+            .workspace()
+            .artifacts_of_space(space_id)
+            .into_iter()
+            .any(|a| a.folder == folder && Path::new(&a.stored_path).starts_with(&legacy_root));
+        if legacy.exists() || sibling_in_legacy {
+            legacy
+        } else {
+            new
+        }
+    }
+
+    /// The folder (under `.mast/artifacts/`) of a scope: reuses the folder
     /// earlier artifacts of the same work item recorded, so renames never
     /// move files.
     fn folder_for(
@@ -951,7 +994,7 @@ impl ArtifactsService {
                 ensure_excluded(&canonical)?;
                 let folder =
                     self.folder_for(&space, work_item_id.as_deref(), request.chat_id.as_deref())?;
-                let dir = canonical.join(ARTIFACTS_DIR).join(&folder);
+                let dir = self.artifact_dir(&space.id, &canonical, &folder);
                 let mut name = file_name_of(&source)?;
                 let taken = self
                     .workspace()
@@ -1944,7 +1987,7 @@ impl ArtifactsService {
             "url": reply.url,
             "storedPath": reply.stored_path,
             "changed": reply.changed,
-            "note": "Link it in your message as [title](zeron-artifact:<artifactId>). For visual \
+            "note": "Link it in your message as [title](mast-artifact:<artifactId>). For visual \
                      kinds, run artifact_render_check before calling it done.",
         }))
     }
@@ -2141,11 +2184,12 @@ impl ArtifactsService {
 
     // ── marker fallback ─────────────────────────────────────────────────────
 
-    /// Register files an assistant message links with `zeron-artifact:<path>`
+    /// Register files an assistant message links with `mast-artifact:<path>` (or the legacy `zeron-artifact:`)
     /// (and Codex `visualize` references) once per (chat, path). Best effort:
     /// failures are logged. Runs on a blocking thread when a runtime exists.
     pub fn note_assistant_text(&self, chat_id: &str, text: &str) {
-        let has_marker = text.contains(mast_proto::artifacts::ARTIFACT_URL_SCHEME);
+        let has_marker = text.contains(mast_proto::artifacts::ARTIFACT_URL_SCHEME)
+            || text.contains(LEGACY_ARTIFACT_URL_SCHEME);
         let has_visualize = text.contains(mast_proto::visualize::ENVELOPE_PREFIX)
             || text.contains(mast_proto::visualize::LINE_PREFIX);
         if !has_marker && !has_visualize {
@@ -2345,16 +2389,43 @@ mod tests {
         assert!(ensure_excluded(&repo).unwrap());
         assert!(!ensure_excluded(&repo).unwrap());
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches(".mast/").count(), 1, "{exclude}");
         assert_eq!(exclude.matches(".zeron/").count(), 1, "{exclude}");
         assert_eq!(
             std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
             "target/\n"
         );
         // Ignored for real.
-        std::fs::create_dir_all(repo.join(".zeron/artifacts")).unwrap();
-        std::fs::write(repo.join(".zeron/artifacts/x.md"), "x").unwrap();
+        for dir in [".zeron", ".mast"] {
+            std::fs::create_dir_all(repo.join(dir).join("artifacts")).unwrap();
+            std::fs::write(repo.join(dir).join("artifacts/x.md"), "x").unwrap();
+        }
         let status = git(&repo, &["status", "--porcelain"]).unwrap();
-        assert!(!status.contains(".zeron"), "{status}");
+        assert!(!status.contains(".zeron") && !status.contains(".mast"), "{status}");
+    }
+
+    #[test]
+    fn exclude_only_adds_the_missing_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = canonical(tmp.path()).join("repo");
+        git_init(&repo);
+        let path = repo.join(".git/info/exclude");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.push_str("/.zeron/\n");
+        std::fs::write(&path, text).unwrap();
+        assert!(ensure_excluded(&repo).unwrap());
+        let exclude = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(exclude.matches(".zeron").count(), 1, "{exclude}");
+        assert_eq!(exclude.matches(".mast/").count(), 1, "{exclude}");
+        assert!(!ensure_excluded(&repo).unwrap());
+    }
+
+    #[test]
+    fn canonical_of_stored_knows_both_roots() {
+        for root in [".mast", ".zeron"] {
+            let stored = Path::new("/repo").join(root).join("artifacts/item-1/plan.md");
+            assert_eq!(canonical_of_stored(&stored), Some(PathBuf::from("/repo")));
+        }
     }
 
     #[test]

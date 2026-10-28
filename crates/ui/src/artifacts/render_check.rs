@@ -166,7 +166,7 @@ pub(crate) fn request_document(
                     &option.label
                 };
                 body.push_str(&format!(
-                    "<section data-zeron-option=\"{}\"><h3>{}</h3>\n{}\n</section>\n",
+                    "<section data-mast-option=\"{}\"><h3>{}</h3>\n{}\n</section>\n",
                     crate::browser::fragment::escape_attr(&option.id),
                     crate::browser::fragment::escape_text(label),
                     fragment

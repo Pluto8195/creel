@@ -56,7 +56,7 @@ pub struct LinearConfig {
 }
 
 impl LinearConfig {
-    /// Linear's API, the Keychain (or `ZERON_LINEAR_KEY_STORE=memory`),
+    /// Linear's API, the Keychain (or `MAST_LINEAR_KEY_STORE=memory`),
     /// and `LINEAR_API_KEY`.
     pub fn production() -> Self {
         Self {

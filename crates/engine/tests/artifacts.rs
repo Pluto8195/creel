@@ -206,7 +206,7 @@ fn find_snapshot(dir: &Path, id: &str, hash: &str) -> Option<PathBuf> {
 
 fn item_folder(rig: &Rig) -> PathBuf {
     rig.space_path
-        .join(".zeron/artifacts")
+        .join(".mast/artifacts")
         .join(format!("receiving-flow-v2-{}", &rig.item[..8]))
 }
 
@@ -227,14 +227,15 @@ async fn publish_copies_into_the_main_checkout_and_records_revisions_idempotentl
     .await;
     let id = first["artifactId"].as_str().unwrap().to_owned();
     assert_eq!(first["revision"], 1);
-    assert_eq!(first["url"], format!("zeron-artifact:{id}"));
+    assert_eq!(first["url"], format!("mast-artifact:{id}"));
     assert_eq!(first["changed"], true);
     let stored = PathBuf::from(first["storedPath"].as_str().unwrap());
     assert_eq!(stored, item_folder(&rig).join("plan.md"));
     assert!(!stored.starts_with(&rig.worktree));
     assert_eq!(std::fs::read_to_string(&stored).unwrap(), "# Plan v1\n");
-    // `.zeron/` is excluded once and the checkout stays clean.
+    // `.mast/` and the legacy `.zeron/` are each excluded once and the checkout stays clean.
     let exclude = std::fs::read_to_string(rig.space_path.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches(".mast/").count(), 1, "{exclude}");
     assert_eq!(exclude.matches(".zeron/").count(), 1, "{exclude}");
     assert!(!rig.space_path.join(".gitignore").exists());
     assert_eq!(git(&rig.space_path, &["status", "--porcelain"]), "");
@@ -331,6 +332,7 @@ async fn publish_copies_into_the_main_checkout_and_records_revisions_idempotentl
 
     // A second artifact never re-appends the exclude line.
     let exclude = std::fs::read_to_string(rig.space_path.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches(".mast/").count(), 1);
     assert_eq!(exclude.matches(".zeron/").count(), 1);
 }
 
@@ -380,7 +382,7 @@ async fn location_follows_the_primary_binding_and_submodules_exclude_via_git_pat
     .await;
     let stored = PathBuf::from(reply["storedPath"].as_str().unwrap());
     assert!(
-        stored.starts_with(sub.join(".zeron/artifacts")),
+        stored.starts_with(sub.join(".mast/artifacts")),
         "{}",
         stored.display()
     );
@@ -390,12 +392,13 @@ async fn location_follows_the_primary_binding_and_submodules_exclude_via_git_pat
     );
     let module_exclude = rig.space_path.join(".git/modules/lib/info/exclude");
     let text = std::fs::read_to_string(&module_exclude).unwrap();
+    assert_eq!(text.matches(".mast/").count(), 1, "{text}");
     assert_eq!(text.matches(".zeron/").count(), 1, "{text}");
     assert_eq!(git(&sub, &["status", "--porcelain"]), "");
     assert!(!sub.join(".gitignore").exists());
     // The superproject's own exclude was not needed.
     let top = std::fs::read_to_string(rig.space_path.join(".git/info/exclude")).unwrap_or_default();
-    assert!(!top.contains(".zeron/"));
+    assert!(!top.contains(".zeron/") && !top.contains(".mast/"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -641,11 +644,11 @@ async fn marker_links_and_visualize_references_register_once() {
     std::fs::write(&file, "# Notes v2\n").unwrap();
     assert_eq!(rig.core.artifacts.import_markers(CHAT, &text), 0);
     // An id link resolves to the existing artifact: nothing is registered.
-    let by_id = format!("[Rollout notes](zeron-artifact:{})", notes.id);
+    let by_id = format!("[Rollout notes](mast-artifact:{})", notes.id);
     assert_eq!(rig.core.artifacts.import_markers(CHAT, &by_id), 0);
     assert_eq!(rig.core.workspace.artifacts_of_space(SPACE).len(), 2);
     // A chat without a work item gets `_chats/<chatId>`.
-    let lone = format!("[Lone](zeron-artifact:{})", file.display());
+    let lone = format!("[Lone](mast-artifact:{})", file.display());
     assert_eq!(rig.core.artifacts.import_markers(LONE_CHAT, &lone), 1);
     let lone_row = rig
         .core
@@ -659,11 +662,81 @@ async fn marker_links_and_visualize_references_register_once() {
     assert!(
         lone_row.stored_path.starts_with(
             rig.space_path
-                .join(".zeron/artifacts/_chats")
+                .join(".mast/artifacts/_chats")
                 .to_str()
                 .unwrap()
         )
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_existing_legacy_zeron_folder_keeps_receiving_the_items_artifacts() {
+    let rig = rig().await;
+    // A work item whose artifacts already live under the pre-rename root.
+    let legacy = rig
+        .space_path
+        .join(".zeron/artifacts")
+        .join(format!("receiving-flow-v2-{}", &rig.item[..8]));
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(rig.worktree.join("plan.md"), "v1\n").unwrap();
+    let first = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": "plan.md", "title": "Plan", "note": "n", "idempotencyKey": "k1" }),
+    )
+    .await;
+    assert_eq!(
+        PathBuf::from(first["storedPath"].as_str().unwrap()),
+        legacy.join("plan.md")
+    );
+    // A second artifact of the same item joins it (registered sibling), and
+    // nothing is written under `.mast/`.
+    std::fs::write(rig.worktree.join("notes.md"), "n\n").unwrap();
+    let second = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": "notes.md", "title": "Notes", "note": "n", "idempotencyKey": "k2" }),
+    )
+    .await;
+    assert_eq!(
+        PathBuf::from(second["storedPath"].as_str().unwrap()),
+        legacy.join("notes.md")
+    );
+    assert!(!rig.space_path.join(".mast").exists());
+    // A new revision of the old artifact stays in the old folder, and its
+    // `mast-artifact:` URL resolves through the same row.
+    std::fs::write(rig.worktree.join("plan.md"), "v2\n").unwrap();
+    let third = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": "plan.md", "title": "Plan", "note": "n2", "idempotencyKey": "k3" }),
+    )
+    .await;
+    assert_eq!(third["revision"], 2);
+    assert_eq!(third["storedPath"], first["storedPath"]);
+    assert!(
+        third["url"].as_str().unwrap().starts_with("mast-artifact:"),
+        "{third}"
+    );
+    assert_eq!(git(&rig.space_path, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_zeron_artifact_links_are_still_imported() {
+    let rig = rig().await;
+    let file = rig.worktree.join("old-link.md");
+    std::fs::write(&file, "# Old\n").unwrap();
+    let text = format!("[Old link](zeron-artifact:{})", file.display());
+    assert_eq!(rig.core.artifacts.import_markers(CHAT, &text), 1);
+    rig.core.artifacts.note_assistant_text(CHAT, "no link here");
+    let row = rig
+        .core
+        .workspace
+        .artifacts_of_space(SPACE)
+        .into_iter()
+        .find(|a| a.title == "Old link")
+        .unwrap();
+    assert!(row.stored_path.contains(".mast/artifacts/"), "{}", row.stored_path);
 }
 
 #[tokio::test(flavor = "multi_thread")]

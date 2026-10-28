@@ -114,11 +114,11 @@ fn reply(status: u16, body: Value) -> (u16, Value) {
 
 fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) {
     match operation {
-        "ZeronLinearViewer" => reply(
+        "MastLinearViewer" => reply(
             200,
             json!({ "data": { "viewer": { "id": ME, "name": "Ada", "displayName": "ada" } } }),
         ),
-        "ZeronLinearAssignedUnstarted" => {
+        "MastLinearAssignedUnstarted" => {
             if state.assigned_error {
                 return reply(
                     400,
@@ -134,7 +134,7 @@ fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) 
                 } } } }),
             )
         }
-        "ZeronLinearIssue" => {
+        "MastLinearIssue" => {
             let id = variables["id"].as_str().unwrap_or_default();
             match state.issues.get(id) {
                 Some(n) => reply(200, json!({ "data": { "issue": n } })),
@@ -145,7 +145,7 @@ fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) 
                 ),
             }
         }
-        "ZeronLinearIssueAttachments" => reply(
+        "MastLinearIssueAttachments" => reply(
             200,
             json!({ "data": { "issue": { "identifier": variables["id"],
                 "attachments": { "nodes": [] } } } }),
@@ -389,7 +389,7 @@ async fn only_assigned_unstarted_projectless_tickets_get_children() {
     let queries = rig.mock.queries();
     let list = queries
         .iter()
-        .find(|(op, _)| op == "ZeronLinearAssignedUnstarted")
+        .find(|(op, _)| op == "MastLinearAssignedUnstarted")
         .unwrap();
     assert!(
         list.1
@@ -641,8 +641,8 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
     rig.mock.set(all(), &["ENG-1"]);
     // Linear on, no linked item: the pass asks for nothing.
     rig.refresh(SPACE).await.unwrap();
-    assert_eq!(rig.mock.count("ZeronLinearAssignedUnstarted"), 0);
-    assert_eq!(rig.mock.count("ZeronLinearViewer"), 0);
+    assert_eq!(rig.mock.count("MastLinearAssignedUnstarted"), 0);
+    assert_eq!(rig.mock.count("MastLinearViewer"), 0);
 
     // Setting one needs Linear on.
     let other = rig
@@ -660,7 +660,7 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
     rig.mock.set(Vec::new(), &[]);
     rig.set_destination(SPACE, Some(&dest)).await.unwrap();
     // Setting it syncs the Space in the background; let that pass finish.
-    while rig.mock.count("ZeronLinearAssignedUnstarted") == 0 {
+    while rig.mock.count("MastLinearAssignedUnstarted") == 0 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

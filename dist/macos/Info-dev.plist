@@ -29,9 +29,9 @@
          the same isolated development instance. -->
     <key>LSEnvironment</key>
     <dict>
-        <key>ZERON_DATA_DIR</key>
+        <key>MAST_DATA_DIR</key>
         <string>__DATA_DIR__</string>
-        <key>ZERON_IPC_PORT</key>
+        <key>MAST_IPC_PORT</key>
         <string>__IPC_PORT__</string>
     </dict>
     <key>NSHighResolutionCapable</key>

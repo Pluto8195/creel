@@ -2,7 +2,18 @@
 
 use std::path::{Component, Path};
 
-const FILE_MENTION_SCHEME: &str = "zeron-file:";
+/// Link scheme of file mentions and agent file links. Generated everywhere.
+pub(crate) const FILE_MENTION_SCHEME: &str = "mast-file:";
+/// The pre-rename scheme, still accepted wherever links are read (old
+/// transcripts, drafts and artifact Markdown contain it).
+pub(crate) const LEGACY_FILE_MENTION_SCHEME: &str = "zeron-file:";
+
+/// Strip a file-mention scheme (new or legacy) from the start of `target`.
+pub(crate) fn strip_file_scheme(target: &str) -> Option<&str> {
+    target
+        .strip_prefix(FILE_MENTION_SCHEME)
+        .or_else(|| target.strip_prefix(LEGACY_FILE_MENTION_SCHEME))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceFileLink {
@@ -21,8 +32,8 @@ pub(crate) fn resolve_workspace_file_link(
     }
 
     let decoded;
-    let is_file_mention = target.starts_with(FILE_MENTION_SCHEME);
-    let mut target = if let Some(encoded) = target.strip_prefix(FILE_MENTION_SCHEME) {
+    let is_file_mention = strip_file_scheme(target).is_some();
+    let mut target = if let Some(encoded) = strip_file_scheme(target) {
         decoded = percent_decode_path(encoded)?;
         if percent_encode_path(&decoded) != encoded || decoded.ends_with('/') {
             return None;
@@ -84,8 +95,8 @@ pub(crate) fn resolve_outside_file_link(target: &str, workspace_root: &str) -> O
         return None;
     }
     let decoded;
-    let is_file_mention = target.starts_with(FILE_MENTION_SCHEME);
-    let path = if let Some(encoded) = target.strip_prefix(FILE_MENTION_SCHEME) {
+    let is_file_mention = strip_file_scheme(target).is_some();
+    let path = if let Some(encoded) = strip_file_scheme(target) {
         decoded = percent_decode_path(encoded)?;
         decoded.as_str()
     } else if let Some(path) = target.strip_prefix("file://") {
@@ -235,15 +246,20 @@ mod tests {
     #[test]
     fn resolves_canonical_file_mentions() {
         assert_eq!(
-            resolve_workspace_file_link("zeron-file:src/a%20file.rs", "/work/comet"),
+            resolve_workspace_file_link("mast-file:src/a%20file.rs", "/work/comet"),
             Some(WorkspaceFileLink {
                 path: "src/a file.rs".into(),
                 line: None,
                 column: None,
             })
         );
-        assert!(resolve_workspace_file_link("zeron-file:src/%61.rs", "/work/comet").is_none());
-        assert!(resolve_workspace_file_link("zeron-file:src/", "/work/comet").is_none());
+        assert_eq!(
+            resolve_workspace_file_link("zeron-file:src/a%20file.rs", "/work/comet"),
+            resolve_workspace_file_link("mast-file:src/a%20file.rs", "/work/comet"),
+        );
+        assert!(resolve_workspace_file_link("zeron-file:src/a%20file.rs", "/work/comet").is_some());
+        assert!(resolve_workspace_file_link("mast-file:src/%61.rs", "/work/comet").is_none());
+        assert!(resolve_workspace_file_link("mast-file:src/", "/work/comet").is_none());
     }
 
     #[test]
@@ -278,7 +294,7 @@ mod tests {
             Some("/tmp/a b.md")
         );
         assert_eq!(
-            resolve_outside_file_link("zeron-file:/tmp/a%20b.md", root).as_deref(),
+            resolve_outside_file_link("mast-file:/tmp/a%20b.md", root).as_deref(),
             Some("/tmp/a b.md")
         );
         for target in [

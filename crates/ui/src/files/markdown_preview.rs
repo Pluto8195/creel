@@ -66,7 +66,7 @@ fn preview_link_outcome(activation: &render::LinkActivation) -> render::LinkOutc
 
 /// URL path resolution is independent of the UI host's filesystem.
 pub(super) fn relative_target(document: &str, target: &str) -> Option<(String, Option<String>)> {
-    if let Some(target) = target.strip_prefix("zeron-file:") {
+    if let Some(target) = crate::workspace_links::strip_file_scheme(target) {
         return relative_target("", target);
     }
     if target.starts_with('/') || target.contains(':') || target.contains('\\') {
@@ -179,7 +179,7 @@ pub(crate) struct MarkdownPreview {
     preview_focus: FocusHandle,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
     open_web_link: Option<WebLinkHandler>,
-    /// Consulted first for non-web links (`path:line`, `zeron-file:`); a
+    /// Consulted first for non-web links (`path:line`, `mast-file:`); a
     /// `true` return means the owner handled it.
     open_file_link: Option<FileLinkHandler>,
 }

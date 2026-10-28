@@ -37,7 +37,7 @@ fn capture(directory: &std::path::Path, name: &str) -> anyhow::Result<()> {
     };
     #[cfg(not(target_os = "macos"))]
     let status = {
-        let capture_window = std::env::var("ZERON_BROWSER_CAPTURE_WINDOW").ok();
+        let capture_window = mast_proto::env::var("MAST_BROWSER_CAPTURE_WINDOW").ok();
         let windows = std::process::Command::new("xdotool")
             .args([
                 "search",
@@ -198,7 +198,7 @@ fn main() -> anyhow::Result<()> {
         cx.spawn(async move |cx| {
             let run: anyhow::Result<()> = async {
                 pause(cx, 1200).await;
-                if std::env::var_os("ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
+                if mast_proto::env::var_os("MAST_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
                     return transcript_links::exercise(window, state.clone(), &_origin, &output, cx).await;
                 }
                 state.update(cx, |s, cx| {

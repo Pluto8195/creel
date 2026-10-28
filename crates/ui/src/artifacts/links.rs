@@ -3,11 +3,11 @@
 //! with [`classify`] and act on the result.
 //!
 //! - `path`, `path:line`, `path:line:col`, `path:line-line`, `path#L12`,
-//!   `zeron-file:path` open in the file viewer. The path resolves against the
-//!   artifact's canonical checkout (the parent of `.zeron/`), then the
+//!   `mast-file:path` open in the file viewer. The path resolves against the
+//!   artifact's canonical checkout (the parent of `.mast/` or the legacy `.zeron/`), then the
 //!   chat's checkout (absolute paths under either root); a relative path
 //!   names the same file in both.
-//! - `zeron-artifact:` opens that artifact tab.
+//! - `mast-artifact:` opens that artifact tab.
 //! - `http(s):` follows the web-link preference; `mailto:` is external.
 //! - `#id` is a same-document anchor and stays in place.
 //! - Everything else (`file:`, `javascript:`, `data:`, `..` or `./` paths,
@@ -25,7 +25,7 @@ pub(crate) enum ArtifactLink {
         line: Option<u32>,
         column: Option<u32>,
     },
-    /// The raw `zeron-artifact:` link.
+    /// The raw `mast-artifact:` link.
     Artifact(String),
     Web(String),
     External(String),
@@ -61,8 +61,8 @@ pub(crate) fn classify(
         return resolve_file(raw, canonical_root, chat_cwd);
     };
     match scheme.to_ascii_lowercase().as_str() {
-        "zeron-file" => resolve_file(raw, canonical_root, chat_cwd),
-        "zeron-artifact" => {
+        "mast-file" | "zeron-file" => resolve_file(raw, canonical_root, chat_cwd),
+        "mast-artifact" | "zeron-artifact" => {
             if super::model::link_target(raw).is_some() {
                 ArtifactLink::Artifact(raw.to_owned())
             } else {
@@ -184,9 +184,23 @@ mod tests {
         );
         assert_eq!(go("foo.tsx:120"), file("foo.tsx", Some(120), None));
         assert_eq!(
+            go("mast-file:src/a%20file.rs"),
+            file("src/a file.rs", None, None)
+        );
+        // The pre-rename scheme still resolves.
+        assert_eq!(
             go("zeron-file:src/a%20file.rs"),
             file("src/a file.rs", None, None)
         );
+    }
+
+    #[test]
+    fn legacy_artifact_scheme_still_opens_an_artifact_tab() {
+        assert_eq!(
+            go("zeron-artifact:art_123"),
+            ArtifactLink::Artifact("zeron-artifact:art_123".into())
+        );
+        assert_eq!(go("zeron-artifact:"), ArtifactLink::Blocked(BlockedReason::Path));
     }
 
     #[test]
@@ -214,8 +228,8 @@ mod tests {
     #[test]
     fn routes_artifacts_web_mail_and_anchors() {
         assert_eq!(
-            go("zeron-artifact:art_123"),
-            ArtifactLink::Artifact("zeron-artifact:art_123".into())
+            go("mast-artifact:art_123"),
+            ArtifactLink::Artifact("mast-artifact:art_123".into())
         );
         assert_eq!(
             go("https://example.com/a?b=1"),
@@ -259,7 +273,7 @@ mod tests {
             "a.rs?x=1",
             "",
             "a\\b.rs",
-            "zeron-artifact:",
+            "mast-artifact:",
         ] {
             assert_eq!(
                 go(raw),
@@ -276,8 +290,8 @@ mod tests {
         for routed in [
             "ui/src/foo.tsx:120",
             "flagship/orders.py",
-            "zeron-file:src/a.rs",
-            "zeron-artifact:art_1",
+            "mast-file:src/a.rs",
+            "mast-artifact:art_1",
             "mailto:a@example.com",
             "file:///etc/passwd",
             "javascript:alert(1)",
@@ -320,7 +334,7 @@ mod tests {
                 assert_eq!(html.matches("<iframe").count(), 1, "{kind:?}");
                 assert!(html.contains(LINK_HOST_SCRIPT), "{kind:?} host");
                 // The frame script lives in the escaped srcdoc attribute.
-                assert!(html.contains("__zeronLinksInstalled"), "{kind:?} frame");
+                assert!(html.contains("__mastLinksInstalled"), "{kind:?} frame");
                 assert!(!html.contains(LINK_FRAME_SCRIPT), "{kind:?} unescaped");
             }
         }

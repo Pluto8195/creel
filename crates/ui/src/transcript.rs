@@ -877,7 +877,7 @@ fn tool_patch_files(diff: &mast_proto::ToolDiff) -> Option<Vec<crate::changes::F
     if diff.path.trim().is_empty() {
         return None;
     }
-    let wrapped = format!("diff --git a/__zeron_tool_diff__ b/__zeron_tool_diff__\n{patch}\n");
+    let wrapped = format!("diff --git a/__mast_tool_diff__ b/__mast_tool_diff__\n{patch}\n");
     let mut files = crate::changes::parse_patch(&wrapped);
     if let Some(file) = files.first_mut() {
         file.path = diff.path.clone();
@@ -1123,7 +1123,7 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
-    /// A `[label](zeron-artifact:<id or path>)` link of a settled assistant
+    /// A `[label](mast-artifact:<id or path>)` link of a settled assistant
     /// message, shown as an artifact card (title, kind, role, revision,
     /// Open) resolved against the watched artifact snapshots at render time.
     ArtifactCard {
@@ -1851,13 +1851,13 @@ pub fn rows_for_entry(
     rows
 }
 
-/// `ZERON_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
+/// `MAST_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
 /// over rolling windows of [`FRAME_STATS_WINDOW`] samples) at `warn` level —
 /// the smoothness measurement knob. Off by default; zero cost when off.
 fn frame_stats_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED
-        .get_or_init(|| std::env::var("ZERON_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+        .get_or_init(|| mast_proto::env::var("MAST_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
 const FRAME_STATS_WINDOW: usize = 240;
@@ -1890,12 +1890,12 @@ pub(crate) fn record_view_frame(view: &'static str) -> bool {
     })
 }
 
-/// `ZERON_NO_RENDER_CACHE=1` bypasses the cross-frame flatten cache — the
+/// `MAST_NO_RENDER_CACHE=1` bypasses the cross-frame flatten cache — the
 /// A/B knob for the frame-cost measurement above.
 fn render_cache_disabled() -> bool {
     static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DISABLED.get_or_init(|| {
-        std::env::var("ZERON_NO_RENDER_CACHE").is_ok_and(|v| !v.is_empty() && v != "0")
+        mast_proto::env::var("MAST_NO_RENDER_CACHE").is_ok_and(|v| !v.is_empty() && v != "0")
     })
 }
 
@@ -5963,7 +5963,7 @@ impl Transcript {
                             // so the overlay stays live even once the trailer's
                             // 30s pending-send bridge has lapsed.
                             let pulse = motion::pulse_wave(motion::pulse_delta(
-                                &motion::ZERON_PULSE,
+                                &motion::MAST_PULSE,
                                 cx.entity_id(),
                                 cx,
                             ));
@@ -6007,7 +6007,7 @@ impl Transcript {
                     .opacity(
                         0.35 + 0.4
                             * motion::pulse_wave(motion::pulse_delta(
-                                &motion::ZERON_PULSE,
+                                &motion::MAST_PULSE,
                                 cx.entity_id(),
                                 cx,
                             )),
@@ -9236,7 +9236,7 @@ mod tests {
     #[gpui::test]
     fn prepared_whale_open_and_revisit_do_not_build_rows_on_ui(cx: &mut gpui::TestAppContext) {
         let (update, prepared, preparation_ms) = std::thread::spawn(|| {
-            let entries = if let Ok(path) = std::env::var("ZERON_WHALE_SNAPSHOT") {
+            let entries = if let Ok(path) = mast_proto::env::var("MAST_WHALE_SNAPSHOT") {
                 let doc = mast_doc::SessionDoc::init("fixture").unwrap();
                 doc.doc().import(&std::fs::read(path).unwrap()).unwrap();
                 mast_doc::join_continuation_entries(doc.read_entries().unwrap())
@@ -10786,8 +10786,8 @@ mod tests {
     fn artifact_links_become_cards_once_the_reply_settles() {
         let id = "0123456789abcdef0123456789abcdef";
         let raw = format!(
-            "Plan: [Receiving plan](zeron-artifact:{id}) and [notes](zeron-artifact:work/notes.md).\n\n\
-             Again [Receiving plan](zeron-artifact:{id})."
+            "Plan: [Receiving plan](mast-artifact:{id}) and [notes](mast-artifact:work/notes.md).\n\n\
+             Again [Receiving plan](mast-artifact:{id})."
         );
         let cards = |status| {
             let entry = assistant("a", status, vec![text_part("t", &raw)]);
@@ -10833,11 +10833,11 @@ mod tests {
             "Markdown \u{b7} plan \u{b7} r2 \u{b7} the plan"
         );
         let by_path = card_model("x", "work/plan.md", &store, Some("/repo"));
-        assert_eq!(by_path.url, format!("zeron-artifact:{}", id(1)));
+        assert_eq!(by_path.url, format!("mast-artifact:{}", id(1)));
         let unknown = card_model("Flow", "work/flow.fragment.html", &store, Some("/repo"));
         assert!(!unknown.registered);
         assert_eq!(unknown.title, "Flow");
-        assert_eq!(unknown.url, "zeron-artifact:work/flow.fragment.html");
+        assert_eq!(unknown.url, "mast-artifact:work/flow.fragment.html");
         assert_eq!(unknown.icon, crate::icons::FILE_CODE);
     }
 
@@ -13180,7 +13180,7 @@ mod tests {
     /// the RAW text either way, so projection never perturbs the diff key.
     #[test]
     fn user_rows_project_file_mentions_into_chips() {
-        let raw = "look at [composer.rs](zeron-file:crates/ui/src/composer.rs) please";
+        let raw = "look at [composer.rs](mast-file:crates/ui/src/composer.rs) please";
         let mut entry = assistant("u3", MessageStatus::Complete, vec![]);
         entry.role = MessageRole::User;
         entry.status = None;
@@ -13190,7 +13190,7 @@ mod tests {
             panic!("expected a user row");
         };
         assert!(
-            !text.contains("zeron-file:"),
+            !text.contains("mast-file:"),
             "raw link left visible: {text}"
         );
         assert!(text.contains("composer.rs"));

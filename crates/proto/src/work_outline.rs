@@ -91,7 +91,7 @@ pub mod limits {
 /// Environment kill switch: when set (any non-empty value other than `0`),
 /// every mutation fails with [`WorkOutlineErrorCode::WritesDisabled`] while
 /// reads keep working (contract section 3.6).
-pub const DISABLE_WRITES_ENV: &str = "ZERON_DISABLE_WORK_OUTLINE_WRITES";
+pub const DISABLE_WRITES_ENV: &str = "MAST_DISABLE_WORK_OUTLINE_WRITES";
 
 /// Roles accepted by [`derive_id`] (contract section 4). Not an enum so a
 /// later milestone can add a role without a wire change.
