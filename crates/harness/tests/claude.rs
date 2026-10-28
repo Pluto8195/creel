@@ -746,3 +746,36 @@ async fn title_run_disables_tools_and_denies_unexpected_permissions() {
         "{events:?}"
     );
 }
+
+/// A `read-only` run (even with auto-approve on) reaches the CLI with the
+/// mutating tools denied and no bypass flag; the fixture exits non-zero
+/// otherwise, so a completed run proves the restricted spawn.
+#[tokio::test]
+async fn read_only_run_spawns_with_denied_tools_and_no_bypass() {
+    let (controls, _steer, token) = controls("Yes");
+    let mut req = request("scenario:readonly");
+    req.sandbox = SandboxLevel::ReadOnly;
+    req.auto_approve = true;
+    let mut stream = harness().run(req, controls).await.unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            let done = matches!(event, AgentEvent::Done { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        events
+    })
+    .await
+    .unwrap();
+    token.cancel();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "restricted")),
+        "{events:?}"
+    );
+}

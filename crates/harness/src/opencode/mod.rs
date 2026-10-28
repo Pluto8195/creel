@@ -417,6 +417,7 @@ impl Harness for OpencodeHarness {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         // No instruction channel (m0-instruction-delivery.md section 2):
         // refuse instruction-bearing runs before spawning (acceptance 12).
+        crate::require_read_only_support(self.id(), &request)?;
         crate::require_instruction_support(self.id(), &self.instruction_support(), &request)?;
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
         let server = self.server(cwd.as_deref()).await?;
