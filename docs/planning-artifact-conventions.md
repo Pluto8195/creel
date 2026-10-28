@@ -114,12 +114,15 @@ One block per question:
   - `status: open|answered|resolved`
 - **Resolving:** when a question is settled, keep the block and set `status: resolved` with a
   `decision: <one line>` field. Do not delete resolved questions.
-- **Answers arrive as messages** like: `Answer to Q-3 in "Receiving flow — plan": <answer>`. Mast
-  has already written the answer into the stored artifact as `status: resolved` with the decision.
-  Read the current stored copy (`storedPath`), apply the decision to the rest of the document, and
-  publish a new revision.
+- **Answers arrive as messages** like: `Re: "Q-3: Should receiving lines merge by MPN?": By MPN`
+  (the same shape as any Required Action reply). Mast records the answer on the artifact but does
+  not edit your file: apply the decision to the document, set the block to `status: resolved`
+  with `decision:`, and publish a new revision. `artifact_get_plan` lists unreflected answers as
+  `answeredQuestions: [{id, answer, at, revision}]`, so you also see answers given while you were
+  not running.
 - **In Mast:** blocking questions each become a Required Action on the work item. Other open
-  questions are summarised as one "N open questions" action per artifact.
+  questions are summarised as one "N open questions in <plan>" action per artifact. Questions with
+  no `Q-n` id cannot become actions or be answered: always give each one an id.
 
 ### HTML
 
@@ -191,7 +194,8 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 - At the start of every chat under a work item, call `artifact_get_plan {}`:
 
   ```
-  → { artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims }
+  → { artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims,
+      answeredQuestions }
   ```
 
   With no plan, `artifactId` is `null` and a `note` explains why. If a plan exists, work from it and update it (publish a new revision) rather than writing a new

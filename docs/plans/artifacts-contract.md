@@ -176,3 +176,51 @@ Classified by `artifacts::links::classify`; HTML documents and Markdown share it
   file-link handler, which routes the same classes and keeps `#anchor`/doc-relative behavior.
 - Tests: resolver, delegate decision (fake navigation per scheme), and Markdown routing unit tests;
   no real-click test (headless only).
+
+## Amendment: phase 3, questions → Required Actions, revision diffs and drift (2026-10-27)
+
+Code: `crates/proto/src/artifacts/questions.rs`, `crates/engine/src/artifact_questions.rs`,
+`ArtifactsService::{answer_question, drift, plan_questions}`, UI in `crates/ui/src/artifacts/`.
+
+- **Questions as data.** `extract_questions(kind, text)` reads Markdown `> [!question]` blocks and
+  HTML `data-zeron-question` elements into `PlanQuestion {id, text, blocking, status, blocks}`.
+  The engine and the UI cards use it for counts; a question without a `Q-n` id is skipped. It
+  replaces nothing: `count_open_questions` stays the cheap counter for `artifact_get_plan`.
+- **Where state lives.** Answers are a new `ArtifactView.answers: [{id, answer, at, by,
+  revision}]` (≤ 24 entries, 600 chars each, written alone by `set_artifact_answers` so a device
+  that does not own the content never rewrites revisions). The document itself is never edited:
+  the agent folds the answer in with `status: resolved` + `decision:`. This replaces the design
+  doc's "Zeron writes the answer into the artifact" (no write races with the watcher, no
+  surprise diffs).
+- **Required Actions.** The engine (`ArtifactQuestionSync`, every 2 s on the artifact's owning
+  device, and immediately after `ArtifactAnswerQuestion`) reconciles pinned plans (or
+  `role: plan`) that belong to a work item:
+  - blocking open question → its own request, dedupe key `artq:<artifactId>:<Q-n>`, text
+    `Q-n: <question>`, info = plan title/revision, `Blocks:` and the artifact link;
+  - every other open question → one request, key `artq:<artifactId>:rollup`, text `N open
+    question(s) in <title>`, info lists `Q-n: text` per line. Requests cannot be edited, so a
+    changed list resolves the old request (system actor, note "Superseded: …") and raises a new
+    one;
+  - dedupe is by key across revisions; operation ids derive from (artifact, question, revision),
+    so republishing never duplicates. A question removed, resolved in the document, answered, or
+    no longer blocking resolves its request (system actor, note says why);
+  - origin: the Chat that published the latest revision (else the artifact's first publisher)
+    when live and in the Space, so Reply & resolve reaches it; otherwise a system-origin request.
+- **Resolution both ways.** Card answer → `ArtifactAnswerQuestion {artifactId, questionId,
+  answer}` (local registry write, not forwardable; the UI also sends `Re: "Q-n: text": answer` to
+  the publishing Chat) → the next reconcile resolves the request ("Answered in Mast: …"). A
+  request resolved by a person (Resolve, or Reply & resolve) records an answer: the note, else
+  "Resolved in Required Actions". The roll-up answers every question its info lists. A resolution
+  by the system actor never counts as an answer. Plain Resolve does not message the Chat; only
+  Reply & resolve (existing behaviour) and the card do.
+- **Agents.** `artifact_get_plan` adds `answeredQuestions: [{id, answer, at, revision}]`.
+  Conventions: answers arrive as `Re: "Q-n: …": <answer>` messages.
+- **Drift (C).** `ArtifactDrift {artifactId, targetDeviceId?}` → `{artifactId, commitsSince,
+  branch?, latestCommitAt?, since}` (forwardable, owning device). Rule: commits whose committer
+  date is at or after the latest revision, on the checkouts the item's chats work in (chat cwd
+  plus bound diff targets), skipping checkouts on `main` / `master` / detached HEAD; the checkout
+  with the most commits wins. Second signal, computed in the UI from the row: answered
+  questions the document does not yet mark resolved and no revision followed
+  (`unreflected_answers`). Shown as a badge with a tooltip; no LLM.
+- **Known limits.** Answers written from two devices at once are last-writer-wins; the checkout
+  scan is limited to the owning device; unrelated commits on a shared feature branch count.
