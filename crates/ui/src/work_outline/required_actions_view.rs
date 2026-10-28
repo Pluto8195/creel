@@ -1090,8 +1090,7 @@ impl RequiredActionsList {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let mut links = mast_proto::artifacts::artifact_links(&row.text);
-        for link in mast_proto::artifacts::artifact_links(row.info.as_deref().unwrap_or_default())
-        {
+        for link in mast_proto::artifacts::artifact_links(row.info.as_deref().unwrap_or_default()) {
             if !links.iter().any(|seen| seen.target == link.target) {
                 links.push(link);
             }

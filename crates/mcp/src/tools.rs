@@ -27,17 +27,17 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use mast_doc::SessionCommandPayload;
 use mast_proto::agent_tools::{self, AgentOrigin, tools as agent_tool_names};
 use mast_proto::{
     Chat, ChatConfig, ChatModelDisplay, HarnessId, ReasoningLevel, RunRequest, SandboxLevel,
     Session, SessionStatus, Space, UserInputAnswer,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
+use crate::mast::{HarnessInfo, Mast, TurnOutcome, resolve_chat_in, session_for, short};
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
-use crate::mast::{HarnessInfo, TurnOutcome, Mast, resolve_chat_in, session_for, short};
 
 /// Default and ceiling for the blocking waits.
 const DEFAULT_WAIT: Duration = Duration::from_secs(600);
@@ -1812,8 +1812,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
-    use std::sync::Mutex;
     use mast_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
+    use std::sync::Mutex;
 
     const BETA_TOKEN: &str = "tok-beta";
 
@@ -2469,7 +2469,10 @@ mod tests {
             ..Default::default()
         });
         let tools = tools(world.clone(), Some(BETA_TOKEN));
-        for (i, wider) in ["workspace-write", "danger-full-access"].into_iter().enumerate() {
+        for (i, wider) in ["workspace-write", "danger-full-access"]
+            .into_iter()
+            .enumerate()
+        {
             let err = tools
                 .call(
                     "create_chat",
@@ -2479,7 +2482,10 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("more permissive"), "{wider}: {err}");
         }
-        assert!(world.writes_of(methods::MUTATE).is_empty(), "nothing created");
+        assert!(
+            world.writes_of(methods::MUTATE).is_empty(),
+            "nothing created"
+        );
         // Omitted: capped at the parent's read-only, not the workspace-write default.
         tools
             .call("create_chat", json!({ "idempotency_key": "default" }))
@@ -2580,10 +2586,7 @@ mod tests {
         let first = tools.call("create_chat", args.clone()).await.unwrap();
         let chat_id = first["chatId"].as_str().unwrap().to_owned();
         let op = agent_tools::operation_id("chat-beta-2", "spawn-reviewer");
-        assert_eq!(
-            chat_id,
-            mast_proto::derive_id(&op, mast_proto::roles::CHAT)
-        );
+        assert_eq!(chat_id, mast_proto::derive_id(&op, mast_proto::roles::CHAT));
         assert_eq!(first["parentChatId"], "chat-beta-2");
         assert_eq!(first["replayed"], false);
         assert_eq!(first["sent"]["id"], "cmd-agent");

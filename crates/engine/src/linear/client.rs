@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use serde_json::{Value, json};
 use mast_proto::linear::{LinearError, LinearErrorCode};
+use serde_json::{Value, json};
 
 pub const LINEAR_GRAPHQL_URL: &str = "https://api.linear.app/graphql";
 /// Linear's rate-limit window is long; never wait more than this per retry.

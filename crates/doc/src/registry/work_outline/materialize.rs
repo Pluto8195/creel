@@ -22,7 +22,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use serde_json::Value;
 use mast_proto::work_outline::{
     WorkItemArchiveCause, WorkItemChatAssignmentState, WorkItemChatAssignmentView,
     WorkItemEffectiveStatus, WorkItemExternalReferenceView, WorkItemRollup, WorkItemStatus,
@@ -37,6 +36,7 @@ use mast_proto::work_outline_instructions::{
     verify_revision_body,
 };
 use mast_proto::work_outline_order::valid_order_key;
+use serde_json::Value;
 
 use super::{
     KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES,
@@ -1118,8 +1118,9 @@ fn materialize_instructions(
         // selection whose revision is missing or corrupt keeps the hash
         // comparison (fail toward showing drift).
         let selected_content_key = match (&selected_revision_id, selected_revision_integrity) {
-            (Some(id), Some(SelectedRevisionIntegrity::Ok)) => revision(id, repairs)
-                .map(|view| instruction_content_key(&view.body.entries)),
+            (Some(id), Some(SelectedRevisionIntegrity::Ok)) => {
+                revision(id, repairs).map(|view| instruction_content_key(&view.body.entries))
+            }
             _ => None,
         };
         let drift = match (&selected_revision_hash, &current) {

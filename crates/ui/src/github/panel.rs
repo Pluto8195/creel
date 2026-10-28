@@ -425,10 +425,7 @@ impl GithubPanel {
                         external_id: external_id.clone(),
                         url: pr.pr_ref.url.clone(),
                         cached_title: Some(pr.title.clone()),
-                        operation_id: mast_proto::work_outline::derive_id(
-                            &operation_id,
-                            "pr-link",
-                        ),
+                        operation_id: mast_proto::work_outline::derive_id(&operation_id, "pr-link"),
                     });
                     link.await.map(|_| item_id)
                 }

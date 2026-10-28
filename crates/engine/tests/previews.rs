@@ -1,8 +1,8 @@
 use futures::StreamExt;
-use std::{sync::Arc, time::Duration};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_proto::{HarnessId, PreviewService};
 use mast_rpc::{RpcReply, RpcService, methods};
+use std::{sync::Arc, time::Duration};
 
 fn service(device: &str, cwd: &std::path::Path, id: &str) -> PreviewService {
     PreviewService {

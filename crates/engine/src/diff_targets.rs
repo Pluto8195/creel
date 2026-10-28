@@ -20,13 +20,13 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
-use tokio::sync::watch;
 use mast_proto::{
     Chat, ChatDiffTargetEntry, ChatDiffTargetSource, ChatDiffTargetsReply, ChatDiffTargetsRow,
     DiffCheckoutCandidate, DiffCheckoutKind, ListChatDiffCheckoutsReply, MAX_CHAT_DIFF_TARGET_OPS,
     MAX_CHAT_DIFF_TARGETS, StoredChatDiffTarget,
 };
+use sha2::{Digest, Sha256};
+use tokio::sync::watch;
 
 use crate::execution_scope::{canonical_lenient, repository_id};
 use crate::repos::{Repos, hex, is_automatic_access_blocked};

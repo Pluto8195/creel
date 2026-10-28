@@ -1912,10 +1912,9 @@ mod tests {
         let old = full.revision(fixture::R_API_OLD).unwrap().clone();
         let mut missing = full.clone();
         missing.revisions.clear();
-        let reply = serde_json::to_value(
-            mast_proto::WorkOutlineQueryResponse::GetInstructionRevision(old),
-        )
-        .unwrap();
+        let reply =
+            serde_json::to_value(mast_proto::WorkOutlineQueryResponse::GetInstructionRevision(old))
+                .unwrap();
         let calls = seed(&shell, cx, missing, move |params| {
             if params.get("query").is_some() {
                 Ok(reply.clone())

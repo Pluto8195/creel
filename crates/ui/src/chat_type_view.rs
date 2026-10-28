@@ -7,11 +7,11 @@ use gpui::{
     Context, Entity, FocusHandle, MouseButton, Render, ScrollHandle, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 use mast_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus, PrStatus};
 use mast_proto::{Chat, ChatIndicator, ChatLinkSource, PrDashTab, PrReference, PrReviewAction};
 use mast_rpc::methods;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::popover;

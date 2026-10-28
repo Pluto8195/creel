@@ -5,9 +5,9 @@
 //!     cargo run -p mast-harness --example grok_subagent_probe -- /tmp/probe-dir
 
 use futures::StreamExt;
-use tokio::sync::{mpsc, oneshot};
 use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls};
 use mast_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
+use tokio::sync::{mpsc, oneshot};
 
 #[tokio::main]
 async fn main() {

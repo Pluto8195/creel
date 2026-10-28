@@ -1,8 +1,8 @@
 //! Frame → [`AgentEvent`] normalization (init dedupe, subagent tagging, tool
 //! decoding, error-code mapping).
 
-use serde_json::Value;
 use mast_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, ToolCall};
+use serde_json::Value;
 
 use super::wire::{ContentBlock, Frame};
 

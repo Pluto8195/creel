@@ -23,14 +23,14 @@
 //! in a terminal) the original unattributed tools work as before.
 
 mod jsonrpc;
+mod mast;
 mod tools;
 mod transcript;
-mod mast;
 
 pub use jsonrpc::serve_stdio;
+pub use mast::{Mast, token_from_env};
 pub use tools::{ToolDef, Tools};
 pub use transcript::{RenderOptions, RenderedMessage, render_entries};
-pub use mast::{Mast, token_from_env};
 
 /// How `zeron mcp` finds the engine and which Run's token it presents.
 #[derive(Clone)]

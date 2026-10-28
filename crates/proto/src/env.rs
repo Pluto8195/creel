@@ -60,16 +60,16 @@ mod tests {
 
     #[test]
     fn neither_name_is_not_present() {
-        assert_eq!(
-            var("MAST_ENV_TEST_NEITHER"),
-            Err(VarError::NotPresent)
-        );
+        assert_eq!(var("MAST_ENV_TEST_NEITHER"), Err(VarError::NotPresent));
         assert!(var_os("MAST_ENV_TEST_NEITHER").is_none());
     }
 
     #[test]
     fn legacy_name_maps_only_mast_names() {
-        assert_eq!(legacy_name("MAST_DATA_DIR").as_deref(), Some("ZERON_DATA_DIR"));
+        assert_eq!(
+            legacy_name("MAST_DATA_DIR").as_deref(),
+            Some("ZERON_DATA_DIR")
+        );
         assert_eq!(legacy_name("HOME"), None);
         assert_eq!(var("HOME_NOT_SET_ANYWHERE_X"), Err(VarError::NotPresent));
     }

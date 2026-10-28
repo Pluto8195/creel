@@ -10,10 +10,10 @@
 //! Single-test binary: it mutates MAST_ADAPTERS_DIR process-wide.
 
 use futures::StreamExt;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use mast_harness::{AcpHarness, Harness, RunControls};
 use mast_proto::{AgentEvent, RunRequest};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 #[ignore = "network + npm + codex CLI; installs the pinned adapter for real"]

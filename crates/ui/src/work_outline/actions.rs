@@ -721,8 +721,8 @@ fn mismatched_query() -> WorkOutlineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use mast_proto::WorkOutlinePlacement;
+    use std::cell::RefCell;
 
     fn move_mutation(operation_id: &str) -> WorkOutlineMutation {
         WorkOutlineMutation::MoveWorkItem(MoveWorkItemParams {

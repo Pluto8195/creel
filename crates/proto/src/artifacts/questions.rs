@@ -150,7 +150,11 @@ fn markdown_questions(text: &str) -> Vec<PlanQuestion> {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             // A new `[!question]` header starts a new block even without a
             // blank line between two quotes.
-            if rest.trim_start().to_ascii_lowercase().starts_with("[!question]") {
+            if rest
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("[!question]")
+            {
                 flush(&mut quote, &mut out);
             }
             quote.push(rest);
@@ -235,7 +239,10 @@ fn markdown_question(lines: &[&str]) -> Option<PlanQuestion> {
 fn html_questions(text: &str) -> Vec<PlanQuestion> {
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(rel) = super::find_first_of(&text[from..], &[super::QUESTION_ATTR, super::LEGACY_QUESTION_ATTR]) {
+    while let Some(rel) = super::find_first_of(
+        &text[from..],
+        &[super::QUESTION_ATTR, super::LEGACY_QUESTION_ATTR],
+    ) {
         let at = from + rel;
         let tag_start = text[..at].rfind('<').unwrap_or(at);
         let tag_end = text[at..].find('>').map_or(text.len(), |e| at + e);
@@ -243,7 +250,8 @@ fn html_questions(text: &str) -> Vec<PlanQuestion> {
         from = tag_end.max(at + 1);
         let Some(id) = attr(tag, super::QUESTION_ATTR)
             .or_else(|| attr(tag, super::LEGACY_QUESTION_ATTR))
-            .and_then(|v| id_of(v.trim())) else {
+            .and_then(|v| id_of(v.trim()))
+        else {
             continue;
         };
         let name: String = tag[1.min(tag.len())..]
@@ -263,7 +271,9 @@ fn html_questions(text: &str) -> Vec<PlanQuestion> {
             status: attr(tag, "data-status")
                 .map(PlanQuestionStatus::parse)
                 .unwrap_or_default(),
-            blocks: attr(tag, "data-blocks").filter(|v| !v.is_empty()).map(str::to_owned),
+            blocks: attr(tag, "data-blocks")
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
         });
     }
     out
@@ -395,7 +405,10 @@ mod tests {
             at: 5,
             ..Default::default()
         }];
-        let open: Vec<_> = open_unanswered(&qs, &answers).iter().map(|q| q.id.clone()).collect();
+        let open: Vec<_> = open_unanswered(&qs, &answers)
+            .iter()
+            .map(|q| q.id.clone())
+            .collect();
         assert_eq!(open, ["Q-3"]);
     }
 
@@ -403,8 +416,16 @@ mod tests {
     fn unreflected_answers_need_no_newer_revision() {
         let qs = extract_questions(ArtifactKind::Markdown, MD);
         let answers = vec![
-            ArtifactQuestionAnswer { id: "Q-1".into(), at: 10, ..Default::default() },
-            ArtifactQuestionAnswer { id: "Q-2".into(), at: 10, ..Default::default() },
+            ArtifactQuestionAnswer {
+                id: "Q-1".into(),
+                at: 10,
+                ..Default::default()
+            },
+            ArtifactQuestionAnswer {
+                id: "Q-2".into(),
+                at: 10,
+                ..Default::default()
+            },
         ];
         // Q-2 is resolved in the doc; Q-1 answered after the latest revision.
         assert_eq!(unreflected_answers(&qs, &answers, 5).len(), 1);

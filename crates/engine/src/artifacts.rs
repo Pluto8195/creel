@@ -29,24 +29,24 @@ use base64::Engine as _;
 use chrono::Utc;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde::Deserialize;
-use serde_json::{Value, json};
 use mast_proto::artifacts::{
-    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
-    ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentStatus, MAX_COMMENTS,
-    MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, kind_supports_comments, next_comment_id,
-    normalize_comment_id, resolve_anchor,
-    ARTIFACTS_DIR, LEGACY_ARTIFACTS_DIR, LEGACY_ARTIFACT_URL_SCHEME, LEGACY_ZERON_DIR, ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply,
-    ArtifactError, ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply,
-    ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
-    ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
-    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
-    ArtifactsSnapshot, EDITED_WITHOUT_NOTE, IMPORTED_NOTE, OptionsManifest, PROMOTE_DIR, PlanScope,
-    SPACE_FOLDER, MAST_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
+    ARTIFACTS_DIR, ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
+    ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
+    ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply, ArtifactPublishReply,
+    ArtifactRegisterParams, ArtifactRenderCheckResult, ArtifactRenderCompanion,
+    ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderTheme, ArtifactRenderViewport,
+    ArtifactResolveCommentParams, ArtifactResolveCommentReply, ArtifactRevision, ArtifactView,
+    ArtifactViewport, ArtifactsSnapshot, CommentStatus, EDITED_WITHOUT_NOTE, IMPORTED_NOTE,
+    LEGACY_ARTIFACT_URL_SCHEME, LEGACY_ARTIFACTS_DIR, LEGACY_ZERON_DIR, MAST_DIR,
+    MAX_COMMENT_CHARS, MAX_COMMENTS, MAX_QUOTE_CHARS, OptionsManifest, PROMOTE_DIR, PlanScope,
+    SPACE_FOLDER, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
     clean_title, content_hash, count_open_questions, count_unverified_claims,
-    is_safe_relative_path, mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
+    is_safe_relative_path, kind_supports_comments, mime_type_for, next_comment_id,
+    normalize_comment_id, publish_operation_id, resolve_anchor, tagged_file_name, work_item_folder,
 };
 use mast_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 use crate::workspace_host::WorkspaceHost;
 
@@ -56,7 +56,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn clean_answer(answer: &str) -> String {
     let answer = answer.trim();
-    match answer.char_indices().nth(mast_proto::artifacts::MAX_ANSWER_CHARS) {
+    match answer
+        .char_indices()
+        .nth(mast_proto::artifacts::MAX_ANSWER_CHARS)
+    {
         Some((cut, _)) => answer[..cut].to_owned(),
         None => answer.to_owned(),
     }
@@ -1043,8 +1046,7 @@ impl ArtifactsService {
         }
         // A fragment's standalone preview travels with it.
         if kind == ArtifactKind::HtmlFragment
-            && let Some(preview) =
-                mast_proto::visualize::preview_sibling(&source.to_string_lossy())
+            && let Some(preview) = mast_proto::visualize::preview_sibling(&source.to_string_lossy())
             && Path::new(&preview).is_file()
         {
             let stored_preview =
@@ -1382,8 +1384,12 @@ impl ArtifactsService {
             .ok()
             .or_else(|| self.current_bytes(artifact).ok())
             .unwrap_or_default();
-        let questions = mast_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
-        lock(&self.inner.questions).insert(artifact.id.clone(), (current.hash.clone(), questions.clone()));
+        let questions =
+            mast_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
+        lock(&self.inner.questions).insert(
+            artifact.id.clone(),
+            (current.hash.clone(), questions.clone()),
+        );
         questions
     }
 
@@ -1393,7 +1399,10 @@ impl ArtifactsService {
     /// skipped: their history is everyone's, not this work's.
     pub fn drift(&self, artifact_id: &str) -> Outcome<mast_proto::ArtifactDriftReply> {
         let artifact = self.local_artifact(artifact_id)?;
-        let since = artifact.revisions.first().map_or(artifact.updated_at, |r| r.at);
+        let since = artifact
+            .revisions
+            .first()
+            .map_or(artifact.updated_at, |r| r.at);
         let mut reply = mast_proto::ArtifactDriftReply {
             artifact_id: artifact.id.clone(),
             since,
@@ -1432,9 +1441,12 @@ impl ArtifactsService {
             if matches!(branch.as_str(), "" | "main" | "master" | "HEAD") {
                 continue;
             }
-            let count: u32 = git(&top, &["rev-list", "--count", &format!("--after={after}"), "HEAD"])
-                .and_then(|c| c.parse().ok())
-                .unwrap_or(0);
+            let count: u32 = git(
+                &top,
+                &["rev-list", "--count", &format!("--after={after}"), "HEAD"],
+            )
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
             if count > reply.commits_since {
                 reply.commits_since = count;
                 reply.branch = Some(branch);
@@ -1457,7 +1469,9 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         let id = params.question_id.trim().to_ascii_uppercase();
         if !id.starts_with("Q-") || id.len() < 3 {
             return Err(ArtifactError::invalid("question id must look like Q-3"));
@@ -1483,9 +1497,13 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         if !kind_supports_comments(artifact.kind) {
-            return Err(ArtifactError::invalid("comments are for HTML and Mermaid artifacts"));
+            return Err(ArtifactError::invalid(
+                "comments are for HTML and Mermaid artifacts",
+            ));
         }
         let text = clip_chars(params.text.trim(), MAX_COMMENT_CHARS);
         if text.is_empty() {
@@ -1497,7 +1515,12 @@ impl ArtifactsService {
                 "comment anchor needs an id or quoted text",
             ));
         }
-        let quote = match params.quote.split_whitespace().collect::<Vec<_>>().join(" ") {
+        let quote = match params
+            .quote
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+        {
             q if q.is_empty() => anchor.exact.clone(),
             q => q,
         };
@@ -1537,7 +1560,9 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         let id = normalize_comment_id(&params.comment_id)
             .ok_or_else(|| ArtifactError::invalid("comment id must look like C-3"))?;
         let mut comments = artifact.comments.clone();
@@ -1573,14 +1598,22 @@ impl ArtifactsService {
 
     /// Mark the open comments in `ids` resolved by the agent, addressed in
     /// `revision`. Unknown ids are ignored.
-    fn mark_comments_addressed(&self, artifact_id: &str, ids: &[String], revision: u32) -> Outcome<()> {
+    fn mark_comments_addressed(
+        &self,
+        artifact_id: &str,
+        ids: &[String],
+        revision: u32,
+    ) -> Outcome<()> {
         let Some(artifact) = self.workspace().artifact(artifact_id) else {
             return Ok(());
         };
         let wanted: Vec<String> = ids.iter().filter_map(|i| normalize_comment_id(i)).collect();
         let mut comments = artifact.comments.clone();
         let mut any = false;
-        for c in comments.iter_mut().filter(|c| c.is_open() && wanted.contains(&c.id)) {
+        for c in comments
+            .iter_mut()
+            .filter(|c| c.is_open() && wanted.contains(&c.id))
+        {
             c.status = CommentStatus::Resolved;
             c.resolved_at = Some(now_ms());
             c.resolved_by = Some("agent".to_owned());
@@ -1640,12 +1673,16 @@ impl ArtifactsService {
             by,
             revision: artifact.current_revision,
         });
-        let excess = answers.len().saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
+        let excess = answers
+            .len()
+            .saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
         answers.drain(..excess);
         self.workspace()
             .set_artifact_answers(&artifact.id, &answers)
             .map_err(|e| ArtifactError::io(e.to_string()))?
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", artifact.id))
+            })?;
         Ok(())
     }
 
@@ -1663,9 +1700,13 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         if artifact.kind != ArtifactKind::Options {
-            return Err(ArtifactError::invalid("only an options artifact can have a pick"));
+            return Err(ArtifactError::invalid(
+                "only an options artifact can have a pick",
+            ));
         }
         let cut = |text: &str, max: usize| -> String { text.trim().chars().take(max).collect() };
         let option_id = params
@@ -1688,7 +1729,9 @@ impl ArtifactsService {
         self.workspace()
             .set_artifact_pick(&artifact.id, pick.as_ref())
             .map_err(|e| ArtifactError::io(e.to_string()))?
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", artifact.id))
+            })?;
         self.sync_pick_answer(&artifact, pick.as_ref());
         Ok(mast_proto::ArtifactPickOptionReply {
             artifact_id: artifact.id,
@@ -1698,7 +1741,11 @@ impl ArtifactsService {
 
     /// Mirror the pick into the plan question the manifest names, if any.
     /// Best effort: the pick itself is already stored.
-    fn sync_pick_answer(&self, artifact: &ArtifactView, pick: Option<&mast_proto::ArtifactOptionPick>) {
+    fn sync_pick_answer(
+        &self,
+        artifact: &ArtifactView,
+        pick: Option<&mast_proto::ArtifactOptionPick>,
+    ) {
         let Some(question_id) = self
             .current_bytes(artifact)
             .ok()
@@ -1714,13 +1761,21 @@ impl ArtifactsService {
             .workspace()
             .artifacts_of_space(&artifact.space_id)
             .into_iter()
-            .find(|a| a.pinned_as_plan && a.archived_at.is_none() && a.work_item_id.as_deref() == Some(item))
+            .find(|a| {
+                a.pinned_as_plan
+                    && a.archived_at.is_none()
+                    && a.work_item_id.as_deref() == Some(item)
+            })
         else {
             return;
         };
         let result = match pick {
             Some(pick) => {
-                let label = if pick.label.is_empty() { String::new() } else { format!(": {}", pick.label) };
+                let label = if pick.label.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", pick.label)
+                };
                 let text = clean_answer(&format!("Picked option {}{label}", pick.option_id));
                 self.record_answer(&plan, &question_id, text, pick.by.clone())
             }
@@ -1979,7 +2034,11 @@ impl ArtifactsService {
             by: caller.actor(),
         })?;
         if !args.addressed_comments.is_empty() {
-            self.mark_comments_addressed(&reply.artifact_id, &args.addressed_comments, reply.revision)?;
+            self.mark_comments_addressed(
+                &reply.artifact_id,
+                &args.addressed_comments,
+                reply.revision,
+            )?;
         }
         Ok(json!({
             "artifactId": reply.artifact_id,
@@ -2401,7 +2460,10 @@ mod tests {
             std::fs::write(repo.join(dir).join("artifacts/x.md"), "x").unwrap();
         }
         let status = git(&repo, &["status", "--porcelain"]).unwrap();
-        assert!(!status.contains(".zeron") && !status.contains(".mast"), "{status}");
+        assert!(
+            !status.contains(".zeron") && !status.contains(".mast"),
+            "{status}"
+        );
     }
 
     #[test]
@@ -2423,7 +2485,9 @@ mod tests {
     #[test]
     fn canonical_of_stored_knows_both_roots() {
         for root in [".mast", ".zeron"] {
-            let stored = Path::new("/repo").join(root).join("artifacts/item-1/plan.md");
+            let stored = Path::new("/repo")
+                .join(root)
+                .join("artifacts/item-1/plan.md");
             assert_eq!(canonical_of_stored(&stored), Some(PathBuf::from("/repo")));
         }
     }

@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use serde_json::json;
 use mast_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactOptionPick, ArtifactView};
 use mast_rpc::methods;
+use serde_json::json;
 
 use super::tab::{ArtifactTab, FakeWebHost};
 use super::tests::{

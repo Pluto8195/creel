@@ -10,9 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use serde::Deserialize;
-use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc};
 use mast_doc::{
     SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
 };
@@ -21,6 +18,9 @@ use mast_proto::{
     Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
 };
 use mast_rpc::{RpcClient, RpcError, connect_ws, methods};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc};
 
 /// First-item wait for a watch snapshot. Localhost; the engine answers
 /// watch attaches in milliseconds unless it is still assembling stores.

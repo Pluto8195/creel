@@ -10,15 +10,15 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use mast_engine::linear::{LinearConfig, MemoryKeyStore, client};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_proto::{
     HarnessId, LinearError, LinearErrorCode, WorkItemStatus, WorkOutlineSnapshot, derive_id, roles,
 };
 use mast_rpc::{RpcClient, methods};
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 const KEY: &str = "lin_api_TESTSECRET0123456789abcdef";
 const OTHER_KEY: &str = "lin_api_OTHERSECRET987654321";
@@ -733,7 +733,9 @@ async fn lists_are_cached_peekable_and_refreshed_on_force() {
     rig.mock.state.lock().unwrap().my_issue_pages =
         vec![vec![issue_node("ENG-1", "One", None, "started")]];
     for _ in 0..3 {
-        rig.call(methods::LINEAR_MY_ISSUES, json!({})).await.unwrap();
+        rig.call(methods::LINEAR_MY_ISSUES, json!({}))
+            .await
+            .unwrap();
     }
     assert_eq!(rig.mock.count("MastLinearMyIssues"), 1, "window hit");
 
@@ -1277,10 +1279,17 @@ async fn project_detail_is_read_only_cached_and_served_stored() {
         )
         .await;
     assert_eq!(stored.code, LinearErrorCode::NotFound);
-    assert_eq!(rig.mock.count("MastLinearProjectDetail"), 0, "stored-only never asks Linear");
+    assert_eq!(
+        rig.mock.count("MastLinearProjectDetail"),
+        0,
+        "stored-only never asks Linear"
+    );
 
     let detail = rig
-        .call(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "p-1" }))
+        .call(
+            methods::LINEAR_PROJECT_DETAIL,
+            json!({ "projectId": "p-1" }),
+        )
         .await
         .unwrap();
     assert_eq!(detail["name"], json!("Auth"));
@@ -1292,9 +1301,12 @@ async fn project_detail_is_read_only_cached_and_served_stored() {
     assert_eq!(rig.mock.recorded()[0].variables["updates"], json!(3));
 
     // A second read is served from the cache; stored-only sees it too.
-    rig.call(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "p-1" }))
-        .await
-        .unwrap();
+    rig.call(
+        methods::LINEAR_PROJECT_DETAIL,
+        json!({ "projectId": "p-1" }),
+    )
+    .await
+    .unwrap();
     let again = rig
         .call(
             methods::LINEAR_PROJECT_DETAIL,
@@ -1313,7 +1325,10 @@ async fn project_detail_is_read_only_cached_and_served_stored() {
     assert_eq!(rig.mock.count("MastLinearProjectDetail"), 2);
 
     let missing = rig
-        .linear_err(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "nope" }))
+        .linear_err(
+            methods::LINEAR_PROJECT_DETAIL,
+            json!({ "projectId": "nope" }),
+        )
         .await;
     assert_eq!(missing.code, LinearErrorCode::NotFound);
 }

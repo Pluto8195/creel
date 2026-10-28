@@ -1296,9 +1296,7 @@ pub async fn serve_ipc(
         agent_tools::note_bound_ipc_port(addr.port());
     }
     tracing::info!(port, "IPC server listening");
-    Ok(tokio::spawn(mast_rpc::serve_ws_listener(
-        listener, service,
-    )))
+    Ok(tokio::spawn(mast_rpc::serve_ws_listener(listener, service)))
 }
 
 /// Block until the WorkOS session is signed in AND org-scoped. On a TTY, print the

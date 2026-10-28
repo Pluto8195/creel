@@ -14,8 +14,8 @@
 //! Everything here is pure so the decode/format/state logic is unit-testable
 //! without a gpui context; the dialog itself lives in `shell/closeout_ui.rs`.
 
-use serde_json::Value;
 use mast_proto::GitHistoryCommit;
+use serde_json::Value;
 
 /// `{chatId, cwd, force}` → `{removed, branchDeleted, archived}`; errors carry
 /// human-readable refusal reasons.

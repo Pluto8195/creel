@@ -24,9 +24,9 @@ use gpui::{
     px,
 };
 
-use std::time::Duration;
 use mast_engine::registry::TitleSettings;
 use mast_engine::registry::{HarnessDescriptor, descriptor_enabled};
+use std::time::Duration;
 
 use mast_proto::Model;
 use mast_proto::{AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId};

@@ -9858,9 +9858,10 @@ mod tests {
 
     #[test]
     fn legacy_file_mention_links_still_project_to_chips() {
-        let (display, spans) =
-            sent_mention_display("see [lib.rs](zeron-file:src/lib.rs) and [a.rs](mast-file:src/a.rs)")
-                .expect("both schemes are mentions");
+        let (display, spans) = sent_mention_display(
+            "see [lib.rs](zeron-file:src/lib.rs) and [a.rs](mast-file:src/a.rs)",
+        )
+        .expect("both schemes are mentions");
         assert_eq!(spans.len(), 2, "{display}");
         assert_eq!(spans[0].path.as_ref(), "src/lib.rs");
         assert_eq!(spans[1].path.as_ref(), "src/a.rs");

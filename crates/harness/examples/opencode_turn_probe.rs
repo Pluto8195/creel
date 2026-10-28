@@ -11,9 +11,9 @@
 //!         "Reply with exactly: PONG"
 
 use futures::StreamExt;
-use tokio::sync::mpsc;
 use mast_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
 use mast_proto::{AgentEvent, RunRequest, SandboxLevel};
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() {
@@ -136,8 +136,8 @@ async fn main() {
     };
     eprintln!("--- done: {status:?} text={text:?} tools={tools}");
     match status {
-        Some(mast_proto::DoneStatus::Completed)
-            if !expect_interrupt && !text.trim().is_empty() => {}
+        Some(mast_proto::DoneStatus::Completed) if !expect_interrupt && !text.trim().is_empty() => {
+        }
         Some(mast_proto::DoneStatus::Interrupted) if expect_interrupt => {}
         _ => std::process::exit(1),
     }

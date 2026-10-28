@@ -7,7 +7,10 @@ use super::*;
 
 type Store = SwrStore<Vec<u32>, String>;
 
-fn counting(calls: &Arc<AtomicUsize>, value: Vec<u32>) -> impl FnOnce() -> BoxFuture<'static, Result<Vec<u32>, String>> {
+fn counting(
+    calls: &Arc<AtomicUsize>,
+    value: Vec<u32>,
+) -> impl FnOnce() -> BoxFuture<'static, Result<Vec<u32>, String>> {
     let calls = calls.clone();
     move || {
         async move {
@@ -25,8 +28,14 @@ fn counting(calls: &Arc<AtomicUsize>, value: Vec<u32>) -> impl FnOnce() -> BoxFu
 async fn fresh_value_makes_no_request() {
     let store = Store::new(Duration::from_secs(60));
     let calls = Arc::new(AtomicUsize::new(0));
-    store.get("k", false, counting(&calls, vec![1])).await.unwrap();
-    let again = store.get("k", false, counting(&calls, vec![2])).await.unwrap();
+    store
+        .get("k", false, counting(&calls, vec![1]))
+        .await
+        .unwrap();
+    let again = store
+        .get("k", false, counting(&calls, vec![2]))
+        .await
+        .unwrap();
     assert_eq!(again.value, vec![1]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
@@ -35,8 +44,14 @@ async fn fresh_value_makes_no_request() {
 async fn force_bypasses_the_window() {
     let store = Store::new(Duration::from_secs(60));
     let calls = Arc::new(AtomicUsize::new(0));
-    store.get("k", false, counting(&calls, vec![1])).await.unwrap();
-    let forced = store.get("k", true, counting(&calls, vec![2])).await.unwrap();
+    store
+        .get("k", false, counting(&calls, vec![1]))
+        .await
+        .unwrap();
+    let forced = store
+        .get("k", true, counting(&calls, vec![2]))
+        .await
+        .unwrap();
     assert_eq!(forced.value, vec![2]);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -58,7 +73,10 @@ async fn concurrent_gets_share_one_request() {
 async fn failure_keeps_the_stale_value() {
     let store = Store::new(Duration::ZERO);
     let calls = Arc::new(AtomicUsize::new(0));
-    store.get("k", false, counting(&calls, vec![1])).await.unwrap();
+    store
+        .get("k", false, counting(&calls, vec![1]))
+        .await
+        .unwrap();
     let failed = store
         .get("k", false, || async { Err("boom".to_string()) }.boxed())
         .await;
@@ -73,7 +91,10 @@ async fn a_cold_start_loads_the_persisted_cache() {
     let first = Store::new(Duration::from_secs(60));
     first.attach_file(path.clone());
     let calls = Arc::new(AtomicUsize::new(0));
-    first.get("k", false, counting(&calls, vec![7])).await.unwrap();
+    first
+        .get("k", false, counting(&calls, vec![7]))
+        .await
+        .unwrap();
     // The write runs on a blocking worker.
     for _ in 0..100 {
         if path.exists() {
@@ -85,7 +106,10 @@ async fn a_cold_start_loads_the_persisted_cache() {
     second.attach_file(path);
     assert_eq!(second.peek("k").unwrap().value, vec![7]);
     // Still inside the window: no request.
-    let hit = second.get("k", false, counting(&calls, vec![9])).await.unwrap();
+    let hit = second
+        .get("k", false, counting(&calls, vec![9]))
+        .await
+        .unwrap();
     assert_eq!(hit.value, vec![7]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
@@ -104,7 +128,10 @@ async fn stale_persisted_value_is_peekable_then_refetched() {
     store.attach_file(path);
     assert_eq!(store.peek("k").unwrap().value, vec![1]);
     let calls = Arc::new(AtomicUsize::new(0));
-    let fresh = store.get("k", false, counting(&calls, vec![2])).await.unwrap();
+    let fresh = store
+        .get("k", false, counting(&calls, vec![2]))
+        .await
+        .unwrap();
     assert_eq!(fresh.value, vec![2]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

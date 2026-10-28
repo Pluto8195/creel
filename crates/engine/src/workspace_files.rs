@@ -10,9 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
-use tokio::sync::{Notify, broadcast, mpsc};
-use tokio_util::sync::CancellationToken;
 use mast_proto::{
     ListWorkspaceDirectoryRequest, ReadWorkspaceFileRequest, SearchWorkspaceFilesRequest,
     WatchWorkspaceFilesRequest, WorkspaceDirectoryPage, WorkspaceEntry, WorkspaceEntryKind,
@@ -23,6 +20,9 @@ use mast_proto::{
     WriteWorkspaceFileOutcome, WriteWorkspaceFileRequest,
 };
 use mast_rpc::RpcError;
+use sha2::{Digest, Sha256};
+use tokio::sync::{Notify, broadcast, mpsc};
+use tokio_util::sync::CancellationToken;
 
 use crate::{Repos, WorkspaceHost};
 
@@ -914,12 +914,10 @@ fn normalize_watch_path_including_temp(root: &Path, path: &Path) -> Option<Strin
 }
 
 fn is_internal_temp_wire_path(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|name| {
-            (name.starts_with(".mast-save-") || name.starts_with(".zeron-save-"))
-                && name.ends_with(".tmp")
-        })
+    path.rsplit('/').next().is_some_and(|name| {
+        (name.starts_with(".mast-save-") || name.starts_with(".zeron-save-"))
+            && name.ends_with(".tmp")
+    })
 }
 
 fn exceeds_watch_budget(root: &Path) -> bool {
@@ -1220,8 +1218,8 @@ fn read_image_blocking(
     request: &mast_proto::ReadWorkspaceImageRequest,
 ) -> Result<mast_proto::WorkspaceImageChunk, WorkspaceFilesError> {
     use base64::Engine as _;
-    use std::io::Read;
     use mast_proto::{MAX_WORKSPACE_IMAGE_BYTES, WORKSPACE_IMAGE_CHUNK_BYTES};
+    use std::io::Read;
     let mime = match relative
         .as_path()
         .extension()

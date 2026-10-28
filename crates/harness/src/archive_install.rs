@@ -366,7 +366,9 @@ mod tests {
             sha512: "test-digest",
         };
         assert!(installed_entry(&pin).is_none());
-        if std::env::var_os("HOME").is_some() || mast_proto::env::var_os("MAST_ADAPTERS_DIR").is_some() {
+        if std::env::var_os("HOME").is_some()
+            || mast_proto::env::var_os("MAST_ADAPTERS_DIR").is_some()
+        {
             let expected = entry_path(&pin).unwrap();
             assert!(expected.ends_with("never-installed-acp/0.0.0-test/server"));
         }

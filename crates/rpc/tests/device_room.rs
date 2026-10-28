@@ -755,7 +755,8 @@ async fn live_edge_relay_round_trip() {
     let Ok(edge_url) = mast_proto::env::var("MAST_EDGE_WS") else {
         panic!("set MAST_EDGE_WS to the edge base URL (e.g. http://127.0.0.1:26640)");
     };
-    let token = mast_proto::env::var("MAST_EDGE_TOKEN").unwrap_or_else(|_| "relay-live-test".into());
+    let token =
+        mast_proto::env::var("MAST_EDGE_TOKEN").unwrap_or_else(|_| "relay-live-test".into());
     let device_id = format!("relay-live-{}", uuid::Uuid::new_v4());
 
     let service = TestService::new("live-host");

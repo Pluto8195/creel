@@ -27,8 +27,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use mast_proto::work_outline::{
     ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemExternalReferenceParams,
     CreateWorkItemParams, DescendantArchivePolicy, FieldPatch, MoveWorkItemParams,
@@ -39,6 +37,8 @@ use mast_proto::work_outline::{
     WorkOutlineSnapshot, derive_id, external_reference_id, limits, roles,
 };
 use mast_proto::work_outline_order::order_keys_between;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -1059,7 +1059,11 @@ impl RegistryDoc {
                 mast_proto::linear::SYNC_FIELD_TITLE,
                 mast_proto::linear::SYNC_FIELD_DESCRIPTION,
             ] {
-                if item.external_sync_modified_fields.iter().any(|f| f == field) {
+                if item
+                    .external_sync_modified_fields
+                    .iter()
+                    .any(|f| f == field)
+                {
                     set.remove(field);
                 }
             }

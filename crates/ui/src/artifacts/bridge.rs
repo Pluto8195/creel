@@ -18,9 +18,9 @@
 //! [`frame_command_script`] (the `__mastFrameCmd` entry point of
 //! `find::HOST_SCRIPT`).
 
-use serde_json::Value;
 use mast_proto::CommentAnchor;
 use mast_proto::artifacts::{MAX_COMMENT_CHARS, MAX_QUOTE_CHARS};
+use serde_json::Value;
 
 /// In the outer document: relays the frame's `{mastMsg}` to the native
 /// delegate as a `mast-msg:` navigation. Messages from any other window,

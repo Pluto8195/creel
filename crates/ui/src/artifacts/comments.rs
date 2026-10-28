@@ -16,9 +16,9 @@
 //! `mastCommentFocus`. Messages out (see `bridge::FrameMessage`): `ready`,
 //! `selection`, `selection-clear`, `draft`, `focus`.
 
-use serde_json::json;
 use mast_proto::artifacts::AnchorStatus;
 use mast_proto::{ArtifactComment, ArtifactKind, ArtifactView, CommentStatus};
+use serde_json::json;
 
 use super::bridge::frame_command_script;
 
@@ -64,11 +64,8 @@ pub(crate) fn rows(
                 CommentStatus::Resolved => CommentState::Resolved,
                 CommentStatus::Open => match source {
                     Some(source)
-                        if mast_proto::artifacts::resolve_anchor(
-                            kind,
-                            source,
-                            &comment.anchor,
-                        ) == AnchorStatus::Outdated =>
+                        if mast_proto::artifacts::resolve_anchor(kind, source, &comment.anchor)
+                            == AnchorStatus::Outdated =>
                     {
                         CommentState::Outdated
                     }
@@ -421,14 +418,21 @@ mod tests {
         assert!(script.contains("\"C-1\""));
         assert!(!script.contains("\"C-2\""));
         assert!(!script.contains("\"C-3\""));
-        assert!(script.starts_with("window.__mastFrameCmd&&window.__mastFrameCmd({\"mastComments\""));
+        assert!(
+            script.starts_with("window.__mastFrameCmd&&window.__mastFrameCmd({\"mastComments\"")
+        );
         assert!(mode_script(true).contains("\"mastCommentMode\":true"));
         assert!(focus_script("C-1").contains("\"mastCommentFocus\":\"C-1\""));
     }
 
     #[test]
     fn frame_script_reads_both_anchor_and_question_spellings() {
-        for name in ["data-mast-anchor", "data-zeron-anchor", "data-mast-question", "data-zeron-question"] {
+        for name in [
+            "data-mast-anchor",
+            "data-zeron-anchor",
+            "data-mast-question",
+            "data-zeron-question",
+        ] {
             assert!(FRAME_SCRIPT.contains(name), "{name}");
         }
         // Everything the script writes uses the new names only.
@@ -439,7 +443,10 @@ mod tests {
     #[test]
     fn frame_script_is_self_contained_and_guarded() {
         assert!(FRAME_SCRIPT.contains("__mastCommentsInstalled"));
-        assert!(!FRAME_SCRIPT.contains("</script"), "would end the inline script");
+        assert!(
+            !FRAME_SCRIPT.contains("</script"),
+            "would end the inline script"
+        );
         // Messages out match `bridge::FrameMessage`.
         for kind in ["ready", "selection", "selection-clear", "draft", "focus"] {
             assert!(FRAME_SCRIPT.contains(&format!("t: \"{kind}\"")), "{kind}");

@@ -18,7 +18,6 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::json;
 use mast_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
 use mast_engine::pr_review_sync::PrReviewSyncConfig;
 use mast_engine::{EngineCore, HarnessRegistry};
@@ -28,6 +27,7 @@ use mast_proto::{
     SandboxLevel, StartPrReviewParams, StartPrReviewReply,
 };
 use mast_rpc::{RpcClient, methods};
+use serde_json::json;
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-ws";

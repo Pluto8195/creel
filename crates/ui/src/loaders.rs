@@ -13,14 +13,12 @@ use gpui::{
     PathBuilder, Render, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 
-use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, MAST_PULSE};
+use crate::motion::{self, GRADIENT_SPIN, MAST_PULSE, PULSE_STAGGER, SPLASH_OUT};
 use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`mast_proto::motion`) so both animate the
 // same loaders from the same numbers.
-pub use mast_proto::motion::{
-    MARK_CELLS, MARK_SPREAD, MATRIX_SIDE, MAST_CELLS, mark_cell_stagger,
-};
+pub use mast_proto::motion::{MARK_CELLS, MARK_SPREAD, MAST_CELLS, MATRIX_SIDE, mark_cell_stagger};
 
 /// The animated zeron mark (zeron-loader.tsx `ZeronLoader`): the full logo
 /// pixel grid with a light wave sweeping tail→head. Each cell rests dim

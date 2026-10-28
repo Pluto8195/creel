@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::json;
 use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use serde_json::json;
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)

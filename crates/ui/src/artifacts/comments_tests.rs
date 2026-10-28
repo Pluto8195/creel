@@ -5,12 +5,12 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use serde_json::json;
 use mast_proto::{
     ArtifactComment, ArtifactContentEncoding, ArtifactKind, ArtifactView, CommentAnchor,
     CommentStatus,
 };
 use mast_rpc::methods;
+use serde_json::json;
 
 use super::tab::{ArtifactTab, FakeWebHost, WebProbe};
 use super::tests::{Calls, Reply, artifact, content_reply, id, init_ui, scripted, snapshot};
@@ -271,11 +271,13 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
     let _dir = init_ui(cx);
     let (tab, _calls, probe, _shown, vcx) = open(cx, ArtifactKind::HtmlFragment, Vec::new());
     tab.update_in(vcx, |tab, _, cx| tab.set_pick_mode(true, cx));
-    assert!(probe
-        .scripts
-        .borrow()
-        .iter()
-        .any(|s| s.contains("\"mastCommentMode\":true")));
+    assert!(
+        probe
+            .scripts
+            .borrow()
+            .iter()
+            .any(|s| s.contains("\"mastCommentMode\":true"))
+    );
     frame(
         &tab,
         vcx,
@@ -283,11 +285,13 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
                 "anchor": { "id": "intake", "exact": "Receiving intake" } }),
     );
     assert!(has(vcx, "artifact-comment-draft"));
-    assert!(probe
-        .scripts
-        .borrow()
-        .iter()
-        .any(|s| s.contains("\"mastCommentMode\":false")));
+    assert!(
+        probe
+            .scripts
+            .borrow()
+            .iter()
+            .any(|s| s.contains("\"mastCommentMode\":false"))
+    );
 }
 
 #[gpui::test]
@@ -391,8 +395,14 @@ fn app_documents_carry_the_bridge_and_render_checks_do_not() {
     for kind in [WebKind::Fragment, WebKind::Page, WebKind::Mermaid] {
         let live = web_document(kind, PAGE, "Flow", "text/html", &theme, false, false);
         assert!(live.contains("mast-msg:"), "{kind:?} host bridge");
-        assert!(live.contains("__mastCommentsInstalled"), "{kind:?} frame script");
+        assert!(
+            live.contains("__mastCommentsInstalled"),
+            "{kind:?} frame script"
+        );
         let probed = web_document(kind, PAGE, "Flow", "text/html", &theme, false, true);
-        assert!(!probed.contains("__mastCommentsInstalled"), "{kind:?} probe stays passive");
+        assert!(
+            !probed.contains("__mastCommentsInstalled"),
+            "{kind:?} probe stays passive"
+        );
     }
 }

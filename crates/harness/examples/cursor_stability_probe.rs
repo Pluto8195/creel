@@ -2,13 +2,13 @@
 //! MAST_CURSOR_STATE_DIR=$(mktemp -d) cargo run -p mast-harness --example cursor_stability_probe -- sessions 20
 //! cargo run -p mast-harness --example cursor_stability_probe -- models 1000
 use futures::StreamExt;
+use mast_harness::{CancellationToken, CursorHarness, Harness, RunControls};
+use mast_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
-use mast_harness::{CancellationToken, CursorHarness, Harness, RunControls};
-use mast_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 async fn turn(
     harness: &CursorHarness,
@@ -32,7 +32,8 @@ async fn turn(
         prompt,
         harness: None,
         model: Some(
-            mast_proto::env::var("MAST_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -152,7 +153,8 @@ async fn parked(harness: &CursorHarness, count: usize) {
         ),
         harness: None,
         model: Some(
-            mast_proto::env::var("MAST_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -266,7 +268,8 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
         },
         harness: None,
         model: Some(
-            mast_proto::env::var("MAST_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -399,7 +402,8 @@ async fn history(harness: &CursorHarness, count: usize) {
         ),
         harness: None,
         model: Some(
-            mast_proto::env::var("MAST_CURSOR_TEST_MODEL").unwrap_or_else(|_| "muse-spark-1.3".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "muse-spark-1.3".into()),
         ),
         reasoning: None,
         model_options: Default::default(),

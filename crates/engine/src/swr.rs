@@ -91,8 +91,7 @@ where
 
     fn is_fresh(&self, entry: &Entry<V>) -> bool {
         let age = Utc::now().signed_duration_since(entry.fetched_at);
-        age >= chrono::Duration::zero()
-            && age.to_std().is_ok_and(|age| age < self.ttl)
+        age >= chrono::Duration::zero() && age.to_std().is_ok_and(|age| age < self.ttl)
     }
 
     /// Drop every entry (memory and file).

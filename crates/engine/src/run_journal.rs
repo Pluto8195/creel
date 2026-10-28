@@ -278,7 +278,8 @@ impl RunJournal {
     }
 
     fn model_checked_path(&self, chat_id: &str) -> PathBuf {
-        self.dir.join(format!("{}.modelchecked", sanitize_id(chat_id)))
+        self.dir
+            .join(format!("{}.modelchecked", sanitize_id(chat_id)))
     }
 
     /// Journal size in bytes (append-only, so growth means new events).

@@ -1,9 +1,9 @@
 //! One initialize response feeds both picker catalogs for 30 minutes.
 use crate::HarnessError;
+use mast_proto::SlashCommand;
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::time::Instant;
-use mast_proto::SlashCommand;
 
 const FORCED_MAX_AGE: Duration = Duration::from_secs(120);
 

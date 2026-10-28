@@ -59,10 +59,7 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         InstallKind::WindowsPortable { directory } => {
             let staged = mast_update::windows::stage(edge_url, &manifest, &directory).await?;
             mast_update::windows::apply(&staged, &directory, false)?;
-            println!(
-                "updated to {} — relaunch Mast to finish.",
-                manifest.version
-            );
+            println!("updated to {} — relaunch Mast to finish.", manifest.version);
             Ok(())
         }
         InstallKind::Unmanaged => {

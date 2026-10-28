@@ -24,7 +24,6 @@ pub(crate) struct WorktreeRecord {
     pub(crate) prunable: bool,
 }
 
-
 /// Every repository folder of a Space: its own checkout (when the folder is
 /// one), every nested repository the bounded scan finds, and every submodule
 /// (recursively), canonicalized and deduplicated, outermost first. Uninitialized

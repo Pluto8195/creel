@@ -24,7 +24,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Value, json};
 use mast_proto::work_outline::{
     WorkItemView, WorkOutlineActor, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineRepair,
 };
@@ -34,6 +33,7 @@ use mast_proto::work_outline_execution::{
     ResolvedExecutionConfiguration, WorkItemExecutionException, check_execution_configuration,
     execution_limits, resolve_execution_configuration,
 };
+use serde_json::{Value, json};
 
 use super::materialize::resolver_views;
 use super::*;

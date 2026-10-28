@@ -14,8 +14,8 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
 use mast_proto::artifacts::{ArtifactView, KIND_ARTIFACTS, PlanScope, artifact_limits};
+use serde_json::Value;
 
 use super::{OpKind, RegistryDoc, RowOp, RowState, check_op_size};
 use crate::schema::DocError;
@@ -55,7 +55,9 @@ fn decode(row: &super::RegistryRow) -> Option<ArtifactView> {
 
 fn fields_of(view: &ArtifactView, update: bool) -> Result<BTreeMap<String, Value>, DocError> {
     let Value::Object(map) = serde_json::to_value(view)? else {
-        return Err(DocError::Schema("artifact did not serialize to an object".into()));
+        return Err(DocError::Schema(
+            "artifact did not serialize to an object".into(),
+        ));
     };
     let mut fields: BTreeMap<String, Value> = map.into_iter().collect();
     if update {
@@ -126,7 +128,11 @@ impl RegistryDoc {
             let op = RowOp {
                 kind: KIND_ARTIFACTS.to_owned(),
                 id: view.id.clone(),
-                op: if update { OpKind::Update } else { OpKind::Upsert },
+                op: if update {
+                    OpKind::Update
+                } else {
+                    OpKind::Upsert
+                },
                 set: Some(fields_of(&view, update)?),
                 hlc: hlc.clone(),
                 clocks: None,
@@ -298,8 +304,9 @@ impl RegistryDoc {
             return Ok(None);
         }
         let value = match pick {
-            Some(pick) => serde_json::to_value(pick)
-                .map_err(|e| DocError::Schema(format!("pick: {e}")))?,
+            Some(pick) => {
+                serde_json::to_value(pick).map_err(|e| DocError::Schema(format!("pick: {e}")))?
+            }
             None => Value::Null,
         };
         self.observe_row(KIND_ARTIFACTS, id);
@@ -402,7 +409,10 @@ mod tests {
         assert_eq!(doc.batches_written(), before + 1);
         assert!(!doc.artifact("a1").unwrap().pinned_as_plan);
         assert!(doc.artifact("a2").unwrap().pinned_as_plan);
-        assert!(doc.artifact("a3").unwrap().pinned_as_plan, "other item untouched");
+        assert!(
+            doc.artifact("a3").unwrap().pinned_as_plan,
+            "other item untouched"
+        );
         assert_eq!(doc.set_artifact_pin("missing", true, 7).unwrap(), None);
     }
 
@@ -422,7 +432,10 @@ mod tests {
         doc.put_artifact(&view("a1", "item-1", 1)).unwrap();
         let mk = |n: u32, status: CommentStatus| ArtifactComment {
             id: format!("C-{n}"),
-            anchor: CommentAnchor { id: Some("intake".into()), ..Default::default() },
+            anchor: CommentAnchor {
+                id: Some("intake".into()),
+                ..Default::default()
+            },
             text: "x".repeat(600),
             quote: "q".repeat(240),
             status,
@@ -432,12 +445,19 @@ mod tests {
         doc.set_artifact_comments("a1", &one, 5).unwrap().unwrap();
         assert_eq!(doc.artifact("a1").unwrap().comments, one);
         assert_eq!(doc.artifact("a1").unwrap().current_revision, 1);
-        assert!(doc.set_artifact_comments("nope", &one, 5).unwrap().is_none());
+        assert!(
+            doc.set_artifact_comments("nope", &one, 5)
+                .unwrap()
+                .is_none()
+        );
 
         let mut many = vec![mk(1, CommentStatus::Open), mk(2, CommentStatus::Resolved)];
         many.extend((3..=40).map(|n| mk(n, CommentStatus::Open)));
         let kept = doc.set_artifact_comments("a1", &many, 6).unwrap().unwrap();
-        assert!(kept.len() < many.len(), "40 maximal comments do not fit one op");
+        assert!(
+            kept.len() < many.len(),
+            "40 maximal comments do not fit one op"
+        );
         assert!(kept.iter().all(|c| c.id != "C-2"), "resolved dropped first");
         assert_eq!(kept.last().unwrap().id, "C-40", "newest kept");
     }

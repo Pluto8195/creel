@@ -316,7 +316,10 @@ fn engine_config_from_env() -> mast_engine::EngineConfig {
 /// `MAST_HARNESS` (kebab-case id) picks the default harness for chats without a
 /// config row — `mock` powers the e2e smoke; default `claude-code`.
 fn harness_from_env() -> mast_engine::HarnessId {
-    match mast_proto::env::var("MAST_HARNESS").as_deref().map(str::trim) {
+    match mast_proto::env::var("MAST_HARNESS")
+        .as_deref()
+        .map(str::trim)
+    {
         Ok("mock") => mast_engine::HarnessId::Mock,
         Ok("codex") => mast_engine::HarnessId::Codex,
         Ok("cursor") => mast_engine::HarnessId::Cursor,

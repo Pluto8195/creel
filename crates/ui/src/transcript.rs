@@ -1856,8 +1856,9 @@ pub fn rows_for_entry(
 /// the smoothness measurement knob. Off by default; zero cost when off.
 fn frame_stats_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED
-        .get_or_init(|| mast_proto::env::var("MAST_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+    *ENABLED.get_or_init(|| {
+        mast_proto::env::var("MAST_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
 }
 
 const FRAME_STATS_WINDOW: usize = 240;
@@ -9163,11 +9164,7 @@ mod tests {
             for (previous, next) in [(&cached, &first_batch), (&first_batch, &second_batch)] {
                 let frame = diff_transcript(previous, next);
                 assert!(matches!(&frame, TranscriptFrame::Delta { .. }));
-                apply_frame(
-                    frame,
-                    Some(mast_doc::TranscriptBaseline::capture(next)),
-                    cx,
-                );
+                apply_frame(frame, Some(mast_doc::TranscriptBaseline::capture(next)), cx);
                 let reveal = &transcript.read(cx).tool_group_reveals[&row_id];
                 assert_eq!(reveal.starts.len(), next[0].parts.len());
                 assert!(reveal.header_started_at.is_none());
@@ -10816,11 +10813,7 @@ mod tests {
     fn artifact_cards_resolve_registered_artifacts() {
         use crate::artifacts::cards::card_model;
         use crate::artifacts::tests::{artifact, id, ready_store};
-        let mut plan = artifact(
-            &id(1),
-            "Receiving plan",
-            mast_proto::ArtifactKind::Markdown,
-        );
+        let mut plan = artifact(&id(1), "Receiving plan", mast_proto::ArtifactKind::Markdown);
         plan.pinned_as_plan = true;
         plan.role = Some("plan".into());
         plan.origin_path = Some("/repo/work/plan.md".into());

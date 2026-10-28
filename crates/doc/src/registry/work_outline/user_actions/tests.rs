@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 
-use sha2::{Digest, Sha256};
 use mast_proto::work_outline::{
     ArchiveWorkItemInstructionParams, ArchiveWorkItemParams, AssignChatToWorkItemParams,
     CreateInstructionRevisionParams, CreateWorkItemExternalReferenceParams,
@@ -19,6 +18,7 @@ use mast_proto::work_outline_execution::{ConfigureExecutionParams, ExecutionScop
 use mast_proto::work_outline_user_actions::{
     InstructionProposalOrigin, UserActionRequestOrigin, user_action_limits,
 };
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::registry::tests::{chat, server_round, space};

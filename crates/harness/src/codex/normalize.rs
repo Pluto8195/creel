@@ -5,8 +5,8 @@
 //! (`delta`/`textDelta`, `exitCode`/`exit_code`, camelCase/snake_case item
 //! types) are accepted, and unknown item types map to nothing.
 
-use serde_json::Value;
 use mast_proto::{AgentEvent, DoneStatus, TodoItem, ToolCall};
+use serde_json::Value;
 
 /// Bound command output before it crosses the event stream. The document
 /// fold applies its own smaller persistence policy; this prevents an

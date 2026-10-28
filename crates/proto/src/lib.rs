@@ -27,18 +27,19 @@ pub mod workspace;
 
 pub use agent::*;
 pub use artifacts::{
-    ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactDriftParams,
-    ArtifactOptionPick, ArtifactPickOptionParams, ArtifactPickOptionReply, pick_message,
-    ArtifactDriftReply, ArtifactQuestionAnswer, PlanQuestion, PlanQuestionStatus,
-    extract_questions, ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
-    ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentAnchor, CommentStatus,
-    ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
-    ArtifactErrorCode, ArtifactKind, ArtifactLayoutWarning, ArtifactPinParams, ArtifactPinReply,
-    ArtifactPromoteParams, ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams,
-    ArtifactRenderCheckResult, ArtifactRenderCompanion, ArtifactRenderRequest,
-    ArtifactRenderResultParams, ArtifactRenderResultReply, ArtifactRenderScreenshot,
-    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
-    ArtifactsSnapshot, WatchArtifactRenderRequestsParams, WatchArtifactsParams,
+    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactAnswerQuestionParams,
+    ArtifactAnswerQuestionReply, ArtifactComment, ArtifactContentEncoding, ArtifactContentParams,
+    ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
+    ArtifactErrorCode, ArtifactKind, ArtifactLayoutWarning, ArtifactOptionPick,
+    ArtifactPickOptionParams, ArtifactPickOptionReply, ArtifactPinParams, ArtifactPinReply,
+    ArtifactPromoteParams, ArtifactPromoteReply, ArtifactPublishReply, ArtifactQuestionAnswer,
+    ArtifactRegisterParams, ArtifactRenderCheckResult, ArtifactRenderCompanion,
+    ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderResultReply,
+    ArtifactRenderScreenshot, ArtifactRenderTheme, ArtifactRenderViewport,
+    ArtifactResolveCommentParams, ArtifactResolveCommentReply, ArtifactRevision, ArtifactView,
+    ArtifactViewport, ArtifactsSnapshot, CommentAnchor, CommentStatus, PlanQuestion,
+    PlanQuestionStatus, WatchArtifactRenderRequestsParams, WatchArtifactsParams, extract_questions,
+    pick_message,
 };
 pub use chat_diff_target::*;
 pub use entities::*;

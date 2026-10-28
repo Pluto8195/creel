@@ -1,6 +1,7 @@
 //! Persisted names are independent of ephemeral process/listener observations.
 use crate::discovery::{Listener, command_identity, framework};
 use anyhow::Context;
+use mast_proto::{PREVIEW_PROXY_PORT, PreviewService, PreviewSnapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -9,7 +10,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::watch;
-use mast_proto::{PREVIEW_PROXY_PORT, PreviewService, PreviewSnapshot};
 
 #[derive(Clone)]
 pub struct Catalog(Arc<Inner>);

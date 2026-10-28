@@ -36,9 +36,6 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use mast_doc::SessionCommandPayload;
 use mast_harness::AgentToolsInjection;
 use mast_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolErrorCode, tools};
@@ -50,6 +47,9 @@ use mast_proto::{
     UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges, WorkItemStatus,
     WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
 };
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::diff_targets::DiffTargetError;
 use crate::doc_host::DocHost;
@@ -781,8 +781,8 @@ impl AgentToolsService {
                 }
             }
         }
-        if let Some(reference) = snapshot
-            .nearest_linear_reference(item_id, mast_proto::linear::LINEAR_PROJECT_REFERENCE)
+        if let Some(reference) =
+            snapshot.nearest_linear_reference(item_id, mast_proto::linear::LINEAR_PROJECT_REFERENCE)
         {
             out.insert(
                 "linearProject".into(),

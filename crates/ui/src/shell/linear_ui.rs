@@ -73,12 +73,10 @@ impl Shell {
                     .state
                     .read(cx)
                     .work_outline_actions()
-                    .remove_external_reference(
-                        mast_proto::RemoveWorkItemExternalReferenceParams {
-                            reference_id,
-                            operation_id: crate::work_outline::actions::new_operation_id(),
-                        },
-                    );
+                    .remove_external_reference(mast_proto::RemoveWorkItemExternalReferenceParams {
+                        reference_id,
+                        operation_id: crate::work_outline::actions::new_operation_id(),
+                    });
                 cx.spawn(async move |this, cx| {
                     if let Err(error) = task.await {
                         this.update(cx, |shell, cx| {

@@ -6,7 +6,6 @@
 //! test seam). Errors come back as [`ArtifactUiError`]: `unknown method` is
 //! "not available on this host yet", `artifact/<code>: …` keeps its code.
 use gpui::Task;
-use serde::de::DeserializeOwned;
 use mast_proto::{
     ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactAnswerQuestionParams,
     ArtifactAnswerQuestionReply, ArtifactContentParams, ArtifactContentReply, ArtifactDriftParams,
@@ -17,6 +16,7 @@ use mast_proto::{
     WorkOutlineError, WorkOutlineErrorCode,
 };
 use mast_rpc::methods;
+use serde::de::DeserializeOwned;
 
 use super::store::UNSUPPORTED_TEXT;
 use crate::work_outline::WorkOutlineActions;

@@ -3,10 +3,10 @@
 //! range scope (no Working tree or Latest turn) and the refs-only capture.
 
 use super::*;
-use std::sync::{Arc, Mutex};
 use mast_proto::{
     ChatDiffTargetsView, ChatRefTargetView, DiffFileSummary, RefDiffCandidate, RefDiffKind,
 };
+use std::sync::{Arc, Mutex};
 
 const FLAGSHIP: &str = "/work/ws/flagship";
 const FLAGSHIP_CHECKOUT: &str = "checkout:flagship";

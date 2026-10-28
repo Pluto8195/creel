@@ -396,7 +396,8 @@ impl CheckoutDiffSync {
             if roots.is_empty() {
                 return; // not a checkout, no targets
             }
-            let trees = futures::future::join_all(roots.iter().map(|root| snapshot_tree(root))).await;
+            let trees =
+                futures::future::join_all(roots.iter().map(|root| snapshot_tree(root))).await;
             let at = chrono::Utc::now();
             let mut turn_trees = lock(&inner.turn_trees);
             // Roots this chat no longer works in (an unbound target) drop out.
@@ -580,9 +581,7 @@ fn repo_display_name(common_dir: &Path, fallback_root: &Path) -> String {
                 })
             })
             .filter(|worktree| !worktree.is_empty())
-            .map(|worktree| {
-                crate::execution_scope::canonical_lenient(&common_dir.join(worktree))
-            })
+            .map(|worktree| crate::execution_scope::canonical_lenient(&common_dir.join(worktree)))
     };
     main.as_deref()
         .unwrap_or(fallback_root)
@@ -615,8 +614,7 @@ async fn resolve_row_targets(
                 "diff-sync: diff target checkout differs from its binding");
             continue;
         }
-        let repo_name =
-            repo_display_name(&common_dir_of(&identity.git_dir), &identity.root);
+        let repo_name = repo_display_name(&common_dir_of(&identity.git_dir), &identity.root);
         out.push(ResolvedTarget {
             selected: row.selected.as_deref() == Some(target.path.as_str()),
             source: target.source,
@@ -696,7 +694,11 @@ async fn resolve_chat_targets(inner: &Arc<DiffSyncInner>, chat_id: &str) -> Vec<
     let Some(targets) = lock(&inner.diff_targets).clone() else {
         return Vec::new();
     };
-    let Some(row) = targets.rows().into_iter().find(|row| row.chat_id == chat_id) else {
+    let Some(row) = targets
+        .rows()
+        .into_iter()
+        .find(|row| row.chat_id == chat_id)
+    else {
         return Vec::new();
     };
     resolve_row_targets(inner, &row, &mut HashMap::new(), false).await
@@ -714,11 +716,13 @@ fn read_head(identity: &CheckoutIdentity) -> (Option<String>, Option<String>) {
     };
     let branch = reference.strip_prefix("refs/heads/").map(str::to_owned);
     let common_dir = common_dir_of(&identity.git_dir);
-    let loose = [&common_dir, &identity.git_dir].into_iter().find_map(|dir| {
-        let text = std::fs::read_to_string(dir.join(reference)).ok()?;
-        let sha = text.trim();
-        valid_object_id(sha).then(|| sha.to_owned())
-    });
+    let loose = [&common_dir, &identity.git_dir]
+        .into_iter()
+        .find_map(|dir| {
+            let text = std::fs::read_to_string(dir.join(reference)).ok()?;
+            let sha = text.trim();
+            valid_object_id(sha).then(|| sha.to_owned())
+        });
     let sha = loose.or_else(|| {
         let packed = std::fs::read_to_string(common_dir.join("packed-refs")).ok()?;
         packed.lines().find_map(|line| {
@@ -2472,7 +2476,12 @@ pub async fn resolve_range(
     let verify = |name: &str| format!("{name}^{{commit}}");
     let head = capture_git(
         root,
-        &["rev-parse", "--verify", "--end-of-options", &verify(head_ref)],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &verify(head_ref),
+        ],
         256,
     )
     .await
@@ -2480,7 +2489,12 @@ pub async fn resolve_range(
     .map_err(|_| EngineError::Other(format!("{head_ref} does not exist in this repository")))?;
     let base = capture_git(
         root,
-        &["rev-parse", "--verify", "--end-of-options", &verify(base_ref)],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &verify(base_ref),
+        ],
         256,
     )
     .await

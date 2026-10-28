@@ -9,10 +9,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_proto::ChatDiffTargetSource;
 use mast_rpc::methods;
+use serde_json::{Value, json};
 
 const CHAT: &str = "chat-1";
 
@@ -195,7 +195,10 @@ async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
         if let Some(value) = probe() {
             return value;
         }
-        assert!(tokio::time::Instant::now() < deadline, "condition timed out");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "condition timed out"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -354,7 +357,12 @@ async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
     let ws = f.ws.clone();
     wait_for(|| sync.turn_snapshot(CHAT, &ws)).await;
     assert!(f.core.diff_sync.turn_snapshot(CHAT, &f.sub_wt).is_none());
-    assert!(f.core.diff_sync.turn_snapshot("other-chat", &f.ws).is_none());
+    assert!(
+        f.core
+            .diff_sync
+            .turn_snapshot("other-chat", &f.ws)
+            .is_none()
+    );
     f.core.diff_sync.reconcile_now().await;
     assert_eq!(*f.core.diff_sync.watch_chat_diff_targets().borrow(), vec![]);
     f.core.shutdown().await;
@@ -411,10 +419,7 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     .await;
     assert_eq!(frame[0]["targets"].as_array().unwrap().len(), 2);
 
-    f.core
-        .diff_targets
-        .unbind(CHAT, &text(&f.sub_wt))
-        .unwrap();
+    f.core.diff_targets.unbind(CHAT, &text(&f.sub_wt)).unwrap();
     let frame = next_frame(&mut stream, |frame| {
         frame[0]["targets"].as_array().is_some_and(|t| t.len() == 1)
     })
@@ -430,10 +435,7 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     .await;
 
     // Removing the worktree drops its target after a repair pass.
-    git(
-        &f.ws,
-        &["worktree", "remove", "--force", &text(&f.root_wt)],
-    );
+    git(&f.ws, &["worktree", "remove", "--force", &text(&f.root_wt)]);
     f.core.diff_sync.repair_now().await;
     next_frame(&mut stream, |frame| frame == &json!([])).await;
     f.core.shutdown().await;
@@ -445,13 +447,7 @@ async fn set_chat_diff_target_rpc_round_trip_and_refusals() {
     let client = mast_rpc::memory_client(f.core.rpc_service());
     f.core
         .workspace
-        .create_chat(
-            "remote-chat",
-            None,
-            Some("dev-b"),
-            None,
-            Some(text(&f.ws)),
-        )
+        .create_chat("remote-chat", None, Some("dev-b"), None, Some(text(&f.ws)))
         .unwrap();
 
     let listed = client

@@ -7,9 +7,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use mast_proto::WorkspaceScope;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use mast_proto::WorkspaceScope;
 
 use crate::EngineError;
 
@@ -411,7 +411,9 @@ mod tests {
         assert_eq!(core.workspace_scope(), WorkspaceScope::Development);
         assert_eq!(core.uploads.dir(), expected.store_root().join("uploads"));
         assert!(expected.store_root().is_dir());
-        if mast_proto::env::var("MAST_ORG_ID").is_err() && mast_proto::env::var("MAST_USER_ID").is_err() {
+        if mast_proto::env::var("MAST_ORG_ID").is_err()
+            && mast_proto::env::var("MAST_USER_ID").is_err()
+        {
             assert_eq!(
                 expected.store_root(),
                 dir.path().join("orgs/dev-org/dev-user")

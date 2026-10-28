@@ -1146,14 +1146,9 @@ impl RegistryDoc {
         // row is not live, and `sweep_work_outline_orphans` catches rows
         // created concurrently elsewhere.
         let outline_keys = self.work_outline_rows_of_space(space_id);
-        let mut keys: Vec<(&str, &str)> =
-            Vec::with_capacity(
-                chat_ids.len() * 2
-                    + pr_link_ids.len()
-                    + diff_target_ids.len()
-                    + outline_keys.len()
-                    + 1,
-            );
+        let mut keys: Vec<(&str, &str)> = Vec::with_capacity(
+            chat_ids.len() * 2 + pr_link_ids.len() + diff_target_ids.len() + outline_keys.len() + 1,
+        );
         for chat_id in &chat_ids {
             keys.push((KIND_CHATS, chat_id));
             keys.push((KIND_SESSIONS, chat_id));

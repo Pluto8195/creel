@@ -8325,13 +8325,11 @@ index 1111111..2222222 160000
         });
         let pruned = mast_proto::ValidateExecutionConfigurationReply::from_result(
             None,
-            Err(vec![
-                mast_proto::ExecutionValidationError::WorktreePruned {
-                    repo_id: "repo:ui".into(),
-                    worktree_id: "wt".into(),
-                    path: "/work/alpha/ui".into(),
-                },
-            ]),
+            Err(vec![mast_proto::ExecutionValidationError::WorktreePruned {
+                repo_id: "repo:ui".into(),
+                worktree_id: "wt".into(),
+                path: "/work/alpha/ui".into(),
+            }]),
         );
         let reply = serde_json::to_value(&pruned).unwrap();
         let (changes, vcx) = cx.add_window_view(|_, cx| {
@@ -8896,9 +8894,7 @@ index 1111111..2222222 160000
         }
     }
 
-    fn frame(
-        targets: Vec<mast_proto::ChatDiffTargetView>,
-    ) -> Vec<mast_proto::ChatDiffTargetsView> {
+    fn frame(targets: Vec<mast_proto::ChatDiffTargetView>) -> Vec<mast_proto::ChatDiffTargetsView> {
         vec![mast_proto::ChatDiffTargetsView {
             chat_id: "chat-wt".into(),
             targets,

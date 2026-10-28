@@ -200,7 +200,10 @@ mod tests {
             go("zeron-artifact:art_123"),
             ArtifactLink::Artifact("zeron-artifact:art_123".into())
         );
-        assert_eq!(go("zeron-artifact:"), ArtifactLink::Blocked(BlockedReason::Path));
+        assert_eq!(
+            go("zeron-artifact:"),
+            ArtifactLink::Blocked(BlockedReason::Path)
+        );
     }
 
     #[test]

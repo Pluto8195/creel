@@ -229,25 +229,30 @@ fn errors_round_trip_through_wire_strings() {
         let wire = error.to_wire_message();
         assert!(wire.starts_with(&format!("linear/{}: ", code.as_str())));
         assert_eq!(LinearError::from_wire_message(&wire), Some(error));
-        assert_eq!(
-            serde_json::to_value(code).unwrap(),
-            json!(code.as_str())
-        );
+        assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
     }
     assert_eq!(
         LinearError::disabled_for_space().to_wire_message(),
         "linear/disabledForSpace: Linear is turned off for this Space"
     );
-    assert_eq!(LinearError::from_wire_message("work-outline/invalid: x"), None);
     assert_eq!(
-        LinearError::from_wire_message("linear/teleported: x").unwrap().code,
+        LinearError::from_wire_message("work-outline/invalid: x"),
+        None
+    );
+    assert_eq!(
+        LinearError::from_wire_message("linear/teleported: x")
+            .unwrap()
+            .code,
         LinearErrorCode::Invalid
     );
 }
 
 #[test]
 fn item_title_and_description_format() {
-    assert_eq!(linear_item_title("ENG-123", "Fix login"), "ENG-123 · Fix login");
+    assert_eq!(
+        linear_item_title("ENG-123", "Fix login"),
+        "ENG-123 · Fix login"
+    );
     assert_eq!(
         linear_item_title(" ENG-1 ", "  multi\n line  title "),
         "ENG-1 · multi line title"
@@ -259,12 +264,18 @@ fn item_title_and_description_format() {
 
     assert_eq!(linear_item_description(None), None);
     assert_eq!(linear_item_description(Some("  \n")), None);
-    assert_eq!(linear_item_description(Some("Body\n")).as_deref(), Some("Body"));
+    assert_eq!(
+        linear_item_description(Some("Body\n")).as_deref(),
+        Some("Body")
+    );
     let huge = linear_item_description(Some(&"y".repeat(20_000))).unwrap();
     assert_eq!(huge.chars().count(), limits::MAX_DESCRIPTION_CHARS);
     // Escape-heavy text stays inside one registry op.
     let quotes = linear_item_description(Some(&"\"".repeat(8_000))).unwrap();
-    let encoded = serde_json::to_string(&quotes).unwrap().encode_utf16().count();
+    let encoded = serde_json::to_string(&quotes)
+        .unwrap()
+        .encode_utf16()
+        .count();
     assert!(encoded <= 12_000, "{encoded}");
 }
 

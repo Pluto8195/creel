@@ -16,8 +16,8 @@
 //! parts once to recover `created_in_chat`.
 
 use crate::workspace_host::{ChatLinkKind, WorkspaceHost};
-use std::collections::BTreeSet;
 use mast_proto::{ChatLinkSource, ToolCall};
+use std::collections::BTreeSet;
 
 /// A `github.com/<org>/<repo>/pull/<n>` URL appearing anywhere in `text` —
 /// matches the design's own vocabulary ("a `github.com/<org>/<repo>/pull/<n>`

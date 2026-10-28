@@ -3441,9 +3441,7 @@ mod tests {
     fn registry_offers_both_appearances_and_keeps_single_dark_families_valid() {
         let registry = ThemeRegistry::builtin();
         assert_eq!(
-            registry
-                .variants_for(mast_theme::Appearance::Light)
-                .count(),
+            registry.variants_for(mast_theme::Appearance::Light).count(),
             10
         );
         assert_eq!(

@@ -5,8 +5,8 @@ use super::{BrowserEvent, BrowserSurface};
 use crate::files::client::WorkspaceFilesClient;
 use crate::{icons, surface_chrome, theme::Theme};
 use gpui::{AnyElement, Context, IntoElement, SharedString, Task, Window, div, prelude::*, px};
-use std::path::PathBuf;
 use mast_proto::WorkspaceTarget;
+use std::path::PathBuf;
 
 /// What to render. `path` is checkout-relative and already jailed.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -474,13 +474,11 @@ impl MarkdownPreview {
                     let mut anchors = HashMap::new();
                     for (ix, top) in tree.blocks.iter().enumerate() {
                         if let Block::CodeBlock { language, code } = &top.block {
-                            if let Ok(doc) =
-                                mast_syntax::highlight(mast_syntax::HighlightRequest {
-                                    source: code,
-                                    path: None,
-                                    fence_tag: language.as_deref(),
-                                })
-                            {
+                            if let Ok(doc) = mast_syntax::highlight(mast_syntax::HighlightRequest {
+                                source: code,
+                                path: None,
+                                fence_tag: language.as_deref(),
+                            }) {
                                 highlights.insert(ix, Arc::new(doc));
                             }
                         }

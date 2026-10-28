@@ -293,10 +293,8 @@ impl Composer {
         let supported = {
             let state = self.state.read(cx);
             state.selected_chat.as_deref().is_some_and(|chat_id| {
-                state.chat_host_supports(
-                    chat_id,
-                    mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1,
-                )
+                state
+                    .chat_host_supports(chat_id, mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1)
             })
         };
         if supported && text != crate::attachments::ATTACHMENT_ONLY_TEXT {

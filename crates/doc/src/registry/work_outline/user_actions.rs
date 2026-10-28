@@ -25,7 +25,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use serde_json::{Value, json};
 use mast_proto::work_outline::{WorkItemStatus, WorkOutlineActorKind, WorkOutlineMutation};
 use mast_proto::work_outline_instructions::{
     InstructionScope, InstructionSource, WorkItemInstructionView,
@@ -39,6 +38,7 @@ use mast_proto::work_outline_user_actions::{
     UserActionRequestView, UserActionResolution, WorkItemInstructionProposalView,
     user_action_limits,
 };
+use serde_json::{Value, json};
 
 use super::instructions::{NewInstruction, check_instruction_text, checked_source};
 use super::materialize::{actor_field, decode_instruction, i64_field, space_of, str_field};

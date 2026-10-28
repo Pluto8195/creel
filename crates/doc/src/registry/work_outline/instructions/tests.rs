@@ -805,7 +805,10 @@ fn drift_follows_selection_and_current_effective_hash() {
     let s = snap(&doc);
     let renamed = state(&s, "chat-1");
     assert!(!renamed.drift);
-    assert_ne!(renamed.selected_revision_hash, renamed.current_effective_hash);
+    assert_ne!(
+        renamed.selected_revision_hash,
+        renamed.current_effective_hash
+    );
     // Editing the inherited instruction's text is drift.
     edit(&mut doc, "edit-a", &from_a, "from A, edited").unwrap();
     assert!(state(&snap(&doc), "chat-1").drift);

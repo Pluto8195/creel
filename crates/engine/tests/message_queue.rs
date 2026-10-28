@@ -18,9 +18,7 @@ use futures::stream::BoxStream;
 use mast_doc::{
     MessagePart, MessageRole, QueueDeliveryGate, SessionCommandPayload, SessionMessageEntry,
 };
-use mast_engine::doc_host::{
-    BeginQueueEditOutcome, FinishQueueEditAction, FinishQueueEditOutcome,
-};
+use mast_engine::doc_host::{BeginQueueEditOutcome, FinishQueueEditAction, FinishQueueEditOutcome};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_harness::{Harness, HarnessError, RunControls};
 use mast_proto::{

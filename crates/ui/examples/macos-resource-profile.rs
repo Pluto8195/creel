@@ -2,12 +2,12 @@
 //! Input is frames.json from scripts/resource-profile.mjs. An offscreen target
 //! replaces the window compositor; this is not a whole-app CPU measurement.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use mast_ui::*;
 use std::{
     cell::RefCell,
     rc::Rc,
     time::{Duration, Instant},
 };
-use mast_ui::*;
 
 #[cfg(target_os = "macos")]
 #[global_allocator]

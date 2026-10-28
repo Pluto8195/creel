@@ -34,7 +34,6 @@ use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use mast_doc::{RowState, SessionCommandPayload};
 use mast_proto::work_outline::derive_id;
 use mast_proto::{
@@ -42,6 +41,7 @@ use mast_proto::{
     PrReviewError, PrReviewErrorCode, RunRequest, SandboxLevel, Space, StartPrReviewParams,
     StartPrReviewReply, WorkOutlineActor, WorkOutlineActorKind, WorkOutlineMutation,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::doc_host::DocHost;
 use crate::workspace_host::{ChatLinkKind, WorkspaceHost};

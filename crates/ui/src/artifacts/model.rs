@@ -2,8 +2,7 @@
 //! header line, row labels, and which component renders a content reply.
 //! GUI-free and unit tested.
 use mast_proto::artifacts::{
-    ALL_ARTIFACTS_DIRS, EDITED_WITHOUT_NOTE, OptionsManifest, is_artifact_id,
-    strip_artifact_scheme,
+    ALL_ARTIFACTS_DIRS, EDITED_WITHOUT_NOTE, OptionsManifest, is_artifact_id, strip_artifact_scheme,
 };
 use mast_proto::{ArtifactContentEncoding, ArtifactContentReply, ArtifactKind, ArtifactView};
 

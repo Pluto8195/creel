@@ -19,7 +19,6 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
 use mast_doc::{
     KIND_INSTRUCTION_REVISION_APPLICATIONS, KIND_INSTRUCTION_REVISIONS,
     KIND_WORK_ITEM_CHAT_ASSIGNMENTS, MessageRole, SessionCommandEntry, SessionCommandPayload,
@@ -35,6 +34,7 @@ use mast_proto::{
     WorkOutlineErrorCode, WorktreeChoice, derive_id, roles,
 };
 use mast_rpc::{RpcClient, methods};
+use serde_json::{Value, json};
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-1";

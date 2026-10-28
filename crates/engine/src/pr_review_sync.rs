@@ -21,7 +21,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use mast_proto::pr_review_sync::{
     GITHUB_PROVIDER, GITHUB_PULL_REQUEST_REFERENCE, GithubError, GithubErrorCode,
     PR_RESOLUTION_CLOSED, PR_RESOLUTION_MERGED, PR_RESOLUTION_REVIEW_SUBMITTED,
@@ -43,6 +42,7 @@ use mast_proto::work_outline_user_actions::{
 use mast_proto::{
     Space, WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlineSnapshot,
 };
+use serde_json::Value;
 
 use crate::pr_ticket_cache::{ChecksStatus, MyOpenPr};
 use crate::repos::Repos;

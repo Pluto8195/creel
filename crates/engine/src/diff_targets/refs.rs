@@ -24,11 +24,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use mast_proto::{
     Chat, ChatDiffTargetsReply, DiffCheckoutKind, ListChatRefDiffCandidatesReply,
     MAX_CHAT_REF_TARGETS, RefDiffCandidate, RefDiffKind, StoredRefDiffTarget,
 };
+use serde::Deserialize;
 
 use super::{
     DiffTargetError, DiffTargets, Family, canonical_lenient, checkout_facts, git_text, hex,

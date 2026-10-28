@@ -5,10 +5,10 @@
 //! continuation entries. An agent reading another chat wants prose plus a
 //! one-line record of what each tool did — never the raw part map.
 
-use serde::Serialize;
-use serde_json::{Value, json};
 use mast_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 use mast_proto::ToolCall;
+use serde::Serialize;
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions {

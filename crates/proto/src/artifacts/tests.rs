@@ -16,9 +16,7 @@ fn view() -> ArtifactView {
         folder: "receiving-flow-item-1".into(),
         stored_path: "/repo/.zeron/artifacts/receiving-flow-item-1/flow.fragment.html".into(),
         origin_path: Some("/tmp/flow.fragment.html".into()),
-        preview_path: Some(
-            "/repo/.zeron/artifacts/receiving-flow-item-1/flow.preview.html".into(),
-        ),
+        preview_path: Some("/repo/.zeron/artifacts/receiving-flow-item-1/flow.preview.html".into()),
         companions: vec!["a.fragment.html".into()],
         current_revision: 2,
         revisions: vec![ArtifactRevision {
@@ -109,7 +107,10 @@ fn kinds_are_lenient_and_accept_kebab_spellings() {
         let parsed: ArtifactKind = serde_json::from_value(json!(raw)).unwrap();
         assert_eq!(parsed, kind, "{raw}");
     }
-    assert_eq!(ArtifactKind::parse("html-fragment"), Some(ArtifactKind::HtmlFragment));
+    assert_eq!(
+        ArtifactKind::parse("html-fragment"),
+        Some(ArtifactKind::HtmlFragment)
+    );
     assert_eq!(ArtifactKind::parse("bogus"), None);
     assert_eq!(
         serde_json::to_value(ArtifactKind::HtmlPage).unwrap(),
@@ -292,10 +293,7 @@ fn render_plans_are_viewport_major_and_capped_at_four_images() {
     request.themes = vec![ArtifactRenderTheme::Light, ArtifactRenderTheme::Dark];
     let (plan, warning) = request.renders();
     assert!(warning.is_none());
-    let order: Vec<_> = plan
-        .iter()
-        .map(|(v, t)| (v.display_label(), *t))
-        .collect();
+    let order: Vec<_> = plan.iter().map(|(v, t)| (v.display_label(), *t)).collect();
     assert_eq!(
         order,
         [
@@ -331,7 +329,8 @@ fn errors_round_trip_through_the_wire_string() {
     let wire = error.to_wire_message();
     assert_eq!(wire, "artifact/renderUnavailable: no window");
     assert_eq!(ArtifactError::from_wire_message(&wire), Some(error));
-    let nested = ArtifactError::from_wire_message("AgentToolCall: artifact/notFound: gone").unwrap();
+    let nested =
+        ArtifactError::from_wire_message("AgentToolCall: artifact/notFound: gone").unwrap();
     assert_eq!(nested.code, ArtifactErrorCode::NotFound);
     assert_eq!(nested.message, "gone");
     assert_eq!(
@@ -345,17 +344,35 @@ fn errors_round_trip_through_the_wire_string() {
 
 #[test]
 fn identity_is_scope_title_and_role() {
-    let a = artifact_id("s", Some("item"), Some("chat-1"), "Receiving  Plan", Some("plan"));
+    let a = artifact_id(
+        "s",
+        Some("item"),
+        Some("chat-1"),
+        "Receiving  Plan",
+        Some("plan"),
+    );
     assert_eq!(a.len(), 32);
     assert!(is_artifact_id(&a));
     // The chat does not matter once there is a work item; title is
     // normalized.
     assert_eq!(
         a,
-        artifact_id("s", Some("item"), Some("chat-2"), " receiving plan ", Some("Plan"))
+        artifact_id(
+            "s",
+            Some("item"),
+            Some("chat-2"),
+            " receiving plan ",
+            Some("Plan")
+        )
     );
-    assert_ne!(a, artifact_id("s", Some("item"), None, "Receiving plan", Some("doc")));
-    assert_ne!(a, artifact_id("s", Some("other"), None, "Receiving plan", Some("plan")));
+    assert_ne!(
+        a,
+        artifact_id("s", Some("item"), None, "Receiving plan", Some("doc"))
+    );
+    assert_ne!(
+        a,
+        artifact_id("s", Some("other"), None, "Receiving plan", Some("plan"))
+    );
     assert_ne!(
         artifact_id("s", None, Some("c1"), "x", None),
         artifact_id("s", None, Some("c2"), "x", None)

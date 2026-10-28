@@ -390,12 +390,12 @@ pub fn local_harness_unsupported(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
     use mast_proto::{
         ExecutionSessionReport, InstructionRevisionBody, InstructionRevisionEntry,
         InstructionRevisionView, InstructionSourceKind, build_revision_body,
     };
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     #[derive(Default)]
     pub(crate) struct FakeRegistry {

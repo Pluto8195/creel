@@ -18,7 +18,6 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
 use mast_proto::linear::{
     LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER, linear_item_description,
     linear_item_title,
@@ -28,6 +27,7 @@ use mast_proto::work_outline::{
     SetSpaceLinearEnabledParams, WorkItemStatus, WorkOutlineActor, WorkOutlineSpaceSettings,
     derive_id, external_reference_id, limits, roles,
 };
+use serde_json::{Value, json};
 
 use super::materialize::{DecodedItem, str_field};
 use super::{

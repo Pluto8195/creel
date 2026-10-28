@@ -6,12 +6,12 @@ mod transcript_links;
 // Real shell + native WebKit smoke test and screenshot fixture. Synthetic
 // chat data, isolated temp storage, loopback-only website, no engine services.
 use gpui::{AppContext, AsyncApp, Bounds, WindowBounds, WindowOptions, px, size};
+use mast_ui::*;
 use std::{
     io::{Read, Write},
     path::PathBuf,
     time::Duration,
 };
-use mast_ui::*;
 
 async fn pause(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor()

@@ -1,9 +1,9 @@
 //! Real OS process/listener association, including unrelated project isolation.
+use mast_preview::PreviewService;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use mast_preview::PreviewService;
 /// Every service binds the fixed proxy port, so tests in this binary must
 /// not run concurrently: one test freeing 7331 for its own proxy to reclaim
 /// would otherwise race another test's service for it.

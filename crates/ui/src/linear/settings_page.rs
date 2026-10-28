@@ -388,8 +388,8 @@ impl Render for LinearSettingsPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use mast_proto::linear::LinearUser;
+    use std::sync::{Arc, Mutex};
 
     type Calls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 

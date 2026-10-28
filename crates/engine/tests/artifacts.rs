@@ -736,7 +736,11 @@ async fn legacy_zeron_artifact_links_are_still_imported() {
         .into_iter()
         .find(|a| a.title == "Old link")
         .unwrap();
-    assert!(row.stored_path.contains(".mast/artifacts/"), "{}", row.stored_path);
+    assert!(
+        row.stored_path.contains(".mast/artifacts/"),
+        "{}",
+        row.stored_path
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1233,7 +1237,11 @@ fn requests(rig: &Rig, artifact_id: &str) -> Vec<UserActionRequestView> {
         .snapshot(SPACE)
         .user_action_requests
         .into_iter()
-        .filter(|r| r.dedupe_key.as_deref().is_some_and(|k| k.starts_with(&prefix)))
+        .filter(|r| {
+            r.dedupe_key
+                .as_deref()
+                .is_some_and(|k| k.starts_with(&prefix))
+        })
         .collect()
 }
 
@@ -1278,13 +1286,25 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
     );
     let all = requests(&rig, &id);
     let blocking = all.iter().find(|r| r.text.starts_with("Q-1")).unwrap();
-    assert_eq!(blocking.dedupe_key.as_deref(), Some(question_key(&id, "Q-1").as_str()));
+    assert_eq!(
+        blocking.dedupe_key.as_deref(),
+        Some(question_key(&id, "Q-1").as_str())
+    );
     // The publishing Chat is the origin, so Reply & resolve reaches it.
     assert_eq!(blocking.chat_id, CHAT);
     assert!(blocking.info.as_deref().unwrap().contains("Blocks: ENG-1"));
-    let rollup = all.iter().find(|r| r.text.contains("open questions")).unwrap();
+    let rollup = all
+        .iter()
+        .find(|r| r.text.contains("open questions"))
+        .unwrap();
     assert_eq!(rollup.dedupe_key.as_deref(), Some(rollup_key(&id).as_str()));
-    assert!(rollup.info.as_deref().unwrap().contains("Q-2: Which timezone?"));
+    assert!(
+        rollup
+            .info
+            .as_deref()
+            .unwrap()
+            .contains("Q-2: Which timezone?")
+    );
 
     // A pass with nothing changed writes nothing.
     assert_eq!(sync.reconcile(&id), 0);
@@ -1306,7 +1326,16 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
         .filter(|r| !r.is_open())
         .collect::<Vec<_>>();
     assert_eq!(superseded.len(), 1);
-    assert!(superseded[0].resolution.as_ref().unwrap().note.as_deref().unwrap().starts_with("Superseded"));
+    assert!(
+        superseded[0]
+            .resolution
+            .as_ref()
+            .unwrap()
+            .note
+            .as_deref()
+            .unwrap()
+            .starts_with("Superseded")
+    );
 
     // Removing Q-1, and resolving Q-2 in the document, resolves their actions
     // and shrinks the roll-up.
@@ -1314,8 +1343,14 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
               > [!question] Q-3 · Reel labels?\n\n> [!question] Q-4 · Pallet size?\n";
     publish_plan(&rig, v4, "v4").await;
     sync.reconcile(&id);
-    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
-    let q1 = requests(&rig, &id).into_iter().find(|r| r.text.starts_with("Q-1")).unwrap();
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["2 open questions in Receiving plan"]
+    );
+    let q1 = requests(&rig, &id)
+        .into_iter()
+        .find(|r| r.text.starts_with("Q-1"))
+        .unwrap();
     let note = q1.resolution.unwrap().note.unwrap();
     assert!(note.contains("removed from the plan"), "{note}");
 
@@ -1345,9 +1380,21 @@ async fn answering_in_the_card_resolves_the_action_and_reaches_the_agent() {
     assert_eq!(row.answers[0].id, "Q-1");
     assert_eq!(row.answers[0].answer, "By MPN");
     assert_eq!(row.answers[0].revision, 1);
-    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
-    let q1 = requests(&rig, &id).into_iter().find(|r| r.text.starts_with("Q-1")).unwrap();
-    assert!(q1.resolution.unwrap().note.unwrap().starts_with("Answered in Mast: By MPN"));
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["2 open questions in Receiving plan"]
+    );
+    let q1 = requests(&rig, &id)
+        .into_iter()
+        .find(|r| r.text.starts_with("Q-1"))
+        .unwrap();
+    assert!(
+        q1.resolution
+            .unwrap()
+            .note
+            .unwrap()
+            .starts_with("Answered in Mast: By MPN")
+    );
 
     // Answering a rolled-up question shrinks the roll-up.
     rig.client
@@ -1363,11 +1410,18 @@ async fn answering_in_the_card_resolves_the_action_and_reaches_the_agent() {
         json!({ "artifactId": id, "questionId": "nope", "answer": "x" }),
         json!({ "artifactId": id, "questionId": "Q-3", "answer": "   " }),
     ] {
-        assert!(rig.client.call(methods::ARTIFACT_ANSWER_QUESTION, params).await.is_err());
+        assert!(
+            rig.client
+                .call(methods::ARTIFACT_ANSWER_QUESTION, params)
+                .await
+                .is_err()
+        );
     }
 
     // The agent sees the answers through artifact_get_plan.
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     let answered = plan["answeredQuestions"].as_array().unwrap();
     assert_eq!(answered.len(), 2);
     assert_eq!(answered[0]["id"], "Q-1");
@@ -1382,7 +1436,10 @@ async fn resolving_the_action_marks_the_question_answered() {
     sync.reconcile(&id);
     let all = requests(&rig, &id);
     let blocking = all.iter().find(|r| r.text.starts_with("Q-1")).unwrap();
-    let rollup = all.iter().find(|r| r.text.contains("open questions")).unwrap();
+    let rollup = all
+        .iter()
+        .find(|r| r.text.contains("open questions"))
+        .unwrap();
 
     outline(
         &rig.client,
@@ -1393,8 +1450,14 @@ async fn resolving_the_action_marks_the_question_answered() {
     sync.reconcile(&id);
     let row = artifact(&rig, &id);
     assert_eq!(row.answer_of("Q-1").unwrap().answer, "Merge by MPN");
-    assert_eq!(row.answer_of("Q-1").unwrap().by.kind, mast_proto::WorkOutlineActorKind::User);
-    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
+    assert_eq!(
+        row.answer_of("Q-1").unwrap().by.kind,
+        mast_proto::WorkOutlineActorKind::User
+    );
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["2 open questions in Receiving plan"]
+    );
 
     // Resolving the roll-up (no note) answers every question it listed.
     outline(
@@ -1406,7 +1469,10 @@ async fn resolving_the_action_marks_the_question_answered() {
     sync.reconcile(&id);
     let row = artifact(&rig, &id);
     assert_eq!(row.answers.len(), 3);
-    assert_eq!(row.answer_of("Q-2").unwrap().answer, "Resolved in Required Actions");
+    assert_eq!(
+        row.answer_of("Q-2").unwrap().answer,
+        "Resolved in Required Actions"
+    );
     assert!(open_texts(&rig, &id).is_empty());
     // Nothing is raised again for answered questions.
     assert_eq!(sync.reconcile(&id), 0);
@@ -1418,9 +1484,7 @@ async fn drift_counts_commits_on_the_chat_branch_after_the_latest_revision() {
     // Make the repository's own history older than the revision.
     tokio::time::sleep(Duration::from_millis(1_100)).await;
     let id = publish_plan(&rig, "# Plan\n", "v1").await;
-    let drift = |rig: &Rig, id: &str| {
-        rig.core.artifacts.drift(id).unwrap()
-    };
+    let drift = |rig: &Rig, id: &str| rig.core.artifacts.drift(id).unwrap();
     assert_eq!(drift(&rig, &id).commits_since, 0);
     tokio::time::sleep(Duration::from_millis(1_100)).await;
     std::fs::write(rig.worktree.join("code.rs"), "fn main() {}\n").unwrap();
@@ -1473,10 +1537,19 @@ async fn picking_an_option_is_stored_changed_cleared_and_seen_by_get_plan() {
     let rig = rig().await;
     let id = publish_options(&rig, "just a sentence", "o1").await;
     assert!(artifact(&rig, &id).picked.is_none());
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(plan["pickedOptions"], json!([]));
 
-    pick(&rig, &id, Some("B"), "Grouped", Some("  keep the PO header  ")).await;
+    pick(
+        &rig,
+        &id,
+        Some("B"),
+        "Grouped",
+        Some("  keep the PO header  "),
+    )
+    .await;
     let picked = artifact(&rig, &id).picked.unwrap();
     assert_eq!(picked.option_id, "B");
     assert_eq!(picked.label, "Grouped");
@@ -1486,7 +1559,9 @@ async fn picking_an_option_is_stored_changed_cleared_and_seen_by_get_plan() {
     assert_eq!(artifact(&rig, &id).current_revision, 1);
 
     // artifact_get_plan reports it, with or without a pinned plan.
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert!(plan["artifactId"].is_null());
     let picks = plan["pickedOptions"].as_array().unwrap();
     assert_eq!(picks.len(), 1);
@@ -1494,10 +1569,14 @@ async fn picking_an_option_is_stored_changed_cleared_and_seen_by_get_plan() {
     assert_eq!(picks[0]["optionId"], "B");
     assert_eq!(picks[0]["note"], "keep the PO header");
     publish_plan(&rig, "# Plan\n", "pv1").await;
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(plan["pickedOptions"][0]["label"], "Grouped");
     // Another item's agent sees nothing.
-    let other = tool(&rig, &rig.other_token, "artifact_get_plan", json!({})).await.unwrap();
+    let other = tool(&rig, &rig.other_token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(other["pickedOptions"], json!([]));
 
     // Changing the pick replaces it.
@@ -1514,7 +1593,9 @@ async fn picking_an_option_is_stored_changed_cleared_and_seen_by_get_plan() {
     let reply = pick(&rig, &id, None, "", None).await;
     assert!(reply["picked"].is_null());
     assert!(artifact(&rig, &id).picked.is_none());
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(plan["pickedOptions"], json!([]));
 }
 
@@ -1526,7 +1607,12 @@ async fn picking_refuses_non_options_artifacts_and_unknown_ids() {
         json!({ "artifactId": plan, "optionId": "A", "label": "x" }),
         json!({ "artifactId": "nope", "optionId": "A", "label": "x" }),
     ] {
-        assert!(rig.client.call(methods::ARTIFACT_PICK_OPTION, params).await.is_err());
+        assert!(
+            rig.client
+                .call(methods::ARTIFACT_PICK_OPTION, params)
+                .await
+                .is_err()
+        );
     }
 }
 
@@ -1566,7 +1652,10 @@ async fn picking_resolves_the_linked_question_and_artopt_requests() {
 
     // Changing the pick rewrites the answer; clearing it removes it.
     pick(&rig, &id, Some("B"), "Grouped", None).await;
-    assert_eq!(artifact(&rig, &plan).answer_of("Q-1").unwrap().answer, "Picked option B: Grouped");
+    assert_eq!(
+        artifact(&rig, &plan).answer_of("Q-1").unwrap().answer,
+        "Picked option B: Grouped"
+    );
     pick(&rig, &id, None, "", None).await;
     // The question is open again on the card; its Required Action comes
     // back with the plan's next revision (create ids are per revision).
@@ -1587,7 +1676,13 @@ async fn publish_html(rig: &Rig, body: &str, key: &str) -> String {
     reply["artifactId"].as_str().unwrap().to_owned()
 }
 
-async fn add_comment(rig: &Rig, id: &str, anchor: Value, quote: &str, text: &str) -> Result<Value, String> {
+async fn add_comment(
+    rig: &Rig,
+    id: &str,
+    anchor: Value,
+    quote: &str,
+    text: &str,
+) -> Result<Value, String> {
     rig.client
         .call(
             methods::ARTIFACT_ADD_COMMENT,
@@ -1603,16 +1698,28 @@ const FLOW_V1: &str = "<h2 id=\"intake\">Receiving</h2><p>Scan the pallet label 
 async fn comments_add_list_resolve_and_reopen() {
     let rig = rig().await;
     let id = publish_html(&rig, FLOW_V1, "v1").await;
-    let reply = add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", "  Rename this  ")
-        .await
-        .unwrap();
+    let reply = add_comment(
+        &rig,
+        &id,
+        json!({ "id": "intake", "exact": "Receiving" }),
+        "",
+        "  Rename this  ",
+    )
+    .await
+    .unwrap();
     assert_eq!(reply["comment"]["id"], "C-1");
     assert_eq!(reply["comment"]["text"], "Rename this");
     assert_eq!(reply["comment"]["quote"], "Receiving");
     assert_eq!(reply["comment"]["revision"], 1);
-    let second = add_comment(&rig, &id, json!({ "exact": "pallet label" }), "pallet label", "Which label?")
-        .await
-        .unwrap();
+    let second = add_comment(
+        &rig,
+        &id,
+        json!({ "exact": "pallet label" }),
+        "pallet label",
+        "Which label?",
+    )
+    .await
+    .unwrap();
     assert_eq!(second["comment"]["id"], "C-2");
     assert_eq!(artifact(&rig, &id).comments.len(), 2);
 
@@ -1647,20 +1754,40 @@ async fn comments_add_list_resolve_and_reopen() {
             json!({ "artifactId": id, "commentId": "C-9", "resolved": true }),
         )
         .await;
-    assert!(missing.unwrap_err().to_string().to_lowercase().contains("not"));
+    assert!(
+        missing
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("not")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn comments_are_refused_on_markdown_and_without_text_or_anchor() {
     let rig = rig().await;
     let md = publish_plan(&rig, "# Plan\n", "v1").await;
-    let err = add_comment(&rig, &md, json!({ "exact": "Plan" }), "", "hi").await.unwrap_err();
+    let err = add_comment(&rig, &md, json!({ "exact": "Plan" }), "", "hi")
+        .await
+        .unwrap_err();
     assert!(err.contains("HTML and Mermaid"), "{err}");
 
     let id = publish_html(&rig, FLOW_V1, "h1").await;
-    assert!(add_comment(&rig, &id, json!({ "exact": "Receiving" }), "", "   ").await.is_err());
-    assert!(add_comment(&rig, &id, json!({ "prefix": "x" }), "", "hi").await.is_err());
-    assert!(add_comment(&rig, "missing", json!({ "exact": "Receiving" }), "", "hi").await.is_err());
+    assert!(
+        add_comment(&rig, &id, json!({ "exact": "Receiving" }), "", "   ")
+            .await
+            .is_err()
+    );
+    assert!(
+        add_comment(&rig, &id, json!({ "prefix": "x" }), "", "hi")
+            .await
+            .is_err()
+    );
+    assert!(
+        add_comment(&rig, "missing", json!({ "exact": "Receiving" }), "", "hi")
+            .await
+            .is_err()
+    );
     assert!(artifact(&rig, &id).comments.is_empty());
 }
 
@@ -1668,26 +1795,57 @@ async fn comments_are_refused_on_markdown_and_without_text_or_anchor() {
 async fn comment_anchors_survive_revisions_until_the_text_goes() {
     let rig = rig().await;
     let id = publish_html(&rig, FLOW_V1, "v1").await;
-    add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", "by id").await.unwrap();
-    add_comment(&rig, &id, json!({ "exact": "Scan the pallet label" }), "", "by quote").await.unwrap();
+    add_comment(
+        &rig,
+        &id,
+        json!({ "id": "intake", "exact": "Receiving" }),
+        "",
+        "by id",
+    )
+    .await
+    .unwrap();
+    add_comment(
+        &rig,
+        &id,
+        json!({ "exact": "Scan the pallet label" }),
+        "",
+        "by quote",
+    )
+    .await
+    .unwrap();
     let statuses = |plan: &Value| -> Vec<String> {
-        plan["comments"].as_array().unwrap().iter()
-            .map(|c| c["anchorStatus"].as_str().unwrap().to_owned()).collect()
+        plan["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["anchorStatus"].as_str().unwrap().to_owned())
+            .collect()
     };
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(statuses(&plan), ["found", "found"]);
     assert_eq!(plan["comments"][0]["anchor"]["id"], "intake");
     assert_eq!(plan["comments"][1]["quote"], "Scan the pallet label");
 
     // r2 drops the id but keeps both texts: both still found (by quote).
-    publish_html(&rig, "<h2>Receiving</h2><p>Scan the pallet label first.</p>", "v2").await;
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    publish_html(
+        &rig,
+        "<h2>Receiving</h2><p>Scan the pallet label first.</p>",
+        "v2",
+    )
+    .await;
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(plan["revision"], 2);
     assert_eq!(statuses(&plan), ["found", "found"]);
 
     // r3 removes the text: both outdated, but still listed.
     publish_html(&rig, "<h2>Dock</h2><p>Check the seal.</p>", "v3").await;
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     assert_eq!(statuses(&plan), ["outdated", "outdated"]);
 }
 
@@ -1696,9 +1854,21 @@ async fn publishing_with_addressed_comments_resolves_them_and_get_plan_lists_onl
     let rig = rig().await;
     let id = publish_html(&rig, FLOW_V1, "v1").await;
     for text in ["one", "two", "three"] {
-        add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", text).await.unwrap();
+        add_comment(
+            &rig,
+            &id,
+            json!({ "id": "intake", "exact": "Receiving" }),
+            "",
+            text,
+        )
+        .await
+        .unwrap();
     }
-    std::fs::write(rig.worktree.join("flow.fragment.html"), "<h2 id=\"intake\">Receiving</h2><p>New.</p>").unwrap();
+    std::fs::write(
+        rig.worktree.join("flow.fragment.html"),
+        "<h2 id=\"intake\">Receiving</h2><p>New.</p>",
+    )
+    .unwrap();
     let reply = publish(
         &rig,
         &rig.token,
@@ -1716,7 +1886,9 @@ async fn publishing_with_addressed_comments_resolves_them_and_get_plan_lists_onl
         assert!(c.resolved_at.is_some());
     }
     assert!(row.comments[1].is_open());
-    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({}))
+        .await
+        .unwrap();
     let open = plan["comments"].as_array().unwrap();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0]["id"], "C-2");
@@ -1729,7 +1901,9 @@ async fn comments_trim_to_the_limit_dropping_resolved_first() {
     let rig = rig().await;
     let id = publish_html(&rig, FLOW_V1, "v1").await;
     for n in 0..mast_proto::artifacts::MAX_COMMENTS {
-        add_comment(&rig, &id, json!({ "id": "intake" }), "", &format!("c{n}")).await.unwrap();
+        add_comment(&rig, &id, json!({ "id": "intake" }), "", &format!("c{n}"))
+            .await
+            .unwrap();
     }
     rig.client
         .call(
@@ -1738,13 +1912,20 @@ async fn comments_trim_to_the_limit_dropping_resolved_first() {
         )
         .await
         .unwrap();
-    add_comment(&rig, &id, json!({ "id": "intake" }), "", "overflow").await.unwrap();
+    add_comment(&rig, &id, json!({ "id": "intake" }), "", "overflow")
+        .await
+        .unwrap();
     let row = artifact(&rig, &id);
     assert_eq!(row.comments.len(), mast_proto::artifacts::MAX_COMMENTS);
-    assert!(row.comments.iter().all(|c| c.id != "C-5"), "resolved dropped first");
+    assert!(
+        row.comments.iter().all(|c| c.id != "C-5"),
+        "resolved dropped first"
+    );
     assert!(row.comments.iter().any(|c| c.id == "C-1"));
     // Nothing resolved: the oldest goes.
-    add_comment(&rig, &id, json!({ "id": "intake" }), "", "again").await.unwrap();
+    add_comment(&rig, &id, json!({ "id": "intake" }), "", "again")
+        .await
+        .unwrap();
     let row = artifact(&rig, &id);
     assert_eq!(row.comments.len(), mast_proto::artifacts::MAX_COMMENTS);
     assert!(row.comments.iter().all(|c| c.id != "C-1"));
@@ -1758,7 +1939,10 @@ async fn publishing_and_resolving_trigger_the_background_sync_without_a_tick() {
     let id = publish_plan(&rig, PLAN_V1, "v1").await;
     let started = std::time::Instant::now();
     while open_texts(&rig, &id).len() < 2 {
-        assert!(started.elapsed() < Duration::from_secs(5), "no event-driven pass");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no event-driven pass"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
@@ -1769,7 +1953,10 @@ async fn publishing_and_resolving_trigger_the_background_sync_without_a_tick() {
     publish_plan(&rig, "# Plan\n\nAll settled.\n", "v2").await;
     let started = std::time::Instant::now();
     while !open_texts(&rig, &id).is_empty() {
-        assert!(started.elapsed() < Duration::from_secs(5), "no event-driven resolve");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no event-driven resolve"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

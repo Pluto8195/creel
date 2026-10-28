@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use mast_proto::GitHistoryCommit;
+use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
 use crate::pr_ticket_cache::{extract_ticket_id, workspace_submodule_paths};

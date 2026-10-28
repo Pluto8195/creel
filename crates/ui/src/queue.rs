@@ -296,10 +296,8 @@ impl Composer {
         let (items, chat_id, host_supports_actions) = {
             let state = self.state.read(cx);
             let chat_id = state.selected_chat.clone()?;
-            let host_supports_actions = state.chat_host_supports(
-                &chat_id,
-                mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1,
-            );
+            let host_supports_actions = state
+                .chat_host_supports(&chat_id, mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1);
             (state.queue.clone(), chat_id, host_supports_actions)
         };
         self.prepare_queue_previews(&items, window, cx);
@@ -1138,10 +1136,8 @@ impl Composer {
             else {
                 return;
             };
-            let supported = state.chat_host_supports(
-                &chat_id,
-                mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1,
-            );
+            let supported = state
+                .chat_host_supports(&chat_id, mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1);
             (chat_id, host_device_id, supported)
         };
         if !supported {

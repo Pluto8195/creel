@@ -24,11 +24,11 @@ use async_trait::async_trait;
 
 use crate::swr::{Entry, SwrStore};
 use futures::future::FutureExt;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use mast_proto::{
     PrDashBucket, PrDashCheck, PrDashDiff, PrDashReply, PrDashReviewer, PrDashRow, PrDashTab,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// `classify` as a function pointer so tests can inject a trivial one.
 pub type ClassifyFn = fn(PrDashTab, &PrDashRow) -> (PrDashBucket, Vec<String>);

@@ -1,12 +1,12 @@
 //! Opt-in production engine + Cursor SDK checks. Uses real account quota.
 //! MAST_CURSOR_STATE_DIR=$(mktemp -d) cargo test -p mast-engine --test cursor_live -- --ignored --nocapture --test-threads=1
-use std::{sync::Arc, time::Duration};
 use mast_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry,
 };
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_harness::CursorHarness;
 use mast_proto::{HarnessId, RunRequest, SandboxLevel};
+use std::{sync::Arc, time::Duration};
 
 const CHAT: &str = "cursor-live-audit";
 fn setup(path: &std::path::Path) -> EngineCore {

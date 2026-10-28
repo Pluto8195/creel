@@ -74,16 +74,20 @@ pub(super) fn document_decision(url: &str, link_activated: bool) -> DocumentDeci
     if !link_activated {
         return cancel(DocumentAction::None);
     }
-    if let Some(encoded) = url.strip_prefix(MESSAGE_BRIDGE_SCHEME)
-        .or_else(|| url.strip_prefix(LEGACY_MESSAGE_BRIDGE_SCHEME)) {
+    if let Some(encoded) = url
+        .strip_prefix(MESSAGE_BRIDGE_SCHEME)
+        .or_else(|| url.strip_prefix(LEGACY_MESSAGE_BRIDGE_SCHEME))
+    {
         return cancel(
             crate::workspace_links::percent_decode_path(encoded)
                 .filter(|json| json.len() <= MAX_BRIDGE_MESSAGE_BYTES)
                 .map_or(DocumentAction::None, DocumentAction::Message),
         );
     }
-    if let Some(encoded) = url.strip_prefix(LINK_BRIDGE_SCHEME)
-        .or_else(|| url.strip_prefix(LEGACY_LINK_BRIDGE_SCHEME)) {
+    if let Some(encoded) = url
+        .strip_prefix(LINK_BRIDGE_SCHEME)
+        .or_else(|| url.strip_prefix(LEGACY_LINK_BRIDGE_SCHEME))
+    {
         return cancel(
             crate::workspace_links::percent_decode_path(encoded)
                 .map_or(DocumentAction::None, DocumentAction::Link),
@@ -312,7 +316,11 @@ mod tests {
         for scheme in ["mast-msg:", "zeron-msg:"] {
             let decision = document_decision(&format!("{scheme}{enc}"), true);
             assert!(!decision.allow);
-            assert_eq!(decision.action, DocumentAction::Message(json.into()), "{scheme}");
+            assert_eq!(
+                decision.action,
+                DocumentAction::Message(json.into()),
+                "{scheme}"
+            );
         }
         assert_eq!(
             document_decision("zeron-msg:%7B%22t%22%3A%22x%22%7D", false).action,

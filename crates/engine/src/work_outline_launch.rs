@@ -34,7 +34,6 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
 use mast_doc::{RowState, SessionCommandPayload, SessionCommandStatus};
 use mast_proto::work_outline::{WorkOutlineErrorCode, derive_id, roles};
 use mast_proto::{
@@ -47,6 +46,7 @@ use mast_proto::{
     WorkItemLaunchState, WorkItemPrompt, WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError,
     WorkOutlineMutation, WorktreeChoice,
 };
+use serde::Serialize;
 
 use crate::EngineError;
 use crate::doc_host::DocHost;
@@ -136,8 +136,7 @@ fn same_path(a: &str, b: &str) -> bool {
 
 fn check_operation_id(operation_id: &str) -> Result<(), WorkOutlineError> {
     let ok = !operation_id.is_empty()
-        && operation_id.chars().count()
-            <= mast_proto::work_outline::limits::MAX_OPERATION_ID_CHARS
+        && operation_id.chars().count() <= mast_proto::work_outline::limits::MAX_OPERATION_ID_CHARS
         && operation_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
@@ -1221,8 +1220,14 @@ mod default_model_tests {
             HarnessId::ClaudeCode,
             "c",
         );
-        assert_eq!(kept.config.unwrap().model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(
+            kept.config.unwrap().model.as_deref(),
+            Some("claude-sonnet-5")
+        );
         let filled = with_default_model(&params(Some(config(None))), HarnessId::ClaudeCode, "c");
-        assert_eq!(filled.config.unwrap().model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(
+            filled.config.unwrap().model.as_deref(),
+            Some("claude-opus-5-5")
+        );
     }
 }

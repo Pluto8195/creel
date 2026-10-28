@@ -1450,10 +1450,7 @@ async fn bind_chat_worktree_records_and_selects_a_submodule_worktree() {
     assert_eq!(row.chat_id, CHAT);
     assert_eq!(
         row.ops,
-        vec![mast_proto::agent_tools::operation_id(
-            CHAT,
-            "bind-flagship"
-        )]
+        vec![mast_proto::agent_tools::operation_id(CHAT, "bind-flagship")]
     );
     assert!(row.ops[0].len() <= 64);
 }

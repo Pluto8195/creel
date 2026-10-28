@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{App, Global, Task};
-use serde::{Deserialize, Serialize};
 use mast_proto::{AuthState, WorkspaceScope};
+use serde::{Deserialize, Serialize};
 
 pub mod accounts;
 pub mod appearance;

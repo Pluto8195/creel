@@ -5108,10 +5108,10 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_install_rpc_verifies_archive_and_refreshes_descriptors() {
+        use mast_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
         use sha2::{Digest, Sha512};
         use std::io::Write;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use mast_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
         if mast_proto::env::var_os("MAST_INSTALL_RPC_TEST").is_none() {
             let root = tempfile::tempdir().unwrap();
             let output = tokio::process::Command::new(std::env::current_exe().unwrap())

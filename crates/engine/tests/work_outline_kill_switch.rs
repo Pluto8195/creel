@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_proto::{HarnessId, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineSnapshot};
 use mast_rpc::methods;
+use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn kill_switch_refuses_writes_and_keeps_reads() {

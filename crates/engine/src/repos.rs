@@ -2264,7 +2264,10 @@ mod tests {
 
     #[test]
     fn worktree_branches_are_created_as_mast_and_both_prefixes_are_ours() {
-        assert_eq!(worktree_branch_from_title("Fix login flow"), "mast/fix-login-flow");
+        assert_eq!(
+            worktree_branch_from_title("Fix login flow"),
+            "mast/fix-login-flow"
+        );
         assert!(is_owned_branch("mast/swift-otter"));
         assert!(is_owned_branch("zeron/swift-otter"));
         assert!(!is_owned_branch("feature/zeron/x"));

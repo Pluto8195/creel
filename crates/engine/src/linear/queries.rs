@@ -16,12 +16,12 @@
 //! - Lists are cursor-paginated (`first`/`after`, `pageInfo { hasNextPage
 //!   endCursor }`), most recently updated first (`orderBy: updatedAt`).
 
-use serde_json::{Value, json};
 use mast_proto::linear::{
     LinearIssueSummary, LinearLabel, LinearProjectDetail, LinearProjectRef, LinearProjectSummary,
     LinearProjectUpdate, LinearState, LinearTeamRef, LinearUser, MAX_PROJECT_UPDATES,
     MAX_UPDATE_BODY_CHARS,
 };
+use serde_json::{Value, json};
 
 /// Page size of every list query.
 pub const PAGE_SIZE: usize = 50;

@@ -4,10 +4,10 @@
 //! cargo test -p mast-harness --test real_acp_lifecycle -- --ignored --nocapture
 
 use futures::StreamExt;
-use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
 use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
 use mast_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, oneshot};
 
 async fn live_run(cancel: bool) {
     let cwd = tempfile::tempdir().unwrap();

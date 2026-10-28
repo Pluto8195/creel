@@ -356,7 +356,9 @@ mod tests {
         assert!(out.contains(
             "<div data-zeron-question=\"Q-3\" data-status=\"answered\" data-answer=\"yes\">A?</div>"
         ));
-        assert!(out.contains("<div data-mast-question=\"Q-3\" data-status=\"answered\" data-answer=\"yes\">B?</div>"));
+        assert!(out.contains(
+            "<div data-mast-question=\"Q-3\" data-status=\"answered\" data-answer=\"yes\">B?</div>"
+        ));
     }
 
     #[test]
@@ -398,10 +400,7 @@ data-example=\"two LM358 lines\" data-blocks=\"ENG-2690\">Merge by <b>MPN</b>?</
                 let html = web_document(kind, &source, "t", "", &theme(), false, probe);
                 // The frame is the escaped srcdoc attribute.
                 assert!(html.contains(&escape_attr(CSS.trim())), "{kind:?} style");
-                assert!(
-                    html.contains("__mastQuestionsInstalled"),
-                    "{kind:?} script"
-                );
+                assert!(html.contains("__mastQuestionsInstalled"), "{kind:?} script");
                 assert!(
                     html.contains(&escape_attr("<div data-mast-question=\"Q-3\"")),
                     "{kind:?} author markup kept"

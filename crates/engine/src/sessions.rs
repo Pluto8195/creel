@@ -2537,15 +2537,16 @@ async fn drive_run(
     // ACP retains the watchdog only for unowned self-continued activity.
     let deterministic_turn_end = harness.deterministic_turn_end();
     let authoritative_prompt_end = harness.authoritative_prompt_end();
-    let quiesce_after: Option<std::time::Duration> = match mast_proto::env::var("MAST_TURN_QUIESCE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        Some(0) => None,
-        Some(ms) => Some(std::time::Duration::from_millis(ms)),
-        None if deterministic_turn_end => None,
-        None => Some(std::time::Duration::from_secs(120)),
-    };
+    let quiesce_after: Option<std::time::Duration> =
+        match mast_proto::env::var("MAST_TURN_QUIESCE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(0) => None,
+            Some(ms) => Some(std::time::Duration::from_millis(ms)),
+            None if deterministic_turn_end => None,
+            None => Some(std::time::Duration::from_secs(120)),
+        };
     let mut last_stream_activity = tokio::time::Instant::now();
     // SELF-CONTINUED turns get a much SHORTER quiesce window. A turn the
     // agent starts on its own (background-task wake) can never receive a

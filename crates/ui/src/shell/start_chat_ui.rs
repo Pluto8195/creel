@@ -193,9 +193,7 @@ impl Shell {
                 .devices
                 .iter()
                 .find(|device| device.id == device_id)
-                .filter(|device| {
-                    !device.supports(mast_proto::capabilities::WORK_OUTLINE_LAUNCH_V1)
-                })
+                .filter(|device| !device.supports(mast_proto::capabilities::WORK_OUTLINE_LAUNCH_V1))
                 .map(|device| {
                     format!(
                         "Update Mast on {} to start Chats from work items",

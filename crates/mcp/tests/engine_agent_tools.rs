@@ -12,13 +12,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde_json::{Value, json};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_harness::{Harness, HarnessError, RunControls};
-use mast_mcp::{Tools, Mast};
+use mast_mcp::{Mast, Tools};
 use mast_proto::{AgentEvent, DoneStatus, Model, ReasoningLevel, RunRequest, SteeringMode};
 use mast_proto::{HarnessId, WorkItemChatAssignmentState, derive_id, roles};
 use mast_rpc::methods;
+use serde_json::{Value, json};
 
 const SPACE: &str = "space-1";
 const PARENT: &str = "chat-parent";

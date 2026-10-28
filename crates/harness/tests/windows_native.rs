@@ -3,12 +3,12 @@
 #![cfg(all(windows, feature = "native-fixture"))]
 
 use futures::StreamExt;
+use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use mast_proto::{AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls};
-use mast_proto::{AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel};
 
 #[test]
 fn managed_process_protocol_progresses_with_one_blocking_worker() {
@@ -18,8 +18,8 @@ fn managed_process_protocol_progresses_with_one_blocking_worker() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         use mast_harness::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let mut command =
             mast_harness::process::Command::new(env!("CARGO_BIN_EXE_harness-native-fixture"));
         command

@@ -868,13 +868,13 @@ mod tests {
 
     // ── host-level: the ENG-3012-shaped chat, persisted ─────────────────────
 
-    use std::sync::Arc;
     use mast_proto::{
         AssignChatToWorkItemParams, ChatDiffTargetSource, CreateWorkItemExternalReferenceParams,
         CreateWorkItemParams, StoredChatDiffTarget, WorkOutlineActor, WorkOutlineActorKind,
         WorkOutlineMutation,
     };
     use mast_sync::DocsStore;
+    use std::sync::Arc;
 
     use crate::workspace_host::{ChatLinkKind, WorkspaceHostConfig};
 

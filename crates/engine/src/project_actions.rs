@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use mast_proto::{
     ProjectAction, ProjectActionDraft, ProjectActionIcon, ProjectActionRun, ProjectActionsSnapshot,
 };
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{EngineError, Terminals};
 
@@ -638,7 +638,10 @@ fn read_project_file_bytes(reader: impl Read) -> Result<Vec<u8>, String> {
 }
 
 fn project_file_issue(message: String) -> (Vec<ProjectActionDraft>, Option<String>) {
-    (Vec::new(), Some(format!("Invalid project file (mast.json): {message}")))
+    (
+        Vec::new(),
+        Some(format!("Invalid project file (mast.json): {message}")),
+    )
 }
 
 #[cfg(test)]
@@ -808,7 +811,9 @@ mod tests {
     fn mast_json_wins_and_a_legacy_zeron_json_is_still_read() {
         let (_temp, store_root, project_root) = roots();
         let store = ProjectActionsStore::open(&store_root).unwrap();
-        let file = |name: &str| format!(r#"{{"actions":[{{"name":"{name}","command":"run","icon":"play"}}]}}"#);
+        let file = |name: &str| {
+            format!(r#"{{"actions":[{{"name":"{name}","command":"run","icon":"play"}}]}}"#)
+        };
 
         std::fs::write(project_root.join(LEGACY_PROJECT_FILE), file("Old")).unwrap();
         let legacy = store.snapshot("space", &project_root).unwrap();

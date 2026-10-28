@@ -7,13 +7,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_proto::{
     HarnessId, InstructionProposalStatus, WorkItemEffectiveStatus, WorkOutlineError,
     WorkOutlineErrorCode, WorkOutlineMutation, WorkOutlineSnapshot, derive_id, roles,
 };
 use mast_rpc::methods;
+use serde_json::{Value, json};
 
 fn assemble(dir: &std::path::Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");

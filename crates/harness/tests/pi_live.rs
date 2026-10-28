@@ -3,10 +3,10 @@
 #![cfg(unix)]
 
 use futures::StreamExt;
-use std::{path::PathBuf, time::Duration};
-use tokio::sync::{mpsc, oneshot};
 use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
 use mast_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
+use std::{path::PathBuf, time::Duration};
+use tokio::sync::{mpsc, oneshot};
 
 #[tokio::test]
 #[ignore = "requires an isolated real Pi adapter and local mock provider"]

@@ -1341,7 +1341,10 @@ fn delivery_outcomes_have_stable_wire_shapes() {
 fn the_upgrade_reason_reads_both_spellings_and_writes_the_old_one() {
     for name in ["zeronUpgradeRequired", "mastUpgradeRequired"] {
         let reason: InstructionHostUnsupportedReason = serde_json::from_value(json!(name)).unwrap();
-        assert_eq!(reason, InstructionHostUnsupportedReason::MastUpgradeRequired);
+        assert_eq!(
+            reason,
+            InstructionHostUnsupportedReason::MastUpgradeRequired
+        );
     }
     assert_eq!(
         serde_json::to_value(InstructionHostUnsupportedReason::MastUpgradeRequired).unwrap(),

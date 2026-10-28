@@ -1,8 +1,8 @@
 //! Pi's native session id survives an idle adapter crash through dispatch.
-use std::{sync::Arc, time::Duration};
 use mast_engine::{EngineCore, HarnessRegistry};
 use mast_harness::AcpHarness;
 use mast_proto::{HarnessId, RunRequest, SandboxLevel};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 async fn pi_idle_crash_next_dispatch_loads_stored_session() {

@@ -9,13 +9,13 @@
 //! answers instruction operations with `unsupported`.
 use std::collections::{BTreeSet, HashMap};
 
-use sha2::{Digest, Sha256};
 use mast_proto::{
     ChatInstructionState, INSTRUCTION_ENVELOPE_VERSION, InstructionRevisionBody,
     InstructionRevisionComparison, InstructionRevisionIntegrity, WorkItemChatAssignmentState,
     WorkItemInstructionView, WorkOutlineActorKind, WorkOutlineSnapshot, build_revision_body,
     canonical_revision_hash, compare_instruction_revisions,
 };
+use sha2::{Digest, Sha256};
 
 /// Live instructions of one scope in effective order `(orderKey, id)`:
 /// `item_id == None` is the Space root.

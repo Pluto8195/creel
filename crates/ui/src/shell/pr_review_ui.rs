@@ -106,8 +106,8 @@ mod tests {
     use crate::chat_type_view::ReviewStatus;
     use crate::pr_page::PageTab;
     use crate::pr_page::fixtures::row;
-    use std::sync::{Arc, Mutex};
     use mast_proto::{ChatLinkSource, PrDashBucket, PrDashChat, PrDashRow, PrDashTab};
+    use std::sync::{Arc, Mutex};
 
     type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
 

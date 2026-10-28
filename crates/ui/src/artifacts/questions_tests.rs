@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use serde_json::json;
 use mast_proto::{
     ArtifactContentEncoding, ArtifactDriftReply, ArtifactKind, ArtifactQuestionAnswer,
     ArtifactView, WorkOutlineActor,
 };
 use mast_rpc::methods;
+use serde_json::json;
 
 use super::tab::ArtifactTab;
 use super::tests::{Calls, Reply, artifact, content_reply, id, init_ui, scripted, snapshot};

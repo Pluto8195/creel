@@ -192,12 +192,16 @@ impl ArtifactQuestionSync {
             Some(p) => format!("Picked option {} in Mast", p.option_id),
             None => "Picked in Mast".to_owned(),
         };
-        open.iter().filter(|r| self.resolve(r, note.clone())).count()
+        open.iter()
+            .filter(|r| self.resolve(r, note.clone()))
+            .count()
     }
 
     /// Reconcile one artifact; see the module docs.
     pub fn reconcile(&self, artifact_id: &str) -> usize {
-        let _pass = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _pass = PASS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ws = self.artifacts.workspace();
         let Some(artifact) = ws.artifact(artifact_id) else {
             return 0;
@@ -218,7 +222,11 @@ impl ArtifactQuestionSync {
             .user_action_requests
             .iter()
             .filter(|r| r.work_item_id == item)
-            .filter(|r| r.dedupe_key.as_deref().is_some_and(|k| k.starts_with(&prefix)))
+            .filter(|r| {
+                r.dedupe_key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with(&prefix))
+            })
             .collect();
         if questions.is_empty() && requests.is_empty() {
             return 0;
@@ -269,7 +277,9 @@ impl ArtifactQuestionSync {
             }
         }
         if !answered_now.is_empty() {
-            let excess = answers.len().saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
+            let excess = answers
+                .len()
+                .saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
             answers.drain(..excess);
             match ws.set_artifact_answers(&artifact.id, &answers) {
                 Ok(_) => changes += answered_now.len(),
@@ -290,10 +300,16 @@ impl ArtifactQuestionSync {
         for q in &blocking {
             let key = question_key(&artifact.id, &q.id);
             wanted_keys.insert(key.clone());
-            if requests.iter().any(|r| r.is_open() && r.dedupe_key.as_deref() == Some(&key)) {
+            if requests
+                .iter()
+                .any(|r| r.is_open() && r.dedupe_key.as_deref() == Some(&key))
+            {
                 continue;
             }
-            let mut info = vec![format!("Plan: {} (rev {})", artifact.title, artifact.current_revision)];
+            let mut info = vec![format!(
+                "Plan: {} (rev {})",
+                artifact.title, artifact.current_revision
+            )];
             if let Some(blocks) = &q.blocks {
                 info.push(format!("Blocks: {}", one_line(blocks)));
             }
@@ -301,10 +317,16 @@ impl ArtifactQuestionSync {
             changes += self.create(
                 &item,
                 &origin,
-                truncate(&question_line(q), user_action_limits::MAX_REQUEST_TEXT_CHARS),
+                truncate(
+                    &question_line(q),
+                    user_action_limits::MAX_REQUEST_TEXT_CHARS,
+                ),
                 info.join("\n"),
                 key,
-                format!("artq\0{}\0{}\0{}", artifact.id, q.id, artifact.current_revision),
+                format!(
+                    "artq\0{}\0{}\0{}",
+                    artifact.id, q.id, artifact.current_revision
+                ),
             ) as usize;
         }
 
@@ -321,7 +343,10 @@ impl ArtifactQuestionSync {
             one_line(&artifact.title)
         );
         let rollup_info_full = format!("{rollup_info}\n{}", artifact.url());
-        let rollup_info_full = truncate(&rollup_info_full, user_action_limits::MAX_REQUEST_INFO_CHARS);
+        let rollup_info_full = truncate(
+            &rollup_info_full,
+            user_action_limits::MAX_REQUEST_INFO_CHARS,
+        );
         if !rollup.is_empty() {
             wanted_keys.insert(rollup_k.clone());
         }
@@ -330,7 +355,8 @@ impl ArtifactQuestionSync {
             let key = request.dedupe_key.clone().unwrap_or_default();
             if key == rollup_k {
                 if !rollup.is_empty()
-                    && request.text == truncate(&rollup_text, user_action_limits::MAX_REQUEST_TEXT_CHARS)
+                    && request.text
+                        == truncate(&rollup_text, user_action_limits::MAX_REQUEST_TEXT_CHARS)
                     && request.info.as_deref() == Some(rollup_info_full.as_str())
                 {
                     rollup_current = true;
@@ -377,14 +403,23 @@ impl ArtifactQuestionSync {
             return "No open questions left in the plan".to_owned();
         };
         match questions.iter().find(|q| q.id == id) {
-            None => format!("{id} was removed from the plan (rev {})", artifact.current_revision),
+            None => format!(
+                "{id} was removed from the plan (rev {})",
+                artifact.current_revision
+            ),
             Some(q) if q.status == PlanQuestionStatus::Resolved => {
-                format!("{id} is resolved in the plan (rev {})", artifact.current_revision)
+                format!(
+                    "{id} is resolved in the plan (rev {})",
+                    artifact.current_revision
+                )
             }
             Some(_) if answers.iter().any(|a| a.id.eq_ignore_ascii_case(id)) => {
                 let answer = answers.iter().find(|a| a.id.eq_ignore_ascii_case(id));
                 let text = answer.map(|a| one_line(&a.answer)).unwrap_or_default();
-                truncate(&format!("Answered in Mast: {text}"), user_action_limits::MAX_NOTE_CHARS)
+                truncate(
+                    &format!("Answered in Mast: {text}"),
+                    user_action_limits::MAX_NOTE_CHARS,
+                )
             }
             Some(q) if q.status == PlanQuestionStatus::Answered => {
                 format!("{id} is marked answered in the plan")
@@ -433,23 +468,29 @@ impl ArtifactQuestionSync {
         dedupe_key: String,
         operation_seed: String,
     ) -> bool {
-        let mutation = WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
-            work_item_id: item.to_owned(),
-            origin: origin.clone(),
-            text,
-            info: Some(truncate(&info, user_action_limits::MAX_REQUEST_INFO_CHARS)),
-            dedupe_key: Some(truncate(&dedupe_key, user_action_limits::MAX_DEDUPE_KEY_CHARS)),
-            operation_id: derive_id(&operation_seed, "artq"),
-        });
+        let mutation =
+            WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
+                work_item_id: item.to_owned(),
+                origin: origin.clone(),
+                text,
+                info: Some(truncate(&info, user_action_limits::MAX_REQUEST_INFO_CHARS)),
+                dedupe_key: Some(truncate(
+                    &dedupe_key,
+                    user_action_limits::MAX_DEDUPE_KEY_CHARS,
+                )),
+                operation_id: derive_id(&operation_seed, "artq"),
+            });
         self.apply(mutation)
     }
 
     fn resolve(&self, request: &UserActionRequestView, note: String) -> bool {
-        self.apply(WorkOutlineMutation::ResolveUserActionRequest(ResolveUserActionRequestParams {
-            user_action_request_id: request.id.clone(),
-            note: Some(truncate(&note, user_action_limits::MAX_NOTE_CHARS)),
-            operation_id: derive_id(&format!("artq-resolve\0{}", request.id), "artq"),
-        }))
+        self.apply(WorkOutlineMutation::ResolveUserActionRequest(
+            ResolveUserActionRequestParams {
+                user_action_request_id: request.id.clone(),
+                note: Some(truncate(&note, user_action_limits::MAX_NOTE_CHARS)),
+                operation_id: derive_id(&format!("artq-resolve\0{}", request.id), "artq"),
+            },
+        ))
     }
 
     fn apply(&self, mutation: WorkOutlineMutation) -> bool {
@@ -457,7 +498,10 @@ impl ArtifactQuestionSync {
         match self.outline.mutate_as(&mutation, &actor) {
             Ok(_) => true,
             Err(error) => {
-                tracing::warn!(code = error.code.as_str(), "artifact question sync: write failed");
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "artifact question sync: write failed"
+                );
                 false
             }
         }

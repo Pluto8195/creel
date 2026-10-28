@@ -115,7 +115,10 @@ impl RegistryDoc {
                 ("chatId", json!(row.chat_id)),
                 ("targets", json!(serde_json::to_string(&row.targets)?)),
                 ("selected", opt_str(row.selected.as_deref())),
-                ("refTargets", json!(serde_json::to_string(&row.ref_targets)?)),
+                (
+                    "refTargets",
+                    json!(serde_json::to_string(&row.ref_targets)?),
+                ),
                 ("selectedRef", opt_str(row.selected_ref.as_deref())),
                 ("ops", json!(serde_json::to_string(&row.ops)?)),
                 ("updatedAt", json!(row.updated_at)),

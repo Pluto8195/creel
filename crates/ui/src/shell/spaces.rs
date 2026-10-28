@@ -11,8 +11,8 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::{FocusHandle, Window};
-use std::collections::HashSet;
 use mast_proto::{ChatIndicator, Device, DriveEntry, DriveListing, FolderListing, Space};
+use std::collections::HashSet;
 
 /// Promote the user's ordered pins above the untouched activity projection.
 /// Every unpinned id keeps exactly the relative order supplied by recency.
