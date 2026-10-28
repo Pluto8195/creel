@@ -289,6 +289,9 @@ pub struct ArtifactView {
     /// The work item's (or chat's) plan. At most one per scope.
     #[serde(default)]
     pub pinned_as_plan: bool,
+    /// Answers given in Zeron to the plan's questions (Artifacts phase 3 D).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<ArtifactQuestionAnswer>,
     /// Absolute path of the last promoted copy under `docs/plans/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_path: Option<String>,
@@ -1289,6 +1292,9 @@ pub fn count_unverified_claims(text: &str) -> u32 {
         + text.matches(" \"unverified\")").count()
         + text.matches("data-claim=\"unverified\"").count()) as u32
 }
+
+mod questions;
+pub use questions::*;
 
 #[cfg(test)]
 mod tests;
