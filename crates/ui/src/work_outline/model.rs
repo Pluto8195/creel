@@ -133,6 +133,9 @@ pub(crate) struct ItemRow {
     pub archived: bool,
     /// Shown only because something below it is visible.
     pub kept_for_descendants: bool,
+    /// The item's only Chat, folded into this row (see [`compactable_chat`]).
+    /// Its own row is not emitted; its key resolves to this row.
+    pub compact_chat: Option<ChatRow>,
 }
 
 impl ItemRow {
@@ -201,6 +204,17 @@ impl OutlineRow {
         }
     }
 
+    /// The Chat a compact item row stands for.
+    pub(crate) fn compact_chat(&self) -> Option<&ChatRow> {
+        self.item().and_then(|item| item.compact_chat.as_ref())
+    }
+
+    /// The Chat Enter / click opens: a Chat row's own, or a compact item
+    /// row's folded one.
+    pub(crate) fn open_chat(&self) -> Option<&ChatRow> {
+        self.chat().or_else(|| self.compact_chat())
+    }
+
     /// The Space this row belongs to (`None` for the projectless group and
     /// its Chats).
     pub(crate) fn space_id(&self) -> Option<&str> {
@@ -242,6 +256,12 @@ impl OutlineModel {
 
     pub(crate) fn row(&self, key: &str) -> Option<&OutlineRow> {
         self.position(key).map(|ix| &self.rows[ix])
+    }
+
+    /// The key of the row that shows `key`: itself, or for a Chat folded
+    /// into its item's compact row, the item's.
+    pub(crate) fn canonical_key(&self, key: &str) -> Option<&str> {
+        self.row(key).map(|row| row.key.as_str())
     }
 
     /// Keys of `ix`'s ancestors, nearest first.
@@ -628,6 +648,10 @@ fn item_node<'s>(
         }
         return None;
     }
+    let compact_chat = compactable_chat(&children, &chat_nodes);
+    if compact_chat.is_some() {
+        chat_nodes.clear();
+    }
     children.extend(chat_nodes);
     Some(Node {
         key: row_key::item(space_id, &item.id),
@@ -655,9 +679,27 @@ fn item_node<'s>(
             ),
             archived,
             kept_for_descendants: !self_visible,
+            compact_chat,
         }),
         children,
     })
+}
+
+/// A lone, live Chat is folded into its item's row. Anything that needs its
+/// own row keeps the item and Chat rows apart: child items, a second Chat, a
+/// sub-chat nested under the Chat, an archived Chat (shown only with
+/// "show archived") or a missing one. Required Actions and proposals do not
+/// expand it: the row already carries the attention indicator and chips.
+fn compactable_chat(item_children: &[Node], chat_nodes: &[Node]) -> Option<ChatRow> {
+    match (item_children, chat_nodes) {
+        ([], [only]) if only.children.is_empty() => match &only.kind {
+            OutlineRowKind::Chat(chat) if !chat.dangling && !chat.chat.archived => {
+                Some(chat.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn missing_chat(chat_id: &str, space_id: &str) -> OutlineChat {
@@ -745,6 +787,13 @@ fn emit(
     let is_collapsed = has_children && !searching && collapsed.contains(&node.key);
     let ix = model.rows.len();
     model.index.insert(node.key.clone(), ix);
+    if let OutlineRowKind::Item(ItemRow {
+        compact_chat: Some(chat),
+        ..
+    }) = &node.kind
+    {
+        model.index.insert(row_key::chat(&chat.chat.id), ix);
+    }
     model.rows.push(OutlineRow {
         key: node.key,
         depth,

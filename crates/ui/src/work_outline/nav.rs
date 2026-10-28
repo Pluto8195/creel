@@ -160,14 +160,16 @@ pub(crate) fn reconcile_selection(
     next: &OutlineModel,
     selected: &str,
 ) -> Option<String> {
-    if next.position(selected).is_some() {
-        return Some(selected.to_string());
+    // A Chat row folded into (or unfolded from) its item's compact row keeps
+    // the selection on whichever row now shows it.
+    if let Some(key) = next.canonical_key(selected) {
+        return Some(key.to_string());
     }
     if let Some(old_ix) = previous.position(selected) {
         if let Some(ancestor) = previous
             .ancestor_keys(old_ix)
             .into_iter()
-            .find(|key| next.position(key).is_some())
+            .find_map(|key| next.canonical_key(key))
         {
             return Some(ancestor.to_string());
         }
