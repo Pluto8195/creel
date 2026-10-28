@@ -758,6 +758,10 @@ pub struct UiSettings {
     /// to mode key). Unknown values are ignored on read.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub artifact_compare_modes: HashMap<String, String>,
+    /// The revision each artifact was last viewed at (artifact id to
+    /// revision), for the "Updated since you last viewed" marker.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub artifact_last_viewed: HashMap<String, u32>,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
     /// [`Self::accent`], and never write it again.
     #[serde(default, rename = "accentColor", skip_serializing)]
@@ -785,6 +789,7 @@ impl Default for UiSettings {
             space_filter: None,
             sidebar_pinned_session_ids_by_profile: HashMap::new(),
             artifact_compare_modes: HashMap::new(),
+            artifact_last_viewed: HashMap::new(),
             sidebar_sections_by_profile: HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
@@ -2360,6 +2365,7 @@ mod tests {
             }),
             new_thread_background_effect: NewThreadBackgroundEffect::Ascii,
             artifact_compare_modes: HashMap::from([("mermaid".to_string(), "source".to_string())]),
+            artifact_last_viewed: HashMap::from([("a1".to_string(), 3)]),
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();

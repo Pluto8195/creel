@@ -265,6 +265,13 @@ pub mod methods {
     /// `ArtifactPinParams {artifactId, pinned}` → `ArtifactPinReply`. Pure
     /// registry write: local, NOT forwardable.
     pub const ARTIFACT_PIN: &str = "ArtifactPin";
+    /// `ArtifactAnswerQuestionParams {artifactId, questionId, answer}` →
+    /// `ArtifactAnswerQuestionReply`. Registry write like `ArtifactPin`:
+    /// local, NOT forwardable (the owning device reconciles Required Actions).
+    pub const ARTIFACT_ANSWER_QUESTION: &str = "ArtifactAnswerQuestion";
+    /// `ArtifactDriftParams {artifactId}` → `ArtifactDriftReply`. Forwardable
+    /// (owning device: it reads the checkouts).
+    pub const ARTIFACT_DRIFT: &str = "ArtifactDrift";
     /// UI → engine, IPC-only: `WatchArtifactRenderRequestsParams` → stream of
     /// `ArtifactRenderRequest`. Holding the stream open registers the caller
     /// as this device's render-capable (headed) UI; each item must be

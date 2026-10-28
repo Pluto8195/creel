@@ -114,6 +114,26 @@ pub struct RenderOptions {
 pub struct QuestionUi {
     pub expanded: Rc<std::collections::HashSet<String>>,
     pub toggle: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
+    /// Answers given in Zeron and the inline Answer affordance (artifact
+    /// tabs only). `None` renders cards from the document alone.
+    pub answers: Option<AnswerUi>,
+}
+
+/// Answering plan questions in place. Keys are upper-cased question ids.
+#[derive(Clone)]
+pub struct AnswerUi {
+    /// Recorded answers by question id.
+    pub answers: Rc<HashMap<String, String>>,
+    /// The question whose input is open.
+    pub editing: Option<String>,
+    /// The shared text input shown under the editing card.
+    pub input: Option<gpui::AnyView>,
+    /// Open the input for a question.
+    pub begin: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
+    /// Send what is typed as the answer to a question.
+    pub send: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
+    /// Close the input without sending.
+    pub cancel: Rc<dyn Fn(&mut Window, &mut gpui::App)>,
 }
 
 /// The state key of a question card: its id, else its block index.
@@ -507,6 +527,19 @@ thread_local! {
     static QUESTION_LOG: RefCell<Vec<(String, bool, bool, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `(key, status pill, answer row, Answer affordance)` of every question
+    /// card drawn.
+    static ANSWER_LOG: RefCell<Vec<(String, &'static str, Option<String>, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the answered-state log (tests).
+#[cfg(test)]
+pub(crate) fn take_answer_log() -> Vec<(String, &'static str, Option<String>, bool)> {
+    ANSWER_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
 /// Drain the question cards drawn since the last call (tests).
 #[cfg(test)]
 pub(crate) fn take_question_log() -> Vec<(String, bool, bool, usize)> {
@@ -530,6 +563,106 @@ fn question_pill(label: &str, color: Hsla, filled: bool) -> gpui::Div {
         .child(label.to_owned())
 }
 
+fn answer_button(
+    id: SharedString,
+    selector: String,
+    label: &'static str,
+    primary: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let color = if primary {
+        theme.accent
+    } else {
+        theme.text_muted
+    };
+    div()
+        .id(id)
+        .debug_selector(move || selector.clone())
+        .px(px(8.0))
+        .h(px(20.0))
+        .flex()
+        .items_center()
+        .rounded(px(5.0))
+        .cursor_pointer()
+        .border_1()
+        .border_color(color.opacity(0.5))
+        .when(primary, |button| button.bg(color.opacity(0.12)))
+        .text_size(px(11.0))
+        .text_color(color)
+        .hover(|style| style.bg(color.opacity(0.2)))
+        .child(label)
+}
+
+/// The "Answer" button of an open question, or its input with Send / Cancel.
+fn answer_affordance(id: &str, ui: &AnswerUi, row_key: &SharedString, theme: &Theme) -> AnyElement {
+    let editing = ui.editing.as_deref() == Some(id) && ui.input.is_some();
+    if !editing {
+        let begin = ui.begin.clone();
+        let target = id.to_owned();
+        return div()
+            .flex()
+            .flex_row()
+            .child(
+                answer_button(
+                    SharedString::from(format!("{row_key}-answer-{id}")),
+                    format!("question-answer-{id}"),
+                    "Answer",
+                    false,
+                    theme,
+                )
+                .on_click(move |_, window, cx| begin(target.clone(), window, cx)),
+            )
+            .into_any_element();
+    }
+    let (send, cancel) = (ui.send.clone(), ui.cancel.clone());
+    let target = id.to_owned();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .debug_selector({
+                    let id = id.to_owned();
+                    move || format!("question-answer-input-{id}")
+                })
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border_strong)
+                .bg(theme.surface)
+                .px(px(8.0))
+                .py(px(5.0))
+                .children(ui.input.clone()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(6.0))
+                .child(
+                    answer_button(
+                        SharedString::from(format!("{row_key}-answer-send-{id}")),
+                        format!("question-answer-send-{id}"),
+                        "Send",
+                        true,
+                        theme,
+                    )
+                    .on_click(move |_, window, cx| send(target.clone(), window, cx)),
+                )
+                .child(
+                    answer_button(
+                        SharedString::from(format!("{row_key}-answer-cancel-{id}")),
+                        format!("question-answer-cancel-{id}"),
+                        "Cancel",
+                        false,
+                        theme,
+                    )
+                    .on_click(move |_, window, cx| cancel(window, cx)),
+                ),
+        )
+        .into_any_element()
+}
+
 /// A plan question as a card: id badge, status pill and a Blocking flag in
 /// the header, the question in bold, then labelled field rows (the decision
 /// tinted). Resolved cards are dimmed and collapsed to the question and the
@@ -543,13 +676,28 @@ fn render_question(
     theme: &Theme,
 ) -> AnyElement {
     let key = question_key(card, top_ix);
+    let answer_ui = opts.question.as_ref().and_then(|ui| ui.answers.as_ref());
+    let answer_text = card
+        .id
+        .as_ref()
+        .zip(answer_ui)
+        .and_then(|(id, ui)| ui.answers.get(id))
+        .filter(|_| card.status != QuestionStatus::Resolved);
+    // An answer on the row makes an open question read Answered; a resolved
+    // document status wins.
+    let status = if card.status == QuestionStatus::Open && answer_text.is_some() {
+        QuestionStatus::Answered
+    } else {
+        card.status
+    };
+    let can_answer = status == QuestionStatus::Open && card.id.is_some() && answer_ui.is_some();
     let collapsible = card.collapsible() && opts.question.is_some() && opts.find.is_none();
     let expanded = !collapsible
         || opts
             .question
             .as_ref()
             .is_some_and(|ui| ui.expanded.contains(&key));
-    let status_color = match card.status {
+    let status_color = match status {
         QuestionStatus::Open => theme.warning,
         QuestionStatus::Answered => theme.accent,
         QuestionStatus::Resolved => theme.success,
@@ -576,7 +724,7 @@ fn render_question(
                 .child(id.clone()),
         );
     }
-    header = header.child(question_pill(card.status.label(), status_color, true));
+    header = header.child(question_pill(status.label(), status_color, true));
     if card.blocking {
         header = header.child(question_pill("Blocking", theme.danger, false));
     }
@@ -612,6 +760,15 @@ fn render_question(
             collapsible,
             expanded,
             visible_question_fields(card, expanded).count(),
+        ))
+    });
+    #[cfg(test)]
+    ANSWER_LOG.with(|log| {
+        log.borrow_mut().push((
+            key.clone(),
+            status.label(),
+            answer_text.cloned(),
+            can_answer,
         ))
     });
     let mut body = div().flex().flex_col().gap(px(6.0)).child(header);
@@ -667,7 +824,54 @@ fn render_question(
         });
     }
 
-    let accent = if collapsible || card.status == QuestionStatus::Resolved {
+    if let Some(answer) = answer_text {
+        let id = card.id.clone().unwrap_or_default();
+        body = body.child(
+            div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("question-answer-row-{id}")
+                })
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(px(10.0))
+                .border_l_2()
+                .border_color(theme.accent)
+                .bg(theme.accent.opacity(0.08))
+                .rounded_tr(px(5.0))
+                .rounded_br(px(5.0))
+                .pl(px(8.0))
+                .pr(px(8.0))
+                .py(px(3.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(68.0))
+                        .text_size(px(11.0))
+                        .line_height(px(MD_LINE_HEIGHT))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text_muted)
+                        .child("Your answer"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(MD_TEXT_SIZE))
+                        .line_height(px(MD_LINE_HEIGHT))
+                        .text_color(theme.text)
+                        .child(answer.clone()),
+                ),
+        );
+    }
+    if can_answer {
+        if let (Some(ui), Some(id)) = (answer_ui, card.id.as_ref()) {
+            body = body.child(answer_affordance(id, ui, &opts.row_key, theme));
+        }
+    }
+
+    let accent = if collapsible || status == QuestionStatus::Resolved {
         theme.text_muted
     } else {
         status_color
@@ -683,10 +887,9 @@ fn render_question(
         .pr(px(10.0))
         .py(px(8.0))
         .text_color(theme.text_muted)
-        .when(
-            card.status == QuestionStatus::Resolved && !expanded,
-            |card| card.opacity(0.75),
-        )
+        .when(status == QuestionStatus::Resolved && !expanded, |card| {
+            card.opacity(0.75)
+        })
         .child(body)
         .into_any_element()
 }

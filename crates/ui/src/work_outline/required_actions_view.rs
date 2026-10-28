@@ -55,6 +55,85 @@ use crate::theme::Theme;
 const REPLY_PROBES: usize = 6;
 const REPLY_PROBE_DELAY: Duration = Duration::from_millis(500);
 
+/// The composer's notion of a busy Chat: its message queues.
+fn chat_busy(state: &AppState, chat_id: &str) -> bool {
+    matches!(
+        state.indicator_for(chat_id, chrono::Utc::now()),
+        Indicator::Working | Indicator::AwaitingInput
+    )
+}
+
+/// Whether the busy-Chat queue send can reach `chat_id`'s host (the
+/// composer's check; without an engine the call itself reports it).
+fn queue_supported(state: &AppState, chat_id: &str) -> bool {
+    let capability = zeron_proto::capabilities::MESSAGE_QUEUE_V1;
+    state.engine().is_none_or(|engine| {
+        engine.engine_info().supports(capability) && state.chat_host_supports(chat_id, capability)
+    })
+}
+
+/// Deliver `message` to `chat_id` as a user message, with the composer's
+/// paths: an idle Chat gets its next Turn through `ContinueChatForWorkItem`
+/// (idempotent per `operation_id`), a busy one a held `QueueMessage` row.
+/// Shared by Reply & resolve and by answering a plan question. The error is
+/// user-readable.
+pub(crate) fn deliver_user_message<T: 'static>(
+    state: Entity<AppState>,
+    chat_id: String,
+    message: String,
+    operation_id: String,
+    cx: &mut Context<T>,
+) -> gpui::Task<Result<(), String>> {
+    let (busy, supported, actions) = {
+        let state = state.read(cx);
+        (
+            chat_busy(state, &chat_id),
+            queue_supported(state, &chat_id),
+            state.work_outline_actions(),
+        )
+    };
+    if busy && !supported {
+        return gpui::Task::ready(Err(
+            "Update the chat\u{2019}s engine to queue messages during a response.".into(),
+        ));
+    }
+    let executor = cx.background_executor().clone();
+    cx.background_spawn(async move {
+        if busy {
+            return actions
+                .queue_message(&chat_id, &message)
+                .await
+                .map(drop)
+                .map_err(|error| send_failure_text(&error.message));
+        }
+        let params = ContinueChatForWorkItemParams {
+            chat_id,
+            prompt: WorkItemPrompt {
+                text: message,
+                attachments: Vec::new(),
+            },
+            operation_id,
+        };
+        let mut reply = actions.continue_chat_for_work_item(params.clone()).await;
+        // The same operation id replays without writing: re-read a queued
+        // Turn so a prompt rejection keeps the request open.
+        for _ in 0..REPLY_PROBES {
+            if !matches!(&reply, Ok(r) if r.state == WorkItemLaunchState::Queued) {
+                break;
+            }
+            executor.timer(REPLY_PROBE_DELAY).await;
+            reply = actions.continue_chat_for_work_item(params.clone()).await;
+        }
+        match reply {
+            Ok(reply) if reply.state == WorkItemLaunchState::Rejected => {
+                Err(rejected_reply_text(reply.detail.as_deref()))
+            }
+            Ok(_) => Ok(()),
+            Err(error) => Err(reply_error_text(&error)),
+        }
+    })
+}
+
 /// One Reply & resolve intent. The reply goes out at most once: the message
 /// id derives from `operation_id`, and once the host accepted the send a
 /// retry only resolves.
@@ -378,74 +457,17 @@ impl RequiredActionsList {
         }
     }
 
-    /// The composer's notion of a busy Chat: its message queues.
-    fn chat_busy(&self, chat_id: &str, cx: &gpui::App) -> bool {
-        matches!(
-            self.state
-                .read(cx)
-                .indicator_for(chat_id, chrono::Utc::now()),
-            Indicator::Working | Indicator::AwaitingInput
-        )
-    }
-
-    /// Whether the busy-Chat queue send can reach `chat_id`'s host (the
-    /// composer's check; without an engine the call itself reports it).
-    fn queue_supported(&self, chat_id: &str, cx: &gpui::App) -> bool {
-        let capability = zeron_proto::capabilities::MESSAGE_QUEUE_V1;
-        let state = self.state.read(cx);
-        state.engine().is_none_or(|engine| {
-            engine.engine_info().supports(capability)
-                && state.chat_host_supports(chat_id, capability)
-        })
-    }
-
     fn send_reply(&mut self, request_id: String, intent: ReplyIntent, cx: &mut Context<Self>) {
-        let busy = self.chat_busy(&intent.chat_id, cx);
-        if busy && !self.queue_supported(&intent.chat_id, cx) {
-            self.fail_reply(
-                &request_id,
-                "Update the chat\u{2019}s engine to queue messages during a response.".into(),
-                None,
-                cx,
-            );
-            return;
-        }
-        let actions = self.state.read(cx).work_outline_actions();
+        let delivery = deliver_user_message(
+            self.state.clone(),
+            intent.chat_id.clone(),
+            intent.message.clone(),
+            intent.operation_id.clone(),
+            cx,
+        );
         let chat_id = intent.chat_id.clone();
         cx.spawn(async move |this, cx| {
-            let outcome: Result<(), String> = if busy {
-                actions
-                    .queue_message(&intent.chat_id, &intent.message)
-                    .await
-                    .map(drop)
-                    .map_err(|error| send_failure_text(&error.message))
-            } else {
-                let params = ContinueChatForWorkItemParams {
-                    chat_id: intent.chat_id.clone(),
-                    prompt: WorkItemPrompt {
-                        text: intent.message.clone(),
-                        attachments: Vec::new(),
-                    },
-                    operation_id: intent.operation_id.clone(),
-                };
-                let mut reply = actions.continue_chat_for_work_item(params.clone()).await;
-                // The same operation id replays without writing: re-read a
-                // queued Turn so a prompt rejection keeps the request open.
-                for _ in 0..REPLY_PROBES {
-                    if !matches!(&reply, Ok(r) if r.state == WorkItemLaunchState::Queued) {
-                        break;
-                    }
-                    cx.background_executor().timer(REPLY_PROBE_DELAY).await;
-                    reply = actions.continue_chat_for_work_item(params.clone()).await;
-                }
-                match reply {
-                    Ok(reply) if reply.state == WorkItemLaunchState::Rejected => {
-                        Err(rejected_reply_text(reply.detail.as_deref()))
-                    }
-                    Ok(_) => Ok(()),
-                    Err(error) => Err(reply_error_text(&error)),
-                }
-            };
+            let outcome = delivery.await;
             this.update(cx, |this, cx| match outcome {
                 Ok(()) => {
                     let mut intent = intent;

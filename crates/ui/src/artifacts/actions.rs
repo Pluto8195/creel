@@ -8,9 +8,10 @@
 use gpui::Task;
 use serde::de::DeserializeOwned;
 use zeron_proto::{
-    ArtifactContentParams, ArtifactContentReply, ArtifactError, ArtifactErrorCode,
-    ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams, ArtifactPromoteReply,
-    ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
+    ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
+    ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
+    ArtifactErrorCode, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
     ArtifactRenderResultReply, WorkOutlineError, WorkOutlineErrorCode,
 };
 use zeron_rpc::methods;
@@ -130,6 +131,17 @@ impl ArtifactActions {
 
     pub(crate) fn pin(&self, params: ArtifactPinParams) -> ArtifactTask<ArtifactPinReply> {
         self.call(methods::ARTIFACT_PIN, &params)
+    }
+
+    pub(crate) fn answer_question(
+        &self,
+        params: ArtifactAnswerQuestionParams,
+    ) -> ArtifactTask<ArtifactAnswerQuestionReply> {
+        self.call(methods::ARTIFACT_ANSWER_QUESTION, &params)
+    }
+
+    pub(crate) fn drift(&self, params: ArtifactDriftParams) -> ArtifactTask<ArtifactDriftReply> {
+        self.call(methods::ARTIFACT_DRIFT, &params)
     }
 
     pub(crate) fn render_result(

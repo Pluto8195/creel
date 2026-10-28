@@ -40,6 +40,7 @@ pub(crate) const CSS: &str = r##"
 [data-zeron-question] .zq-label{flex:none;width:68px;font-size:11px;font-weight:600;line-height:22px}
 [data-zeron-question] .zq-value{flex:1;min-width:0}
 [data-zeron-question] .zq-row[data-zq-key="decision"]{padding:3px 8px;border-left:2px solid var(--green,#16a34a);border-radius:0 5px 5px 0;background:color-mix(in srgb,var(--green,#16a34a) 8%,transparent)}
+[data-zeron-question] .zq-row[data-zq-key="answer"]{padding:3px 8px;border-left:2px solid var(--primary,#4f46e5);border-radius:0 5px 5px 0;background:color-mix(in srgb,var(--primary,#4f46e5) 8%,transparent)}
 [data-zeron-question][data-zq-collapsed] .zq-row:not([data-zq-key="decision"]){display:none}
 html[data-zq-finding] [data-zeron-question] .zq-row:not([data-zq-key="decision"]){display:flex}
 "##;
@@ -50,7 +51,7 @@ pub(crate) const SCRIPT: &str = r##"(() => {
   window.__zeronQuestionsInstalled = true;
   const STATUSES = ["open", "answered", "resolved"];
   const LABELS = { open: "Open", answered: "Answered", resolved: "Resolved" };
-  const ROWS = [["example", "Example"], ["blocks", "Blocks"], ["decision", "Decision"]];
+  const ROWS = [["example", "Example"], ["blocks", "Blocks"], ["answer", "Your answer"], ["decision", "Decision"]];
   const make = (tag, cls, text) => {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -107,6 +108,85 @@ pub(crate) const SCRIPT: &str = r##"(() => {
 })();
 "##;
 
+/// Mark the open `data-zeron-question` cards of `source` that have a
+/// recorded answer (`answers`: upper-cased id to text) as answered, with the
+/// text in `data-answer` (the frame script shows it as a "Your answer" row).
+/// Resolved and already-answered cards are left alone. Pure string work: the
+/// answer is attribute-escaped, the rest of the markup is untouched.
+pub(crate) fn with_answers(
+    source: &str,
+    answers: &std::collections::HashMap<String, String>,
+) -> String {
+    const NEEDLE: &str = "data-zeron-question";
+    if answers.is_empty() || !source.contains(NEEDLE) {
+        return source.to_owned();
+    }
+    let mut out = String::with_capacity(source.len() + 64);
+    let mut rest = source;
+    while let Some(at) = rest.find(NEEDLE) {
+        // The tag this attribute sits in: back to its `<`, on to its `>`.
+        let tag_start = rest[..at].rfind('<').unwrap_or(0);
+        let Some(tag_len) = rest[at..].find('>') else {
+            break;
+        };
+        let tag_end = at + tag_len;
+        let tag = &rest[tag_start..tag_end];
+        out.push_str(&rest[..tag_start]);
+        out.push_str(&answered_tag(tag, answers));
+        rest = &rest[tag_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The value of attribute `name` in `tag` and the byte range of
+/// `name="value"` (either quote style).
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<(&'a str, std::ops::Range<usize>)> {
+    let mut from = 0;
+    while let Some(found) = tag[from..].find(name) {
+        let start = from + found;
+        from = start + name.len();
+        let before_ok = tag[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace());
+        let after = &tag[from..];
+        let Some(after) = after.strip_prefix('=') else {
+            continue;
+        };
+        let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''));
+        let Some(quote) = quote.filter(|_| before_ok) else {
+            continue;
+        };
+        let value_start = from + 2;
+        let len = tag[value_start..].find(quote)?;
+        return Some((
+            &tag[value_start..value_start + len],
+            start..value_start + len + 1,
+        ));
+    }
+    None
+}
+
+fn answered_tag(tag: &str, answers: &std::collections::HashMap<String, String>) -> String {
+    let Some((id, _)) = attribute(tag, "data-zeron-question") else {
+        return tag.to_owned();
+    };
+    let Some(answer) = answers.get(&id.trim().to_ascii_uppercase()) else {
+        return tag.to_owned();
+    };
+    let escaped = crate::browser::fragment::escape_attr(answer);
+    match attribute(tag, "data-status") {
+        Some((status, range)) if status.trim().eq_ignore_ascii_case("open") => format!(
+            "{}data-status=\"answered\" data-answer=\"{escaped}\"{}",
+            &tag[..range.start],
+            &tag[range.end..]
+        ),
+        Some(_) => tag.to_owned(),
+        None => format!("{tag} data-status=\"answered\" data-answer=\"{escaped}\""),
+    }
+}
+
 /// `<style>` and `<script>` for a frame that may hold questions.
 pub(crate) fn head_markup() -> String {
     format!("<style>{CSS}</style>\n<script>{SCRIPT}</script>")
@@ -156,6 +236,29 @@ mod tests {
         assert!(SCRIPT.contains("textContent"));
         assert!(!SCRIPT.contains("innerHTML"));
         assert!(!SCRIPT.contains("insertAdjacentHTML"));
+    }
+
+    #[test]
+    fn answers_mark_open_cards_answered_and_leave_others_alone() {
+        let answers = std::collections::HashMap::from([
+            ("Q-3".to_owned(), "by \"MPN\"".to_owned()),
+            ("Q-4".to_owned(), "ignored".to_owned()),
+            ("Q-5".to_owned(), "no status".to_owned()),
+        ]);
+        let source = "<p>x</p><div data-zeron-question=\"Q-3\" data-status=\"open\" data-blocking=\"true\">A?</div>\
+<div data-zeron-question=\"Q-4\" data-status=\"resolved\">B?</div>\
+<div data-zeron-question='Q-5'>C?</div><div data-zeron-question=\"Q-9\">D?</div>";
+        let out = with_answers(source, &answers);
+        assert!(out.contains(
+            "<div data-zeron-question=\"Q-3\" data-status=\"answered\" data-answer=\"by &quot;MPN&quot;\" data-blocking=\"true\">A?</div>"
+        ));
+        assert!(out.contains("<div data-zeron-question=\"Q-4\" data-status=\"resolved\">B?</div>"));
+        assert!(out.contains(
+            "data-zeron-question='Q-5' data-status=\"answered\" data-answer=\"no status\">C?"
+        ));
+        assert!(out.contains("<div data-zeron-question=\"Q-9\">D?</div>"));
+        assert!(out.starts_with("<p>x</p>"));
+        assert_eq!(with_answers(source, &Default::default()), source);
     }
 
     #[test]

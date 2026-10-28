@@ -61,6 +61,7 @@ pub mod titles;
 mod transcript_history;
 pub mod typesafe;
 pub mod uploads;
+pub mod artifact_questions;
 pub mod work_outline;
 pub mod work_outline_launch;
 pub mod work_outline_pr_links;
@@ -573,6 +574,7 @@ impl EngineCore {
             }));
         }
         artifacts.spawn_watch_loop();
+        artifact_questions::ArtifactQuestionSync::new(artifacts.clone()).spawn_loop();
         Ok(Self {
             sessions,
             doc_host,

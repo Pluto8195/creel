@@ -208,6 +208,32 @@ impl ArtifactTab {
         self.open_compare(&artifact, older, newer, window, cx);
     }
 
+    /// "Updated since you last viewed": `from` against the current revision
+    /// (the oldest kept revision when `from` was pruned).
+    pub(crate) fn compare_since(&mut self, from: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker = None;
+        let Some(artifact) = self.artifact(cx) else {
+            return;
+        };
+        let current = artifact.current_revision;
+        let left = artifact
+            .revisions
+            .iter()
+            .map(|revision| revision.id)
+            .filter(|id| *id >= from && *id < current)
+            .min();
+        match left {
+            Some(left) => self.open_compare(&artifact, left, current, window, cx),
+            None => self.compare_previous(window, cx),
+        }
+    }
+
+    /// The revision on screen as a number (`current_revision` when the
+    /// current file is shown).
+    pub(super) fn shown_or_current_revision(&self, artifact: &ArtifactView) -> u32 {
+        self.shown_or_current(artifact)
+    }
+
     /// The default compare: the revision before the shown one against it.
     pub(crate) fn compare_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker = None;

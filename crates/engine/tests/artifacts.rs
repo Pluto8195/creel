@@ -1148,3 +1148,211 @@ async fn publish_accepts_any_local_file_outside_the_deny_list() {
         "{err}"
     );
 }
+
+// ── Artifacts phase 3: plan questions → Required Actions, drift ─────────────
+
+use zeron_engine::artifact_questions::{ArtifactQuestionSync, question_key, rollup_key};
+use zeron_proto::UserActionRequestView;
+
+fn requests(rig: &Rig, artifact_id: &str) -> Vec<UserActionRequestView> {
+    let prefix = format!("artq:{artifact_id}:");
+    zeron_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
+        .snapshot(SPACE)
+        .user_action_requests
+        .into_iter()
+        .filter(|r| r.dedupe_key.as_deref().is_some_and(|k| k.starts_with(&prefix)))
+        .collect()
+}
+
+fn open_texts(rig: &Rig, artifact_id: &str) -> Vec<String> {
+    let mut out: Vec<String> = requests(rig, artifact_id)
+        .into_iter()
+        .filter(|r| r.is_open())
+        .map(|r| r.text)
+        .collect();
+    out.sort();
+    out
+}
+
+const PLAN_V1: &str = "# Plan\n\n\
+> [!question] Q-1 · Merge by MPN?\n> blocking: true\n> blocks: ENG-1\n\n\
+> [!question] Q-2 · Which timezone?\n> status: open\n\n\
+> [!question] Q-3 · Reel labels?\n";
+
+async fn publish_plan(rig: &Rig, body: &str, key: &str) -> String {
+    std::fs::write(rig.worktree.join("plan.md"), body).unwrap();
+    let reply = publish(
+        rig,
+        &rig.token,
+        json!({ "path": "plan.md", "title": "Receiving plan", "role": "plan", "note": key,
+                "pinAsPlan": true, "idempotencyKey": key }),
+    )
+    .await;
+    reply["artifactId"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates() {
+    let rig = rig().await;
+    let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
+    let id = publish_plan(&rig, PLAN_V1, "v1").await;
+    assert!(sync.reconcile(&id) >= 2);
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["2 open questions in Receiving plan", "Q-1: Merge by MPN?"]
+    );
+    let all = requests(&rig, &id);
+    let blocking = all.iter().find(|r| r.text.starts_with("Q-1")).unwrap();
+    assert_eq!(blocking.dedupe_key.as_deref(), Some(question_key(&id, "Q-1").as_str()));
+    // The publishing Chat is the origin, so Reply & resolve reaches it.
+    assert_eq!(blocking.chat_id, CHAT);
+    assert!(blocking.info.as_deref().unwrap().contains("Blocks: ENG-1"));
+    let rollup = all.iter().find(|r| r.text.contains("open questions")).unwrap();
+    assert_eq!(rollup.dedupe_key.as_deref(), Some(rollup_key(&id).as_str()));
+    assert!(rollup.info.as_deref().unwrap().contains("Q-2: Which timezone?"));
+
+    // A pass with nothing changed writes nothing.
+    assert_eq!(sync.reconcile(&id), 0);
+    // Republishing the same plan does not duplicate either.
+    publish_plan(&rig, &format!("{PLAN_V1}\nMore prose.\n"), "v2").await;
+    assert_eq!(sync.reconcile(&id), 0);
+    assert_eq!(requests(&rig, &id).len(), 2);
+
+    // A new non-blocking question updates the roll-up (old one superseded).
+    let v3 = format!("{PLAN_V1}\n> [!question] Q-4 · Pallet size?\n");
+    publish_plan(&rig, &v3, "v3").await;
+    assert!(sync.reconcile(&id) >= 2);
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["3 open questions in Receiving plan", "Q-1: Merge by MPN?"]
+    );
+    let superseded = requests(&rig, &id)
+        .into_iter()
+        .filter(|r| !r.is_open())
+        .collect::<Vec<_>>();
+    assert_eq!(superseded.len(), 1);
+    assert!(superseded[0].resolution.as_ref().unwrap().note.as_deref().unwrap().starts_with("Superseded"));
+
+    // Removing Q-1, and resolving Q-2 in the document, resolves their actions
+    // and shrinks the roll-up.
+    let v4 = "# Plan\n\n> [!question] Q-2 · Which timezone?\n> status: resolved\n> decision: UTC\n\n\
+              > [!question] Q-3 · Reel labels?\n\n> [!question] Q-4 · Pallet size?\n";
+    publish_plan(&rig, v4, "v4").await;
+    sync.reconcile(&id);
+    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
+    let q1 = requests(&rig, &id).into_iter().find(|r| r.text.starts_with("Q-1")).unwrap();
+    let note = q1.resolution.unwrap().note.unwrap();
+    assert!(note.contains("removed from the plan"), "{note}");
+
+    // No questions left: the roll-up resolves too.
+    publish_plan(&rig, "# Plan\n\nAll settled.\n", "v5").await;
+    sync.reconcile(&id);
+    assert!(open_texts(&rig, &id).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn answering_in_the_card_resolves_the_action_and_reaches_the_agent() {
+    let rig = rig().await;
+    let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
+    let id = publish_plan(&rig, PLAN_V1, "v1").await;
+    sync.reconcile(&id);
+
+    rig.client
+        .call(
+            methods::ARTIFACT_ANSWER_QUESTION,
+            json!({ "artifactId": id, "questionId": "q-1", "answer": "  By MPN  " }),
+        )
+        .await
+        .unwrap();
+    // The RPC reconciles immediately on the owning device.
+    let row = artifact(&rig, &id);
+    assert_eq!(row.answers.len(), 1);
+    assert_eq!(row.answers[0].id, "Q-1");
+    assert_eq!(row.answers[0].answer, "By MPN");
+    assert_eq!(row.answers[0].revision, 1);
+    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
+    let q1 = requests(&rig, &id).into_iter().find(|r| r.text.starts_with("Q-1")).unwrap();
+    assert!(q1.resolution.unwrap().note.unwrap().starts_with("Answered in Mast: By MPN"));
+
+    // Answering a rolled-up question shrinks the roll-up.
+    rig.client
+        .call(
+            methods::ARTIFACT_ANSWER_QUESTION,
+            json!({ "artifactId": id, "questionId": "Q-2", "answer": "UTC" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(open_texts(&rig, &id), ["1 open question in Receiving plan"]);
+    // Bad input is refused.
+    for params in [
+        json!({ "artifactId": id, "questionId": "nope", "answer": "x" }),
+        json!({ "artifactId": id, "questionId": "Q-3", "answer": "   " }),
+    ] {
+        assert!(rig.client.call(methods::ARTIFACT_ANSWER_QUESTION, params).await.is_err());
+    }
+
+    // The agent sees the answers through artifact_get_plan.
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let answered = plan["answeredQuestions"].as_array().unwrap();
+    assert_eq!(answered.len(), 2);
+    assert_eq!(answered[0]["id"], "Q-1");
+    assert_eq!(answered[0]["answer"], "By MPN");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolving_the_action_marks_the_question_answered() {
+    let rig = rig().await;
+    let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
+    let id = publish_plan(&rig, PLAN_V1, "v1").await;
+    sync.reconcile(&id);
+    let all = requests(&rig, &id);
+    let blocking = all.iter().find(|r| r.text.starts_with("Q-1")).unwrap();
+    let rollup = all.iter().find(|r| r.text.contains("open questions")).unwrap();
+
+    outline(
+        &rig.client,
+        json!({ "op": "resolveUserActionRequest", "userActionRequestId": blocking.id,
+                "note": "Merge by MPN", "operationId": "op-resolve-q1" }),
+    )
+    .await;
+    sync.reconcile(&id);
+    let row = artifact(&rig, &id);
+    assert_eq!(row.answer_of("Q-1").unwrap().answer, "Merge by MPN");
+    assert_eq!(row.answer_of("Q-1").unwrap().by.kind, zeron_proto::WorkOutlineActorKind::User);
+    assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
+
+    // Resolving the roll-up (no note) answers every question it listed.
+    outline(
+        &rig.client,
+        json!({ "op": "resolveUserActionRequest", "userActionRequestId": rollup.id,
+                "operationId": "op-resolve-rollup" }),
+    )
+    .await;
+    sync.reconcile(&id);
+    let row = artifact(&rig, &id);
+    assert_eq!(row.answers.len(), 3);
+    assert_eq!(row.answer_of("Q-2").unwrap().answer, "Resolved in Required Actions");
+    assert!(open_texts(&rig, &id).is_empty());
+    // Nothing is raised again for answered questions.
+    assert_eq!(sync.reconcile(&id), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drift_counts_commits_on_the_chat_branch_after_the_latest_revision() {
+    let rig = rig().await;
+    // Make the repository's own history older than the revision.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let id = publish_plan(&rig, "# Plan\n", "v1").await;
+    let drift = |rig: &Rig, id: &str| {
+        rig.core.artifacts.drift(id).unwrap()
+    };
+    assert_eq!(drift(&rig, &id).commits_since, 0);
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    std::fs::write(rig.worktree.join("code.rs"), "fn main() {}\n").unwrap();
+    git(&rig.worktree, &["add", "code.rs"]);
+    git(&rig.worktree, &["commit", "-q", "-m", "work"]);
+    let after = drift(&rig, &id);
+    assert_eq!(after.commits_since, 1);
+    assert_eq!(after.branch.as_deref(), Some("agent"));
+    assert!(after.latest_commit_at.unwrap() >= after.since);
+}

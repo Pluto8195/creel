@@ -2085,6 +2085,7 @@ fn forwardable(method: &str) -> bool {
             | methods::ARTIFACT_CONTENT
             | methods::ARTIFACT_REGISTER
             | methods::ARTIFACT_PROMOTE
+            | methods::ARTIFACT_DRIFT
     )
 }
 
@@ -2907,6 +2908,24 @@ impl RpcService for EngineRpc {
             methods::ARTIFACT_PIN => {
                 let p: zeron_proto::ArtifactPinParams = parse_params(params)?;
                 self.artifact_reply(move |service| service.pin(&p.artifact_id, p.pinned))
+                    .await
+            }
+            methods::ARTIFACT_ANSWER_QUESTION => {
+                let p: zeron_proto::ArtifactAnswerQuestionParams = parse_params(params)?;
+                let by = self.work_outline.local_user();
+                let sync = crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
+                self.artifact_reply(move |service| {
+                    let reply = service.answer_question(&p, by)?;
+                    // The owning device resolves the Required Action now
+                    // instead of on its next pass.
+                    sync.reconcile(&p.artifact_id);
+                    Ok(reply)
+                })
+                .await
+            }
+            methods::ARTIFACT_DRIFT => {
+                let p: zeron_proto::ArtifactDriftParams = parse_params(params)?;
+                self.artifact_reply(move |service| service.drift(&p.artifact_id))
                     .await
             }
             methods::WATCH_ARTIFACT_RENDER_REQUESTS => {

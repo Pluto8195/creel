@@ -49,6 +49,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn clean_answer(answer: &str) -> String {
+    let answer = answer.trim();
+    match answer.char_indices().nth(zeron_proto::artifacts::MAX_ANSWER_CHARS) {
+        Some((cut, _)) => answer[..cut].to_owned(),
+        None => answer.to_owned(),
+    }
+}
+
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
@@ -616,6 +624,9 @@ struct Inner {
     workspace: WorkspaceHost,
     /// `<profile store>/artifacts`.
     snapshots: PathBuf,
+    /// Questions of each artifact's current revision, by artifact id and
+    /// revision hash.
+    questions: Mutex<HashMap<String, (String, Vec<zeron_proto::PlanQuestion>)>>,
     /// Serializes every artifact write and the watcher; holds the watcher
     /// cache keyed by stored path.
     gate: Mutex<HashMap<String, SeenFile>>,
@@ -637,6 +648,7 @@ impl ArtifactsService {
             inner: Arc::new(Inner {
                 workspace,
                 snapshots,
+                questions: Mutex::new(HashMap::new()),
                 gate: Mutex::new(HashMap::new()),
                 render: Arc::new(RenderBroker::default()),
                 home: Mutex::new(std::env::var_os("HOME").map(PathBuf::from)),
@@ -659,11 +671,11 @@ impl ArtifactsService {
         &self.inner.render
     }
 
-    fn workspace(&self) -> &WorkspaceHost {
+    pub(crate) fn workspace(&self) -> &WorkspaceHost {
         &self.inner.workspace
     }
 
-    fn device_id(&self) -> &str {
+    pub(crate) fn device_id(&self) -> &str {
         self.workspace().device_id()
     }
 
@@ -1305,6 +1317,139 @@ impl ArtifactsService {
         })
     }
 
+    /// The questions in the artifact's current revision, read from its
+    /// stored snapshot (falling back to the file) and cached by revision
+    /// hash. Empty for kinds without questions or unreadable content.
+    pub(crate) fn plan_questions(&self, artifact: &ArtifactView) -> Vec<zeron_proto::PlanQuestion> {
+        let Some(current) = artifact.current() else {
+            return Vec::new();
+        };
+        if let Some((hash, questions)) = lock(&self.inner.questions).get(&artifact.id)
+            && *hash == current.hash
+        {
+            return questions.clone();
+        }
+        let bytes = std::fs::read(self.snapshot_path(&artifact.id, &current.hash))
+            .ok()
+            .or_else(|| self.current_bytes(artifact).ok())
+            .unwrap_or_default();
+        let questions = zeron_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
+        lock(&self.inner.questions).insert(artifact.id.clone(), (current.hash.clone(), questions.clone()));
+        questions
+    }
+
+    /// `ArtifactDrift`: commits made after the artifact's latest revision on
+    /// the checkouts the work item's chats work in (their cwd and bound diff
+    /// targets). Checkouts on the repository's main / master branch are
+    /// skipped: their history is everyone's, not this work's.
+    pub fn drift(&self, artifact_id: &str) -> Outcome<zeron_proto::ArtifactDriftReply> {
+        let artifact = self.local_artifact(artifact_id)?;
+        let since = artifact.revisions.first().map_or(artifact.updated_at, |r| r.at);
+        let mut reply = zeron_proto::ArtifactDriftReply {
+            artifact_id: artifact.id.clone(),
+            since,
+            ..Default::default()
+        };
+        let Some(item) = artifact.work_item_id.clone() else {
+            return Ok(reply);
+        };
+        let outline = crate::work_outline::WorkOutlineService::new(self.workspace().clone());
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for assignment in outline
+            .snapshot(&artifact.space_id)
+            .assignments
+            .iter()
+            .filter(|a| a.work_item_id.as_deref() == Some(item.as_str()))
+        {
+            if let Ok(Some(chat)) = self.workspace().chat(&assignment.chat_id)
+                && let Some(cwd) = chat.cwd
+            {
+                paths.push(PathBuf::from(cwd));
+            }
+            if let Ok(Some(row)) = self.workspace().chat_diff_targets(&assignment.chat_id) {
+                paths.extend(row.targets.iter().map(|t| PathBuf::from(&t.path)));
+            }
+        }
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let after = (since / 1000).to_string();
+        for path in paths {
+            let Some(top) = git(&path, &["rev-parse", "--show-toplevel"]).map(PathBuf::from) else {
+                continue;
+            };
+            if !seen.insert(canonical(&top)) {
+                continue;
+            }
+            let branch = git(&top, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+            if matches!(branch.as_str(), "" | "main" | "master" | "HEAD") {
+                continue;
+            }
+            let count: u32 = git(&top, &["rev-list", "--count", &format!("--after={after}"), "HEAD"])
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
+            if count > reply.commits_since {
+                reply.commits_since = count;
+                reply.branch = Some(branch);
+                reply.latest_commit_at = git(&top, &["log", "-1", "--format=%ct"])
+                    .and_then(|t| t.parse::<i64>().ok())
+                    .map(|t| t * 1000);
+            }
+        }
+        Ok(reply)
+    }
+
+    /// `ArtifactAnswerQuestion`: record (or replace) the answer to question
+    /// `question_id`. Only the `answers` field is written, from any device;
+    /// the owning device's reconcile pass resolves the Required Action.
+    pub fn answer_question(
+        &self,
+        params: &zeron_proto::ArtifactAnswerQuestionParams,
+        by: WorkOutlineActor,
+    ) -> Outcome<zeron_proto::ArtifactAnswerQuestionReply> {
+        let artifact = self
+            .workspace()
+            .artifact(&params.artifact_id)
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+        let id = params.question_id.trim().to_ascii_uppercase();
+        if !id.starts_with("Q-") || id.len() < 3 {
+            return Err(ArtifactError::invalid("question id must look like Q-3"));
+        }
+        let answer = clean_answer(&params.answer);
+        if answer.is_empty() {
+            return Err(ArtifactError::invalid("answer must not be empty"));
+        }
+        self.record_answer(&artifact, &id, answer, by)?;
+        Ok(zeron_proto::ArtifactAnswerQuestionReply {
+            artifact_id: artifact.id,
+            question_id: id,
+        })
+    }
+
+    /// Store `answer` for `question_id` on the row (replacing an earlier one).
+    pub(crate) fn record_answer(
+        &self,
+        artifact: &ArtifactView,
+        question_id: &str,
+        answer: String,
+        by: WorkOutlineActor,
+    ) -> Outcome<()> {
+        let mut answers = artifact.answers.clone();
+        answers.retain(|a| !a.id.eq_ignore_ascii_case(question_id));
+        answers.push(zeron_proto::ArtifactQuestionAnswer {
+            id: question_id.to_owned(),
+            answer,
+            at: now_ms(),
+            by,
+            revision: artifact.current_revision,
+        });
+        let excess = answers.len().saturating_sub(zeron_proto::artifacts::MAX_ANSWERS);
+        answers.drain(..excess);
+        self.workspace()
+            .set_artifact_answers(&artifact.id, &answers)
+            .map_err(|e| ArtifactError::io(e.to_string()))?
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+        Ok(())
+    }
+
     /// `WatchArtifacts`: the Space's artifacts now, then one frame per
     /// change (coalesced; skipped when no artifact row changed).
     pub fn watch(&self, space_id: String) -> BoxStream<'static, Value> {
@@ -1598,6 +1743,9 @@ impl ArtifactsService {
             "content": content,
             "openQuestions": open_questions,
             "unverifiedClaims": unverified_claims,
+            "answeredQuestions": plan.answers.iter().map(|a| json!({
+                "id": a.id, "answer": a.answer, "at": a.at, "revision": a.revision,
+            })).collect::<Vec<_>>(),
         }))
     }
 
