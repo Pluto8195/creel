@@ -110,9 +110,10 @@ pub fn is_touched(
         || !item.child_ids.is_empty()
         || !item.external_sync_modified_fields.is_empty()
         || item.status != record.synced_status
-        || snapshot.instructions.iter().any(|i| {
-            i.work_item_id.as_deref() == Some(item.id.as_str()) && i.archived_at.is_none()
-        })
+        || snapshot
+            .instructions
+            .iter()
+            .any(|i| i.work_item_id.as_deref() == Some(item.id.as_str()) && i.archived_at.is_none())
 }
 
 /// The sync's own children: items with a Linear sync record, or the id the
@@ -120,7 +121,8 @@ pub fn is_touched(
 fn own_items(snapshot: &WorkOutlineSnapshot, space_id: &str) -> BTreeMap<String, String> {
     let mut own = BTreeMap::new();
     for reference in &snapshot.external_references {
-        if reference.provider != LINEAR_PROVIDER || reference.reference_type != LINEAR_ISSUE_REFERENCE
+        if reference.provider != LINEAR_PROVIDER
+            || reference.reference_type != LINEAR_ISSUE_REFERENCE
         {
             continue;
         }
@@ -314,7 +316,12 @@ async fn create(pass: &Pass<'_>, destination: &str, issue: &LinearIssueSummary, 
 }
 
 /// A matching own child: restore one this sync archived, clear a marker.
-async fn restore_or_clear(pass: &Pass<'_>, item: &WorkItemView, identifier: &str, now: i64) -> bool {
+async fn restore_or_clear(
+    pass: &Pass<'_>,
+    item: &WorkItemView,
+    identifier: &str,
+    now: i64,
+) -> bool {
     let record = item
         .external_sync_state
         .clone()
@@ -330,10 +337,12 @@ async fn restore_or_clear(pass: &Pass<'_>, item: &WorkItemView, identifier: &str
             return false;
         }
         let restored = pass
-            .mutate(WorkOutlineMutation::RestoreWorkItem(RestoreWorkItemParams {
-                work_item_id: item.id.clone(),
-                operation_id: uuid::Uuid::new_v4().to_string(),
-            }))
+            .mutate(WorkOutlineMutation::RestoreWorkItem(
+                RestoreWorkItemParams {
+                    work_item_id: item.id.clone(),
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                },
+            ))
             .await;
         if !restored {
             return false;
@@ -376,11 +385,13 @@ async fn leave(
         return pass.record(&item.id, marked).await;
     }
     let archived = pass
-        .mutate(WorkOutlineMutation::ArchiveWorkItem(ArchiveWorkItemParams {
-            work_item_id: item.id.clone(),
-            descendant_archive_policy: DescendantArchivePolicy::ArchiveDescendants,
-            operation_id: archive_operation(pass.space_id, identifier, reason),
-        }))
+        .mutate(WorkOutlineMutation::ArchiveWorkItem(
+            ArchiveWorkItemParams {
+                work_item_id: item.id.clone(),
+                descendant_archive_policy: DescendantArchivePolicy::ArchiveDescendants,
+                operation_id: archive_operation(pass.space_id, identifier, reason),
+            },
+        ))
         .await;
     if !archived {
         return false;

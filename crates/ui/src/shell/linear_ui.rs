@@ -90,6 +90,35 @@ impl Shell {
                 })
                 .detach();
             }
+            LinearMenuAction::SetAssignedDestination { space_id, item_id } => {
+                let task = self
+                    .state
+                    .read(cx)
+                    .work_outline_actions()
+                    .set_linear_assigned_destination(
+                        zeron_proto::SetLinearAssignedDestinationParams {
+                            space_id,
+                            work_item_id: item_id,
+                            operation_id: crate::work_outline::actions::new_operation_id(),
+                        },
+                    );
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = task.await {
+                        this.update(cx, |shell, cx| {
+                            shell.sidebar_notice = Some(
+                                format!(
+                                    "Couldn\u{2019}t change the linked Linear item: {}",
+                                    error.user_text()
+                                )
+                                .into(),
+                            );
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
             LinearMenuAction::OpenPanel(space_id) => self.open_linear_panel(Some(space_id), cx),
             LinearMenuAction::AddProjectIssues { space_id, item_id } => {
                 if !matches!(self.route, Route::Overview) {

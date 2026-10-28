@@ -12,12 +12,13 @@ use zeron_proto::linear::{
     LinearClearApiKeyParams, LinearConnectionStatus, LinearError, LinearErrorCode,
     LinearIssueParams, LinearIssueSummary, LinearMyIssuesParams, LinearMyProjectsParams,
     LinearProjectDetail, LinearProjectDetailParams, LinearProjectIssuesParams,
-    LinearProjectSummary, LinearRefreshLinkedItemsParams,
-    LinearRefreshLinkedItemsReply, LinearSetApiKeyParams, LinearStatusParams,
+    LinearProjectSummary, LinearRefreshLinkedItemsParams, LinearRefreshLinkedItemsReply,
+    LinearSetApiKeyParams, LinearStatusParams,
 };
 use zeron_proto::{
-    CreateWorkItemFromLinearParams, LinkLinearProjectParams, SetSpaceLinearEnabledParams,
-    WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply, WorkOutlineMutation,
+    CreateWorkItemFromLinearParams, LinkLinearProjectParams, SetLinearAssignedDestinationParams,
+    SetSpaceLinearEnabledParams, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply,
+    WorkOutlineMutation,
 };
 use zeron_rpc::methods;
 
@@ -301,6 +302,14 @@ impl WorkOutlineActions {
         params: SetSpaceLinearEnabledParams,
     ) -> LinearTask<WorkOutlineMutateReply> {
         self.linear_mutate(WorkOutlineMutation::SetSpaceLinearEnabled(params))
+    }
+
+    /// `setLinearAssignedDestination` (`None` turns the linked Linear item off).
+    pub(crate) fn set_linear_assigned_destination(
+        &self,
+        params: SetLinearAssignedDestinationParams,
+    ) -> LinearTask<WorkOutlineMutateReply> {
+        self.linear_mutate(WorkOutlineMutation::SetLinearAssignedDestination(params))
     }
 
     /// Reply carries `work_item_id` and `reference_id`.

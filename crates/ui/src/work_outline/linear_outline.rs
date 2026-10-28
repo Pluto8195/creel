@@ -59,6 +59,9 @@ pub(super) struct LinearParts {
     pub issue: Option<LinearIssueRow>,
     pub has_project_chip: bool,
     pub has_fix_chip: bool,
+    /// Rough width of the linked-Linear-item markers (destination arrow,
+    /// "Started in Linear" chip) among `chips`.
+    pub marker_width: f32,
 }
 
 impl OutlineView {
@@ -182,11 +185,27 @@ impl OutlineView {
                 }))
                 .into_any_element()
         });
+        // The linked Linear item: its destination arrow, and on an auto-added
+        // child the reason its ticket stopped matching.
+        let destination = (snapshot.linear_assigned_destination() == Some(item.item_id.as_str()))
+            .then(|| assigned_destination_marker(format!("outline-linear-assigned-{key}"), theme));
+        let left = snapshot
+            .item(&item.item_id)
+            .and_then(|i| i.external_sync_state.as_ref())
+            .filter(|state| state.provider == zeron_proto::linear::LINEAR_PROVIDER)
+            .and_then(|state| state.marker.clone());
+        let marker_width = if destination.is_some() { 28.0 } else { 0.0 }
+            + if left.is_some() { 120.0 } else { 0.0 };
+        let left = left.map(|text| left_marker(format!("outline-linear-left-{key}"), text, theme));
         LinearParts {
-            chips: join_chips(project_chip, fix_chip),
+            chips: join_chips(
+                join_chips(project_chip, fix_chip),
+                join_chips(left, destination),
+            ),
             issue,
             has_project_chip,
             has_fix_chip,
+            marker_width,
         }
     }
 
@@ -663,6 +682,61 @@ pub(crate) fn project_chip(
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(open_link(shell, url))
+        .into_any_element()
+}
+
+/// The small marker on the Space's linked Linear item.
+pub(crate) fn assigned_destination_marker(id: String, theme: &Theme) -> AnyElement {
+    let selector = id.clone();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .px(px(3.0))
+        .rounded(px(3.0))
+        .text_size(crate::typography::ui_rems(10.0))
+        .text_color(theme.accent)
+        .child(
+            crate::icons::icon(crate::icons::CHECKLIST)
+                .size(px(10.0))
+                .text_color(theme.accent),
+        )
+        .child("\u{2193}")
+        .tooltip(|_, cx| {
+            cx.new(|_| {
+                TextTooltip(
+                    "My unstarted Linear tickets with no project are added here (every 15 minutes)"
+                        .into(),
+                )
+            })
+            .into()
+        })
+        .into_any_element()
+}
+
+/// Why an auto-added child's ticket no longer matches ("Started in Linear",
+/// "Moved to project X"): the child is kept because it was touched.
+pub(crate) fn left_marker(id: String, text: String, theme: &Theme) -> AnyElement {
+    let selector = id.clone();
+    let tip: SharedString =
+        format!("{text}. This item is kept because you worked on it; untouched ones are archived")
+            .into();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .max_w(px(160.0))
+        .px(px(4.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(theme.warning.opacity(0.6))
+        .text_size(crate::typography::ui_rems(10.0))
+        .text_color(theme.warning)
+        .child(div().truncate().child(SharedString::from(text)))
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
         .into_any_element()
 }
 
