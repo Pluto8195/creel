@@ -17,6 +17,7 @@ fn guides_overview<'a>(
     );
     vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
     let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+    outline.update(vcx, |outline, cx| outline.set_compact_single_chat(false, cx));
     vcx.update(|window, cx| {
         let handle = gpui::Focusable::focus_handle(outline.read(cx), cx);
         window.focus(&handle, cx);

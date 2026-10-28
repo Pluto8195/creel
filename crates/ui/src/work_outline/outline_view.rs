@@ -462,6 +462,8 @@ pub(crate) struct OutlineView {
     hidden_spaces: std::collections::BTreeSet<String>,
     /// "Hidden projects (N)" is on: hidden Spaces show as dimmed roots.
     show_hidden_spaces: bool,
+    /// Fold a single-chat item's Chat into its row (on in the app).
+    compact_single_chat: bool,
     _editor_events: Subscription,
     /// Focus gained / lost diagnostics (registered on first render, which
     /// has the window).
@@ -517,6 +519,7 @@ impl OutlineView {
             notice_seq: 0,
             move_toast: None,
             move_toast_seq: 0,
+            compact_single_chat: true,
             details_key: None,
             panel_chat: None,
             shell: None,
@@ -546,6 +549,14 @@ impl OutlineView {
     // ----------------------------------------------------------------------
     // Inputs and model
     // ----------------------------------------------------------------------
+
+    pub(crate) fn set_compact_single_chat(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.compact_single_chat != on {
+            self.compact_single_chat = on;
+            self.reflatten();
+            cx.notify();
+        }
+    }
 
     pub(crate) fn set_inputs(&mut self, inputs: OutlineInputs, cx: &mut Context<Self>) {
         self.ensure_collapsed_loaded(cx);
@@ -726,6 +737,7 @@ impl OutlineView {
     fn flatten_inputs(&self, collapsed: &HashSet<String>) -> OutlineModel {
         let options = OutlineOptions {
             show_hidden_spaces: self.show_hidden_spaces,
+            compact_single_chat: self.compact_single_chat,
             ..self.inputs.options.clone()
         };
         model::flatten(
@@ -747,7 +759,12 @@ impl OutlineView {
             if let Some((after, depth)) = place(&self.model) {
                 if before != Some((after, depth)) {
                     // The moved item's new place: select and reveal it.
-                    self.selected = Some(follow);
+                    self.selected = Some(
+                        self.model
+                            .canonical_key(&follow)
+                            .unwrap_or(&follow)
+                            .to_string(),
+                    );
                     self.follow = None;
                     self.scroll.scroll_to_item(after, ScrollStrategy::Nearest);
                     return;
@@ -755,8 +772,8 @@ impl OutlineView {
             }
         }
         if let Some(pending) = self.pending_select.clone() {
-            if self.model.position(&pending).is_some() {
-                self.selected = Some(pending);
+            if let Some(key) = self.model.canonical_key(&pending) {
+                self.selected = Some(key.to_string());
                 self.pending_select = None;
                 return;
             }
@@ -834,9 +851,19 @@ impl OutlineView {
             .map(|chat| chat.chat.id.clone())
     }
 
+    /// The Chat the selection stands for when it is opened or previewed: a
+    /// Chat row's, or a compact item row's. Rename / move keys keep acting on
+    /// the item ([`Self::selected_chat`] is `None` there).
+    pub(crate) fn selected_open_chat(&self) -> Option<String> {
+        self.selected_row()
+            .and_then(OutlineRow::open_chat)
+            .filter(|chat| !chat.dangling)
+            .map(|chat| chat.chat.id.clone())
+    }
+
     pub(crate) fn select(&mut self, key: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.model.position(key) {
-            self.selected = Some(key.to_string());
+            self.selected = Some(self.model.rows[ix].key.clone());
             self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
             cx.notify();
         }
@@ -957,8 +984,24 @@ impl OutlineView {
         self.open_row(&row, cx);
     }
 
+    /// Open Work Item Details for an item (a compact row's menu entry).
+    pub(crate) fn open_item_details(
+        &mut self,
+        space_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(OutlineEvent::OpenDetails { space_id, item_id });
+    }
+
     fn open_row(&mut self, row: &OutlineRow, cx: &mut Context<Self>) {
         match &row.kind {
+            // A compact row opens its Chat (the common action); Open Details
+            // in its context menu reaches the item.
+            OutlineRowKind::Item(ItemRow {
+                compact_chat: Some(chat),
+                ..
+            }) => cx.emit(OutlineEvent::OpenChat(chat.chat.id.clone())),
             OutlineRowKind::Item(item) => cx.emit(OutlineEvent::OpenDetails {
                 space_id: item.space_id.clone(),
                 item_id: item.item_id.clone(),
@@ -2492,6 +2535,56 @@ impl OutlineView {
         )
     }
 
+    /// The "Instructions changed" chip of a Chat whose work item's
+    /// instructions moved on since it started.
+    fn drift_chip(
+        &self,
+        key: &str,
+        chat: &ChatRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let drift = chat
+            .work_item
+            .as_ref()
+            .and_then(|(space, _)| self.snapshot(space))
+            .and_then(|snapshot| snapshot.chat_instruction_state(&chat.chat.id))
+            .is_some_and(|state| state.drift);
+        (drift && !chat.dangling).then(|| {
+            let chat_id = chat.chat.id.clone();
+            div()
+                .id(SharedString::from(format!("outline-drift-{key}")))
+                .debug_selector({
+                    let selector = format!("outline-drift-{key}");
+                    move || selector.clone()
+                })
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .px(px(4.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.warning)
+                .hover(|el| el.bg(theme.element_hover))
+                .child(
+                    crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                        .size(px(10.0))
+                        .text_color(theme.warning),
+                )
+                .child("Instructions changed")
+                .hint(chips::INSTRUCTION_DRIFT_TOOLTIP, HintKey::None)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade) {
+                        shell.update(cx, |shell, cx| shell.open_instruction_compare(&chat_id, cx));
+                    }
+                }))
+                .into_any_element()
+        })
+    }
+
     fn render_row(
         &self,
         ix: usize,
@@ -2507,7 +2600,7 @@ impl OutlineView {
         let selected = self.selected.as_deref() == Some(key.as_str());
         let highlighted = self.details_key.as_deref() == Some(key.as_str())
             || row
-                .chat()
+                .open_chat()
                 .is_some_and(|chat| self.panel_chat.as_deref() == Some(chat.chat.id.as_str()));
         let renaming = matches!(
             self.editing.as_ref().map(|edit| &edit.kind),
@@ -2745,9 +2838,14 @@ impl OutlineView {
                         };
                     let external =
                         self.external_chips(&key, item, row.depth, other_width, theme, cx);
+                    let compact_chat = item.compact_chat.as_ref().map(|chat| {
+                        let drift = self.drift_chip(&key, chat, theme, cx);
+                        compact_chat_segment(&key, chat, drift, theme)
+                    });
                     item_body(
                         &key,
                         item,
+                        compact_chat,
                         linear_outline::join_chips(
                             linear_outline::join_chips(proposals, artifacts),
                             external.chips,
@@ -2758,47 +2856,7 @@ impl OutlineView {
                 }
             }
             OutlineRowKind::Chat(chat) => {
-                let drift = chat
-                    .work_item
-                    .as_ref()
-                    .and_then(|(space, _)| self.snapshot(space))
-                    .and_then(|snapshot| snapshot.chat_instruction_state(&chat.chat.id))
-                    .is_some_and(|state| state.drift);
-                let chip = (drift && !chat.dangling).then(|| {
-                    let chat_id = chat.chat.id.clone();
-                    div()
-                        .id(SharedString::from(format!("outline-drift-{key}")))
-                        .debug_selector({
-                            let selector = format!("outline-drift-{key}");
-                            move || selector.clone()
-                        })
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(2.0))
-                        .px(px(4.0))
-                        .rounded(px(3.0))
-                        .cursor_pointer()
-                        .text_size(crate::typography::ui_rems(10.0))
-                        .text_color(theme.warning)
-                        .hover(|el| el.bg(theme.element_hover))
-                        .child(
-                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                .size(px(10.0))
-                                .text_color(theme.warning),
-                        )
-                        .child("Instructions changed")
-                        .hint(chips::INSTRUCTION_DRIFT_TOOLTIP, HintKey::None)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade) {
-                                shell.update(cx, |shell, cx| {
-                                    shell.open_instruction_compare(&chat_id, cx)
-                                });
-                            }
-                        }))
-                        .into_any_element()
-                });
+                let chip = self.drift_chip(&key, chat, theme, cx);
                 chat_body(&key, chat, chip, theme)
             }
         };
@@ -3244,6 +3302,7 @@ fn status_totals_element(
 fn item_body(
     key: &str,
     item: &ItemRow,
+    compact_chat: Option<AnyElement>,
     proposals: Option<AnyElement>,
     pr_slots: Option<AnyElement>,
     theme: &Theme,
@@ -3284,6 +3343,7 @@ fn item_body(
                 .text_color(theme.text)
                 .child(SharedString::from(item.title.clone())),
         )
+        .children(compact_chat)
         .when_some(
             chips::attention_indicator(
                 format!("outline-attention-{key}"),
@@ -3302,29 +3362,32 @@ fn item_body(
             ))
         })
         .children(proposals)
-        .when(item.chat_count > 0 && !compact_pr, |el| {
-            el.child(
-                div()
-                    .id(SharedString::from(format!("outline-chats-{key}")))
-                    .debug_selector({
-                        let selector = format!("outline-chats-{key}");
-                        move || selector.clone()
-                    })
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .text_color(theme.text_faint)
-                    .child(
-                        crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
-                            .size(px(10.0))
-                            .text_color(theme.text_faint),
-                    )
-                    .child(SharedString::from(item.chat_count.to_string()))
-                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(chats_tip.clone())).into()),
-            )
-        })
+        .when(
+            item.chat_count > 0 && !compact_pr && item.compact_chat.is_none(),
+            |el| {
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("outline-chats-{key}")))
+                        .debug_selector({
+                            let selector = format!("outline-chats-{key}");
+                            move || selector.clone()
+                        })
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .text_color(theme.text_faint)
+                        .child(
+                            crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                .size(px(10.0))
+                                .text_color(theme.text_faint),
+                        )
+                        .child(SharedString::from(item.chat_count.to_string()))
+                        .tooltip(move |_, cx| cx.new(|_| TextTooltip(chats_tip.clone())).into()),
+                )
+            },
+        )
         .when(item.execution_exceptions > 0, |el| {
             let tip = super::execution::exception_tooltip(item.execution_exceptions as usize);
             el.child(
@@ -3372,6 +3435,54 @@ fn item_body(
             )
         })
         .children(pr_slots)
+        .into_any_element()
+}
+
+/// A compact item row's Chat: live-state dot, instruction-drift chip and
+/// harness badge, in the same styles as a Chat row. The title, status, PR /
+/// Linear icons and attention chips are the item's, so nothing repeats.
+fn compact_chat_segment(
+    key: &str,
+    row: &ChatRow,
+    drift: Option<AnyElement>,
+    theme: &Theme,
+) -> AnyElement {
+    let chat = &row.chat;
+    let dot = crate::shell::spaces::status_dot_color(chat.status, theme);
+    let tip: SharedString = format!("Chat: {}", chat.title).into();
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(
+            div()
+                .id(SharedString::from(format!("outline-chat-dot-{key}")))
+                .debug_selector({
+                    let selector = format!("outline-chat-dot-{key}");
+                    move || selector.clone()
+                })
+                .flex_none()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(dot)
+                .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
+        )
+        .when_some(drift, |el, drift| el.child(drift))
+        .when_some(chat.harness.clone(), |el, harness| {
+            el.child(
+                div()
+                    .flex_none()
+                    .max_w(px(100.0))
+                    .px(px(4.0))
+                    .rounded(px(3.0))
+                    .bg(theme.element_hover.opacity(0.7))
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(9.0))
+                    .text_color(theme.text_muted.opacity(0.85))
+                    .child(SharedString::from(harness)),
+            )
+        })
         .into_any_element()
 }
 

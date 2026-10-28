@@ -5860,6 +5860,8 @@ impl Overview {
                 all_spaces: true,
                 // The Outline owns the reveal (`OutlineView`).
                 show_hidden_spaces: false,
+                // Likewise: the view compacts single-chat items itself.
+                compact_single_chat: false,
             },
         };
         self.outline
@@ -6614,7 +6616,7 @@ impl Overview {
             (self.view_mode == OverviewMode::Outline)
                 .then(|| self.outline.read(cx).selected_row())
                 .flatten()
-                .and_then(|row| row.chat())
+                .and_then(|row| row.open_chat())
                 .filter(|row| !row.dangling)
                 .map(|row| row.chat.id.clone())
         };
@@ -6638,7 +6640,7 @@ impl Overview {
     /// any other row, cancel a pending switch: the panel keeps the last
     /// previewed Chat.
     fn schedule_outline_preview(&mut self, cx: &mut Context<Self>) {
-        if self.outline.read(cx).selected_chat().is_none() {
+        if self.outline.read(cx).selected_open_chat().is_none() {
             self.outline_preview = None;
             return;
         }
@@ -6674,7 +6676,7 @@ impl Overview {
         if !shell.read(cx).is_overview_route() {
             return;
         }
-        let Some(chat_id) = self.outline.read(cx).selected_chat() else {
+        let Some(chat_id) = self.outline.read(cx).selected_open_chat() else {
             return;
         };
         if self.shown_panel_chat(cx).as_deref() == Some(chat_id.as_str()) {
@@ -8966,8 +8968,8 @@ mod logic_tests {
         draw(vcx);
         for key in [
             row_key::item("s1", LAUNCH),
+            // w-api-auth's only Chat is folded into its row.
             row_key::item("s1", API_AUTH),
-            row_key::chat(CHAT_AUTH),
             row_key::chat(CHAT_GHOST),
             row_key::unassociated(Some("s1")),
             row_key::chat(CHAT_LOOSE_A),
@@ -8977,6 +8979,7 @@ mod logic_tests {
                 "{key} renders"
             );
         }
+        assert!(row_bounds(vcx, format!("outline-row-{}", row_key::chat(CHAT_AUTH))).is_none());
         // Archived items stay out by default.
         assert!(row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", RETIRED))).is_none());
         let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", API))).unwrap();
@@ -10810,5 +10813,10 @@ mod logic_tests {
     /// this module's fixtures.
     mod tree_guides_tests {
         include!("work_outline/tree_guides_tests.rs");
+    }
+
+    /// Compact single-chat rows: rendering, open, menu, keys, drag.
+    mod compact_rows_tests {
+        include!("work_outline/compact_rows_tests.rs");
     }
 }

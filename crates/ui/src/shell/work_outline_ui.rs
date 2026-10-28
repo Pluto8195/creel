@@ -1792,6 +1792,7 @@ mod tests {
         });
         let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
         let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        outline.update(cx, |outline, cx| outline.set_compact_single_chat(false, cx));
         let draw = |cx: &mut gpui::VisualTestContext| {
             cx.update(|window, cx| {
                 window.refresh();
@@ -1941,6 +1942,7 @@ mod tests {
         });
         let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
         let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        outline.update(cx, |outline, cx| outline.set_compact_single_chat(false, cx));
         redraw(cx);
         let outline_focus = cx.update(|_, cx| gpui::Focusable::focus_handle(outline.read(cx), cx));
         outline.update(cx, |outline, cx| {
@@ -2049,6 +2051,7 @@ mod tests {
         });
         let overview = shell.read_with(cx, |shell, _| shell.overview_page.clone().unwrap());
         let outline = overview.read_with(cx, |overview, _| overview.outline_entity());
+        outline.update(cx, |outline, cx| outline.set_compact_single_chat(false, cx));
         redraw(cx);
         (shell, overview, outline, cx)
     }
