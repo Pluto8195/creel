@@ -33,6 +33,8 @@ pub(crate) struct QuestionState {
     /// What the Markdown preview was last given.
     synced: Option<(Vec<(String, String)>, Option<String>, bool)>,
     cached: Option<(u64, Vec<PlanQuestion>)>,
+    /// Answers baked into the HTML document on screen (`data-answer`).
+    pub(super) html_answers: HashMap<String, String>,
     drift: Option<ArtifactDriftReply>,
     gate: DriftGate,
     /// The revision last recorded as viewed, and the one the previous
@@ -160,9 +162,22 @@ impl ArtifactTab {
     fn sync_answers(
         &mut self,
         artifact: &ArtifactView,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode != super::Mode::Compare
+            && matches!(self.body, Some(super::ArtifactBody::Web { .. }))
+            && self.option_shown.is_none()
+        {
+            // HTML cards show answered state from the document itself; a
+            // changed answer set re-presents the page.
+            let answers = self.answer_map(artifact);
+            if answers != self.questions.html_answers {
+                self.questions.html_answers = answers;
+                self.present(window, cx);
+            }
+            return;
+        }
         let Some(preview) = self.markdown.clone() else {
             return;
         };

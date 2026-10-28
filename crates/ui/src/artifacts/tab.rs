@@ -566,7 +566,8 @@ impl ArtifactTab {
     ) {
         let key = render_key(cx);
         let title = self.document_title(cx);
-        let html = document::web_document(kind, source, &title, mime, &key.0, key.1, false);
+        let source = super::question_html::with_answers(source, &self.questions.html_answers);
+        let html = document::web_document(kind, &source, &title, mime, &key.0, key.1, false);
         self.rendered_key = Some(key);
         if self.web.is_none() {
             let factory = self.web_factory.clone();
