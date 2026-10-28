@@ -113,6 +113,8 @@ pub struct ClaudeHarness {
     /// Zeron-owned directory for per-Run `--mcp-config` files (see
     /// [`crate::agent_tools`]); defaults beside the model-discovery directory.
     agent_tools_dir: Option<PathBuf>,
+    /// Managed account home (`CLAUDE_CONFIG_DIR`); `None` = the Default login.
+    account_home: Option<PathBuf>,
 }
 
 impl Default for ClaudeHarness {
@@ -128,6 +130,7 @@ impl Default for ClaudeHarness {
             instruction_dir: None,
             instruction_probe: Default::default(),
             agent_tools_dir: None,
+            account_home: None,
         }
     }
 }
@@ -141,6 +144,17 @@ impl ClaudeHarness {
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
         self
+    }
+
+    /// Run every spawn against this managed account home.
+    pub fn with_account_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.account_home = Some(home.into());
+        self
+    }
+
+    /// Point a spawn at this harness's account home (no-op for Default).
+    fn apply_home(&self, cmd: &mut Command) {
+        crate::account_home::apply(cmd, HarnessId::ClaudeCode, self.account_home.as_deref());
     }
 
     /// Run automatic model probes in this Zeron-owned directory.
@@ -248,6 +262,7 @@ impl ClaudeHarness {
     ) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        self.apply_home(&mut cmd);
         cmd.args([
             "--print",
             "--input-format",
@@ -406,6 +421,7 @@ impl ClaudeHarness {
         };
         let mut cmd = Command::new(&exe);
         crate::compose_child_path(&mut cmd, &exe);
+        self.apply_home(&mut cmd);
         cmd.args([
             "--print",
             "--input-format",
@@ -550,10 +566,28 @@ impl Harness for ClaudeHarness {
 
     /// Credential and executable identity scopes both initialize and catalog caches.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
-        crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+        crate::model_context::context_in(
+            self.id(),
+            &self.resolve_executable()?,
+            &[],
+            self.account_home.as_deref(),
+        )
+        .map(Some)
+    }
+    fn scoped_to_account_home(&self, home: &std::path::Path) -> Option<Arc<dyn Harness>> {
+        Some(Arc::new(Self {
+            executable: self.executable.clone(),
+            model_discovery_cwd: self.model_discovery_cwd.clone(),
+            interrupt_grace: self.interrupt_grace,
+            kill_grace: self.kill_grace,
+            instruction_dir: self.instruction_dir.clone(),
+            agent_tools_dir: self.agent_tools_dir.clone(),
+            account_home: Some(home.to_path_buf()),
+            ..Self::default()
+        }))
     }
     fn fallback_models(&self) -> Vec<Model> {
-        catalog::configured_models()
+        catalog::configured_models(self.account_home.as_deref())
     }
     async fn model_catalog(&self, force: bool) -> Result<crate::ModelCatalog, HarnessError> {
         self.model_context()?.unwrap().log();
@@ -564,7 +598,10 @@ impl Harness for ClaudeHarness {
                 || self.model_context().map(|c| c.unwrap().key()),
                 || async {
                     let response = self.initialize(force).await?;
-                    catalog::with_discovered_models(catalog::configured_models(), &response)
+                    catalog::with_discovered_models(
+                        catalog::configured_models(self.account_home.as_deref()),
+                        &response,
+                    )
                 },
             )
             .await
@@ -1208,7 +1245,11 @@ mod tests {
                 assert!(denied.split(',').any(|t| t == tool), "{tool} in {denied}");
             }
             assert_eq!(flag_value(&args, "--permission-mode"), Some("default"));
-            assert!(!args.iter().any(|a| a.contains("bypass") || a.contains("skip-permissions")));
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.contains("bypass") || a.contains("skip-permissions"))
+            );
         }
     }
 
@@ -1219,8 +1260,14 @@ mod tests {
         assert!(!ww.iter().any(|a| a == "--disallowedTools"), "{ww:?}");
         assert_eq!(flag_value(&ww, "--permission-mode"), Some("default"));
         let danger = argv(&harness, &sandbox_request("danger-full-access", true));
-        assert!(!danger.iter().any(|a| a == "--disallowedTools"), "{danger:?}");
-        assert_eq!(flag_value(&danger, "--permission-mode"), Some("bypassPermissions"));
+        assert!(
+            !danger.iter().any(|a| a == "--disallowedTools"),
+            "{danger:?}"
+        );
+        assert_eq!(
+            flag_value(&danger, "--permission-mode"),
+            Some("bypassPermissions")
+        );
     }
 
     fn model_arg(args: &[String]) -> Option<&str> {

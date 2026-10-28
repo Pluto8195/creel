@@ -146,6 +146,8 @@ pub struct CodexHarness {
     kill_grace: Duration,
     /// `codex --version` instruction probe, cached per executable identity.
     instruction_probe: crate::instruction_support::ProbeCache,
+    /// Managed account home (`CODEX_HOME`); `None` = the Default login.
+    account_home: Option<PathBuf>,
 }
 
 impl Default for CodexHarness {
@@ -157,6 +159,7 @@ impl Default for CodexHarness {
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
             instruction_probe: Default::default(),
+            account_home: None,
         }
     }
 }
@@ -170,6 +173,17 @@ impl CodexHarness {
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
         self
+    }
+
+    /// Run every spawn against this managed account home.
+    pub fn with_account_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.account_home = Some(home.into());
+        self
+    }
+
+    /// Point a spawn at this harness's account home (no-op for Default).
+    fn apply_home(&self, cmd: &mut Command) {
+        crate::account_home::apply(cmd, HarnessId::Codex, self.account_home.as_deref());
     }
 
     /// Run automatic model probes in this Zeron-owned directory.
@@ -216,6 +230,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        self.apply_home(&mut cmd);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -271,6 +286,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        self.apply_home(&mut cmd);
         cmd.current_dir(discovery_cwd);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -625,7 +641,23 @@ impl Harness for CodexHarness {
     /// discovery call is unavailable and no last-good catalog exists. Explicit
     /// picker refreshes bypass cooldowns while overlapping callers coalesce.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
-        crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+        crate::model_context::context_in(
+            self.id(),
+            &self.resolve_executable()?,
+            &[],
+            self.account_home.as_deref(),
+        )
+        .map(Some)
+    }
+    fn scoped_to_account_home(&self, home: &std::path::Path) -> Option<Arc<dyn Harness>> {
+        Some(Arc::new(Self {
+            executable: self.executable.clone(),
+            model_discovery_cwd: self.model_discovery_cwd.clone(),
+            interrupt_grace: self.interrupt_grace,
+            kill_grace: self.kill_grace,
+            account_home: Some(home.to_path_buf()),
+            ..Self::default()
+        }))
     }
     fn fallback_models(&self) -> Vec<Model> {
         static_models()
@@ -751,6 +783,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        self.apply_home(&mut cmd);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
