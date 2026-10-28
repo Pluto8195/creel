@@ -65,9 +65,6 @@ pub(crate) use user_actions_section::ProposalReview;
 /// `item_id` of the Space-root variant of the details surface.
 pub(crate) const SPACE_ROOT_ITEM_ID: &str = "";
 
-/// Fixed width of the details surface.
-pub(crate) const DETAILS_PANEL_W: f32 = 380.0;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DetailsEvent {
     /// The surface should close (after any discard confirmation).
@@ -1069,7 +1066,7 @@ impl Render for WorkItemDetails {
             .debug_selector(|| "work-item-details".into())
             .track_focus(&self.focus)
             .flex_none()
-            .w(px(DETAILS_PANEL_W))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()

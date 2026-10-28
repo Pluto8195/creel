@@ -570,6 +570,11 @@ impl Overview {
         )
     }
 
+    /// Overview width as last painted (`None` before the first paint).
+    pub(super) fn overview_width(&self) -> Option<f32> {
+        self.linear_column.overview_width.get()
+    }
+
     /// Zero-size paint hook recording the Overview's own width (the
     /// narrow-window rule needs it); a change re-renders once.
     pub(super) fn linear_width_capture(&self) -> AnyElement {

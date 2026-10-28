@@ -28,8 +28,8 @@ pub mod shortcuts;
 pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).
-pub const SIDEBAR_MIN: f32 = 224.0;
-pub const SIDEBAR_MAX: f32 = 400.0;
+pub const SIDEBAR_MIN: f32 = 200.0;
+pub const SIDEBAR_MAX: f32 = 520.0;
 pub const SIDEBAR_DEFAULT: f32 = 256.0;
 
 /// Independent file explorer width preference and drag bounds (px).

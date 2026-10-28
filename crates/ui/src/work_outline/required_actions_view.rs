@@ -1296,7 +1296,7 @@ impl Render for RequiredActionsList {
             .debug_selector(|| "required-actions-panel".into())
             .track_focus(&self.focus)
             .flex_none()
-            .w(px(super::details_panel::DETAILS_PANEL_W))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
