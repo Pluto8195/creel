@@ -28,6 +28,7 @@ pub(crate) mod markdown_diff;
 pub(crate) mod model;
 pub(crate) mod outline;
 pub(crate) mod pixel_diff;
+pub(crate) mod plan_linear;
 pub(crate) mod question_html;
 pub(crate) mod questions_ui;
 pub(crate) mod render_check;
