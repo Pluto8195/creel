@@ -385,3 +385,107 @@ fn the_move_toast_undo_and_the_log_agree(cx: &mut gpui::TestAppContext) {
     let redo = outline.read_with(vcx, |o, cx| o.next_redo_label(cx));
     assert!(redo.is_some_and(|label| label.starts_with("moved chat")));
 }
+
+/// Work Item Details edits share the log: a status change made there is
+/// undone with ⌘Z from the Outline, through `updateWorkItem`.
+#[gpui::test]
+fn a_status_change_in_details_is_undone_from_the_outline(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), fixture(), reply_ok);
+    let details = open_details(&overview, vcx, API);
+    details.update(vcx, |d, cx| {
+        d.set_status(zeron_proto::WorkItemStatus::Pending, cx)
+    });
+    vcx.run_until_parked();
+    assert_eq!(call(&calls, 0)["changes"]["status"], "pending");
+    let mut changed = fixture();
+    changed
+        .items
+        .iter_mut()
+        .find(|item| item.id == API)
+        .unwrap()
+        .status = zeron_proto::WorkItemStatus::Pending;
+    settle(&overview, vcx, changed);
+    focus(&outline, vcx);
+
+    assert_eq!(
+        undo_label(&outline, vcx).as_deref(),
+        Some("marked \u{2018}API\u{2019} pending")
+    );
+    press(vcx, "cmd-z");
+    let undo = call(&calls, 1);
+    assert_eq!(undo["op"], "updateWorkItem");
+    assert_eq!(undo["workItemId"], API);
+    assert_eq!(undo["changes"]["status"], "active");
+    assert_distinct_short_operation_ids(&calls);
+}
+
+/// Restoring an archived item is undone by archiving it again.
+#[gpui::test]
+fn restoring_an_item_is_undone_by_archiving_it_again(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), fixture(), reply_ok);
+    let details = open_details(&overview, vcx, RETIRED);
+    details.update(vcx, |d, cx| d.restore(cx));
+    vcx.run_until_parked();
+    assert_eq!(call(&calls, 0)["op"], "restoreWorkItem");
+    let mut restored = fixture();
+    restored
+        .items
+        .iter_mut()
+        .find(|item| item.id == RETIRED)
+        .unwrap()
+        .archived_at = None;
+    settle(&overview, vcx, restored);
+    focus(&outline, vcx);
+
+    press(vcx, "cmd-z");
+    let undo = call(&calls, 1);
+    assert_eq!(undo["op"], "archiveWorkItem");
+    assert_eq!(undo["workItemId"], RETIRED);
+    assert_eq!(undo["descendantArchivePolicy"]["type"], "archiveDescendants");
+}
+
+/// An instruction edit is undone by writing the old text back; the engine
+/// call is the ordinary `updateWorkItemInstruction`.
+#[gpui::test]
+fn an_instruction_edit_is_undone_with_the_old_text(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bare = instruction_fixture::snapshot("s1");
+    bare.instructions
+        .retain(|i| i.work_item_id.as_deref() == Some(HOUSEKEEPING));
+    bare.instructions.push(instruction_fixture::instruction(
+        "i-house",
+        "s1",
+        Some(HOUSEKEEPING),
+        "a0",
+        "Tidy up.",
+    ));
+    let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), bare.clone(), reply_ok);
+    let details = open_details(&overview, vcx, HOUSEKEEPING);
+    vcx.update(|window, cx| {
+        details.update(cx, |d, cx| {
+            d.begin_instruction_draft(Some("i-house".into()), window, cx);
+            d.set_instruction_text("Tidy more.", cx);
+            d.save_instruction(cx);
+        })
+    });
+    vcx.run_until_parked();
+    assert_eq!(call(&calls, 0)["op"], "updateWorkItemInstruction");
+    let mut edited = bare;
+    edited
+        .instructions
+        .iter_mut()
+        .find(|i| i.id == "i-house")
+        .unwrap()
+        .text = "Tidy more.".into();
+    settle(&overview, vcx, edited);
+    focus(&outline, vcx);
+
+    press(vcx, "cmd-z");
+    let undo = call(&calls, 1);
+    assert_eq!(undo["op"], "updateWorkItemInstruction");
+    assert_eq!(undo["instructionId"], "i-house");
+    assert_eq!(undo["text"], "Tidy up.");
+    assert_distinct_short_operation_ids(&calls);
+}
