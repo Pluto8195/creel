@@ -21,6 +21,7 @@ fn view() -> ArtifactView {
         ),
         companions: vec!["a.fragment.html".into()],
         current_revision: 2,
+        picked: None,
         revisions: vec![ArtifactRevision {
             id: 2,
             hash: "ab".into(),

@@ -125,6 +125,11 @@ pub enum LinearStateType {
 }
 
 impl LinearStateType {
+    /// Backlog, unstarted and triage: the work has not started.
+    pub fn is_unstarted(self) -> bool {
+        matches!(self, Self::Triage | Self::Backlog | Self::Unstarted)
+    }
+
     /// Completed and canceled issues are closed (not "open").
     pub fn is_closed(self) -> bool {
         matches!(self, Self::Completed | Self::Canceled)
@@ -214,6 +219,16 @@ pub struct LinearIssueSummary {
     /// ISO-8601 timestamp.
     #[serde(default)]
     pub updated_at: String,
+}
+
+impl LinearIssueSummary {
+    /// The linked Linear item's rule: assigned to `viewer_id`, state type
+    /// backlog, unstarted or triage, and not in any project.
+    pub fn is_assigned_unstarted(&self, viewer_id: &str) -> bool {
+        self.assignee.as_ref().is_some_and(|a| a.id == viewer_id)
+            && self.state.state_type.is_unstarted()
+            && self.project.is_none()
+    }
 }
 
 /// One Linear project (the "My projects" list).

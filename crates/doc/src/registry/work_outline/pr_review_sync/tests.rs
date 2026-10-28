@@ -152,6 +152,8 @@ fn state(round: u32) -> WorkItemExternalSyncState {
         round_started_at: NOW,
         synced_at: NOW,
         archived_by_sync: None,
+        marker: None,
+        archived_by_linear_sync: false,
     }
 }
 
@@ -276,4 +278,84 @@ fn system_origin_requests_need_the_system_actor_and_have_no_chat() {
     let resolution = request.resolution.as_ref().unwrap();
     assert_eq!(resolution.note.as_deref(), Some("Review submitted"));
     assert_eq!(resolution.by.kind, WorkOutlineActorKind::System);
+}
+
+fn set_linear_item(
+    doc: &mut RegistryDoc,
+    kind: WorkOutlineActorKind,
+    space_id: &str,
+    item: Option<&str>,
+    op: &str,
+) -> Result<WorkOutlineMutateReply, WorkOutlineError> {
+    apply_as(
+        doc,
+        kind,
+        WorkOutlineMutation::SetLinearAssignedDestination(
+            zeron_proto::work_outline::SetLinearAssignedDestinationParams {
+                space_id: space_id.into(),
+                work_item_id: item.map(str::to_owned),
+                operation_id: op.into(),
+            },
+        ),
+    )
+}
+
+#[test]
+fn linked_linear_item_needs_linear_on_and_is_independent_of_the_pr_destination() {
+    let mut doc = doc();
+    let item = create(&mut doc, SPACE, "item");
+    let user = WorkOutlineActorKind::User;
+    // Linear is off: refused. Clearing an absent setting is fine.
+    assert!(set_linear_item(&mut doc, user, SPACE, Some(&item), "off").is_err());
+    set_linear_item(&mut doc, user, SPACE, None, "noop").unwrap();
+    apply_as(
+        &mut doc,
+        user,
+        WorkOutlineMutation::SetSpaceLinearEnabled(
+            zeron_proto::work_outline::SetSpaceLinearEnabledParams {
+                space_id: SPACE.into(),
+                enabled: true,
+                operation_id: "on".into(),
+            },
+        ),
+    )
+    .unwrap();
+    let other = create(&mut doc, OTHER, "other");
+    let error = set_linear_item(&mut doc, user, SPACE, Some(&other), "cross").unwrap_err();
+    assert_eq!(error.code, WorkOutlineErrorCode::CrossSpace);
+    set_linear_item(&mut doc, user, SPACE, Some(&item), "set").unwrap();
+    set_destination(&mut doc, SPACE, Some(&item), "pr").unwrap();
+    let snap = snapshot(&doc, SPACE);
+    assert_eq!(snap.linear_assigned_destination(), Some(item.as_str()));
+    assert_eq!(snap.pr_review_sync_destination(), Some(item.as_str()));
+    assert!(snap.space_settings.linear_enabled);
+    assert_eq!(doc.linear_assigned_space_ids(), vec![SPACE.to_owned()]);
+    // Clearing one leaves the other.
+    set_linear_item(&mut doc, user, SPACE, None, "clear").unwrap();
+    let snap = snapshot(&doc, SPACE);
+    assert_eq!(snap.linear_assigned_destination(), None);
+    assert_eq!(snap.pr_review_sync_destination(), Some(item.as_str()));
+    assert!(doc.linear_assigned_space_ids().is_empty());
+}
+
+#[test]
+fn agents_cannot_set_the_linked_linear_item() {
+    let mut doc = doc();
+    let item = create(&mut doc, SPACE, "item");
+    let mut agent = actor(WorkOutlineActorKind::Agent);
+    agent.chat_id = Some("chat-x".into());
+    let error = doc
+        .apply_work_outline_mutation(
+            &WorkOutlineMutation::SetLinearAssignedDestination(
+                zeron_proto::work_outline::SetLinearAssignedDestinationParams {
+                    space_id: SPACE.into(),
+                    work_item_id: Some(item),
+                    operation_id: "op".into(),
+                },
+            ),
+            &agent,
+            NOW,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, WorkOutlineErrorCode::Unauthorized);
 }

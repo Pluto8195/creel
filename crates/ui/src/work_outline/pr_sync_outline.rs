@@ -112,7 +112,8 @@ impl OutlineView {
         // status slot, when a PR cluster takes the row, and the project
         // chips).
         let project_width = if linear.has_project_chip { 100.0 } else { 0.0 }
-            + if linear.has_fix_chip { 56.0 } else { 0.0 };
+            + if linear.has_fix_chip { 56.0 } else { 0.0 }
+            + linear.marker_width;
         let status_width = linear.issue.as_ref().map_or(0.0, |issue| {
             30.0 + linear_outline::identifier_width(&issue.identifier)
         });

@@ -218,6 +218,8 @@ fn sync_state_and_work_outline_additions_are_pinned() {
         round_started_at: 100,
         synced_at: 200,
         archived_by_sync: None,
+        marker: None,
+        archived_by_linear_sync: false,
     };
     round_trip(
         &state,
@@ -261,6 +263,7 @@ fn sync_state_and_work_outline_additions_are_pinned() {
         space_settings: WorkOutlineSpaceSettings {
             linear_enabled: false,
             pr_review_sync_work_item_id: Some("w".into()),
+            linear_assigned_work_item_id: None,
         },
         ..Default::default()
     })

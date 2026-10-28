@@ -1016,6 +1016,8 @@ impl PrReviewSyncService {
         }
         let marked = WorkItemExternalSyncState {
             archived_by_sync: Some(state.request_state),
+            marker: None,
+            archived_by_linear_sync: false,
             ..state.clone()
         };
         if let Err(error) = self
@@ -1238,6 +1240,8 @@ impl PrReviewSyncService {
                         round_started_at: now,
                         synced_at: now,
                         archived_by_sync: None,
+                        marker: None,
+                        archived_by_linear_sync: false,
                     };
                     if let Err(error) = self
                         .write_record(&item_id, Some(WorkItemStatus::Active), state, item.status)
@@ -1463,6 +1467,8 @@ impl PrReviewSyncService {
             round_started_at: now,
             synced_at: now,
             archived_by_sync: None,
+            marker: None,
+            archived_by_linear_sync: false,
         };
         if let Err(error) = self
             .write_record(&item_id, None, state, WorkItemStatus::Active)

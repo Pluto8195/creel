@@ -2831,6 +2831,18 @@ impl RpcService for EngineRpc {
                     zeron_proto::WorkOutlineMutation::SetSpaceLinearEnabled(p) if p.enabled => {
                         Some(p.space_id.clone())
                     }
+                    // Picking the linked Linear item syncs the Space now.
+                    zeron_proto::WorkOutlineMutation::SetLinearAssignedDestination(p)
+                        if p.work_item_id.as_deref().is_some_and(|id| !id.is_empty()) =>
+                    {
+                        Some(p.space_id.clone())
+                    }
+                    // Picking the linked Linear item syncs the Space now.
+                    zeron_proto::WorkOutlineMutation::SetLinearAssignedDestination(p)
+                        if p.work_item_id.as_deref().is_some_and(|id| !id.is_empty()) =>
+                    {
+                        Some(p.space_id.clone())
+                    }
                     _ => None,
                 };
                 let pr_sync_space = match &mutation {
