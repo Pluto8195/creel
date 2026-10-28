@@ -89,6 +89,20 @@ fn option_is_on(options: &serde_json::Map<String, Value>, key: &str) -> bool {
     }
 }
 
+/// A ready-to-spawn `claude auth login` for a managed account: shares the
+/// harness's executable resolution and child PATH, and `CLAUDE_CONFIG_DIR`
+/// makes the CLI itself write the login (Keychain item keyed to that dir, or
+/// file credentials) so Mast never copies tokens. The caller owns stdio and
+/// cancellation.
+pub fn login_command(config_dir: &std::path::Path) -> Result<Command, HarnessError> {
+    let exe = ClaudeHarness::new().resolve_executable()?;
+    let mut cmd = Command::new(&exe);
+    crate::compose_child_path(&mut cmd, &exe);
+    cmd.args(["auth", "login"]);
+    crate::account_home::apply(&mut cmd, HarnessId::ClaudeCode, Some(config_dir));
+    Ok(cmd)
+}
+
 /// The Claude Code harness. Construct with [`ClaudeHarness::new`]; tests point
 /// it at a fake CLI with [`ClaudeHarness::with_executable`].
 pub struct ClaudeHarness {

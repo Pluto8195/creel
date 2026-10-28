@@ -532,6 +532,14 @@ pub mod methods {
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
     pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
+    // Per-project managed accounts (device-local homes; relay-forwardable).
+    pub const LIST_MANAGED_ACCOUNTS: &str = "ListManagedAccounts";
+    pub const CREATE_MANAGED_ACCOUNT: &str = "CreateManagedAccount";
+    pub const REMOVE_MANAGED_ACCOUNT: &str = "RemoveManagedAccount";
+    pub const START_MANAGED_ACCOUNT_LOGIN: &str = "StartManagedAccountLogin";
+    pub const POLL_MANAGED_ACCOUNT_LOGIN: &str = "PollManagedAccountLogin";
+    pub const CANCEL_MANAGED_ACCOUNT_LOGIN: &str = "CancelManagedAccountLogin";
+    pub const SET_PROJECT_ACCOUNT: &str = "SetProjectAccount";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

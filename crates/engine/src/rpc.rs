@@ -531,6 +531,28 @@ struct StartAgentLoginParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateManagedAccountParams {
+    harness: HarnessId,
+    label: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedAccountIdParams {
+    account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetProjectAccountParams {
+    space_id: String,
+    harness: HarnessId,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LoginIdParams {
     login_id: String,
 }
@@ -718,6 +740,8 @@ pub struct EngineRpc {
     diff_targets: crate::diff_targets::DiffTargets,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
+    /// Per-project managed accounts; `None` on bare test surfaces.
+    managed_accounts: Option<crate::managed_accounts::ManagedAccounts>,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<zeron_update::Updater>,
@@ -864,6 +888,7 @@ impl EngineRpc {
             diff_targets,
             uploads,
             agent_accounts,
+            managed_accounts: None,
             auth: None,
             links: None,
             updater: None,
@@ -944,6 +969,20 @@ impl EngineRpc {
             Ok(value) => RpcReply::value(&value),
             Err(error) => Err(RpcError::Failed(error.to_wire_message())),
         }
+    }
+
+    pub fn with_managed_accounts(
+        mut self,
+        accounts: crate::managed_accounts::ManagedAccounts,
+    ) -> Self {
+        self.managed_accounts = Some(accounts);
+        self
+    }
+
+    fn managed(&self) -> Result<&crate::managed_accounts::ManagedAccounts, RpcError> {
+        self.managed_accounts
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("per-project accounts are not available here".into()))
     }
 
     /// Share the engine's Linear service (key, caches) with the RPC surface
@@ -2065,6 +2104,13 @@ fn forwardable(method: &str) -> bool {
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
             | methods::CANCEL_AGENT_LOGIN
+            | methods::LIST_MANAGED_ACCOUNTS
+            | methods::CREATE_MANAGED_ACCOUNT
+            | methods::REMOVE_MANAGED_ACCOUNT
+            | methods::START_MANAGED_ACCOUNT_LOGIN
+            | methods::POLL_MANAGED_ACCOUNT_LOGIN
+            | methods::CANCEL_MANAGED_ACCOUNT_LOGIN
+            | methods::SET_PROJECT_ACCOUNT
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -2924,7 +2970,8 @@ impl RpcService for EngineRpc {
             methods::ARTIFACT_ANSWER_QUESTION => {
                 let p: zeron_proto::ArtifactAnswerQuestionParams = parse_params(params)?;
                 let by = self.work_outline.local_user();
-                let sync = crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
+                let sync =
+                    crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
                 self.artifact_reply(move |service| {
                     let reply = service.answer_question(&p, by)?;
                     // The owning device resolves the Required Action now
@@ -2949,7 +2996,8 @@ impl RpcService for EngineRpc {
             methods::ARTIFACT_PICK_OPTION => {
                 let p: zeron_proto::ArtifactPickOptionParams = parse_params(params)?;
                 let by = self.work_outline.local_user();
-                let sync = crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
+                let sync =
+                    crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
                 self.artifact_reply(move |service| {
                     let reply = service.pick_option(&p, by)?;
                     sync.after_pick(&p.artifact_id, reply.picked.is_some());
@@ -3776,9 +3824,9 @@ impl RpcService for EngineRpc {
                         zeron_proto::SetChatDiffTargetAction::Unbind => targets
                             .unbind(&chat_id, &need_path(path)?)
                             .map(|reply| (reply, None)),
-                        zeron_proto::SetChatDiffTargetAction::ClearSelection => targets
-                            .clear_selection(&chat_id)
-                            .map(|reply| (reply, None)),
+                        zeron_proto::SetChatDiffTargetAction::ClearSelection => {
+                            targets.clear_selection(&chat_id).map(|reply| (reply, None))
+                        }
                     }
                 })
                 .await
@@ -3983,14 +4031,12 @@ impl RpcService for EngineRpc {
                                 .head_ref
                                 .as_deref()
                                 .ok_or_else(|| RpcError::Failed("headRef required".into()))?;
-                            let (snapshot, range) = Box::pin(
-                                crate::diff_sync::capture_range_diff(
-                                    &self.repos,
-                                    root,
-                                    base_ref,
-                                    head_ref,
-                                ),
-                            )
+                            let (snapshot, range) = Box::pin(crate::diff_sync::capture_range_diff(
+                                &self.repos,
+                                root,
+                                base_ref,
+                                head_ref,
+                            ))
                             .await
                             .map_err(|error| RpcError::Failed(error.to_string()))?;
                             (snapshot, range.merge_base, Some(range.head))
@@ -4712,6 +4758,53 @@ impl RpcService for EngineRpc {
                 let p: LoginIdParams = parse_params(params)?;
                 self.agent_accounts.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_MANAGED_ACCOUNTS => RpcReply::value(&self.managed()?.snapshot()),
+            methods::CREATE_MANAGED_ACCOUNT => {
+                let p: CreateManagedAccountParams = parse_params(params)?;
+                let account = self
+                    .managed()?
+                    .create(p.harness, &p.label)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&account)
+            }
+            methods::REMOVE_MANAGED_ACCOUNT => {
+                let p: ManagedAccountIdParams = parse_params(params)?;
+                let accounts = self.managed()?;
+                accounts
+                    .remove(&p.account_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&accounts.snapshot())
+            }
+            methods::START_MANAGED_ACCOUNT_LOGIN => {
+                let p: ManagedAccountIdParams = parse_params(params)?;
+                let (login_id, url) = self
+                    .managed()?
+                    .start_login(&p.account_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&zeron_proto::AgentLoginStart {
+                    login_id,
+                    url,
+                    mode: zeron_proto::AgentLoginMode::Browser,
+                })
+            }
+            methods::POLL_MANAGED_ACCOUNT_LOGIN => {
+                let p: LoginIdParams = parse_params(params)?;
+                RpcReply::value(&self.managed()?.poll_login(&p.login_id))
+            }
+            methods::CANCEL_MANAGED_ACCOUNT_LOGIN => {
+                let p: LoginIdParams = parse_params(params)?;
+                self.managed()?.cancel_login(&p.login_id);
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::SET_PROJECT_ACCOUNT => {
+                let p: SetProjectAccountParams = parse_params(params)?;
+                let accounts = self.managed()?;
+                accounts
+                    .set_project_account(&p.space_id, p.harness, p.account_id.as_deref())
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&accounts.snapshot())
             }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;

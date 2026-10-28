@@ -268,7 +268,7 @@ struct Inner {
     inflight_refreshes: Mutex<std::collections::HashSet<String>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -1614,7 +1614,7 @@ mod keychain {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-fn harness_slug(harness: HarnessId) -> &'static str {
+pub(crate) fn harness_slug(harness: HarnessId) -> &'static str {
     match harness {
         HarnessId::ClaudeCode => "claude-code",
         HarnessId::Codex => "codex",
@@ -1629,14 +1629,14 @@ fn harness_slug(harness: HarnessId) -> &'static str {
     }
 }
 
-fn read_json(file: &Path) -> Option<serde_json::Value> {
+pub(crate) fn read_json(file: &Path) -> Option<serde_json::Value> {
     let raw = std::fs::read_to_string(file).ok()?;
     serde_json::from_str(&raw)
         .ok()
         .filter(serde_json::Value::is_object)
 }
 
-fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
+pub(crate) fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(|v| v.as_str())
@@ -1646,7 +1646,7 @@ fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
 
 /// Decode a JWT payload without verifying — we only mine identity claims from a
 /// token the user's own CLI already trusts.
-fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
+pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
     let payload = jwt.split('.').nth(1)?;
     let bytes = BASE64_URL
         .decode(payload)
@@ -1946,7 +1946,7 @@ fn json_ms(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(ms)
 }
 
-fn scan_openai_url(output: &str) -> Option<String> {
+pub(crate) fn scan_openai_url(output: &str) -> Option<String> {
     let start = output.find("https://auth.openai.com/")?;
     let rest = &output[start..];
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -1958,7 +1958,7 @@ fn scan_openai_url(output: &str) -> Option<String> {
 /// app opens the one tab). Unix only — `webbrowser` only consults `BROWSER`
 /// on unix; elsewhere the CLI's own open is left as-is.
 #[cfg(unix)]
-fn ensure_noop_browser(root: &Path) -> Option<PathBuf> {
+pub(crate) fn ensure_noop_browser(root: &Path) -> Option<PathBuf> {
     const SCRIPT: &str = "#!/bin/sh\nexit 0\n";
     let path = root.join(".noop-browser");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(SCRIPT) {
@@ -1985,7 +1985,7 @@ fn scan_shim_fatal(output: &str) -> Option<String> {
     str_field(&scan_shim_event(output, "fatal")?, "message")
 }
 
-type LoginChildHandles = (
+pub(crate) type LoginChildHandles = (
     Arc<Mutex<Option<zeron_harness::process::Child>>>,
     Arc<Mutex<String>>,
     Arc<Mutex<Option<Option<i32>>>>,
@@ -1995,7 +1995,7 @@ type LoginChildHandles = (
 /// (the URL can land on either stream), and a monitor polls `try_wait` so the
 /// child is reaped without owning it — the cancel path needs concurrent kill
 /// access.
-fn wire_login_child(mut child: zeron_harness::process::Child) -> LoginChildHandles {
+pub(crate) fn wire_login_child(mut child: zeron_harness::process::Child) -> LoginChildHandles {
     let output = Arc::new(Mutex::new(String::new()));
     for pipe in [
         child
@@ -2099,7 +2099,11 @@ fn urlencode(input: &str) -> String {
 }
 
 /// Atomic write via a same-dir temp file + rename; `secret` = 0600 from birth.
-fn write_file_atomic(file: &Path, bytes: &[u8], secret: bool) -> Result<(), EngineError> {
+pub(crate) fn write_file_atomic(
+    file: &Path,
+    bytes: &[u8],
+    secret: bool,
+) -> Result<(), EngineError> {
     let tmp = file.with_extension(format!("tmp-{}", std::process::id()));
     {
         use std::io::Write;
