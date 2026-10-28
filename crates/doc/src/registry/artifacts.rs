@@ -242,6 +242,40 @@ impl RegistryDoc {
             }
         }
     }
+
+    /// Record (or, with `None`, clear) the artifact's picked option. Writes
+    /// the `picked` field alone. `None` when the artifact is not live.
+    pub fn set_artifact_pick(
+        &mut self,
+        id: &str,
+        pick: Option<&zeron_proto::artifacts::ArtifactOptionPick>,
+        now_ms: i64,
+    ) -> Result<Option<()>, DocError> {
+        if self.artifact(id).is_none() {
+            return Ok(None);
+        }
+        let value = match pick {
+            Some(pick) => serde_json::to_value(pick)
+                .map_err(|e| DocError::Schema(format!("pick: {e}")))?,
+            None => Value::Null,
+        };
+        self.observe_row(KIND_ARTIFACTS, id);
+        let hlc = self.next_hlc();
+        let op = RowOp {
+            kind: KIND_ARTIFACTS.to_owned(),
+            id: id.to_owned(),
+            op: OpKind::Update,
+            set: Some(BTreeMap::from([
+                ("picked".to_owned(), value),
+                ("updatedAt".to_owned(), Value::from(now_ms)),
+            ])),
+            hlc,
+            clocks: None,
+        };
+        check_op_size(&op)?;
+        self.write_ops(vec![op])?;
+        Ok(Some(()))
+    }
 }
 
 #[cfg(test)]

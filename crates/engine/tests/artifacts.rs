@@ -1356,3 +1356,144 @@ async fn drift_counts_commits_on_the_chat_branch_after_the_latest_revision() {
     assert_eq!(after.branch.as_deref(), Some("agent"));
     assert!(after.latest_commit_at.unwrap() >= after.since);
 }
+
+// ── Artifacts phase 5 F: picking an option ──────────────────────────────────
+
+async fn publish_options(rig: &Rig, question: &str, key: &str) -> String {
+    let dir = rig.worktree.join("opts");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.fragment.html"), "<p>A</p>").unwrap();
+    std::fs::write(dir.join("b.fragment.html"), "<p>B</p>").unwrap();
+    std::fs::write(
+        dir.join("layouts.options.json"),
+        format!(
+            r#"{{"title":"Layouts","question":"{question}","options":[
+            {{"id":"A","label":"Dense","path":"a.fragment.html"}},
+            {{"id":"B","label":"Grouped","path":"b.fragment.html"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let reply = publish(
+        rig,
+        &rig.token,
+        json!({ "path": dir.join("layouts.options.json").to_string_lossy(), "title": "Layouts",
+                "kind": "options", "role": "comparison", "note": key, "idempotencyKey": key }),
+    )
+    .await;
+    reply["artifactId"].as_str().unwrap().to_owned()
+}
+
+async fn pick(rig: &Rig, id: &str, option: Option<&str>, label: &str, note: Option<&str>) -> Value {
+    rig.client
+        .call(
+            methods::ARTIFACT_PICK_OPTION,
+            json!({ "artifactId": id, "optionId": option, "label": label, "note": note }),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn picking_an_option_is_stored_changed_cleared_and_seen_by_get_plan() {
+    let rig = rig().await;
+    let id = publish_options(&rig, "just a sentence", "o1").await;
+    assert!(artifact(&rig, &id).picked.is_none());
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(plan["pickedOptions"], json!([]));
+
+    pick(&rig, &id, Some("B"), "Grouped", Some("  keep the PO header  ")).await;
+    let picked = artifact(&rig, &id).picked.unwrap();
+    assert_eq!(picked.option_id, "B");
+    assert_eq!(picked.label, "Grouped");
+    assert_eq!(picked.note.as_deref(), Some("keep the PO header"));
+    assert_eq!(picked.revision, 1);
+    // Files and revisions are untouched.
+    assert_eq!(artifact(&rig, &id).current_revision, 1);
+
+    // artifact_get_plan reports it, with or without a pinned plan.
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert!(plan["artifactId"].is_null());
+    let picks = plan["pickedOptions"].as_array().unwrap();
+    assert_eq!(picks.len(), 1);
+    assert_eq!(picks[0]["artifactId"], id.as_str());
+    assert_eq!(picks[0]["optionId"], "B");
+    assert_eq!(picks[0]["note"], "keep the PO header");
+    publish_plan(&rig, "# Plan\n", "pv1").await;
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(plan["pickedOptions"][0]["label"], "Grouped");
+    // Another item's agent sees nothing.
+    let other = tool(&rig, &rig.other_token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(other["pickedOptions"], json!([]));
+
+    // Changing the pick replaces it.
+    pick(&rig, &id, Some("A"), "Dense", None).await;
+    let picked = artifact(&rig, &id).picked.unwrap();
+    assert_eq!((picked.option_id.as_str(), picked.note), ("A", None));
+    // A new revision of the options keeps the pick on the row.
+    std::fs::write(rig.worktree.join("opts/a.fragment.html"), "<p>A2</p>").unwrap();
+    let again = publish_options(&rig, "just a sentence", "o2").await;
+    assert_eq!(again, id);
+    assert_eq!(artifact(&rig, &id).picked.unwrap().option_id, "A");
+
+    // Un-pick.
+    let reply = pick(&rig, &id, None, "", None).await;
+    assert!(reply["picked"].is_null());
+    assert!(artifact(&rig, &id).picked.is_none());
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(plan["pickedOptions"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn picking_refuses_non_options_artifacts_and_unknown_ids() {
+    let rig = rig().await;
+    let plan = publish_plan(&rig, "# Plan\n", "pv1").await;
+    for params in [
+        json!({ "artifactId": plan, "optionId": "A", "label": "x" }),
+        json!({ "artifactId": "nope", "optionId": "A", "label": "x" }),
+    ] {
+        assert!(rig.client.call(methods::ARTIFACT_PICK_OPTION, params).await.is_err());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn picking_resolves_the_linked_question_and_artopt_requests() {
+    let rig = rig().await;
+    let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
+    let plan = publish_plan(&rig, PLAN_V1, "v1").await;
+    sync.reconcile(&plan);
+    assert!(open_texts(&rig, &plan).contains(&"Q-1: Merge by MPN?".to_owned()));
+    let id = publish_options(&rig, "Q-1", "o1").await;
+    // An agent-raised request about the choice itself.
+    outline(
+        &rig.client,
+        json!({ "op": "createUserActionRequest", "workItemId": rig.item,
+                "origin": { "kind": "chat", "chatId": CHAT },
+                "text": "Pick a layout", "dedupeKey": format!("artopt:{id}"),
+                "operationId": "op-artopt" }),
+    )
+    .await;
+    let outline_open = || {
+        zeron_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
+            .snapshot(SPACE)
+            .user_action_requests
+            .into_iter()
+            .filter(|r| r.is_open())
+            .map(|r| r.text)
+            .collect::<Vec<_>>()
+    };
+    assert!(outline_open().contains(&"Pick a layout".to_owned()));
+
+    pick(&rig, &id, Some("A"), "Dense", None).await;
+    assert!(!outline_open().contains(&"Pick a layout".to_owned()));
+    assert!(!open_texts(&rig, &plan).contains(&"Q-1: Merge by MPN?".to_owned()));
+    let answer = artifact(&rig, &plan).answer_of("Q-1").unwrap().clone();
+    assert_eq!(answer.answer, "Picked option A: Dense");
+
+    // Changing the pick rewrites the answer; clearing it removes it.
+    pick(&rig, &id, Some("B"), "Grouped", None).await;
+    assert_eq!(artifact(&rig, &plan).answer_of("Q-1").unwrap().answer, "Picked option B: Grouped");
+    pick(&rig, &id, None, "", None).await;
+    // The question is open again on the card; its Required Action comes
+    // back with the plan's next revision (create ids are per revision).
+    assert!(artifact(&rig, &plan).answer_of("Q-1").is_none());
+}

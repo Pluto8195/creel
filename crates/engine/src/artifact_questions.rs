@@ -40,6 +40,9 @@ use crate::work_outline::WorkOutlineService;
 
 pub const INTERVAL: Duration = Duration::from_secs(2);
 const KEY_PREFIX: &str = "artq:";
+/// Dedupe key of a Required Action about an options artifact's choice
+/// (`artopt:<artifactId>`); an agent raises it, a pick resolves it.
+const OPTION_KEY_PREFIX: &str = "artopt:";
 const RESOLVED_IN_ACTIONS: &str = "Resolved in Required Actions";
 
 #[derive(Clone)]
@@ -114,6 +117,45 @@ impl ArtifactQuestionSync {
                 let _ = tokio::task::spawn_blocking(move || sync.reconcile_all()).await;
             }
         });
+    }
+
+    /// After a pick (or un-pick): resolve the open requests about the choice,
+    /// the plan question the manifest names, and `artopt:<id>` requests.
+    /// An un-pick resolves nothing (the plan question re-opens by itself).
+    pub fn after_pick(&self, artifact_id: &str, picked: bool) -> usize {
+        let ws = self.artifacts.workspace();
+        let Some(artifact) = ws.artifact(artifact_id) else {
+            return 0;
+        };
+        let Some(item) = artifact.work_item_id.clone() else {
+            return 0;
+        };
+        // The plan question the pick answered resolves on the plan's pass.
+        for plan in ws
+            .artifacts_of_space(&artifact.space_id)
+            .into_iter()
+            .filter(|a| a.pinned_as_plan && a.work_item_id.as_deref() == Some(item.as_str()))
+        {
+            self.reconcile(&plan.id);
+        }
+        if !picked {
+            return 0;
+        }
+        let key = format!("{OPTION_KEY_PREFIX}{}", artifact.id);
+        let snapshot = self.outline.snapshot(&artifact.space_id);
+        let open: Vec<UserActionRequestView> = snapshot
+            .user_action_requests
+            .iter()
+            .filter(|r| r.work_item_id == item && r.is_open())
+            .filter(|r| r.dedupe_key.as_deref() == Some(key.as_str()))
+            .cloned()
+            .collect();
+        let pick = artifact.picked.as_ref();
+        let note = match pick {
+            Some(p) => format!("Picked option {} in Mast", p.option_id),
+            None => "Picked in Mast".to_owned(),
+        };
+        open.iter().filter(|r| self.resolve(r, note.clone())).count()
     }
 
     /// Reconcile one artifact; see the module docs.

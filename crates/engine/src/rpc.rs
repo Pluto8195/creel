@@ -2923,6 +2923,17 @@ impl RpcService for EngineRpc {
                 })
                 .await
             }
+            methods::ARTIFACT_PICK_OPTION => {
+                let p: zeron_proto::ArtifactPickOptionParams = parse_params(params)?;
+                let by = self.work_outline.local_user();
+                let sync = crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
+                self.artifact_reply(move |service| {
+                    let reply = service.pick_option(&p, by)?;
+                    sync.after_pick(&p.artifact_id, reply.picked.is_some());
+                    Ok(reply)
+                })
+                .await
+            }
             methods::ARTIFACT_DRIFT => {
                 let p: zeron_proto::ArtifactDriftParams = parse_params(params)?;
                 self.artifact_reply(move |service| service.drift(&p.artifact_id))
