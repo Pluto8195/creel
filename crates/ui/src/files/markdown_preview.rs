@@ -171,6 +171,8 @@ pub(crate) struct MarkdownPreview {
     source_visible: HashSet<String>,
     /// Resolved question cards the reader expanded (by question id).
     questions_expanded: Rc<HashSet<String>>,
+    /// Answered state and the Answer affordance (artifact tabs set it).
+    question_answers: Option<render::AnswerUi>,
     preview_image: Option<crate::attachments::PreviewImage>,
     zoom_source: Option<crate::image_media::MediaImage>,
     zoom_render: Option<crate::image_media::MediaImage>,
@@ -406,6 +408,7 @@ impl MarkdownPreview {
             diagram_style: 0,
             source_visible: HashSet::new(),
             questions_expanded: Rc::default(),
+            question_answers: None,
             preview_image: None,
             zoom_source: None,
             zoom_render: None,
@@ -648,6 +651,16 @@ impl MarkdownPreview {
     }
 
     /// Expand or collapse a resolved question card.
+    /// Set (or clear) the answered state of the question cards and repaint.
+    pub(crate) fn set_question_answers(
+        &mut self,
+        answers: Option<render::AnswerUi>,
+        cx: &mut Context<Self>,
+    ) {
+        self.question_answers = answers;
+        cx.notify();
+    }
+
     fn toggle_question(&mut self, key: String, cx: &mut Context<Self>) {
         let expanded = Rc::make_mut(&mut self.questions_expanded);
         if !expanded.remove(&key) {
@@ -1265,6 +1278,7 @@ impl MarkdownPreview {
                     toggle: Rc::new(move |key, _, cx| {
                         let _ = question_owner.update(cx, |view, cx| view.toggle_question(key, cx));
                     }),
+                    answers: self.question_answers.clone(),
                 });
                 let image_allowed = self.image_allowed.clone();
                 let diagram_allowed = self.diagram_allowed.clone();

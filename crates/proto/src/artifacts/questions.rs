@@ -14,9 +14,9 @@ use super::ArtifactKind;
 use crate::work_outline::WorkOutlineActor;
 
 /// Longest recorded answer, in Unicode scalar values.
-pub const MAX_ANSWER_CHARS: usize = 1_000;
+pub const MAX_ANSWER_CHARS: usize = 600;
 /// Answers kept on one artifact row (newest dropped last; the row is capped).
-pub const MAX_ANSWERS: usize = 40;
+pub const MAX_ANSWERS: usize = 24;
 
 /// Status written in the document itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +90,9 @@ pub struct ArtifactAnswerQuestionReply {
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactDriftParams {
     pub artifact_id: String,
+    /// Forward to this device (the artifact's owner), like `ArtifactContent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
