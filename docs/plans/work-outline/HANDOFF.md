@@ -409,6 +409,22 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
 - **Repository map removed** (2026-10-28): the UI (`repository_topology.rs`, route, button, ⇧⌘G),
   proto types and the `GetRepositoryTopology` RPC are gone; the shared engine discovery code lives
   on as `repository_discovery.rs`.
+- **Linked Linear item** (2026-10-28): per-Space setting `linearAssignedWorkItemId`
+  (`setLinearAssignedDestination`, needs Linear on). `engine/src/linear/assigned.rs` runs inside
+  the Linear sync pass (15 min loop, manual Refresh, and when the destination is set) with the
+  read-only query `ZeronLinearAssignedUnstarted` (viewer.assignedIssues, state backlog/unstarted/
+  triage, project null) through the SWR store. Children "ENG-123 · title" are created via
+  `createWorkItemFromLinear` with derived ids; tickets already linked elsewhere aren't duplicated.
+  Tickets that stop matching: touched children get a marker, untouched ones are archived. System
+  actor only, never on the undo stack; nothing is written to Linear.
+- **Outline undo** (2026-10-28): `work_outline/action_log.rs` (in-memory per Space, cap 200, UI call
+  sites only, so agent/remote/sync changes are never recorded) and `outline_view/undo.rs`. ⌘Z / ⇧⌘Z
+  (and Ctrl-Z / Ctrl-Shift-Z) in the outline nav context; text fields keep their own ⌘Z. Steps go
+  through the normal engine ops; a probe refuses when the target changed ("Can't undo … Nothing was
+  changed"). Undo / Redo / Recent Changes… in the item and Space-root menus. Not persisted.
+- **Small gaps** (2026-10-28): Markdown table/code padding, header and radius scale with zoom.
+  Plan-question reconcile is event-driven (boot; outline kinds change, debounced 50 ms and gated by
+  the kinds' generation marker; immediate after an answer/pick) with a 5-min safety sweep.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -423,6 +439,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Engine integration, flaky under full parallel load (pass alone): `artifacts::blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates`
     (timing on the 2s question reconcile), `m5c_accounts_uploads_titles::cursor_login_flow_spawns_shim_and_auto_activates`.
   - Engine integration, flaky under full load (pass alone): `codex_login_resolver::codex_login_resolves_override_and_adds_its_directory_to_child_path`.
+  - Engine integration, flaky under full load (pass alone): `instruction_delivery` revision-wait tests.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
@@ -481,8 +498,6 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
   - Render diffs are capped at 16,000 CSS px (no tiling); longer pages show "Compared the first
     16,000 px of N". Unverified in a real WKWebView at that height.
   - HTML/Mermaid compare zoom mirroring is headless-tested only. Onion skin doesn't zoom.
-  - Markdown table and code-block padding don't scale with zoom.
-  - HTML plan question cards can't be answered in place (needs frame → host messaging).
   - Option revisions recorded before 2026-10-20 can't be compared across revisions.
 - Linear GraphQL (projects, attachments) unverified against the real API.
 - **Usage (2026-10-27):** a 7-day audit of `~/.claude/projects/*.jsonl` found about 43% of usage
