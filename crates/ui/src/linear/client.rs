@@ -11,7 +11,8 @@ use gpui::Task;
 use zeron_proto::linear::{
     LinearClearApiKeyParams, LinearConnectionStatus, LinearError, LinearErrorCode,
     LinearIssueParams, LinearIssueSummary, LinearMyIssuesParams, LinearMyProjectsParams,
-    LinearProjectIssuesParams, LinearProjectSummary, LinearRefreshLinkedItemsParams,
+    LinearProjectDetail, LinearProjectDetailParams, LinearProjectIssuesParams,
+    LinearProjectSummary, LinearRefreshLinkedItemsParams,
     LinearRefreshLinkedItemsReply, LinearSetApiKeyParams, LinearStatusParams,
 };
 use zeron_proto::{
@@ -261,6 +262,21 @@ impl WorkOutlineActions {
         self.linear_call(
             methods::LINEAR_PROJECT_ISSUES,
             LinearProjectIssuesParams {
+                project_id: project_id.to_string(),
+                force: read.force(),
+                cached_only: read.stored_only(),
+            },
+        )
+    }
+
+    pub(crate) fn linear_project_detail(
+        &self,
+        project_id: &str,
+        read: ListRead,
+    ) -> LinearTask<LinearProjectDetail> {
+        self.linear_call(
+            methods::LINEAR_PROJECT_DETAIL,
+            LinearProjectDetailParams {
                 project_id: project_id.to_string(),
                 force: read.force(),
                 cached_only: read.stored_only(),

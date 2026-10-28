@@ -221,6 +221,9 @@ pub mod methods {
     pub const LINEAR_MY_PROJECTS: &str = "LinearMyProjects";
     /// `LinearProjectIssuesParams {projectId}` → `[LinearIssueSummary]`.
     pub const LINEAR_PROJECT_ISSUES: &str = "LinearProjectIssues";
+    /// `LinearProjectDetailParams {projectId}` → `LinearProjectDetail`
+    /// (read-only, cached; device-local).
+    pub const LINEAR_PROJECT_DETAIL: &str = "LinearProjectDetail";
     /// `LinearRefreshLinkedItemsParams {spaceId}` →
     /// `LinearRefreshLinkedItemsReply {updated}`.
     pub const LINEAR_REFRESH_LINKED_ITEMS: &str = "LinearRefreshLinkedItems";
@@ -269,6 +272,10 @@ pub mod methods {
     /// `ArtifactAnswerQuestionReply`. Registry write like `ArtifactPin`:
     /// local, NOT forwardable (the owning device reconciles Required Actions).
     pub const ARTIFACT_ANSWER_QUESTION: &str = "ArtifactAnswerQuestion";
+    /// `ArtifactPickOptionParams {artifactId, optionId?, label, note?}` →
+    /// `ArtifactPickOptionReply`. Registry write like `ArtifactPin`: local,
+    /// NOT forwardable. No `optionId` clears the pick.
+    pub const ARTIFACT_PICK_OPTION: &str = "ArtifactPickOption";
     /// `ArtifactDriftParams {artifactId}` → `ArtifactDriftReply`. Forwardable
     /// (owning device: it reads the checkouts).
     pub const ARTIFACT_DRIFT: &str = "ArtifactDrift";

@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use zeron_proto::{
     ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
     ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
-    ArtifactErrorCode, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactErrorCode, ArtifactPickOptionParams, ArtifactPickOptionReply, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
     ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
     ArtifactRenderResultReply, WorkOutlineError, WorkOutlineErrorCode,
 };
@@ -138,6 +138,13 @@ impl ArtifactActions {
         params: ArtifactAnswerQuestionParams,
     ) -> ArtifactTask<ArtifactAnswerQuestionReply> {
         self.call(methods::ARTIFACT_ANSWER_QUESTION, &params)
+    }
+
+    pub(crate) fn pick_option(
+        &self,
+        params: ArtifactPickOptionParams,
+    ) -> ArtifactTask<ArtifactPickOptionReply> {
+        self.call(methods::ARTIFACT_PICK_OPTION, &params)
     }
 
     pub(crate) fn drift(&self, params: ArtifactDriftParams) -> ArtifactTask<ArtifactDriftReply> {

@@ -235,6 +235,22 @@ fn route(state: &MockState, operation: &str, auth: Option<&str>, variables: &Val
                 None => Reply::ok(json!({ "project": null })),
             }
         }
+        "ZeronLinearProjectDetail" => {
+            if variables["id"].as_str() != Some("p-1") {
+                return Reply::ok(json!({ "project": null }));
+            }
+            Reply::ok(json!({ "project": {
+                "id": "p-1", "name": "Auth", "url": "https://linear.app/acme/project/auth",
+                "state": "started", "progress": 0.42, "targetDate": "2026-12-01",
+                "updatedAt": "2026-10-20T10:00:00.000Z",
+                "lead": { "id": "u-1", "name": "Ada", "displayName": "ada", "email": null },
+                "projectUpdates": { "nodes": [
+                    { "id": "up-1", "body": "Shipped the login page", "health": "onTrack",
+                      "createdAt": "2026-10-20T09:00:00.000Z",
+                      "user": { "id": "u-1", "name": "Ada" } }
+                ] },
+            }}))
+        }
         other => panic!("unexpected operation {other}"),
     }
 }
@@ -1249,4 +1265,55 @@ async fn unreadable_attachments_are_logged_and_the_title_sync_still_runs() {
         text.contains("issue attachments could not be read"),
         "logged for a fix from a real run"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_detail_is_read_only_cached_and_served_stored() {
+    let rig = rig().await;
+    let stored = rig
+        .linear_err(
+            methods::LINEAR_PROJECT_DETAIL,
+            json!({ "projectId": "p-1", "cachedOnly": true }),
+        )
+        .await;
+    assert_eq!(stored.code, LinearErrorCode::NotFound);
+    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 0, "stored-only never asks Linear");
+
+    let detail = rig
+        .call(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "p-1" }))
+        .await
+        .unwrap();
+    assert_eq!(detail["name"], json!("Auth"));
+    assert_eq!(detail["state"], json!("started"));
+    assert!((detail["progress"].as_f64().unwrap() - 0.42).abs() < 1e-6);
+    assert_eq!(detail["targetDate"], json!("2026-12-01"));
+    assert_eq!(detail["lead"]["name"], json!("Ada"));
+    assert_eq!(detail["updates"][0]["health"], json!("onTrack"));
+    assert_eq!(rig.mock.recorded()[0].variables["updates"], json!(3));
+
+    // A second read is served from the cache; stored-only sees it too.
+    rig.call(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "p-1" }))
+        .await
+        .unwrap();
+    let again = rig
+        .call(
+            methods::LINEAR_PROJECT_DETAIL,
+            json!({ "projectId": "p-1", "cachedOnly": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again["name"], json!("Auth"));
+    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 1);
+    rig.call(
+        methods::LINEAR_PROJECT_DETAIL,
+        json!({ "projectId": "p-1", "force": true }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rig.mock.count("ZeronLinearProjectDetail"), 2);
+
+    let missing = rig
+        .linear_err(methods::LINEAR_PROJECT_DETAIL, json!({ "projectId": "nope" }))
+        .await;
+    assert_eq!(missing.code, LinearErrorCode::NotFound);
 }
