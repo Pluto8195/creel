@@ -406,6 +406,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   (`ItemRow.compact_chat`, `OutlineOptions.compact_single_chat`); the chat's key aliases to the item
   row. Splits into item + chat rows on a second chat, a child item, a nested sub-chat, an archived
   chat (with show-archived) or a dangling chat.
+  ⌘I opens Work Item Details for the selected row (compact or not); on compact rows the status
+  glyph is clickable and opens details too (2026-10-28, `compact-row-details`).
 - **Repository map removed** (2026-10-28): the UI (`repository_topology.rs`, route, button, ⇧⌘G),
   proto types and the `GetRepositoryTopology` RPC are gone; the shared engine discovery code lives
   on as `repository_discovery.rs`.
