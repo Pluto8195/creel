@@ -19,7 +19,8 @@
 //! `find::HOST_SCRIPT`).
 
 use serde_json::Value;
-use zeron_proto::{CommentAnchor, MAX_COMMENT_CHARS, MAX_QUOTE_CHARS};
+use zeron_proto::CommentAnchor;
+use zeron_proto::artifacts::{MAX_COMMENT_CHARS, MAX_QUOTE_CHARS};
 
 /// In the outer document: relays the frame's `{zeronMsg}` to the native
 /// delegate as a `zeron-msg:` navigation. Messages from any other window,
@@ -82,7 +83,7 @@ impl FrameMessage {
                 })
             }
             "focus" => {
-                let id = zeron_proto::normalize_comment_id(&text("id", 16)?)?;
+                let id = zeron_proto::artifacts::normalize_comment_id(&text("id", 16)?)?;
                 Some(FrameMessage::FocusComment(id))
             }
             "answer" => {

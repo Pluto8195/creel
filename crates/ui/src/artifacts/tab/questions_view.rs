@@ -173,8 +173,22 @@ impl ArtifactTab {
             // changed answer set re-presents the page.
             let answers = self.answer_map(artifact);
             if answers != self.questions.html_answers {
-                self.questions.html_answers = answers;
-                self.present(window, cx);
+                // A live page updates its cards in place (no reload, the
+                // scroll position stays); otherwise re-present it with the
+                // answers baked in.
+                let in_place = self.comments.ready
+                    && self.web.as_ref().is_some_and(|web| web.supports_scripts());
+                self.questions.html_answers = answers.clone();
+                if in_place {
+                    let script = crate::artifacts::bridge::frame_command_script(
+                        &serde_json::json!({ "zeronAnswers": answers }),
+                    );
+                    if let Some(web) = &mut self.web {
+                        web.run_script(&script, cx);
+                    }
+                } else {
+                    self.present(window, cx);
+                }
             }
             return;
         }
@@ -275,8 +289,15 @@ impl ArtifactTab {
 
     /// Record the typed answer, then tell the chat that published the plan.
     pub(crate) fn send_answer(&mut self, id: String, cx: &mut Context<Self>) {
-        let id = id.to_ascii_uppercase();
         let answer = self.typed_answer(cx);
+        self.submit_answer(id, answer, cx);
+    }
+
+    /// Record `answer` (typed in the Markdown card, or sent by an HTML card
+    /// through the frame bridge), then tell the chat that published the plan.
+    pub(crate) fn submit_answer(&mut self, id: String, answer: String, cx: &mut Context<Self>) {
+        let id = id.to_ascii_uppercase();
+        let answer = answer.trim().to_owned();
         if answer.is_empty() || self.questions.busy {
             return;
         }

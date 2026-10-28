@@ -8,7 +8,8 @@
 use gpui::Task;
 use serde::de::DeserializeOwned;
 use zeron_proto::{
-    ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
+    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactResolveCommentParams,
+    ArtifactResolveCommentReply, ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
     ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
     ArtifactErrorCode, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
     ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
@@ -138,6 +139,20 @@ impl ArtifactActions {
         params: ArtifactAnswerQuestionParams,
     ) -> ArtifactTask<ArtifactAnswerQuestionReply> {
         self.call(methods::ARTIFACT_ANSWER_QUESTION, &params)
+    }
+
+    pub(crate) fn add_comment(
+        &self,
+        params: ArtifactAddCommentParams,
+    ) -> ArtifactTask<ArtifactAddCommentReply> {
+        self.call(methods::ARTIFACT_ADD_COMMENT, &params)
+    }
+
+    pub(crate) fn resolve_comment(
+        &self,
+        params: ArtifactResolveCommentParams,
+    ) -> ArtifactTask<ArtifactResolveCommentReply> {
+        self.call(methods::ARTIFACT_RESOLVE_COMMENT, &params)
     }
 
     pub(crate) fn drift(&self, params: ArtifactDriftParams) -> ArtifactTask<ArtifactDriftReply> {

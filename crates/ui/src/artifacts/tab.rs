@@ -27,6 +27,7 @@ use zeron_proto::{
     ArtifactPromoteParams, ArtifactView, TextDiffLine,
 };
 
+pub(crate) mod comments_view;
 pub(crate) mod compare_view;
 pub(crate) mod find_view;
 pub(crate) mod questions_view;
@@ -143,7 +144,7 @@ impl BrowserWebHost {
                 browser.set_extra_forwarded_keys(page_forwarded_keys(false));
                 browser
             });
-            let subscription = window.subscribe(&browser, cx, move |_, event, _, cx| match event {
+            let subscription = window.subscribe(&browser, cx, move |_, event, window, cx| match event {
                 crate::browser::BrowserEvent::NewTab(Some(url)) => {
                     let event = ArtifactTabEvent::OpenUrl(url.clone());
                     tab.update(cx, |_, cx| cx.emit(event)).ok();
@@ -157,6 +158,10 @@ impl BrowserWebHost {
                         cx.emit(event)
                     })
                     .ok();
+                }
+                crate::browser::BrowserEvent::DocumentMessage(json) => {
+                    tab.update(cx, |tab, cx| tab.on_frame_message(json, window, cx))
+                        .ok();
                 }
                 crate::browser::BrowserEvent::Changed => {
                     tab.update(cx, |_, cx| cx.emit(ArtifactTabEvent::Changed))
@@ -289,6 +294,8 @@ pub(crate) struct ArtifactTab {
     nav: find_view::FindNav,
     /// Plan question answers, drift and the changed-since marker.
     questions: questions_view::QuestionState,
+    /// Comments on HTML / Mermaid pages and the frame bridge.
+    comments: comments_view::CommentsState,
     /// Zoom (1.0 = 100%, fit for images), remembered per artifact.
     zoom: f32,
     /// The zoom the web page last reported (per mille), and whether the
@@ -390,6 +397,7 @@ impl ArtifactTab {
             focus: cx.focus_handle(),
             nav: find_view::FindNav::new(cx),
             questions: Default::default(),
+            comments: Default::default(),
             zoom: remembered_zoom,
             zoom_reported: None,
             zoom_synced: false,
@@ -603,6 +611,7 @@ impl ArtifactTab {
         let source = super::question_html::with_answers(source, &self.questions.html_answers);
         let html = document::web_document(kind, &source, &title, mime, &key.0, key.1, false);
         self.rendered_key = Some(key);
+        self.comments_document_loading();
         if self.web.is_none() {
             let factory = self.web_factory.clone();
             self.web = Some(factory(cx.weak_entity(), window, cx));
@@ -939,7 +948,7 @@ impl ArtifactTab {
     }
 
     fn render_toolbar(
-        &self,
+        &mut self,
         artifact: &ArtifactView,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -1025,6 +1034,7 @@ impl ArtifactTab {
                 }
             })
             .child(div().flex_1())
+            .children(self.render_comments_toolbar(artifact, theme, cx))
             .children(self.render_zoom_control(theme, cx))
             .child(
                 button(
@@ -1438,6 +1448,7 @@ impl gpui::Render for ArtifactTab {
         let body = self.render_body(&theme, window, cx);
         let find_bar = self.render_find_bar(&theme, cx);
         let body = self.with_section_index(body, &theme, window, cx);
+        let body = self.with_comments_panel(body, &artifact, &theme, cx);
         self.with_find_keys(root, cx)
             .on_action(cx.listener(|this, _: &super::zoom::ZoomIn, _, cx| {
                 if !this.zoom_step(1, cx) {

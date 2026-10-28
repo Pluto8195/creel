@@ -6,10 +6,10 @@
 //! comment mode (hover outline, click to capture), and draws markers for the
 //! open comments (CSS Custom Highlight for quotes, an outline attribute for
 //! element anchors). Everything with decisions (status, outdated, ids,
-//! storage) lives in Rust: `zeron_proto::resolve_anchor` decides found /
+//! storage) lives in Rust: `zeron_proto::artifacts::resolve_anchor` decides found /
 //! outdated from the revision source, so the list never depends on the page
 //! having laid out. The script's text-index rules mirror
-//! `zeron_proto::visible_text` / `find_quote`; where they differ the marker is
+//! `zeron_proto::artifacts::visible_text` / `find_quote`; where they differ the marker is
 //! simply missing, never wrong.
 //!
 //! Messages in: `zeronComments {items: [{id, anchor}]}`, `zeronCommentMode`,
@@ -17,7 +17,8 @@
 //! `selection`, `selection-clear`, `draft`, `focus`.
 
 use serde_json::json;
-use zeron_proto::{ArtifactComment, ArtifactKind, ArtifactView, AnchorStatus, CommentStatus};
+use zeron_proto::artifacts::AnchorStatus;
+use zeron_proto::{ArtifactComment, ArtifactKind, ArtifactView, CommentStatus};
 
 use super::bridge::frame_command_script;
 
@@ -49,7 +50,7 @@ pub(crate) struct CommentRow {
 
 /// The rows for `comments` against the source on screen, oldest first
 /// (comment ids order). Resolved comments keep their state; open ones are
-/// outdated when [`zeron_proto::resolve_anchor`] cannot find them. With no
+/// outdated when [`zeron_proto::artifacts::resolve_anchor`] cannot find them. With no
 /// source (still loading), open comments count as open.
 pub(crate) fn rows(
     kind: ArtifactKind,
@@ -63,7 +64,7 @@ pub(crate) fn rows(
                 CommentStatus::Resolved => CommentState::Resolved,
                 CommentStatus::Open => match source {
                     Some(source)
-                        if zeron_proto::resolve_anchor(kind, source, &comment.anchor)
+                        if zeron_proto::artifacts::resolve_anchor(kind, source, &comment.anchor)
                             == AnchorStatus::Outdated =>
                     {
                         CommentState::Outdated
@@ -108,7 +109,7 @@ pub(crate) fn focus_script(id: &str) -> String {
 
 /// Whether the tab can show the comments affordances for this artifact.
 pub(crate) fn applies(artifact: &ArtifactView) -> bool {
-    zeron_proto::kind_supports_comments(artifact.kind)
+    zeron_proto::artifacts::kind_supports_comments(artifact.kind)
 }
 
 /// In the frame. Installs once.
