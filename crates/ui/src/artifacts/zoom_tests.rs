@@ -432,3 +432,38 @@ fn zoomed_images_pan_by_dragging_and_still_scroll(cx: &mut TestAppContext) {
     settle(vcx);
     assert!(offset(&tab, vcx).1 > cy_, "wheel scrolled back");
 }
+
+#[gpui::test]
+fn markdown_spacing_scales_with_the_zoom_like_the_text(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    // Paragraphs, a list and a quote: every block carries the 12 px gap, the
+    // list its item gaps, the quote its padding.
+    let source = "First paragraph.\n\n- one\n- two\n- three\n\n> quoted line\n\nLast paragraph.\n";
+    let (tab, _probe, vcx) = open_in(
+        cx,
+        ArtifactKind::Markdown,
+        source,
+        ArtifactContentEncoding::Utf8,
+    );
+    let heights = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        settle(vcx);
+        settle(vcx);
+        tab.read_with(vcx, |tab, cx| tab.markdown_item_heights_for_tests(cx))
+    };
+    let base = heights(&tab, vcx);
+    assert!(base.len() >= 4, "{base:?}");
+    for _ in 0..10 {
+        tab.update(vcx, |tab, cx| {
+            tab.zoom_step(1, cx);
+        });
+    }
+    assert!(approx(level(&tab, vcx), 2.0));
+    let zoomed = heights(&tab, vcx);
+    assert_eq!(base.len(), zoomed.len());
+    for (ix, (a, b)) in base.iter().zip(&zoomed).enumerate() {
+        assert!(
+            (b / a - 2.0).abs() < 0.03,
+            "block {ix}: {a} -> {b} should double with the zoom"
+        );
+    }
+}

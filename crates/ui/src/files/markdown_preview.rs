@@ -1428,12 +1428,12 @@ impl MarkdownPreview {
                         .when_some(tint, |el, tint| el.bg(tint))
                         .flex()
                         .flex_col()
-                        .pb(px(render::MD_BLOCK_GAP))
+                        .pb(crate::typography::ui_rems(render::MD_BLOCK_GAP))
                         // Include the comment gutter so moving from the block to
                         // its button never leaves the hover group.
                         .group(group.clone())
                         .child(
-                            div().w_full().flex().justify_center().px(px(24.0)).child(
+                            div().w_full().flex().justify_center().px(crate::typography::ui_rems(24.0)).child(
                                 div()
                                     .w_full()
                                     .max_w(px(MAX_PREVIEW_CONTENT_WIDTH * zoom))
@@ -1549,7 +1549,7 @@ impl Render for MarkdownPreview {
             .when(self.loading, |el| {
                 el.child(
                     div()
-                        .px(px(24.0))
+                        .px(crate::typography::ui_rems(24.0))
                         .text_color(theme.text_muted)
                         .child("Loading preview…"),
                 )
@@ -1557,7 +1557,7 @@ impl Render for MarkdownPreview {
             .when(self.truncated, |el| {
                 el.child(
                     div()
-                        .px(px(24.0))
+                        .px(crate::typography::ui_rems(24.0))
                         .text_color(theme.warning_muted)
                         .child("Large file preview is truncated and read-only."),
                 )
@@ -1568,7 +1568,7 @@ impl Render for MarkdownPreview {
                     .min_h_0()
                     // Scroll the breathing room with the document so content
                     // clips at the viewport edge, directly below the toolbar.
-                    .py(px(PREVIEW_VERTICAL_PADDING))
+                    .py(crate::typography::ui_rems(PREVIEW_VERTICAL_PADDING))
                     .with_sizing_behavior(ListSizingBehavior::Auto),
             );
         if let Some(preview) = &self.preview_image {

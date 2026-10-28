@@ -56,6 +56,15 @@ impl ArtifactTab {
             .map_or(0.0, |preview| preview.read(cx).zoom())
     }
 
+    #[cfg(test)]
+    pub(crate) fn markdown_item_heights_for_tests(&self, cx: &gpui::App) -> Vec<f32> {
+        let list = self.markdown.as_ref().unwrap().read(cx).list_state();
+        (0..list.item_count())
+            .filter_map(|ix| list.bounds_for_item(ix))
+            .map(|bounds| f32::from(bounds.size.height))
+            .collect()
+    }
+
     pub(crate) fn zoom_level(&self) -> f32 {
         self.zoom
     }
