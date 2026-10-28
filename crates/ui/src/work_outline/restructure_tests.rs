@@ -1137,6 +1137,7 @@ fn gated_restructure_overview<'a>(
     draw(vcx);
     vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
     let outline = overview.read_with(vcx, |o, _| o.outline.clone());
+    outline.update(vcx, |outline, cx| outline.set_compact_single_chat(false, cx));
     focus_outline(&outline, vcx);
     (overview, outline, calls, gate, vcx)
 }
@@ -1748,6 +1749,7 @@ fn chat_moves_never_cross_spaces(cx: &mut gpui::TestAppContext) {
             ));
     });
     let (outline, vcx) = cx.add_window_view(|_, cx| OutlineView::new(state.clone(), cx));
+    outline.update(vcx, |outline, cx| outline.set_compact_single_chat(false, cx));
     vcx.update(|_, cx| cx.bind_keys(crate::work_outline::outline_view::key_bindings()));
     // Space s2: the same tree, no Chats of its own but one unassociated.
     let mut s2 = crate::work_outline::store::fixture_snapshot("s2");

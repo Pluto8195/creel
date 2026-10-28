@@ -873,10 +873,7 @@ impl Pickers {
             // A launcher configures its own new chat on a fixed device: the
             // composer's selection never resets it.
             if this.launcher.is_some() {
-                if this
-                    .seen
-                    .changed(PickersSlice::read(state.read(cx), chrono::Utc::now()))
-                {
+                if this.seen.changed(PickersSlice::read(state.read(cx), chrono::Utc::now())) {
                     cx.notify();
                 }
                 return;
@@ -929,10 +926,7 @@ impl Pickers {
             }
             // Repaint only when something the pickers render changed, not on
             // every streaming frame.
-            if this
-                .seen
-                .changed(PickersSlice::read(state.read(cx), chrono::Utc::now()))
-            {
+            if this.seen.changed(PickersSlice::read(state.read(cx), chrono::Utc::now())) {
                 cx.notify();
             }
         });

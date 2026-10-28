@@ -8079,8 +8079,7 @@ mod logic_tests {
                         fetched_at: Instant::now(),
                     },
                 );
-                o.context_usage_fetched_at
-                    .insert(id.clone(), Instant::now());
+                o.context_usage_fetched_at.insert(id.clone(), Instant::now());
                 o.subagents_fetched_at.insert(id, Instant::now());
             }
             o.rows_dirty = true;
@@ -8128,10 +8127,7 @@ mod logic_tests {
         draw(vcx);
         let rows = overview.update(vcx, |o, cx| o.rows(cx));
         let row = rows.iter().find(|r| r.chat.id == "c0").unwrap();
-        assert_eq!(
-            row.chat.last_message_preview.as_deref(),
-            Some("new preview")
-        );
+        assert_eq!(row.chat.last_message_preview.as_deref(), Some("new preview"));
     }
 
     #[gpui::test]

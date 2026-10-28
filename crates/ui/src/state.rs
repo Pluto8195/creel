@@ -2097,9 +2097,7 @@ impl AppState {
             (
                 doc_id,
                 entries.len(),
-                entries
-                    .last()
-                    .map(|entry| entry.status.map(|s| std::mem::discriminant(&s))),
+                entries.last().map(|entry| entry.status.map(|s| std::mem::discriminant(&s))),
             )
                 .hash(&mut sh);
             subagents ^= sh.finish();
@@ -4939,12 +4937,8 @@ mod tests {
             state.connectivity = Default::default();
             state.pending_sends.clear();
         };
-        probe("title", &mut state, &|s| {
-            s.chats[1].title = Some("New".into())
-        });
-        probe("selection", &mut state, &|s| {
-            s.selected_chat = Some("b".into())
-        });
+        probe("title", &mut state, &|s| s.chats[1].title = Some("New".into()));
+        probe("selection", &mut state, &|s| s.selected_chat = Some("b".into()));
         probe("connection", &mut state, &|s| {
             s.connection = ConnectionStatus::Ready
         });

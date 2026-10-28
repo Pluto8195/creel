@@ -776,28 +776,27 @@ impl ArtifactTab {
             let left_render = renderer.render_full_height(left_doc, viewport, cx);
             let right_render = renderer.render_full_height(right_doc, viewport, cx);
             let (left, right) = futures::future::join(left_render, right_render).await;
-            let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff, Option<(u32, u32)>), String> =
-                match (left, right) {
-                    (Err(error), _) | (_, Err(error)) => Err(error),
-                    (Ok(left), Ok(right)) => match (left.png, right.png) {
-                        (Some(left_png), Some(right_png)) => {
-                            let tallest = [&left.report, &right.report]
-                                .into_iter()
-                                .filter_map(|report| report.as_ref()?.content_height)
-                                .max();
-                            let coverage = tallest.and_then(document::compare_coverage);
-                            let (left, right) = (left_png, right_png);
-                            let (a, b) = (left.clone(), right.clone());
-                            cx.background_executor()
-                                .spawn(async move {
-                                    pixel_diff::diff_png(&a, &b, DiffConfig::default())
-                                })
-                                .await
-                                .map(|diff| (left, right, diff, coverage))
-                        }
-                        _ => Err("The web view returned no snapshot.".to_owned()),
-                    },
-                };
+            let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff, Option<(u32, u32)>), String> = match (left, right) {
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Ok(left), Ok(right)) => match (left.png, right.png) {
+                    (Some(left_png), Some(right_png)) => {
+                        let tallest = [&left.report, &right.report]
+                            .into_iter()
+                            .filter_map(|report| report.as_ref()?.content_height)
+                            .max();
+                        let coverage = tallest.and_then(document::compare_coverage);
+                        let (left, right) = (left_png, right_png);
+                        let (a, b) = (left.clone(), right.clone());
+                        cx.background_executor()
+                            .spawn(
+                                async move { pixel_diff::diff_png(&a, &b, DiffConfig::default()) },
+                            )
+                            .await
+                            .map(|diff| (left, right, diff, coverage))
+                    }
+                    _ => Err("The web view returned no snapshot.".to_owned()),
+                },
+            };
             this.update_in(cx, |this, window, cx| {
                 this.renders_ready(generation, outcome, window, cx)
             })

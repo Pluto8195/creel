@@ -318,12 +318,7 @@ pub(crate) struct ArtifactTab {
 
 impl EventEmitter<ArtifactTabEvent> for ArtifactTab {}
 
-type StateSlice = (
-    Option<ArtifactView>,
-    Option<String>,
-    Option<usize>,
-    Option<String>,
-);
+type StateSlice = (Option<ArtifactView>, Option<String>, Option<usize>, Option<String>);
 
 /// What the tab reads from `AppState` while rendering.
 fn state_slice(state: &crate::state::AppState, artifact_id: &str) -> StateSlice {

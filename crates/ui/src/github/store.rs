@@ -137,13 +137,12 @@ impl GithubStore {
         for key in &self.in_flight {
             total ^= hash_of(&|h| (3u8, key).hash(h));
         }
-        total
-            ^ hash_of(&|h| match &self.viewer {
-                ViewerEntry::Unknown => 4u8.hash(h),
-                ViewerEntry::Loading => 5u8.hash(h),
-                ViewerEntry::Known(login) => (6u8, login).hash(h),
-                ViewerEntry::Failed(at) => (7u8, at).hash(h),
-            })
+        total ^ hash_of(&|h| match &self.viewer {
+            ViewerEntry::Unknown => 4u8.hash(h),
+            ViewerEntry::Loading => 5u8.hash(h),
+            ViewerEntry::Known(login) => (6u8, login).hash(h),
+            ViewerEntry::Failed(at) => (7u8, at).hash(h),
+        })
     }
 
     pub(crate) fn status(&self, pr: &PullRequestRef) -> Option<&PrEntry> {

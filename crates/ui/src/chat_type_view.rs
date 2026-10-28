@@ -371,10 +371,7 @@ impl ChatTypeView {
     /// The chat ids the launcher review chat list shows, in order.
     #[cfg(test)]
     pub(crate) fn listed_chat_ids(&mut self, cx: &mut Context<Self>) -> Vec<String> {
-        self.rows(cx)
-            .iter()
-            .map(|row| row.chat.id.clone())
-            .collect()
+        self.rows(cx).iter().map(|row| row.chat.id.clone()).collect()
     }
 
     #[cfg(test)]
@@ -1119,10 +1116,7 @@ mod tests {
         let first = view.update(vcx, |view, cx| view.rows(cx));
         assert_eq!(first.len(), 2);
         let again = view.update(vcx, |view, cx| view.rows(cx));
-        assert!(
-            Rc::ptr_eq(&first, &again),
-            "unchanged inputs reuse the list"
-        );
+        assert!(Rc::ptr_eq(&first, &again), "unchanged inputs reuse the list");
 
         // Streaming into the open chat touches nothing the list shows.
         state.update(vcx, |state, cx| {
