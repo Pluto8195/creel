@@ -68,6 +68,8 @@ mod github_ui;
 mod instructions_ui;
 mod linear_ui;
 mod outside_file_ui;
+#[cfg(test)]
+mod perf_tests;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
