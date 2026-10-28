@@ -221,6 +221,9 @@ pub mod methods {
     pub const LINEAR_MY_PROJECTS: &str = "LinearMyProjects";
     /// `LinearProjectIssuesParams {projectId}` → `[LinearIssueSummary]`.
     pub const LINEAR_PROJECT_ISSUES: &str = "LinearProjectIssues";
+    /// `LinearProjectDetailParams {projectId}` → `LinearProjectDetail`
+    /// (read-only, cached; device-local).
+    pub const LINEAR_PROJECT_DETAIL: &str = "LinearProjectDetail";
     /// `LinearRefreshLinkedItemsParams {spaceId}` →
     /// `LinearRefreshLinkedItemsReply {updated}`.
     pub const LINEAR_REFRESH_LINKED_ITEMS: &str = "LinearRefreshLinkedItems";

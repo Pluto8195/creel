@@ -2986,6 +2986,15 @@ impl RpcService for EngineRpc {
                 )
                 .await
             }
+            methods::LINEAR_PROJECT_DETAIL => {
+                let p: zeron_proto::LinearProjectDetailParams = parse_params(params)?;
+                Self::linear_reply(
+                    self.linear
+                        .project_detail(&p.project_id, p.force, p.cached_only)
+                        .await,
+                )
+                .await
+            }
             methods::LINEAR_REFRESH_LINKED_ITEMS => {
                 let p: zeron_proto::LinearRefreshLinkedItemsParams = parse_params(params)?;
                 let result = crate::linear::sync::sync_space(
@@ -4872,6 +4881,7 @@ mod tests {
             methods::LINEAR_MY_ISSUES,
             methods::LINEAR_MY_PROJECTS,
             methods::LINEAR_PROJECT_ISSUES,
+            methods::LINEAR_PROJECT_DETAIL,
             methods::LINEAR_REFRESH_LINKED_ITEMS,
         ] {
             assert!(!forwardable(linear), "{linear} is device-local");
