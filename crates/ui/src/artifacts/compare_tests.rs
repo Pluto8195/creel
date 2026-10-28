@@ -642,6 +642,62 @@ fn markdown_compare_panes_scroll_together(cx: &mut TestAppContext) {
     assert!(ratio(&left) < 0.01 && ratio(&right) < 0.01, "back at top");
 }
 
+#[gpui::test]
+fn markdown_compare_follows_scrollbar_drag_and_programmatic_scroll(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &tall_markdown(revision),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, ArtifactKind::Markdown, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    settle(vcx);
+    settle(vcx);
+    let (left, right) = tab.read_with(vcx, |tab, cx| {
+        let (l, r) = tab.compare_view().unwrap().markdown.clone().unwrap();
+        (l.read(cx).list_state(), r.read(cx).list_state())
+    });
+    let ratio = |list: &gpui::ListState| {
+        let top = list.logical_scroll_top();
+        super::compare::scroll_ratio(top.item_ix, 0.0, list.item_count())
+    };
+    // Scrollbar drag on the left pane: no wheel event, no scroll handler.
+    left.scrollbar_drag_started();
+    left.set_offset_from_scrollbar(gpui::point(gpui::px(0.0), gpui::px(-600.0)));
+    left.scrollbar_drag_ended();
+    settle(vcx);
+    settle(vcx);
+    assert!(ratio(&left) > 0.02, "dragged: {}", ratio(&left));
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.02,
+        "right follows the drag: {} vs {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    // Programmatic scroll (what PageDown and scroll-to-block use) on the right.
+    right.scroll_to(gpui::ListOffset {
+        item_ix: 10,
+        offset_in_item: gpui::px(0.0),
+    });
+    settle(vcx);
+    settle(vcx);
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.02,
+        "left follows scroll_to: {} vs {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    assert!(ratio(&left) < 0.2, "moved back up: {}", ratio(&left));
+}
+
 #[test]
 fn scroll_ratio_math_maps_item_positions_between_lists() {
     use super::compare::{scroll_ratio, scroll_target};

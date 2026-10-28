@@ -98,6 +98,10 @@ pub(crate) struct CompareView {
     )>,
     /// Scroll ratio (0..=1) last applied to the follower pane.
     synced_scroll: f32,
+    /// Per pane: the ratio seen at its last paint, and whether the next
+    /// change is our own doing (the follower we just moved).
+    seen_scroll: [f32; 2],
+    follower_moved: [bool; 2],
     generation: u64,
 }
 
@@ -321,6 +325,8 @@ impl ArtifactTab {
             renders: RenderState::Idle,
             markdown: None,
             synced_scroll: 0.0,
+            seen_scroll: [0.0; 2],
+            follower_moved: [false; 2],
             generation: 0,
         });
         self.load_compare(window, cx);
@@ -565,31 +571,61 @@ impl ArtifactTab {
         }
     }
 
-    /// Move the pane opposite `from` to the same scroll position (as a
-    /// fraction of its blocks). The ratio last applied is remembered so a
-    /// scroll that moved nothing does not bounce back.
-    pub(crate) fn sync_markdown_scroll(&mut self, from: Side, cx: &App) {
+    /// Where a pane's list sits, as a fraction of its blocks.
+    fn markdown_scroll_ratio(list: &gpui::ListState) -> f32 {
+        let top = list.logical_scroll_top();
+        let frac = list
+            .bounds_for_item(top.item_ix)
+            .map(|bounds| f32::from(top.offset_in_item) / f32::from(bounds.size.height).max(1.0))
+            .unwrap_or(0.0);
+        compare::scroll_ratio(top.item_ix, frac, list.item_count())
+    }
+
+    /// Called on every paint of a pane. A position that changed without the
+    /// wheel handler (scrollbar drag, keyboard paging, `scroll_to`) drives the
+    /// other pane; the move we made ourselves is not echoed back.
+    pub(crate) fn observe_markdown_scroll(&mut self, from: Side, cx: &mut Context<Self>) {
         let Some(view) = self.compare.as_mut() else {
             return;
         };
         let Some((left, right)) = view.markdown.as_ref() else {
             return;
         };
-        let (left, right) = (left.read(cx).list_state(), right.read(cx).list_state());
-        let (source, follower) = match from {
-            Side::Left => (left, right),
-            Side::Right => (right, left),
+        let list = match from {
+            Side::Left => left.read(cx).list_state(),
+            Side::Right => right.read(cx).list_state(),
         };
-        let top = source.logical_scroll_top();
-        let frac = source
-            .bounds_for_item(top.item_ix)
-            .map(|bounds| f32::from(top.offset_in_item) / f32::from(bounds.size.height).max(1.0))
-            .unwrap_or(0.0);
-        let ratio = compare::scroll_ratio(top.item_ix, frac, source.item_count());
-        if (ratio - view.synced_scroll).abs() < 1e-5 {
+        let ratio = Self::markdown_scroll_ratio(&list);
+        let ix = from as usize;
+        let seen = std::mem::replace(&mut view.seen_scroll[ix], ratio);
+        if std::mem::take(&mut view.follower_moved[ix]) || (ratio - seen).abs() < 1e-5 {
+            return;
+        }
+        self.sync_markdown_scroll(from, cx);
+    }
+
+    /// Move the pane opposite `from` to the same scroll position (as a
+    /// fraction of its blocks). The ratio last applied is remembered so a
+    /// scroll that moved nothing does not bounce back.
+    pub(crate) fn sync_markdown_scroll(&mut self, from: Side, cx: &mut Context<Self>) {
+        let Some(view) = self.compare.as_mut() else {
+            return;
+        };
+        let Some((left, right)) = view.markdown.as_ref() else {
+            return;
+        };
+        let (left_entity, right_entity) = (left.clone(), right.clone());
+        let (left, right) = (left.read(cx).list_state(), right.read(cx).list_state());
+        let (source, follower, follower_side) = match from {
+            Side::Left => (left, right, Side::Right),
+            Side::Right => (right, left, Side::Left),
+        };
+        let ratio = Self::markdown_scroll_ratio(&source);
+        if (ratio - view.synced_scroll).abs() < 1e-3 {
             return;
         }
         view.synced_scroll = ratio;
+        view.follower_moved[follower_side as usize] = true;
         let (item_ix, frac) = compare::scroll_target(ratio, follower.item_count());
         let height = follower
             .bounds_for_item(item_ix)
@@ -599,6 +635,11 @@ impl ArtifactTab {
             item_ix,
             offset_in_item: px(frac * height),
         });
+        let follower_entity = match follower_side {
+            Side::Left => left_entity,
+            Side::Right => right_entity,
+        };
+        follower_entity.update(cx, |_, cx| cx.notify());
     }
 
     /// The compare document (both frames, the change overlay when
@@ -1238,7 +1279,7 @@ impl ArtifactTab {
                 None => message("No text source for this artifact.".to_owned()),
             },
             (CompareMode::SideBySide, Flavor::Markdown) => {
-                self.render_markdown_compare(view, data, theme)
+                self.render_markdown_compare(view, data, theme, cx.weak_entity())
             }
             (CompareMode::SideBySide, _) => div()
                 .size_full()
@@ -1254,6 +1295,7 @@ impl ArtifactTab {
         view: &CompareView,
         data: &CompareData,
         theme: &Theme,
+        tab: WeakEntity<Self>,
     ) -> AnyElement {
         let summary = data
             .blocks
@@ -1262,7 +1304,9 @@ impl ArtifactTab {
             .unwrap_or_default();
         let pane = |label: &str,
                     preview: Option<&Entity<crate::files::markdown_preview::MarkdownPreview>>,
-                    selector: &'static str| {
+                    selector: &'static str,
+                    side: Side| {
+            let tab = tab.clone();
             div()
                 .flex_1()
                 .min_w_0()
@@ -1284,7 +1328,22 @@ impl ArtifactTab {
                         .flex_1()
                         .min_h_0()
                         .debug_selector(move || selector.into())
-                        .children(preview.cloned()),
+                        .relative()
+                        .children(preview.cloned())
+                        // Every paint reports the pane's position, so moves
+                        // the wheel handler never sees (scrollbar drag, PageUp,
+                        // scroll_to) still reach the other pane.
+                        .child(gpui::canvas(
+                            |_, _, _| {},
+                            move |_, _, _, cx| {
+                                let tab = tab.clone();
+                                cx.defer(move |cx| {
+                                    let _ = tab.update(cx, |tab, cx| {
+                                        tab.observe_markdown_scroll(side, cx)
+                                    });
+                                });
+                            },
+                        )),
                 )
         };
         let (left, right) = view
@@ -1318,11 +1377,13 @@ impl ArtifactTab {
                         &data.left.label,
                         left,
                         "artifact-compare-markdown-left",
+                        Side::Left,
                     ))
                     .child(pane(
                         &data.right.label,
                         right,
                         "artifact-compare-markdown-right",
+                        Side::Right,
                     )),
             )
             .into_any_element()
