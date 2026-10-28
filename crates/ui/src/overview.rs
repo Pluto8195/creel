@@ -10753,6 +10753,11 @@ mod logic_tests {
         include!("work_outline/restructure_tests.rs");
     }
 
+    /// Undo / redo and Recent changes; shares this module's fixtures.
+    mod undo_tests {
+        include!("work_outline/undo_tests.rs");
+    }
+
     /// First-use empty state of the Outline; shares this module's fixtures.
     mod guidance_tests {
         include!("work_outline/guidance_tests.rs");

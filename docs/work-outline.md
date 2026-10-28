@@ -71,6 +71,7 @@ inline editor, a picker, the search field, or any other text input.
 | Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Project row (more than one project): move the project up / down | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
+| Undo / redo the last Outline change (see [Undo and redo](#undo-and-redo)) | `⌘Z` or `⌃Z` / `⇧⌘Z` or `⌃⇧Z` | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Shortcut reference | `?` | `?` |
 | Archive the selected Chat, or open **Archive…** for the selected work item | `⇧⌘A` | `Ctrl+Shift+A` |
 | Context menu of the selected row | `⇧F10` | `Shift+F10` or `Menu` |
@@ -649,3 +650,26 @@ duplicate items.
   profile. Deleted rows are garbage-collected after 30 days.
 - The engine's loopback IPC is unauthenticated for its general methods. Only
   agent-attributed Work Outline writes require the per-run token.
+
+## Undo and redo
+
+Changes you make to the Outline are kept in an action log, one per project, for this
+session (the newest 200). With the Outline tree focused, `⌘Z` undoes the newest and `⇧⌘Z`
+redoes it (`Ctrl+Z` / `Ctrl+Shift+Z` on Windows and Linux; `⌃Z` / `⌃⇧Z` also work on macOS).
+A text field keeps its own ⌘Z: in the composer, the inline rename box, or an
+instruction editor, ⌘Z undoes typing and never touches the Outline.
+
+- **Undoable:** creating an item, renaming, moving, reordering, indenting, outdenting and
+  dragging items, status and description edits, archiving (when sub-items are archived with
+  it or it has none) and restoring, moving a Chat to an item or off its item, linking and
+  unlinking a ticket or PR (a local link only), editing or reordering an instruction.
+- **Not undoable:** changes made by agents or by other devices, completing an item together
+  with resolving its open Required Actions, inheritance toggles, adding or removing an
+  instruction, archiving an item whose sub-items were moved out, Linear and PR sync updates,
+  and anything that wrote outside the Outline. Undo never writes to Linear or GitHub.
+- **Feedback:** the Outline shows "Undid: moved ‘X’ under ‘Y’" (or "Redid: …").
+- **Conflicts:** if the item or Chat changed since your action (someone archived it, moved
+  it again, edited it again), undo says so and changes nothing.
+- **Recent changes:** the **Recent changes…** command lists the last actions, newest
+  first. Choose one to undo everything back to it; rows already undone can be redone the
+  same way.

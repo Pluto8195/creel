@@ -402,6 +402,15 @@ impl Shell {
                     details.disassociate(chat_id, cx)
                 })
             }
+            MenuAction::RecentChanges => {
+                if let Some(outline) = outline.upgrade() {
+                    outline.update(cx, |outline, cx| {
+                        if let Err(notice) = outline.open_recent_changes(window, cx) {
+                            outline.show_notice(notice, cx);
+                        }
+                    });
+                }
+            }
             MenuAction::CopyPath(path) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(path));
                 if let Some(outline) = outline.upgrade() {

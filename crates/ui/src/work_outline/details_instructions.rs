@@ -133,6 +133,19 @@ impl WorkItemDetails {
         cx: &mut Context<Self>,
         on_ok: impl FnOnce(&mut Self) + 'static,
     ) {
+        self.run_instruction_logged(key, task, None, cx, on_ok);
+    }
+
+    /// [`Self::run_instruction`] that records `change` in the action log once
+    /// the engine acknowledges the request.
+    fn run_instruction_logged(
+        &mut self,
+        key: impl Into<String>,
+        task: super::super::actions::ActionTask,
+        change: Option<super::super::action_log::Draft>,
+        cx: &mut Context<Self>,
+        on_ok: impl FnOnce(&mut Self) + 'static,
+    ) {
         let key = key.into();
         if !self.in_flight.insert(key.clone()) {
             return;
@@ -144,7 +157,14 @@ impl WorkItemDetails {
             this.update(cx, |this, cx| {
                 this.in_flight.remove(&key);
                 match result {
-                    Ok(_) => on_ok(this),
+                    Ok(_) => {
+                        if let Some(change) = change {
+                            let space_id = this.space_id.clone();
+                            this.state
+                                .update(cx, |state, _| state.action_log.record(&space_id, change));
+                        }
+                        on_ok(this)
+                    }
                     Err(error) => this.instructions_error = Some(instruction_error_text(&error)),
                 }
                 cx.notify();
@@ -247,6 +267,9 @@ impl WorkItemDetails {
 
     fn send_instruction_update(&mut self, id: String, text: String, cx: &mut Context<Self>) {
         let operation_id = self.draft_operation_id(&text);
+        let change = self.snapshot.as_deref().and_then(|snapshot| {
+            super::super::action_log::instruction_edit_entry(snapshot, &id, &text, None)
+        });
         let task = self
             .state
             .read(cx)
@@ -256,7 +279,7 @@ impl WorkItemDetails {
                 text,
                 operation_id,
             });
-        self.run_instruction("instruction:save", task, cx, |this| {
+        self.run_instruction_logged("instruction:save", task, change, cx, |this| {
             this.instruction_draft = None
         });
     }
@@ -326,6 +349,16 @@ impl WorkItemDetails {
                 sibling_instruction_id: next.id.clone(),
             }
         };
+        let change = self.snapshot.as_deref().and_then(|snapshot| {
+            let scope: Vec<String> = list.iter().map(|i| i.id.clone()).collect();
+            super::super::action_log::instruction_move_entry(
+                snapshot,
+                &scope,
+                &id,
+                placement.clone(),
+                None,
+            )
+        });
         let task = self.state.read(cx).work_outline_actions().move_instruction(
             MoveWorkItemInstructionParams {
                 instruction_id: id.clone(),
@@ -333,7 +366,7 @@ impl WorkItemDetails {
                 operation_id: super::super::actions::new_operation_id(),
             },
         );
-        self.run_instruction(format!("instruction:{id}"), task, cx, |_| {});
+        self.run_instruction_logged(format!("instruction:{id}"), task, change, cx, |_| {});
     }
 
     /// "Inherit parent instructions" (drift-confirmed).

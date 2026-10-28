@@ -65,6 +65,8 @@ pub(crate) enum MenuAction {
     Outline(OutlineNavKey),
     /// Dispatch the palette / keymap command.
     Command(WorkOutlineCommand),
+    /// The Recent changes picker (action log).
+    RecentChanges,
     /// Open the Set Status page.
     StatusPage,
     /// Back from the Set Status page.
@@ -126,7 +128,8 @@ impl MenuAction {
             Self::Linear(action) => action.hint(),
             // Entries set their own (⌘↩ on a PR review item's Review).
             Self::Github(_) => HintKey::None,
-            Self::StatusPage
+            Self::RecentChanges
+            | Self::StatusPage
             | Self::Back
             | Self::SetStatus(_)
             | Self::AddInstruction
@@ -154,8 +157,8 @@ impl MenuAction {
 pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
     use super::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
-        OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
+        OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst, SelectLast, SelectNext,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected, UndoChange,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -175,6 +178,8 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::MoveItemDown => Box::new(MoveItemDown),
         OutlineNavKey::IndentItem => Box::new(IndentItem),
         OutlineNavKey::OutdentItem => Box::new(OutdentItem),
+        OutlineNavKey::Undo => Box::new(UndoChange),
+        OutlineNavKey::Redo => Box::new(RedoChange),
         OutlineNavKey::ShowShortcuts => Box::new(RunWorkOutlineCommand(
             WorkOutlineCommand::ShowOutlineShortcuts,
         )),
@@ -313,6 +318,7 @@ fn space_root_menu(
             MenuAction::Outline(OutlineNavKey::ShowShortcuts),
         ),
     ];
+    entries.splice(entries.len() - 1..entries.len() - 1, history_entries());
     if let Some(row) = row {
         let id = space_id.to_string();
         let manage = [
@@ -375,6 +381,33 @@ fn space_root_menu(
         entries,
         status_entries: Vec::new(),
     }
+}
+
+/// Undo, Redo and Recent Changes: the action log's entries, shared by the
+/// item and Space-root menus. Undo and Redo dispatch the same actions as
+/// their keys and say "Nothing to undo" themselves when the log is empty.
+fn history_entries() -> [MenuEntry; 3] {
+    [
+        MenuEntry::new(
+            "undo",
+            "Undo",
+            "",
+            MenuAction::Outline(OutlineNavKey::Undo),
+        )
+        .separated(),
+        MenuEntry::new(
+            "redo",
+            "Redo",
+            "",
+            MenuAction::Outline(OutlineNavKey::Redo),
+        ),
+        MenuEntry::new(
+            "recent-changes",
+            "Recent Changes\u{2026}",
+            icons::CLOCK_CIRCLE,
+            MenuAction::RecentChanges,
+        ),
+    ]
 }
 
 /// Why a restructuring key would do nothing for this item.
@@ -640,6 +673,7 @@ impl OutlineView {
                 .unwrap_or(1);
             entries.splice(at..at, chat_entries);
         }
+        entries.extend(history_entries());
         let status = |id: &'static str, status: WorkItemStatus| {
             // No glyph: the current status carries the check mark.
             MenuEntry::new(
