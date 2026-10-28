@@ -16,6 +16,28 @@ Order matters: do them in the order below. Each step is independent and reversib
 - Runtime names were renamed with the old name still accepted (see the piece 3 commit messages and
   the aliases table in the final report). Old data keeps working; new data is written with new names.
 
+## Aliases in force after piece 3 (for reference)
+
+| Old | New (written) | Old still accepted |
+|---|---|---|
+| `ZERON_*` env vars | `MAST_*` | read via `mast_proto::env` (new wins); child envs read by user scripts or `zeron mcp` get both names |
+| MCP server `zeron-agent` | `mast-agent` | config key only; transcripts with `mcp__zeron-agent__*` render; `is_server_name` accepts both |
+| `zeron-artifact:` / `zeron-file:` | `mast-artifact:` / `mast-file:` | parsed everywhere |
+| `zeron-msg:` / `zeron-link:` bridge | `mast-msg:` / `mast-link:` | accepted on receive |
+| `data-zeron-anchor` / `data-zeron-question` | `data-mast-*` | accepted in selectors and parsers |
+| `.zeron/` folder in repos | `.mast/` | read/watched; an existing `.zeron/artifacts/<folder>` keeps receiving that item's files; both in `info/exclude` |
+| `zeron.json` project file | `mast.json` | read when `mast.json` is absent |
+| `zeron/<name>` worktree branches | `mast/<name>` | still treated as app-owned (title rename, deletion) |
+| `zeron-headed.log` | `mast-headed.log` | old overflow logs swept; the old file is simply left |
+| theme ids `zeron-dark/light`, accent `zeron`, setting `openWebLinksInZeron`, import report `zeronRole` | `mast-*`, `mast`, `openWebLinksInMast`, `mastRole` | serde aliases / `canonical_variant_id` |
+| Linear operation names `ZeronLinear*` | `MastLinear*` | none needed (sent to Linear, not stored) |
+
+Deliberately unchanged: wire names `zeronOwned` and `zeronUpgradeRequired` (edge worker and older devices
+read them; the new spellings are accepted on read), the hashed `zeron_work_outline_instructions` envelope tag
+and the `zeron-agent-tool` idempotency namespace (golden hashes), `TERM_PROGRAM=Zeron`, ACP/Codex
+`clientInfo` names, `REPLAY_ORIGIN = "zeron:transcript-replay"` (stored in transcripts), the `zeron://` URL
+scheme, release file names `zeron-<version>-*`, the systemd unit `zeron.service` and launchd label.
+
 ## 1. Binary name `Contents/MacOS/zeron` → `mast`
 
 Where it shows up: `[[bin]] name` in `apps/mast/Cargo.toml`, `CFBundleExecutable` in
