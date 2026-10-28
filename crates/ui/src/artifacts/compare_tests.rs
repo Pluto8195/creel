@@ -58,11 +58,15 @@ impl ArtifactRenderer for Rc<PngRenderer> {
     ) -> RenderFuture {
         let changed = document.contains("CHANGED");
         let tall = document.contains("TALL");
+        let content_height = document.contains("VERYTALL").then_some(40_000);
         self.documents.borrow_mut().push((document, viewport));
         Box::pin(async move {
             Ok(RenderOutput {
                 png: Some(synthetic_png(changed, tall)),
-                report: None,
+                report: content_height.map(|content_height| super::document::ProbeReport {
+                    content_height: Some(content_height),
+                    ..Default::default()
+                }),
             })
         })
     }
@@ -333,6 +337,57 @@ fn highlight_changes_diffs_two_offscreen_renders(cx: &mut TestAppContext) {
     let doc = shown.borrow().last().unwrap().1.clone();
     assert_eq!(doc.matches("data-zeron-changes").count(), 1);
     assert!(vcx.debug_bounds("artifact-compare-result").is_some());
+}
+
+#[test]
+fn coverage_notice_math() {
+    use super::document::{COMPARE_MAX_HEIGHT, compare_coverage, coverage_notice};
+    assert_eq!(compare_coverage(3000), None);
+    assert_eq!(compare_coverage(COMPARE_MAX_HEIGHT), None);
+    assert_eq!(
+        compare_coverage(COMPARE_MAX_HEIGHT + 1),
+        Some((COMPARE_MAX_HEIGHT, COMPARE_MAX_HEIGHT + 1))
+    );
+    assert_eq!(
+        coverage_notice((16_000, 42_000)),
+        "Compared the first 16,000 px of 42,000"
+    );
+    assert_eq!(
+        coverage_notice((16_000, 100_123)),
+        "Compared the first 16,000 px of 100,123"
+    );
+}
+
+#[gpui::test]
+fn very_tall_renders_say_how_much_was_compared(cx: &mut TestAppContext) {
+    let kind = ArtifactKind::HtmlFragment;
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(move |_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        let text = if revision == 1 {
+            "<p>TALL VERYTALL old</p>"
+        } else {
+            "<p>TALL VERYTALL CHANGED</p>"
+        };
+        Ok(content_reply(
+            kind,
+            revision,
+            text,
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, kind, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    tab.update_in(vcx, |tab, window, cx| tab.toggle_highlight(window, cx));
+    settle(vcx);
+    tab.read_with(vcx, |tab, _| {
+        let summary = tab.compare_view().unwrap().render_summary().unwrap();
+        assert!(
+            summary.ends_with("Compared the first 16,000 px of 40,000"),
+            "{summary}"
+        );
+    });
 }
 
 #[gpui::test]

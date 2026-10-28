@@ -92,8 +92,11 @@ pub(crate) const COMPARE_VIEWPORT_WIDTH: u32 = 520;
 /// Tall enough to capture most plans in one snapshot.
 pub(crate) const COMPARE_VIEWPORT_HEIGHT: u32 = 1400;
 
-/// The most CSS pixels tall a compare render grows to.
-pub(crate) const COMPARE_MAX_HEIGHT: u32 = 8000;
+/// The most CSS pixels tall a compare render grows to. Taller documents are
+/// compared up to this height and the view says so
+/// ([`compare_coverage`]). 16 000 keeps the offscreen view within common
+/// GPU texture limits and, at 1x, within [`COMPARE_MAX_PIXELS`].
+pub(crate) const COMPARE_MAX_HEIGHT: u32 = 16_000;
 /// The most pixels in one compare snapshot (RGBA8: 4 bytes each, and the
 /// diff keeps a few masks of the same size), so 20 M is 80 MB per image.
 pub(crate) const COMPARE_MAX_PIXELS: u64 = 20_000_000;
@@ -115,6 +118,33 @@ pub(crate) fn compare_render_plan(content_height: u32, scale: f32) -> (u32, Opti
     let effective = affordable.clamp(1.0, scale);
     let width = (effective < scale).then(|| (COMPARE_VIEWPORT_WIDTH as f32 * effective) as u32);
     (height, width)
+}
+
+/// `Some((compared, total))` CSS pixels when a document `content_height`
+/// tall is cut off at [`COMPARE_MAX_HEIGHT`], `None` when the render covers
+/// all of it.
+pub(crate) fn compare_coverage(content_height: u32) -> Option<(u32, u32)> {
+    (content_height > COMPARE_MAX_HEIGHT).then_some((COMPARE_MAX_HEIGHT, content_height))
+}
+
+/// "Compared the first 16,000 px of 42,000" (digit groups of three).
+pub(crate) fn coverage_notice((compared, total): (u32, u32)) -> String {
+    fn grouped(n: u32) -> String {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    }
+    format!(
+        "Compared the first {} px of {}",
+        grouped(compared),
+        grouped(total)
+    )
 }
 
 /// One pane's sandboxed frame document for the compare view.

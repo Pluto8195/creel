@@ -63,6 +63,22 @@ pub(crate) struct Rendered {
     pub(crate) left: Arc<gpui::Image>,
     pub(crate) right: Arc<gpui::Image>,
     pub(crate) diff: PixelDiff,
+    /// (compared, total) CSS px when the render was cut at the height cap.
+    pub(crate) coverage: Option<(u32, u32)>,
+}
+
+impl Rendered {
+    /// The diff summary, plus the cut-off notice for very tall pages.
+    pub(crate) fn summary(&self) -> String {
+        match self.coverage {
+            Some(coverage) => format!(
+                "{} \u{b7} {}",
+                self.diff.summary(),
+                document::coverage_notice(coverage)
+            ),
+            None => self.diff.summary(),
+        }
+    }
 }
 
 pub(crate) enum RenderState {
@@ -131,7 +147,7 @@ impl CompareView {
 
     /// "N regions changed" / "No visual change", once rendered.
     pub(crate) fn render_summary(&self) -> Option<String> {
-        self.rendered().map(|rendered| rendered.diff.summary())
+        self.rendered().map(Rendered::summary)
     }
 
     pub(crate) fn regions(&self) -> &[Region] {
@@ -743,17 +759,23 @@ impl ArtifactTab {
             let left_render = renderer.render_full_height(left_doc, viewport, cx);
             let right_render = renderer.render_full_height(right_doc, viewport, cx);
             let (left, right) = futures::future::join(left_render, right_render).await;
-            let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff), String> = match (left, right) {
+            let outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff, Option<(u32, u32)>), String> = match (left, right) {
                 (Err(error), _) | (_, Err(error)) => Err(error),
                 (Ok(left), Ok(right)) => match (left.png, right.png) {
-                    (Some(left), Some(right)) => {
+                    (Some(left_png), Some(right_png)) => {
+                        let tallest = [&left.report, &right.report]
+                            .into_iter()
+                            .filter_map(|report| report.as_ref()?.content_height)
+                            .max();
+                        let coverage = tallest.and_then(document::compare_coverage);
+                        let (left, right) = (left_png, right_png);
                         let (a, b) = (left.clone(), right.clone());
                         cx.background_executor()
                             .spawn(
                                 async move { pixel_diff::diff_png(&a, &b, DiffConfig::default()) },
                             )
                             .await
-                            .map(|diff| (left, right, diff))
+                            .map(|diff| (left, right, diff, coverage))
                     }
                     _ => Err("The web view returned no snapshot.".to_owned()),
                 },
@@ -769,7 +791,7 @@ impl ArtifactTab {
     fn renders_ready(
         &mut self,
         generation: u64,
-        outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff), String>,
+        outcome: Result<(Vec<u8>, Vec<u8>, PixelDiff, Option<(u32, u32)>), String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -780,10 +802,11 @@ impl ArtifactTab {
             return;
         }
         view.renders = match outcome {
-            Ok((left, right, diff)) => RenderState::Ready(Box::new(Rendered {
+            Ok((left, right, diff, coverage)) => RenderState::Ready(Box::new(Rendered {
                 left: png_image(left),
                 right: png_image(right),
                 diff,
+                coverage,
             })),
             Err(error) => {
                 RenderState::Failed(format!("Couldn\u{2019}t render the revisions ({error})"))
@@ -995,7 +1018,7 @@ impl ArtifactTab {
                 Some(match &view.renders {
                     RenderState::Idle | RenderState::Rendering => "Rendering\u{2026}".to_owned(),
                     RenderState::Failed(error) => error.clone(),
-                    RenderState::Ready(rendered) => rendered.diff.summary(),
+                    RenderState::Ready(rendered) => rendered.summary(),
                 })
             } else {
                 None
