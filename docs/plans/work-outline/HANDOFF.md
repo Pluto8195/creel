@@ -427,6 +427,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
 - **Small gaps** (2026-10-28): Markdown table/code padding, header and radius scale with zoom.
   Plan-question reconcile is event-driven (boot; outline kinds change, debounced 50 ms and gated by
   the kinds' generation marker; immediate after an answer/pick) with a 5-min safety sweep.
+- **Web view ↔ composer focus** (2026-10-28, `browser/macos.rs`, `browser/mod.rs`): AppKit used to
+  leave the WKWebView first responder after a click into the page or a forwarded shortcut, so keys
+  (e.g. space) went to the page while GPUI showed the composer focused; page loads also stole GPUI
+  focus. Now: a mouse-down outside the page restores GPUI's view as first responder (NSEvent local
+  monitor, popover-aware); GPUI focus leaving the browser surface clears native focus; bare Esc in a
+  page text field returns focus to the app; loads only take focus when it's already in the browser
+  or nowhere (`may_take_focus`); plain keys are never forwarded. Still forwarded from page fields:
+  ⌥↑/⌥↓ and Esc with the find bar open. HTML question-card typing: no blocker found, verify by hand.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
