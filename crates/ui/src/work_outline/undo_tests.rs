@@ -489,3 +489,36 @@ fn an_instruction_edit_is_undone_with_the_old_text(cx: &mut gpui::TestAppContext
     assert_eq!(undo["text"], "Tidy up.");
     assert_distinct_short_operation_ids(&calls);
 }
+
+/// A compact row (an item with exactly one chat) is the item: moving it
+/// records and undoes like any item, and its right-click menu has the item's
+/// actions, the chat's, and the history entries.
+#[gpui::test]
+fn compact_rows_record_and_undo_like_items(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), fixture(), reply_ok);
+    // UI holds only chat-ui: it renders as one compact row.
+    select(&outline, vcx, UI);
+    assert_eq!(
+        outline.read_with(vcx, |o, _| o.selected_key().map(str::to_owned)),
+        Some(row_key::item("s1", UI))
+    );
+    press(vcx, "shift-up");
+    assert_eq!(call(&calls, 0)["workItemId"], UI);
+    settle(&overview, vcx, fixture());
+    press(vcx, "cmd-z");
+    let undo = call(&calls, 1);
+    assert_eq!(undo["op"], "moveWorkItem");
+    assert_eq!(undo["workItemId"], UI);
+    assert_eq!(
+        notice(&outline, vcx).as_deref(),
+        Some("Undid: reordered \u{2018}UI\u{2019}")
+    );
+    let menu = outline
+        .read_with(vcx, |o, cx| o.context_menu(&row_key::item("s1", UI), cx))
+        .expect("menu");
+    let ids: Vec<_> = menu.entries.iter().map(|e| e.id).collect();
+    for id in ["open-chat", "start-chat", "archive", "undo", "redo", "recent-changes"] {
+        assert!(ids.contains(&id), "{id} in {ids:?}");
+    }
+}
