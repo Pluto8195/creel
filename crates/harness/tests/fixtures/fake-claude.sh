@@ -35,6 +35,25 @@ case "$first" in
   ;;
 
 
+*scenario:readonly*)
+  denied=""
+  mode=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --disallowedTools) shift; denied="$1" ;;
+      --permission-mode) shift; mode="$1" ;;
+      --dangerously-skip-permissions) exit 1 ;;
+    esac
+    shift
+  done
+  [ "$mode" = "default" ] || exit 1
+  for tool in Edit Write MultiEdit NotebookEdit Bash; do
+    case ",$denied," in *",$tool,"*) ;; *) exit 1 ;; esac
+  done
+  emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"restricted"}}}'
+  emit '{"type":"result","subtype":"success","result":"restricted","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-ro"}'
+  ;;
+
 *scenario:happy*)
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":["Bash","Read"],"cwd":"/tmp","session_id":"sess-1"}'
   # Re-emitted init mid-run (background-task wakeup): must be deduped.
