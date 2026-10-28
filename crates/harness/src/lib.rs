@@ -47,6 +47,32 @@ pub enum HarnessError {
         detail: String,
         upgrade_hint: Option<String>,
     },
+    /// The requested sandbox cannot be enforced by this adapter. Raised
+    /// before spawning; never run wider than requested.
+    #[error("{harness:?} cannot enforce the {sandbox} sandbox: {detail}")]
+    Sandbox {
+        harness: HarnessId,
+        sandbox: &'static str,
+        detail: String,
+    },
+}
+
+/// Refuse a `read-only` run on an adapter with no way to enforce it (the ACP
+/// agents run their own tools and expose no read-only switch Mast can set).
+pub fn require_read_only_support(
+    harness: HarnessId,
+    request: &zeron_proto::RunRequest,
+) -> Result<(), HarnessError> {
+    if request.sandbox == zeron_proto::SandboxLevel::ReadOnly {
+        return Err(HarnessError::Sandbox {
+            harness,
+            sandbox: "read-only",
+            detail: "this harness has no read-only mode; use Claude Code or Codex, or a \
+                     writable sandbox"
+                .into(),
+        });
+    }
+    Ok(())
 }
 
 /// A steer prompt pushed into a live run; delivered at the harness's steering boundary.
@@ -686,5 +712,29 @@ mod git_command_tests {
         let status = cmd.args(["-c", "fake-git-lfs"]).status().unwrap();
 
         assert!(status.success(), "tool in login-shell PATH must resolve");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_support_tests {
+    use super::*;
+
+    fn request(sandbox: &str) -> zeron_proto::RunRequest {
+        serde_json::from_value(serde_json::json!({
+            "prompt": "p", "model": null, "reasoning": null, "cwd": "",
+            "sandbox": sandbox, "resume": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn read_only_is_refused_where_it_cannot_be_enforced() {
+        let err = require_read_only_support(HarnessId::Opencode, &request("read-only"))
+            .expect_err("read-only must be refused");
+        assert!(matches!(err, HarnessError::Sandbox { sandbox: "read-only", .. }), "{err:?}");
+        assert!(err.to_string().contains("cannot enforce the read-only sandbox"));
+        for ok in ["workspace-write", "danger-full-access"] {
+            require_read_only_support(HarnessId::Opencode, &request(ok)).unwrap();
+        }
     }
 }

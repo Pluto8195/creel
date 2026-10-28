@@ -295,7 +295,13 @@ impl ClaudeHarness {
         if let Some(effort) = to_effort(request.reasoning, model.as_deref()) {
             cmd.args(["--effort", effort]);
         }
-        if request.auto_approve {
+        // `read-only` is enforced by the CLI itself: file-mutating tools and
+        // Bash (which cannot be restricted to read-only use) are denied, and
+        // auto-approve never selects bypass mode for it. `workspace-write` is
+        // the CLI's default (file tools confined to the cwd by its own
+        // prompts; Bash is not sandboxed); `danger-full-access` is unchanged.
+        let read_only = request.sandbox == zeron_proto::SandboxLevel::ReadOnly;
+        if request.auto_approve && !read_only {
             cmd.args([
                 "--permission-mode",
                 "bypassPermissions",
@@ -303,6 +309,9 @@ impl ClaudeHarness {
             ]);
         } else {
             cmd.args(["--permission-mode", "default"]);
+        }
+        if read_only {
+            cmd.args(["--disallowedTools", READ_ONLY_DISALLOWED_TOOLS]);
         }
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
@@ -501,6 +510,9 @@ fn parse_initialize_commands(response: &Value) -> Vec<SlashCommand> {
         })
         .collect()
 }
+
+/// Tools denied for a `read-only` run (one comma-separated argument).
+const READ_ONLY_DISALLOWED_TOOLS: &str = "Edit,Write,MultiEdit,NotebookEdit,Bash,PowerShell";
 
 #[async_trait]
 impl Harness for ClaudeHarness {
@@ -1169,6 +1181,46 @@ mod tests {
             "sandbox": "workspace-write", "resume": null
         }))
         .unwrap()
+    }
+
+    fn sandbox_request(sandbox: &str, auto_approve: bool) -> RunRequest {
+        let mut request: RunRequest = serde_json::from_value(json!({
+            "prompt": "p", "model": null, "reasoning": null, "cwd": "",
+            "sandbox": sandbox, "resume": null
+        }))
+        .unwrap();
+        request.auto_approve = auto_approve;
+        request
+    }
+
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let i = args.iter().position(|a| a == flag)?;
+        args.get(i + 1).map(String::as_str)
+    }
+
+    #[test]
+    fn read_only_denies_mutating_tools_and_never_bypasses_permissions() {
+        let harness = ClaudeHarness::new();
+        for auto_approve in [false, true] {
+            let args = argv(&harness, &sandbox_request("read-only", auto_approve));
+            let denied = flag_value(&args, "--disallowedTools").expect("deny list");
+            for tool in ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"] {
+                assert!(denied.split(',').any(|t| t == tool), "{tool} in {denied}");
+            }
+            assert_eq!(flag_value(&args, "--permission-mode"), Some("default"));
+            assert!(!args.iter().any(|a| a.contains("bypass") || a.contains("skip-permissions")));
+        }
+    }
+
+    #[test]
+    fn writable_sandboxes_keep_their_existing_arguments() {
+        let harness = ClaudeHarness::new();
+        let ww = argv(&harness, &sandbox_request("workspace-write", false));
+        assert!(!ww.iter().any(|a| a == "--disallowedTools"), "{ww:?}");
+        assert_eq!(flag_value(&ww, "--permission-mode"), Some("default"));
+        let danger = argv(&harness, &sandbox_request("danger-full-access", true));
+        assert!(!danger.iter().any(|a| a == "--disallowedTools"), "{danger:?}");
+        assert_eq!(flag_value(&danger, "--permission-mode"), Some("bypassPermissions"));
     }
 
     fn model_arg(args: &[String]) -> Option<&str> {

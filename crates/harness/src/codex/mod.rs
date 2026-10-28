@@ -736,6 +736,11 @@ impl CodexHarness {
         // malformed mount that kills every command. Without `auto_approve`
         // the request's own sandbox level is honored and approvals are
         // "on-request" (see [`approval_policy_for`]).
+        // A `read-only` request is never widened by auto-approve: yolo would
+        // both select danger-full-access and auto-accept sandbox escalations.
+        if request.sandbox == zeron_proto::SandboxLevel::ReadOnly {
+            request.auto_approve = false;
+        }
         request.sandbox = if title_only {
             zeron_proto::SandboxLevel::ReadOnly
         } else if request.auto_approve {
