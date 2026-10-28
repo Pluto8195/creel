@@ -358,7 +358,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ARTIFACT_GET_PLAN,
-            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims}, or null. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
+            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims, answeredQuestions: [{id, answer, at, revision}]}, or null. answeredQuestions are answers the user gave in Mast (the plan's question card or Required Actions) that the document may not reflect yet: fold each into the plan (`status: resolved` + `decision:`) in your next revision. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
@@ -2098,6 +2098,16 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["token"], BETA_TOKEN);
         assert_eq!(calls[0]["arguments"]["path"], "/tmp/wt");
+    }
+
+    #[test]
+    fn get_plan_documents_the_answers_the_agent_must_fold_in() {
+        let def = artifact_catalog()
+            .into_iter()
+            .find(|d| d.name == agent_tool_names::ARTIFACT_GET_PLAN)
+            .expect("artifact_get_plan is defined");
+        assert!(def.description.contains("answeredQuestions"));
+        assert!(def.description.contains("status: resolved"));
     }
 
     #[tokio::test]
