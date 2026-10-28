@@ -56,6 +56,7 @@ use crate::work_outline::store::WorkOutlineSnapshot;
 use crate::work_outline::{WorkOutlineCommand, WorkOutlineLoad};
 
 /// The Linear panel host (`overview/linear_host.rs`).
+mod details_width;
 mod github_host;
 mod linear_host;
 
@@ -1654,6 +1655,8 @@ pub struct Overview {
     /// The Linear column's persisted open state and width, its open/close
     /// tween, and an in-flight edge drag (`overview/linear_host.rs`).
     linear_column: linear_host::LinearColumnState,
+    /// Width of the right-slot Details / Required Actions panel.
+    details_width: details_width::DetailsWidthState,
     /// The GitHub section of the same left column (PR review sync;
     /// `overview/github_host.rs`). `Some` while it shows.
     github_panel: Option<Entity<crate::github::panel::GithubPanel>>,
@@ -1873,6 +1876,7 @@ impl Overview {
             linear_panel: None,
             _linear_panel_events: None,
             linear_column: Default::default(),
+            details_width: Default::default(),
             github_panel: None,
             _github_panel_events: None,
             #[cfg(test)]
@@ -2056,6 +2060,7 @@ impl Overview {
         let flags =
             overview_positions::load_string_set(&data_dir, overview_positions::UI_FLAGS_FILE);
         self.restore_linear_column(&flags);
+        self.restore_details_width(&flags);
         self.acknowledged_done
             .extend(overview_positions::load_string_set(
                 &data_dir,
@@ -4830,18 +4835,16 @@ impl Render for Overview {
             let snapshot = self.outline_snapshot(&space_id, cx);
             let chats = self.outline_chats.clone();
             details.update(cx, |details, _| details.set_data(snapshot, chats));
-            (
-                Some(div().h_full().flex_none().child(details).into_any_element()),
-                crate::work_outline::details_panel::DETAILS_PANEL_W,
-            )
+            let width = self.shown_details_width();
+            let panel = self.details_slot(details.into_any_element(), width, &theme, cx);
+            (Some(panel), width)
         } else if let Some(list) = self.required_actions_panel.clone() {
             let spaces = self.required_action_spaces(cx);
             let chats = self.outline_chats.clone();
             list.update(cx, |list, _| list.set_data(spaces, chats));
-            (
-                Some(div().h_full().flex_none().child(list).into_any_element()),
-                crate::work_outline::details_panel::DETAILS_PANEL_W,
-            )
+            let width = self.shown_details_width();
+            let panel = self.details_slot(list.into_any_element(), width, &theme, cx);
+            (Some(panel), width)
         } else {
             let panel = if self.subagent_peek.is_some() {
                 self.render_subagent_peek(&theme, cx)
@@ -4868,6 +4871,11 @@ impl Render for Overview {
             .relative()
             .flex()
             .child(self.linear_width_capture())
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<details_width::DetailsPanelResize>, _, cx| {
+                    this.details_resize_drag(f32::from(event.event.position.x), cx)
+                },
+            ))
             .on_drag_move(cx.listener(
                 |this, event: &gpui::DragMoveEvent<linear_host::LinearPanelResize>, _, cx| {
                     this.linear_resize_drag(f32::from(event.event.position.x), cx)
@@ -10731,6 +10739,11 @@ mod logic_tests {
             overview.update(vcx, |o, _| o.captured_start_chat.take()),
             Some(("s1".to_string(), API.to_string()))
         );
+    }
+
+    /// Resizable Work Item Details panel; shares this module's fixtures.
+    mod resizable_panes_tests {
+        include!("work_outline/resizable_panes_tests.rs");
     }
 
     /// Milestone 4 (Required Actions, proposals); the body lives beside the

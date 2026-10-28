@@ -870,6 +870,12 @@ fn sidebar_drag_sample(
     )
 }
 
+/// `width` clamped to what a `viewport`-wide window can give the sidebar while
+/// the conversation keeps `CHAT_PANEL_MIN`; never below `SIDEBAR_MIN`.
+fn sidebar_width_for_viewport(width: f32, viewport: f32) -> f32 {
+    width.min((viewport - CHAT_PANEL_MIN).max(SIDEBAR_MIN))
+}
+
 /// The dragged surface-tab payload (strip reorder).
 struct RightTabDrag {
     panel_key: String,
@@ -2653,8 +2659,15 @@ impl Shell {
         if self.settings.sidebar_collapsed {
             0.0
         } else {
-            self.settings.sidebar_width
+            self.sidebar_shown_width()
         }
+    }
+
+    /// The saved sidebar width clamped so the conversation column keeps
+    /// `CHAT_PANEL_MIN` in this window. The saved preference is untouched,
+    /// so widening the window restores it.
+    fn sidebar_shown_width(&self) -> f32 {
+        sidebar_width_for_viewport(self.settings.sidebar_width, self.viewport_width)
     }
 
     /// Does the selected space's folder have git? Owner-stamped and synced —
@@ -4123,12 +4136,13 @@ impl Shell {
     fn on_sidebar_drag(
         &mut self,
         event: &gpui::DragMoveEvent<SidebarResize>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let x = f32::from(event.event.position.x);
         let sample = sidebar_drag_sample(x, self.sidebar_resize_edge, self.reduced_motion);
-        self.settings.sidebar_width = sample.width;
+        self.settings.sidebar_width =
+            sidebar_width_for_viewport(sample.width, f32::from(window.viewport_size().width));
         self.settings.sidebar_collapsed = false;
         self.pane_resize_dragging = Some(PaneResizeKind::Sidebar);
         self.sidebar_tween = None; // live drag tracks the pointer directly
@@ -6844,7 +6858,7 @@ impl Shell {
         // activity/glyph personality independently of the selected variant.
         let inner = self.sidebar_pane.clone().cached(
             gpui::StyleRefinement::default()
-                .w(px(self.settings.sidebar_width))
+                .w(px(self.sidebar_shown_width()))
                 .h_full()
                 .flex_none(),
         );
@@ -6887,7 +6901,7 @@ impl Shell {
         // the sidebar's right edge (user-reported). Device identity lives on
         // the Accounts page now — the one surface where the device matters.
         div()
-            .w(px(self.settings.sidebar_width))
+            .w(px(self.sidebar_shown_width()))
             .h_full()
             .flex()
             .flex_col()
@@ -8130,7 +8144,7 @@ impl Shell {
         .fade_overflow_y(&self.sidebar_scroll);
 
         div()
-            .w(px(self.settings.sidebar_width))
+            .w(px(self.sidebar_shown_width()))
             .h_full()
             .flex()
             .flex_col()
@@ -8427,7 +8441,7 @@ impl Shell {
         if self.user_menu.get().is_some() {
             let closing = self.user_menu.closing_since();
             let menu = popover::popover_card(theme)
-                .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
+                .w(px(self.sidebar_shown_width() - 2.0 * Theme::SPACE_SM))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_user_menu(cx);
                 }))
@@ -12673,6 +12687,18 @@ mod tests {
         assert_eq!(new_thread_background_height(1_000.0), 720.0);
         assert_eq!(new_thread_background_height(1_200.0), 760.0);
         assert!(new_thread_background_height(848.0) > 848.0 / 2.0);
+    }
+
+    #[test]
+    fn sidebar_width_yields_to_a_narrow_window_without_changing_the_preference() {
+        assert_eq!(sidebar_width_for_viewport(520.0, 1600.0), 520.0);
+        assert_eq!(
+            sidebar_width_for_viewport(520.0, 800.0),
+            800.0 - CHAT_PANEL_MIN
+        );
+        // Never below the sidebar minimum, even in a tiny window.
+        assert_eq!(sidebar_width_for_viewport(300.0, 300.0), SIDEBAR_MIN);
+        assert_eq!(sidebar_width_for_viewport(SIDEBAR_MIN, 300.0), SIDEBAR_MIN);
     }
 
     #[test]
