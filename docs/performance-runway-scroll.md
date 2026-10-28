@@ -54,7 +54,7 @@ samples to each local output directory.
 
 ## Reproduction
 
-Build each revision with `cargo build --release --locked -p zeron` and copy the
+Build each revision with `cargo build --release --locked -p mast` and copy the
 binaries to distinct paths. Use fresh output directories and a dedicated display.
 Run main/candidate/candidate/main sequentially with the following environment:
 

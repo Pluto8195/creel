@@ -286,7 +286,7 @@ impl Shell {
     fn inspect_closeout_commit(
         &mut self,
         cwd: String,
-        commit: zeron_proto::GitHistoryCommit,
+        commit: mast_proto::GitHistoryCommit,
         cx: &mut Context<Self>,
     ) {
         let changes =

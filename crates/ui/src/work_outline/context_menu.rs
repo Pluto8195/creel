@@ -20,7 +20,7 @@ use gpui::{
     Action, App, Context, KeyBinding, MouseDownEvent, Pixels, Point, WeakEntity, Window, actions,
     point, px,
 };
-use zeron_proto::WorkItemStatus;
+use mast_proto::WorkItemStatus;
 
 use super::super::chips::base_status_label;
 use super::super::command::WorkOutlineCommand;

@@ -17,7 +17,7 @@
 
 use crate::workspace_host::{ChatLinkKind, WorkspaceHost};
 use std::collections::BTreeSet;
-use zeron_proto::{ChatLinkSource, ToolCall};
+use mast_proto::{ChatLinkSource, ToolCall};
 
 /// A `github.com/<org>/<repo>/pull/<n>` URL appearing anywhere in `text` —
 /// matches the design's own vocabulary ("a `github.com/<org>/<repo>/pull/<n>`
@@ -369,7 +369,7 @@ mod tests {
         use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
         let host = WorkspaceHost::open(
-            Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap()),
+            Arc::new(mast_sync::DocsStore::open(dir.path()).unwrap()),
             crate::workspace_host::WorkspaceHostConfig {
                 device_id: "dev".into(),
                 device_name: "Dev".into(),

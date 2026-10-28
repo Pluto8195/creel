@@ -7,7 +7,7 @@
 //! start is retried with the SAME operation id while the inputs are
 //! unchanged (`OperationSlot`); the Chat is never deleted on a partial
 //! failure.
-use zeron_proto::{
+use mast_proto::{
     ExecutionConfiguration, ExecutionValidationError, ResolvedExecutionConfiguration,
     WorkOutlineError, WorkOutlineErrorCode,
 };
@@ -139,13 +139,13 @@ pub(crate) enum WorktreePick {
 pub(crate) fn worktree_choice(
     pick: &WorktreePick,
     name: &str,
-) -> Result<Option<zeron_proto::WorktreeChoice>, String> {
+) -> Result<Option<mast_proto::WorktreeChoice>, String> {
     match pick {
         WorktreePick::SpaceWorkspace => Ok(None),
         WorktreePick::Existing {
             worktree_id,
             worktree_path,
-        } => Ok(Some(zeron_proto::WorktreeChoice::UseExisting {
+        } => Ok(Some(mast_proto::WorktreeChoice::UseExisting {
             worktree_id: worktree_id.clone(),
             worktree_path: worktree_path.clone(),
         })),
@@ -154,7 +154,7 @@ pub(crate) fn worktree_choice(
             if name.is_empty() {
                 Err("Name the new worktree".into())
             } else {
-                Ok(Some(zeron_proto::WorktreeChoice::CreateNew {
+                Ok(Some(mast_proto::WorktreeChoice::CreateNew {
                     name: name.to_owned(),
                 }))
             }
@@ -397,7 +397,7 @@ mod tests {
         );
         assert_eq!(
             worktree_choice(&WorktreePick::CreateNew, "fix login").unwrap(),
-            Some(zeron_proto::WorktreeChoice::CreateNew {
+            Some(mast_proto::WorktreeChoice::CreateNew {
                 name: "fix login".into()
             })
         );

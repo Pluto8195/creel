@@ -32,7 +32,7 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, div,
     prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     CreateWorkItemExternalReferenceParams, CreateWorkItemParams, GITHUB_PROVIDER,
     GITHUB_PULL_REQUEST_REFERENCE, PrReviewAction, PullRequestRef, PullRequestStatusSummary,
     WorkOutlinePlacement, WorkOutlineSnapshot,
@@ -405,7 +405,7 @@ impl GithubPanel {
             space_id: space_id.clone(),
             parent_work_item_id: parent.clone(),
             placement: WorkOutlinePlacement::Last,
-            title: zeron_proto::pr_item_title(&pr.pr_ref.repo, pr.pr_ref.number, &pr.title),
+            title: mast_proto::pr_item_title(&pr.pr_ref.repo, pr.pr_ref.number, &pr.title),
             description: None,
             status: None,
             operation_id: operation_id.clone(),
@@ -416,7 +416,7 @@ impl GithubPanel {
             let result = match create.await {
                 Ok(reply) => {
                     let item_id = reply.work_item_id.unwrap_or_else(|| {
-                        zeron_proto::work_outline::derive_id(&operation_id, "item")
+                        mast_proto::work_outline::derive_id(&operation_id, "item")
                     });
                     let link = actions.link_pull_request(CreateWorkItemExternalReferenceParams {
                         work_item_id: item_id.clone(),
@@ -425,7 +425,7 @@ impl GithubPanel {
                         external_id: external_id.clone(),
                         url: pr.pr_ref.url.clone(),
                         cached_title: Some(pr.title.clone()),
-                        operation_id: zeron_proto::work_outline::derive_id(
+                        operation_id: mast_proto::work_outline::derive_id(
                             &operation_id,
                             "pr-link",
                         ),
@@ -795,7 +795,7 @@ impl GithubPanel {
             .on_drag(drag, |drag, _, _, cx| {
                 cx.stop_propagation();
                 let title = match drag {
-                    OutlineDrag::PullRequest(drag) => zeron_proto::pr_item_title(
+                    OutlineDrag::PullRequest(drag) => mast_proto::pr_item_title(
                         &drag.pr.pr_ref.repo,
                         drag.pr.pr_ref.number,
                         &drag.pr.title,

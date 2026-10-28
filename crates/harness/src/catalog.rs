@@ -5,7 +5,7 @@ use std::{
     future::Future,
     time::{Duration, Instant},
 };
-use zeron_proto::Model;
+use mast_proto::Model;
 
 /// A successful catalog is reused this long for the same binary and credentials;
 /// a changed binary or login changes the context key and bypasses it, and

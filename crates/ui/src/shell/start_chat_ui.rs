@@ -20,7 +20,7 @@ use super::*;
 
 use std::sync::Arc;
 
-use zeron_proto::{
+use mast_proto::{
     CreateChatForWorkItemParams, EffectiveInstructionEntry, ExecutionScope,
     ExecutionWorktreeIdentity, PrReference, PrReviewAction, ResolvedExecutionConfiguration,
     ValidateExecutionConfigurationParams, WorkItemLaunchState, WorkItemPrompt, WorkOutlineSnapshot,
@@ -61,7 +61,7 @@ pub(super) struct StartChatDialog {
     /// Space path).
     skill_root: String,
     /// Skill harness while the picker has no harness resolved yet.
-    fallback_harness: zeron_proto::HarnessId,
+    fallback_harness: mast_proto::HarnessId,
     pub(super) worktree_name: Entity<ComposerInput>,
     /// The composer's harness/model picker in launcher mode: a new chat on
     /// the owning device, seeded with the composer's sticky defaults. Its
@@ -194,7 +194,7 @@ impl Shell {
                 .iter()
                 .find(|device| device.id == device_id)
                 .filter(|device| {
-                    !device.supports(zeron_proto::capabilities::WORK_OUTLINE_LAUNCH_V1)
+                    !device.supports(mast_proto::capabilities::WORK_OUTLINE_LAUNCH_V1)
                 })
                 .map(|device| {
                     format!(
@@ -547,7 +547,7 @@ impl Shell {
         let item_id = dialog.item_id.clone();
         let target_device_id = Some(dialog.device_id.clone())
             .filter(|device| !device.is_empty() && local.as_deref() != Some(device.as_str()));
-        let task = actions.describe_repository(zeron_proto::DescribeExecutionRepositoryParams {
+        let task = actions.describe_repository(mast_proto::DescribeExecutionRepositoryParams {
             path: path.clone(),
             target_device_id,
         });
@@ -1461,7 +1461,7 @@ mod tests {
     type Reply = Arc<
         Mutex<
             Box<
-                dyn FnMut(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+                dyn FnMut(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
                     + Send,
             >,
         >,
@@ -1482,7 +1482,7 @@ mod tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -1493,7 +1493,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -1536,12 +1536,12 @@ mod tests {
                 .unwrap()
                 .push((method.to_owned(), params.clone()));
             match method {
-                zeron_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION => Ok(validate.clone()),
-                zeron_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY => {
+                mast_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION => Ok(validate.clone()),
+                mast_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY => {
                     Ok(identity(params["path"].as_str().unwrap_or_default()))
                 }
-                zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM => (create.lock().unwrap())(&params),
-                zeron_rpc::methods::LIST_COMMANDS => Ok(serde_json::json!([
+                mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM => (create.lock().unwrap())(&params),
+                mast_rpc::methods::LIST_COMMANDS => Ok(serde_json::json!([
                     {"name": "code-review", "description": "Review a diff"},
                     {"name": "open-pr", "description": "Open a PR"},
                     {"name": "compact", "description": "Compact the conversation"},
@@ -1570,7 +1570,7 @@ mod tests {
                     })
                     .collect();
                 let capabilities: Vec<&str> = if capable {
-                    vec![zeron_proto::capabilities::WORK_OUTLINE_LAUNCH_V1]
+                    vec![mast_proto::capabilities::WORK_OUTLINE_LAUNCH_V1]
                 } else {
                     Vec::new()
                 };
@@ -1652,7 +1652,7 @@ mod tests {
             let mut n = counter.lock().unwrap();
             *n += 1;
             if *n <= crate::work_outline::actions::MAX_ATTEMPTS as usize {
-                Err(zeron_rpc::RpcError::Closed)
+                Err(mast_rpc::RpcError::Closed)
             } else {
                 Ok(serde_json::json!({
                     "chatId": "chat-new", "messageId": "m", "commandId": "k",
@@ -1676,7 +1676,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("start-chat").is_some());
         assert!(cx.debug_bounds("start-chat-validation-ready").is_some());
-        let validate = calls_to(&calls, zeron_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION);
+        let validate = calls_to(&calls, mast_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION);
         assert_eq!(
             validate[0],
             serde_json::json!({
@@ -1686,7 +1686,7 @@ mod tests {
         );
         // Housekeeping runs in the implicit Space folder: its repository's
         // checkouts are offered (prunable and the folder itself excluded).
-        let describe = calls_to(&calls, zeron_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY);
+        let describe = calls_to(&calls, mast_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY);
         assert_eq!(describe[0]["path"], "/work/alpha");
         assert_eq!(describe[0]["targetDeviceId"], "d");
         assert!(cx.debug_bounds("start-chat-worktree-workspace").is_some());
@@ -1696,7 +1696,7 @@ mod tests {
 
         // Empty prompt: nothing is sent.
         click(cx, "start-chat-start");
-        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
         assert!(cx.debug_bounds("start-chat-failure").is_some());
 
         set_prompt(&shell, cx, "Tidy the build scripts");
@@ -1713,7 +1713,7 @@ mod tests {
             assert!(dialog.failure.as_ref().unwrap().unknown_outcome);
         });
         click(cx, "start-chat-start");
-        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
         assert_eq!(
             creates.len(),
             crate::work_outline::actions::MAX_ATTEMPTS as usize + 1
@@ -1772,10 +1772,10 @@ mod tests {
         assert!(cx.debug_bounds("start-chat-worktree-unavailable").is_some());
         assert!(cx.debug_bounds("start-chat-worktree-new").is_none());
         assert!(cx.debug_bounds("start-chat-worktree-workspace").is_none());
-        assert!(calls_to(&calls, zeron_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::DESCRIBE_EXECUTION_REPOSITORY).is_empty());
         set_prompt(&shell, cx, "Ship the launch page");
         click(cx, "start-chat-start");
-        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
         assert_eq!(creates.len(), 1);
         assert!(
             creates[0].get("worktreeChoice").is_none(),
@@ -1792,9 +1792,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let offline = serde_json::to_value(
-            zeron_proto::ValidateExecutionConfigurationReply::from_result(
+            mast_proto::ValidateExecutionConfigurationReply::from_result(
                 None,
-                Err(vec![zeron_proto::ExecutionValidationError::DeviceOffline {
+                Err(vec![mast_proto::ExecutionValidationError::DeviceOffline {
                     device_id: "d".into(),
                     detail: String::new(),
                 }]),
@@ -1821,10 +1821,10 @@ mod tests {
         assert!(cx.debug_bounds("start-chat-revalidate").is_some());
         set_prompt(&shell, cx, "Ship it");
         click(cx, "start-chat-start");
-        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
 
         // Validation passes now, but the host rejects at launch.
-        let error = zeron_proto::ExecutionValidationError::WorktreePruned {
+        let error = mast_proto::ExecutionValidationError::WorktreePruned {
             repo_id: "repo:flagship".into(),
             worktree_id: "wt".into(),
             path: "/work/alpha/.worktrees/gone".into(),
@@ -1842,7 +1842,7 @@ mod tests {
             true,
             validated_ok(),
             Arc::new(Mutex::new(Box::new(move |_: &serde_json::Value| {
-                Err(zeron_rpc::RpcError::Failed(wire.clone()))
+                Err(mast_rpc::RpcError::Failed(wire.clone()))
             }))),
         );
         click(cx, "start-chat-revalidate");
@@ -1855,7 +1855,7 @@ mod tests {
             assert_eq!(dialog.worktree_name.read(cx).text(), "ship-it");
         });
         click(cx, "start-chat-start");
-        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
         assert_eq!(creates.len(), 1, "coded failures are not retried");
         assert_eq!(
             creates[0]["worktreeChoice"],
@@ -1932,7 +1932,7 @@ mod tests {
         assert!(cx.debug_bounds("start-chat-blocker").is_some());
         set_prompt(&shell, cx, "Anything");
         click(cx, "start-chat-start");
-        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
 
         // Archived items cannot start Chats.
         let error = shell.update(cx, |shell, cx| shell.open_start_chat("s1", RETIRED, cx));
@@ -1992,7 +1992,7 @@ mod tests {
         draw(cx);
         cx.simulate_input("Fix it with /");
         draw(cx);
-        let lists = calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS);
+        let lists = calls_to(&calls, mast_rpc::methods::LIST_COMMANDS);
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0]["cwd"], "/work/alpha/flagship");
         assert_eq!(lists[0]["targetDeviceId"], "d");
@@ -2015,7 +2015,7 @@ mod tests {
         // Typing reopens and filters from the cache; Down + Enter accepts.
         cx.simulate_input("o");
         draw(cx);
-        assert_eq!(calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS).len(), 1);
+        assert_eq!(calls_to(&calls, mast_rpc::methods::LIST_COMMANDS).len(), 1);
         let names = prompt_skills(&shell, cx);
         assert!(names.len() >= 1 && names.contains(&"open-pr".to_owned()));
         let open_pr = names.iter().position(|name| name == "open-pr").unwrap();
@@ -2027,7 +2027,7 @@ mod tests {
         assert_eq!(prompt_text(&shell, cx), "Fix it with /open-pr ");
         assert!(prompt_skills(&shell, cx).is_empty());
         assert!(
-            calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty(),
+            calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty(),
             "Enter accepted the skill instead of starting"
         );
 
@@ -2059,11 +2059,11 @@ mod tests {
         binding.worktree_path = Some("/work/alpha/ui".into());
         snapshot
             .execution_configurations
-            .push(zeron_proto::ExecutionConfigurationView {
+            .push(mast_proto::ExecutionConfigurationView {
                 id: scope.row_id(),
                 space_id: "s1".into(),
                 work_item_id: Some(HOUSEKEEPING.into()),
-                configuration: Some(zeron_proto::ExecutionConfiguration {
+                configuration: Some(mast_proto::ExecutionConfiguration {
                     execution_root: "/work/alpha/ui".into(),
                     bindings: vec![binding],
                     schema: 1,
@@ -2099,7 +2099,7 @@ mod tests {
         draw(cx);
         cx.simulate_input("/");
         draw(cx);
-        let lists = calls_to(&calls, zeron_rpc::methods::LIST_COMMANDS);
+        let lists = calls_to(&calls, mast_rpc::methods::LIST_COMMANDS);
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0]["cwd"], "/work/alpha/ui");
         assert_eq!(lists[0]["targetDeviceId"], "d");
@@ -2178,8 +2178,8 @@ mod tests {
 
     /// Claude Code (Fable first, as the live catalog leads) and Codex.
     fn picker_catalog() -> (
-        Vec<zeron_engine::registry::HarnessDescriptor>,
-        Vec<(zeron_proto::HarnessId, Vec<zeron_proto::Model>)>,
+        Vec<mast_engine::registry::HarnessDescriptor>,
+        Vec<(mast_proto::HarnessId, Vec<mast_proto::Model>)>,
     ) {
         let harnesses = serde_json::from_value(serde_json::json!([
             {"id": "claude-code", "name": "Claude Code", "supportsSteering": true,
@@ -2201,8 +2201,8 @@ mod tests {
         (
             harnesses,
             vec![
-                (zeron_proto::HarnessId::ClaudeCode, claude),
-                (zeron_proto::HarnessId::Codex, codex),
+                (mast_proto::HarnessId::ClaudeCode, claude),
+                (mast_proto::HarnessId::Codex, codex),
             ],
         )
     }
@@ -2226,12 +2226,12 @@ mod tests {
                 state.selected_chat = Some(CHAT_API.into());
                 state.apply_chat_config(
                     CHAT_API,
-                    zeron_proto::ChatConfig {
-                        harness: zeron_proto::HarnessId::Codex,
+                    mast_proto::ChatConfig {
+                        harness: mast_proto::HarnessId::Codex,
                         model: Some("gpt-5.4".into()),
-                        reasoning: Some(zeron_proto::ReasoningLevel::Low),
+                        reasoning: Some(mast_proto::ReasoningLevel::Low),
                         model_options: Default::default(),
-                        sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                        sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                         auto_approve: true,
                     },
                 );
@@ -2242,11 +2242,11 @@ mod tests {
                 pickers.seed_catalog_for_tests(harnesses, models, cx);
                 let defaults = pickers.defaults_mut_for_tests();
                 defaults.remember_model(
-                    zeron_proto::HarnessId::ClaudeCode,
+                    mast_proto::HarnessId::ClaudeCode,
                     "opus".into(),
                     "Opus".into(),
                 );
-                defaults.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
+                defaults.reasoning = Some(mast_proto::ReasoningLevel::Medium);
             });
         });
     }
@@ -2300,13 +2300,13 @@ mod tests {
 
         let pickers = dialog_pickers(&shell, cx);
         let initial = pickers.read_with(cx, |pickers, cx| pickers.resolved(cx));
-        assert_eq!(initial.harness, Some(zeron_proto::HarnessId::ClaudeCode));
+        assert_eq!(initial.harness, Some(mast_proto::HarnessId::ClaudeCode));
         assert_eq!(
             initial.model.as_deref(),
             Some("opus"),
             "not forced to Fable"
         );
-        assert_eq!(initial.reasoning, Some(zeron_proto::ReasoningLevel::Medium));
+        assert_eq!(initial.reasoning, Some(mast_proto::ReasoningLevel::Medium));
         assert!(!initial.auto_approve, "new chats start at Ask");
         // Identical to the composer's own new-chat canvas resolution.
         let composer_pickers =
@@ -2366,9 +2366,9 @@ mod tests {
                 .as_deref(),
             Some("sonnet")
         );
-        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
         pickers.update(cx, |pickers, cx| {
-            pickers.pick_reasoning_for_tests(zeron_proto::ReasoningLevel::High, cx)
+            pickers.pick_reasoning_for_tests(mast_proto::ReasoningLevel::High, cx)
         });
         // Esc closes the picker only and hands focus back to the prompt.
         cx.simulate_keystrokes("escape");
@@ -2380,17 +2380,17 @@ mod tests {
         // Enter in the prompt starts with the picked config.
         cx.simulate_keystrokes("enter");
         draw(cx);
-        let creates = calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
         assert_eq!(creates.len(), 1);
         assert_eq!(creates[0]["initialPrompt"]["text"], "Ship it");
         assert_eq!(
             creates[0]["config"],
-            serde_json::to_value(zeron_proto::ChatConfig {
-                harness: zeron_proto::HarnessId::ClaudeCode,
+            serde_json::to_value(mast_proto::ChatConfig {
+                harness: mast_proto::HarnessId::ClaudeCode,
                 model: Some("sonnet".into()),
-                reasoning: Some(zeron_proto::ReasoningLevel::High),
+                reasoning: Some(mast_proto::ReasoningLevel::High),
                 model_options: Default::default(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                 auto_approve: true,
             })
             .unwrap()
@@ -2400,11 +2400,11 @@ mod tests {
             let defaults = pickers.new_chat_defaults();
             assert_eq!(
                 defaults
-                    .model_for(zeron_proto::HarnessId::ClaudeCode)
+                    .model_for(mast_proto::HarnessId::ClaudeCode)
                     .map(|m| m.id.as_str()),
                 Some("sonnet")
             );
-            assert_eq!(defaults.reasoning, Some(zeron_proto::ReasoningLevel::High));
+            assert_eq!(defaults.reasoning, Some(mast_proto::ReasoningLevel::High));
         });
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
     }
@@ -2511,7 +2511,7 @@ mod tests {
             pr_calls.lock().unwrap().is_empty(),
             "opening starts nothing"
         );
-        assert!(calls_to(&calls, zeron_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
+        assert!(calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM).is_empty());
 
         // Starts from the composer's remembered Opus; pick Sonnet by keyboard
         // (focus starts on the dialog, Tab walks to the model chip).
@@ -2579,7 +2579,7 @@ mod tests {
             assert_eq!(
                 pickers
                     .new_chat_defaults()
-                    .model_for(zeron_proto::HarnessId::ClaudeCode)
+                    .model_for(mast_proto::HarnessId::ClaudeCode)
                     .map(|m| m.id.as_str()),
                 Some("sonnet")
             );

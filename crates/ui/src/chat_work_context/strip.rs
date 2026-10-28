@@ -12,8 +12,8 @@ use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, App, Hsla, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
 };
-use zeron_proto::linear::LinearProjectSummary;
-use zeron_proto::{PullRequestRef, PullRequestStatusSummary};
+use mast_proto::linear::LinearProjectSummary;
+use mast_proto::{PullRequestRef, PullRequestStatusSummary};
 
 use super::{
     ArtifactBrief, ImplementationContext, IssueRef, PlanningContext, PrReviewContext, Variant,

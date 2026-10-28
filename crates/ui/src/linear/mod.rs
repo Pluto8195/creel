@@ -30,8 +30,8 @@ pub(crate) mod settings_page;
 pub(crate) mod store;
 
 use gpui::Hsla;
-use zeron_proto::WorkOutlineSnapshot;
-use zeron_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER};
+use mast_proto::WorkOutlineSnapshot;
+use mast_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER};
 
 #[allow(unused_imports)]
 pub(crate) use client::{LinearFailure, LinearUiError, ListRead};
@@ -194,7 +194,7 @@ pub(crate) fn priority_text(priority: u8, label: &str) -> Option<String> {
 }
 
 /// The display name of a Linear user.
-pub(crate) fn user_name(user: &zeron_proto::linear::LinearUser) -> String {
+pub(crate) fn user_name(user: &mast_proto::linear::LinearUser) -> String {
     user.display_name
         .clone()
         .filter(|name| !name.trim().is_empty())
@@ -203,7 +203,7 @@ pub(crate) fn user_name(user: &zeron_proto::linear::LinearUser) -> String {
 
 #[cfg(test)]
 pub(crate) mod fixture {
-    use zeron_proto::linear::{
+    use mast_proto::linear::{
         LinearIssueSummary, LinearProjectRef, LinearProjectSummary, LinearState, LinearStateType,
         LinearTeamRef, LinearUser,
     };
@@ -277,8 +277,8 @@ pub(crate) mod fixture {
         kind: &str,
         external_id: &str,
         url: &str,
-    ) -> zeron_proto::WorkItemExternalReferenceView {
-        zeron_proto::WorkItemExternalReferenceView {
+    ) -> mast_proto::WorkItemExternalReferenceView {
+        mast_proto::WorkItemExternalReferenceView {
             id: id.into(),
             space_id: space_id.into(),
             work_item_id: item_id.into(),

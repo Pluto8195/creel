@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Two-device e2e smoke: real edge (wrangler dev), two headless engines, and the
-# zeron-rpc e2e_driver example proving the doc-queued cross-device command path:
+# mast-rpc e2e_driver example proving the doc-queued cross-device command path:
 #
 #   B queues a Run into the chat doc -> nudge -> A (host) executes via the mock
 #   harness -> transcript + session status sync A -> edge -> B.
@@ -91,8 +91,8 @@ echo "build: zeron + e2e_driver"
 # Two invocations: a single one with `--example` builds ONLY the example
 # (the target filter applies across every -p), silently skipping the zeron
 # bin — the smoke then dies on "No such file or directory".
-(cd "$ROOT" && cargo build -q -p zeron)
-(cd "$ROOT" && cargo build -q -p zeron-rpc --example e2e_driver)
+(cd "$ROOT" && cargo build -q -p mast)
+(cd "$ROOT" && cargo build -q -p mast-rpc --example e2e_driver)
 ZERON="$ROOT/target/debug/zeron"
 DRIVER="$ROOT/target/debug/examples/e2e_driver"
 

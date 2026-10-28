@@ -59,7 +59,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SlashCommand, SteeringMode, TodoItem, ToolCall, UserInputAnswer, UserInputQuestion,
 };
@@ -599,7 +599,7 @@ impl Server {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::opencode", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::opencode", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -1383,7 +1383,7 @@ async fn run_session(session: Session) {
                     }
                     Err(e) => {
                         tracing::debug!(
-                            target: "zeron_harness::opencode",
+                            target: "mast_harness::opencode",
                             "session resume failed (starting fresh): {e}"
                         );
                         create_session(&server, dir, agent).await?
@@ -1532,7 +1532,7 @@ async fn run_session(session: Session) {
     .await;
     if connect_wait.is_err() {
         tracing::debug!(
-            target: "zeron_harness::opencode",
+            target: "mast_harness::opencode",
             "event bus not connected within 15s; prompting anyway"
         );
     }
@@ -1911,7 +1911,7 @@ async fn run_session(session: Session) {
 
     if !done_sent {
         // Consumer went away (stream dropped): nothing to report to.
-        tracing::debug!(target: "zeron_harness::opencode", "run loop ended without settling");
+        tracing::debug!(target: "mast_harness::opencode", "run loop ended without settling");
     }
     bus_handle.abort();
     server.shutdown(kill_grace).await;
@@ -1966,7 +1966,7 @@ async fn create_session(
         }
         if attempt == 0 && status.is_server_error() {
             tracing::debug!(
-                target: "zeron_harness::opencode",
+                target: "mast_harness::opencode",
                 "POST /session answered {status}; retrying once (the lazy-migration crash self-heals)"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2804,7 +2804,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 };
                 if let Err(e) = reply {
                     tracing::debug!(
-                        target: "zeron_harness::opencode",
+                        target: "mast_harness::opencode",
                         "question reply failed: {e}"
                     );
                 }

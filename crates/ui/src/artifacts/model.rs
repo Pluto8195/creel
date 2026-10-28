@@ -1,10 +1,10 @@
 //! Pure presentation logic for artifacts: link parsing and resolution, the
 //! header line, row labels, and which component renders a content reply.
 //! GUI-free and unit tested.
-use zeron_proto::artifacts::{
+use mast_proto::artifacts::{
     ARTIFACT_URL_SCHEME, EDITED_WITHOUT_NOTE, OptionsManifest, is_artifact_id,
 };
-use zeron_proto::{ArtifactContentEncoding, ArtifactContentReply, ArtifactKind, ArtifactView};
+use mast_proto::{ArtifactContentEncoding, ArtifactContentReply, ArtifactKind, ArtifactView};
 
 use super::store::ArtifactStore;
 
@@ -291,7 +291,7 @@ pub(crate) fn source_text(reply: &ArtifactContentReply) -> Option<String> {
 /// `.zeron/artifacts/<folder>/<file>` (so `zeron-file:` and repo-relative
 /// links resolve from the canonical checkout's root), else the file name.
 pub(crate) fn markdown_document_path(stored_path: &str) -> String {
-    let marker = format!("/{}/", zeron_proto::artifacts::ARTIFACTS_DIR);
+    let marker = format!("/{}/", mast_proto::artifacts::ARTIFACTS_DIR);
     match stored_path.find(&marker) {
         Some(at) => stored_path[at + 1..].to_owned(),
         None => stored_path
@@ -305,6 +305,6 @@ pub(crate) fn markdown_document_path(stored_path: &str) -> String {
 /// The canonical checkout root of a stored path (the part before
 /// `/.zeron/artifacts/`).
 pub(crate) fn canonical_root(stored_path: &str) -> Option<&str> {
-    let marker = format!("/{}/", zeron_proto::artifacts::ARTIFACTS_DIR);
+    let marker = format!("/{}/", mast_proto::artifacts::ARTIFACTS_DIR);
     stored_path.find(&marker).map(|at| &stored_path[..at])
 }

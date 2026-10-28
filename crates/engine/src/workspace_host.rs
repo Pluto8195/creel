@@ -27,11 +27,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use chrono::Utc;
 use tokio::sync::watch;
 
-use zeron_doc::{DeletedSpace, REGISTRY_DOC_ID, RegistryDoc, WorkspaceDoc};
-use zeron_proto::{
+use mast_doc::{DeletedSpace, REGISTRY_DOC_ID, RegistryDoc, WorkspaceDoc};
+use mast_proto::{
     Chat, ChatConfig, ChatLinkSource, ChatPrLink, Device, Session, SidebarPreferencesState, Space,
 };
-use zeron_sync::{DocsStore, RegistryClient, RegistryTuning};
+use mast_sync::{DocsStore, RegistryClient, RegistryTuning};
 
 use crate::doc_host::EdgeConfig;
 use crate::http_error::describe_http_error;
@@ -93,9 +93,9 @@ pub(crate) async fn token_changed(changes: &mut Option<tokio::sync::watch::Recei
     }
 }
 
-async fn token_revoked(token: &Option<Arc<dyn zeron_rpc::TokenSource>>) -> bool {
+async fn token_revoked(token: &Option<Arc<dyn mast_rpc::TokenSource>>) -> bool {
     match token {
-        Some(token) => matches!(token.token().await, Err(zeron_rpc::TokenError::SignedOut)),
+        Some(token) => matches!(token.token().await, Err(mast_rpc::TokenError::SignedOut)),
         // Fixed test/dev URLs have no revocable credential source.
         None => false,
     }
@@ -279,7 +279,7 @@ impl WorkspaceHost {
             .find(|d| d.id == config.device_id);
         // Keep the per-harness instruction tokens the last probe stamped;
         // the post-boot restamp replaces them with the fresh probe result.
-        let capabilities = zeron_proto::capabilities::current_preserving_instruction_harnesses(
+        let capabilities = mast_proto::capabilities::current_preserving_instruction_harnesses(
             existing
                 .as_ref()
                 .map(|d| d.capabilities.as_slice())
@@ -299,7 +299,7 @@ impl WorkspaceHost {
             // Every boot restamps the running binary's version (fleet staleness
             // on the Devices page; workspace version — same for every crate).
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
+            cursor_sdk_version: Some(mast_harness::CursorHarness::sdk_version().into()),
             capabilities,
         })?;
 
@@ -387,22 +387,22 @@ impl WorkspaceHost {
                 doc.queue_rows_for_server();
             }
         }
-        self.spawn_join(Arc::new(zeron_sync::StaticUrl(url.to_string())), None, None);
+        self.spawn_join(Arc::new(mast_sync::StaticUrl(url.to_string())), None, None);
     }
 
     fn spawn_join(
         &self,
-        url: Arc<dyn zeron_sync::UrlProvider>,
+        url: Arc<dyn mast_sync::UrlProvider>,
         mut token_changes: Option<tokio::sync::watch::Receiver<u64>>,
-        token: Option<Arc<dyn zeron_rpc::TokenSource>>,
+        token: Option<Arc<dyn mast_rpc::TokenSource>>,
     ) {
         let org_id = self.inner.config.org_id.clone();
         let reg = self.inner.reg.clone();
         let device_id = self.inner.config.device_id.clone();
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
-            let mut wake = zeron_sync::wake::subscribe();
-            let mut online = zeron_sync::wake::subscribe_online();
+            let mut wake = mast_sync::wake::subscribe();
+            let mut online = mast_sync::wake::subscribe_online();
             // `RegistryClient` only self-reconnects AFTER a first successful
             // join; an INITIAL failure (a 500 from an overloaded DO, a token
             // racing a refresh, an edge deploy) must not end this task and
@@ -459,7 +459,7 @@ impl WorkspaceHost {
                         loop {
                             tokio::select! {
                                 event = events.recv() => match event {
-                                    Ok(zeron_sync::RegistryEvent::Connected) => {
+                                    Ok(mast_sync::RegistryEvent::Connected) => {
                                         let Some(inner) = weak.upgrade() else { return };
                                         // Re-join: restart the dial gate's
                                         // warm-up clock (presence map is empty
@@ -469,15 +469,15 @@ impl WorkspaceHost {
                                             .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                                         inner.bump_changed();
                                     }
-                                    Ok(zeron_sync::RegistryEvent::Applied) => {
+                                    Ok(mast_sync::RegistryEvent::Applied) => {
                                         let Some(inner) = weak.upgrade() else { return };
                                         inner.bump_changed();
                                     }
-                                    Ok(zeron_sync::RegistryEvent::Presence) => {
+                                    Ok(mast_sync::RegistryEvent::Presence) => {
                                         let Some(inner) = weak.upgrade() else { return };
                                         inner.publish();
                                     }
-                                    Ok(zeron_sync::RegistryEvent::Disconnected) => {}
+                                    Ok(mast_sync::RegistryEvent::Disconnected) => {}
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                                 },
@@ -548,7 +548,7 @@ impl WorkspaceHost {
     /// Test seam: apply registry rows as if a peer (or a newer build) had
     /// written them (malformed-row tests; production rows arrive via sync).
     #[doc(hidden)]
-    pub fn apply_registry_rows(&self, seq: u64, rows: Vec<zeron_doc::RegistryRow>) -> bool {
+    pub fn apply_registry_rows(&self, seq: u64, rows: Vec<mast_doc::RegistryRow>) -> bool {
         self.mutate(|doc| doc.apply_rows(seq, rows))
     }
 
@@ -559,8 +559,8 @@ impl WorkspaceHost {
     /// down, relay fine: the 2026-08-18 03:45 incident shape) must never
     /// park the relay. Un-park is presence-driven: heartbeats resume → the
     /// verdict flips and the peer-alive hook clears any dial cooldown.
-    pub fn peer_liveness(&self, device_id: &str) -> zeron_rpc::PeerLiveness {
-        use zeron_rpc::PeerLiveness::{Dark, Live, Unknown};
+    pub fn peer_liveness(&self, device_id: &str) -> mast_rpc::PeerLiveness {
+        use mast_rpc::PeerLiveness::{Dark, Live, Unknown};
         if device_id == self.inner.config.device_id {
             return Live;
         }
@@ -655,13 +655,13 @@ impl WorkspaceHost {
 
     /// Registry room introspection for SyncStatus / `zeron sync`.
     /// `None` = no room yet (edge-less, or the initial join is still retrying).
-    pub fn sync_status(&self) -> Option<zeron_sync::RoomStatsSnapshot> {
+    pub fn sync_status(&self) -> Option<mast_sync::RoomStatsSnapshot> {
         lock(&self.inner.room).as_ref().map(|room| room.stats())
     }
 
     /// The registry room's reconnect posture (next-dial deadline + sticky
     /// last failure) for the connectivity stream. `None` = no room yet.
-    pub fn reconnect_state(&self) -> Option<zeron_sync::ReconnectState> {
+    pub fn reconnect_state(&self) -> Option<mast_sync::ReconnectState> {
         lock(&self.inner.room)
             .as_ref()
             .map(|room| room.reconnect_state())
@@ -720,14 +720,14 @@ impl WorkspaceHost {
     pub fn chat_diff_targets(
         &self,
         chat_id: &str,
-    ) -> Result<Option<zeron_proto::ChatDiffTargetsRow>, EngineError> {
+    ) -> Result<Option<mast_proto::ChatDiffTargetsRow>, EngineError> {
         Ok(self.read(|doc| doc.chat_diff_targets(chat_id)))
     }
 
     /// Every decodable diff-target row (diff-sync reads this each pass).
     pub fn all_chat_diff_targets(
         &self,
-    ) -> Result<Vec<zeron_proto::ChatDiffTargetsRow>, EngineError> {
+    ) -> Result<Vec<mast_proto::ChatDiffTargetsRow>, EngineError> {
         Ok(self.read(|doc| doc.all_chat_diff_targets()))
     }
 
@@ -739,15 +739,15 @@ impl WorkspaceHost {
     pub fn update_chat_diff_targets(
         &self,
         chat_id: &str,
-        f: impl FnOnce(&mut zeron_proto::ChatDiffTargetsRow),
+        f: impl FnOnce(&mut mast_proto::ChatDiffTargetsRow),
     ) -> Result<bool, EngineError> {
-        Ok(self.mutate(|doc| -> Result<bool, zeron_doc::DocError> {
+        Ok(self.mutate(|doc| -> Result<bool, mast_doc::DocError> {
             if doc.chat(chat_id)?.is_none() {
                 return Ok(false);
             }
             let before =
                 doc.chat_diff_targets(chat_id)
-                    .unwrap_or_else(|| zeron_proto::ChatDiffTargetsRow {
+                    .unwrap_or_else(|| mast_proto::ChatDiffTargetsRow {
                         chat_id: chat_id.to_owned(),
                         ..Default::default()
                     });
@@ -772,7 +772,7 @@ impl WorkspaceHost {
 
     pub fn change_sidebar_pin(
         &self,
-        change: &zeron_proto::SidebarPinChange,
+        change: &mast_proto::SidebarPinChange,
     ) -> Result<(), EngineError> {
         let synced = self.sync_status().is_some_and(|status| status.synced);
         self.mutate(|doc| {
@@ -783,8 +783,8 @@ impl WorkspaceHost {
         })?;
         if matches!(
             change,
-            zeron_proto::SidebarPinChange::Section {
-                change: zeron_proto::SidebarSectionChange::Import { .. }
+            mast_proto::SidebarPinChange::Section {
+                change: mast_proto::SidebarSectionChange::Import { .. }
             }
         ) {
             // The UI removes its legacy copy only after this acknowledgement.
@@ -805,7 +805,7 @@ impl WorkspaceHost {
     /// Clone the Work Outline inputs of one Space under the registry lock;
     /// the caller materializes after the lock is released (the lock also
     /// guards sync-frame application).
-    pub fn work_outline_inputs(&self, space_id: &str) -> zeron_doc::WorkOutlineInputs {
+    pub fn work_outline_inputs(&self, space_id: &str) -> mast_doc::WorkOutlineInputs {
         let synced = self.registry_synced();
         self.read(|doc| doc.work_outline_inputs(space_id, synced))
     }
@@ -826,7 +826,7 @@ impl WorkspaceHost {
     pub fn work_outline_inputs_marked(
         &self,
         space_id: &str,
-    ) -> ((u64, bool), zeron_doc::WorkOutlineInputs) {
+    ) -> ((u64, bool), mast_doc::WorkOutlineInputs) {
         let synced = self.registry_synced();
         self.read(|doc| {
             (
@@ -846,10 +846,10 @@ impl WorkspaceHost {
     /// a crash after it keeps both, so a replay is refused.
     pub fn work_outline_mutate(
         &self,
-        mutation: &zeron_proto::WorkOutlineMutation,
-        actor: &zeron_proto::WorkOutlineActor,
+        mutation: &mast_proto::WorkOutlineMutation,
+        actor: &mast_proto::WorkOutlineActor,
         ledger_keys: &[String],
-    ) -> Result<zeron_proto::WorkOutlineMutateReply, zeron_proto::WorkOutlineError> {
+    ) -> Result<mast_proto::WorkOutlineMutateReply, mast_proto::WorkOutlineError> {
         let now = Utc::now().timestamp_millis();
         self.mutate(|doc| {
             let reply = doc.apply_work_outline_mutation(mutation, actor, now)?;
@@ -864,16 +864,16 @@ impl WorkspaceHost {
     /// [`Self::work_outline_mutate`].
     pub fn work_outline_keep_session(
         &self,
-        params: &zeron_proto::KeepInstructionSessionParams,
-        kept: Option<Option<zeron_proto::InstructionRevisionPin>>,
-        actor: &zeron_proto::WorkOutlineActor,
+        params: &mast_proto::KeepInstructionSessionParams,
+        kept: Option<Option<mast_proto::InstructionRevisionPin>>,
+        actor: &mast_proto::WorkOutlineActor,
         ledger_keys: &[String],
-    ) -> Result<zeron_proto::WorkOutlineMutateReply, zeron_proto::WorkOutlineError> {
+    ) -> Result<mast_proto::WorkOutlineMutateReply, mast_proto::WorkOutlineError> {
         let now = Utc::now().timestamp_millis();
         self.mutate(|doc| {
             let id = doc.keep_instruction_session(params, kept, actor, now)?;
             lock(&self.inner.pending_ledger_marks).extend(ledger_keys.iter().cloned());
-            Ok(zeron_proto::WorkOutlineMutateReply {
+            Ok(mast_proto::WorkOutlineMutateReply {
                 application_id: Some(id),
                 ..Default::default()
             })
@@ -896,8 +896,8 @@ impl WorkspaceHost {
     pub fn authorize_agent_work_outline(
         &self,
         chat_id: &str,
-        mutation: &zeron_proto::WorkOutlineMutation,
-    ) -> Result<(), zeron_proto::WorkOutlineError> {
+        mutation: &mast_proto::WorkOutlineMutation,
+    ) -> Result<(), mast_proto::WorkOutlineError> {
         self.read(|doc| doc.authorize_agent_mutation(chat_id, mutation))
     }
 
@@ -917,12 +917,12 @@ impl WorkspaceHost {
     }
 
     /// Whether a registry row is absent, live, or tombstoned (rule R1).
-    pub fn registry_row_state(&self, kind: &str, id: &str) -> zeron_doc::RowState {
+    pub fn registry_row_state(&self, kind: &str, id: &str) -> mast_doc::RowState {
         self.read(|doc| doc.row_state(kind, id))
     }
 
     /// One overlay registry row with its clocks (diagnostics and tests).
-    pub fn registry_row(&self, kind: &str, id: &str) -> Option<zeron_doc::RegistryRow> {
+    pub fn registry_row(&self, kind: &str, id: &str) -> Option<mast_doc::RegistryRow> {
         self.read(|doc| doc.row(kind, id))
     }
 
@@ -940,17 +940,17 @@ impl WorkspaceHost {
     // ── Planning artifacts (registry rows; policy in `crate::artifacts`) ──
 
     /// A live artifact row.
-    pub fn artifact(&self, id: &str) -> Option<zeron_proto::ArtifactView> {
+    pub fn artifact(&self, id: &str) -> Option<mast_proto::ArtifactView> {
         self.read(|doc| doc.artifact(id))
     }
 
     /// Every live artifact row (all Spaces).
-    pub fn all_artifacts(&self) -> Vec<zeron_proto::ArtifactView> {
+    pub fn all_artifacts(&self) -> Vec<mast_proto::ArtifactView> {
         self.read(|doc| doc.all_artifacts())
     }
 
     /// Live artifacts of one Space, sorted.
-    pub fn artifacts_of_space(&self, space_id: &str) -> Vec<zeron_proto::ArtifactView> {
+    pub fn artifacts_of_space(&self, space_id: &str) -> Vec<mast_proto::ArtifactView> {
         self.read(|doc| doc.artifacts_of_space(space_id))
     }
 
@@ -968,8 +968,8 @@ impl WorkspaceHost {
     /// Create or update one artifact row (returns the row as written).
     pub fn put_artifact(
         &self,
-        view: &zeron_proto::ArtifactView,
-    ) -> Result<zeron_proto::ArtifactView, EngineError> {
+        view: &mast_proto::ArtifactView,
+    ) -> Result<mast_proto::ArtifactView, EngineError> {
         Ok(self.mutate(|doc| doc.put_artifact(view))?)
     }
 
@@ -989,8 +989,8 @@ impl WorkspaceHost {
     pub fn set_artifact_answers(
         &self,
         id: &str,
-        answers: &[zeron_proto::ArtifactQuestionAnswer],
-    ) -> Result<Option<Vec<zeron_proto::ArtifactQuestionAnswer>>, EngineError> {
+        answers: &[mast_proto::ArtifactQuestionAnswer],
+    ) -> Result<Option<Vec<mast_proto::ArtifactQuestionAnswer>>, EngineError> {
         let now = Utc::now().timestamp_millis();
         Ok(self.mutate(|doc| doc.set_artifact_answers(id, answers, now))?)
     }
@@ -999,8 +999,8 @@ impl WorkspaceHost {
     pub fn set_artifact_comments(
         &self,
         id: &str,
-        comments: &[zeron_proto::ArtifactComment],
-    ) -> Result<Option<Vec<zeron_proto::ArtifactComment>>, EngineError> {
+        comments: &[mast_proto::ArtifactComment],
+    ) -> Result<Option<Vec<mast_proto::ArtifactComment>>, EngineError> {
         let now = Utc::now().timestamp_millis();
         Ok(self.mutate(|doc| doc.set_artifact_comments(id, comments, now))?)
     }
@@ -1010,7 +1010,7 @@ impl WorkspaceHost {
     pub fn set_artifact_pick(
         &self,
         id: &str,
-        pick: Option<&zeron_proto::ArtifactOptionPick>,
+        pick: Option<&mast_proto::ArtifactOptionPick>,
     ) -> Result<Option<()>, EngineError> {
         let now = Utc::now().timestamp_millis();
         Ok(self.mutate(|doc| doc.set_artifact_pick(id, pick, now))?)
@@ -1045,7 +1045,7 @@ impl WorkspaceHost {
     pub fn instruction_revision(
         &self,
         revision_id: &str,
-    ) -> Option<zeron_proto::InstructionRevisionView> {
+    ) -> Option<mast_proto::InstructionRevisionView> {
         self.read(|doc| doc.instruction_revision(revision_id))
     }
 
@@ -1054,7 +1054,7 @@ impl WorkspaceHost {
     pub fn selected_instruction_revision(
         &self,
         chat_id: &str,
-    ) -> Option<zeron_proto::InstructionRevisionPin> {
+    ) -> Option<mast_proto::InstructionRevisionPin> {
         self.read(|doc| doc.selected_instruction_revision(chat_id))
     }
 
@@ -1062,8 +1062,8 @@ impl WorkspaceHost {
     /// (Milestone 3; pure, no filesystem).
     pub fn resolve_execution(
         &self,
-        scope: &zeron_proto::ExecutionScope,
-    ) -> Result<zeron_proto::ResolvedExecutionConfiguration, zeron_proto::WorkOutlineError> {
+        scope: &mast_proto::ExecutionScope,
+    ) -> Result<mast_proto::ResolvedExecutionConfiguration, mast_proto::WorkOutlineError> {
         self.read(|doc| doc.resolve_execution(scope))
     }
 
@@ -1071,7 +1071,7 @@ impl WorkspaceHost {
     pub fn chat_execution_binding(
         &self,
         chat_id: &str,
-    ) -> Option<zeron_proto::ChatExecutionBindingView> {
+    ) -> Option<mast_proto::ChatExecutionBindingView> {
         self.read(|doc| doc.chat_execution_binding(chat_id))
     }
 
@@ -1080,7 +1080,7 @@ impl WorkspaceHost {
     pub fn chat_execution_binding_state(
         &self,
         chat_id: &str,
-    ) -> zeron_proto::ChatExecutionBindingState {
+    ) -> mast_proto::ChatExecutionBindingState {
         self.read(|doc| doc.chat_execution_binding_state(chat_id))
     }
 
@@ -1089,7 +1089,7 @@ impl WorkspaceHost {
     pub fn checked_chat_execution_binding(
         &self,
         chat_id: &str,
-    ) -> Result<Option<zeron_proto::ChatExecutionBindingView>, EngineError> {
+    ) -> Result<Option<mast_proto::ChatExecutionBindingView>, EngineError> {
         self.chat_execution_binding_state(chat_id)
             .checked()
             .map_err(|error| {
@@ -1100,7 +1100,7 @@ impl WorkspaceHost {
     /// Every captured execution binding, by Chat id (Milestone 3).
     pub fn chat_execution_bindings(
         &self,
-    ) -> std::collections::HashMap<String, zeron_proto::ChatExecutionBindingView> {
+    ) -> std::collections::HashMap<String, mast_proto::ChatExecutionBindingView> {
         self.read(|doc| doc.chat_execution_bindings())
             .into_iter()
             .map(|binding| (binding.chat_id.clone(), binding))
@@ -1114,10 +1114,10 @@ impl WorkspaceHost {
     pub fn capture_chat_execution_binding(
         &self,
         chat_id: &str,
-        resolved: &zeron_proto::ResolvedExecutionConfiguration,
+        resolved: &mast_proto::ResolvedExecutionConfiguration,
         operation_id: &str,
-        actor: &zeron_proto::WorkOutlineActor,
-    ) -> Result<bool, zeron_proto::WorkOutlineError> {
+        actor: &mast_proto::WorkOutlineActor,
+    ) -> Result<bool, mast_proto::WorkOutlineError> {
         let now = Utc::now().timestamp_millis();
         // Dry run under the read lock first: `mutate` always bumps the
         // change counter, which a replay must not do.
@@ -1142,10 +1142,10 @@ impl WorkspaceHost {
     pub fn report_execution_session(
         &self,
         chat_id: &str,
-        report: &zeron_proto::ExecutionSessionReport,
+        report: &mast_proto::ExecutionSessionReport,
     ) -> bool {
         let unchanged = self.read(|doc| {
-            doc.row(zeron_doc::KIND_SESSIONS, chat_id)
+            doc.row(mast_doc::KIND_SESSIONS, chat_id)
                 .is_some_and(|row| {
                     !row.deleted
                         && row.fields.get("executionSession")
@@ -1648,7 +1648,7 @@ impl WorkspaceHost {
     ) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| {
             let Some(mut config) = doc.chat(chat_id)?.and_then(|chat| chat.config) else {
-                return Ok::<bool, zeron_doc::DocError>(false);
+                return Ok::<bool, mast_doc::DocError>(false);
             };
             if config.auto_approve == auto_approve {
                 return Ok(true);
@@ -1660,7 +1660,7 @@ impl WorkspaceHost {
 
     /// LWW write of one durable link slot (`linkedPrUrl`/`linkedTicketId` +
     /// its source), gated by write-time precedence — manual > created_in_chat
-    /// > mentioned (see [`zeron_proto::ChatLinkSource::can_overwrite`]).
+    /// > mentioned (see [`mast_proto::ChatLinkSource::can_overwrite`]).
     /// `value: None` clears the slot; clearing is manual-only (a mined writer
     /// passing `value: None` is refused outright — mining only ever adds a
     /// link, never removes one). Returns `Ok(false)` when the write was
@@ -1672,9 +1672,9 @@ impl WorkspaceHost {
         chat_id: &str,
         kind: ChatLinkKind,
         value: Option<&str>,
-        source: zeron_proto::ChatLinkSource,
+        source: mast_proto::ChatLinkSource,
     ) -> Result<bool, EngineError> {
-        if value.is_none() && source != zeron_proto::ChatLinkSource::Manual {
+        if value.is_none() && source != mast_proto::ChatLinkSource::Manual {
             return Ok(false);
         }
         if kind == ChatLinkKind::Pr {
@@ -1708,7 +1708,7 @@ impl WorkspaceHost {
         if url.is_empty() {
             return Ok(false);
         }
-        Ok(self.mutate(|doc| -> Result<bool, zeron_doc::DocError> {
+        Ok(self.mutate(|doc| -> Result<bool, mast_doc::DocError> {
             let Some(chat) = doc.chat(chat_id)? else {
                 return Ok(false);
             };
@@ -1746,7 +1746,7 @@ impl WorkspaceHost {
     /// per-row unlink; mined writers never call it.
     pub fn remove_chat_pr_link(&self, chat_id: &str, url: &str) -> Result<bool, EngineError> {
         let url = crate::chat_links::canonicalize_pr_url(url);
-        Ok(self.mutate(|doc| -> Result<bool, zeron_doc::DocError> {
+        Ok(self.mutate(|doc| -> Result<bool, mast_doc::DocError> {
             let Some(chat) = doc.chat(chat_id)? else {
                 return Ok(false);
             };
@@ -1769,7 +1769,7 @@ impl WorkspaceHost {
 
     /// Remove all durable PR links and clear the legacy primary mirror.
     pub fn clear_chat_pr_links(&self, chat_id: &str) -> Result<bool, EngineError> {
-        Ok(self.mutate(|doc| -> Result<bool, zeron_doc::DocError> {
+        Ok(self.mutate(|doc| -> Result<bool, mast_doc::DocError> {
             let Some(chat) = doc.chat(chat_id)? else {
                 return Ok(false);
             };
@@ -1800,7 +1800,7 @@ impl WorkspaceHost {
     pub fn set_chat_source_context(
         &self,
         chat_id: &str,
-        context: &zeron_proto::ConversationSourceContext,
+        context: &mast_proto::ConversationSourceContext,
     ) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| doc.set_chat_source_context(chat_id, context))?)
     }
@@ -1830,7 +1830,7 @@ impl WorkspaceHost {
         }
         Err(EngineError::Other(
             crate::execution_scope::rejection_message(&[
-                zeron_proto::ExecutionValidationError::BoundChatRetarget {
+                mast_proto::ExecutionValidationError::BoundChatRetarget {
                     chat_id: chat_id.to_owned(),
                     execution_root: root,
                     requested_path: cwd.to_owned(),
@@ -1890,18 +1890,18 @@ impl crate::instruction_registry::InstructionRegistry for WorkspaceHost {
     fn instruction_revision(
         &self,
         revision_id: &str,
-    ) -> Option<zeron_proto::InstructionRevisionView> {
+    ) -> Option<mast_proto::InstructionRevisionView> {
         WorkspaceHost::instruction_revision(self, revision_id)
     }
 
     fn selected_instruction_revision(
         &self,
         chat_id: &str,
-    ) -> Option<zeron_proto::InstructionRevisionPin> {
+    ) -> Option<mast_proto::InstructionRevisionPin> {
         WorkspaceHost::selected_instruction_revision(self, chat_id)
     }
 
-    fn report_execution_session(&self, chat_id: &str, report: zeron_proto::ExecutionSessionReport) {
+    fn report_execution_session(&self, chat_id: &str, report: mast_proto::ExecutionSessionReport) {
         WorkspaceHost::report_execution_session(self, chat_id, &report);
     }
 }
@@ -1909,7 +1909,7 @@ impl crate::instruction_registry::InstructionRegistry for WorkspaceHost {
 fn effective_chat_pr_links(
     doc: &RegistryDoc,
     chat_id: &str,
-) -> Result<Vec<ChatPrLink>, zeron_doc::DocError> {
+) -> Result<Vec<ChatPrLink>, mast_doc::DocError> {
     let mut by_url: BTreeMap<String, ChatLinkSource> = BTreeMap::new();
     for link in doc.chat_pr_links(chat_id) {
         let url = crate::chat_links::canonicalize_pr_url(&link.url);
@@ -1939,7 +1939,7 @@ fn effective_chat_pr_links(
     Ok(links)
 }
 
-fn mirror_primary_pr_link(doc: &mut RegistryDoc, chat_id: &str) -> Result<(), zeron_doc::DocError> {
+fn mirror_primary_pr_link(doc: &mut RegistryDoc, chat_id: &str) -> Result<(), mast_doc::DocError> {
     let primary = effective_chat_pr_links(doc, chat_id)?.into_iter().next();
     doc.set_chat_pr_link(
         chat_id,
@@ -2390,12 +2390,12 @@ fn device_name_on_boot(existing_name: Option<&str>, detected_name: &str) -> Stri
 /// auth path to maintain, and the `?beat=1` keeps presence alive for a
 /// device that can only reach the edge over HTTPS.
 struct WsDerivedRegistryTransport {
-    url: Arc<dyn zeron_sync::UrlProvider>,
+    url: Arc<dyn mast_sync::UrlProvider>,
     client: reqwest::Client,
 }
 
 impl WsDerivedRegistryTransport {
-    fn new(url: Arc<dyn zeron_sync::UrlProvider>) -> Self {
+    fn new(url: Arc<dyn mast_sync::UrlProvider>) -> Self {
         Self {
             url,
             client: reqwest::Client::new(),
@@ -2403,17 +2403,17 @@ impl WsDerivedRegistryTransport {
     }
 
     async fn leaf_url(
-        provider: &Arc<dyn zeron_sync::UrlProvider>,
+        provider: &Arc<dyn mast_sync::UrlProvider>,
         leaf: &str,
-    ) -> Result<(reqwest::Url, Option<String>), zeron_sync::SyncError> {
+    ) -> Result<(reqwest::Url, Option<String>), mast_sync::SyncError> {
         let ws = provider.url().await?;
         let mut u = reqwest::Url::parse(&ws)
-            .map_err(|e| zeron_sync::SyncError::Protocol(format!("bad ws url: {e}")))?;
+            .map_err(|e| mast_sync::SyncError::Protocol(format!("bad ws url: {e}")))?;
         let scheme = if u.scheme() == "wss" { "https" } else { "http" };
         let _ = u.set_scheme(scheme);
         let path = u.path().to_string();
         let Some(base) = path.strip_suffix("/ws") else {
-            return Err(zeron_sync::SyncError::Protocol(
+            return Err(mast_sync::SyncError::Protocol(
                 "ws url without /ws leaf".into(),
             ));
         };
@@ -2439,11 +2439,11 @@ impl WsDerivedRegistryTransport {
     }
 }
 
-impl zeron_sync::RegistryTransport for WsDerivedRegistryTransport {
+impl mast_sync::RegistryTransport for WsDerivedRegistryTransport {
     fn fetch(
         &self,
         since: u64,
-    ) -> futures::future::BoxFuture<'static, Result<String, zeron_sync::SyncError>> {
+    ) -> futures::future::BoxFuture<'static, Result<String, mast_sync::SyncError>> {
         let provider = self.url.clone();
         let client = self.client.clone();
         Box::pin(async move {
@@ -2458,23 +2458,23 @@ impl zeron_sync::RegistryTransport for WsDerivedRegistryTransport {
             let resp = req
                 .send()
                 .await
-                .map_err(|e| zeron_sync::SyncError::WebSocket(describe_http_error(e)))?;
+                .map_err(|e| mast_sync::SyncError::WebSocket(describe_http_error(e)))?;
             if !resp.status().is_success() {
-                return Err(zeron_sync::SyncError::Protocol(format!(
+                return Err(mast_sync::SyncError::Protocol(format!(
                     "registry pull http {}",
                     resp.status()
                 )));
             }
             resp.text()
                 .await
-                .map_err(|e| zeron_sync::SyncError::WebSocket(describe_http_error(e)))
+                .map_err(|e| mast_sync::SyncError::WebSocket(describe_http_error(e)))
         })
     }
 
     fn push(
         &self,
         body: String,
-    ) -> futures::future::BoxFuture<'static, Result<String, zeron_sync::SyncError>> {
+    ) -> futures::future::BoxFuture<'static, Result<String, mast_sync::SyncError>> {
         let provider = self.url.clone();
         let client = self.client.clone();
         Box::pin(async move {
@@ -2489,16 +2489,16 @@ impl zeron_sync::RegistryTransport for WsDerivedRegistryTransport {
             let resp = req
                 .send()
                 .await
-                .map_err(|e| zeron_sync::SyncError::WebSocket(describe_http_error(e)))?;
+                .map_err(|e| mast_sync::SyncError::WebSocket(describe_http_error(e)))?;
             if !resp.status().is_success() {
-                return Err(zeron_sync::SyncError::Protocol(format!(
+                return Err(mast_sync::SyncError::Protocol(format!(
                     "registry push http {}",
                     resp.status()
                 )));
             }
             resp.text()
                 .await
-                .map_err(|e| zeron_sync::SyncError::WebSocket(describe_http_error(e)))
+                .map_err(|e| mast_sync::SyncError::WebSocket(describe_http_error(e)))
         })
     }
 }
@@ -2511,11 +2511,11 @@ mod tests {
     async fn registry_http_sync_retains_dns_cause() {
         use super::*;
         use crate::http_error::test_support::FailingDns;
-        use zeron_sync::RegistryTransport;
+        use mast_sync::RegistryTransport;
 
         let dns = Arc::new(FailingDns::default());
         let transport = WsDerivedRegistryTransport {
-            url: Arc::new(zeron_sync::StaticUrl(
+            url: Arc::new(mast_sync::StaticUrl(
                 "wss://edge.invalid/registry/org/ws?token=token-secret".into(),
             )),
             client: dns.client(),
@@ -2588,7 +2588,7 @@ mod tests {
     #[tokio::test]
     async fn work_outline_sweep_with_nothing_to_do_does_not_bump_the_change_counter() {
         use super::*;
-        use zeron_doc::{OpKind, RowOp};
+        use mast_doc::{OpKind, RowOp};
 
         let dir = tempfile::tempdir().unwrap();
         let host = WorkspaceHost::open(
@@ -2619,7 +2619,7 @@ mod tests {
         host.mutate(|doc| {
             let hlc = doc.mint_hlc();
             doc.write_ops(vec![RowOp {
-                kind: zeron_doc::KIND_WORK_ITEMS.to_owned(),
+                kind: mast_doc::KIND_WORK_ITEMS.to_owned(),
                 id: "ghost-item".into(),
                 op: OpKind::Upsert,
                 set: Some(std::collections::BTreeMap::from([(
@@ -2659,7 +2659,7 @@ mod tests {
         let mut preferences = host.watch_sidebar_preferences();
         assert!(!preferences.borrow().initialized);
 
-        host.change_sidebar_pin(&zeron_proto::SidebarPinChange::Unpin {
+        host.change_sidebar_pin(&mast_proto::SidebarPinChange::Unpin {
             session_id: "absent".into(),
         })
         .unwrap();
@@ -2679,7 +2679,7 @@ mod tests {
         );
         host.create_chat("cached", None, Some("test-device"), None, None)
             .unwrap();
-        host.change_sidebar_pin(&zeron_proto::SidebarPinChange::Pin {
+        host.change_sidebar_pin(&mast_proto::SidebarPinChange::Pin {
             session_id: "cached".into(),
             after: None,
             before: None,
@@ -2688,8 +2688,8 @@ mod tests {
         let acknowledgement = host.sidebar_preferences_snapshot();
         assert!(acknowledgement.revision > first_revision);
         assert_eq!(*preferences.borrow(), acknowledgement);
-        host.change_sidebar_pin(&zeron_proto::SidebarPinChange::Section {
-            change: zeron_proto::SidebarSectionChange::Create {
+        host.change_sidebar_pin(&mast_proto::SidebarPinChange::Section {
+            change: mast_proto::SidebarSectionChange::Create {
                 id: "focus".into(),
                 name: "Focus".into(),
             },
@@ -2699,8 +2699,8 @@ mod tests {
         assert!(sections.revision > acknowledgement.revision);
         assert_eq!(sections.sections[0].name, "Focus");
         assert_eq!(*preferences.borrow(), sections);
-        host.change_sidebar_pin(&zeron_proto::SidebarPinChange::Section {
-            change: zeron_proto::SidebarSectionChange::Collapse {
+        host.change_sidebar_pin(&mast_proto::SidebarPinChange::Section {
+            change: mast_proto::SidebarSectionChange::Collapse {
                 id: "focus".into(),
                 collapsed: true,
             },
@@ -2736,7 +2736,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_chat_link_precedence_manual_is_not_clobbered_by_mined_writes() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
 
         assert!(
@@ -2785,7 +2785,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_chat_link_precedence_created_in_chat_beats_mentioned_but_not_manual() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
 
         assert!(
@@ -2851,7 +2851,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_chat_link_clear_is_manual_only() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
 
         host.set_chat_link(
@@ -2890,7 +2890,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_chat_pr_link_is_targeted_and_legacy_rows_fall_back() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
 
         // Simulate a pre-collection registry row.
@@ -2925,7 +2925,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_chat_link_the_pr_and_ticket_slots_are_independent() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
 
         host.set_chat_link(
@@ -2958,7 +2958,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_chat_link_on_a_missing_chat_row_is_a_quiet_no_op() {
-        use zeron_proto::ChatLinkSource;
+        use mast_proto::ChatLinkSource;
         let (_dir, host) = linkable_test_host();
         assert!(
             !host

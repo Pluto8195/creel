@@ -26,7 +26,7 @@ use crate::swr::{Entry, SwrStore};
 use futures::future::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use zeron_proto::{
+use mast_proto::{
     PrDashBucket, PrDashCheck, PrDashDiff, PrDashReply, PrDashReviewer, PrDashRow, PrDashTab,
 };
 
@@ -111,9 +111,9 @@ pub trait GhRunner: Send + Sync + 'static {
 pub struct RealGh;
 
 fn gh_command() -> Option<std::process::Command> {
-    let executable = zeron_harness::resolve_login_shell_executable("gh")?;
+    let executable = mast_harness::resolve_login_shell_executable("gh")?;
     let mut command = std::process::Command::new(executable);
-    zeron_harness::compose_login_shell_path_std(&mut command);
+    mast_harness::compose_login_shell_path_std(&mut command);
     command.env("GH_PROMPT_DISABLED", "1").stdin(Stdio::null());
     Some(command)
 }
@@ -211,7 +211,7 @@ pub struct PrDashConfig {
 impl Default for PrDashConfig {
     fn default() -> Self {
         Self {
-            classify: zeron_proto::classify,
+            classify: mast_proto::classify,
             cache_ttl: Duration::from_secs(60),
             mergeable_sleep: Duration::from_millis(1200),
             mergeable_retries: 2,
@@ -1130,7 +1130,7 @@ impl PrDash {
         }
     }
 
-    /// The real service: `gh`, spec defaults, `zeron_proto::classify`.
+    /// The real service: `gh`, spec defaults, `mast_proto::classify`.
     pub fn with_real_gh() -> Self {
         Self::new(Arc::new(RealGh), PrDashConfig::default())
     }

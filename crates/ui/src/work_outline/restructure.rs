@@ -41,8 +41,8 @@ pub(crate) struct MovePlan {
 }
 
 impl MovePlan {
-    pub(crate) fn params(&self, operation_id: String) -> zeron_proto::MoveWorkItemParams {
-        zeron_proto::MoveWorkItemParams {
+    pub(crate) fn params(&self, operation_id: String) -> mast_proto::MoveWorkItemParams {
+        mast_proto::MoveWorkItemParams {
             work_item_id: self.work_item_id.clone(),
             destination_parent_work_item_id: self.destination_parent.clone(),
             placement: self.placement.clone(),

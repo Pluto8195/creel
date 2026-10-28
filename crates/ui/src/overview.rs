@@ -35,9 +35,9 @@ use gpui::{
     prelude::*, px,
 };
 
-use zeron_engine::pr_ticket_cache::{ChecksStatus, PrAction, PrStatus, TicketStatus};
-use zeron_proto::{Chat, ChatIndicator, ChatLinkSource, Space};
-use zeron_rpc::methods;
+use mast_engine::pr_ticket_cache::{ChecksStatus, PrAction, PrStatus, TicketStatus};
+use mast_proto::{Chat, ChatIndicator, ChatLinkSource, Space};
+use mast_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::overview_grouping::{self, GroupDimension, GroupKeyed, Partition};
@@ -85,7 +85,7 @@ const SUBAGENTS_REFRESH: Duration = Duration::from_secs(120);
 const SUBAGENTS_RUNNING_REFRESH: Duration = Duration::from_secs(12);
 
 /// One subagent, as `SCAN_CHAT_SUBAGENTS` reports it — the UI's own decode
-/// of the wire item (a subset of `zeron_engine::subagent_scan::SubagentSummary`
+/// of the wire item (a subset of `mast_engine::subagent_scan::SubagentSummary`
 /// plus the `status` field), so this view depends on the RPC contract rather
 /// than the engine struct's exact shape. Unknown extra keys
 /// (`transcriptPath`) are ignored.
@@ -428,7 +428,7 @@ fn workspace_root_of(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    if zeron_engine::repos::is_automatic_access_blocked(std::path::Path::new(cwd)) {
+    if mast_engine::repos::is_automatic_access_blocked(std::path::Path::new(cwd)) {
         return None;
     }
     let contents =
@@ -1664,9 +1664,9 @@ pub struct Overview {
     /// Tests run without a Shell: PR review starts land here.
     #[cfg(test)]
     pub(crate) captured_pr_review: Option<(
-        zeron_proto::PullRequestRef,
+        mast_proto::PullRequestRef,
         Option<(String, String)>,
-        zeron_proto::PrReviewAction,
+        mast_proto::PrReviewAction,
     )>,
     /// "Add issues from <project>…" on a project-linked item: a picker over
     /// the Overview, independent of the Linear panel (`linear_host.rs`).
@@ -6805,7 +6805,7 @@ impl Overview {
             return self.start_pr_review_for_item(
                 space_id,
                 item_id,
-                zeron_proto::PrReviewAction::CodeReview,
+                mast_proto::PrReviewAction::CodeReview,
                 cx,
             );
         }
@@ -7457,7 +7457,7 @@ mod logic_tests {
             assert!(workspace_root_of(cwd.to_str().unwrap()).is_none());
             assert_eq!(repo_key(cwd.to_str()), "historical-chat");
         }
-        assert!(!zeron_engine::repos::is_automatic_access_blocked(
+        assert!(!mast_engine::repos::is_automatic_access_blocked(
             &home.join("Projects").join("zeron")
         ));
     }
@@ -8342,12 +8342,12 @@ mod logic_tests {
     fn card_model_label_uses_explicit_id_or_honest_default() {
         let mut chat = row("c", "/r/zeron", None).chat;
         assert_eq!(chat_model_label(&chat), "default model");
-        chat.config = Some(zeron_proto::ChatConfig {
-            harness: zeron_proto::HarnessId::Codex,
+        chat.config = Some(mast_proto::ChatConfig {
+            harness: mast_proto::HarnessId::Codex,
             model: Some("gpt-6-codex".into()),
             reasoning: None,
             model_options: Default::default(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: false,
         });
         assert_eq!(chat_model_label(&chat), "gpt-6-codex");
@@ -8475,7 +8475,7 @@ mod logic_tests {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
+                mast_rpc::RpcClient::new(out, inbound),
             ));
             let mut chat = row("c1", "/r", None).chat;
             chat.harness_session_id = Some("s1".into());
@@ -8566,7 +8566,7 @@ mod logic_tests {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
+                mast_rpc::RpcClient::new(out, inbound),
             ));
             let mut chat = row("c1", "/r", None).chat;
             chat.harness_session_id = Some("s1".into());
@@ -8972,18 +8972,18 @@ mod logic_tests {
     #[gpui::test]
     fn work_item_details_list_artifacts_and_the_outline_counts_them(cx: &mut gpui::TestAppContext) {
         use crate::artifacts::tests::{artifact, id, scripted, snapshot as artifacts_snapshot};
-        use zeron_proto::ArtifactKind;
+        use mast_proto::ArtifactKind;
         let dir = tempfile::tempdir().unwrap();
         let (overview, state, vcx) = outline_overview(cx, dir.path());
         let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
         snapshot
             .external_references
-            .push(zeron_proto::WorkItemExternalReferenceView {
+            .push(mast_proto::WorkItemExternalReferenceView {
                 id: "ref-project".into(),
                 space_id: "s1".into(),
                 work_item_id: API.into(),
-                provider: zeron_proto::linear::LINEAR_PROVIDER.into(),
-                reference_type: zeron_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
+                provider: mast_proto::linear::LINEAR_PROVIDER.into(),
+                reference_type: mast_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
                 external_id: "p1".into(),
                 url: "https://linear.app/acme/project/receiving-1".into(),
                 cached_title: Some("Receiving".into()),
@@ -8999,7 +8999,7 @@ mod logic_tests {
         older.updated_at = 10;
         let (actions, calls) = scripted(std::sync::Arc::new(|method, _| {
             Ok(match method {
-                zeron_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
+                mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
                     "artifactId": id(4), "revision": 1, "url": "zeron-artifact:x",
                     "storedPath": "/work/alpha/.zeron/artifacts/api/plan.md", "changed": true
                 }),
@@ -9072,7 +9072,7 @@ mod logic_tests {
                 .map(|(_, params)| params.clone())
                 .collect::<Vec<_>>()
         };
-        let pins = sent(zeron_rpc::methods::ARTIFACT_PIN);
+        let pins = sent(mast_rpc::methods::ARTIFACT_PIN);
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0]["artifactId"], id(2));
         assert_eq!(pins[0]["pinned"], true);
@@ -9080,12 +9080,12 @@ mod logic_tests {
         // Register existing: outside the Space is refused; inside registers.
         details.update(vcx, |d, cx| d.register_existing("/etc/passwd".into(), cx));
         vcx.run_until_parked();
-        assert!(sent(zeron_rpc::methods::ARTIFACT_REGISTER).is_empty());
+        assert!(sent(mast_rpc::methods::ARTIFACT_REGISTER).is_empty());
         details.update(vcx, |d, cx| {
             d.register_existing("/work/alpha/work/plan.md".into(), cx)
         });
         vcx.run_until_parked();
-        let registers = sent(zeron_rpc::methods::ARTIFACT_REGISTER);
+        let registers = sent(mast_rpc::methods::ARTIFACT_REGISTER);
         assert_eq!(registers.len(), 1);
         assert_eq!(registers[0]["spaceId"], "s1");
         assert_eq!(registers[0]["workItemId"], API);
@@ -9463,7 +9463,7 @@ mod logic_tests {
         cx: &'a mut gpui::TestAppContext,
         dir: &std::path::Path,
         snapshot: WorkOutlineSnapshot,
-        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
         + Send
         + Sync
         + 'static,
@@ -9492,7 +9492,7 @@ mod logic_tests {
         (overview, calls, vcx)
     }
 
-    fn reply_ok(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    fn reply_ok(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
         Ok(match params["op"].as_str() {
             Some("createWorkItemInstruction") => serde_json::json!({"instructionId": "i-new"}),
             _ => serde_json::json!({}),
@@ -10143,7 +10143,7 @@ mod logic_tests {
         let dir = tempfile::tempdir().unwrap();
         let (overview, calls, vcx) =
             instruction_overview(cx, dir.path(), instruction_fixture::snapshot("s1"), |_| {
-                Err(zeron_rpc::RpcError::Failed(
+                Err(mast_rpc::RpcError::Failed(
                     "work-outline/unsupported: instruction operations are not available".into(),
                 ))
             });
@@ -10188,7 +10188,7 @@ mod logic_tests {
     /// with `validate`.
     fn execution_reply(
         validate: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
-    ) -> impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    ) -> impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static {
@@ -10200,7 +10200,7 @@ mod logic_tests {
                 return match path {
                     "/work/alpha/ui" => Ok(identity("repo:ui", path)),
                     "/work/alpha/flagship" => Ok(identity("repo:flagship", path)),
-                    other => Err(zeron_rpc::RpcError::Failed(format!(
+                    other => Err(mast_rpc::RpcError::Failed(format!(
                         "{other} is not a Git repository"
                     ))),
                 };
@@ -10526,21 +10526,21 @@ mod logic_tests {
         draw(vcx);
         let cases = [
             (
-                zeron_proto::ExecutionValidationError::DeviceOffline {
+                mast_proto::ExecutionValidationError::DeviceOffline {
                     device_id: "d".into(),
                     detail: String::new(),
                 },
                 "work-item-execution-validation-device-offline",
             ),
             (
-                zeron_proto::ExecutionValidationError::HostUnsupported {
+                mast_proto::ExecutionValidationError::HostUnsupported {
                     device_id: "d".into(),
                     capability: "work-outline-multi-repo-v1".into(),
                 },
                 "work-item-execution-validation-host-unsupported",
             ),
             (
-                zeron_proto::ExecutionValidationError::WorktreeMoved {
+                mast_proto::ExecutionValidationError::WorktreeMoved {
                     repo_id: "repo:flagship".into(),
                     worktree_id: "wt".into(),
                     expected_path: "/a".into(),
@@ -10551,7 +10551,7 @@ mod logic_tests {
         ];
         for (error, selector) in cases {
             *validate.lock().unwrap() = serde_json::to_value(
-                zeron_proto::ValidateExecutionConfigurationReply::from_result(
+                mast_proto::ValidateExecutionConfigurationReply::from_result(
                     None,
                     Err(vec![error]),
                 ),

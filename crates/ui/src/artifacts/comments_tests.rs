@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use serde_json::json;
-use zeron_proto::{
+use mast_proto::{
     ArtifactComment, ArtifactContentEncoding, ArtifactKind, ArtifactView, CommentAnchor,
     CommentStatus,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use super::tab::{ArtifactTab, FakeWebHost, WebProbe};
 use super::tests::{Calls, Reply, artifact, content_reply, id, init_ui, scripted, snapshot};
@@ -19,7 +19,7 @@ const PAGE: &str = "<h2 id=\"intake\">Receiving intake</h2>\
 <p>Parts arrive at the dock.</p>\
 <div data-zeron-question=\"Q-1\" data-status=\"open\">Merge by MPN?</div>";
 
-fn chat(id: &str) -> zeron_proto::Chat {
+fn chat(id: &str) -> mast_proto::Chat {
     serde_json::from_value(json!({
         "id": id, "deviceId": "dev", "archived": false,
         "createdAt": "2026-07-19T12:00:00Z",

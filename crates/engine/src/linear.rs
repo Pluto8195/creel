@@ -26,7 +26,7 @@ use futures::future::{BoxFuture, Shared};
 use crate::swr::SwrStore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearConnectionStatus, LinearError, LinearErrorCode, LinearIssueSummary, LinearKeySource,
     LinearProjectDetail, LinearProjectSummary, MAX_LIST_ISSUES, MAX_PROJECT_UPDATES,
 };

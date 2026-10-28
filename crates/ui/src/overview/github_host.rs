@@ -5,7 +5,7 @@
 //! panel, its events (Reveal, Created, Review), and the Outline drop of a
 //! panel PR.
 use gpui::{AppContext as _, Context, Entity};
-use zeron_proto::{PrReviewAction, PullRequestRef, PullRequestStatusSummary};
+use mast_proto::{PrReviewAction, PullRequestRef, PullRequestStatusSummary};
 
 use super::Overview;
 use crate::github::panel::{GithubPanel, GithubPanelEvent, GithubSpace};

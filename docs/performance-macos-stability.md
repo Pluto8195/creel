@@ -144,7 +144,7 @@ foreground focus and was discarded, rather than counted as a resource result.
 
 ## Reproduction
 
-Build with `cargo build --release --locked -p zeron`, and copy each binary to an
+Build with `cargo build --release --locked -p mast`, and copy each binary to an
 immutable path before profiling. Use an unlocked, awake display with no concurrent
 build or test workload. The native helper sizes the foreground window to 1320×880
 points and rejects focus loss. Default dark appearance and animations are enabled.

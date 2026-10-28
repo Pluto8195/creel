@@ -164,13 +164,13 @@ pub(crate) enum OutlineEvent {
     LinearIssueDropped {
         space_id: String,
         item_id: String,
-        issue: Box<zeron_proto::linear::LinearIssueSummary>,
+        issue: Box<mast_proto::linear::LinearIssueSummary>,
     },
     /// A GitHub panel PR was dropped on a work item: create it there.
     PullRequestDropped {
         space_id: String,
         item_id: String,
-        pr: Box<zeron_proto::PullRequestStatusSummary>,
+        pr: Box<mast_proto::PullRequestStatusSummary>,
     },
 }
 
@@ -1283,7 +1283,7 @@ impl OutlineView {
         }
         let title: String = title
             .chars()
-            .take(zeron_proto::limits::MAX_TITLE_CHARS)
+            .take(mast_proto::limits::MAX_TITLE_CHARS)
             .collect();
         edit.submitting = true;
         let operation_id = edit.operation_id.clone();
@@ -1296,8 +1296,8 @@ impl OutlineView {
                 placement,
                 ..
             } => {
-                let work_item_id = zeron_proto::derive_id(&operation_id, zeron_proto::roles::ITEM);
-                let task = actions.create_work_item(zeron_proto::CreateWorkItemParams {
+                let work_item_id = mast_proto::derive_id(&operation_id, mast_proto::roles::ITEM);
+                let task = actions.create_work_item(mast_proto::CreateWorkItemParams {
                     space_id: space_id.clone(),
                     parent_work_item_id: parent.clone(),
                     placement: placement.clone(),
@@ -1322,7 +1322,7 @@ impl OutlineView {
                 let space_id = self
                     .snapshot_with_item(&item_id)
                     .map(|snapshot| snapshot.space_id.clone());
-                let changes = zeron_proto::WorkItemChanges {
+                let changes = mast_proto::WorkItemChanges {
                     title: Some(title.clone()),
                     ..Default::default()
                 };
@@ -1334,7 +1334,7 @@ impl OutlineView {
                         Some(operation_id.clone()),
                     )
                 });
-                let task = actions.update_work_item(zeron_proto::UpdateWorkItemParams {
+                let task = actions.update_work_item(mast_proto::UpdateWorkItemParams {
                     work_item_id: item_id.clone(),
                     changes,
                     operation_id: operation_id.clone(),
@@ -1660,7 +1660,7 @@ impl OutlineView {
         let (task, item_id, change) = match picker.purpose.clone() {
             PickerPurpose::RecentChanges => return,
             PickerPurpose::Move { item_id } => (
-                actions.move_work_item(zeron_proto::MoveWorkItemParams {
+                actions.move_work_item(mast_proto::MoveWorkItemParams {
                     work_item_id: item_id.clone(),
                     destination_parent_work_item_id: entry.value.clone(),
                     placement: placement.clone(),
@@ -1678,7 +1678,7 @@ impl OutlineView {
                     return;
                 };
                 (
-                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                    actions.assign_chat(mast_proto::AssignChatToWorkItemParams {
                         chat_id: chat_id.clone(),
                         work_item_id: item_id.clone(),
                         operation_id: operation_id.clone(),
@@ -1695,7 +1695,7 @@ impl OutlineView {
                     return;
                 };
                 (
-                    actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                    actions.assign_chat(mast_proto::AssignChatToWorkItemParams {
                         chat_id: chat_id.clone(),
                         work_item_id: item_id.clone(),
                         operation_id: operation_id.clone(),
@@ -2077,7 +2077,7 @@ impl OutlineView {
                 chat_id,
                 work_item_id,
             } => (
-                actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+                actions.assign_chat(mast_proto::AssignChatToWorkItemParams {
                     chat_id: chat_id.clone(),
                     work_item_id: work_item_id.clone(),
                     operation_id: operation_id.clone(),
@@ -2090,7 +2090,7 @@ impl OutlineView {
                 Some(row_key::item(&space_id, work_item_id)),
             ),
             DirectMutation::RemoveChat { chat_id } => (
-                actions.remove_chat(zeron_proto::RemoveChatFromWorkItemParams {
+                actions.remove_chat(mast_proto::RemoveChatFromWorkItemParams {
                     chat_id: chat_id.clone(),
                     operation_id: operation_id.clone(),
                 }),

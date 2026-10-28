@@ -14,8 +14,8 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use zeron_proto::pr_review_sync::WorkItemExternalSyncState;
-use zeron_proto::work_outline::{
+use mast_proto::pr_review_sync::WorkItemExternalSyncState;
+use mast_proto::work_outline::{
     SetLinearAssignedDestinationParams, SetPrReviewSyncDestinationParams, WorkOutlineErrorCode,
 };
 

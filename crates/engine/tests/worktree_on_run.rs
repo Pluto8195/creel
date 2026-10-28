@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ProjectActionDraft, ProjectActionIcon,
     ReasoningLevel, RunRequest, SandboxLevel, SteeringMode, WorktreeSpec,
 };
@@ -204,10 +204,10 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool) {
         .expect("create project");
     // Save through the same RPC as the editor: the Space may use an alias
     // while the queued WorktreeSpec carries the canonical repository path.
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
-            zeron_rpc::methods::UPSERT_PROJECT_ACTION,
+            mast_rpc::methods::UPSERT_PROJECT_ACTION,
             serde_json::json!({
                 "spaceId": "space-worktree-run",
                 "action": ProjectActionDraft {
@@ -225,7 +225,7 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool) {
     // resolves the project folder), then the queued Run carries the spec.
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({
                 "op": "createChat",
                 "chatId": CHAT,

@@ -11,7 +11,7 @@
 //!
 //! Pure logic only — the chip view lives in `Pickers`.
 
-use zeron_proto::ChatConfig;
+use mast_proto::ChatConfig;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ApprovalMode {
@@ -81,7 +81,7 @@ pub fn effective_auto_approve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{HarnessId, SandboxLevel};
+    use mast_proto::{HarnessId, SandboxLevel};
 
     fn config(auto_approve: bool) -> ChatConfig {
         ChatConfig {

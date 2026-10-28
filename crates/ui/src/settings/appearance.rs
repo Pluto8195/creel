@@ -11,8 +11,8 @@ use gpui::{
     KeyDownEvent, ObjectFit, Render, SharedString, StyledImage as _, Subscription, Window, div,
     img, prelude::*, px,
 };
-use zeron_theme::vscode::{ImportReport, SourceCompilation};
-use zeron_theme::{
+use mast_theme::vscode::{ImportReport, SourceCompilation};
+use mast_theme::{
     AccentPreset, AccentSelection, CustomThemeEntry, CustomThemeStatus, InstallMode,
     SurfacePreference, SurfaceTreatment, ThemeRegistry, ThemeSelection,
 };
@@ -1435,10 +1435,10 @@ fn preview(
     }
 }
 
-fn model_appearance(appearance: Appearance) -> zeron_theme::Appearance {
+fn model_appearance(appearance: Appearance) -> mast_theme::Appearance {
     match appearance {
-        Appearance::Dark => zeron_theme::Appearance::Dark,
-        Appearance::Light => zeron_theme::Appearance::Light,
+        Appearance::Dark => mast_theme::Appearance::Dark,
+        Appearance::Light => mast_theme::Appearance::Light,
     }
 }
 
@@ -1477,7 +1477,7 @@ fn compact_action(
         .text_size(crate::typography::ui_rems(11.5))
 }
 
-fn import_scene_preview(variant: &zeron_theme::ThemeVariant) -> AnyElement {
+fn import_scene_preview(variant: &mast_theme::ThemeVariant) -> AnyElement {
     let theme = Theme::from_variant(
         variant,
         AccentSelection::ThemeDefault,
@@ -3442,12 +3442,12 @@ mod tests {
         let registry = ThemeRegistry::builtin();
         assert_eq!(
             registry
-                .variants_for(zeron_theme::Appearance::Light)
+                .variants_for(mast_theme::Appearance::Light)
                 .count(),
             10
         );
         assert_eq!(
-            registry.variants_for(zeron_theme::Appearance::Dark).count(),
+            registry.variants_for(mast_theme::Appearance::Dark).count(),
             20
         );
     }

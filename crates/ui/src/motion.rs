@@ -582,9 +582,9 @@ where
 // ---------------------------------------------------------------------------
 
 /// Zeron-pulse floor opacity.
-// The loader constants and math live in `zeron_proto::motion` (pure phase
+// The loader constants and math live in `mast_proto::motion` (pure phase
 // functions); this crate animates them with gpui.
-pub use zeron_proto::motion::{
+pub use mast_proto::motion::{
     PULSE_MIN_OPACITY, PULSE_MIN_SCALE, PULSE_STAGGER, gspin_opacity, pulse_opacity, pulse_scale,
     pulse_wave, staggered_phase,
 };

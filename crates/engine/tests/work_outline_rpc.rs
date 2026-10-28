@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{
     HarnessId, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 fn assemble(dir: &std::path::Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
@@ -18,7 +18,7 @@ fn assemble(dir: &std::path::Path) -> EngineCore {
         .expect("engine core assembles")
 }
 
-async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
+async fn mutate(client: &mast_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
     client
         .call(methods::WORK_OUTLINE_MUTATE, params)
         .await
@@ -62,7 +62,7 @@ async fn frame_within(
 async fn watch_and_mutate_round_trip_over_rpc() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let info: Value = client.call(methods::ENGINE_INFO, json!({})).await.unwrap();
     assert!(
         info["capabilities"]
@@ -214,7 +214,7 @@ async fn outline_survives_an_engine_restart() {
     let root = derive_id("op-root", roles::ITEM);
     {
         let core = assemble(&data);
-        let client = zeron_rpc::memory_client(core.rpc_service());
+        let client = mast_rpc::memory_client(core.rpc_service());
         client
             .call(
                 methods::MUTATE,
@@ -232,7 +232,7 @@ async fn outline_survives_an_engine_restart() {
         core.shutdown().await;
     }
     let core = assemble(&data);
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let mut stream = client
         .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))
         .await
@@ -269,7 +269,7 @@ async fn replay_after_restart_does_not_rewrite() {
     });
     {
         let core = assemble(&data);
-        let client = zeron_rpc::memory_client(core.rpc_service());
+        let client = mast_rpc::memory_client(core.rpc_service());
         client
             .call(
                 methods::MUTATE,
@@ -294,7 +294,7 @@ async fn replay_after_restart_does_not_rewrite() {
     }
 
     let core = assemble(&data);
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     // A later edit (as if from another device) moves and renames X again.
     mutate(
         &client,
@@ -316,7 +316,7 @@ async fn replay_after_restart_does_not_rewrite() {
     .unwrap();
     let row_before = core
         .workspace
-        .registry_row(zeron_doc::KIND_WORK_ITEMS, &item("op-x"))
+        .registry_row(mast_doc::KIND_WORK_ITEMS, &item("op-x"))
         .unwrap();
     let pending_before = core.workspace.registry_batches_written();
 
@@ -335,7 +335,7 @@ async fn replay_after_restart_does_not_rewrite() {
     assert_eq!(created, json!({ "workItemId": item("op-x") }));
     let row_after = core
         .workspace
-        .registry_row(zeron_doc::KIND_WORK_ITEMS, &item("op-x"))
+        .registry_row(mast_doc::KIND_WORK_ITEMS, &item("op-x"))
         .unwrap();
     assert_eq!(row_after.clocks, row_before.clocks, "no field re-written");
     assert_eq!(row_after.fields, row_before.fields);
@@ -362,7 +362,7 @@ async fn replay_after_restart_does_not_rewrite() {
 async fn unrelated_registry_changes_never_hide_an_outline_change() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,
@@ -430,7 +430,7 @@ fn assemble_local(dir: &std::path::Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
     std::fs::write(dir.join("device-id"), "dev-a").expect("write device id");
     EngineCore::assemble_with_profile(
-        zeron_engine::EngineProfile::local(dir).expect("local profile"),
+        mast_engine::EngineProfile::local(dir).expect("local profile"),
         Arc::new(HarnessRegistry::new()),
         HarnessId::Mock,
         None,
@@ -443,25 +443,25 @@ fn assemble_local(dir: &std::path::Path) -> EngineCore {
 /// writes cycling over them, the way months of agent turns pile up on a
 /// local profile.
 fn seed_large_registry(data: &std::path::Path, spaces: &[String], chats: usize, history: usize) {
-    use zeron_doc::{OpKind, RowOp};
-    let store = zeron_sync::DocsStore::open(
-        zeron_engine::EngineProfile::local(data)
+    use mast_doc::{OpKind, RowOp};
+    let store = mast_sync::DocsStore::open(
+        mast_engine::EngineProfile::local(data)
             .unwrap()
             .store_root(),
     )
     .unwrap();
     let bytes = store
-        .load_snapshot(zeron_doc::REGISTRY_DOC_ID)
+        .load_snapshot(mast_doc::REGISTRY_DOC_ID)
         .unwrap()
         .unwrap();
-    let mut doc = zeron_doc::RegistryDoc::from_bytes(&bytes, "dev-a").unwrap();
+    let mut doc = mast_doc::RegistryDoc::from_bytes(&bytes, "dev-a").unwrap();
     let set = |value: Value| -> Option<std::collections::BTreeMap<String, Value>> {
         Some(serde_json::from_value(value).unwrap())
     };
     let mut ops = Vec::new();
     for i in 0..chats {
         ops.push(RowOp {
-            kind: zeron_doc::KIND_CHATS.into(),
+            kind: mast_doc::KIND_CHATS.into(),
             id: format!("chat-{i}"),
             op: OpKind::Upsert,
             set: set(json!({
@@ -476,7 +476,7 @@ fn seed_large_registry(data: &std::path::Path, spaces: &[String], chats: usize, 
     for n in 0..history {
         let chat = n % chats;
         ops.push(RowOp {
-            kind: zeron_doc::KIND_SESSIONS.into(),
+            kind: mast_doc::KIND_SESSIONS.into(),
             id: format!("chat-{chat}"),
             op: OpKind::Upsert,
             set: set(json!({
@@ -490,7 +490,7 @@ fn seed_large_registry(data: &std::path::Path, spaces: &[String], chats: usize, 
     }
     doc.write_ops(ops).unwrap();
     store
-        .save_snapshot(zeron_doc::REGISTRY_DOC_ID, &doc.to_bytes().unwrap())
+        .save_snapshot(mast_doc::REGISTRY_DOC_ID, &doc.to_bytes().unwrap())
         .unwrap();
 }
 
@@ -505,7 +505,7 @@ async fn mutations_stay_fast_on_a_large_local_registry() {
     let spaces: Vec<String> = (0..10).map(|i| format!("space-{i}")).collect();
     {
         let core = assemble_local(&data);
-        let client = zeron_rpc::memory_client(core.rpc_service());
+        let client = mast_rpc::memory_client(core.rpc_service());
         for space in &spaces {
             client
                 .call(
@@ -524,7 +524,7 @@ async fn mutations_stay_fast_on_a_large_local_registry() {
     let booted = std::time::Instant::now();
     let core = assemble_local(&data);
     eprintln!("boot over the seeded registry: {:?}", booted.elapsed());
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let mut streams = Vec::new();
     for space in &spaces {
         let mut stream = client

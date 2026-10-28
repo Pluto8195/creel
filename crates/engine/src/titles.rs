@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 
-use zeron_harness::{CancellationToken, RunControls, SteerMessage};
-use zeron_proto::{
+use mast_harness::{CancellationToken, RunControls, SteerMessage};
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     UserInputAnswer, UserInputQuestion,
 };
@@ -178,7 +178,7 @@ impl TitleGenerator {
         Ok(())
     }
 
-    fn title_context(&self, chat_id: &str, chat: &zeron_proto::Chat) -> TitleContext {
+    fn title_context(&self, chat_id: &str, chat: &mast_proto::Chat) -> TitleContext {
         let linked_pr_urls = self
             .inner
             .workspace
@@ -229,16 +229,16 @@ impl TitleGenerator {
         let settings = self.inner.registry.title_settings();
         let enabled = self.inner.registry.enabled_set();
         let harness_id = settings.harness.or_else(|| {
-            if zeron_harness::supports_titles(harness_id) {
+            if mast_harness::supports_titles(harness_id) {
                 Some(harness_id)
             } else {
                 enabled
                     .iter()
                     .copied()
-                    .find(|id| zeron_harness::supports_titles(*id))
+                    .find(|id| mast_harness::supports_titles(*id))
             }
         })?;
-        if !zeron_harness::supports_titles(harness_id) {
+        if !mast_harness::supports_titles(harness_id) {
             return None;
         }
         // No repository instructions, files, or active coding-session context.
@@ -270,7 +270,7 @@ impl TitleGenerator {
         };
         let title_prompt = format!(
             "{}\n\nKnown context (JSON; use identifiers exactly, omit absent fields):\n{}\n\nSession request (JSON string):\n{}",
-            zeron_harness::TITLE_INSTRUCTIONS,
+            mast_harness::TITLE_INSTRUCTIONS,
             serde_json::to_string(context).ok()?,
             serde_json::to_string(prompt).ok()?
         );
@@ -470,7 +470,7 @@ fn contextualize_title(candidate: &str, context: &TitleContext) -> String {
 /// Drive one titling run through the harness: no steering, questions resolved
 /// empty immediately (a titling prompt must never block on input).
 async fn collect_text(
-    harness: &dyn zeron_harness::Harness,
+    harness: &dyn mast_harness::Harness,
     request: RunRequest,
 ) -> Result<String, EngineError> {
     let (steer_tx, steer_rx) = tokio::sync::mpsc::channel::<SteerMessage>(1);
@@ -525,7 +525,7 @@ async fn collect_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::Model;
+    use mast_proto::Model;
 
     fn model(id: &str, label: &str) -> Model {
         Model {
@@ -552,14 +552,14 @@ mod tests {
 
     #[tokio::test]
     async fn tool_use_rejects_the_title_instead_of_accepting_coding_output() {
-        let harness = zeron_harness::mock::MockHarness {
+        let harness = mast_harness::mock::MockHarness {
             script: vec![
                 AgentEvent::TextDelta {
                     text: "I will change your code".into(),
                 },
                 AgentEvent::ToolCall {
                     id: "tool".into(),
-                    call: zeron_proto::ToolCall::Unknown {
+                    call: mast_proto::ToolCall::Unknown {
                         name: "write".into(),
                         input: None,
                     },
@@ -592,7 +592,7 @@ mod tests {
     struct RecordingTitleHarness(std::sync::Mutex<Vec<RunRequest>>);
 
     #[async_trait::async_trait]
-    impl zeron_harness::Harness for RecordingTitleHarness {
+    impl mast_harness::Harness for RecordingTitleHarness {
         fn id(&self) -> HarnessId {
             HarnessId::ClaudeCode
         }
@@ -602,13 +602,13 @@ mod tests {
         fn supports_steering(&self) -> bool {
             false
         }
-        fn steering_mode(&self) -> zeron_proto::SteeringMode {
-            zeron_proto::SteeringMode::TurnBoundary
+        fn steering_mode(&self) -> mast_proto::SteeringMode {
+            mast_proto::SteeringMode::TurnBoundary
         }
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<Model>, zeron_harness::HarnessError> {
+        async fn models(&self) -> Result<Vec<Model>, mast_harness::HarnessError> {
             panic!("an explicit title model should bypass catalog discovery")
         }
         async fn run(
@@ -616,8 +616,8 @@ mod tests {
             _: RunRequest,
             _: RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, mast_harness::HarnessError>>,
+            mast_harness::HarnessError,
         > {
             panic!("title generation must never call the coding entry point")
         }
@@ -626,8 +626,8 @@ mod tests {
             request: RunRequest,
             _: RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, mast_harness::HarnessError>>,
+            mast_harness::HarnessError,
         > {
             assert!(std::path::Path::new(&request.cwd).is_dir());
             self.0.lock().unwrap().push(request);

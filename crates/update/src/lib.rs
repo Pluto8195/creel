@@ -1,4 +1,4 @@
-//! zeron-update — release checking and self-update, shared by the engine (the
+//! mast-update — release checking and self-update, shared by the engine (the
 //! background checker + `ApplyUpdate`), the CLI (`zeron update`), and the UI
 //! (the sidebar update strip + macOS bundle swap).
 //!

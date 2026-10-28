@@ -6,7 +6,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'apps/zeron/**'
+      - 'apps/mast/**'
       - 'dist/windows/**'
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
@@ -18,7 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'apps/zeron/**'
+      - 'apps/mast/**'
       - 'dist/windows/**'
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
@@ -61,32 +61,32 @@ jobs:
           cache-on-failure: true
           cache-workspace-crates: true
       - name: Native harness security and integration tests
-        run: cargo test --release --locked -p zeron-harness --features native-fixture --lib --test codex_availability --test windows_native
+        run: cargo test --release --locked -p mast-harness --features native-fixture --lib --test codex_availability --test windows_native
       - name: UI tests
         env:
           RUST_BACKTRACE: '1'
         run: |
           # Native platform initialization runs in its own process. Keep the
           # real-font assertion and the complete headless suite mandatory.
-          cargo test --release --locked -p zeron-ui --lib native_diff_font_geometry -- --test-threads=1 --nocapture
+          cargo test --release --locked -p mast-ui --lib native_diff_font_geometry -- --test-threads=1 --nocapture
           $nativeResult = $LASTEXITCODE
-          cargo test --release --locked -p zeron-ui --lib -- --test-threads=1 --skip native_diff_font_geometry --nocapture
+          cargo test --release --locked -p mast-ui --lib -- --test-threads=1 --skip native_diff_font_geometry --nocapture
           $headlessResult = $LASTEXITCODE
           if ($nativeResult -ne 0 -or $headlessResult -ne 0) { exit 1 }
       - name: Build application
-        run: cargo build --release --locked -p zeron
+        run: cargo build --release --locked -p mast
       - name: Verify portable packaging
         run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Shader layout tests
         run: cargo test --release --locked -p gpui_windows --lib layout
       - name: Application and updater tests
-        run: cargo test --release --locked -p zeron -p zeron-update
+        run: cargo test --release --locked -p mast -p mast-update
       - name: Engine unit tests
-        run: cargo test --release --locked -p zeron-engine --lib
+        run: cargo test --release --locked -p mast-engine --lib
       - name: Harness catalog and login tests
-        run: cargo test --release --locked -p zeron-engine --test codex_catalog --test codex_login_resolution
+        run: cargo test --release --locked -p mast-engine --test codex_catalog --test codex_login_resolution
       - name: Auth integration tests
-        run: cargo test --release --locked -p zeron-engine --test auth
+        run: cargo test --release --locked -p mast-engine --test auth
       - name: GUI subsystem and redirected CLI output
         run: ./scripts/test-windows-startup.ps1
       - name: CLI startup without HOME
@@ -126,7 +126,7 @@ jobs:
           }
       - name: Build rendering fixture
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
-        run: cargo build --release --locked -p zeron-ui --example windows-render-fixture --features windows-render-fixture
+        run: cargo build --release --locked -p mast-ui --example windows-render-fixture --features windows-render-fixture
       - name: Upload GUI test binaries
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
         uses: actions/upload-artifact@v4

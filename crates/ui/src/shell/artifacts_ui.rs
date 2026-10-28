@@ -309,7 +309,7 @@ impl Shell {
         &self,
         path: &str,
         cx: &App,
-    ) -> Option<zeron_proto::ArtifactRegisterParams> {
+    ) -> Option<mast_proto::ArtifactRegisterParams> {
         let state = self.state.read(cx);
         let chat = state
             .chats
@@ -337,7 +337,7 @@ impl Shell {
             .map(|space| space.device_id.clone());
         let target_device_id =
             space_device.filter(|device| state.local_device_id.as_deref() != Some(device.as_str()));
-        Some(zeron_proto::ArtifactRegisterParams {
+        Some(mast_proto::ArtifactRegisterParams {
             space_id,
             work_item_id,
             chat_id: Some(chat.id.clone()),
@@ -359,14 +359,14 @@ mod tests {
     use crate::artifacts::tests::{
         Calls, Reply, Shown, artifact, content_reply, id, init_ui, scripted, snapshot,
     };
-    use zeron_proto::{ArtifactContentEncoding, ArtifactKind};
+    use mast_proto::{ArtifactContentEncoding, ArtifactKind};
 
     /// A Shell on the chat route with chat `c1` (Space `s1`, cwd
     /// `/work/alpha`) selected, `artifacts` installed, and a scripted engine.
     pub(crate) fn artifact_shell<'a>(
         cx: &'a mut gpui::TestAppContext,
         dir: &std::path::Path,
-        artifacts: Vec<zeron_proto::ArtifactView>,
+        artifacts: Vec<mast_proto::ArtifactView>,
         reply: Reply,
     ) -> (Entity<Shell>, Calls, Shown, &'a mut gpui::VisualTestContext) {
         cx.update(|cx| {
@@ -385,7 +385,7 @@ mod tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -396,7 +396,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -460,7 +460,7 @@ mod tests {
         imported.origin_path = Some("/work/alpha/notes/new.md".into());
         let reply: Reply = Arc::new(|method, params| {
             Ok(match method {
-                zeron_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
+                mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
                     "artifactId": id(2), "revision": 1,
                     "url": format!("zeron-artifact:{}", id(2)),
                     "storedPath": "/work/alpha/.zeron/artifacts/_chats/c1/new.md",
@@ -520,7 +520,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .find(|(method, _)| method == zeron_rpc::methods::ARTIFACT_REGISTER)
+            .find(|(method, _)| method == mast_rpc::methods::ARTIFACT_REGISTER)
             .map(|(_, params)| params.clone())
             .expect("registered");
         assert_eq!(register["spaceId"], "s1");
@@ -535,7 +535,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_REGISTER)
+                .filter(|(method, _)| method == mast_rpc::methods::ARTIFACT_REGISTER)
                 .count()
         };
         shell.update_in(vcx, |shell, window, cx| {
@@ -700,7 +700,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_REGISTER)
+            .filter(|(method, _)| method == mast_rpc::methods::ARTIFACT_REGISTER)
             .map(|(_, params)| params.clone())
             .collect()
     }
@@ -712,7 +712,7 @@ mod tests {
         let dir = init_ui(cx);
         let reply: Reply = Arc::new(|method, _| {
             Ok(match method {
-                zeron_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
+                mast_rpc::methods::ARTIFACT_REGISTER => serde_json::json!({
                     "artifactId": id(2), "revision": 1,
                     "url": format!("zeron-artifact:{}", id(2)),
                     "storedPath": "/work/alpha/.zeron/artifacts/_chats/c1/doc.md",
@@ -765,7 +765,7 @@ mod tests {
     fn outside_file_denial_shows_the_reason(cx: &mut gpui::TestAppContext) {
         let dir = init_ui(cx);
         let reply: Reply = Arc::new(|method, _| {
-            Err(zeron_rpc::RpcError::Failed(format!(
+            Err(mast_rpc::RpcError::Failed(format!(
                 "artifact/denied: /Users/me/.ssh/id cannot be published ({method})"
             )))
         });

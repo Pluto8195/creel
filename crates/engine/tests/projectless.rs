@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
@@ -136,11 +136,11 @@ async fn exercise_projectless(command_first: bool) {
 
     // The composer's exact wire shape for "Don't work in a project": a
     // deviceId, no spaceId, no cwd.
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     if !command_first {
         client
             .call(
-                zeron_rpc::methods::MUTATE,
+                mast_rpc::methods::MUTATE,
                 serde_json::json!({
                     "op": "createChat",
                     "chatId": CHAT,
@@ -201,7 +201,7 @@ async fn exercise_projectless(command_first: bool) {
     for _ in 0..2 {
         client
             .call(
-                zeron_rpc::methods::MUTATE,
+                mast_rpc::methods::MUTATE,
                 serde_json::json!({
                     "op": "createChat", "chatId": CHAT, "deviceId": core.device_id,
                 }),
@@ -230,7 +230,7 @@ async fn exercise_projectless(command_first: bool) {
     );
     let terminal = client
         .call(
-            zeron_rpc::methods::OPEN_TERMINAL,
+            mast_rpc::methods::OPEN_TERMINAL,
             serde_json::json!({ "chatId": CHAT, "cols": 80, "rows": 24 }),
         )
         .await
@@ -238,7 +238,7 @@ async fn exercise_projectless(command_first: bool) {
     assert_eq!(terminal["cwd"], cwds[0]);
     client
         .call(
-            zeron_rpc::methods::CLOSE_TERMINAL,
+            mast_rpc::methods::CLOSE_TERMINAL,
             serde_json::json!({ "terminalId": terminal["id"] }),
         )
         .await

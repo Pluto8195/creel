@@ -18,7 +18,7 @@ use std::time::Duration;
 use futures::{StreamExt, stream};
 use sha2::{Digest, Sha256};
 
-use zeron_proto::{
+use mast_proto::{
     DriveEntry, FileSearchMatch, FolderEntry, FolderListing, GitHistoryCommit,
     GitHistoryComparison, GitHistoryPage, GitHistoryRef, GitHistoryRefKind, Repo, RepoRef,
     Worktree,
@@ -254,7 +254,7 @@ impl Repos {
         args: &[&str],
         cwd: Option<&Path>,
     ) -> Result<String, EngineError> {
-        let mut cmd = zeron_harness::git_command_async();
+        let mut cmd = mast_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

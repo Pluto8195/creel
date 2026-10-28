@@ -3,15 +3,15 @@
 //! unassociated / projectless chats), opened in Outline mode. Run on a
 //! dedicated display:
 //!
-//! `cargo run -p zeron-ui --example outline-fixture`
+//! `cargo run -p mast-ui --example outline-fixture`
 //!
 //! ZERON_PALETTE_LIGHT selects the light appearance; ZERON_SIDEBAR_COMPACT the
 //! compact row density.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
-use zeron_ui::*;
+use mast_ui::*;
 
-fn chat(id: &str, space: Option<&str>, title: &str, minutes_ago: i64) -> zeron_proto::Chat {
-    let mut chat: zeron_proto::Chat = serde_json::from_value(serde_json::json!({
+fn chat(id: &str, space: Option<&str>, title: &str, minutes_ago: i64) -> mast_proto::Chat {
+    let mut chat: mast_proto::Chat = serde_json::from_value(serde_json::json!({
         "id": id, "deviceId": "local", "title": title, "archived": false,
         "createdAt": "2026-09-08T00:00:00Z",
         "config": {"harness": "claude-code", "model": "claude-sonnet-4-6", "reasoning": null, "sandbox": "workspace-write"}
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         gpui_base::init(cx);
         let mut settings = settings::UiSettings::default();
         settings.sidebar_compact = std::env::var_os("ZERON_SIDEBAR_COMPACT").is_some();
-        settings.surface = zeron_theme::SurfacePreference::Frosted;
+        settings.surface = mast_theme::SurfacePreference::Frosted;
         settings.save(&data).unwrap();
         settings::init(settings.clone(), data.clone(), cx);
         let fonts = typography::register_fonts(cx);
@@ -49,8 +49,8 @@ fn main() -> anyhow::Result<()> {
 
         let state = cx.new(|_| {
             let mut s = state::AppState::new();
-            s.connection = zeron_proto::view::ConnectionStatus::Ready;
-            s.workspace_scope = Some(zeron_proto::WorkspaceScope::Local);
+            s.connection = mast_proto::view::ConnectionStatus::Ready;
+            s.workspace_scope = Some(mast_proto::WorkspaceScope::Local);
             s.local_device_id = Some("local".into());
             s.data_dir = Some(data.clone());
             s.chats_synced = true;

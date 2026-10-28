@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::ChatDiffTargetSource;
-use zeron_rpc::methods;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::ChatDiffTargetSource;
+use mast_rpc::methods;
 
 const CHAT: &str = "chat-1";
 
@@ -121,7 +121,7 @@ fn fixture() -> Fixture {
     let core = EngineCore::assemble(
         &data,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine core assembles");
@@ -203,7 +203,7 @@ async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_and_branch_diffs_cover_only_the_bound_worktree() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     // The chat's own checkout is dirty with unrelated docs.
     std::fs::write(f.ws.join("README"), "dirty root\n").unwrap();
     // The worktree has one committed change and one uncommitted edit.
@@ -253,7 +253,7 @@ async fn scoped_and_branch_diffs_cover_only_the_bound_worktree() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn latest_turn_snapshots_cwd_and_targets_and_bases_mid_turn_binds() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     bind(&f, &f.sub_wt);
     f.core.diff_sync.reconcile_now().await;
 
@@ -341,7 +341,7 @@ async fn latest_turn_snapshots_cwd_and_targets_and_bases_mid_turn_binds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -363,7 +363,7 @@ async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -442,7 +442,7 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_chat_diff_target_rpc_round_trip_and_refusals() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     f.core
         .workspace
         .create_chat(
@@ -576,7 +576,7 @@ async fn agent_tool_bind_on_the_assembled_engine_reaches_the_watch_and_the_diff(
         .agent_tokens()
         .mint("chat-2", "run-1", "space-1", "dev-a");
     let rpc = f.core.rpc_service();
-    let client = zeron_rpc::memory_client(rpc.clone());
+    let client = mast_rpc::memory_client(rpc.clone());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -586,9 +586,9 @@ async fn agent_tool_bind_on_the_assembled_engine_reaches_the_watch_and_the_diff(
     std::fs::write(f.sub_wt.join("feature.txt"), "work\n").unwrap();
     let reply = rpc
         .agent_tools()
-        .call(&zeron_proto::agent_tools::AgentToolCallParams {
+        .call(&mast_proto::agent_tools::AgentToolCallParams {
             token: lease.token().to_owned(),
-            tool: zeron_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
+            tool: mast_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
             arguments: json!({"path": text(&f.sub_wt), "idempotencyKey": "k-1"}),
         })
         .expect("bind through the assembled agent tool");

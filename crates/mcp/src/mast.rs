@@ -1,4 +1,4 @@
-//! The engine client: a thin, reconnecting wrapper over `zeron_rpc` with the
+//! The engine client: a thin, reconnecting wrapper over `mast_rpc` with the
 //! snapshot/resolve helpers the tools share.
 //!
 //! Watch streams are the engine's only read surface for chats, devices,
@@ -13,14 +13,14 @@ use anyhow::{Context, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
-use zeron_doc::{
+use mast_doc::{
     SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
 };
-use zeron_proto::agent_tools::{self, AgentOrigin};
-use zeron_proto::{
+use mast_proto::agent_tools::{self, AgentOrigin};
+use mast_proto::{
     Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
 };
-use zeron_rpc::{RpcClient, RpcError, connect_ws, methods};
+use mast_rpc::{RpcClient, RpcError, connect_ws, methods};
 
 /// First-item wait for a watch snapshot. Localhost; the engine answers
 /// watch attaches in milliseconds unless it is still assembling stores.
@@ -92,13 +92,13 @@ pub enum TurnOutcome {
     TimedOut,
 }
 
-pub struct Zeron {
+pub struct Mast {
     url: String,
     token: Option<String>,
     rpc: Mutex<Option<Arc<RpcClient>>>,
 }
 
-impl Zeron {
+impl Mast {
     /// Lazy dialer: nothing connects until the first tool call, so `zeron
     /// mcp` starts (and answers `initialize`) even before the engine is up.
     pub fn new(url: String, token: Option<String>) -> Self {

@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use zeron_proto::{
+use mast_proto::{
     ExecutionHostCapabilities, ExecutionRepositoryIdentity, ExecutionValidationError,
     ExecutionWorktreeIdentity, RepositoryBinding, ResolvedExecutionConfiguration, Space,
     ValidatedExecution, ValidatedRepository, execution_configuration_shape_errors,

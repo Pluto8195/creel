@@ -20,12 +20,12 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 
-use zeron_engine::external_import::{ExternalSessionCandidate, ImportedSession};
-use zeron_engine::registry::HarnessDescriptor;
-use zeron_proto::{
+use mast_engine::external_import::{ExternalSessionCandidate, ImportedSession};
+use mast_engine::registry::HarnessDescriptor;
+use mast_proto::{
     ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel, Space,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 /// Display cap for the ref list (t3code shows pages of 100 with a status
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
@@ -468,7 +468,7 @@ pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
 }
 
 /// Directory rows of a listing (files never render in the browser).
-pub fn browser_rows(listing: &FolderListing) -> Vec<&zeron_proto::FolderEntry> {
+pub fn browser_rows(listing: &FolderListing) -> Vec<&mast_proto::FolderEntry> {
     listing.entries.iter().filter(|e| e.is_dir).collect()
 }
 
@@ -583,18 +583,18 @@ pub(crate) struct NewChatLauncher {
 #[derive(Debug, Clone, PartialEq)]
 struct PickersSlice {
     selected_chat: Option<String>,
-    chat: Option<zeron_proto::Chat>,
+    chat: Option<mast_proto::Chat>,
     selected_space: Option<String>,
     no_project: bool,
     selected_device: Option<String>,
     local_device_id: Option<String>,
     spaces: Vec<Space>,
-    devices: Vec<(zeron_proto::Device, bool)>,
+    devices: Vec<(mast_proto::Device, bool)>,
     execution: Option<(
         Vec<crate::work_outline::execution::ExecutionMember>,
         Option<crate::work_outline::execution::ExecutionMember>,
     )>,
-    change_request: Option<zeron_proto::ChangeRequestSummary>,
+    change_request: Option<mast_proto::ChangeRequestSummary>,
 }
 
 impl PickersSlice {
@@ -1054,7 +1054,7 @@ impl Pickers {
     }
 
     /// The selected chat's row (see [`Self::chat_id`]).
-    fn chat_row<'a>(&self, cx: &'a App) -> Option<&'a zeron_proto::Chat> {
+    fn chat_row<'a>(&self, cx: &'a App) -> Option<&'a mast_proto::Chat> {
         if self.launcher.is_some() {
             return None;
         }
@@ -1319,7 +1319,7 @@ impl Pickers {
                 // the CLI decide".
                 .or_else(|| {
                     self.effective_harness(cx)
-                        .and_then(|h| zeron_proto::resolve_model(h, None))
+                        .and_then(|h| mast_proto::resolve_model(h, None))
                 }),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
@@ -3079,10 +3079,10 @@ impl Pickers {
     }
 
     /// Devices in picker order: this device first, then by name.
-    fn device_rows(&self, cx: &App) -> Vec<zeron_proto::Device> {
+    fn device_rows(&self, cx: &App) -> Vec<mast_proto::Device> {
         let state = self.state.read(cx);
         let local = state.local_device_id.clone();
-        let mut devices: Vec<zeron_proto::Device> = state.devices.clone();
+        let mut devices: Vec<mast_proto::Device> = state.devices.clone();
         devices.sort_by_key(|d| {
             (
                 local.as_deref() != Some(d.id.as_str()),
@@ -3095,7 +3095,7 @@ impl Pickers {
 
     /// [`Self::device_rows`] filtered by the search box (same ranked
     /// substring match as the project rows).
-    fn filtered_device_rows(&self, cx: &App) -> Vec<zeron_proto::Device> {
+    fn filtered_device_rows(&self, cx: &App) -> Vec<mast_proto::Device> {
         let query = self.search.read(cx).text().to_string();
         let rows = self.device_rows(cx);
         let names: Vec<String> = rows.iter().map(|d| d.name.clone()).collect();
@@ -5948,7 +5948,7 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
             .to_ascii_lowercase()
     }
     let catalog = match harness {
-        HarnessId::ClaudeCode => zeron_harness::claude::catalog::static_models(),
+        HarnessId::ClaudeCode => mast_harness::claude::catalog::static_models(),
         _ => Vec::new(),
     };
     // Curated label for an id: exact normalized match, else — for bare
@@ -5989,15 +5989,15 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
                     }
                 }
                 if !model.options.iter().any(|o| o.id == "contextWindow") {
-                    model.options.push(zeron_proto::ModelOption {
+                    model.options.push(mast_proto::ModelOption {
                         id: "contextWindow".into(),
                         label: "Context Window".into(),
                         choices: vec![
-                            zeron_proto::ModelOptionChoice {
+                            mast_proto::ModelOptionChoice {
                                 id: "200k".into(),
                                 label: "200K".into(),
                             },
-                            zeron_proto::ModelOptionChoice {
+                            mast_proto::ModelOptionChoice {
                                 id: "1m".into(),
                                 label: "1M".into(),
                             },
@@ -6084,7 +6084,7 @@ fn offered_harnesses_impl(list: &[HarnessDescriptor], allow_mock: bool) -> Vec<H
         .into_iter()
         .filter(|d| {
             d.installed
-                && (zeron_engine::registry::descriptor_enabled(d)
+                && (mast_engine::registry::descriptor_enabled(d)
                     || (allow_mock && d.id == HarnessId::Mock))
         })
         .collect()
@@ -6387,7 +6387,7 @@ impl Render for Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
+    use mast_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
 
     struct ModelShortcutHost {
         focus_sub: Option<gpui::Subscription>,
@@ -7576,8 +7576,8 @@ mod tests {
         });
     }
 
-    fn chip_test_chat(model: Option<&str>, actual: Option<&str>) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    fn chip_test_chat(model: Option<&str>, actual: Option<&str>) -> mast_proto::Chat {
+        mast_proto::Chat {
             id: "chat-chip".into(),
             device_id: "d".into(),
             title: None,
@@ -7586,12 +7586,12 @@ mod tests {
             branch: None,
             checkout_id: None,
             source_context: None,
-            config: Some(zeron_proto::ChatConfig {
+            config: Some(mast_proto::ChatConfig {
                 harness: HarnessId::ClaudeCode,
                 model: model.map(str::to_owned),
                 reasoning: None,
                 model_options: Default::default(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                 auto_approve: false,
             }),
             last_message_preview: None,
@@ -7730,7 +7730,7 @@ mod tests {
             can_install: false,
             enabled: Some(true),
             reasoning_levels: Vec::new(),
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             supports_steering: false,
         }
     }
@@ -8191,7 +8191,7 @@ mod tests {
             default_model(&models).map(|m| &*m.id),
             Some("claude-opus-5-5")
         );
-        assert_eq!(zeron_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
+        assert_eq!(mast_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
     }
 
     #[test]
@@ -8230,7 +8230,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
             can_install: false,
@@ -8257,7 +8257,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
             can_install: false,
@@ -8310,7 +8310,7 @@ mod tests {
                 id,
                 name: name.into(),
                 supports_steering: true,
-                steering_mode: zeron_proto::SteeringMode::StepBoundary,
+                steering_mode: mast_proto::SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed,
                 can_install: false,

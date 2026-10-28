@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, ValueEnum};
-use zeron_theme::Appearance;
-use zeron_theme::vscode::{ImportOptions, import_file};
+use mast_theme::Appearance;
+use mast_theme::vscode::{ImportOptions, import_file};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum AppearanceArg {

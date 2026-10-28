@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::registry::tests::{chat, server_round, space};
-use zeron_proto::work_outline::WorkItemChatAssignmentState;
+use mast_proto::work_outline::WorkItemChatAssignmentState;
 
 const SPACE: &str = "sp-1";
 const OTHER_SPACE: &str = "sp-2";
@@ -303,7 +303,7 @@ fn three_level_create_rename_archive_move_reorder() {
         &mut doc,
         WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
             work_item_id: a1.clone(),
-            changes: zeron_proto::WorkItemChanges {
+            changes: mast_proto::WorkItemChanges {
                 title: Some("A-one".into()),
                 status: Some(WorkItemStatus::Active),
                 ..Default::default()
@@ -728,7 +728,7 @@ fn retries_with_the_same_operation_id_never_duplicate() {
 
 // ── acceptance 3 and 4: Chats ───────────────────────────────────────────────
 
-fn space_chat(id: &str, space_id: Option<&str>) -> zeron_proto::Chat {
+fn space_chat(id: &str, space_id: Option<&str>) -> mast_proto::Chat {
     let mut chat = chat(id, "dev-a");
     chat.space_id = space_id.map(str::to_owned);
     chat.parent_chat_id = None;
@@ -1175,7 +1175,7 @@ fn slow_clock_device_edit_is_not_lost() {
         &mut a,
         WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
             work_item_id: x.clone(),
-            changes: zeron_proto::WorkItemChanges {
+            changes: mast_proto::WorkItemChanges {
                 title: Some("from fast A".into()),
                 ..Default::default()
             },
@@ -1189,7 +1189,7 @@ fn slow_clock_device_edit_is_not_lost() {
         &mut b,
         WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
             work_item_id: x.clone(),
-            changes: zeron_proto::WorkItemChanges {
+            changes: mast_proto::WorkItemChanges {
                 title: Some("later from B".into()),
                 ..Default::default()
             },
@@ -1355,7 +1355,7 @@ fn inputs(rows: Vec<RegistryRow>) -> WorkOutlineInputs {
         synced: true,
         items: rows,
         // The Space `doc_with_spaces` creates (the implicit execution root).
-        execution_space: Some(zeron_proto::work_outline_execution::ExecutionSpace {
+        execution_space: Some(mast_proto::work_outline_execution::ExecutionSpace {
             space_id: SPACE.into(),
             path: "/tmp/one".into(),
             device_id: "dev-a".into(),
@@ -1642,7 +1642,7 @@ fn undo_inverse_operations_restore_order_parent_fields_and_archive() {
             &mut doc,
             WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
                 work_item_id: b.clone(),
-                changes: zeron_proto::WorkItemChanges {
+                changes: mast_proto::WorkItemChanges {
                     title: Some(title.into()),
                     status: Some(status),
                     ..Default::default()

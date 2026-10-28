@@ -84,7 +84,7 @@ pub enum QueueDeliveryGate {
     /// marks the row confirmed) or edits / removes the row. Older hosts read
     /// the unknown kind as `ReviewRequired` (fail closed).
     InstructionContextResetRequired {
-        harness: zeron_proto::HarnessId,
+        harness: mast_proto::HarnessId,
         revision_id: String,
         revision_hash: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -343,7 +343,7 @@ impl SessionDoc {
     pub fn push_queued_with_instructions(
         &self,
         item: &QueuedMessage,
-        instructions: Option<&zeron_proto::InstructionRevisionPin>,
+        instructions: Option<&mast_proto::InstructionRevisionPin>,
     ) -> Result<(), DocError> {
         if item.id.trim().is_empty() {
             return Err(DocError::Schema("queued message id required".into()));
@@ -365,7 +365,7 @@ impl SessionDoc {
     }
 
     /// The instruction revision a queued row captured, if any.
-    pub fn queued_instructions(&self, id: &str) -> Option<zeron_proto::InstructionRevisionPin> {
+    pub fn queued_instructions(&self, id: &str) -> Option<mast_proto::InstructionRevisionPin> {
         let queue = self.doc().get_movable_list("queue");
         let index = index_of(&queue, id)?;
         let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) = queue.get(index)
@@ -381,7 +381,7 @@ impl SessionDoc {
     pub fn set_queued_instructions(
         &self,
         id: &str,
-        instructions: &zeron_proto::InstructionRevisionPin,
+        instructions: &mast_proto::InstructionRevisionPin,
     ) -> Result<bool, DocError> {
         let queue = self.doc().get_movable_list("queue");
         let Some(index) = index_of(&queue, id) else {
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn queued_rows_keep_their_captured_instruction_pin() {
         let doc = SessionDoc::init("chat").unwrap();
-        let pin = zeron_proto::InstructionRevisionPin {
+        let pin = mast_proto::InstructionRevisionPin {
             revision_id: "rev-1".into(),
             revision_hash: "abc".into(),
         };
@@ -583,7 +583,7 @@ mod tests {
         doc.push_queued(&QueuedMessage::new("q1", "first", "dev"))
             .unwrap();
         let gate = QueueDeliveryGate::InstructionContextResetRequired {
-            harness: zeron_proto::HarnessId::Codex,
+            harness: mast_proto::HarnessId::Codex,
             revision_id: "rev-b".into(),
             revision_hash: "hb".into(),
             previous_revision_id: Some("rev-a".into()),

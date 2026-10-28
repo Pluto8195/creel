@@ -43,7 +43,7 @@ git clone https://github.com/Pluto8195/mast.git
 cd mast
 git checkout work-outline-implementation   # 默认分支
 
-cargo build -p zeron                       # 调试版二进制在 target/debug/zeron
+cargo build -p mast                       # 调试版二进制在 target/debug/zeron
 ```
 
 二进制和 crate 仍然叫 `zeron`，只有产品名改了。

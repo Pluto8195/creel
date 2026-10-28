@@ -14,7 +14,7 @@
 //! rejected outcomes stay listed (history collapsed).
 use super::*;
 
-use zeron_proto::{
+use mast_proto::{
     ApproveWorkItemInstructionProposalParams, RejectWorkItemInstructionProposalParams,
     WorkItemInstructionProposalView, WorkOutlineActorKind, WorkOutlineErrorCode,
 };
@@ -275,7 +275,7 @@ impl WorkItemDetails {
             cx.notify();
             return;
         }
-        let max = zeron_proto::user_action_limits::MAX_PROPOSAL_TEXT_CHARS;
+        let max = mast_proto::user_action_limits::MAX_PROPOSAL_TEXT_CHARS;
         let chars = text.chars().count();
         if chars > max {
             self.proposals_error = Some(format!(
@@ -328,7 +328,7 @@ impl WorkItemDetails {
             .text()
             .trim()
             .chars()
-            .take(zeron_proto::user_action_limits::MAX_NOTE_CHARS)
+            .take(mast_proto::user_action_limits::MAX_NOTE_CHARS)
             .collect();
         let review = self.proposal_review.as_mut().expect("checked above");
         let operation_id = review.reject_op.id_for(&reason);
@@ -745,7 +745,7 @@ impl WorkItemDetails {
         now: chrono::DateTime<chrono::Utc>,
         theme: &Theme,
     ) -> AnyElement {
-        let approved = proposal.status == zeron_proto::InstructionProposalStatus::Approved;
+        let approved = proposal.status == mast_proto::InstructionProposalStatus::Approved;
         let review = proposal.review.as_ref();
         let mut outcome = format!(
             "{} {}",

@@ -13,16 +13,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use zeron_doc::{
+use mast_doc::{
     MessageRole, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus,
     SessionMessageEntry,
 };
-use zeron_engine::instruction_delivery::RevisionWait;
-use zeron_engine::instruction_registry::InstructionRegistry;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::mock::InstructionMockHarness;
-use zeron_harness::{InstructionChannel, InstructionReplaceStrategy, InstructionSupport};
-use zeron_proto::{
+use mast_engine::instruction_delivery::RevisionWait;
+use mast_engine::instruction_registry::InstructionRegistry;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::mock::InstructionMockHarness;
+use mast_harness::{InstructionChannel, InstructionReplaceStrategy, InstructionSupport};
+use mast_proto::{
     ExecutionSessionReport, HarnessId, InstructionRevisionEntry, InstructionRevisionIntegrity,
     InstructionRevisionPin, InstructionRevisionView, InstructionSourceKind, InstructionTransition,
     RunRequest, SandboxLevel, build_revision_body,
@@ -242,7 +242,7 @@ async fn wait_turns(rig: &Rig, n: usize, what: &str) {
     .await;
 }
 
-fn revision_of(turn: &zeron_harness::mock::RecordedInstructionTurn) -> Option<&str> {
+fn revision_of(turn: &mast_harness::mock::RecordedInstructionTurn) -> Option<&str> {
     turn.revision_id.as_deref()
 }
 
@@ -777,7 +777,7 @@ async fn a_fresh_session_harness_requires_a_confirmed_context_reset() {
         resolved
             .resolution
             .as_deref()
-            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+            .is_some_and(|r| r.starts_with(mast_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
         "{resolved:?}"
     );
     assert!(!has_user_message(&rig.core, "m-2"));
@@ -821,7 +821,7 @@ fn fresh_session_rig(dir: &std::path::Path) -> Rig {
     rig
 }
 
-fn rejected_sends(core: &EngineCore) -> Vec<zeron_proto::InstructionRejectedSend> {
+fn rejected_sends(core: &EngineCore) -> Vec<mast_proto::InstructionRejectedSend> {
     core.doc_host
         .open(CHAT)
         .unwrap()
@@ -830,7 +830,7 @@ fn rejected_sends(core: &EngineCore) -> Vec<zeron_proto::InstructionRejectedSend
         .clone()
 }
 
-fn queue_row(core: &EngineCore, id: &str) -> Option<zeron_doc::QueuedMessage> {
+fn queue_row(core: &EngineCore, id: &str) -> Option<mast_doc::QueuedMessage> {
     core.doc_host
         .open(CHAT)
         .ok()?
@@ -860,11 +860,11 @@ async fn a_plain_send_after_apply_on_a_fresh_session_harness_needs_a_confirmed_r
         resolved
             .resolution
             .as_deref()
-            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+            .is_some_and(|r| r.starts_with(mast_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
         "{resolved:?}"
     );
     // Durable, typed outcome on the command row.
-    let expected = zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+    let expected = mast_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
         harness: HarnessId::Mock,
         message_id: Some("m-2".into()),
         revision_id: "rev-b".into(),
@@ -942,7 +942,7 @@ async fn a_queued_row_needing_a_reset_is_gated_with_its_reason_until_confirmed()
             queue_row(&rig.core, &queued).is_some_and(|row| {
                 matches!(
                     row.delivery_gate,
-                    Some(zeron_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
+                    Some(mast_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
                 )
             })
         },
@@ -954,7 +954,7 @@ async fn a_queued_row_needing_a_reset_is_gated_with_its_reason_until_confirmed()
         .delivery_gate
         .unwrap()
     {
-        zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+        mast_doc::QueueDeliveryGate::InstructionContextResetRequired {
             harness,
             revision_id,
             revision_hash,
@@ -1132,12 +1132,12 @@ async fn a_restart_before_session_start_keeps_the_context_reset_confirmation() {
 // Ingestion: a remote host must advertise the per-harness token
 // ---------------------------------------------------------------------------
 
-fn host_rejection(error: zeron_engine::EngineError) -> zeron_proto::InstructionDeliveryRejection {
+fn host_rejection(error: mast_engine::EngineError) -> mast_proto::InstructionDeliveryRejection {
     let wire = error.to_string();
-    let parsed = zeron_proto::InstructionDeliveryRejection::from_wire_message(&wire)
+    let parsed = mast_proto::InstructionDeliveryRejection::from_wire_message(&wire)
         .unwrap_or_else(|| panic!("not a typed rejection: {wire}"));
     match error {
-        zeron_engine::EngineError::InstructionDelivery(rejection) => {
+        mast_engine::EngineError::InstructionDelivery(rejection) => {
             assert_eq!(rejection, parsed);
             rejection
         }
@@ -1146,10 +1146,10 @@ fn host_rejection(error: zeron_engine::EngineError) -> zeron_proto::InstructionD
 }
 
 fn host_reason(
-    rejection: &zeron_proto::InstructionDeliveryRejection,
-) -> zeron_proto::InstructionHostUnsupportedReason {
+    rejection: &mast_proto::InstructionDeliveryRejection,
+) -> mast_proto::InstructionHostUnsupportedReason {
     match &rejection.outcome {
-        zeron_proto::InstructionDeliveryOutcome::InstructionHostUnsupported {
+        mast_proto::InstructionDeliveryOutcome::InstructionHostUnsupported {
             reason,
             host_device_id,
             required_capability,
@@ -1168,7 +1168,7 @@ fn host_reason(
 
 #[tokio::test]
 async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
-    use zeron_proto::InstructionHostUnsupportedReason as Reason;
+    use mast_proto::InstructionHostUnsupportedReason as Reason;
     let tmp = tempfile::tempdir().unwrap();
     let rig = assemble(
         tmp.path(),
@@ -1200,7 +1200,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
     assert_eq!(host_reason(&host_rejection(refused)), Reason::UnknownDevice);
 
     // A host on an older Mast.
-    let mut device: zeron_proto::Device = serde_json::from_value(serde_json::json!({
+    let mut device: mast_proto::Device = serde_json::from_value(serde_json::json!({
         "id": "device-b", "name": "Studio", "platform": "macos", "lastSeenAt": null,
         "version": "0.2.81"
     }))
@@ -1222,7 +1222,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
     // Envelope support but no token for this harness; a queued message is
     // refused the same way.
     device.capabilities =
-        vec![zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
+        vec![mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
     rig.core.workspace.upsert_device_row(&device);
     let rejection = host_rejection(
         rig.core
@@ -1256,7 +1256,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
     // With the token the send is accepted and written, pinned.
     device
         .capabilities
-        .push(zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Mock));
+        .push(mast_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Mock));
     rig.core.workspace.upsert_device_row(&device);
     let id = queue(&rig.core, plain("hello", "m-1"));
     assert!(matches!(
@@ -1324,7 +1324,7 @@ async fn a_steer_fallback_that_cannot_deliver_its_revision_writes_nothing() {
 async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data");
-    let codex = zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex);
+    let codex = mast_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex);
     let own_device = |core: &EngineCore| {
         core.workspace
             .read_devices()
@@ -1349,11 +1349,11 @@ async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes(
         "{:?}",
         device.capabilities
     );
-    assert!(device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1));
+    assert!(device.supports(mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1));
 
     // A registry change restamps from the probes: this registry has no
     // Codex, so its token goes.
-    zeron_engine::instruction_delivery::restamp_on_registry_change(
+    mast_engine::instruction_delivery::restamp_on_registry_change(
         &rig.core.workspace,
         &rig.core.registry,
     );
@@ -1374,8 +1374,8 @@ async fn per_harness_capability_tokens_survive_boot_and_follow_registry_changes(
     )
     .await;
     assert_eq!(
-        zeron_engine::instruction_delivery::last_advertised_capabilities(),
-        Some(zeron_proto::capabilities::current())
+        mast_engine::instruction_delivery::last_advertised_capabilities(),
+        Some(mast_proto::capabilities::current())
     );
     rig.core.shutdown().await;
 }
@@ -1417,7 +1417,7 @@ async fn keeping_the_session_after_a_refused_apply_continues_the_old_conversatio
         resolved
             .resolution
             .as_deref()
-            .is_some_and(|r| r.starts_with(zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
+            .is_some_and(|r| r.starts_with(mast_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED)),
         "{resolved:?}"
     );
     wait_for(
@@ -1527,7 +1527,7 @@ async fn keeping_the_session_for_a_gated_queued_row_runs_it_on_the_old_session()
             queue_row(&rig.core, &queued).is_some_and(|row| {
                 matches!(
                     row.delivery_gate,
-                    Some(zeron_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
+                    Some(mast_doc::QueueDeliveryGate::InstructionContextResetRequired { .. })
                 )
             })
         },

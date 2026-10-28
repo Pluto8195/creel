@@ -10,8 +10,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use zeron_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
-use zeron_proto::{
+use mast_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
+use mast_proto::{
     AgentEvent, DoneStatus, RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion,
 };
 
@@ -81,7 +81,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
 async fn collect_until_done(
     stream: &mut futures::stream::BoxStream<
         'static,
-        Result<AgentEvent, zeron_harness::HarnessError>,
+        Result<AgentEvent, mast_harness::HarnessError>,
     >,
 ) -> Vec<AgentEvent> {
     tokio::time::timeout(Duration::from_secs(15), async {

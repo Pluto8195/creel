@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     #[cfg(windows)]
     if let Some(pid) = cli.wait_for_exit {
-        zeron_update::windows::wait_for_exit(pid)?;
+        mast_update::windows::wait_for_exit(pid)?;
     }
     // Long-running modes log at info, one-shot CLI commands at warn (RUST_LOG
     // overrides either).
@@ -201,7 +201,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Headless) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
-                let engine = zeron_engine::Engine::new(engine_config_from_env());
+                let engine = mast_engine::Engine::new(engine_config_from_env());
                 engine.run().await
             })
         }
@@ -223,11 +223,11 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Mcp) => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(zeron_mcp::run(zeron_mcp::McpConfig::from_env()))
+            runtime.block_on(mast_mcp::run(mast_mcp::McpConfig::from_env()))
         }
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => {
-            zeron_ui::appshots::request_running_appshot(&engine_config_from_env().data_dir)
+            mast_ui::appshots::request_running_appshot(&engine_config_from_env().data_dir)
                 .map_err(anyhow::Error::msg)
         }
         Some(Command::Update { check }) => {
@@ -246,7 +246,7 @@ fn main() -> anyhow::Result<()> {
             let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
             // Headed: the UI probes ZERON_IPC_PORT and connects to a running
             // daemon, or embeds the engine in-process (ARCHITECTURE §1).
-            zeron_ui::run_app(zeron_ui::UiConfig {
+            mast_ui::run_app(mast_ui::UiConfig {
                 data_dir: paths::data_dir(),
                 ipc_port: std::env::var("ZERON_IPC_PORT")
                     .ok()
@@ -256,7 +256,7 @@ fn main() -> anyhow::Result<()> {
                 workos_client_id: workos_client_id_from_env(&edge_token),
                 edge_token,
                 org_id: std::env::var("ZERON_ORG_ID").ok(),
-                default_harness: zeron_ui::HarnessId::ClaudeCode,
+                default_harness: mast_ui::HarnessId::ClaudeCode,
                 initial_url: cli.open_url,
             });
             Ok(())
@@ -292,10 +292,10 @@ fn attach_parent_console() {
 /// The env-resolved engine configuration shared by `headless`, `login`,
 /// `logout`, and `status` — one resolution so the CLI auth commands always
 /// operate on the exact session the daemon will load.
-fn engine_config_from_env() -> zeron_engine::EngineConfig {
+fn engine_config_from_env() -> mast_engine::EngineConfig {
     // Dev-mode bearer (no WorkOS): an explicit token enables sync.
     let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
-    zeron_engine::EngineConfig {
+    mast_engine::EngineConfig {
         data_dir: paths::data_dir(),
         edge_url: edge_url_from_env(),
         ipc_port: std::env::var("ZERON_IPC_PORT")
@@ -315,17 +315,17 @@ fn engine_config_from_env() -> zeron_engine::EngineConfig {
 
 /// `ZERON_HARNESS` (kebab-case id) picks the default harness for chats without a
 /// config row — `mock` powers the e2e smoke; default `claude-code`.
-fn harness_from_env() -> zeron_engine::HarnessId {
+fn harness_from_env() -> mast_engine::HarnessId {
     match std::env::var("ZERON_HARNESS").as_deref().map(str::trim) {
-        Ok("mock") => zeron_engine::HarnessId::Mock,
-        Ok("codex") => zeron_engine::HarnessId::Codex,
-        Ok("cursor") => zeron_engine::HarnessId::Cursor,
-        Ok("devin") => zeron_engine::HarnessId::Devin,
-        Ok("grok") => zeron_engine::HarnessId::Grok,
-        Ok("hermes") => zeron_engine::HarnessId::Hermes,
-        Ok("pi") => zeron_engine::HarnessId::Pi,
-        Ok("antigravity") => zeron_engine::HarnessId::Antigravity,
-        _ => zeron_engine::HarnessId::ClaudeCode,
+        Ok("mock") => mast_engine::HarnessId::Mock,
+        Ok("codex") => mast_engine::HarnessId::Codex,
+        Ok("cursor") => mast_engine::HarnessId::Cursor,
+        Ok("devin") => mast_engine::HarnessId::Devin,
+        Ok("grok") => mast_engine::HarnessId::Grok,
+        Ok("hermes") => mast_engine::HarnessId::Hermes,
+        Ok("pi") => mast_engine::HarnessId::Pi,
+        Ok("antigravity") => mast_engine::HarnessId::Antigravity,
+        _ => mast_engine::HarnessId::ClaudeCode,
     }
 }
 
@@ -333,13 +333,13 @@ fn harness_from_env() -> zeron_engine::HarnessId {
 /// The introspection surface every 2026-08 incident was missing — "is this
 /// device's workspace room actually receiving?" as a one-liner.
 async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
-    let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
+    let client = mast_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
         .await
         .map_err(|e| {
             anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is zeron running?")
         })?;
     let status = client
-        .call(zeron_rpc::methods::SYNC_STATUS, serde_json::json!({}))
+        .call(mast_rpc::methods::SYNC_STATUS, serde_json::json!({}))
         .await
         .map_err(|e| anyhow::anyhow!("SyncStatus failed: {e}"))?;
     let now = status.get("nowMs").and_then(|v| v.as_i64()).unwrap_or(0);

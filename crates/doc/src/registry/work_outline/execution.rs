@@ -25,10 +25,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     WorkItemView, WorkOutlineActor, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineRepair,
 };
-use zeron_proto::work_outline_execution::{
+use mast_proto::work_outline_execution::{
     ChatExecutionBindingState, ChatExecutionBindingView, ConfigureExecutionParams,
     ExecutionConfiguration, ExecutionConfigurationView, ExecutionScope, ExecutionSpace,
     ResolvedExecutionConfiguration, WorkItemExecutionException, check_execution_configuration,
@@ -60,9 +60,9 @@ fn opt_str(row: &RegistryRow, key: &str) -> Option<String> {
 fn opt_actor(row: &RegistryRow, key: &str) -> Option<WorkOutlineActor> {
     let value = row.fields.get(key).filter(|v| v.is_object())?;
     let kind = match value.get("k").and_then(Value::as_str) {
-        Some("agent") => zeron_proto::WorkOutlineActorKind::Agent,
-        Some("system") => zeron_proto::WorkOutlineActorKind::System,
-        _ => zeron_proto::WorkOutlineActorKind::User,
+        Some("agent") => mast_proto::WorkOutlineActorKind::Agent,
+        Some("system") => mast_proto::WorkOutlineActorKind::System,
+        _ => mast_proto::WorkOutlineActorKind::User,
     };
     Some(WorkOutlineActor {
         kind,
@@ -246,7 +246,7 @@ pub(crate) fn materialize_execution(
             // normal per-Chat flow, not an exception.
             view.exception = current.is_some_and(|current| {
                 (current.configuration != view.resolved.configuration
-                    && !zeron_proto::is_launch_worktree_fill(
+                    && !mast_proto::is_launch_worktree_fill(
                         &current.configuration,
                         &view.resolved.configuration,
                     ))

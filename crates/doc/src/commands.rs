@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{InstructionRevisionPin, RunRequest, UserInputAnswer};
+use mast_proto::{InstructionRevisionPin, RunRequest, UserInputAnswer};
 
 use crate::constants::COMMAND_DEFAULT_TTL_MS;
 
@@ -479,7 +479,7 @@ mod tests {
             reasoning: None,
             model_options: Default::default(),
             cwd: "/tmp".into(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: false,
             attachments: Vec::new(),
             worktree: None,

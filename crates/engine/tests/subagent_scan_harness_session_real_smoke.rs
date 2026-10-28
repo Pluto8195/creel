@@ -12,11 +12,11 @@
 //! `subagents/` directory sibling to its own transcript.
 //!
 //! Run with:
-//!   cargo test -p zeron-engine --test subagent_scan_harness_session_real_smoke -- --ignored --nocapture
+//!   cargo test -p mast-engine --test subagent_scan_harness_session_real_smoke -- --ignored --nocapture
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 #[tokio::test]
 #[ignore = "depends on real ~/.claude/projects data on this machine"]
@@ -81,7 +81,7 @@ async fn resolves_and_scans_subagents_for_a_harness_session_chat_never_imported(
     );
 
     let subagents =
-        zeron_engine::subagent_scan::scan_subagents(&resolved.unwrap()).expect("scan_subagents");
+        mast_engine::subagent_scan::scan_subagents(&resolved.unwrap()).expect("scan_subagents");
     eprintln!("found {} subagents", subagents.len());
     for s in &subagents {
         eprintln!("{s:?}");

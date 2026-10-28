@@ -1,18 +1,18 @@
 [package]
-name = "zeron-engine"
+name = "mast-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-zeron-preview.workspace = true
-zeron-proto.workspace = true
-zeron-doc.workspace = true
-zeron-sync.workspace = true
-zeron-harness.workspace = true
-zeron-rpc.workspace = true
-zeron-update.workspace = true
+mast-preview.workspace = true
+mast-proto.workspace = true
+mast-doc.workspace = true
+mast-sync.workspace = true
+mast-harness.workspace = true
+mast-rpc.workspace = true
+mast-update.workspace = true
 loro.workspace = true
 tokio.workspace = true
 futures.workspace = true
@@ -46,4 +46,4 @@ zip.workspace = true
 tracing-subscriber.workspace = true
 tokio-tungstenite.workspace = true
 # In-process registry server for the two-engine workspace integration tests.
-zeron-sync = { workspace = true, features = ["mock-server"] }
+mast-sync = { workspace = true, features = ["mock-server"] }

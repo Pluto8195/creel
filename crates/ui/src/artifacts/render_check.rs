@@ -21,13 +21,13 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
-use zeron_proto::artifacts::{ArtifactErrorCode, artifact_limits};
-use zeron_proto::{
+use mast_proto::artifacts::{ArtifactErrorCode, artifact_limits};
+use mast_proto::{
     ArtifactContentEncoding, ArtifactError, ArtifactKind, ArtifactRenderCheckResult,
     ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderScreenshot,
     ArtifactRenderTheme, ArtifactRenderViewport, ArtifactViewport,
 };
-use zeron_rpc::{RpcError, methods};
+use mast_rpc::{RpcError, methods};
 
 use super::document::{self, ProbeReport};
 use super::layout_heuristics;
@@ -144,13 +144,13 @@ pub(crate) fn request_document(
             Ok(web(
                 WebKind::Image,
                 &base64,
-                zeron_proto::artifacts::mime_type_for(&request.path),
+                mast_proto::artifacts::mime_type_for(&request.path),
             ))
         }
         ArtifactKind::Options => {
             // Every option's fragment, stacked under its label (the tab shows
             // one at a time; side by side is phase 5).
-            let manifest = zeron_proto::artifacts::OptionsManifest::parse(&text()?)
+            let manifest = mast_proto::artifacts::OptionsManifest::parse(&text()?)
                 .map_err(|error| RenderSkip::Invalid(error.message))?;
             let mut body = String::new();
             for option in &manifest.options {
@@ -377,7 +377,7 @@ pub(crate) fn check_results(
     if layout_dropped {
         result.warnings.push(format!(
             "More than {} layout findings; only the first are listed",
-            zeron_proto::artifacts::artifact_limits::MAX_LAYOUT_WARNINGS
+            mast_proto::artifacts::artifact_limits::MAX_LAYOUT_WARNINGS
         ));
     }
     result
@@ -455,7 +455,7 @@ pub(crate) fn spawn_render_requests(
         }
         let mut attempt: u32 = 0;
         loop {
-            let params = serde_json::json!({ "client": "zeron-ui" });
+            let params = serde_json::json!({ "client": "mast-ui" });
             let mut subscription = match handle
                 .client()
                 .subscribe_checked(methods::WATCH_ARTIFACT_RENDER_REQUESTS, params)
@@ -551,7 +551,7 @@ pub(crate) mod webkit {
     use crate::artifacts::document::{
         MERMAID_WAIT_MS, READ_PROBE_SCRIPT, SETTLE_MS, compare_render_plan,
     };
-    use zeron_proto::ArtifactViewport;
+    use mast_proto::ArtifactViewport;
 
     pub(crate) struct WebKitRenderer;
 

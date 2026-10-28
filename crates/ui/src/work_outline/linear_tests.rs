@@ -25,7 +25,7 @@ fn linear_snapshot(enabled: bool) -> WorkOutlineSnapshot {
 
 /// Default scripted host: My issues ENG-1/ENG-2, one project with ENG-3/4,
 /// a connected key, and creates that answer `w-new-<n>`.
-fn default_reply(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn default_reply(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     Ok(match method {
         "LinearStatus" => serde_json::json!({"configured": true, "source": "keychain",
             "viewer": {"id": "u", "name": "Mikey"}}),
@@ -62,7 +62,7 @@ fn linear_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -320,7 +320,7 @@ fn create_from_row_under_selected_item_retries_and_selects(cx: &mut gpui::TestAp
             if params["op"] == "createWorkItemFromLinear"
                 && flag.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                return Err(zeron_rpc::RpcError::Failed("linear/rateLimited: slow down".into()));
+                return Err(mast_rpc::RpcError::Failed("linear/rateLimited: slow down".into()));
             }
             default_reply(method, params)
         });
@@ -636,7 +636,7 @@ fn unknown_method_and_missing_key_states(cx: &mut gpui::TestAppContext) {
     let (overview, _calls, vcx) =
         linear_overview(cx, dir.path(), linear_snapshot(true), |method, params| {
             if method.starts_with("Linear") {
-                return Err(zeron_rpc::RpcError::UnknownMethod(method.to_string()));
+                return Err(mast_rpc::RpcError::UnknownMethod(method.to_string()));
             }
             default_reply(method, params)
         });
@@ -656,7 +656,7 @@ fn unknown_method_and_missing_key_states(cx: &mut gpui::TestAppContext) {
     let (overview, _calls, vcx) =
         linear_overview(cx, dir.path(), linear_snapshot(true), |method, params| {
             if method.starts_with("LinearMy") {
-                return Err(zeron_rpc::RpcError::Failed(
+                return Err(mast_rpc::RpcError::Failed(
                     "linear/missingKey: No Linear API key is set".into(),
                 ));
             }
@@ -1179,7 +1179,7 @@ fn slug_project_link_matches_and_fix_link_repairs_it(cx: &mut gpui::TestAppConte
 
 /// Project issues for the "Add issues from…" tests: ENG-3 (linked on
 /// `API` by `picker_snapshot`), ENG-4, ENG-5.
-fn picker_reply(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn picker_reply(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     if method == "LinearProjectIssues" {
         return Ok(serde_json::to_value(vec![
             lf::issue("ENG-3", "Docs"),
@@ -1303,7 +1303,7 @@ fn add_issues_retry_keeps_operation_ids(cx: &mut gpui::TestAppContext) {
             if params["op"] == "createWorkItemFromLinear"
                 && flag.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                return Err(zeron_rpc::RpcError::Failed("linear/rateLimited: slow down".into()));
+                return Err(mast_rpc::RpcError::Failed("linear/rateLimited: slow down".into()));
             }
             picker_reply(method, params)
         });
@@ -1414,7 +1414,7 @@ fn issue_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
     cx: &mut gpui::TestAppContext,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let answer: std::sync::Arc<std::sync::Mutex<Option<zeron_proto::linear::LinearIssueSummary>>> =
+    let answer: std::sync::Arc<std::sync::Mutex<Option<mast_proto::linear::LinearIssueSummary>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Some(lf::issue("ENG-1", "Fix login"))));
     let script = answer.clone();
     let (overview, _calls, vcx) = linear_overview(
@@ -1424,7 +1424,7 @@ fn issue_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
         move |method, params| match method {
             "LinearIssue" => match script.lock().unwrap().clone() {
                 Some(issue) => Ok(serde_json::to_value(issue).unwrap()),
-                None => Err(zeron_rpc::RpcError::Failed("linear unavailable".into())),
+                None => Err(mast_rpc::RpcError::Failed("linear unavailable".into())),
             },
             _ => default_reply(method, params),
         },
@@ -1527,7 +1527,7 @@ fn stored_lists_show_and_survive_a_failed_refresh(cx: &mut gpui::TestAppContext)
         linear_snapshot(true),
         |method, params| match method {
             "LinearMyIssues" | "LinearMyProjects" if params["cachedOnly"] != true => Err(
-                zeron_rpc::RpcError::Failed("linear/network: offline".into()),
+                mast_rpc::RpcError::Failed("linear/network: offline".into()),
             ),
             _ => default_reply(method, params),
         },
@@ -1556,7 +1556,7 @@ fn linked_item_snapshot(enabled: bool) -> WorkOutlineSnapshot {
         ));
         for item in snapshot.items.iter_mut().filter(|i| i.id == id) {
             item.title = format!("{identifier} \u{00b7} Ticket");
-            item.external_sync_state = Some(zeron_proto::WorkItemExternalSyncState {
+            item.external_sync_state = Some(mast_proto::WorkItemExternalSyncState {
                 provider: "linear".into(),
                 external_id: identifier.into(),
                 round: 1,

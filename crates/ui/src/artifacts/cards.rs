@@ -4,7 +4,7 @@
 //! goes through the chat's link handler, so it opens the Artifact tab (and
 //! registers an unknown path) exactly like clicking the inline link.
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
-use zeron_proto::artifacts::ARTIFACT_URL_SCHEME;
+use mast_proto::artifacts::ARTIFACT_URL_SCHEME;
 
 use super::model;
 use super::store::ArtifactStore;
@@ -30,7 +30,7 @@ pub(crate) fn card_model(
     cwd: Option<&str>,
 ) -> CardModel {
     let url = format!("{ARTIFACT_URL_SCHEME}{target}");
-    let artifact = if zeron_proto::artifacts::is_artifact_id(target) {
+    let artifact = if mast_proto::artifacts::is_artifact_id(target) {
         store.artifact(target)
     } else {
         store.artifact_by_path(target, cwd, None)
@@ -61,14 +61,14 @@ pub(crate) fn card_model(
             } else {
                 label.trim().to_owned()
             };
-            let detail = if zeron_proto::artifacts::is_artifact_id(target) {
+            let detail = if mast_proto::artifacts::is_artifact_id(target) {
                 "Artifact".to_owned()
             } else {
                 target.to_owned()
             };
             CardModel {
                 title,
-                icon: model::kind_icon(zeron_proto::ArtifactKind::from_path(target)),
+                icon: model::kind_icon(mast_proto::ArtifactKind::from_path(target)),
                 detail,
                 url,
                 registered: false,

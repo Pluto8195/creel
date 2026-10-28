@@ -18,8 +18,8 @@
 
 use crate::files::client::FilesClientError;
 use crate::theme::Theme;
-use zeron_proto::WorkspaceFileText;
-use zeron_proto::visualize::{MAX_FRAGMENT_BYTES, is_complete_document};
+use mast_proto::WorkspaceFileText;
+use mast_proto::visualize::{MAX_FRAGMENT_BYTES, is_complete_document};
 
 /// Static resource origins the visualize skill promises fragments.
 pub const RESOURCE_SOURCES: &str = "blob: data: https://cdnjs.cloudflare.com \
@@ -539,7 +539,7 @@ mod tests {
             content_hash: None,
             size,
             modified_at: None,
-            encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+            encoding: mast_proto::WorkspaceTextEncoding::Utf8,
             line_ending: None,
             read_only_reason: None,
             truncated,

@@ -5,7 +5,7 @@
 //! (experimentalApi). This snapshot is the failure/offline fallback, kept in
 //! newest-first order so a picker remains useful when discovery cannot run.
 
-use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SandboxLevel};
+use mast_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SandboxLevel};
 
 /// The unified reasoning ladder Codex accepts (`minimal` is offered but clamped
 /// on the wire — see [`to_effort`]).

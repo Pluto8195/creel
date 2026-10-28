@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputQuestion,
 };
@@ -290,7 +290,7 @@ impl Harness for MockHarness {
                     },
                     AgentEvent::ToolCall {
                         id: "mock-think-tool".into(),
-                        call: zeron_proto::ToolCall::Exec {
+                        call: mast_proto::ToolCall::Exec {
                             command: "rg -n walletInsufficient apps/word/src | wc -l".into(),
                         },
                     },
@@ -324,7 +324,7 @@ impl Harness for MockHarness {
                     id: id.into(),
                     // The claude-driver spawn shape: `Agent: {description}`
                     // with the task in the input (names the chip AND the tab).
-                    call: zeron_proto::ToolCall::Unknown {
+                    call: mast_proto::ToolCall::Unknown {
                         name: format!("Agent: {description}"),
                         input: Some(serde_json::json!({
                             "description": description,
@@ -382,7 +382,7 @@ impl Harness for MockHarness {
                         "mock-sub-1",
                         AgentEvent::ToolCall {
                             id: "sub1-grep".into(),
-                            call: zeron_proto::ToolCall::Exec {
+                            call: mast_proto::ToolCall::Exec {
                                 command: "grep -rn fold_event_into_parts crates".into(),
                             },
                         },
@@ -424,8 +424,8 @@ impl Harness for MockHarness {
                         "mock-sub-2",
                         AgentEvent::ToolCall {
                             id: "sub2-burst".into(),
-                            call: zeron_proto::ToolCall::Exec {
-                                command: "cargo test -p zeron-doc cadence_burst -- --nocapture".into(),
+                            call: mast_proto::ToolCall::Exec {
+                                command: "cargo test -p mast-doc cadence_burst -- --nocapture".into(),
                             },
                         },
                     ),
@@ -456,8 +456,8 @@ impl Harness for MockHarness {
                         "mock-sub-2",
                         AgentEvent::ToolCall {
                             id: "sub2-steer-burst".into(),
-                            call: zeron_proto::ToolCall::Exec {
-                                command: "cargo test -p zeron-doc cadence_steer -- --nocapture"
+                            call: mast_proto::ToolCall::Exec {
+                                command: "cargo test -p mast-doc cadence_steer -- --nocapture"
                                     .into(),
                             },
                         },
@@ -493,7 +493,7 @@ impl Harness for MockHarness {
                 [
                     AgentEvent::ToolCall {
                         id: "mock-code-tool".into(),
-                        call: zeron_proto::ToolCall::Exec {
+                        call: mast_proto::ToolCall::Exec {
                             command: "set -e\nfixture_in_original=0\ngrep -rn \"veil\" crates/ui/src | wc -l".into(),
                         },
                     },
@@ -603,7 +603,7 @@ pub struct RecordedInstructionRun {
     pub resume: Option<String>,
     /// The native session id the run reported in `SessionStarted`.
     pub session_id: String,
-    pub instructions: Option<zeron_proto::InstructionDelivery>,
+    pub instructions: Option<mast_proto::InstructionDelivery>,
     /// The working directory the run was spawned in.
     pub cwd: String,
 }
@@ -792,7 +792,7 @@ impl Harness for InstructionMockHarness {
                     let spawn_id = format!("{session_id}-agent{turn}");
                     let _ = tx.send(Ok(AgentEvent::ToolCall {
                         id: spawn_id.clone(),
-                        call: zeron_proto::ToolCall::Unknown {
+                        call: mast_proto::ToolCall::Unknown {
                             name: "Agent: scout".into(),
                             input: Some(serde_json::json!({
                                 "description": "scout",
@@ -856,7 +856,7 @@ impl Harness for InstructionMockHarness {
 #[cfg(test)]
 mod instruction_mock_tests {
     use super::*;
-    use zeron_proto::{InstructionDelivery, InstructionEnvelope, InstructionTransition};
+    use mast_proto::{InstructionDelivery, InstructionEnvelope, InstructionTransition};
 
     fn request(instructions: bool) -> RunRequest {
         let mut request: RunRequest = serde_json::from_value(serde_json::json!({

@@ -1,8 +1,8 @@
-//! zeron-mcp — a Model Context Protocol server over the running engine.
+//! mast-mcp — a Model Context Protocol server over the running engine.
 //!
 //! `zeron mcp` speaks MCP (JSON-RPC 2.0, newline-delimited) on stdin/stdout
 //! and proxies every tool into the engine's localhost IPC — the same
-//! `zeron_rpc` WebSocket the headed app and `zeron sync` dial. Nothing here
+//! `mast_rpc` WebSocket the headed app and `zeron sync` dial. Nothing here
 //! talks to the edge or touches the filesystem: the engine stays the single
 //! authority for chats, devices, projects, and the command plane.
 //!
@@ -25,12 +25,12 @@
 mod jsonrpc;
 mod tools;
 mod transcript;
-mod zeron;
+mod mast;
 
 pub use jsonrpc::serve_stdio;
 pub use tools::{ToolDef, Tools};
 pub use transcript::{RenderOptions, RenderedMessage, render_entries};
-pub use zeron::{Zeron, token_from_env};
+pub use mast::{Mast, token_from_env};
 
 /// How `zeron mcp` finds the engine and which Run's token it presents.
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl McpConfig {
     /// Resolve from the process environment: `ZERON_IPC_PORT` for the engine,
     /// `ZERON_AGENT_TOKEN` for the Run. `ZERON_CHAT_ID` is ignored.
     pub fn from_env() -> Self {
-        let ipc_port = std::env::var(zeron_proto::agent_tools::IPC_PORT_ENV)
+        let ipc_port = std::env::var(mast_proto::agent_tools::IPC_PORT_ENV)
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(27654);
@@ -67,7 +67,7 @@ impl McpConfig {
 
 /// Run the MCP server on this process's stdin/stdout until stdin closes.
 pub async fn run(config: McpConfig) -> anyhow::Result<()> {
-    let zeron = Zeron::new(format!("ws://127.0.0.1:{}", config.ipc_port), config.token);
+    let zeron = Mast::new(format!("ws://127.0.0.1:{}", config.ipc_port), config.token);
     let tools = Tools::new(std::sync::Arc::new(zeron));
     serve_stdio(std::sync::Arc::new(tools)).await
 }

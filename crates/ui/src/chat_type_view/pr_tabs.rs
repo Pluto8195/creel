@@ -5,11 +5,11 @@
 
 use chrono::{DateTime, Utc};
 use gpui::{AnyElement, Context, ElementId, Hsla, MouseButton, SharedString, div, prelude::*, px};
-use zeron_proto::PrReviewAction;
-use zeron_proto::{PrDashBucket, PrDashParams, PrDashReply, PrDashRow, PrDashTab, PrReference};
-use zeron_rpc::methods;
+use mast_proto::PrReviewAction;
+use mast_proto::{PrDashBucket, PrDashParams, PrDashReply, PrDashRow, PrDashTab, PrReference};
+use mast_rpc::methods;
 
-use zeron_proto::ChatIndicator;
+use mast_proto::ChatIndicator;
 
 use super::{ChatTypeView, review_button, status_line};
 use crate::error_notice::ErrorNotice;

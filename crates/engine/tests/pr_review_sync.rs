@@ -25,15 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use zeron_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
-use zeron_engine::pr_review_sync::{PrReviewSyncConfig, synced_item_id, synced_request_id};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::mock::InstructionMockHarness;
-use zeron_proto::{
+use mast_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
+use mast_engine::pr_review_sync::{PrReviewSyncConfig, synced_item_id, synced_request_id};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::mock::InstructionMockHarness;
+use mast_proto::{
     GithubError, GithubErrorCode, HarnessId, PrReviewRequestState, UserActionOriginKind,
     WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineSnapshot,
 };
-use zeron_rpc::{RpcClient, methods};
+use mast_rpc::{RpcClient, methods};
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-ws";
@@ -202,7 +202,7 @@ esac
             gh: Some(gh.clone()),
             worktrees_dir_env: WorktreesDirEnv::Fixed(None),
         });
-    let client = zeron_rpc::memory_client(Arc::new(rpc));
+    let client = mast_rpc::memory_client(Arc::new(rpc));
     client
         .call(
             methods::MUTATE,
@@ -246,7 +246,7 @@ impl Rig {
 
     fn snapshot(&self) -> WorkOutlineSnapshot {
         let inputs = self.core.workspace.work_outline_inputs(SPACE);
-        zeron_doc::materialize_work_outline(SPACE, &inputs)
+        mast_doc::materialize_work_outline(SPACE, &inputs)
     }
 
     /// A root item "PR reviews" set as the destination.
@@ -422,7 +422,7 @@ async fn review_requests_across_the_space_repos_become_items_once() {
     assert!(!request.origin_chat_available);
     assert_eq!(
         request.created_by.as_ref().unwrap().kind,
-        zeron_proto::WorkOutlineActorKind::System
+        mast_proto::WorkOutlineActorKind::System
     );
     let detail = request.info.as_deref().unwrap();
     assert!(detail.contains("Author: @ada"), "{detail}");
@@ -942,12 +942,12 @@ async fn a_review_started_from_a_synced_item_is_assigned_to_it() {
             json!({
                 "repoOwner": "acme", "repoName": "ui", "number": 9, "action": "codeReview",
                 "spaceId": SPACE, "workItemId": item, "operationId": "review-ui-9",
-                "config": serde_json::to_value(zeron_proto::ChatConfig {
+                "config": serde_json::to_value(mast_proto::ChatConfig {
                     harness: HarnessId::Mock,
                     model: None,
                     reasoning: None,
                     model_options: Default::default(),
-                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                     auto_approve: true,
                 }).unwrap(),
             }),
@@ -958,7 +958,7 @@ async fn a_review_started_from_a_synced_item_is_assigned_to_it() {
     let row = rig
         .core
         .workspace
-        .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat)
+        .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat)
         .expect("assignment row");
     assert_eq!(row.fields["workItemId"], item.as_str());
     let snapshot = rig.snapshot();
@@ -973,7 +973,7 @@ async fn a_review_started_from_a_synced_item_is_assigned_to_it() {
     // The synced item id is the derived one.
     assert_eq!(
         item,
-        zeron_engine::pr_review_sync::synced_item_id(SPACE, "acme/ui#9")
+        mast_engine::pr_review_sync::synced_item_id(SPACE, "acme/ui#9")
     );
 }
 
@@ -1006,12 +1006,12 @@ async fn a_merged_pr_archives_its_item_and_leaves_chats_alone() {
             json!({
                 "repoOwner": "acme", "repoName": "ui", "number": 9, "action": "codeReview",
                 "spaceId": SPACE, "workItemId": item, "operationId": "review-ui-9",
-                "config": serde_json::to_value(zeron_proto::ChatConfig {
+                "config": serde_json::to_value(mast_proto::ChatConfig {
                     harness: HarnessId::Mock,
                     model: None,
                     reasoning: None,
                     model_options: Default::default(),
-                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                     auto_approve: true,
                 }).unwrap(),
             }),
@@ -1030,7 +1030,7 @@ async fn a_merged_pr_archives_its_item_and_leaves_chats_alone() {
     assert!(archived.archived_at.is_some());
     assert_eq!(
         archived.archived_by.as_ref().unwrap().kind,
-        zeron_proto::WorkOutlineActorKind::System
+        mast_proto::WorkOutlineActorKind::System
     );
     assert_eq!(archived.status, WorkItemStatus::Completed);
     let state = archived.external_sync_state.clone().unwrap();
@@ -1049,7 +1049,7 @@ async fn a_merged_pr_archives_its_item_and_leaves_chats_alone() {
     assert!(
         rig.core
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &chat)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &chat)
             .is_some()
     );
 

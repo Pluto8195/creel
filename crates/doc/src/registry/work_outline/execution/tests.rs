@@ -7,12 +7,12 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::registry::tests::{chat, server_round, space};
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemParams,
     DescendantArchivePolicy, MoveWorkItemParams, WorkOutlineActorKind, WorkOutlineMutateReply,
     WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
 };
-use zeron_proto::work_outline_execution::{ExecutionSourceScope, RepositoryBinding};
+use mast_proto::work_outline_execution::{ExecutionSourceScope, RepositoryBinding};
 
 const SPACE: &str = "sp-1";
 const OTHER_SPACE: &str = "sp-2";
@@ -107,7 +107,7 @@ fn configure(
     )
 }
 
-fn space_chat(id: &str, space_id: Option<&str>) -> zeron_proto::Chat {
+fn space_chat(id: &str, space_id: Option<&str>) -> mast_proto::Chat {
     let mut chat = chat(id, "dev-a");
     chat.space_id = space_id.map(str::to_owned);
     chat.parent_chat_id = None;

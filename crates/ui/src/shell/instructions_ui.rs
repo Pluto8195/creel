@@ -29,7 +29,7 @@ use super::*;
 
 use std::sync::Arc;
 
-use zeron_proto::{
+use mast_proto::{
     ApplyInstructionRevisionParams, ChatIndicator, ChatInstructionState,
     CreateInstructionRevisionParams, CreateWorkItemInstructionParams, InstructionApplicationReason,
     InstructionRevisionComparison, InstructionScope, InstructionSource, WorkOutlineQueryRequest,
@@ -64,20 +64,20 @@ pub(crate) fn fresh_session_apply_warning(state: &AppState, chat_id: &str) -> Op
     ))
 }
 
-fn harness_display_name(harness: zeron_proto::HarnessId) -> Option<&'static str> {
+fn harness_display_name(harness: mast_proto::HarnessId) -> Option<&'static str> {
     match harness {
-        zeron_proto::HarnessId::Codex => Some("Codex"),
-        zeron_proto::HarnessId::ClaudeCode => Some("Claude Code"),
+        mast_proto::HarnessId::Codex => Some("Codex"),
+        mast_proto::HarnessId::ClaudeCode => Some("Claude Code"),
         _ => None,
     }
 }
 
-fn needs_fresh_session(harness: zeron_proto::HarnessId) -> bool {
-    zeron_harness::declared_replace_strategy(harness)
-        == Some(zeron_harness::InstructionReplaceStrategy::FreshSession)
+fn needs_fresh_session(harness: mast_proto::HarnessId) -> bool {
+    mast_harness::declared_replace_strategy(harness)
+        == Some(mast_harness::InstructionReplaceStrategy::FreshSession)
 }
 
-fn has_native_session(chat: &zeron_proto::Chat) -> bool {
+fn has_native_session(chat: &mast_proto::Chat) -> bool {
     chat.harness_session_id
         .as_deref()
         .is_some_and(|id| !id.trim().is_empty())
@@ -570,7 +570,7 @@ impl Shell {
         entry.error = None;
         entry.done = None;
         entry.confirm = None;
-        let task = actions.keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+        let task = actions.keep_instruction_session(mast_proto::KeepInstructionSessionParams {
             chat_id: chat_id.to_owned(),
             operation_id,
         });
@@ -685,7 +685,7 @@ impl Shell {
     fn finish_apply(
         &mut self,
         chat_id: &str,
-        result: Result<(), zeron_proto::WorkOutlineError>,
+        result: Result<(), mast_proto::WorkOutlineError>,
         working: bool,
         cx: &mut Context<Self>,
     ) {
@@ -885,11 +885,11 @@ impl Shell {
             .and_then(|id| live(&id));
         let excerpt: String = excerpt
             .chars()
-            .take(zeron_proto::limits::MAX_INSTRUCTION_EXCERPT_CHARS)
+            .take(mast_proto::limits::MAX_INSTRUCTION_EXCERPT_CHARS)
             .collect();
         let draft: String = excerpt
             .chars()
-            .take(zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS)
+            .take(mast_proto::limits::MAX_INSTRUCTION_TEXT_CHARS)
             .collect();
         let input = cx.new(|cx| {
             let mut input = ComposerInput::new("Instruction", cx)
@@ -983,7 +983,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let max = zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS;
+        let max = mast_proto::limits::MAX_INSTRUCTION_TEXT_CHARS;
         if text.chars().count() > max {
             dialog.error = Some(format!("Instructions are limited to {max} characters"));
             cx.notify();
@@ -1389,7 +1389,7 @@ mod tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -1400,7 +1400,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -1413,7 +1413,7 @@ mod tests {
         shell: &Entity<Shell>,
         cx: &mut gpui::VisualTestContext,
         snapshot: WorkOutlineSnapshot,
-        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+        reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
         + Send
         + Sync
         + 'static,
@@ -1450,7 +1450,7 @@ mod tests {
                         "id": "d", "name": "Studio", "platform": "macos",
                         "lastSeenAt": null,
                         "capabilities": [
-                            zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
+                            mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
                         ],
                     }))
                     .unwrap(),
@@ -1472,7 +1472,7 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear());
     }
 
-    fn ok_ids(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    fn ok_ids(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
         Ok(match params["op"].as_str() {
             Some("createInstructionRevision") => serde_json::json!({"revisionId": "r-new"}),
             Some("applyInstructionRevision") => serde_json::json!({"applicationId": "a-new"}),
@@ -1545,7 +1545,7 @@ mod tests {
                 let mut left = failures.lock().unwrap();
                 if *left > 0 {
                     *left -= 1;
-                    return Err(zeron_rpc::RpcError::Failed(
+                    return Err(mast_rpc::RpcError::Failed(
                         "work-outline/invalid: try again".into(),
                     ));
                 }
@@ -1592,7 +1592,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (shell, cx) = test_shell(cx, dir.path());
         let calls = seed(&shell, cx, fixture::snapshot("s1"), |_| {
-            Err(zeron_rpc::RpcError::Failed(
+            Err(mast_rpc::RpcError::Failed(
                 "work-outline/unsupported: instruction operations are not available yet".into(),
             ))
         });
@@ -1618,7 +1618,7 @@ mod tests {
         shell.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
                 state.devices[0].capabilities =
-                    vec![zeron_proto::capabilities::WORK_OUTLINE_V1.into()];
+                    vec![mast_proto::capabilities::WORK_OUTLINE_V1.into()];
             });
         });
         let blocker = shell.read_with(cx, |shell, cx| {
@@ -1678,7 +1678,7 @@ mod tests {
                         "id": "d", "name": "Studio", "platform": "macos",
                         "lastSeenAt": null,
                         "capabilities": [
-                            zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
+                            mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1
                         ],
                     }))
                     .unwrap(),
@@ -1707,12 +1707,12 @@ mod tests {
         assert_eq!(blocker(&shell, cx), None);
         shell.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
-                state.chats[0].config = Some(zeron_proto::ChatConfig {
-                    harness: zeron_proto::HarnessId::Codex,
+                state.chats[0].config = Some(mast_proto::ChatConfig {
+                    harness: mast_proto::HarnessId::Codex,
                     model: None,
                     reasoning: None,
                     model_options: Default::default(),
-                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                     auto_approve: false,
                 });
             });
@@ -1733,8 +1733,8 @@ mod tests {
         shell.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
                 state.devices[0].capabilities.push(
-                    zeron_proto::capabilities::work_outline_instruction_envelope_for(
-                        zeron_proto::HarnessId::Codex,
+                    mast_proto::capabilities::work_outline_instruction_envelope_for(
+                        mast_proto::HarnessId::Codex,
                     ),
                 );
             });
@@ -1749,18 +1749,18 @@ mod tests {
     fn codex_with_session(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, session: bool) {
         shell.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
-                state.chats[0].config = Some(zeron_proto::ChatConfig {
-                    harness: zeron_proto::HarnessId::Codex,
+                state.chats[0].config = Some(mast_proto::ChatConfig {
+                    harness: mast_proto::HarnessId::Codex,
                     model: None,
                     reasoning: None,
                     model_options: Default::default(),
-                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                     auto_approve: false,
                 });
                 state.chats[0].harness_session_id = session.then(|| "thread-1".into());
                 state.devices[0].capabilities.push(
-                    zeron_proto::capabilities::work_outline_instruction_envelope_for(
-                        zeron_proto::HarnessId::Codex,
+                    mast_proto::capabilities::work_outline_instruction_envelope_for(
+                        mast_proto::HarnessId::Codex,
                     ),
                 );
             });
@@ -1828,7 +1828,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(calls.lock().unwrap().len(), 4);
         // Claude keeps the conversation: no warning either.
-        assert!(!needs_fresh_session(zeron_proto::HarnessId::ClaudeCode));
+        assert!(!needs_fresh_session(mast_proto::HarnessId::ClaudeCode));
     }
 
     #[gpui::test]
@@ -1913,7 +1913,7 @@ mod tests {
         let mut missing = full.clone();
         missing.revisions.clear();
         let reply = serde_json::to_value(
-            zeron_proto::WorkOutlineQueryResponse::GetInstructionRevision(old),
+            mast_proto::WorkOutlineQueryResponse::GetInstructionRevision(old),
         )
         .unwrap();
         let calls = seed(&shell, cx, missing, move |params| {

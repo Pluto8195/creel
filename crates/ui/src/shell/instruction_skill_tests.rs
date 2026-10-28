@@ -19,10 +19,10 @@ const UI_ROOT: &str = "/work/alpha/ui";
 /// matter, built-ins included); Codex answers its personal skills only (it
 /// never reads `.claude/skills`), like the live engine does. A folder named
 /// `broken` fails.
-fn discovery(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn discovery(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     let cwd = params["cwd"].as_str().unwrap_or_default();
     if cwd.ends_with("/broken") {
-        return Err(zeron_rpc::RpcError::Failed(
+        return Err(mast_rpc::RpcError::Failed(
             "claude initialize failed".into(),
         ));
     }
@@ -66,25 +66,25 @@ fn discovery(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc:
 
 /// The fixture snapshot with Housekeeping (a root-level item, no Chats,
 /// like Design) rooted at `root`: one member binding, not primary.
-fn rooted_snapshot(root: &str) -> zeron_proto::WorkOutlineSnapshot {
+fn rooted_snapshot(root: &str) -> mast_proto::WorkOutlineSnapshot {
     let mut snapshot = crate::work_outline::store::fixture_snapshot("s1");
-    snapshot.execution_space = Some(zeron_proto::ExecutionSpace {
+    snapshot.execution_space = Some(mast_proto::ExecutionSpace {
         space_id: "s1".into(),
         path: SPACE.into(),
         device_id: "d".into(),
     });
-    let scope = zeron_proto::ExecutionScope::WorkItem {
+    let scope = mast_proto::ExecutionScope::WorkItem {
         work_item_id: HOUSEKEEPING.into(),
     };
     snapshot
         .execution_configurations
-        .push(zeron_proto::ExecutionConfigurationView {
+        .push(mast_proto::ExecutionConfigurationView {
             id: scope.row_id(),
             space_id: "s1".into(),
             work_item_id: Some(HOUSEKEEPING.into()),
-            configuration: Some(zeron_proto::ExecutionConfiguration {
+            configuration: Some(mast_proto::ExecutionConfiguration {
                 execution_root: root.into(),
-                bindings: vec![zeron_proto::RepositoryBinding {
+                bindings: vec![mast_proto::RepositoryBinding {
                     repo_id: "repo:0081d8ad".into(),
                     repo_fingerprint: "d0848554".into(),
                     repo_path: root.into(),
@@ -138,7 +138,7 @@ fn seed(
             state.work_outline_actions_override =
                 Some(crate::work_outline::WorkOutlineActions::scripted(
                     std::sync::Arc::new(move |method, params| {
-                        if method == zeron_rpc::methods::LIST_COMMANDS {
+                        if method == mast_rpc::methods::LIST_COMMANDS {
                             sink.lock().unwrap().push(params.clone());
                             return discovery(&params);
                         }
@@ -147,12 +147,12 @@ fn seed(
                 ));
             for chat in &mut state.chats {
                 if chat.id == CHAT_AUTH {
-                    chat.config = Some(zeron_proto::ChatConfig {
-                        harness: zeron_proto::HarnessId::Codex,
+                    chat.config = Some(mast_proto::ChatConfig {
+                        harness: mast_proto::HarnessId::Codex,
                         model: None,
                         reasoning: None,
                         model_options: Default::default(),
-                        sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                        sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                         auto_approve: false,
                     });
                 }
@@ -217,7 +217,7 @@ fn design_item_instruction_editor_lists_the_ui_skills_whatever_chat_is_selected(
     let calls = seed(&shell, &overview, UI_ROOT, false, cx);
     assert_eq!(
         shell.read_with(cx, |shell, cx| shell.skill_harness(cx)),
-        zeron_proto::HarnessId::Codex,
+        mast_proto::HarnessId::Codex,
         "the composer follows the selected Codex Chat"
     );
     let (input, skills) = open_instruction_editor(&overview, cx);

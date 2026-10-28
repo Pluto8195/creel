@@ -52,7 +52,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use zeron_proto::{
+use mast_proto::{
     AgentAccount, AgentAccountWarning, AgentAccountsSnapshot, AgentAuthKind, AgentLoginMode,
     AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentUsageWindow, HarnessId,
 };
@@ -206,7 +206,7 @@ enum LoginFlow {
     Spawned {
         harness: HarnessId,
         /// The login child; monitored (try_wait) + killable from cancel.
-        child: Arc<Mutex<Option<zeron_harness::process::Child>>>,
+        child: Arc<Mutex<Option<mast_harness::process::Child>>>,
         /// Throwaway credential dir, reclaimed on cancel/completion.
         home: PathBuf,
         started_at: Instant,
@@ -616,12 +616,12 @@ impl AgentAccounts {
         // login-shell snapshot, install dirs — the Windows npm payload
         // included) and compose the same child PATH a chat run gets, so
         // account login never diverges from what the harness can launch.
-        let mut command = match zeron_harness::codex::login_command(&home) {
+        let mut command = match mast_harness::codex::login_command(&home) {
             Ok(command) => command,
             Err(err) => {
                 let _ = std::fs::remove_dir_all(&home);
                 return Err(EngineError::Other(match err {
-                    zeron_harness::HarnessError::NotInstalled(hint) => {
+                    mast_harness::HarnessError::NotInstalled(hint) => {
                         format!(
                             "The `codex` CLI was not found on this device — install it first. ({hint})"
                         )
@@ -631,9 +631,9 @@ impl AgentAccounts {
             }
         };
         command
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+            .stdin(mast_harness::process::Stdio::null())
+            .stdout(mast_harness::process::Stdio::piped())
+            .stderr(mast_harness::process::Stdio::piped());
         // The CLI opens the authorization tab itself (via the `webbrowser`
         // crate) AND the app opens the page when this start reply lands —
         // users got TWO identical auth.openai.com tabs. `webbrowser` prefers
@@ -701,11 +701,11 @@ impl AgentAccounts {
         let task_state = state.clone();
         let handle = tokio::spawn(async move {
             let progress_state = task_state.clone();
-            let outcome = zeron_harness::AcpHarness::antigravity()
+            let outcome = mast_harness::AcpHarness::antigravity()
                 .sign_in(browser, move |progress| {
                     let mut state = lock(&progress_state);
                     match progress {
-                        zeron_harness::acp::SignInProgress::OpenBrowser(url) => {
+                        mast_harness::acp::SignInProgress::OpenBrowser(url) => {
                             state.message = Some("Finish signing in in your browser.".into());
                             state.url = Some(url);
                         }
@@ -743,15 +743,15 @@ impl AgentAccounts {
             .root_dir()
             .join(format!(".login-{login_id}"));
         std::fs::create_dir_all(&home)?;
-        let mut cmd = zeron_harness::cursor::login_command(&home.join("auth.json"))
+        let mut cmd = mast_harness::cursor::login_command(&home.join("auth.json"))
             .await
             .map_err(|e| {
                 let _ = std::fs::remove_dir_all(&home);
                 EngineError::Other(format!("Could not start the Cursor login: {e}"))
             })?;
-        cmd.stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+        cmd.stdin(mast_harness::process::Stdio::null())
+            .stdout(mast_harness::process::Stdio::piped())
+            .stderr(mast_harness::process::Stdio::piped());
         let child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -1986,7 +1986,7 @@ fn scan_shim_fatal(output: &str) -> Option<String> {
 }
 
 pub(crate) type LoginChildHandles = (
-    Arc<Mutex<Option<zeron_harness::process::Child>>>,
+    Arc<Mutex<Option<mast_harness::process::Child>>>,
     Arc<Mutex<String>>,
     Arc<Mutex<Option<Option<i32>>>>,
 );
@@ -1995,7 +1995,7 @@ pub(crate) type LoginChildHandles = (
 /// (the URL can land on either stream), and a monitor polls `try_wait` so the
 /// child is reaped without owning it — the cancel path needs concurrent kill
 /// access.
-pub(crate) fn wire_login_child(mut child: zeron_harness::process::Child) -> LoginChildHandles {
+pub(crate) fn wire_login_child(mut child: mast_harness::process::Child) -> LoginChildHandles {
     let output = Arc::new(Mutex::new(String::new()));
     for pipe in [
         child

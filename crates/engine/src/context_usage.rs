@@ -4,7 +4,7 @@
 //!
 //! Two sources, tried in order:
 //!
-//! 1. **Live**: the chat's own [`zeron_doc::SessionDoc`] `contextUsage` meta
+//! 1. **Live**: the chat's own [`mast_doc::SessionDoc`] `contextUsage` meta
 //!    stamp. Mast's live run loop already tracks this for the composer's own
 //!    context meter — `crates/harness/src/claude/normalize.rs`'s
 //!    `Frame::Assistant` handling sums the harness's assistant-message
@@ -38,7 +38,7 @@
 //! tool: `min((input+cache_read+cache_creation)/200_000, 1.0)` — a FIXED
 //! 200k divisor regardless of the model's real advertised context window
 //! (the reference documents this as a deliberate approximation, not a bug).
-//! This deliberately does NOT reuse `zeron_proto::ContextUsage::fraction()`,
+//! This deliberately does NOT reuse `mast_proto::ContextUsage::fraction()`,
 //! which divides by the model's REAL window when known (a more accurate
 //! number, appropriate for the composer's own meter) — parity with the
 //! reference overview wants the same fixed approximation on both the live
@@ -54,9 +54,9 @@ use std::time::SystemTime;
 
 use loro::LoroDoc;
 use serde_json::Value;
-use zeron_doc::SessionDoc;
-use zeron_proto::HarnessId;
-use zeron_sync::DocsStore;
+use mast_doc::SessionDoc;
+use mast_proto::HarnessId;
+use mast_sync::DocsStore;
 
 use crate::EngineError;
 use crate::external_import::ExternalSessionImporter;

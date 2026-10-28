@@ -28,13 +28,13 @@ use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
 use crate::comments::ReviewComment;
-use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
-use zeron_proto::{
+use mast_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
+use mast_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
+use mast_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
     EngineInfo, HarnessId, Session, SidebarPreferencesState, Space, WorkspaceScope,
 };
-use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
+use mast_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
 
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
@@ -49,7 +49,7 @@ struct CachedTranscript {
     prepared: Option<Arc<crate::transcript::PreparedTranscript>>,
     chat_id: String,
     entries: Vec<SessionMessageEntry>,
-    context_usage: Option<zeron_proto::ContextUsage>,
+    context_usage: Option<mast_proto::ContextUsage>,
     bytes: usize,
 }
 
@@ -68,7 +68,7 @@ impl WatchPreparation {
     }
     fn prepare(
         &mut self,
-        update: &zeron_doc::TranscriptUpdate,
+        update: &mast_doc::TranscriptUpdate,
     ) -> Result<Arc<crate::transcript::PreparedTranscript>, TranscriptDesync> {
         self.worker.as_mut().unwrap().prepare(update)
     }
@@ -345,7 +345,7 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match zeron_engine::serve_ipc(engine_config.ipc_port, service).await {
+        let ipc_task = match mast_engine::serve_ipc(engine_config.ipc_port, service).await {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(
@@ -570,10 +570,10 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // ---------------------------------------------------------------------------
 
 // The frontend-agnostic derivations (sort orders, staleness gating, sidebar
-// grouping, the boot gate, relative times) live in `zeron_proto::view`, pure
+// grouping, the boot gate, relative times) live in `mast_proto::view`, pure
 // and with their own test suite. Re-exported here because every call site in
 // this crate reads them as `state::…`.
-pub use zeron_proto::view::{
+pub use mast_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
     parse_auth_state, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
@@ -667,7 +667,7 @@ pub struct AppState {
     session_presence_presentation: Vec<Indicator>,
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
-    pub connectivity: zeron_proto::Connectivity,
+    pub connectivity: mast_proto::Connectivity,
     /// Whether this runtime's connectivity watch has delivered its first
     /// frame. The default `Disabled` value is only a placeholder and must not
     /// seed notification decisions before the watch is authoritative.
@@ -709,18 +709,18 @@ pub struct AppState {
     /// The selected chat's pending-message queue — what was typed while the
     /// agent was busy, in the order it will be sent. Device-agnostic: the
     /// chat's doc holds them (every device sees the same queue).
-    pub queue: Vec<zeron_doc::QueuedMessage>,
+    pub queue: Vec<mast_doc::QueuedMessage>,
     /// The selected chat's sends the host refused with a typed Work Outline
     /// instruction-delivery outcome that still need the user (`WatchQueue`
     /// `rejectedSends`): a context reset waiting on confirmation.
-    pub rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
-    pub context_usage: Option<zeron_proto::ContextUsage>,
+    pub rejected_sends: Vec<mast_proto::InstructionRejectedSend>,
+    pub context_usage: Option<mast_proto::ContextUsage>,
     /// The selected chat has a transcript from a `WatchDocMessages` reset
     /// (including a retained reset from an earlier visit). An
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
     pub transcript_replayed: bool,
-    transcript_baselines: HashMap<String, Arc<zeron_doc::TranscriptBaseline>>,
+    transcript_baselines: HashMap<String, Arc<mast_doc::TranscriptBaseline>>,
     transcript_cache: std::collections::VecDeque<CachedTranscript>,
     pub(crate) prepared_transcripts: HashMap<String, Arc<crate::transcript::PreparedTranscript>>,
     /// Changes only when transcript/optimistic content changes. Presence,
@@ -748,7 +748,7 @@ pub struct AppState {
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
     /// Latest `UpdateStatus` frame — drives the sidebar update strip.
-    pub update: Option<zeron_update::UpdateStatus>,
+    pub update: Option<mast_update::UpdateStatus>,
     /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
@@ -792,9 +792,9 @@ pub struct AppState {
     chat_execution: HashMap<String, crate::work_outline::execution::ChatExecutionState>,
     /// Resolved diff targets per chat: the latest `WatchChatDiffTargets` frame
     /// (full list each time; chats without a resolvable target are absent).
-    chat_diff_targets: HashMap<String, Vec<zeron_proto::ChatDiffTargetView>>,
+    chat_diff_targets: HashMap<String, Vec<mast_proto::ChatDiffTargetView>>,
     /// Resolved branch / PR range targets per chat (same frame).
-    chat_ref_targets: HashMap<String, Vec<zeron_proto::ChatRefTargetView>>,
+    chat_ref_targets: HashMap<String, Vec<mast_proto::ChatRefTargetView>>,
     /// The last failed `SetChatDiffTarget` per chat (the Changes pane shows it
     /// as a copyable error notice until dismissed or the next write).
     chat_diff_target_errors: HashMap<String, String>,
@@ -847,7 +847,7 @@ impl AppState {
             devices: Vec::new(),
             device_presentation: None,
             session_presence_presentation: Vec::new(),
-            connectivity: zeron_proto::Connectivity::default(),
+            connectivity: mast_proto::Connectivity::default(),
             connectivity_observed: false,
             spaces: Vec::new(),
             chats: Vec::new(),
@@ -1116,13 +1116,13 @@ impl AppState {
     /// Optimistic local echo of a `setChatConfig` mutate: stamp the row now so
     /// the chips update on click; the next chats watch frame carries the same
     /// value once the engine applies the LWW write.
-    pub fn apply_chat_config(&mut self, chat_id: &str, config: zeron_proto::ChatConfig) {
+    pub fn apply_chat_config(&mut self, chat_id: &str, config: mast_proto::ChatConfig) {
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             chat.config = Some(config);
         }
     }
 
-    pub fn apply_connectivity(&mut self, connectivity: zeron_proto::Connectivity) {
+    pub fn apply_connectivity(&mut self, connectivity: mast_proto::Connectivity) {
         self.connectivity = connectivity;
         self.connectivity_observed = true;
     }
@@ -1133,7 +1133,7 @@ impl AppState {
     /// chats degrade when the OS says offline, when the chat's own edge room
     /// is down, or when the host device has gone presence-dark.
     pub fn chat_delivery_degraded(&self, chat_id: &str) -> bool {
-        use zeron_proto::ConnectivityState as S;
+        use mast_proto::ConnectivityState as S;
         if self.connectivity.state == S::Disabled {
             return false;
         }
@@ -1248,7 +1248,7 @@ impl AppState {
     /// fixed at boot, while the row is restamped once the harness delivery
     /// probes run. An unknown device is unsupported.
     pub(crate) fn chat_host_instruction_support(&self, chat_id: &str) -> InstructionHostSupport {
-        use zeron_proto::capabilities::{
+        use mast_proto::capabilities::{
             WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1, work_outline_instruction_envelope_for,
         };
         let Some(chat) = self.chats.iter().find(|chat| chat.id == chat_id) else {
@@ -1299,7 +1299,7 @@ impl AppState {
             .map(|s| s.id.clone())
     }
 
-    pub fn apply_update(&mut self, status: zeron_update::UpdateStatus) {
+    pub fn apply_update(&mut self, status: mast_update::UpdateStatus) {
         self.update = Some(status);
     }
 
@@ -1316,7 +1316,7 @@ impl AppState {
     }
 
     /// The signed-in user, if the engine reports one.
-    pub fn auth_user(&self) -> Option<&zeron_proto::UserProfile> {
+    pub fn auth_user(&self) -> Option<&mast_proto::UserProfile> {
         match self.auth.as_ref()? {
             AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
             AuthState::SignedOut => None,
@@ -1350,7 +1350,7 @@ impl AppState {
         }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
-        zeron_doc::apply_transcript_frame(&mut self.transcript, frame)?;
+        mast_doc::apply_transcript_frame(&mut self.transcript, frame)?;
         if is_reset {
             self.transcript_replayed = true;
         }
@@ -1391,13 +1391,13 @@ impl AppState {
     pub(crate) fn transcript_baseline(
         &self,
         doc_id: &str,
-    ) -> Option<&Arc<zeron_doc::TranscriptBaseline>> {
+    ) -> Option<&Arc<mast_doc::TranscriptBaseline>> {
         self.transcript_baselines.get(doc_id)
     }
 
     pub fn receive_transcript_update(
         &mut self,
-        update: zeron_doc::TranscriptUpdate,
+        update: mast_doc::TranscriptUpdate,
         cx: &mut Context<Self>,
     ) -> Result<(), TranscriptDesync> {
         self.receive_transcript_frame(update.frame, cx)?;
@@ -1416,7 +1416,7 @@ impl AppState {
     /// with it, and don't treat it as a full reset for caching/scroll anchors.
     pub(crate) fn receive_opening_transcript_update(
         &mut self,
-        update: zeron_doc::TranscriptUpdate,
+        update: mast_doc::TranscriptUpdate,
         history_pending: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), TranscriptDesync> {
@@ -1454,7 +1454,7 @@ impl AppState {
     fn receive_prepared_opening_transcript_update(
         &mut self,
         chat_id: &str,
-        update: zeron_doc::TranscriptUpdate,
+        update: mast_doc::TranscriptUpdate,
         prepared: Arc<crate::transcript::PreparedTranscript>,
         history_pending: bool,
         cx: &mut Context<Self>,
@@ -1511,7 +1511,7 @@ impl AppState {
         self.sub_watch_tasks.remove(&doc_id);
         self.transcript_baselines.insert(
             doc_id.clone(),
-            Arc::new(zeron_doc::TranscriptBaseline::capture(&entries)),
+            Arc::new(mast_doc::TranscriptBaseline::capture(&entries)),
         );
         self.sub_transcripts.insert(doc_id, entries);
     }
@@ -1556,8 +1556,8 @@ impl AppState {
     pub(crate) fn apply_queue_frame(
         &mut self,
         chat_id: &str,
-        items: Vec<zeron_doc::QueuedMessage>,
-        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
+        items: Vec<mast_doc::QueuedMessage>,
+        rejected_sends: Vec<mast_proto::InstructionRejectedSend>,
     ) {
         self.queue = items;
         for rejected in &rejected_sends {
@@ -1628,7 +1628,7 @@ impl AppState {
 
     /// A `WatchTransfers` snapshot: the engine-side relay leg's in-flight
     /// queued-attachment transfers, replacing the whole set each frame.
-    pub fn apply_transfers(&mut self, transfers: Vec<zeron_proto::TransferProgress>) {
+    pub fn apply_transfers(&mut self, transfers: Vec<mast_proto::TransferProgress>) {
         self.transfers = transfers
             .into_iter()
             .map(|t| (t.upload_id, (t.done, t.total)))
@@ -2182,7 +2182,7 @@ impl AppState {
     pub(crate) fn chat_execution_binding(
         &self,
         chat_id: &str,
-    ) -> Option<&zeron_proto::ChatExecutionBindingView> {
+    ) -> Option<&mast_proto::ChatExecutionBindingView> {
         let space_id = self
             .chats
             .iter()
@@ -2327,9 +2327,9 @@ impl AppState {
                 .unwrap_or(&member.repo_id)
                 .to_owned();
             self.write_chat_diff_target(
-                zeron_proto::SetChatDiffTargetParams {
+                mast_proto::SetChatDiffTargetParams {
                     chat_id: chat_id.to_owned(),
-                    action: zeron_proto::SetChatDiffTargetAction::SelectRef,
+                    action: mast_proto::SetChatDiffTargetAction::SelectRef,
                     ref_id: Some(ref_id),
                     ..Default::default()
                 },
@@ -2341,11 +2341,11 @@ impl AppState {
         let (action, path) = match member.kind {
             MemberKind::Ref => return,
             MemberKind::Target => (
-                zeron_proto::SetChatDiffTargetAction::Select,
+                mast_proto::SetChatDiffTargetAction::Select,
                 Some(member.checkout_path),
             ),
             MemberKind::Own | MemberKind::Binding => {
-                (zeron_proto::SetChatDiffTargetAction::ClearSelection, None)
+                (mast_proto::SetChatDiffTargetAction::ClearSelection, None)
             }
         };
         self.set_chat_diff_target(chat_id, action, path, cx)
@@ -2368,7 +2368,7 @@ impl AppState {
     }
 
     /// Resolved diff targets of a Chat (empty when none).
-    pub(crate) fn chat_diff_targets(&self, chat_id: &str) -> &[zeron_proto::ChatDiffTargetView] {
+    pub(crate) fn chat_diff_targets(&self, chat_id: &str) -> &[mast_proto::ChatDiffTargetView] {
         self.chat_diff_targets
             .get(chat_id)
             .map(Vec::as_slice)
@@ -2376,7 +2376,7 @@ impl AppState {
     }
 
     /// Resolved branch / PR range targets of a Chat (empty when none).
-    pub(crate) fn chat_ref_targets(&self, chat_id: &str) -> &[zeron_proto::ChatRefTargetView] {
+    pub(crate) fn chat_ref_targets(&self, chat_id: &str) -> &[mast_proto::ChatRefTargetView] {
         self.chat_ref_targets
             .get(chat_id)
             .map(Vec::as_slice)
@@ -2392,10 +2392,10 @@ impl AppState {
     /// is what a `clearSelection` write (own or binding pill) looks like.
     pub(crate) fn apply_chat_diff_targets(
         &mut self,
-        frame: Vec<zeron_proto::ChatDiffTargetsView>,
+        frame: Vec<mast_proto::ChatDiffTargetsView>,
     ) -> bool {
-        let mut next: HashMap<String, Vec<zeron_proto::ChatDiffTargetView>> = HashMap::new();
-        let mut next_refs: HashMap<String, Vec<zeron_proto::ChatRefTargetView>> = HashMap::new();
+        let mut next: HashMap<String, Vec<mast_proto::ChatDiffTargetView>> = HashMap::new();
+        let mut next_refs: HashMap<String, Vec<mast_proto::ChatRefTargetView>> = HashMap::new();
         for view in frame {
             if !view.ref_targets.is_empty() {
                 next_refs.insert(view.chat_id.clone(), view.ref_targets);
@@ -2409,8 +2409,8 @@ impl AppState {
         }
         // What a frame selects: a checkout target's path or a ref target's
         // id (at most one of the two).
-        let selected_key = |targets: &HashMap<String, Vec<zeron_proto::ChatDiffTargetView>>,
-                            refs: &HashMap<String, Vec<zeron_proto::ChatRefTargetView>>,
+        let selected_key = |targets: &HashMap<String, Vec<mast_proto::ChatDiffTargetView>>,
+                            refs: &HashMap<String, Vec<mast_proto::ChatRefTargetView>>,
                             chat_id: &str| {
             targets
                 .get(chat_id)
@@ -2457,7 +2457,7 @@ impl AppState {
     #[cfg(test)]
     pub(crate) fn set_chat_diff_targets_for_test(
         &mut self,
-        frame: Vec<zeron_proto::ChatDiffTargetsView>,
+        frame: Vec<mast_proto::ChatDiffTargetsView>,
     ) {
         self.apply_chat_diff_targets(frame);
     }
@@ -2513,15 +2513,15 @@ impl AppState {
         &self,
         chat_id: &str,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<zeron_proto::DiffCheckoutCandidate>, String>> {
-        let params = serde_json::to_value(zeron_proto::ListChatDiffCheckoutsParams {
+    ) -> Task<Result<Vec<mast_proto::DiffCheckoutCandidate>, String>> {
+        let params = serde_json::to_value(mast_proto::ListChatDiffCheckoutsParams {
             chat_id: chat_id.to_owned(),
         })
         .unwrap_or_default();
         let task = self.chat_diff_rpc(methods::LIST_CHAT_DIFF_CHECKOUTS, params, cx);
         cx.spawn(async move |_, _| {
             let value = task.await?;
-            serde_json::from_value::<zeron_proto::ListChatDiffCheckoutsReply>(value)
+            serde_json::from_value::<mast_proto::ListChatDiffCheckoutsReply>(value)
                 .map(|reply| reply.candidates)
                 .map_err(|error| format!("Malformed checkout list from the engine: {error}"))
         })
@@ -2533,12 +2533,12 @@ impl AppState {
     pub(crate) fn set_chat_diff_target(
         &mut self,
         chat_id: &str,
-        action: zeron_proto::SetChatDiffTargetAction,
+        action: mast_proto::SetChatDiffTargetAction,
         path: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
         self.write_chat_diff_target(
-            zeron_proto::SetChatDiffTargetParams {
+            mast_proto::SetChatDiffTargetParams {
                 chat_id: chat_id.to_owned(),
                 action,
                 path,
@@ -2560,9 +2560,9 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
         self.write_chat_diff_target(
-            zeron_proto::SetChatDiffTargetParams {
+            mast_proto::SetChatDiffTargetParams {
                 chat_id: chat_id.to_owned(),
-                action: zeron_proto::SetChatDiffTargetAction::BindRef,
+                action: mast_proto::SetChatDiffTargetAction::BindRef,
                 input: Some(input),
                 repo_path,
                 ..Default::default()
@@ -2577,15 +2577,15 @@ impl AppState {
         &self,
         chat_id: &str,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<zeron_proto::RefDiffCandidate>, String>> {
-        let params = serde_json::to_value(zeron_proto::ListChatDiffCheckoutsParams {
+    ) -> Task<Result<Vec<mast_proto::RefDiffCandidate>, String>> {
+        let params = serde_json::to_value(mast_proto::ListChatDiffCheckoutsParams {
             chat_id: chat_id.to_owned(),
         })
         .unwrap_or_default();
         let task = self.chat_diff_rpc(methods::LIST_CHAT_REF_DIFF_CANDIDATES, params, cx);
         cx.spawn(async move |_, _| {
             let value = task.await?;
-            serde_json::from_value::<zeron_proto::ListChatRefDiffCandidatesReply>(value)
+            serde_json::from_value::<mast_proto::ListChatRefDiffCandidatesReply>(value)
                 .map(|reply| reply.candidates)
                 .map_err(|error| format!("Malformed branch list from the engine: {error}"))
         })
@@ -2593,7 +2593,7 @@ impl AppState {
 
     fn write_chat_diff_target(
         &mut self,
-        params: zeron_proto::SetChatDiffTargetParams,
+        params: mast_proto::SetChatDiffTargetParams,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
         let chat_id = params.chat_id.clone();
@@ -2646,7 +2646,7 @@ impl AppState {
         }
         entry.loading = true;
         let task = self.work_outline_actions().validate_execution(
-            zeron_proto::ValidateExecutionConfigurationParams {
+            mast_proto::ValidateExecutionConfigurationParams {
                 chat_id: Some(chat_id.to_owned()),
                 ..Default::default()
             },
@@ -2682,7 +2682,7 @@ impl AppState {
 
     /// Tests: put a loaded Work Outline snapshot in the store.
     #[cfg(test)]
-    pub(crate) fn set_work_outline_for_test(&mut self, snapshot: zeron_proto::WorkOutlineSnapshot) {
+    pub(crate) fn set_work_outline_for_test(&mut self, snapshot: mast_proto::WorkOutlineSnapshot) {
         let space_id = snapshot.space_id.clone();
         self.work_outlines.set(
             &space_id,
@@ -2710,7 +2710,7 @@ impl AppState {
     pub(crate) fn apply_work_outline_frame(
         &mut self,
         space_id: &str,
-        snapshot: zeron_proto::WorkOutlineSnapshot,
+        snapshot: mast_proto::WorkOutlineSnapshot,
     ) -> bool {
         if snapshot.space_id != space_id || !self.work_outline_visible_contains(space_id) {
             return false;
@@ -2811,7 +2811,7 @@ impl AppState {
     pub(crate) fn apply_artifacts_frame(
         &mut self,
         space_id: &str,
-        snapshot: zeron_proto::ArtifactsSnapshot,
+        snapshot: mast_proto::ArtifactsSnapshot,
     ) -> bool {
         if snapshot.space_id != space_id || !self.artifact_tasks.contains_key(space_id) {
             return false;
@@ -2838,7 +2838,7 @@ impl AppState {
 
     /// Tests: install a Space's artifacts without a watch.
     #[cfg(test)]
-    pub(crate) fn set_test_artifacts(&mut self, snapshot: zeron_proto::ArtifactsSnapshot) {
+    pub(crate) fn set_test_artifacts(&mut self, snapshot: mast_proto::ArtifactsSnapshot) {
         let space_id = snapshot.space_id.clone();
         self.artifacts.set(
             &space_id,
@@ -3081,7 +3081,7 @@ impl AppState {
                 Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
             if handle
                 .engine_info()
-                .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+                .supports(mast_proto::capabilities::MESSAGE_QUEUE_V1)
             {
                 self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
             }
@@ -3129,7 +3129,7 @@ impl AppState {
     }
 
     pub fn open_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        match crate::links::parse_zeron_conversation_link(url) {
+        match crate::links::parse_mast_conversation_link(url) {
             Ok(link) => {
                 self.pending_deep_link = Some(link);
                 self.apply_pending_deep_link(cx);
@@ -3209,7 +3209,7 @@ impl AppState {
                                         .parts
                                         .iter()
                                         .map(|part| {
-                                            std::mem::size_of::<zeron_doc::MessagePart>()
+                                            std::mem::size_of::<mast_doc::MessagePart>()
                                                 + part.byte_len()
                                         })
                                         .sum::<usize>()
@@ -3256,7 +3256,7 @@ impl AppState {
                     .as_ref()
                     .map(|p| p.navigation_baseline.clone())
                     .unwrap_or_else(|| {
-                        Arc::new(zeron_doc::TranscriptBaseline::capture(&cached.entries))
+                        Arc::new(mast_doc::TranscriptBaseline::capture(&cached.entries))
                     }),
             );
             if let Some(prepared) = cached.prepared {
@@ -3293,7 +3293,7 @@ impl AppState {
                 Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
             if handle
                 .engine_info()
-                .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+                .supports(mast_proto::capabilities::MESSAGE_QUEUE_V1)
             {
                 self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
             }
@@ -3315,7 +3315,7 @@ impl AppState {
         };
         if handle
             .engine_info()
-            .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+            .supports(mast_proto::capabilities::MESSAGE_QUEUE_V1)
         {
             self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
         }
@@ -3469,7 +3469,7 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
     })
 }
 
-pub use zeron_proto::version_triple;
+pub use mast_proto::version_triple;
 
 /// What the cx-less Work Outline entry points need to schedule work on the
 /// app: a weak handle to the state and the app's async context.
@@ -3489,7 +3489,7 @@ pub(crate) enum InstructionHostSupport {
     /// The host's Mast predates instruction delivery.
     ZeronUpgradeRequired,
     /// The host delivers instructions, but not for this harness.
-    HarnessUnsupported(zeron_proto::HarnessId),
+    HarnessUnsupported(mast_proto::HarnessId),
 }
 
 /// Backoff before resubscribing a failed `WatchWorkOutline`: 2 s doubling to
@@ -3552,7 +3552,7 @@ fn spawn_work_outline_watch(
             // newest already applied from this subscription.
             let mut newest_revision: u64 = 0;
             while let Some(value) = subscription.recv().await {
-                let snapshot: zeron_proto::WorkOutlineSnapshot = match serde_json::from_value(value)
+                let snapshot: mast_proto::WorkOutlineSnapshot = match serde_json::from_value(value)
                 {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
@@ -3636,7 +3636,7 @@ fn spawn_artifacts_watch(
             attempt = 0;
             let mut newest_revision: u64 = 0;
             while let Some(value) = subscription.recv().await {
-                let snapshot: zeron_proto::ArtifactsSnapshot = match serde_json::from_value(value) {
+                let snapshot: mast_proto::ArtifactsSnapshot = match serde_json::from_value(value) {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
                         tracing::warn!(%space_id, error = %err, "dropping malformed artifacts frame");
@@ -3892,7 +3892,7 @@ fn spawn_transcript_watch(
                 let decoded = cx
                     .background_executor()
                     .spawn(async move {
-                        let update: zeron_doc::TranscriptUpdate =
+                        let update: mast_doc::TranscriptUpdate =
                             serde_json::from_value(value).map_err(|e| e.to_string())?;
                         let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
                         Ok::<_, String>((update, prepared, preparation))
@@ -3957,10 +3957,10 @@ fn spawn_queue_watch(
     #[derive(serde::Deserialize)]
     struct QueueFrame {
         #[serde(default)]
-        items: Vec<zeron_doc::QueuedMessage>,
+        items: Vec<mast_doc::QueuedMessage>,
         /// Additive: older hosts omit it.
         #[serde(default, rename = "rejectedSends")]
-        rejected_sends: Vec<zeron_proto::InstructionRejectedSend>,
+        rejected_sends: Vec<mast_proto::InstructionRejectedSend>,
     }
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -4040,7 +4040,7 @@ fn spawn_subagent_watch(
                 let decoded = cx
                     .background_executor()
                     .spawn(async move {
-                        let update: zeron_doc::TranscriptUpdate =
+                        let update: mast_doc::TranscriptUpdate =
                             serde_json::from_value(value).map_err(|e| e.to_string())?;
                         let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
                         Ok::<_, String>((update, prepared, preparation))
@@ -4062,7 +4062,7 @@ fn spawn_subagent_watch(
                         let frame = update.frame;
                         let text_only = is_text_append(&frame);
                         state.transcript_revision = state.transcript_revision.wrapping_add(1);
-                        if let Err(err) = zeron_doc::apply_transcript_frame(rows, frame) {
+                        if let Err(err) = mast_doc::apply_transcript_frame(rows, frame) {
                             tracing::warn!(%doc_id, error = %err, "resubscribing subagent watch");
                             desync = true;
                         }
@@ -4104,10 +4104,10 @@ mod tests {
     use super::*;
     use chrono::TimeDelta;
     use gpui::AppContext;
-    use zeron_engine::{EngineCore, default_registry};
+    use mast_engine::{EngineCore, default_registry};
     // `SessionStatus` is only needed to build the fixtures below — the module
-    // itself derives everything through `zeron_proto::view`.
-    use zeron_proto::{SessionStatus, UserProfile};
+    // itself derives everything through `mast_proto::view`.
+    use mast_proto::{SessionStatus, UserProfile};
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
@@ -4181,7 +4181,7 @@ mod tests {
     async fn remote_viewport_treats_legacy_daemon_as_ready() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
+        let server = tokio::spawn(mast_rpc::serve_ws_listener(
             listener,
             Arc::new(LegacyIdentityRpc),
         ));
@@ -4249,7 +4249,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_reports_local_assembly_failure_before_returning_a_handle() {
         let dir = tempfile::tempdir().unwrap();
-        zeron_engine::EngineProfile::local(dir.path()).unwrap();
+        mast_engine::EngineProfile::local(dir.path()).unwrap();
         std::fs::create_dir(dir.path().join("profiles")).unwrap();
         std::fs::write(dir.path().join("profiles/local"), b"not a directory").unwrap();
         let port = free_port().await;
@@ -4297,14 +4297,14 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (state_tx, state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
+        let server = tokio::spawn(mast_rpc::serve_ws_listener(
             listener,
             Arc::new(DeferredIdentityRpc {
                 engine_info: EngineInfo {
                     device_id: "owner-device".into(),
                     workspace_scope: WorkspaceScope::Local,
                     cursor_sdk_version: None,
-                    capabilities: zeron_proto::capabilities::current(),
+                    capabilities: mast_proto::capabilities::current(),
                 },
                 state: state_rx,
             }),
@@ -4584,7 +4584,7 @@ mod tests {
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(zeron_rpc::serve_ws_listener(listener, core.rpc_service()));
+        tokio::spawn(mast_rpc::serve_ws_listener(listener, core.rpc_service()));
 
         let ui_dir = tempfile::tempdir().unwrap();
         let handle = EngineHandle::bootstrap(EngineBootConfig {
@@ -4689,7 +4689,7 @@ mod tests {
     fn user_entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
             id: id.into(),
-            role: zeron_doc::MessageRole::User,
+            role: mast_doc::MessageRole::User,
             parts: Vec::new(),
             created_at: 0,
             device_id: "dev".into(),
@@ -4704,7 +4704,7 @@ mod tests {
     ) {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, cx| {
-            let update = |id: &str| zeron_doc::TranscriptUpdate {
+            let update = |id: &str| mast_doc::TranscriptUpdate {
                 frame: TranscriptFrame::reset(&[user_entry(id)]),
                 context_usage: None,
                 replay_baseline: None,
@@ -4756,10 +4756,10 @@ mod tests {
             state.select_chat(Some("restored".into()), cx);
         });
 
-        let preview = zeron_doc::TranscriptUpdate {
+        let preview = mast_doc::TranscriptUpdate {
             frame: TranscriptFrame::reset(&[]),
             context_usage: None,
-            replay_baseline: Some(zeron_doc::TranscriptBaseline::default()),
+            replay_baseline: Some(mast_doc::TranscriptBaseline::default()),
         };
         let preview_prepared = crate::transcript::TranscriptPreparation::default()
             .prepare(&preview)
@@ -4782,10 +4782,10 @@ mod tests {
         });
 
         let entries = vec![user_entry("history")];
-        let full = zeron_doc::TranscriptUpdate {
+        let full = mast_doc::TranscriptUpdate {
             frame: TranscriptFrame::reset(&entries),
             context_usage: None,
-            replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&entries)),
+            replay_baseline: Some(mast_doc::TranscriptBaseline::capture(&entries)),
         };
         let full_prepared = crate::transcript::TranscriptPreparation::default()
             .prepare(&full)
@@ -4818,7 +4818,7 @@ mod tests {
             let entries: Vec<_> = (0..2000)
                 .map(|i| {
                     let mut entry = user_entry(&format!("message-{i}"));
-                    entry.parts.push(zeron_doc::MessagePart::Text {
+                    entry.parts.push(mast_doc::MessagePart::Text {
                         id: "text".into(),
                         text: "x".repeat(2048),
                     });
@@ -4906,7 +4906,7 @@ mod tests {
             state.select_chat(Some("oversize".into()), cx);
             assert!(state.transcript_cache.is_empty());
             let mut entry = user_entry("large");
-            entry.parts.push(zeron_doc::MessagePart::Text {
+            entry.parts.push(mast_doc::MessagePart::Text {
                 id: "text".into(),
                 text: "x".repeat(TRANSCRIPT_CACHE_BYTES + 1),
             });
@@ -4931,7 +4931,7 @@ mod tests {
         state.transcript_revision += 1;
         state.transcript.clear();
         state.queue.clear();
-        state.context_usage = Some(zeron_proto::ContextUsage {
+        state.context_usage = Some(mast_proto::ContextUsage {
             tokens: Some(10),
             ..Default::default()
         });
@@ -4961,7 +4961,7 @@ mod tests {
             s.connection = ConnectionStatus::Ready
         });
         probe("auth", &mut state, &|s| {
-            s.auth = Some(zeron_proto::AuthState::SignedOut)
+            s.auth = Some(mast_proto::AuthState::SignedOut)
         });
         probe("local device", &mut state, &|s| {
             s.local_device_id = Some("d".into())
@@ -5176,7 +5176,7 @@ mod tests {
         let mut s = AppState::new();
         assert_eq!(s.transfer_percent("u1"), None);
 
-        let frame = |id: &str, done, total| zeron_proto::TransferProgress {
+        let frame = |id: &str, done, total| mast_proto::TransferProgress {
             upload_id: id.into(),
             file_name: "a.png".into(),
             done,
@@ -5441,7 +5441,7 @@ mod tests {
         space_id: &str,
         revision: u64,
         title: &str,
-    ) -> zeron_proto::WorkOutlineSnapshot {
+    ) -> mast_proto::WorkOutlineSnapshot {
         let mut snapshot = crate::work_outline::store::fixture_snapshot(space_id);
         snapshot.revision = revision;
         snapshot.items[0].title = title.into();
@@ -5750,7 +5750,7 @@ mod tests {
             // A frame for an unwatched Space is dropped.
             assert!(!state.apply_artifacts_frame(
                 "s1",
-                zeron_proto::ArtifactsSnapshot {
+                mast_proto::ArtifactsSnapshot {
                     space_id: "s1".into(),
                     ..Default::default()
                 }
@@ -6001,12 +6001,12 @@ mod tests {
     fn apply_chat_config_stamps_the_row() {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
-        let config = zeron_proto::ChatConfig {
+        let config = mast_proto::ChatConfig {
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
+            reasoning: Some(mast_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: false,
         };
         state.apply_chat_config("a", config.clone());
@@ -6026,12 +6026,12 @@ mod tests {
         // Unknown chat: no-op, no panic.
         state.apply_chat_config(
             "missing",
-            zeron_proto::ChatConfig {
+            mast_proto::ChatConfig {
                 harness: HarnessId::ClaudeCode,
                 model: None,
                 reasoning: None,
                 model_options: serde_json::Map::new(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                 auto_approve: false,
             },
         );
@@ -6124,7 +6124,7 @@ mod tests {
         state.selected_chat = Some("c1".into());
         let echo = SessionMessageEntry {
             id: "m1".into(),
-            role: zeron_doc::MessageRole::User,
+            role: mast_doc::MessageRole::User,
             parts: vec![],
             created_at: 0,
             device_id: "local".into(),
@@ -6489,7 +6489,7 @@ mod tests {
                 created_at: None,
                 version: Some("0.2.31".into()),
                 cursor_sdk_version: None,
-                capabilities: vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()],
+                capabilities: vec![mast_proto::capabilities::MESSAGE_QUEUE_V1.into()],
             },
             Device {
                 id: "upstream".into(),
@@ -6503,13 +6503,13 @@ mod tests {
             },
         ];
 
-        assert!(state.device_supports("personal", zeron_proto::capabilities::MESSAGE_QUEUE_V1));
-        assert!(!state.device_supports("upstream", zeron_proto::capabilities::MESSAGE_QUEUE_V1));
+        assert!(state.device_supports("personal", mast_proto::capabilities::MESSAGE_QUEUE_V1));
+        assert!(!state.device_supports("upstream", mast_proto::capabilities::MESSAGE_QUEUE_V1));
     }
 
     #[test]
     fn delivery_degradation_and_queued_sends_tell_the_truth() {
-        use zeron_proto::{ChatConnectivity, ConnectivityState};
+        use mast_proto::{ChatConnectivity, ConnectivityState};
         let now = Utc::now();
         let mut s = AppState::default();
         s.local_device_id = Some("local".into());
@@ -6596,7 +6596,7 @@ impl AppState {
     /// Seed provider metadata for the isolated native sidebar review fixture.
     pub fn fixture_sidebar_change_request(
         &mut self,
-        snapshot: zeron_proto::CheckoutChangeRequestStatus,
+        snapshot: mast_proto::CheckoutChangeRequestStatus,
     ) {
         let key = crate::change_requests::ChangeRequestWatchKey {
             device_id: snapshot.device_id.clone(),
@@ -6609,7 +6609,7 @@ impl AppState {
 }
 
 /// Identity of a captured binding (a reply for another capture is stale).
-fn execution_binding_key(binding: &zeron_proto::ChatExecutionBindingView) -> String {
+fn execution_binding_key(binding: &mast_proto::ChatExecutionBindingView) -> String {
     format!(
         "{}|{}",
         binding.operation_id.as_deref().unwrap_or(""),

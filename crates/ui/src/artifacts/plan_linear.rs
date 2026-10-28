@@ -9,7 +9,7 @@ use chrono::{NaiveDate, TimeZone, Utc};
 use gpui::{
     AnyElement, IntoElement, ParentElement, SharedString, Styled, WeakEntity, div, prelude::*, px,
 };
-use zeron_proto::linear::{LinearProjectDetail, LinearUser};
+use mast_proto::linear::{LinearProjectDetail, LinearUser};
 
 use crate::linear::store::ProjectDetailEntry;
 use crate::theme::Theme;
@@ -364,7 +364,7 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::linear::LinearProjectUpdate;
+    use mast_proto::linear::LinearProjectUpdate;
 
     // 2026-10-28T12:00:00Z
     const NOW: i64 = 1_793_188_800_000;

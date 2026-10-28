@@ -7,8 +7,8 @@
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use zeron_proto::ToolCall;
+use mast_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use mast_proto::ToolCall;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions {

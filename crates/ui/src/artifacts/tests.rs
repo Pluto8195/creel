@@ -1,7 +1,7 @@
 //! Artifact UI tests (GUI-free logic and headless gpui views).
 use std::sync::Arc;
 
-use zeron_proto::{ArtifactKind, ArtifactRevision, ArtifactView, ArtifactsSnapshot};
+use mast_proto::{ArtifactKind, ArtifactRevision, ArtifactView, ArtifactsSnapshot};
 
 use super::model::{self, LinkResolution};
 use super::store::{ArtifactStore, ArtifactsLoad};
@@ -139,8 +139,8 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use zeron_proto::{ArtifactContentEncoding, ArtifactContentReply};
-use zeron_rpc::RpcError;
+use mast_proto::{ArtifactContentEncoding, ArtifactContentReply};
+use mast_rpc::RpcError;
 
 use super::document::MERMAID_SRC;
 use super::model::WebKind;
@@ -233,7 +233,7 @@ pub(crate) fn content_calls(calls: &Calls) -> Vec<serde_json::Value> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_CONTENT)
+        .filter(|(method, _)| method == mast_rpc::methods::ARTIFACT_CONTENT)
         .map(|(_, params)| params.clone())
         .collect()
 }
@@ -420,7 +420,7 @@ fn compare_source_tab_uses_the_revision_text_diff(cx: &mut TestAppContext) {
         let data = view.data().expect("compare ready");
         assert_eq!(
             data.lines.as_deref(),
-            Some(zeron_proto::diff_lines("a\nb\n", "a\nc\n").as_slice())
+            Some(mast_proto::diff_lines("a\nb\n", "a\nc\n").as_slice())
         );
     });
     vcx.update(|window, cx| {
@@ -453,7 +453,7 @@ fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext
     let _dir = init_ui(cx);
     let mut plan = artifact(&id(1), "Plan", ArtifactKind::Markdown);
     plan.pinned_as_plan = true;
-    plan.revisions[0].note = zeron_proto::artifacts::EDITED_WITHOUT_NOTE.into();
+    plan.revisions[0].note = mast_proto::artifacts::EDITED_WITHOUT_NOTE.into();
     let reply = reply_with(content_reply(
         ArtifactKind::Markdown,
         2,
@@ -468,12 +468,12 @@ fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext
     let mut outline = crate::work_outline::store::fixture_snapshot(SPACE);
     outline
         .external_references
-        .push(zeron_proto::WorkItemExternalReferenceView {
+        .push(mast_proto::WorkItemExternalReferenceView {
             id: "ref".into(),
             space_id: SPACE.into(),
             work_item_id: "w-api".into(),
-            provider: zeron_proto::linear::LINEAR_PROVIDER.into(),
-            reference_type: zeron_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
+            provider: mast_proto::linear::LINEAR_PROVIDER.into(),
+            reference_type: mast_proto::linear::LINEAR_PROJECT_REFERENCE.into(),
             external_id: "p".into(),
             url: "https://linear.app/acme/project/p-1".into(),
             cached_title: Some("Receiving".into()),
@@ -497,7 +497,7 @@ fn header_shows_edited_without_a_note_and_the_plan_badge(cx: &mut TestAppContext
 // --------------------------------------------------------------------------
 
 use super::render_check::{self, ArtifactRenderer, RenderConfig, RenderFuture, RenderOutput};
-use zeron_proto::{ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactViewport};
+use mast_proto::{ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactViewport};
 
 /// Records each document and answers from `answer` (or holds the render
 /// until released when `gated`).
@@ -688,10 +688,10 @@ fn render_check_renders_every_viewport_and_theme_and_keeps_the_single_screenshot
         ..Default::default()
     });
     let mut request = render_request(1, ArtifactKind::HtmlFragment, "<div>flow</div>");
-    request.viewports = zeron_proto::ArtifactRenderViewport::defaults();
+    request.viewports = mast_proto::ArtifactRenderViewport::defaults();
     request.themes = vec![
-        zeron_proto::ArtifactRenderTheme::Light,
-        zeron_proto::ArtifactRenderTheme::Dark,
+        mast_proto::ArtifactRenderTheme::Light,
+        mast_proto::ArtifactRenderTheme::Dark,
     ];
     let result = serve_with(cx, request, &renderer).result.unwrap();
     let seen: Vec<_> = result
@@ -748,17 +748,17 @@ fn render_check_caps_images_at_four_and_says_so(cx: &mut TestAppContext) {
     });
     let mut request = render_request(1, ArtifactKind::HtmlFragment, "<p>x</p>");
     request.viewports = vec![
-        zeron_proto::ArtifactRenderViewport::defaults().remove(0),
-        zeron_proto::ArtifactRenderViewport::defaults().remove(1),
-        zeron_proto::ArtifactRenderViewport {
+        mast_proto::ArtifactRenderViewport::defaults().remove(0),
+        mast_proto::ArtifactRenderViewport::defaults().remove(1),
+        mast_proto::ArtifactRenderViewport {
             width: 1920,
             height: 1080,
             label: Some("huge".into()),
         },
     ];
     request.themes = vec![
-        zeron_proto::ArtifactRenderTheme::Light,
-        zeron_proto::ArtifactRenderTheme::Dark,
+        mast_proto::ArtifactRenderTheme::Light,
+        mast_proto::ArtifactRenderTheme::Dark,
     ];
     let result = serve_with(cx, request, &renderer).result.unwrap();
     assert_eq!(result.screenshots.len(), 4);
@@ -892,7 +892,7 @@ fn render_executor_serves_the_stream_with_bounded_concurrency(cx: &mut TestAppCo
     state.update(cx, |state, cx| {
         state.work_outline_actions_override = Some(actions);
         let handle =
-            crate::state::EngineHandle::from_test_client(zeron_rpc::RpcClient::new(out, inbound));
+            crate::state::EngineHandle::from_test_client(mast_rpc::RpcClient::new(out, inbound));
         state.start_artifact_render_executor(
             handle,
             Some(dyn_renderer),
@@ -907,9 +907,9 @@ fn render_executor_serves_the_stream_with_bounded_concurrency(cx: &mut TestAppCo
     let frame: serde_json::Value = serde_json::from_str(&requests.try_recv().unwrap()).unwrap();
     assert_eq!(
         frame["method"],
-        zeron_rpc::methods::WATCH_ARTIFACT_RENDER_REQUESTS
+        mast_rpc::methods::WATCH_ARTIFACT_RENDER_REQUESTS
     );
-    assert_eq!(frame["params"]["client"], "zeron-ui");
+    assert_eq!(frame["params"]["client"], "mast-ui");
     for n in 1..=3 {
         let item = serde_json::json!({
             "id": frame["id"].clone(),
@@ -942,7 +942,7 @@ fn render_executor_serves_the_stream_with_bounded_concurrency(cx: &mut TestAppCo
         .lock()
         .unwrap()
         .iter()
-        .filter(|(method, _)| method == zeron_rpc::methods::ARTIFACT_RENDER_RESULT)
+        .filter(|(method, _)| method == mast_rpc::methods::ARTIFACT_RENDER_RESULT)
         .map(|(_, params)| params["requestId"].as_str().unwrap().to_owned())
         .collect();
     answered.sort();

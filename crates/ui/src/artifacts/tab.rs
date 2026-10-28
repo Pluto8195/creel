@@ -22,7 +22,7 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Task,
     WeakEntity, Window, div, prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArtifactContentParams, ArtifactContentReply, ArtifactKind, ArtifactPinParams,
     ArtifactPromoteParams, ArtifactView, TextDiffLine,
 };

@@ -1,4 +1,4 @@
-//! zeron-ui — the gpui viewport. Shell, sidebar, conversation, composer, terminal,
+//! mast-ui — the gpui viewport. Shell, sidebar, conversation, composer, terminal,
 //! diff pane.
 //!
 //! Design: ARCHITECTURE.md §4; animation catalog docs/research/feature-inventory.md
@@ -86,7 +86,7 @@ use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 pub use state::EngineBootConfig;
-pub use zeron_proto::HarnessId;
+pub use mast_proto::HarnessId;
 
 /// Whether a control whose primary action is click activation may also start
 /// a GPUI drag from the same hitbox. GPUI promotes pointer travel above 2 px
@@ -99,7 +99,7 @@ pub(crate) const fn click_activation_drag_enabled() -> bool {
 }
 
 /// Everything the headed binary passes in (config/env resolution lives in
-/// `apps/zeron`, not here).
+/// `apps/mast`, not here).
 #[derive(Debug, Clone)]
 pub struct UiConfig {
     /// Data directory — engine stores + `ui-settings.json`.

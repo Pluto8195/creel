@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{AgentEvent, InstructionRevisionPin};
+use mast_proto::{AgentEvent, InstructionRevisionPin};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -580,7 +580,7 @@ fn sanitize_id(chat_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::DoneStatus;
+    use mast_proto::DoneStatus;
 
     fn pin(id: &str) -> InstructionRevisionPin {
         InstructionRevisionPin {

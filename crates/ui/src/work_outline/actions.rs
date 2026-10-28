@@ -19,7 +19,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use gpui::{BackgroundExecutor, Task};
-use zeron_proto::{
+use mast_proto::{
     ApplyInstructionRevisionParams, ArchiveWorkItemInstructionParams, ArchiveWorkItemParams,
     AssignChatToWorkItemParams, ConfigureExecutionParams, CreateInstructionRevisionParams,
     CreateWorkItemExternalReferenceParams, CreateWorkItemInstructionParams, CreateWorkItemParams,
@@ -31,7 +31,7 @@ use zeron_proto::{
     ValidateExecutionConfigurationReply, WorkOutlineError, WorkOutlineErrorCode,
     WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlineQueryRequest, WorkOutlineQueryResponse,
 };
-use zeron_rpc::{RpcError, methods};
+use mast_rpc::{RpcError, methods};
 
 use crate::state::EngineHandle;
 
@@ -505,7 +505,7 @@ impl WorkOutlineActions {
     /// carries `application_id`.
     pub(crate) fn keep_instruction_session(
         &self,
-        params: zeron_proto::KeepInstructionSessionParams,
+        params: mast_proto::KeepInstructionSessionParams,
     ) -> ActionTask {
         self.mutate(WorkOutlineMutation::KeepInstructionSession(params))
     }
@@ -515,7 +515,7 @@ impl WorkOutlineActions {
     /// Resolve one request (and its open duplicates); reply `{}`.
     pub(crate) fn resolve_user_action_request(
         &self,
-        params: zeron_proto::ResolveUserActionRequestParams,
+        params: mast_proto::ResolveUserActionRequestParams,
     ) -> ActionTask {
         self.mutate(WorkOutlineMutation::ResolveUserActionRequest(params))
     }
@@ -524,7 +524,7 @@ impl WorkOutlineActions {
     /// `instruction_id` (`derive_id(proposalId, "instruction")`).
     pub(crate) fn approve_instruction_proposal(
         &self,
-        params: zeron_proto::ApproveWorkItemInstructionProposalParams,
+        params: mast_proto::ApproveWorkItemInstructionProposalParams,
     ) -> ActionTask {
         self.mutate(WorkOutlineMutation::ApproveWorkItemInstructionProposal(
             params,
@@ -534,7 +534,7 @@ impl WorkOutlineActions {
     /// Reject a proposal (optional reason); reply `{}`.
     pub(crate) fn reject_instruction_proposal(
         &self,
-        params: zeron_proto::RejectWorkItemInstructionProposalParams,
+        params: mast_proto::RejectWorkItemInstructionProposalParams,
     ) -> ActionTask {
         self.mutate(WorkOutlineMutation::RejectWorkItemInstructionProposal(
             params,
@@ -575,13 +575,13 @@ impl WorkOutlineActions {
     /// the same ids.
     pub(crate) fn create_chat_for_work_item(
         &self,
-        params: zeron_proto::CreateChatForWorkItemParams,
-    ) -> Task<Result<zeron_proto::CreateChatForWorkItemReply, WorkOutlineError>> {
+        params: mast_proto::CreateChatForWorkItemParams,
+    ) -> Task<Result<mast_proto::CreateChatForWorkItemReply, WorkOutlineError>> {
         match serde_json::to_value(&params) {
             Ok(value) => self.call(
                 methods::CREATE_CHAT_FOR_WORK_ITEM,
                 value,
-                decode_json::<zeron_proto::CreateChatForWorkItemReply>,
+                decode_json::<mast_proto::CreateChatForWorkItemReply>,
             ),
             Err(error) => Task::ready(Err(WorkOutlineError::new(
                 WorkOutlineErrorCode::Invalid,
@@ -598,13 +598,13 @@ impl WorkOutlineActions {
     /// same id writes nothing and reports the Turn's current state.
     pub(crate) fn continue_chat_for_work_item(
         &self,
-        params: zeron_proto::ContinueChatForWorkItemParams,
-    ) -> Task<Result<zeron_proto::ContinueChatForWorkItemReply, WorkOutlineError>> {
+        params: mast_proto::ContinueChatForWorkItemParams,
+    ) -> Task<Result<mast_proto::ContinueChatForWorkItemReply, WorkOutlineError>> {
         match serde_json::to_value(&params) {
             Ok(value) => self.call(
                 methods::CONTINUE_CHAT_FOR_WORK_ITEM,
                 value,
-                decode_json::<zeron_proto::ContinueChatForWorkItemReply>,
+                decode_json::<mast_proto::ContinueChatForWorkItemReply>,
             ),
             Err(error) => Task::ready(Err(WorkOutlineError::new(
                 WorkOutlineErrorCode::Invalid,
@@ -654,11 +654,11 @@ impl WorkOutlineActions {
     pub(crate) fn list_commands(
         &self,
         params: serde_json::Value,
-    ) -> Task<Result<Vec<zeron_proto::SlashCommand>, WorkOutlineError>> {
+    ) -> Task<Result<Vec<mast_proto::SlashCommand>, WorkOutlineError>> {
         self.call(
             methods::LIST_COMMANDS,
             params,
-            decode_json::<Vec<zeron_proto::SlashCommand>>,
+            decode_json::<Vec<mast_proto::SlashCommand>>,
         )
     }
 
@@ -722,7 +722,7 @@ fn mismatched_query() -> WorkOutlineError {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use zeron_proto::WorkOutlinePlacement;
+    use mast_proto::WorkOutlinePlacement;
 
     fn move_mutation(operation_id: &str) -> WorkOutlineMutation {
         WorkOutlineMutation::MoveWorkItem(MoveWorkItemParams {
@@ -1004,7 +1004,7 @@ mod tests {
         .unwrap();
         assert_eq!(identity.repo_id, "repo:x");
         futures::executor::block_on(actions.configure_execution(ConfigureExecutionParams {
-            scope: zeron_proto::ExecutionScope::Space {
+            scope: mast_proto::ExecutionScope::Space {
                 space_id: "s".into(),
             },
             configuration: None,

@@ -10,7 +10,7 @@ fn undo_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -278,7 +278,7 @@ fn a_failed_undo_keeps_the_entry(cx: &mut gpui::TestAppContext) {
     let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), fixture(), move |params| {
         if params["op"] == "moveWorkItem" && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
         {
-            return Err(zeron_rpc::RpcError::Failed("engine said no".into()));
+            return Err(mast_rpc::RpcError::Failed("engine said no".into()));
         }
         reply_ok(params)
     });
@@ -394,7 +394,7 @@ fn a_status_change_in_details_is_undone_from_the_outline(cx: &mut gpui::TestAppC
     let (overview, outline, calls, vcx) = undo_overview(cx, dir.path(), fixture(), reply_ok);
     let details = open_details(&overview, vcx, API);
     details.update(vcx, |d, cx| {
-        d.set_status(zeron_proto::WorkItemStatus::Pending, cx)
+        d.set_status(mast_proto::WorkItemStatus::Pending, cx)
     });
     vcx.run_until_parked();
     assert_eq!(call(&calls, 0)["changes"]["status"], "pending");
@@ -404,7 +404,7 @@ fn a_status_change_in_details_is_undone_from_the_outline(cx: &mut gpui::TestAppC
         .iter_mut()
         .find(|item| item.id == API)
         .unwrap()
-        .status = zeron_proto::WorkItemStatus::Pending;
+        .status = mast_proto::WorkItemStatus::Pending;
     settle(&overview, vcx, changed);
     focus(&outline, vcx);
 

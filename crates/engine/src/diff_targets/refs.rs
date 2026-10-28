@@ -25,7 +25,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use zeron_proto::{
+use mast_proto::{
     Chat, ChatDiffTargetsReply, DiffCheckoutKind, ListChatRefDiffCandidatesReply,
     MAX_CHAT_REF_TARGETS, RefDiffCandidate, RefDiffKind, StoredRefDiffTarget,
 };
@@ -171,7 +171,7 @@ fn ref_exists(repo: &Path, full_ref: &str) -> bool {
 /// `git fetch origin <refspec>` in `repo` (read-only: only the local
 /// repository's refs change). Bounded by [`FETCH_TIMEOUT`].
 fn fetch(repo: &Path, refspec: &str) -> Result<(), String> {
-    let mut child = zeron_harness::git_command()
+    let mut child = mast_harness::git_command()
         .args([
             "fetch",
             "--quiet",

@@ -5,7 +5,7 @@
 //!
 //! Deliberately a DIFFERENT output shape from `external_import.rs`'s
 //! `parse_transcript`: that function folds a transcript into
-//! `zeron_doc::SessionMessageEntry`/`MessagePart` — the shape a chat DOC
+//! `mast_doc::SessionMessageEntry`/`MessagePart` — the shape a chat DOC
 //! wants (coalesced deltas, tool calls/results merged into one part,
 //! sanitized). A subagent transcript panel isn't a doc and never becomes
 //! one; it wants the same flat, ungrouped list of raw turns the reference

@@ -44,8 +44,8 @@ use gpui::{
 };
 use unicode_width::UnicodeWidthChar as _;
 
-use zeron_proto::{Chat, CheckoutDiff, GitHistoryCommit, SubmoduleDiffSummary};
-use zeron_rpc::methods;
+use mast_proto::{Chat, CheckoutDiff, GitHistoryCommit, SubmoduleDiffSummary};
+use mast_rpc::methods;
 
 use crate::comments::{self, CommentSide, ReviewComment};
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -58,7 +58,7 @@ use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::popover::{self, Popup};
 use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
-use zeron_syntax::LanguageId as Lang;
+use mast_syntax::LanguageId as Lang;
 
 mod ref_picker;
 
@@ -310,8 +310,8 @@ pub struct SourceLineRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DiffHighlights {
-    pub old: Option<Arc<zeron_syntax::HighlightedDocument>>,
-    pub new: Option<Arc<zeron_syntax::HighlightedDocument>>,
+    pub old: Option<Arc<mast_syntax::HighlightedDocument>>,
+    pub new: Option<Arc<mast_syntax::HighlightedDocument>>,
 }
 
 impl DiffHighlights {
@@ -342,7 +342,7 @@ impl DiffHighlights {
         }
     }
 
-    pub fn spans(&self, line: &DiffLine) -> &[zeron_syntax::HighlightSpan] {
+    pub fn spans(&self, line: &DiffLine) -> &[mast_syntax::HighlightSpan] {
         let Some(source_ref) = self.source_ref(line) else {
             return &[];
         };
@@ -1209,7 +1209,7 @@ fn excerpt_side(
     side: SourceSide,
     language: Lang,
     path: &str,
-) -> Option<Arc<zeron_syntax::HighlightedDocument>> {
+) -> Option<Arc<mast_syntax::HighlightedDocument>> {
     let max_line = file
         .hunks
         .iter()
@@ -1244,7 +1244,7 @@ fn excerpt_side(
             .map(|(_, text)| *text)
             .collect::<Vec<_>>()
             .join("\n");
-        let document = zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+        let document = mast_syntax::highlight(mast_syntax::HighlightRequest {
             source: &source,
             path: Some(path),
             fence_tag: None,
@@ -1254,14 +1254,14 @@ fn excerpt_side(
             lines[number as usize - 1] = spans;
         }
     }
-    Some(Arc::new(zeron_syntax::HighlightedDocument {
+    Some(Arc::new(mast_syntax::HighlightedDocument {
         language,
         lines,
     }))
 }
 
 fn excerpt_highlights(file: &FileDiff, language: Lang) -> Option<DiffHighlights> {
-    if !zeron_syntax::supports_language(language) {
+    if !mast_syntax::supports_language(language) {
         return None;
     }
     let old = if file.status == FileStatus::Added {
@@ -1282,7 +1282,7 @@ fn excerpt_highlights(file: &FileDiff, language: Lang) -> Option<DiffHighlights>
     Some(DiffHighlights { old, new })
 }
 
-fn sources_match_patch(file: &FileDiff, response: &zeron_proto::CheckoutFileDiffText) -> bool {
+fn sources_match_patch(file: &FileDiff, response: &mast_proto::CheckoutFileDiffText) -> bool {
     let old = response
         .old_text
         .as_deref()
@@ -1315,7 +1315,7 @@ fn sources_match_patch(file: &FileDiff, response: &zeron_proto::CheckoutFileDiff
 fn full_highlights(
     file: &FileDiff,
     language: Lang,
-    response: &zeron_proto::CheckoutFileDiffText,
+    response: &mast_proto::CheckoutFileDiffText,
 ) -> Option<DiffHighlights> {
     if response.stale
         || response.binary
@@ -1325,7 +1325,7 @@ fn full_highlights(
         return None;
     }
     let parse = |source: &str, path: &str| {
-        zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+        mast_syntax::highlight(mast_syntax::HighlightRequest {
             source,
             path: Some(path),
             fence_tag: None,
@@ -1344,7 +1344,7 @@ fn full_highlights(
         Some(source) => Some(parse(source, &file.path)?),
         None => None,
     };
-    if old.is_none() && new.is_none() && zeron_syntax::supports_language(language) {
+    if old.is_none() && new.is_none() && mast_syntax::supports_language(language) {
         return None;
     }
     Some(DiffHighlights { old, new })
@@ -1358,8 +1358,8 @@ fn file_diff_text_request(
     chat_id: Option<String>,
     commit_sha: Option<String>,
     head_ref: Option<String>,
-) -> zeron_proto::GetCheckoutFileDiffTextRequest {
-    zeron_proto::GetCheckoutFileDiffTextRequest {
+) -> mast_proto::GetCheckoutFileDiffTextRequest {
+    mast_proto::GetCheckoutFileDiffTextRequest {
         checkout_id: diff.checkout_id.clone(),
         cwd: diff.cwd.clone(),
         path: origin.repository_relative_path.clone(),
@@ -3002,7 +3002,7 @@ impl Changes {
                 changes.scoped_inflight = None;
                 match result.and_then(|value| {
                     serde_json::from_value::<CheckoutDiff>(value)
-                        .map_err(|e| zeron_rpc::RpcError::Failed(e.to_string()))
+                        .map_err(|e| mast_rpc::RpcError::Failed(e.to_string()))
                 }) {
                     Ok(diff) => {
                         changes.scoped = Some(diff);
@@ -4211,10 +4211,10 @@ impl Changes {
     /// surfaces as the pane's error notice (`AppState::chat_diff_target_error`).
     fn choose_checkout(
         &mut self,
-        candidate: zeron_proto::DiffCheckoutCandidate,
+        candidate: mast_proto::DiffCheckoutCandidate,
         cx: &mut Context<Self>,
     ) {
-        use zeron_proto::{DiffCheckoutKind, SetChatDiffTargetAction};
+        use mast_proto::{DiffCheckoutKind, SetChatDiffTargetAction};
         if let Some(chat_id) = self.owner_chat_id_owned() {
             self.state.update(cx, |state, cx| {
                 state.clear_chat_diff_member_pick(&chat_id);
@@ -4254,7 +4254,7 @@ impl Changes {
         parsed_key: &str,
         cx: &mut Context<Self>,
     ) -> Option<Arc<DiffHighlights>> {
-        let lang = zeron_syntax::language_for_path(&file.path)?;
+        let lang = mast_syntax::language_for_path(&file.path)?;
         let fingerprint = hash64(&[parsed_key, &file.path]);
         if let Some(slot) = self.highlights.get(&file.path)
             && slot.fingerprint == fingerprint
@@ -4266,7 +4266,7 @@ impl Changes {
                 DiffHighlightState::Pending | DiffHighlightState::Plain => None,
             };
         }
-        if !zeron_syntax::supports_language(lang) {
+        if !mast_syntax::supports_language(lang) {
             self.highlights.insert(
                 file.path.clone(),
                 HighlightSlot {
@@ -4348,7 +4348,7 @@ impl Changes {
                     .await
                     .ok()
                     .and_then(|value| {
-                        serde_json::from_value::<zeron_proto::CheckoutFileDiffText>(value).ok()
+                        serde_json::from_value::<mast_proto::CheckoutFileDiffText>(value).ok()
                     });
                 let highlights = match response {
                     Some(response) => {
@@ -6294,7 +6294,7 @@ fn code_text_viewport(
 /// paint-only syntax runs.
 fn diff_line_row(
     line: &DiffLine,
-    spans: &[zeron_syntax::HighlightSpan],
+    spans: &[mast_syntax::HighlightSpan],
     theme: &Theme,
     gutter_px: f32,
     code_width: DiffCodeWidth,
@@ -7234,7 +7234,7 @@ rename to new_name.rs
             expanded,
             patch: patch.into(),
             files: vec![
-                zeron_proto::DiffFileSummary {
+                mast_proto::DiffFileSummary {
                     path: "src/lib.rs".into(),
                     old_path: None,
                     status: "modified".into(),
@@ -7242,7 +7242,7 @@ rename to new_name.rs
                     deletions: 1,
                     binary: false,
                 },
-                zeron_proto::DiffFileSummary {
+                mast_proto::DiffFileSummary {
                     path: "README.md".into(),
                     old_path: None,
                     status: "modified".into(),
@@ -7487,7 +7487,7 @@ index 1111111..2222222 160000
 
     #[test]
     fn sticky_header_uses_the_content_theme_in_dark_and_light() {
-        use zeron_theme::{AccentSelection, SurfacePreference};
+        use mast_theme::{AccentSelection, SurfacePreference};
 
         for (appearance, variant_id) in [
             (crate::theme::Appearance::Dark, "gruvbox-dark"),
@@ -7916,7 +7916,7 @@ index 1111111..2222222 160000
         let highlight = Arc::new(DiffHighlights {
             old: None,
             new: Some(Arc::new(
-                zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                mast_syntax::highlight(mast_syntax::HighlightRequest {
                     source: &source,
                     path: Some("x.ts"),
                     fence_tag: None,
@@ -8257,7 +8257,7 @@ index 1111111..2222222 160000
             assert_eq!(calls.len(), 1, "refreshed once on open");
             assert_eq!(
                 calls[0].0,
-                zeron_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION
+                mast_rpc::methods::VALIDATE_EXECUTION_CONFIGURATION
             );
             assert_eq!(calls[0].1["chatId"], "chat-ui");
         }
@@ -8323,10 +8323,10 @@ index 1111111..2222222 160000
             gpui_base::init(cx);
             cx.set_global(Theme::dark());
         });
-        let pruned = zeron_proto::ValidateExecutionConfigurationReply::from_result(
+        let pruned = mast_proto::ValidateExecutionConfigurationReply::from_result(
             None,
             Err(vec![
-                zeron_proto::ExecutionValidationError::WorktreePruned {
+                mast_proto::ExecutionValidationError::WorktreePruned {
                     repo_id: "repo:ui".into(),
                     worktree_id: "wt".into(),
                     path: "/work/alpha/ui".into(),
@@ -8443,7 +8443,7 @@ index 1111111..2222222 160000
         assert_eq!(diff_phase(Some(&full)), DiffPhase::List);
         // Engine may report files without patch text (truncation edge).
         let mut summarized = diff("co", "d", "/w", "");
-        summarized.files.push(zeron_proto::DiffFileSummary {
+        summarized.files.push(mast_proto::DiffFileSummary {
             path: "x".into(),
             old_path: None,
             status: "modified".into(),
@@ -8605,7 +8605,7 @@ index 1111111..2222222 160000
         let new_source = "export function new(value: string) {\n    return value.trim();\n}\n";
         let parse = |source| {
             Arc::new(
-                zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                mast_syntax::highlight(mast_syntax::HighlightRequest {
                     source,
                     path: Some("src/derive.ts"),
                     fence_tag: None,
@@ -8660,13 +8660,13 @@ index 1111111..2222222 160000
             highlights
                 .spans(&deleted)
                 .iter()
-                .any(|span| span.kind == zeron_syntax::HighlightKind::Function)
+                .any(|span| span.kind == mast_syntax::HighlightKind::Function)
         );
         assert!(
             highlights
                 .spans(&added)
                 .iter()
-                .any(|span| span.kind == zeron_syntax::HighlightKind::Function)
+                .any(|span| span.kind == mast_syntax::HighlightKind::Function)
         );
     }
 
@@ -8702,21 +8702,21 @@ index 1111111..2222222 160000
             (
                 "src/card.tsx",
                 "const view: JSX.Element = <main id=\"app\" />;",
-                zeron_syntax::HighlightKind::Tag,
+                mast_syntax::HighlightKind::Tag,
             ),
             (
                 "src/Greeter.kt",
                 "fun greet(name: String) = println(name)",
-                zeron_syntax::HighlightKind::Function,
+                mast_syntax::HighlightKind::Function,
             ),
             (
                 "Dockerfile",
                 "RUN echo \"hello\"",
-                zeron_syntax::HighlightKind::Function,
+                mast_syntax::HighlightKind::Function,
             ),
         ] {
             let document = Arc::new(
-                zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                mast_syntax::highlight(mast_syntax::HighlightRequest {
                     source,
                     path: Some(path),
                     fence_tag: None,
@@ -8809,13 +8809,13 @@ index 1111111..2222222 160000
             highlights
                 .spans(deleted)
                 .iter()
-                .any(|span| span.kind == zeron_syntax::HighlightKind::Comment)
+                .any(|span| span.kind == mast_syntax::HighlightKind::Comment)
         );
         assert!(
             highlights
                 .spans(added)
                 .iter()
-                .any(|span| span.kind == zeron_syntax::HighlightKind::Comment)
+                .any(|span| span.kind == mast_syntax::HighlightKind::Comment)
         );
     }
 
@@ -8848,7 +8848,7 @@ index 1111111..2222222 160000
             deletions: 1,
             max_line: 1,
         };
-        let response = zeron_proto::CheckoutFileDiffText {
+        let response = mast_proto::CheckoutFileDiffText {
             diff_checksum: "sum".into(),
             old_text: Some("let old = 1;\n".into()),
             new_text: Some("different snapshot\n".into()),
@@ -8884,11 +8884,11 @@ index 1111111..2222222 160000
         checkout_id: &str,
         branch: Option<&str>,
         selected: bool,
-    ) -> zeron_proto::ChatDiffTargetView {
-        zeron_proto::ChatDiffTargetView {
+    ) -> mast_proto::ChatDiffTargetView {
+        mast_proto::ChatDiffTargetView {
             path: path.into(),
             checkout_id: checkout_id.into(),
-            source: zeron_proto::ChatDiffTargetSource::Agent,
+            source: mast_proto::ChatDiffTargetSource::Agent,
             selected,
             repo_name: "flagship".into(),
             branch: branch.map(Into::into),
@@ -8897,9 +8897,9 @@ index 1111111..2222222 160000
     }
 
     fn frame(
-        targets: Vec<zeron_proto::ChatDiffTargetView>,
-    ) -> Vec<zeron_proto::ChatDiffTargetsView> {
-        vec![zeron_proto::ChatDiffTargetsView {
+        targets: Vec<mast_proto::ChatDiffTargetView>,
+    ) -> Vec<mast_proto::ChatDiffTargetsView> {
+        vec![mast_proto::ChatDiffTargetsView {
             chat_id: "chat-wt".into(),
             targets,
             ref_targets: Vec::new(),
@@ -8908,11 +8908,11 @@ index 1111111..2222222 160000
 
     fn candidate(
         path: &str,
-        kind: zeron_proto::DiffCheckoutKind,
+        kind: mast_proto::DiffCheckoutKind,
         branch: Option<&str>,
         selected: bool,
-    ) -> zeron_proto::DiffCheckoutCandidate {
-        zeron_proto::DiffCheckoutCandidate {
+    ) -> mast_proto::DiffCheckoutCandidate {
+        mast_proto::DiffCheckoutCandidate {
             path: path.into(),
             kind,
             repo_name: "flagship".into(),
@@ -8924,8 +8924,8 @@ index 1111111..2222222 160000
     }
 
     /// The engine's answer to "Diff checkout...": own + submodule + 2 worktrees.
-    fn picker_candidates() -> Vec<zeron_proto::DiffCheckoutCandidate> {
-        use zeron_proto::DiffCheckoutKind::*;
+    fn picker_candidates() -> Vec<mast_proto::DiffCheckoutCandidate> {
+        use mast_proto::DiffCheckoutKind::*;
         vec![
             candidate(WS, Own, Some("main"), true),
             candidate("/work/ws/flagship", Submodule, Some("main"), false),
@@ -8942,7 +8942,7 @@ index 1111111..2222222 160000
     /// A state with one local chat and a fake diff-target engine. `set_error`
     /// makes `SetChatDiffTarget` fail with that message.
     fn target_state(
-        targets: Vec<zeron_proto::ChatDiffTargetView>,
+        targets: Vec<mast_proto::ChatDiffTargetView>,
         set_error: Option<&'static str>,
     ) -> (AppState, RpcCalls) {
         let calls: RpcCalls = Default::default();
@@ -8956,16 +8956,16 @@ index 1111111..2222222 160000
         state.chat_diff_rpc_override = Some(std::sync::Arc::new(move |method, params| {
             sink.lock().unwrap().push((method.to_owned(), params));
             match method {
-                zeron_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS => Ok(serde_json::to_value(
-                    zeron_proto::ListChatDiffCheckoutsReply {
+                mast_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS => Ok(serde_json::to_value(
+                    mast_proto::ListChatDiffCheckoutsReply {
                         candidates: picker_candidates(),
                     },
                 )
                 .unwrap()),
-                zeron_rpc::methods::SET_CHAT_DIFF_TARGET => match set_error {
+                mast_rpc::methods::SET_CHAT_DIFF_TARGET => match set_error {
                     Some(message) => Err(message.to_owned()),
                     None => Ok(
-                        serde_json::to_value(zeron_proto::ChatDiffTargetsReply::default()).unwrap(),
+                        serde_json::to_value(mast_proto::ChatDiffTargetsReply::default()).unwrap(),
                     ),
                 },
                 other => Err(format!("unexpected {other}")),
@@ -8976,7 +8976,7 @@ index 1111111..2222222 160000
 
     fn open_target_changes<'a>(
         cx: &'a mut gpui::TestAppContext,
-        targets: Vec<zeron_proto::ChatDiffTargetView>,
+        targets: Vec<mast_proto::ChatDiffTargetView>,
         set_error: Option<&'static str>,
     ) -> (Entity<Changes>, RpcCalls, &'a mut gpui::VisualTestContext) {
         cx.update(|cx| {
@@ -9055,7 +9055,7 @@ index 1111111..2222222 160000
         vcx.run_until_parked();
 
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS),
+            rpc_calls(&calls, mast_rpc::methods::LIST_CHAT_DIFF_CHECKOUTS),
             vec![serde_json::json!({"chatId": "chat-wt"})]
         );
         assert_eq!(
@@ -9098,7 +9098,7 @@ index 1111111..2222222 160000
         vcx.simulate_click(row, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
             vec![serde_json::json!({
                 "chatId": "chat-wt", "action": "select", "path": WT_TICKET,
             })]
@@ -9146,7 +9146,7 @@ index 1111111..2222222 160000
         changes.update(vcx, |changes, cx| changes.choose_checkout(candidate, cx));
         vcx.run_until_parked();
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
+            rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
             serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})
         );
     }
@@ -9168,7 +9168,7 @@ index 1111111..2222222 160000
         vcx.run_until_parked();
         // Row 1 of the ranked list is the own checkout.
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
             vec![serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})]
         );
     }
@@ -9290,7 +9290,7 @@ index 1111111..2222222 160000
         assert!(vcx.debug_bounds("changes-execution-repo-1").is_some());
         assert!(vcx.debug_bounds("changes-execution-repo-2").is_none());
         // Nothing was written by merely showing it.
-        assert!(rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty());
+        assert!(rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty());
 
         // No selected target: the chat's own checkout, as before targets.
         let (changes, _calls, vcx) = open_target_changes(
@@ -9334,7 +9334,7 @@ index 1111111..2222222 160000
             );
         });
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+            rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
             vec![serde_json::json!({"chatId": "chat-wt", "action": "select", "path": WT_OTHER})]
         );
         // Back to the own checkout: clearSelection, exact cwd fallback again.
@@ -9346,7 +9346,7 @@ index 1111111..2222222 160000
         vcx.simulate_click(own, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(
-            rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
+            rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
             serde_json::json!({"chatId": "chat-wt", "action": "clearSelection"})
         );
         changes.read_with(vcx, |changes, _| {
@@ -9384,7 +9384,7 @@ index 1111111..2222222 160000
         assert_eq!(selected(vcx), WT_OTHER);
         // The agent then binds another worktree: the frame's selection wins.
         state.update(vcx, |state, cx| {
-            state.apply_chat_diff_targets(vec![zeron_proto::ChatDiffTargetsView {
+            state.apply_chat_diff_targets(vec![mast_proto::ChatDiffTargetsView {
                 chat_id: "chat-wt".into(),
                 targets: vec![
                     target_view(WT_OTHER, "checkout:other", Some("spike"), false),
@@ -9427,7 +9427,7 @@ index 1111111..2222222 160000
         assert_eq!(selected(vcx), WS, "falls back to the own checkout");
     }
 
-    fn targets_all_unselected() -> Vec<zeron_proto::ChatDiffTargetView> {
+    fn targets_all_unselected() -> Vec<mast_proto::ChatDiffTargetView> {
         vec![
             target_view(WT_OTHER, "checkout:other", Some("spike"), false),
             target_view(WT_TICKET, "checkout:wt", Some("eng"), false),

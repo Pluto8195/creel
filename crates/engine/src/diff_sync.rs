@@ -45,7 +45,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use zeron_proto::{
+use mast_proto::{
     Chat, ChatDiffTargetSource, ChatDiffTargetView, ChatDiffTargetsRow, ChatDiffTargetsView,
     ChatRefTargetView, CheckoutDiff, DiffFileSummary, RefDiffKind, StoredChatDiffTarget,
     StoredRefDiffTarget, SubmoduleDiffSummary,
@@ -109,7 +109,7 @@ pub struct DiffSidecar {
 /// One bounded atomic snapshot of a checkout's working tree.
 #[derive(Debug, Clone)]
 pub struct DiffSnapshot {
-    pub git_status: Option<(Vec<zeron_proto::GitFileStatus>, bool)>,
+    pub git_status: Option<(Vec<mast_proto::GitFileStatus>, bool)>,
     pub branch: String,
     pub head_sha: Option<String>,
     pub patch: String,
@@ -209,7 +209,7 @@ struct DiffSyncInner {
     /// How long an entry may sit chat-less before reconcile removes it.
     orphan_grace: Duration,
     diffs_tx: watch::Sender<Vec<CheckoutDiff>>,
-    statuses_tx: watch::Sender<Vec<zeron_proto::CheckoutGitStatus>>,
+    statuses_tx: watch::Sender<Vec<mast_proto::CheckoutGitStatus>>,
     /// (chat id, checkout root) → turn-start tree (see [`TurnSnapshot`]): the
     /// chat's `cwd` checkout plus every resolvable diff target.
     turn_trees: Mutex<HashMap<(String, PathBuf), TurnSnapshot>>,
@@ -307,7 +307,7 @@ impl CheckoutDiffSync {
     }
 
     /// Consumers filter this shared cache; subscribing never starts another Git scan.
-    pub fn watch_git_statuses(&self) -> watch::Receiver<Vec<zeron_proto::CheckoutGitStatus>> {
+    pub fn watch_git_statuses(&self) -> watch::Receiver<Vec<mast_proto::CheckoutGitStatus>> {
         self.inner.statuses_tx.subscribe()
     }
 
@@ -522,7 +522,7 @@ async fn resolve_identity(
 /// (topology id of the common dir) at that checkout's top level. No `git`
 /// spawn: the common dir is read from the git dir's `commondir` file.
 pub(crate) fn member_identity_matches(
-    binding: &zeron_proto::RepositoryBinding,
+    binding: &mast_proto::RepositoryBinding,
     identity: &CheckoutIdentity,
     device_id: &str,
 ) -> bool {
@@ -809,7 +809,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, fresh: bool) {
     // one diff per member. Member entries carry no Chats: the Chat's row and
     // edge sidecar stay keyed to its execution root (`chat.cwd`).
     let bindings = inner.workspace.chat_execution_bindings();
-    let mut member_paths: Vec<(String, zeron_proto::RepositoryBinding)> = Vec::new();
+    let mut member_paths: Vec<(String, mast_proto::RepositoryBinding)> = Vec::new();
     let local_chat_ids: HashSet<String> = chats
         .iter()
         .filter(|chat| chat.device_id == inner.device_id)
@@ -1354,7 +1354,7 @@ fn capture_git<'a>(
     max_bytes: usize,
 ) -> BoxFuture<'a, Result<Capture, EngineError>> {
     Box::pin(async move {
-        let mut cmd = zeron_harness::git_command_async();
+        let mut cmd = mast_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -2659,7 +2659,7 @@ pub async fn snapshot_tree(root: &Path) -> Result<String, EngineError> {
         chrono::Utc::now().timestamp_micros()
     ));
     let run = |args: &[&str]| {
-        let mut cmd = zeron_harness::git_command_async();
+        let mut cmd = mast_harness::git_command_async();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

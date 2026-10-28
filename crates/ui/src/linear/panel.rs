@@ -30,11 +30,11 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LINEAR_ISSUE_REFERENCE, LINEAR_PROVIDER, LinearErrorCode, LinearIssueLink, LinearIssueSummary,
     LinearProjectSummary,
 };
-use zeron_proto::{
+use mast_proto::{
     CreateWorkItemExternalReferenceParams, CreateWorkItemFromLinearParams, LinkLinearProjectParams,
     WorkOutlinePlacement, WorkOutlineSnapshot,
 };
@@ -945,7 +945,7 @@ impl LinearPanel {
                 }
                 match result {
                     Ok(reply) => created.push(reply.work_item_id.unwrap_or_else(|| {
-                        zeron_proto::work_outline::derive_id(&operation_id, "item")
+                        mast_proto::work_outline::derive_id(&operation_id, "item")
                     })),
                     Err(error) => {
                         failure.get_or_insert((identifier, error));
@@ -1050,7 +1050,7 @@ impl LinearPanel {
         &mut self,
         busy: String,
         label: String,
-        task: super::client::LinearTask<zeron_proto::WorkOutlineMutateReply>,
+        task: super::client::LinearTask<mast_proto::WorkOutlineMutateReply>,
         cx: &mut Context<Self>,
     ) {
         self.notice = None;
@@ -1445,7 +1445,7 @@ impl LinearPanel {
             .on_drag(drag, |drag, _, _, cx| {
                 cx.stop_propagation();
                 let title = match drag {
-                    OutlineDrag::LinearIssue(drag) => zeron_proto::linear::linear_item_title(
+                    OutlineDrag::LinearIssue(drag) => mast_proto::linear::linear_item_title(
                         &drag.issue.identifier,
                         &drag.issue.title,
                     ),

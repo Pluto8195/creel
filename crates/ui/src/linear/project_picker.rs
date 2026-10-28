@@ -17,8 +17,8 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_proto::linear::{LinearIssueLink, LinearIssueSummary};
-use zeron_proto::{
+use mast_proto::linear::{LinearIssueLink, LinearIssueSummary};
+use mast_proto::{
     CreateWorkItemFromLinearParams, WorkItemExternalReferenceView, WorkOutlinePlacement,
     WorkOutlineSnapshot,
 };
@@ -317,7 +317,7 @@ impl ProjectIssuePicker {
                     Ok(reply) => created.push((
                         identifier,
                         reply.work_item_id.unwrap_or_else(|| {
-                            zeron_proto::work_outline::derive_id(&operation_id, "item")
+                            mast_proto::work_outline::derive_id(&operation_id, "item")
                         }),
                     )),
                     Err(error) => {

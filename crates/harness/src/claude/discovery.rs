@@ -3,7 +3,7 @@ use crate::HarnessError;
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::time::Instant;
-use zeron_proto::SlashCommand;
+use mast_proto::SlashCommand;
 
 const FORCED_MAX_AGE: Duration = Duration::from_secs(120);
 

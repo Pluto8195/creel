@@ -10,7 +10,7 @@ use gpui::{
     AnyElement, ClipboardItem, Context, Entity, Focusable, SharedString, Window, div, prelude::*,
     px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArtifactPinParams, ArtifactPromoteParams, ArtifactRegisterParams, WorkItemView,
     WorkOutlineSnapshot,
 };
@@ -167,7 +167,7 @@ impl WorkItemDetails {
         self.artifacts.menu = None;
         let url = format!(
             "{}{artifact_id}",
-            zeron_proto::artifacts::ARTIFACT_URL_SCHEME
+            mast_proto::artifacts::ARTIFACT_URL_SCHEME
         );
         cx.write_to_clipboard(ClipboardItem::new_string(url));
         self.artifacts.status = Some("Link copied".into());

@@ -7,7 +7,7 @@
 //! summary (changed / added / removed / reordered), which leads because entry
 //! numbers in the rendered envelope shift when entries are inserted.
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
-use zeron_proto::{InstructionRevisionComparison, TextDiffKind, TextDiffLine};
+use mast_proto::{InstructionRevisionComparison, TextDiffKind, TextDiffLine};
 
 use crate::theme::Theme;
 

@@ -186,7 +186,7 @@ replay without an API call. Use a dedicated display and fresh output directories
 the driver requires exactly one Mast window.
 
 ```sh
-cargo build --release -p zeron
+cargo build --release -p mast
 Xvfb :98 -screen 0 1440x900x24 -nolisten tcp
 # In another terminal:
 DISPLAY=:98 WAYLAND_DISPLAY= LP_NUM_THREADS=4 ZERON_FRAME_STATS=0 \

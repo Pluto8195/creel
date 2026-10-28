@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -88,7 +88,7 @@ async fn resolves_and_scans_subagents_for_a_harness_session_only_chat() {
         .expect("must resolve via the harness-session fallback");
     assert_eq!(resolved, transcript_path);
 
-    let subagents = zeron_engine::subagent_scan::scan_subagents(&resolved).expect("scan_subagents");
+    let subagents = mast_engine::subagent_scan::scan_subagents(&resolved).expect("scan_subagents");
     assert_eq!(subagents.len(), 1);
     assert_eq!(subagents[0].agent_id, "sub1");
     assert_eq!(subagents[0].description.as_deref(), Some("Do a subtask"));

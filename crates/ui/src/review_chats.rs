@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use zeron_proto::{ChatIndicator, ChatLinkSource, PullRequestRef, WorkOutlineSnapshot};
+use mast_proto::{ChatIndicator, ChatLinkSource, PullRequestRef, WorkOutlineSnapshot};
 
 /// Why a chat counts as a review chat. Assignment wins when both apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,7 +267,7 @@ pub(crate) fn note_chat_links(
 
 /// The PR links (canonical URL, source) of a link status reply.
 pub(crate) fn links_of_status(
-    status: &zeron_engine::pr_ticket_cache::ChatLinkStatus,
+    status: &mast_engine::pr_ticket_cache::ChatLinkStatus,
 ) -> Vec<(String, ChatLinkSource)> {
     crate::chat_work_context::chat_prs(status)
         .into_iter()

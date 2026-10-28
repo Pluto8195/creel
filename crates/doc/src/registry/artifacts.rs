@@ -1,7 +1,7 @@
 //! Planning artifact rows (`artifacts`; contract `docs/plans/artifacts-contract.md`).
 //!
 //! Metadata only: one row per artifact whose fields are exactly
-//! `zeron_proto::ArtifactView`. Content lives in the owning device's profile
+//! `mast_proto::ArtifactView`. Content lives in the owning device's profile
 //! store. Write rules (registry R1–R6):
 //! - creation is one `upsert` after a [`RowState`] check that never revives a
 //!   tombstone; later writes are `update`s without the immutable fields
@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use zeron_proto::artifacts::{ArtifactView, KIND_ARTIFACTS, PlanScope, artifact_limits};
+use mast_proto::artifacts::{ArtifactView, KIND_ARTIFACTS, PlanScope, artifact_limits};
 
 use super::{OpKind, RegistryDoc, RowOp, RowState, check_op_size};
 use crate::schema::DocError;
@@ -207,9 +207,9 @@ impl RegistryDoc {
     pub fn set_artifact_answers(
         &mut self,
         id: &str,
-        answers: &[zeron_proto::artifacts::ArtifactQuestionAnswer],
+        answers: &[mast_proto::artifacts::ArtifactQuestionAnswer],
         now_ms: i64,
-    ) -> Result<Option<Vec<zeron_proto::artifacts::ArtifactQuestionAnswer>>, DocError> {
+    ) -> Result<Option<Vec<mast_proto::artifacts::ArtifactQuestionAnswer>>, DocError> {
         if self.artifact(id).is_none() {
             return Ok(None);
         }
@@ -249,9 +249,9 @@ impl RegistryDoc {
     pub fn set_artifact_comments(
         &mut self,
         id: &str,
-        comments: &[zeron_proto::artifacts::ArtifactComment],
+        comments: &[mast_proto::artifacts::ArtifactComment],
         now_ms: i64,
-    ) -> Result<Option<Vec<zeron_proto::artifacts::ArtifactComment>>, DocError> {
+    ) -> Result<Option<Vec<mast_proto::artifacts::ArtifactComment>>, DocError> {
         if self.artifact(id).is_none() {
             return Ok(None);
         }
@@ -291,7 +291,7 @@ impl RegistryDoc {
     pub fn set_artifact_pick(
         &mut self,
         id: &str,
-        pick: Option<&zeron_proto::artifacts::ArtifactOptionPick>,
+        pick: Option<&mast_proto::artifacts::ArtifactOptionPick>,
         now_ms: i64,
     ) -> Result<Option<()>, DocError> {
         if self.artifact(id).is_none() {
@@ -324,7 +324,7 @@ impl RegistryDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::artifacts::{ArtifactKind, ArtifactRevision};
+    use mast_proto::artifacts::{ArtifactKind, ArtifactRevision};
 
     fn view(id: &str, item: &str, revisions: u32) -> ArtifactView {
         ArtifactView {
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn set_artifact_comments_roundtrips_and_trims_resolved_first() {
-        use zeron_proto::artifacts::{ArtifactComment, CommentAnchor, CommentStatus};
+        use mast_proto::artifacts::{ArtifactComment, CommentAnchor, CommentStatus};
         let mut doc = RegistryDoc::new("dev-1");
         doc.put_artifact(&view("a1", "item-1", 1)).unwrap();
         let mk = |n: u32, status: CommentStatus| ArtifactComment {

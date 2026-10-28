@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemExternalReferenceParams,
     CreateWorkItemParams, DescendantArchivePolicy, FieldPatch, MoveWorkItemParams,
     RemoveChatFromWorkItemParams, RemoveWorkItemExternalReferenceParams, RepairWorkOutlineParams,
@@ -38,7 +38,7 @@ use zeron_proto::work_outline::{
     WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineRepair,
     WorkOutlineSnapshot, derive_id, external_reference_id, limits, roles,
 };
-use zeron_proto::work_outline_order::order_keys_between;
+use mast_proto::work_outline_order::order_keys_between;
 
 use super::*;
 
@@ -78,7 +78,7 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_WORK_OUTLINE_SPACE_SETTINGS,
     // Planning artifacts carry `spaceId` too: the Space cascade and the
     // orphan sweep cover them.
-    zeron_proto::artifacts::KIND_ARTIFACTS,
+    mast_proto::artifacts::KIND_ARTIFACTS,
 ];
 
 /// Additive schema version stamped on every outline row (`v`).
@@ -1040,8 +1040,8 @@ impl RegistryDoc {
         // stops Linear sync for that field (same op, so it can never be lost).
         if actor.kind == WorkOutlineActorKind::User {
             let edited: Vec<&str> = [
-                ("title", zeron_proto::linear::SYNC_FIELD_TITLE),
-                ("description", zeron_proto::linear::SYNC_FIELD_DESCRIPTION),
+                ("title", mast_proto::linear::SYNC_FIELD_TITLE),
+                ("description", mast_proto::linear::SYNC_FIELD_DESCRIPTION),
             ]
             .into_iter()
             .filter(|(field, _)| set.contains_key(*field))
@@ -1056,8 +1056,8 @@ impl RegistryDoc {
         // (checked here, under the registry lock).
         if actor.kind == WorkOutlineActorKind::System {
             for field in [
-                zeron_proto::linear::SYNC_FIELD_TITLE,
-                zeron_proto::linear::SYNC_FIELD_DESCRIPTION,
+                mast_proto::linear::SYNC_FIELD_TITLE,
+                mast_proto::linear::SYNC_FIELD_DESCRIPTION,
             ] {
                 if item.external_sync_modified_fields.iter().any(|f| f == field) {
                     set.remove(field);
@@ -1471,7 +1471,7 @@ impl RegistryDoc {
                 .is_some_and(|d| !d.trim().is_empty())
             && let Some(fields) = linear::merge_modified_fields(
                 &item.external_sync_modified_fields,
-                &[zeron_proto::linear::SYNC_FIELD_DESCRIPTION],
+                &[mast_proto::linear::SYNC_FIELD_DESCRIPTION],
             )
         {
             plan.push(Planned::update(

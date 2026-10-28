@@ -24,12 +24,12 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use zeron_proto::{
+use mast_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
+use mast_proto::{
     FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
     UserInputQuestion, capabilities,
 };
-use zeron_rpc::{RpcError, methods};
+use mast_rpc::{RpcError, methods};
 
 use crate::appshots::{self, CapturedAppshot};
 
@@ -3978,7 +3978,7 @@ pub enum ComposerEvent {
     /// chat, even when the user has selected another chat in the meantime.
     WorktreeSetup {
         chat_id: String,
-        setup_action: Option<zeron_proto::ProjectActionRun>,
+        setup_action: Option<mast_proto::ProjectActionRun>,
         setup_error: Option<String>,
         target_device_id: Option<String>,
     },
@@ -4172,7 +4172,7 @@ struct SlashCacheEntry {
 /// without restarting zeron, but a picker reopen (or a quick tab-switch
 /// between a couple of chats) shouldn't re-fetch every time either — this is
 /// the same order of magnitude as the engine's own per-cwd discovery cache
-/// (see `zeron_harness::claude::discovery::CommandsCache`).
+/// (see `mast_harness::claude::discovery::CommandsCache`).
 const SLASH_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Whether a cached entry for `cached_key` can still answer a lookup for
@@ -4233,9 +4233,9 @@ fn mention_error_message(err: &RpcError) -> SharedString {
 ///   selected Space folder. Empty only with no project at all — that list
 ///   holds user-scoped skills only.
 fn slash_discovery_cwd(
-    chat: Option<&zeron_proto::Chat>,
-    chat_space: Option<&zeron_proto::Space>,
-    selected_space: Option<&zeron_proto::Space>,
+    chat: Option<&mast_proto::Chat>,
+    chat_space: Option<&mast_proto::Space>,
+    selected_space: Option<&mast_proto::Space>,
     reuse_worktree: Option<String>,
 ) -> String {
     let non_empty = |path: &str| (!path.trim().is_empty()).then(|| path.to_owned());
@@ -4341,17 +4341,17 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 #[derive(Debug, Clone, PartialEq)]
 struct ComposerSlice {
     selected_chat: Option<String>,
-    chat: Option<zeron_proto::Chat>,
-    space: Option<zeron_proto::Space>,
+    chat: Option<mast_proto::Chat>,
+    space: Option<mast_proto::Space>,
     effective_device: Option<String>,
     local_device_id: Option<String>,
-    devices: Vec<(zeron_proto::Device, bool)>,
-    queue: Vec<zeron_doc::QueuedMessage>,
+    devices: Vec<(mast_proto::Device, bool)>,
+    queue: Vec<mast_doc::QueuedMessage>,
     comments: Vec<crate::comments::ReviewComment>,
     comment_flush_pending: bool,
     delivery_degraded: bool,
-    connectivity: zeron_proto::Connectivity,
-    context_usage: Option<zeron_proto::ContextUsage>,
+    connectivity: mast_proto::Connectivity,
+    context_usage: Option<mast_proto::ContextUsage>,
     live: bool,
 }
 
@@ -6856,7 +6856,7 @@ impl Composer {
         // so the doc frame dedups it away).
         let echo = SessionMessageEntry {
             id: message_id.clone(),
-            role: zeron_doc::MessageRole::User,
+            role: mast_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
                 id: "t0".into(),
                 text: echo_text.clone(),
@@ -7046,7 +7046,7 @@ impl Composer {
                     if should_publish_optimistic_echo(queue) {
                         let refreshed = SessionMessageEntry {
                             id: message_id.clone(),
-                            role: zeron_doc::MessageRole::User,
+                            role: mast_doc::MessageRole::User,
                             parts: vec![MessagePart::Text {
                                 id: "t0".into(),
                                 text: content.clone(),
@@ -7089,7 +7089,7 @@ impl Composer {
                 // a blocking CreateWorktree relay RPC here: the RPC had no
                 // timeout, so a lost relay frame wedged the send on "Sending…"
                 // forever while the session ran remotely anyway (2026-08-18).
-                let mut run_worktree: Option<zeron_proto::WorktreeSpec> = None;
+                let mut run_worktree: Option<mast_proto::WorktreeSpec> = None;
                 // The picked ref rides createChat so the session footer names
                 // it from the first frame (it read "Select ref" until the
                 // host's diff reconciler got around to stamping the branch).
@@ -7122,7 +7122,7 @@ impl Composer {
                                 // current checkout state.
                                 let base =
                                     base.clone().unwrap_or_else(|| "HEAD".to_string());
-                                run_worktree = Some(zeron_proto::WorktreeSpec {
+                                run_worktree = Some(mast_proto::WorktreeSpec {
                                     repo_path: repo_path.clone(),
                                     base,
                                     space_id: space_id.clone(),
@@ -8136,7 +8136,7 @@ impl Render for Composer {
         // UP FRONT that a send will queue (a durable local write delivered on
         // reconnect) instead of letting the button imply instant delivery.
         let queue_notice: Option<(SharedString, bool)> = {
-            use zeron_proto::ConnectivityState as S;
+            use mast_proto::ConnectivityState as S;
             let state = self.state.read(cx);
             let degraded = match state.selected_chat.as_deref() {
                 Some(id) => state.chat_delivery_degraded(id),
@@ -9256,7 +9256,7 @@ mod tests {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
+                mast_rpc::RpcClient::new(out, inbound),
             ));
             state.selected_chat = Some("c".into());
             // A send in flight reads as Working — the double-Enter window.
@@ -9673,12 +9673,12 @@ mod tests {
     /// (which lists user skills only).
     #[test]
     fn slash_discovery_cwd_follows_the_agent_folder() {
-        let space: zeron_proto::Space = serde_json::from_value(serde_json::json!({
+        let space: mast_proto::Space = serde_json::from_value(serde_json::json!({
             "id": "s1", "deviceId": "d", "path": "/work/workspace",
             "createdAt": "2026-01-01T00:00:00Z"
         }))
         .unwrap();
-        let chat = |cwd: Option<&str>| -> zeron_proto::Chat {
+        let chat = |cwd: Option<&str>| -> mast_proto::Chat {
             serde_json::from_value(serde_json::json!({
                 "id": "c1", "deviceId": "d", "archived": false, "spaceId": "s1",
                 "cwd": cwd, "createdAt": "2026-01-01T00:00:00Z"
@@ -10689,7 +10689,7 @@ mod tests {
 
     #[test]
     fn pending_input_detection() {
-        use zeron_doc::MessageStatus;
+        use mast_doc::MessageStatus;
         let input_part = MessagePart::Input {
             id: "in-r1".into(),
             request_id: "r1".into(),

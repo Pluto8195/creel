@@ -36,8 +36,8 @@ use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use gpui::{App, Global, Hsla, SharedString, hsla};
 use serde::{Deserialize, Serialize};
-use zeron_syntax::HighlightKind;
-use zeron_theme::{
+use mast_syntax::HighlightKind;
+use mast_theme::{
     AccentPreset, AccentSelection, Color as ModelColor, SurfacePreference, SurfaceTreatment,
     ThemeRegistry, ThemeVariant,
 };
@@ -273,10 +273,10 @@ pub(crate) fn bump_style_generation() {
     STYLE_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
-fn model_appearance(appearance: zeron_theme::Appearance) -> Appearance {
+fn model_appearance(appearance: mast_theme::Appearance) -> Appearance {
     match appearance {
-        zeron_theme::Appearance::Dark => Appearance::Dark,
-        zeron_theme::Appearance::Light => Appearance::Light,
+        mast_theme::Appearance::Dark => Appearance::Dark,
+        mast_theme::Appearance::Light => Appearance::Light,
     }
 }
 
@@ -2020,14 +2020,14 @@ mod tests {
             assert!(frosted.is_frost());
         }
 
-        let opaque_zeron = Theme::for_selection(
+        let opaque_mast = Theme::for_selection(
             Appearance::Dark,
             "zeron-dark",
             AccentSelection::ThemeDefault,
             SurfacePreference::Opaque,
         );
-        assert_eq!(opaque_zeron.surface_treatment, SurfaceTreatment::Opaque);
-        assert_eq!(opaque_zeron.glass(), opaque_zeron.surface);
+        assert_eq!(opaque_mast.surface_treatment, SurfaceTreatment::Opaque);
+        assert_eq!(opaque_mast.glass(), opaque_mast.surface);
     }
 
     #[test]

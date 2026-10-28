@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use zeron_doc::SessionDoc;
-use zeron_engine::context_usage::pct_from_tokens;
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_doc::SessionDoc;
+use mast_engine::context_usage::pct_from_tokens;
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -40,7 +40,7 @@ async fn reads_a_live_doc_stamped_context_usage() {
     doc.update_context_usage(Some(60_000), Some(1_000_000))
         .expect("stamp context usage");
     let bytes = doc.export_snapshot().expect("snapshot");
-    let store = zeron_sync::DocsStore::open(&store_root).expect("open store");
+    let store = mast_sync::DocsStore::open(&store_root).expect("open store");
     store
         .save_snapshot_with_cursor(chat_id, &bytes, 0, 2)
         .expect("save doc");

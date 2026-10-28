@@ -15,12 +15,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearError, LinearErrorCode, LinearIssueSummary, SYNC_FIELD_DESCRIPTION, SYNC_FIELD_TITLE,
     linear_item_description, linear_item_title,
 };
-use zeron_proto::work_outline::{FieldPatch, UpdateWorkItemParams, WorkItemChanges};
-use zeron_proto::{WorkOutlineMutation, WorkOutlineSnapshot};
+use mast_proto::work_outline::{FieldPatch, UpdateWorkItemParams, WorkItemChanges};
+use mast_proto::{WorkOutlineMutation, WorkOutlineSnapshot};
 
 use super::LinearService;
 use crate::pr_review_sync::PrReviewSyncService;

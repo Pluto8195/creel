@@ -13,12 +13,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use zeron_engine::linear::{LinearConfig, MemoryKeyStore, client};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{
+use mast_engine::linear::{LinearConfig, MemoryKeyStore, client};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{
     HarnessId, LinearError, LinearErrorCode, WorkItemStatus, WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::{RpcClient, methods};
+use mast_rpc::{RpcClient, methods};
 
 const KEY: &str = "lin_api_TESTSECRET0123456789abcdef";
 const OTHER_KEY: &str = "lin_api_OTHERSECRET987654321";
@@ -369,7 +369,7 @@ async fn rig_with(store: Arc<MemoryKeyStore>, ttl: Duration) -> Rig {
         Box::pin(async {})
     });
     core.linear.reconfigure(config);
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let rig = Rig {
         _tmp: tmp,
         core,
@@ -435,7 +435,7 @@ impl Rig {
 
     fn snapshot(&self, space: &str) -> WorkOutlineSnapshot {
         let inputs = self.core.workspace.work_outline_inputs(space);
-        zeron_doc::materialize_work_outline(space, &inputs)
+        mast_doc::materialize_work_outline(space, &inputs)
     }
 
     async fn from_linear(&self, op: &str, parent: Option<&str>, identifier: &str) -> String {
@@ -971,7 +971,7 @@ async fn agents_get_the_ticket_only_in_linear_enabled_spaces_and_never_the_key()
         .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
     let read = || async {
         rig.call(
-            zeron_proto::agent_tools::TOOL_CALL_METHOD,
+            mast_proto::agent_tools::TOOL_CALL_METHOD,
             json!({ "token": lease.token(), "tool": "work_outline_read_current", "arguments": {} }),
         )
         .await
@@ -1016,7 +1016,7 @@ async fn the_key_never_appears_in_replies_agent_payloads_or_logs() {
         .agent_tokens()
         .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
     rig.call(
-        zeron_proto::agent_tools::TOOL_CALL_METHOD,
+        mast_proto::agent_tools::TOOL_CALL_METHOD,
         json!({ "token": lease.token(), "tool": "work_outline_read_current", "arguments": {} }),
     )
     .await
@@ -1116,7 +1116,7 @@ fn item_prs(rig: &Rig, item: &str) -> Vec<(String, String, Option<String>, bool)
         .map(|r| {
             let system = r
                 .created_by
-                .is_some_and(|a| a.kind == zeron_proto::WorkOutlineActorKind::System);
+                .is_some_and(|a| a.kind == mast_proto::WorkOutlineActorKind::System);
             (r.external_id, r.url, r.cached_title, system)
         })
         .collect();

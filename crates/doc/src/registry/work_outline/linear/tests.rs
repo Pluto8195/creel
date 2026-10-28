@@ -4,13 +4,13 @@
 
 use super::*;
 use crate::registry::tests::space;
-use zeron_proto::linear::LinearIssueLink;
-use zeron_proto::work_outline::{
+use mast_proto::linear::LinearIssueLink;
+use mast_proto::work_outline::{
     CreateWorkItemParams, FieldPatch, RemoveWorkItemExternalReferenceParams, UpdateWorkItemParams,
     WorkItemChanges, WorkOutlineActorKind, WorkOutlineErrorCode, WorkOutlineMutateReply,
     WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
 };
-use zeron_proto::{LinearProjectRef, WorkOutlineError};
+use mast_proto::{LinearProjectRef, WorkOutlineError};
 
 const SPACE: &str = "sp-1";
 const OFF_SPACE: &str = "sp-2";

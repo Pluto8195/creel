@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use zeron_proto::{
+use mast_proto::{
     Chat, ChatConfig, ChatPrLink, Device, MAX_SIDEBAR_PINS, Session, SidebarPreferences, Space,
 };
 
@@ -84,12 +84,12 @@ pub fn op_utf16_units(op: &RowOp) -> usize {
 /// later registry write.
 pub fn check_op_size(op: &RowOp) -> Result<(), DocError> {
     let units = op_utf16_units(op);
-    if units > zeron_proto::work_outline::limits::MAX_OP_UTF16_UNITS {
+    if units > mast_proto::work_outline::limits::MAX_OP_UTF16_UNITS {
         return Err(DocError::Schema(format!(
             "registry op for {}/{} is {units} units, over the {} unit limit",
             op.kind,
             op.id,
-            zeron_proto::work_outline::limits::MAX_OP_UTF16_UNITS
+            mast_proto::work_outline::limits::MAX_OP_UTF16_UNITS
         )));
     }
     Ok(())
@@ -399,7 +399,7 @@ struct PersistedState {
 }
 
 /// The local registry replica. Pure data — no I/O, no async; the transport
-/// (`zeron_sync::RegistryClient`) and the engine host drive it under a lock.
+/// (`mast_sync::RegistryClient`) and the engine host drive it under a lock.
 pub struct RegistryDoc {
     device_id: String,
     /// kind → id → row (server truth).
@@ -1348,7 +1348,7 @@ impl RegistryDoc {
     pub fn set_chat_source_context(
         &mut self,
         chat_id: &str,
-        context: &zeron_proto::ConversationSourceContext,
+        context: &mast_proto::ConversationSourceContext,
     ) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
@@ -1498,7 +1498,7 @@ impl RegistryDoc {
         &mut self,
         chat_id: &str,
         value: Option<&str>,
-        source: Option<zeron_proto::ChatLinkSource>,
+        source: Option<mast_proto::ChatLinkSource>,
     ) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
@@ -1588,7 +1588,7 @@ impl RegistryDoc {
         &mut self,
         chat_id: &str,
         value: Option<&str>,
-        source: Option<zeron_proto::ChatLinkSource>,
+        source: Option<mast_proto::ChatLinkSource>,
     ) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
@@ -1704,7 +1704,7 @@ impl RegistryDoc {
             .filter(|(id, _)| !known.contains(id))
             .collect();
         for (id, _) in &removed {
-            self.change_sidebar_pin(&zeron_proto::SidebarPinChange::Unpin {
+            self.change_sidebar_pin(&mast_proto::SidebarPinChange::Unpin {
                 session_id: id.clone(),
             })?;
         }
@@ -1862,7 +1862,7 @@ fn fields<const N: usize>(entries: [(&str, Value); N]) -> BTreeMap<String, Value
 #[serde(rename_all = "camelCase")]
 struct RawChatPrLink {
     url: String,
-    source: zeron_proto::ChatLinkSource,
+    source: mast_proto::ChatLinkSource,
 }
 
 impl From<RawChatPrLink> for ChatPrLink {
@@ -1896,7 +1896,7 @@ fn opt_ms(value: Option<DateTime<Utc>>) -> Value {
     }
 }
 
-fn opt_source(value: Option<zeron_proto::ChatLinkSource>) -> Value {
+fn opt_source(value: Option<mast_proto::ChatLinkSource>) -> Value {
     match value {
         Some(source) => json!(source),
         None => Value::Null,
@@ -1924,7 +1924,7 @@ fn row_to<T: serde::de::DeserializeOwned>(row: &RegistryRow) -> Option<T> {
 }
 
 // SessionStatus needs to serialize to the same strings the loro doc used
-// ("idle"/"working"/…) — zeron_proto's serde derives already use camelCase;
+// ("idle"/"working"/…) — mast_proto's serde derives already use camelCase;
 // the compile-time check lives in the tests below.
 
 #[cfg(test)]

@@ -42,7 +42,7 @@ fn load_local_icon(root: &std::path::Path) -> Option<MediaImage> {
         let bytes = std::fs::File::open(&path).ok().and_then(|file| {
             use std::io::Read;
             let mut bytes = Vec::new();
-            file.take(zeron_proto::MAX_WORKSPACE_IMAGE_BYTES as u64 + 1)
+            file.take(mast_proto::MAX_WORKSPACE_IMAGE_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
                 .ok()?;
             Some(bytes)
@@ -58,7 +58,7 @@ fn load_local_icon(root: &std::path::Path) -> Option<MediaImage> {
 }
 
 fn project_icon_access_allowed(root: &std::path::Path) -> bool {
-    !zeron_engine::repos::is_automatic_access_blocked(root)
+    !mast_engine::repos::is_automatic_access_blocked(root)
 }
 
 // Curated badge tones: (dark appearance, light appearance). Keep the ordering
@@ -157,7 +157,7 @@ impl ProjectIcon {
                 for path in ICON_PATHS {
                     // This also resolves the current checkout identity on the owning host.
                     let file = match client
-                        .read_file(zeron_proto::ReadWorkspaceFileRequest {
+                        .read_file(mast_proto::ReadWorkspaceFileRequest {
                             target: context.target.clone(),
                             path: (*path).into(),
                         })
@@ -310,7 +310,7 @@ impl Shell {
         let context = space
             .filter(|space| project_icon_access_allowed(std::path::Path::new(&space.path)))
             .map(|space| FilesRequestContext {
-                target: zeron_proto::WorkspaceTarget {
+                target: mast_proto::WorkspaceTarget {
                     chat_id: None,
                     space_id: Some(space.id.clone()),
                     checkout_path: None,

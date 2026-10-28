@@ -16,11 +16,11 @@ use gpui::{
 };
 use std::time::Duration;
 
-use zeron_proto::{
+use mast_proto::{
     AgentAccount, AgentAccountsSnapshot, AgentLoginMode, AgentLoginPoll, AgentLoginStart,
     AgentLoginStatus, HarnessId, ManagedAccountsSnapshot,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::managed_accounts::AccountFlow;
@@ -202,13 +202,13 @@ pub struct AccountsPage {
     managed_task: Option<Task<()>>,
     account_flow: Option<Entity<AccountFlow>>,
     account_flow_sub: Option<Subscription>,
-    seen: ObserveGate<(Vec<zeron_proto::Device>, Option<String>)>,
+    seen: ObserveGate<(Vec<mast_proto::Device>, Option<String>)>,
     _observe: Subscription,
     _code_events: Subscription,
 }
 
 impl AccountsPage {
-    fn slice(state: &AppState) -> (Vec<zeron_proto::Device>, Option<String>) {
+    fn slice(state: &AppState) -> (Vec<mast_proto::Device>, Option<String>) {
         (state.devices.clone(), state.local_device_id.clone())
     }
 
@@ -752,7 +752,7 @@ impl AccountsPage {
             this.update(cx, |page, cx| {
                 match result.and_then(|value| {
                     serde_json::from_value::<AgentLoginStart>(value)
-                        .map_err(|e| zeron_rpc::RpcError::Failed(e.to_string()))
+                        .map_err(|e| mast_rpc::RpcError::Failed(e.to_string()))
                 }) {
                     Ok(start) => {
                         cx.open_url(&start.url);
@@ -938,7 +938,7 @@ impl AccountsPage {
     /// quiet reset time.
     fn render_usage_meter(
         &self,
-        window: &zeron_proto::AgentUsageWindow,
+        window: &mast_proto::AgentUsageWindow,
         theme: &Theme,
         now: DateTime<Utc>,
     ) -> AnyElement {

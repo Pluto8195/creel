@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -168,14 +168,14 @@ async fn sync_picks_up_a_closed_message_but_defers_the_new_open_reply() {
     core.shutdown().await;
 
     // Verify the doc directly: 5 entries total, correct order, no duplicates.
-    let store = zeron_sync::DocsStore::open(&store_root).expect("open store");
+    let store = mast_sync::DocsStore::open(&store_root).expect("open store");
     let bytes = store
         .load_snapshot(chat_id)
         .expect("load snapshot")
         .expect("snapshot exists");
     let loro = loro::LoroDoc::new();
     loro.import(&bytes).expect("import snapshot");
-    let doc = zeron_doc::SessionDoc::from_doc(loro);
+    let doc = mast_doc::SessionDoc::from_doc(loro);
     let entries = doc.read_entries().expect("read entries");
     let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(ids, vec!["u1", "asst1", "u2", "asst2", "u3"]);

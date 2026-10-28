@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use zeron_engine::{AgentAccounts, AgentAccountsConfig};
-use zeron_proto::{AgentLoginMode, HarnessId};
+use mast_engine::{AgentAccounts, AgentAccountsConfig};
+use mast_proto::{AgentLoginMode, HarnessId};
 
 fn test_accounts(root: &Path) -> AgentAccounts {
     let config = AgentAccountsConfig {

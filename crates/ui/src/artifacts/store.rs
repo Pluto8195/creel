@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zeron_proto::{ArtifactView, ArtifactsSnapshot};
+use mast_proto::{ArtifactView, ArtifactsSnapshot};
 
 /// Per-Space load state. `Unsupported` is a host that answers `unknown
 /// method` to `WatchArtifacts` (the engine branch has not landed there yet).

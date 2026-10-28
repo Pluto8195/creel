@@ -2,11 +2,11 @@
 #![cfg(unix)]
 
 use std::time::Duration;
-use zeron_engine::project_actions::{
+use mast_engine::project_actions::{
     MAX_PROJECT_ACTION_COMMAND_BYTES, launch_project_action, launch_project_setup_action,
 };
-use zeron_engine::{ProjectActionsStore, Terminals};
-use zeron_proto::{ProjectActionDraft, ProjectActionIcon};
+use mast_engine::{ProjectActionsStore, Terminals};
+use mast_proto::{ProjectActionDraft, ProjectActionIcon};
 
 #[tokio::test]
 async fn manual_and_setup_actions_preserve_long_multiline_commands() {

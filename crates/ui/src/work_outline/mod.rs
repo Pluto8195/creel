@@ -8,7 +8,7 @@
 //! 1. [`command`] — [`WorkOutlineCommand`] (the nine palette/keymap commands)
 //!    and [`WorkOutlineConfirmRequest`] (the Shell-owned confirmation modal).
 //! 2. [`store`] — the read side: wire view types re-exported from
-//!    `zeron_proto`, [`WorkOutlineLoad`], and [`WorkOutlineStore`] with a
+//!    `mast_proto`, [`WorkOutlineLoad`], and [`WorkOutlineStore`] with a
 //!    fixture constructor so presentation work needs no engine.
 //! 3. [`actions`] — the mutation facade over the `WorkOutlineMutate` RPC.
 //!

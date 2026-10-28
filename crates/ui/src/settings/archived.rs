@@ -5,8 +5,8 @@ use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
-use zeron_proto::Chat;
-use zeron_rpc::methods;
+use mast_proto::Chat;
+use mast_rpc::methods;
 
 use crate::popover;
 use crate::settings::widgets;

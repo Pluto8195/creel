@@ -465,7 +465,7 @@ impl Overview {
         &mut self,
         space_id: String,
         item_id: String,
-        issue: zeron_proto::linear::LinearIssueSummary,
+        issue: mast_proto::linear::LinearIssueSummary,
         cx: &mut Context<Self>,
     ) {
         let Some(panel) = self.linear_panel.clone() else {

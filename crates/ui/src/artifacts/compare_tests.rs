@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use zeron_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactViewport};
+use mast_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactViewport};
 
 use super::compare::{CompareMode, Flavor, Side};
 use super::pixel_diff::Region;

@@ -84,7 +84,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
@@ -770,13 +770,13 @@ impl CodexHarness {
         // "on-request" (see [`approval_policy_for`]).
         // A `read-only` request is never widened by auto-approve: yolo would
         // both select danger-full-access and auto-accept sandbox escalations.
-        if request.sandbox == zeron_proto::SandboxLevel::ReadOnly {
+        if request.sandbox == mast_proto::SandboxLevel::ReadOnly {
             request.auto_approve = false;
         }
         request.sandbox = if title_only {
-            zeron_proto::SandboxLevel::ReadOnly
+            mast_proto::SandboxLevel::ReadOnly
         } else if request.auto_approve {
-            zeron_proto::SandboxLevel::DangerFullAccess
+            mast_proto::SandboxLevel::DangerFullAccess
         } else {
             request.sandbox
         };
@@ -813,7 +813,7 @@ impl CodexHarness {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::codex", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::codex", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -1127,7 +1127,7 @@ async fn run_session(session: Session) {
                 // A missing/foreign rollout falls back to a fresh thread.
                 Err(e) => {
                     tracing::debug!(
-                        target: "zeron_harness::codex",
+                        target: "mast_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
                     client
@@ -1580,7 +1580,7 @@ async fn run_session(session: Session) {
                             // fallback for older Codex without steering).
                             Err(e) => {
                                 tracing::debug!(
-                                    target: "zeron_harness::codex",
+                                    target: "mast_harness::codex",
                                     "turn/steer rejected (queued as next turn): {e}"
                                 );
                                 if router.active.as_deref() == Some(expected.as_str())
@@ -1637,7 +1637,7 @@ async fn run_session(session: Session) {
                             .await
                         {
                             tracing::debug!(
-                                target: "zeron_harness::codex",
+                                target: "mast_harness::codex",
                                 "turn/interrupt failed (escalation will reap): {e}"
                             );
                         }
@@ -1864,7 +1864,7 @@ fn handle_server_request(
     // never asks); keep the yolo branch's behavior exactly as it was.
     if !is_approval || (auto_approve && method == "item/permissions/requestApproval") {
         tracing::debug!(
-            target: "zeron_harness::codex",
+            target: "mast_harness::codex",
             "unhandled server request: {method}"
         );
         client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
@@ -2080,19 +2080,19 @@ mod tests {
 
     fn instruction_request(
         resume: Option<&str>,
-        transition: zeron_proto::InstructionTransition,
+        transition: mast_proto::InstructionTransition,
     ) -> RunRequest {
         let mut request: RunRequest = serde_json::from_value(json!({
             "prompt": "p", "model": "gpt-5.6-luna", "reasoning": null, "cwd": "/w",
             "sandbox": "workspace-write", "resume": resume
         }))
         .unwrap();
-        request.instructions = Some(zeron_proto::InstructionDelivery {
-            envelope: zeron_proto::InstructionEnvelope {
+        request.instructions = Some(mast_proto::InstructionDelivery {
+            envelope: mast_proto::InstructionEnvelope {
                 revision_id: "rev-1".into(),
                 revision_hash: "hash-1".into(),
                 envelope_version: 1,
-                envelope_sha256: zeron_proto::envelope_sha256("ENVELOPE-1\n"),
+                envelope_sha256: mast_proto::envelope_sha256("ENVELOPE-1\n"),
                 rendered: "ENVELOPE-1\n".into(),
             },
             transition,
@@ -2102,7 +2102,7 @@ mod tests {
 
     #[test]
     fn developer_instructions_ride_thread_start_and_every_resume() {
-        use zeron_proto::InstructionTransition::{Continue, Fresh};
+        use mast_proto::InstructionTransition::{Continue, Fresh};
         let fresh = thread_start_params(&instruction_request(None, Fresh), false);
         assert_eq!(fresh["developerInstructions"], json!("ENVELOPE-1\n"));
         assert!(fresh.get("baseInstructions").is_none());
@@ -2126,7 +2126,7 @@ mod tests {
             args: vec!["mcp".into()],
             env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok".into())]),
         };
-        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let mut request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         request.instructions = None;
         let mut start = thread_start_params(&request, false);
         with_agent_tools(&mut start, None);
@@ -2145,7 +2145,7 @@ mod tests {
 
     #[test]
     fn runs_without_instructions_send_no_developer_instructions() {
-        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let mut request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         request.instructions = None;
         assert!(
             thread_start_params(&request, false)
@@ -2156,7 +2156,7 @@ mod tests {
 
     #[test]
     fn title_runs_keep_title_instructions_only() {
-        let request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         let params = thread_start_params(&request, true);
         assert_eq!(
             params["developerInstructions"],
@@ -2166,7 +2166,7 @@ mod tests {
 
     #[test]
     fn a_revision_change_in_an_existing_thread_is_refused() {
-        let replace = zeron_proto::InstructionTransition::Replace {
+        let replace = mast_proto::InstructionTransition::Replace {
             previous_revision_id: "rev-0".into(),
         };
         assert!(matches!(
@@ -2178,7 +2178,7 @@ mod tests {
         assert!(
             instructions::check_transition(&instruction_request(
                 Some("th-1"),
-                zeron_proto::InstructionTransition::Continue
+                mast_proto::InstructionTransition::Continue
             ))
             .is_ok()
         );

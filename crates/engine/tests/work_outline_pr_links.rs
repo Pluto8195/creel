@@ -17,12 +17,12 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
-use zeron_engine::pr_review_sync::PrReviewSyncConfig;
-use zeron_engine::workspace_host::ChatLinkKind;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{ChatLinkSource, HarnessId, ToolCall, WorkOutlineSnapshot};
-use zeron_rpc::{RpcClient, methods};
+use mast_doc::{MessagePart, MessageRole, SessionMessageEntry};
+use mast_engine::pr_review_sync::PrReviewSyncConfig;
+use mast_engine::workspace_host::ChatLinkKind;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{ChatLinkSource, HarnessId, ToolCall, WorkOutlineSnapshot};
+use mast_rpc::{RpcClient, methods};
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-ws";
@@ -150,7 +150,7 @@ async fn rig() -> Rig {
         .set_transcript_reader(Arc::new(move |chat_id: &str| {
             reader.lock().unwrap().get(chat_id).cloned()
         }));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,
@@ -214,7 +214,7 @@ impl Rig {
 
     fn snapshot(&self) -> WorkOutlineSnapshot {
         let inputs = self.core.workspace.work_outline_inputs(SPACE);
-        zeron_doc::materialize_work_outline(SPACE, &inputs)
+        mast_doc::materialize_work_outline(SPACE, &inputs)
     }
 
     async fn item(&self, op: &str, title: &str) -> String {
@@ -254,7 +254,7 @@ impl Rig {
         );
     }
 
-    async fn pass(&self) -> zeron_engine::work_outline_pr_links::ChatLinkPass {
+    async fn pass(&self) -> mast_engine::work_outline_pr_links::ChatLinkPass {
         self.core
             .pr_review_sync
             .link_chat_pull_requests(SPACE)
@@ -276,7 +276,7 @@ impl Rig {
             .map(|r| {
                 let system = r
                     .created_by
-                    .is_some_and(|a| a.kind == zeron_proto::WorkOutlineActorKind::System);
+                    .is_some_and(|a| a.kind == mast_proto::WorkOutlineActorKind::System);
                 (r.external_id, r.url, system)
             })
             .collect();
@@ -324,7 +324,7 @@ async fn gh_pr_create_output_in_a_transcript_links_the_pr_to_the_chats_item() {
     assert_eq!(links[0].source, ChatLinkSource::CreatedInChat);
     // Status is untouched; a second pass adds nothing and re-reads nothing.
     let item = rig.snapshot().item(&ticket).unwrap().clone();
-    assert_eq!(item.status, zeron_proto::WorkItemStatus::Pending);
+    assert_eq!(item.status, mast_proto::WorkItemStatus::Pending);
     let again = rig.pass().await;
     assert_eq!(again.linked + again.scanned, 0);
     assert_eq!(rig.prs(&ticket).len(), 1);

@@ -30,7 +30,7 @@ pub(crate) fn needs_collapse(text: &str) -> bool {
     lines > COLLAPSED_LINES
 }
 
-use zeron_proto::{
+use mast_proto::{
     ArchiveWorkItemInstructionParams, CreateWorkItemInstructionParams, InstructionPlacement,
     InstructionScope, MoveWorkItemInstructionParams, UpdateWorkItemInstructionParams,
     WorkItemInstructionView, WorkOutlineError,
@@ -231,7 +231,7 @@ impl WorkItemDetails {
             cx.notify();
             return;
         }
-        let max = zeron_proto::limits::MAX_INSTRUCTION_TEXT_CHARS;
+        let max = mast_proto::limits::MAX_INSTRUCTION_TEXT_CHARS;
         let chars = text.chars().count();
         if chars > max {
             self.instructions_error = Some(format!(
@@ -797,8 +797,8 @@ impl WorkItemDetails {
         for (ix, entry) in effective.entries.iter().enumerate() {
             let space_id = self.space_id.clone();
             let target = match entry.source_kind {
-                zeron_proto::InstructionSourceKind::SpaceRoot => SPACE_ROOT_ITEM_ID.to_owned(),
-                zeron_proto::InstructionSourceKind::WorkItem => entry.scope_id.clone(),
+                mast_proto::InstructionSourceKind::SpaceRoot => SPACE_ROOT_ITEM_ID.to_owned(),
+                mast_proto::InstructionSourceKind::WorkItem => entry.scope_id.clone(),
             };
             let local = !entry.inherited;
             section = section.child(

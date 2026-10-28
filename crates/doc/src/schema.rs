@@ -24,7 +24,7 @@ use crate::commands::{SessionCommandEntry, SessionCommandStatus};
 use crate::constants::{SESSION_SCHEMA_VERSION, TAIL_MESSAGE_COUNT};
 use crate::parts::{MessagePart, MessageStatus, SubagentStatus};
 
-/// Command-row key holding a typed `zeron_proto::InstructionDeliveryOutcome`.
+/// Command-row key holding a typed `mast_proto::InstructionDeliveryOutcome`.
 const COMMAND_OUTCOME_KEY: &str = "outcome";
 
 #[derive(Debug, thiserror::Error)]
@@ -319,7 +319,7 @@ impl SessionDoc {
     }
 
     /// A single atomic value prevents tokens and capacity from tearing on sync.
-    pub fn context_usage(&self) -> Option<zeron_proto::ContextUsage> {
+    pub fn context_usage(&self) -> Option<mast_proto::ContextUsage> {
         let loro::ValueOrContainer::Value(LoroValue::String(value)) =
             self.doc.get_map("meta").get("contextUsage")?
         else {
@@ -334,7 +334,7 @@ impl SessionDoc {
         window: Option<u64>,
     ) -> Result<(), DocError> {
         let previous = self.context_usage().unwrap_or_default();
-        let next = zeron_proto::ContextUsage {
+        let next = mast_proto::ContextUsage {
             tokens: tokens.or(previous.tokens),
             window: window.filter(|n| *n > 0).or(previous.window),
         };
@@ -586,7 +586,7 @@ impl SessionDoc {
     pub fn set_command_outcome(
         &self,
         command_id: &str,
-        outcome: &zeron_proto::InstructionDeliveryOutcome,
+        outcome: &mast_proto::InstructionDeliveryOutcome,
     ) -> Result<(), DocError> {
         let commands = self.doc.get_list("commands");
         let value = loro_value_from_json(&serde_json::to_value(outcome)?);
@@ -612,7 +612,7 @@ impl SessionDoc {
 
     /// Typed instruction-delivery outcomes by command id (rows without one,
     /// or with an outcome this build cannot read, are absent).
-    pub fn command_outcomes(&self) -> HashMap<String, zeron_proto::InstructionDeliveryOutcome> {
+    pub fn command_outcomes(&self) -> HashMap<String, mast_proto::InstructionDeliveryOutcome> {
         let commands = self
             .doc
             .get_list("commands")
@@ -805,7 +805,7 @@ impl SessionDoc {
                             loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
                             _ => None,
                         })
-                        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
+                        .and_then(|j| serde_json::from_value::<mast_proto::ToolCall>(j).ok())
                         .is_some_and(|c| c.is_subagent_spawn());
                     if !is_spawn {
                         return Ok(false);
@@ -1449,7 +1449,7 @@ fn collapse_duplicate_commands(entries: Vec<SessionCommandEntry>) -> Vec<Session
 mod tests {
     use super::*;
     use crate::parts::fold_event_into_parts;
-    use zeron_proto::{AgentEvent, ToolCall};
+    use mast_proto::{AgentEvent, ToolCall};
 
     #[test]
     fn opening_tail_bounds_parts_and_preserves_continuation_ids() {
@@ -1573,7 +1573,7 @@ mod tests {
         let mut w = SegmentWriter::begin(&doc, "e1", "dev", 1).unwrap();
         let mut part = MessagePart::Tool {
             id: "call_alpha".into(),
-            call: zeron_proto::ToolCall::Unknown {
+            call: mast_proto::ToolCall::Unknown {
                 name: "Agent: alpha".into(),
                 input: None,
             },
@@ -1626,7 +1626,7 @@ mod tests {
         // subtype and turned Run chips into dead spawn links, 2026-08-20).
         let doc = SessionDoc::init("c1").unwrap();
         let mut w = SegmentWriter::begin(&doc, "e1", "dev", 1).unwrap();
-        let tool = |id: &str, call: zeron_proto::ToolCall| MessagePart::Tool {
+        let tool = |id: &str, call: mast_proto::ToolCall| MessagePart::Tool {
             id: id.into(),
             call,
             is_error: false,
@@ -1644,13 +1644,13 @@ mod tests {
         let parts = vec![
             tool(
                 "toolu_bash",
-                zeron_proto::ToolCall::Exec {
+                mast_proto::ToolCall::Exec {
                     command: "git clone …".into(),
                 },
             ),
             tool(
                 "toolu_spawn",
-                zeron_proto::ToolCall::Unknown {
+                mast_proto::ToolCall::Unknown {
                     name: "Agent: scan".into(),
                     input: None,
                 },
@@ -1902,7 +1902,7 @@ mod tests {
                 id: "t1".into(),
                 is_error: false,
                 output: Some("total 0\nmore lines".into()),
-                diff: Some(zeron_proto::ToolDiff {
+                diff: Some(mast_proto::ToolDiff {
                     path: "/w/a.rs".into(),
                     old_text: Some("old\n".into()),
                     new_text: "new\n".into(),
@@ -1954,7 +1954,7 @@ mod tests {
                 is_error: false,
                 resolved: true,
                 output: Some("full inline output\nline 2".into()),
-                diff: Some(zeron_proto::ToolDiff {
+                diff: Some(mast_proto::ToolDiff {
                     path: "/w/a.rs".into(),
                     old_text: Some("old".into()),
                     new_text: "new".into(),
@@ -2030,8 +2030,8 @@ mod tests {
         assert_eq!(commands[0].payload, entry.payload);
         // Typed outcome: an additive key the entry decoder ignores.
         assert!(doc.command_outcomes().is_empty());
-        let outcome = zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
-            harness: zeron_proto::HarnessId::Codex,
+        let outcome = mast_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+            harness: mast_proto::HarnessId::Codex,
             message_id: Some("m1".into()),
             revision_id: "rev-b".into(),
             revision_hash: "hb".into(),
@@ -2143,7 +2143,7 @@ mod tests {
         enum OldPayload {
             #[serde(rename_all = "camelCase")]
             Run {
-                request: zeron_proto::RunRequest,
+                request: mast_proto::RunRequest,
                 message_id: String,
             },
             #[serde(rename_all = "camelCase")]
@@ -2155,7 +2155,7 @@ mod tests {
             #[serde(rename_all = "camelCase")]
             RespondInput {
                 request_id: String,
-                answers: Vec<zeron_proto::UserInputAnswer>,
+                answers: Vec<mast_proto::UserInputAnswer>,
             },
         }
         #[derive(Deserialize)]
@@ -2164,7 +2164,7 @@ mod tests {
             id: String,
             payload: OldPayload,
         }
-        let request: zeron_proto::RunRequest = serde_json::from_value(serde_json::json!({
+        let request: mast_proto::RunRequest = serde_json::from_value(serde_json::json!({
             "prompt": "go", "model": null, "reasoning": null, "cwd": "/w",
             "sandbox": "workspace-write", "resume": null
         }))
@@ -2183,7 +2183,7 @@ mod tests {
             SessionCommandPayload::RunWithInstructions {
                 request,
                 message_id: "m1".into(),
-                instructions: zeron_proto::InstructionRevisionPin {
+                instructions: mast_proto::InstructionRevisionPin {
                     revision_id: "rev-1".into(),
                     revision_hash: "abc".into(),
                 },
@@ -2309,7 +2309,7 @@ mod context_usage_tests {
             .unwrap();
         assert_eq!(
             replica.context_usage(),
-            Some(zeron_proto::ContextUsage {
+            Some(mast_proto::ContextUsage {
                 tokens: Some(0),
                 window: Some(200_000)
             })

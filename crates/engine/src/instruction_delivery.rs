@@ -16,8 +16,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use zeron_harness::{InstructionReplaceStrategy, InstructionSupport};
-use zeron_proto::{
+use mast_harness::{InstructionReplaceStrategy, InstructionSupport};
+use mast_proto::{
     HarnessId, InstructionDeliveryOutcome, InstructionDeliveryRejection, InstructionEnvelope,
     InstructionRevisionIntegrity, InstructionRevisionPin, envelope_sha256,
 };
@@ -198,14 +198,14 @@ pub fn capability_message(harness: HarnessId, reason: &str, upgrade_hint: Option
 
 /// The message when a revision change needs a context reset the user has not
 /// confirmed (replace strategy `FreshSession`, `m0-contract.md` 5.7). Starts
-/// with [`zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED`] so clients can
+/// with [`mast_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED`] so clients can
 /// offer the confirmation and resend with `contextResetConfirmed`.
 pub fn context_reset_message(harness: HarnessId) -> String {
     format!(
         "{}: {} cannot carry this conversation into a different Work Outline instruction \
          revision. Confirm starting a fresh {} session (the earlier conversation stays in the \
          transcript but the agent will not remember it), then send again",
-        zeron_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED,
+        mast_proto::INSTRUCTION_CONTEXT_RESET_REQUIRED,
         harness_label(harness),
         harness_label(harness),
     )
@@ -233,7 +233,7 @@ pub fn supported_instruction_harnesses(registry: &HarnessRegistry) -> Vec<Harnes
 /// `work-outline-instruction-envelope-v1/<harness>` token per harness whose
 /// probe passes.
 pub fn advertised_capabilities(registry: &HarnessRegistry) -> Vec<String> {
-    zeron_proto::capabilities::current_with_instruction_harnesses(&supported_instruction_harnesses(
+    mast_proto::capabilities::current_with_instruction_harnesses(&supported_instruction_harnesses(
         registry,
     ))
 }
@@ -307,12 +307,12 @@ pub fn restamp_device_capabilities(
 /// token. Unknown devices count as unsupported. The refusal is typed
 /// (`instructionHostUnsupported`) with an actionable message.
 pub fn remote_host_preflight(
-    host: Option<&zeron_proto::Device>,
+    host: Option<&mast_proto::Device>,
     host_id: &str,
     harness: HarnessId,
 ) -> Result<(), InstructionDeliveryRejection> {
-    use zeron_proto::InstructionHostUnsupportedReason as Reason;
-    let token = zeron_proto::capabilities::work_outline_instruction_envelope_for(harness);
+    use mast_proto::InstructionHostUnsupportedReason as Reason;
+    let token = mast_proto::capabilities::work_outline_instruction_envelope_for(harness);
     let reject = |reason: Reason, message: String| InstructionDeliveryRejection {
         outcome: InstructionDeliveryOutcome::InstructionHostUnsupported {
             host_device_id: host_id.to_string(),
@@ -339,7 +339,7 @@ pub fn remote_host_preflight(
         .as_deref()
         .map(|v| format!(" (running {v})"))
         .unwrap_or_default();
-    if !device.supports(zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
+    if !device.supports(mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1) {
         return Err(reject(
             Reason::ZeronUpgradeRequired,
             format!(
@@ -376,10 +376,10 @@ pub fn local_harness_unsupported(
         outcome: InstructionDeliveryOutcome::InstructionHostUnsupported {
             host_device_id: device_id.to_string(),
             harness,
-            required_capability: zeron_proto::capabilities::work_outline_instruction_envelope_for(
+            required_capability: mast_proto::capabilities::work_outline_instruction_envelope_for(
                 harness,
             ),
-            reason: zeron_proto::InstructionHostUnsupportedReason::HarnessUnsupported,
+            reason: mast_proto::InstructionHostUnsupportedReason::HarnessUnsupported,
             device_name: None,
             device_version: None,
         },
@@ -392,7 +392,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use zeron_proto::{
+    use mast_proto::{
         ExecutionSessionReport, InstructionRevisionBody, InstructionRevisionEntry,
         InstructionRevisionView, InstructionSourceKind, build_revision_body,
     };
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn remote_hosts_without_tokens_get_an_upgrade_message() {
-        let mut device: zeron_proto::Device = serde_json::from_value(serde_json::json!({
+        let mut device: mast_proto::Device = serde_json::from_value(serde_json::json!({
             "id": "d2", "name": "Studio", "platform": "macos", "lastSeenAt": null,
             "version": "0.2.81"
         }))
@@ -623,13 +623,13 @@ mod tests {
                 host_device_id: "d2".into(),
                 harness: HarnessId::Codex,
                 required_capability: "work-outline-instruction-envelope-v1/codex".into(),
-                reason: zeron_proto::InstructionHostUnsupportedReason::ZeronUpgradeRequired,
+                reason: mast_proto::InstructionHostUnsupportedReason::ZeronUpgradeRequired,
                 device_name: Some("Studio".into()),
                 device_version: Some("0.2.81".into()),
             }
         );
         device.capabilities =
-            vec![zeron_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
+            vec![mast_proto::capabilities::WORK_OUTLINE_INSTRUCTION_ENVELOPE_V1.into()];
         let rejection = remote_host_preflight(Some(&device), "d2", HarnessId::Codex).unwrap_err();
         assert!(
             rejection.message.contains("Update Codex on Studio"),
@@ -637,7 +637,7 @@ mod tests {
             rejection.message
         );
         device.capabilities.push(
-            zeron_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex),
+            mast_proto::capabilities::work_outline_instruction_envelope_for(HarnessId::Codex),
         );
         assert!(remote_host_preflight(Some(&device), "d2", HarnessId::Codex).is_ok());
         assert!(remote_host_preflight(None, "d9", HarnessId::Codex).is_err());

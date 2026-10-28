@@ -26,11 +26,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::{Value, json};
-use zeron_proto::work_outline::{WorkItemStatus, WorkOutlineActorKind, WorkOutlineMutation};
-use zeron_proto::work_outline_instructions::{
+use mast_proto::work_outline::{WorkItemStatus, WorkOutlineActorKind, WorkOutlineMutation};
+use mast_proto::work_outline_instructions::{
     InstructionScope, InstructionSource, WorkItemInstructionView,
 };
-use zeron_proto::work_outline_user_actions::{
+use mast_proto::work_outline_user_actions::{
     ApproveWorkItemInstructionProposalParams, COMPLETION_RESOLUTION_NOTE,
     CreateUserActionRequestParams, InstructionProposalReview, InstructionProposalStatus,
     InstructionProposalTarget, ProposalReviewState, ProposalTargetScope,

@@ -9,8 +9,8 @@ use gpui::{
 };
 use std::time::Duration;
 
-use zeron_proto::{Device, WorkspaceScope};
-use zeron_rpc::methods;
+use mast_proto::{Device, WorkspaceScope};
+use mast_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::observe_gate::ObserveGate;

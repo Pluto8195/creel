@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArtifactKind, ArtifactOptionPick, ArtifactPickOptionParams, ArtifactView, pick_message,
 };
 
@@ -42,14 +42,14 @@ pub(crate) struct SideBySide {
 }
 
 impl ArtifactTab {
-    fn manifest_options(&self) -> Vec<zeron_proto::artifacts::OptionsManifestEntry> {
+    fn manifest_options(&self) -> Vec<mast_proto::artifacts::OptionsManifestEntry> {
         match &self.body {
             Some(ArtifactBody::Options(manifest)) => manifest.options.clone(),
             _ => Vec::new(),
         }
     }
 
-    fn option_label(option: &zeron_proto::artifacts::OptionsManifestEntry) -> String {
+    fn option_label(option: &mast_proto::artifacts::OptionsManifestEntry) -> String {
         if option.label.is_empty() {
             option.path.clone()
         } else {

@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use zeron_engine::linear::{LinearConfig, MemoryKeyStore};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{HarnessId, WorkItemStatus, WorkOutlineSnapshot};
-use zeron_rpc::{RpcClient, methods};
+use mast_engine::linear::{LinearConfig, MemoryKeyStore};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{HarnessId, WorkItemStatus, WorkOutlineSnapshot};
+use mast_rpc::{RpcClient, methods};
 
 const KEY: &str = "lin_api_TESTSECRET0123456789abcdef";
 const SPACE: &str = "space-on";
@@ -230,7 +230,7 @@ async fn rig() -> Rig {
         mock.url.clone(),
         MemoryKeyStore::with_key(KEY),
     ));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let rig = Rig {
         _tmp: tmp,
         core,
@@ -280,7 +280,7 @@ impl Rig {
 
     fn snapshot(&self) -> WorkOutlineSnapshot {
         let inputs = self.core.workspace.work_outline_inputs(SPACE);
-        zeron_doc::materialize_work_outline(SPACE, &inputs)
+        mast_doc::materialize_work_outline(SPACE, &inputs)
     }
 
     async fn item(&self, title: &str) -> String {
@@ -312,7 +312,7 @@ impl Rig {
     }
 
     /// The live and archived children of `parent`, by title.
-    fn children(&self, parent: &str) -> Vec<zeron_proto::WorkItemView> {
+    fn children(&self, parent: &str) -> Vec<mast_proto::WorkItemView> {
         self.snapshot()
             .items
             .into_iter()
@@ -320,7 +320,7 @@ impl Rig {
             .collect()
     }
 
-    fn child(&self, parent: &str, identifier: &str) -> zeron_proto::WorkItemView {
+    fn child(&self, parent: &str, identifier: &str) -> mast_proto::WorkItemView {
         self.children(parent)
             .into_iter()
             .find(|i| i.title.starts_with(&format!("{identifier} ")))
@@ -328,7 +328,7 @@ impl Rig {
     }
 }
 
-fn marker(item: &zeron_proto::WorkItemView) -> Option<String> {
+fn marker(item: &mast_proto::WorkItemView) -> Option<String> {
     item.external_sync_state
         .as_ref()
         .and_then(|s| s.marker.clone())

@@ -2,7 +2,7 @@
 //! decoding, error-code mapping).
 
 use serde_json::Value;
-use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, ToolCall};
+use mast_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, ToolCall};
 
 use super::wire::{ContentBlock, Frame};
 
@@ -106,7 +106,7 @@ fn opt_str_field(input: &Value, key: &str) -> Option<String> {
 
 /// Decode a Claude `tool_use` block (name + input) into a typed [`ToolCall`].
 /// Claude tool name → [`ToolCall`]. `pub` (not `pub(crate)`): the same
-/// mapping is needed outside the live wire path — `zeron_engine::external_import`
+/// mapping is needed outside the live wire path — `mast_engine::external_import`
 /// applies it to an already-complete `tool_use` block read from an on-disk
 /// transcript, where the block shape carries the same `name`/`input` this
 /// takes.
@@ -642,7 +642,7 @@ impl Normalizer {
                         .partition(|m| is_internal_diagnostic(m));
                     for diagnostic in &diagnostics {
                         tracing::debug!(
-                            target: "zeron_harness::claude",
+                            target: "mast_harness::claude",
                             "internal CLI diagnostic (not surfaced): {diagnostic}"
                         );
                     }

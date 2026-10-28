@@ -8,19 +8,19 @@
 //! available on this host" state. The API key is only ever a parameter of
 //! [`WorkOutlineActions::linear_set_api_key`] and is never logged.
 use gpui::Task;
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearClearApiKeyParams, LinearConnectionStatus, LinearError, LinearErrorCode,
     LinearIssueParams, LinearIssueSummary, LinearMyIssuesParams, LinearMyProjectsParams,
     LinearProjectDetail, LinearProjectDetailParams, LinearProjectIssuesParams,
     LinearProjectSummary, LinearRefreshLinkedItemsParams, LinearRefreshLinkedItemsReply,
     LinearSetApiKeyParams, LinearStatusParams,
 };
-use zeron_proto::{
+use mast_proto::{
     CreateWorkItemFromLinearParams, LinkLinearProjectParams, SetLinearAssignedDestinationParams,
     SetSpaceLinearEnabledParams, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineMutateReply,
     WorkOutlineMutation,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::work_outline::WorkOutlineActions;
 use crate::work_outline::actions::is_transport_failure;
@@ -330,7 +330,7 @@ impl WorkOutlineActions {
     /// `createWorkItemExternalReference` as a Linear call (issue links).
     pub(crate) fn link_linear_issue(
         &self,
-        params: zeron_proto::CreateWorkItemExternalReferenceParams,
+        params: mast_proto::CreateWorkItemExternalReferenceParams,
     ) -> LinearTask<WorkOutlineMutateReply> {
         map_task(self.create_external_reference(params))
     }

@@ -14,7 +14,7 @@
 //! A child module of `details_panel` (like the Linear section), so it uses
 //! the surface's private state directly.
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use zeron_proto::{
+use mast_proto::{
     PrReviewAction, PrReviewRequestState, SetPrReviewSyncDestinationParams, WorkItemView,
     WorkOutlineSnapshot,
 };
@@ -400,7 +400,7 @@ impl WorkItemDetails {
         let synced = item
             .external_sync_state
             .as_ref()
-            .filter(|state| state.provider == zeron_proto::GITHUB_PROVIDER)
+            .filter(|state| state.provider == mast_proto::GITHUB_PROVIDER)
             .map(|state| {
                 format!(
                     "Synced from GitHub \u{00b7} round {} \u{00b7} {}",

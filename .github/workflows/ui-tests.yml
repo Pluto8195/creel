@@ -44,13 +44,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: OpenCode protocol and permission regressions
         run: |
-          cargo test --locked -p zeron-harness --lib opencode::
-          cargo test --locked -p zeron-harness --test opencode
+          cargo test --locked -p mast-harness --lib opencode::
+          cargo test --locked -p mast-harness --test opencode
       - name: Durable session publication and recovery
         run: |
-          cargo test --locked -p zeron-sync --lib
-          cargo test --locked -p zeron-update --lib
-          cargo test --locked -p zeron-engine --lib --test session_publication --test restart_resume --test codex_subagents --test local_profiles
+          cargo test --locked -p mast-sync --lib
+          cargo test --locked -p mast-update --lib
+          cargo test --locked -p mast-engine --lib --test session_publication --test restart_resume --test codex_subagents --test local_profiles
 
   ui-tests:
     runs-on: ubuntu-24.04
@@ -70,7 +70,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: UI and headless layout regressions
-        run: cargo test --release --locked -p zeron-ui --lib -- --test-threads=1
+        run: cargo test --release --locked -p mast-ui --lib -- --test-threads=1
 
   macos-frame-recovery:
     runs-on: macos-latest
@@ -94,14 +94,14 @@ jobs:
             .
             frame-source-tests
       - name: Check macOS application
-        run: cargo check --release --locked -p zeron
+        run: cargo check --release --locked -p mast
       - name: Native diff font geometry regression
-        run: cargo test --release --locked -p zeron-ui --lib native_diff_font_geometry -- --test-threads=1
+        run: cargo test --release --locked -p mast-ui --lib native_diff_font_geometry -- --test-threads=1
       - name: Native notification click regressions
         run: |
-          cargo test --release --locked -p zeron-ui --lib notify::tests:: -- --test-threads=1
+          cargo test --release --locked -p mast-ui --lib notify::tests:: -- --test-threads=1
       - name: Build native browser fixture
-        run: cargo build --release --locked -p zeron-ui --example browser-fixture --example preview-fixture --features browser-fixture
+        run: cargo build --release --locked -p mast-ui --example browser-fixture --example preview-fixture --features browser-fixture
       - name: Native browser regression and screenshots
         timeout-minutes: 3
         env:
@@ -190,7 +190,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Build browser fixture
-        run: cargo build --release --locked -p zeron-ui --example browser-fixture --features browser-fixture
+        run: cargo build --release --locked -p mast-ui --example browser-fixture --features browser-fixture
       - name: X11 and Wayland browser regressions
         timeout-minutes: 5
         env:

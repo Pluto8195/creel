@@ -1,4 +1,4 @@
-//! zeron-harness — one interface over coding agents (plus a mock for tests).
+//! mast-harness — one interface over coding agents (plus a mock for tests).
 //!
 //! NATIVE DRIVERS speak each agent's own wire directly: Claude Code over
 //! stream-json ([`ClaudeHarness`]), Codex over the app-server JSON-RPC
@@ -19,7 +19,7 @@ use futures::stream::BoxStream;
 use tokio::sync::{mpsc, oneshot};
 pub use tokio_util::sync::CancellationToken;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand, SteeringMode,
     UserInputAnswer, UserInputQuestion,
 };
@@ -61,9 +61,9 @@ pub enum HarnessError {
 /// agents run their own tools and expose no read-only switch Mast can set).
 pub fn require_read_only_support(
     harness: HarnessId,
-    request: &zeron_proto::RunRequest,
+    request: &mast_proto::RunRequest,
 ) -> Result<(), HarnessError> {
-    if request.sandbox == zeron_proto::SandboxLevel::ReadOnly {
+    if request.sandbox == mast_proto::SandboxLevel::ReadOnly {
         return Err(HarnessError::Sandbox {
             harness,
             sandbox: "read-only",
@@ -730,7 +730,7 @@ mod git_command_tests {
 mod sandbox_support_tests {
     use super::*;
 
-    fn request(sandbox: &str) -> zeron_proto::RunRequest {
+    fn request(sandbox: &str) -> mast_proto::RunRequest {
         serde_json::from_value(serde_json::json!({
             "prompt": "p", "model": null, "reasoning": null, "cwd": "",
             "sandbox": sandbox, "resume": null

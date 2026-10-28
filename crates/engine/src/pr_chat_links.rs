@@ -29,7 +29,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use zeron_proto::{Chat, ChatLinkSource, ChatPrLink, PrDashChat};
+use mast_proto::{Chat, ChatLinkSource, ChatPrLink, PrDashChat};
 
 use crate::chat_links::canonicalize_pr_url;
 use crate::workspace_host::WorkspaceHost;
@@ -335,7 +335,7 @@ pub fn plan_matches(chats: &[ChatFacts], candidates: &[PrLinkCandidate], git: &G
 }
 
 /// The git questions the matcher asks. Production shells out through
-/// `zeron_harness::git_command_async`; tests answer from fixtures.
+/// `mast_harness::git_command_async`; tests answer from fixtures.
 pub trait GitProbe: Send + Sync {
     /// Current HEAD branch of the checkout at `path` (`None` = detached or
     /// unreadable).
@@ -348,7 +348,7 @@ pub trait GitProbe: Send + Sync {
 pub struct GitCliProbe;
 
 async fn git_stdout(path: &Path, args: &[&str]) -> Option<String> {
-    let mut command = zeron_harness::git_command_async();
+    let mut command = mast_harness::git_command_async();
     command
         .arg("-C")
         .arg(path)
@@ -471,7 +471,7 @@ impl WorkspaceHost {
         let mut out: HashMap<String, Vec<String>> = HashMap::new();
         for space_id in spaces {
             let inputs = self.work_outline_inputs(space_id);
-            let text = |row: &zeron_doc::RegistryRow, key: &str| {
+            let text = |row: &mast_doc::RegistryRow, key: &str| {
                 row.fields
                     .get(key)
                     .and_then(|v| v.as_str())
@@ -479,8 +479,8 @@ impl WorkspaceHost {
             };
             let mut by_item: HashMap<String, Vec<String>> = HashMap::new();
             for row in &inputs.references {
-                if text(row, "provider").as_deref() == Some(zeron_proto::LINEAR_PROVIDER)
-                    && text(row, "refType").as_deref() == Some(zeron_proto::LINEAR_ISSUE_REFERENCE)
+                if text(row, "provider").as_deref() == Some(mast_proto::LINEAR_PROVIDER)
+                    && text(row, "refType").as_deref() == Some(mast_proto::LINEAR_ISSUE_REFERENCE)
                     && let (Some(item), Some(identifier)) =
                         (text(row, "workItemId"), text(row, "externalId"))
                     && !identifier.trim().is_empty()
@@ -869,12 +869,12 @@ mod tests {
     // ── host-level: the ENG-3012-shaped chat, persisted ─────────────────────
 
     use std::sync::Arc;
-    use zeron_proto::{
+    use mast_proto::{
         AssignChatToWorkItemParams, ChatDiffTargetSource, CreateWorkItemExternalReferenceParams,
         CreateWorkItemParams, StoredChatDiffTarget, WorkOutlineActor, WorkOutlineActorKind,
         WorkOutlineMutation,
     };
-    use zeron_sync::DocsStore;
+    use mast_sync::DocsStore;
 
     use crate::workspace_host::{ChatLinkKind, WorkspaceHostConfig};
 

@@ -18,9 +18,9 @@
 //! and never fetches; the Shell host (`shell/work_context_ui.rs`) requests
 //! the data and supplies the click handlers.
 
-use zeron_engine::pr_ticket_cache::ChatLinkStatus;
-use zeron_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE};
-use zeron_proto::{
+use mast_engine::pr_ticket_cache::ChatLinkStatus;
+use mast_proto::linear::{LINEAR_ISSUE_REFERENCE, LINEAR_PROJECT_REFERENCE};
+use mast_proto::{
     ArtifactView, ArtifactsSnapshot, ChatLinkSource, PullRequestRef, WorkItemChatAssignmentState,
     WorkItemView, WorkOutlineSnapshot,
 };
@@ -234,7 +234,7 @@ pub(crate) fn is_review_item(
     let synced = item
         .external_sync_state
         .as_ref()
-        .is_some_and(|state| state.provider == zeron_proto::GITHUB_PROVIDER);
+        .is_some_and(|state| state.provider == mast_proto::GITHUB_PROVIDER);
     let destination = snapshot.pr_review_sync_destination();
     let under_destination =
         destination.is_some() && item.parent_work_item_id.as_deref() == destination;

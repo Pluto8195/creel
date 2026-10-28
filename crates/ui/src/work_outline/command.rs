@@ -5,7 +5,7 @@
 //! `Overview::run_work_outline_command`. This file only names the commands; it
 //! owns no behavior.
 use gpui::{SharedString, Window};
-use zeron_proto::DescendantArchivePolicy;
+use mast_proto::DescendantArchivePolicy;
 
 use crate::settings::ShortcutId;
 

@@ -1,6 +1,6 @@
 use super::*;
 
-use zeron_proto::{
+use mast_proto::{
     ProjectAction, ProjectActionDraft, ProjectActionIcon, ProjectActionRun, ProjectActionsSnapshot,
 };
 

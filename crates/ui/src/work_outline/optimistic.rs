@@ -11,7 +11,7 @@
 //! tree shape the Outline renders (`root_work_item_ids` / `child_ids`,
 //! parent ids, depths, `chat_ids`, assignments); derived fields the engine
 //! recomputes (rollups, effective status) catch up with the next frame.
-use zeron_proto::{
+use mast_proto::{
     WorkItemChatAssignmentState, WorkItemChatAssignmentView, WorkItemEffectiveStatus,
     WorkItemRollup, WorkItemStatus, WorkItemView, WorkOutlinePlacement, WorkOutlineSnapshot,
 };

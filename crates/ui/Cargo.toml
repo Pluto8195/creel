@@ -1,5 +1,5 @@
 [package]
-name = "zeron-ui"
+name = "mast-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -43,15 +43,15 @@ required-features = ["project-palette-fixture"]
 
 [dependencies]
 url = "2"
-zeron-proto.workspace = true
+mast-proto.workspace = true
 similar.workspace = true
-zeron-doc.workspace = true
-zeron-engine.workspace = true
-zeron-harness.workspace = true
-zeron-rpc.workspace = true
-zeron-update.workspace = true
-zeron-syntax.workspace = true
-zeron-theme.workspace = true
+mast-doc.workspace = true
+mast-engine.workspace = true
+mast-harness.workspace = true
+mast-rpc.workspace = true
+mast-update.workspace = true
+mast-syntax.workspace = true
+mast-theme.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true

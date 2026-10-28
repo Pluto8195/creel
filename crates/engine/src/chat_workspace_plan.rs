@@ -43,7 +43,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use zeron_proto::GitHistoryCommit;
+use mast_proto::GitHistoryCommit;
 
 use crate::EngineError;
 use crate::pr_ticket_cache::{extract_ticket_id, workspace_submodule_paths};
@@ -1164,7 +1164,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

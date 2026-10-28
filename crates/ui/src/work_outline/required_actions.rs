@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use zeron_proto::{
+use mast_proto::{
     InstructionProposalStatus, ProposalTargetScope, UserActionRequestView,
     WorkItemInstructionProposalView, WorkItemRollup, WorkOutlineActorKind, WorkOutlineSnapshot,
 };
@@ -206,7 +206,7 @@ fn row_for(
     let chat = chats
         .get(request.chat_id.as_str())
         .filter(|chat| !chat.archived);
-    let system = request.origin_kind == zeron_proto::UserActionOriginKind::System;
+    let system = request.origin_kind == mast_proto::UserActionOriginKind::System;
     let chat_available = !system && request.origin_chat_available && chat.is_some();
     let pr_url = system
         .then(|| snapshot.github_pull_request_reference(&request.work_item_id))
@@ -247,7 +247,7 @@ fn row_for(
 /// in the app's shared relative-time format.
 pub(crate) fn age_label(at_millis: i64, now: chrono::DateTime<chrono::Utc>) -> String {
     let then = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at_millis).unwrap_or(now);
-    zeron_proto::view::format_time_ago(then, now)
+    mast_proto::view::format_time_ago(then, now)
 }
 
 /// How much of the request text a reply quotes.
@@ -638,7 +638,7 @@ pub(crate) mod fixture {
     use super::super::store::fixture_ids::*;
     use super::super::store::fixture_snapshot;
     use super::*;
-    use zeron_proto::{
+    use mast_proto::{
         InstructionProposalOrigin, InstructionProposalReview, InstructionProposalTarget,
         ProposalReviewState, UserActionRequestState, UserActionResolution, WorkItemEffectiveStatus,
         WorkOutlineActor,
@@ -792,7 +792,7 @@ mod tests {
     use super::fixture::*;
     use super::*;
     use crate::work_outline::store::fixture_ids::*;
-    use zeron_proto::ChatIndicator;
+    use mast_proto::ChatIndicator;
 
     fn chat(id: &str, archived: bool) -> OutlineChat {
         OutlineChat {

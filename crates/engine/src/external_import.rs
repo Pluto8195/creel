@@ -47,13 +47,13 @@ use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use zeron_doc::{
+use mast_doc::{
     MessagePart, MessageRole, SessionDoc, SessionMessageEntry, fold_event_into_parts,
     sanitize_tool_call,
 };
-use zeron_harness::claude::decode_tool_use;
-use zeron_proto::{AgentEvent, ChatConfig, ChatLinkSource, HarnessId, SandboxLevel};
-use zeron_sync::DocsStore;
+use mast_harness::claude::decode_tool_use;
+use mast_proto::{AgentEvent, ChatConfig, ChatLinkSource, HarnessId, SandboxLevel};
+use mast_sync::DocsStore;
 
 use crate::EngineError;
 use crate::chat2_host::CHAT2_DOC_EPOCH;
@@ -1550,7 +1550,7 @@ const CLASSIFY_PROMPT_PREFIX: &str = "Classify this coding-agent chat";
 
 /// Mast's OWN chat-title generator (`titles.rs` -> `Harness::run_title`)
 /// spawns a throwaway `claude` process whose first (and only) user message is
-/// `zeron_harness::TITLE_INSTRUCTIONS` + `"\n\nSession request (JSON
+/// `mast_harness::TITLE_INSTRUCTIONS` + `"\n\nSession request (JSON
 /// string):\n<json>"`. Like any `claude` run it writes a full transcript
 /// under `~/.claude/projects/<scratch-cwd>/`, which the importer then picked
 /// up as a real chat (the two prefixes above only cover the Python
@@ -2152,7 +2152,7 @@ mod imported_tool_output_tests {
 #[cfg(test)]
 mod link_mining_tests {
     use super::*;
-    use zeron_proto::ToolCall;
+    use mast_proto::ToolCall;
 
     fn tool_part(id: &str, call: ToolCall, output: Option<&str>) -> MessagePart {
         MessagePart::Tool {
@@ -2567,7 +2567,7 @@ mod title_registry_tests {
     /// sends, or Mast's own throwaway title runs leak back in as chats.
     #[test]
     fn title_instructions_start_with_zeron_title_prompt_prefix() {
-        assert!(zeron_harness::TITLE_INSTRUCTIONS.starts_with(ZERON_TITLE_PROMPT_PREFIX));
+        assert!(mast_harness::TITLE_INSTRUCTIONS.starts_with(ZERON_TITLE_PROMPT_PREFIX));
     }
 
     #[test]
@@ -2576,7 +2576,7 @@ mod title_registry_tests {
         // under ~/.claude/projects/<scratch-tmpdir>/).
         let prompt = format!(
             "{}\n\nSession request (JSON string):\n{}",
-            zeron_harness::TITLE_INSTRUCTIONS,
+            mast_harness::TITLE_INSTRUCTIONS,
             serde_json::to_string("Ok picking up on were we left of").unwrap()
         );
         assert!(is_synthetic_prompt(&prompt));

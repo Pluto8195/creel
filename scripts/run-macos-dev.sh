@@ -20,7 +20,7 @@ if pgrep -f -x "$CONTENTS/MacOS/zeron" >/dev/null 2>&1; then
 fi
 
 cd "$ROOT"
-cargo build -p zeron
+cargo build -p mast
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$DATA_DIR"
 install -m 755 "$ROOT/target/debug/zeron" "$CONTENTS/MacOS/zeron"

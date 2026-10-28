@@ -11,8 +11,8 @@ use gpui::{
     AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext,
     VisualTestContext, Window, div, px,
 };
-use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus};
-use zeron_proto::{
+use mast_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus};
+use mast_proto::{
     ArtifactKind, ChatLinkSource, PullRequestCiStatus, PullRequestMyReviewState, PullRequestRef,
     PullRequestReviewDecision, PullRequestState, WorkOutlineSnapshot,
 };
@@ -407,7 +407,7 @@ fn now() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 17, 0, 0, 0).unwrap()
 }
 
-fn ready(status: zeron_proto::PullRequestStatusSummary) -> PrEntry {
+fn ready(status: mast_proto::PullRequestStatusSummary) -> PrEntry {
     PrEntry::Ready {
         status: Box::new(status),
         at: Instant::now(),
@@ -415,7 +415,7 @@ fn ready(status: zeron_proto::PullRequestStatusSummary) -> PrEntry {
     }
 }
 
-fn fields(status: zeron_proto::PullRequestStatusSummary) -> PrFields {
+fn fields(status: mast_proto::PullRequestStatusSummary) -> PrFields {
     let pr = status.pr_ref.clone();
     strip::pr_fields(&pr, Some(&ready(status)), None, now())
 }
@@ -669,7 +669,7 @@ fn click(vcx: &mut VisualTestContext, selector: &'static str) {
     draw(vcx);
 }
 
-fn data_for(statuses: &[zeron_proto::PullRequestStatusSummary]) -> StripData {
+fn data_for(statuses: &[mast_proto::PullRequestStatusSummary]) -> StripData {
     StripData {
         prs: statuses
             .iter()
@@ -815,7 +815,7 @@ fn a_failed_refresh_keeps_the_last_status_in_the_store(cx: &mut TestAppContext) 
                 std::sync::Arc::new(move |method, _params| {
                     assert_eq!(method, "PrStatus");
                     if seen.load(Ordering::SeqCst) {
-                        Err(zeron_rpc::RpcError::Failed("gh exploded".into()))
+                        Err(mast_rpc::RpcError::Failed("gh exploded".into()))
                     } else {
                         Ok(serde_json::to_value(gf::summary("app", 7, "Add auth")).unwrap())
                     }
@@ -939,7 +939,7 @@ fn the_review_strip_shows_the_linked_ticket_chip(cx: &mut TestAppContext) {
 fn review_chat(
     id: &str,
     title: &str,
-    state: zeron_proto::ChatIndicator,
+    state: mast_proto::ChatIndicator,
 ) -> crate::review_chats::ReviewChat {
     crate::review_chats::ReviewChat {
         chat_id: id.into(),
@@ -963,9 +963,9 @@ fn a_pr_with_a_review_chat_shows_the_being_reviewed_marker(cx: &mut TestAppConte
         review_chat(
             "chat-new",
             "Review app#42",
-            zeron_proto::ChatIndicator::Working,
+            mast_proto::ChatIndicator::Working,
         ),
-        review_chat("chat-old", "Earlier", zeron_proto::ChatIndicator::Idle),
+        review_chat("chat-old", "Earlier", mast_proto::ChatIndicator::Idle),
     ];
     let (_, log, vcx) = mount(cx, review_context(&[pr_ref("app", 42)]), data);
     assert!(present(vcx, "work-context-reviewing"));
@@ -981,7 +981,7 @@ fn the_implementation_strip_marks_a_pr_under_review_too(cx: &mut TestAppContext)
     data.review_chats = vec![review_chat(
         "chat-r",
         "Review app#42",
-        zeron_proto::ChatIndicator::AwaitingInput,
+        mast_proto::ChatIndicator::AwaitingInput,
     )];
     let (_, log, vcx) = mount(cx, implementation_context(&[pr_ref("app", 42)]), data);
     assert!(present(vcx, "work-context-reviewing"));

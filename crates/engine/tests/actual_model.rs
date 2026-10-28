@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::SessionCommandPayload;
-use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::SessionCommandPayload;
+use mast_engine::{EngineCore, HarnessRegistry, RunJournal};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, ChatModelDisplay, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest,
     SandboxLevel, SteeringMode,
 };

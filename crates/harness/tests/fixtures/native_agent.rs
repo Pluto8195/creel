@@ -49,13 +49,13 @@ fn main() {
         let path = std::env::current_dir()
             .unwrap()
             .join("descendant-pids.json");
-        let mut command = zeron_harness::process::Command::new(std::env::current_exe().unwrap());
+        let mut command = mast_harness::process::Command::new(std::env::current_exe().unwrap());
         command
             .arg("--tree-child")
             .arg(&path)
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::null())
-            .stderr(zeron_harness::process::Stdio::null());
+            .stdin(mast_harness::process::Stdio::null())
+            .stdout(mast_harness::process::Stdio::null())
+            .stderr(mast_harness::process::Stdio::null());
         let _owned = command.spawn().unwrap();
         let pids = await_tree(&path);
         println!("{}", serde_json::to_string(&pids).unwrap());

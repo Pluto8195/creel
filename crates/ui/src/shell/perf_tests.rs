@@ -25,9 +25,9 @@ fn watch<T: 'static>(cx: &mut TestAppContext, name: &'static str, entity: &Entit
     (name, count)
 }
 
-fn chat_row(index: usize) -> zeron_proto::Chat {
+fn chat_row(index: usize) -> mast_proto::Chat {
     use chrono::TimeZone;
-    zeron_proto::Chat {
+    mast_proto::Chat {
         id: format!("c{index}"),
         device_id: "local".into(),
         title: Some(format!("Chat {index}")),
@@ -99,7 +99,7 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -155,11 +155,11 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
     // lease timestamp moves, no visible field does.
     for i in 0..50 {
         state.update(cx, |state, cx| {
-            state.sessions = vec![zeron_proto::Session {
+            state.sessions = vec![mast_proto::Session {
                 last_completed_turn: None,
                 chat_id: "c1".into(),
                 device_id: "local".into(),
-                status: zeron_proto::SessionStatus::Working,
+                status: mast_proto::SessionStatus::Working,
                 started_at: None,
                 updated_at: Utc::now() + chrono::TimeDelta::milliseconds(i),
             }];
@@ -184,10 +184,10 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
     // chat/space/session field does.
     for i in 0..50 {
         state.update(cx, |state, cx| {
-            state.transcript.push(zeron_doc::SessionMessageEntry {
+            state.transcript.push(mast_doc::SessionMessageEntry {
                 id: format!("m{i}"),
-                role: zeron_doc::MessageRole::Assistant,
-                parts: vec![zeron_doc::MessagePart::Text {
+                role: mast_doc::MessageRole::Assistant,
+                parts: vec![mast_doc::MessagePart::Text {
                     id: "t0".into(),
                     text: format!("token {i}"),
                 }],

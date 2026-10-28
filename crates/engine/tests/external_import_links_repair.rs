@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
-use zeron_proto::ChatLinkSource;
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_proto::ChatLinkSource;
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -159,7 +159,7 @@ async fn repair_never_touches_a_chat_that_already_has_a_link() {
     core.workspace
         .set_chat_link(
             chat_id,
-            zeron_engine::workspace_host::ChatLinkKind::Pr,
+            mast_engine::workspace_host::ChatLinkKind::Pr,
             Some("https://github.com/acme/widgets/pull/999"),
             ChatLinkSource::Manual,
         )
@@ -258,7 +258,7 @@ async fn repair_still_scans_a_chat_that_only_has_a_ticket() {
     core.workspace
         .set_chat_link(
             chat_id,
-            zeron_engine::workspace_host::ChatLinkKind::Ticket,
+            mast_engine::workspace_host::ChatLinkKind::Ticket,
             Some("ENG-1"),
             ChatLinkSource::Mentioned,
         )

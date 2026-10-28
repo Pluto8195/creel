@@ -15,14 +15,14 @@
 //! without a gpui context; the dialog itself lives in `shell/closeout_ui.rs`.
 
 use serde_json::Value;
-use zeron_proto::GitHistoryCommit;
+use mast_proto::GitHistoryCommit;
 
 /// `{chatId, cwd, force}` → `{removed, branchDeleted, archived}`; errors carry
 /// human-readable refusal reasons.
-pub use zeron_rpc::methods::CLOSE_CHAT_WORKTREE;
+pub use mast_rpc::methods::CLOSE_CHAT_WORKTREE;
 /// `{chatId, cwd}` → `{isWorktree, worktreePath, branch, chatLive, dirty,
 /// dirtyFiles, unmergedCommits, defaultBranch}`.
-pub use zeron_rpc::methods::PLAN_CHAT_CLOSEOUT;
+pub use mast_rpc::methods::PLAN_CHAT_CLOSEOUT;
 
 /// The plan runs a handful of `git` commands plus a process scan.
 pub const PLAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -46,7 +46,7 @@ pub fn is_closeout_candidate(cwd: Option<&str>) -> bool {
         return false;
     };
     let cwd = std::path::Path::new(cwd);
-    if zeron_engine::repos::is_automatic_access_blocked(cwd) {
+    if mast_engine::repos::is_automatic_access_blocked(cwd) {
         return false;
     }
     cwd.join(".workspace-root").is_file() || cwd.join(".git").is_file()

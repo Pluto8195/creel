@@ -30,7 +30,7 @@
 //! survive snapshot refreshes.
 use std::collections::{HashMap, HashSet};
 
-use zeron_proto::ChatIndicator;
+use mast_proto::ChatIndicator;
 
 use super::store::{
     WorkItemEffectiveStatus, WorkItemStatus, WorkItemView, WorkOutlineLoad, WorkOutlineSnapshot,
@@ -130,7 +130,7 @@ pub(crate) struct ItemRow {
     /// the item's current one (`executionExceptions`).
     pub execution_exceptions: u32,
     /// Subtree rollup (descendant status totals, Milestone 4).
-    pub rollup: zeron_proto::WorkItemRollup,
+    pub rollup: mast_proto::WorkItemRollup,
     /// Pending instruction proposals targeting this item (Milestone 4).
     pub pending_proposals: usize,
     pub archived: bool,
@@ -1260,12 +1260,12 @@ pub(crate) mod tests {
             .find(|item| item.id == RETIRED)
             .unwrap();
         retired.chat_ids = vec![CHAT_PR.into()];
-        retired.external_sync_state = Some(zeron_proto::WorkItemExternalSyncState {
+        retired.external_sync_state = Some(mast_proto::WorkItemExternalSyncState {
             provider: "github".into(),
             external_id: "acme/launch#42".into(),
             round: 1,
-            request_state: zeron_proto::PrReviewRequestState::Merged,
-            archived_by_sync: Some(zeron_proto::PrReviewRequestState::Merged),
+            request_state: mast_proto::PrReviewRequestState::Merged,
+            archived_by_sync: Some(mast_proto::PrReviewRequestState::Merged),
             marker: None,
             archived_by_linear_sync: false,
             ..Default::default()
@@ -1391,7 +1391,7 @@ pub(crate) mod tests {
         snapshot.items[1].chat_ids.push("foreign".into());
         snapshot
             .assignments
-            .push(zeron_proto::WorkItemChatAssignmentView {
+            .push(mast_proto::WorkItemChatAssignmentView {
                 chat_id: "foreign".into(),
                 space_id: "s1".into(),
                 work_item_id: Some(API.into()),

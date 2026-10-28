@@ -4,7 +4,7 @@
 //! (command executor, sessions, run journal) consumes it. Delivery never reads
 //! outline rows directly, and the registry never knows about harness processes.
 
-use zeron_proto::{ExecutionSessionReport, InstructionRevisionPin, InstructionRevisionView};
+use mast_proto::{ExecutionSessionReport, InstructionRevisionPin, InstructionRevisionView};
 
 pub trait InstructionRegistry: Send + Sync {
     /// The exact revision by id, if it has synced to this device. Callers verify

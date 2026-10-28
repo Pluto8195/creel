@@ -675,7 +675,7 @@ pub fn plan_renders(
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchArtifactRenderRequestsParams {
-    /// Diagnostics label (`"zeron-ui"`).
+    /// Diagnostics label (`"mast-ui"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
 }

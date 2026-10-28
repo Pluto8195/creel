@@ -10,7 +10,7 @@
 //! handshake succeeding.
 use std::path::{Path, PathBuf};
 
-use zeron_proto::SlashCommand;
+use mast_proto::SlashCommand;
 
 /// The skills found for one folder.
 #[derive(Debug, Clone, Default, PartialEq)]

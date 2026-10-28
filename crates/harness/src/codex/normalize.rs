@@ -6,7 +6,7 @@
 //! types) are accepted, and unknown item types map to nothing.
 
 use serde_json::Value;
-use zeron_proto::{AgentEvent, DoneStatus, TodoItem, ToolCall};
+use mast_proto::{AgentEvent, DoneStatus, TodoItem, ToolCall};
 
 /// Bound command output before it crosses the event stream. The document
 /// fold applies its own smaller persistence policy; this prevents an
@@ -272,7 +272,7 @@ fn push_content_hunk(patch: &mut String, content: &str, added: bool) {
 /// for adds and deletes. Normalize both forms into ordinary git-style sections
 /// so the document can derive per-file stats and the UI can reuse the checkout
 /// patch parser. Already-hunked and full git patches pass through unchanged.
-fn file_change_diff(changes: &[&Value]) -> Option<zeron_proto::ToolDiff> {
+fn file_change_diff(changes: &[&Value]) -> Option<mast_proto::ToolDiff> {
     let mut patch = String::new();
     let mut paths = Vec::new();
     for change in changes {
@@ -325,7 +325,7 @@ fn file_change_diff(changes: &[&Value]) -> Option<zeron_proto::ToolDiff> {
         [path] => path.clone(),
         _ => "workspace".to_owned(),
     };
-    Some(zeron_proto::ToolDiff {
+    Some(mast_proto::ToolDiff {
         path,
         old_text: None,
         new_text: String::new(),
@@ -882,7 +882,7 @@ mod tests {
             }
         }
         assert_eq!(streamed, format!("{full}\n\n{full}\n\n"));
-        let refs = zeron_proto::visualize::references(&streamed);
+        let refs = mast_proto::visualize::references(&streamed);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].path, "/repo/work/kit.fragment.html");
         assert_eq!(refs[0].title, "Kit");

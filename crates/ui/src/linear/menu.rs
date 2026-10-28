@@ -4,7 +4,7 @@
 //! <project>…; a Space row gets Open Linear Panel, which shows the
 //! Toggle Linear Panel binding. The Shell runs them
 //! (`shell/linear_ui.rs`).
-use zeron_proto::WorkOutlineSnapshot;
+use mast_proto::WorkOutlineSnapshot;
 
 use crate::icons;
 use crate::work_outline::WorkOutlineCommand;

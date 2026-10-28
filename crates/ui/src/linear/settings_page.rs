@@ -3,7 +3,7 @@
 //! Disconnect (`LinearClearApiKey`), and a link to Linear's key page. The
 //! key is never displayed or logged; it is sent once and the field clears.
 use gpui::{Context, Entity, SharedString, Subscription, Window, div, prelude::*, px};
-use zeron_proto::linear::{LinearConnectionStatus, LinearErrorCode, LinearKeySource};
+use mast_proto::linear::{LinearConnectionStatus, LinearErrorCode, LinearKeySource};
 
 use super::client::LinearUiError;
 use super::masked_input::{MaskedKeyEvent, MaskedKeyInput};
@@ -389,13 +389,13 @@ impl Render for LinearSettingsPage {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use zeron_proto::linear::LinearUser;
+    use mast_proto::linear::LinearUser;
 
     type Calls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 
     fn page(
         cx: &mut gpui::TestAppContext,
-        reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+        reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
         + Send
         + Sync
         + 'static,
@@ -452,7 +452,7 @@ mod tests {
         let (page, state, calls, vcx) = page(cx, |method, params| match method {
             "LinearStatus" => Ok(not_configured()),
             "LinearSetApiKey" if params["apiKey"] == "lin_good" => Ok(connected()),
-            "LinearSetApiKey" => Err(zeron_rpc::RpcError::Failed(
+            "LinearSetApiKey" => Err(mast_rpc::RpcError::Failed(
                 "linear/unauthorized: bad key".into(),
             )),
             "LinearClearApiKey" => Ok(not_configured()),
@@ -513,7 +513,7 @@ mod tests {
     #[gpui::test]
     fn unknown_method_reads_as_not_available(cx: &mut gpui::TestAppContext) {
         let (_page, state, _calls, vcx) = page(cx, |method, _| {
-            Err(zeron_rpc::RpcError::UnknownMethod(method.to_string()))
+            Err(mast_rpc::RpcError::UnknownMethod(method.to_string()))
         });
         state.read_with(vcx, |state, _| {
             assert_eq!(

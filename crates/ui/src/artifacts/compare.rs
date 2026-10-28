@@ -12,7 +12,7 @@
 //! The view itself (loading, rendering, offscreen diffs) is
 //! [`super::tab`]'s `compare_view`.
 use gpui::App;
-use zeron_proto::{ArtifactKind, ArtifactView};
+use mast_proto::{ArtifactKind, ArtifactView};
 
 use super::document::CompareFrame;
 use super::pixel_diff::Region;

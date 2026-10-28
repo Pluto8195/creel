@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{HarnessId, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineSnapshot};
-use zeron_rpc::methods;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{HarnessId, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineSnapshot};
+use mast_rpc::methods;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn kill_switch_refuses_writes_and_keeps_reads() {
     // SAFETY: this binary has exactly one test, so nothing reads the
     // environment concurrently.
-    unsafe { std::env::set_var(zeron_proto::work_outline::DISABLE_WRITES_ENV, "1") };
+    unsafe { std::env::set_var(mast_proto::work_outline::DISABLE_WRITES_ENV, "1") };
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -25,7 +25,7 @@ async fn kill_switch_refuses_writes_and_keeps_reads() {
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,

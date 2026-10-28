@@ -5,7 +5,7 @@
 //! `chat.cwd`.
 //!
 //! The API is synchronous: it runs blocking `git` subprocesses (all spawned
-//! through [`zeron_harness::git_command`]), so async callers use
+//! through [`mast_harness::git_command`]), so async callers use
 //! `spawn_blocking`.
 //!
 //! The *allowed set* a chat may bind is its checkout family: the chat's own
@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
-use zeron_proto::{
+use mast_proto::{
     Chat, ChatDiffTargetEntry, ChatDiffTargetSource, ChatDiffTargetsReply, ChatDiffTargetsRow,
     DiffCheckoutCandidate, DiffCheckoutKind, ListChatDiffCheckoutsReply, MAX_CHAT_DIFF_TARGET_OPS,
     MAX_CHAT_DIFF_TARGETS, StoredChatDiffTarget,
@@ -438,7 +438,7 @@ fn reply_of(row: &ChatDiffTargetsRow) -> ChatDiffTargetsReply {
         ref_targets: row
             .ref_targets
             .iter()
-            .map(|t| zeron_proto::ChatRefTargetEntry {
+            .map(|t| mast_proto::ChatRefTargetEntry {
                 id: t.id.clone(),
                 kind: t.kind,
                 label: crate::diff_sync::ref_target_label(t),
@@ -730,7 +730,7 @@ struct Facts {
 
 /// Raw stdout of a successful `git` run in `dir`.
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -786,7 +786,7 @@ fn main_checkout_of(common_dir: &Path) -> Option<PathBuf> {
     }
     let config = common_dir.join("config");
     let config = config.to_string_lossy().into_owned();
-    let out = zeron_harness::git_command()
+    let out = mast_harness::git_command()
         .args(["config", "--file", &config, "--get", "core.worktree"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())

@@ -43,7 +43,7 @@ git clone https://github.com/Pluto8195/mast.git
 cd mast
 git checkout work-outline-implementation   # the default branch
 
-cargo build -p zeron                       # debug binary at target/debug/zeron
+cargo build -p mast                       # debug binary at target/debug/zeron
 ```
 
 The binary and crate are still called `zeron`; only the product name changed.

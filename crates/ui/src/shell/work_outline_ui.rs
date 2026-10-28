@@ -19,7 +19,7 @@ use crate::work_outline::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
     WorkOutlineDriftRequest, WorkOutlineParentChoice,
 };
-use zeron_proto::DescendantArchivePolicy;
+use mast_proto::DescendantArchivePolicy;
 
 /// Fire one Work Outline command from a keymap binding. One action carrying
 /// the command, like `JumpSession`, rather than nine action types.
@@ -661,14 +661,14 @@ impl Shell {
     /// Claude Code: Start Chat's fallback before its own picker resolves.
     /// Instruction editors never use it (their lists are harness-agnostic,
     /// see `SkillSource::for_outline_scope`).
-    pub(crate) fn skill_harness(&self, cx: &App) -> zeron_proto::HarnessId {
+    pub(crate) fn skill_harness(&self, cx: &App) -> mast_proto::HarnessId {
         self.composer
             .read(cx)
             .pickers()
             .read(cx)
             .resolved(cx)
             .harness
-            .unwrap_or(zeron_proto::HarnessId::ClaudeCode)
+            .unwrap_or(mast_proto::HarnessId::ClaudeCode)
     }
 
     /// The one entry point for web and PR links: [`Self::open_web_reference`]
@@ -1572,7 +1572,7 @@ mod tests {
                 // The overlays render only behind the Ready gate.
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -1583,7 +1583,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )

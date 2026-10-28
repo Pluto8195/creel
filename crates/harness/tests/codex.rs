@@ -10,10 +10,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use zeron_harness::{
+use mast_harness::{
     CancellationToken, CodexHarness, Harness, HarnessError, RunControls, SteerMessage,
 };
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoItem,
     ToolCall, UserInputAnswer, UserInputQuestion,
 };
@@ -126,7 +126,7 @@ async fn codex_visualize_references_reach_the_transcript_text_intact() {
             _ => None,
         })
         .collect();
-    let refs = zeron_proto::visualize::references(&text);
+    let refs = mast_proto::visualize::references(&text);
     assert_eq!(refs.len(), 2, "{text:?}");
     assert_eq!(refs[0].path, "/repo/work/chart.fragment.html");
     assert_eq!(refs[0].title, "Chart");
@@ -1439,7 +1439,7 @@ async fn live_subagent_spawn_and_followup_keep_one_transcript() {
 
 /// Live smoke against the REAL codex app-server (installed + authed):
 /// one trivial turn, ending on turn/completed.
-/// `cargo test -p zeron-harness --test codex -- --ignored`.
+/// `cargo test -p mast-harness --test codex -- --ignored`.
 #[tokio::test]
 #[ignore = "spawns the real codex app-server; needs install + auth + network"]
 async fn live_real_app_server_single_turn() {
@@ -1540,7 +1540,7 @@ exec sleep 30
     assert_eq!(second[0].name, "skill-2");
 }
 
-/// Live smoke against the real CLI: `cargo test -p zeron-harness --test
+/// Live smoke against the real CLI: `cargo test -p mast-harness --test
 /// codex -- --ignored live_commands`.
 #[tokio::test]
 #[ignore]
@@ -1675,8 +1675,8 @@ async fn real_image_generation_smoke() {
     assert!(serde_json::to_vec(&events).unwrap().len() < 64 * 1024);
 }
 
-fn agent_tools_injection() -> zeron_harness::AgentToolsInjection {
-    zeron_harness::AgentToolsInjection {
+fn agent_tools_injection() -> mast_harness::AgentToolsInjection {
+    mast_harness::AgentToolsInjection {
         server_name: "zeron-agent".into(),
         command: PathBuf::from("/opt/zeron/bin/zeron"),
         args: vec!["mcp".into()],

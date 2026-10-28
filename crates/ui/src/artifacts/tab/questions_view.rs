@@ -9,7 +9,7 @@ use gpui::{
     AnyElement, Context, Entity, Focusable, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArtifactAnswerQuestionParams, ArtifactDriftParams, ArtifactDriftReply, ArtifactKind,
     ArtifactView, PlanQuestion, extract_questions,
 };
@@ -404,7 +404,7 @@ impl ArtifactTab {
         let answers = self.answer_map(artifact);
         let answer_rows: Vec<_> = answers
             .iter()
-            .map(|(id, text)| zeron_proto::ArtifactQuestionAnswer {
+            .map(|(id, text)| mast_proto::ArtifactQuestionAnswer {
                 id: id.clone(),
                 answer: text.clone(),
                 at: i64::MAX,

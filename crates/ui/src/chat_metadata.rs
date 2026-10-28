@@ -9,8 +9,8 @@ use gpui::{
     ClipboardItem, InteractiveElement as _, IntoElement as _, ParentElement as _, Render,
     SharedString, Styled as _, div, prelude::*, px,
 };
-use zeron_engine::pr_ticket_cache::ChatLinkStatus;
-use zeron_proto::{Chat, ChatLinkSource, ChatModelDisplay, Space};
+use mast_engine::pr_ticket_cache::ChatLinkStatus;
+use mast_proto::{Chat, ChatLinkSource, ChatModelDisplay, Space};
 
 use crate::theme::Theme;
 

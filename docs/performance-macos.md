@@ -137,14 +137,14 @@ that window foreground and the display awake for the entire run. Replay uses
 an isolated profile and the bundled sanitized fixture; it makes no model API call.
 
 ```sh
-cargo build --release --locked -p zeron
+cargo build --release --locked -p mast
 ZERON_FRAME_STATS=0 ZERON_PROFILE_IDLE_MS=10000 \
   CLAUDE_CODE_EXECUTABLE="$PWD/scripts/replay-claude.py" \
   ZERON_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
   node scripts/resource-profile.mjs target/release/zeron /tmp/zeron-native claude-code
 
 # UI-only offscreen replay of those verified protocol frames:
-cargo build --release --locked -p zeron-ui --features resource-profile \
+cargo build --release --locked -p mast-ui --features resource-profile \
   --example macos-resource-profile
 ZERON_VERIFY_CACHE=1 ZERON_VERIFY_INTERACTIONS=1 ZERON_FRAME_STATS=0 \
   target/release/examples/macos-resource-profile \

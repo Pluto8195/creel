@@ -5,11 +5,11 @@
 //! real-world data ahead of the picker UI existing to trigger it manually.
 //!
 //! Run with:
-//!   cargo test -p zeron-engine --test external_import_real_smoke -- --ignored --nocapture
+//!   cargo test -p mast-engine --test external_import_real_smoke -- --ignored --nocapture
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 async fn import_one(real_path: &std::path::Path, session_id: &str, chat_id: &str) {
     assert!(

@@ -35,9 +35,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use zeron_doc::{RowState, SessionCommandPayload, SessionCommandStatus};
-use zeron_proto::work_outline::{WorkOutlineErrorCode, derive_id, roles};
-use zeron_proto::{
+use mast_doc::{RowState, SessionCommandPayload, SessionCommandStatus};
+use mast_proto::work_outline::{WorkOutlineErrorCode, derive_id, roles};
+use mast_proto::{
     ApplyInstructionRevisionParams, AssignChatToWorkItemParams, ChatConfig,
     ContinueChatForWorkItemParams, ContinueChatForWorkItemReply, CreateChatForWorkItemParams,
     CreateChatForWorkItemReply, CreateInstructionRevisionParams, ExecutionHostCapabilities,
@@ -137,7 +137,7 @@ fn same_path(a: &str, b: &str) -> bool {
 fn check_operation_id(operation_id: &str) -> Result<(), WorkOutlineError> {
     let ok = !operation_id.is_empty()
         && operation_id.chars().count()
-            <= zeron_proto::work_outline::limits::MAX_OPERATION_ID_CHARS
+            <= mast_proto::work_outline::limits::MAX_OPERATION_ID_CHARS
         && operation_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
@@ -234,7 +234,7 @@ impl WorkItemLaunchService {
     fn mutate(
         &self,
         mutation: WorkOutlineMutation,
-    ) -> Result<zeron_proto::WorkOutlineMutateReply, WorkOutlineError> {
+    ) -> Result<mast_proto::WorkOutlineMutateReply, WorkOutlineError> {
         // No ledger keys: every step here is replay-safe in the doc layer
         // (create-if-absent with an immutable inputsHash, compare-before-
         // write), and the launch's own ledger keys guard its inputs.
@@ -287,7 +287,7 @@ impl WorkItemLaunchService {
         let chat_id = derive_id(op, roles::CHAT);
         let message_id = derive_id(op, roles::MESSAGE);
         let command_id = derive_id(op, roles::COMMAND);
-        let inputs_hash = zeron_doc::registry::work_outline::inputs_hash(&LaunchInputs {
+        let inputs_hash = mast_doc::registry::work_outline::inputs_hash(&LaunchInputs {
             work_item_id: &p.work_item_id,
             initial_prompt: &p.initial_prompt,
             config: &p.config,
@@ -322,7 +322,7 @@ impl WorkItemLaunchService {
                 },
             ]));
         }
-        let snapshot = zeron_doc::materialize_work_outline(
+        let snapshot = mast_doc::materialize_work_outline(
             &space_id,
             &self.workspace.work_outline_inputs(&space_id),
         );
@@ -335,7 +335,7 @@ impl WorkItemLaunchService {
         }
         if self
             .workspace
-            .registry_row_state(zeron_doc::KIND_CHATS, &chat_id)
+            .registry_row_state(mast_doc::KIND_CHATS, &chat_id)
             == RowState::Tombstoned
         {
             return Err(error(
@@ -520,7 +520,7 @@ impl WorkItemLaunchService {
         let revision = derive_id(operation_id, roles::REVISION);
         if self
             .workspace
-            .registry_row_state(zeron_doc::KIND_INSTRUCTION_REVISIONS, &revision)
+            .registry_row_state(mast_doc::KIND_INSTRUCTION_REVISIONS, &revision)
             != RowState::Absent
         {
             return Ok(true);
@@ -549,7 +549,7 @@ impl WorkItemLaunchService {
         if let Some(over) = &p.execution_override {
             resolved.configuration = over.configuration.clone();
             resolved.invalid_reason =
-                zeron_proto::check_execution_configuration(&over.configuration).err();
+                mast_proto::check_execution_configuration(&over.configuration).err();
         }
         if let Some(choice) = &p.worktree_choice {
             self.apply_worktree_choice(&mut resolved, choice, &p.operation_id)
@@ -764,7 +764,7 @@ impl WorkItemLaunchService {
 
     fn require_instruction_support(
         &self,
-        harness: zeron_proto::HarnessId,
+        harness: mast_proto::HarnessId,
     ) -> Result<(), WorkOutlineError> {
         let support = self.sessions.instruction_support(harness).map_err(|err| {
             error(
@@ -773,8 +773,8 @@ impl WorkItemLaunchService {
             )
         })?;
         match support {
-            zeron_harness::InstructionSupport::Supported { .. } => Ok(()),
-            zeron_harness::InstructionSupport::Unsupported {
+            mast_harness::InstructionSupport::Supported { .. } => Ok(()),
+            mast_harness::InstructionSupport::Unsupported {
                 reason,
                 upgrade_hint,
             } => {
@@ -835,7 +835,7 @@ impl WorkItemLaunchService {
     ) -> Result<(), WorkOutlineError> {
         let row = self
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat_id)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat_id)
             .filter(|row| !row.deleted);
         if let Some(row) = row {
             let current = row.fields.get("workItemId").and_then(|v| v.as_str());
@@ -951,7 +951,7 @@ impl WorkItemLaunchService {
             .map_err(|error| validation_error(&[error]))?;
         let assigned = self
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &p.chat_id)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &p.chat_id)
             .filter(|row| !row.deleted)
             .and_then(|row| {
                 row.fields
@@ -998,7 +998,7 @@ impl WorkItemLaunchService {
         if let Some(harness) = request.harness
             && request.model.as_deref().is_none_or(|m| m.trim().is_empty())
         {
-            request.model = zeron_proto::resolve_model(harness, None);
+            request.model = mast_proto::resolve_model(harness, None);
             tracing::debug!(chat = %p.chat_id, model = ?request.model, "continued turn had no model; filled in the Mast default");
         }
         let payload = SessionCommandPayload::Run {
@@ -1068,7 +1068,7 @@ impl WorkItemLaunchService {
         let op = derive_id(child_id, "fork-inherit");
         let parent_item = self
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, parent_id)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, parent_id)
             .filter(|row| !row.deleted)
             .and_then(|row| {
                 row.fields
@@ -1082,7 +1082,7 @@ impl WorkItemLaunchService {
         };
         let child_assignment = self
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, child_id)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, child_id)
             .filter(|row| !row.deleted);
         if child_assignment.is_none() {
             self.mutate(WorkOutlineMutation::AssignChatToWorkItem(
@@ -1127,7 +1127,7 @@ impl WorkItemLaunchService {
 /// built-in default.
 fn with_default_model(
     p: &CreateChatForWorkItemParams,
-    default_harness: zeron_proto::HarnessId,
+    default_harness: mast_proto::HarnessId,
     chat_id: &str,
 ) -> CreateChatForWorkItemParams {
     let mut p = p.clone();
@@ -1178,7 +1178,7 @@ fn command_prompt(payload: &SessionCommandPayload) -> Option<&str> {
 #[cfg(test)]
 mod default_model_tests {
     use super::*;
-    use zeron_proto::HarnessId;
+    use mast_proto::HarnessId;
 
     fn params(config: Option<ChatConfig>) -> CreateChatForWorkItemParams {
         CreateChatForWorkItemParams {

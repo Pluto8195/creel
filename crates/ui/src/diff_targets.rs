@@ -3,7 +3,7 @@
 //! labels, and the test-only RPC fake. The state lives in `AppState`
 //! (`chat_diff_targets`), the picker in `changes.rs`.
 
-use zeron_proto::{Chat, DiffCheckoutCandidate, DiffCheckoutKind, RefDiffCandidate, RefDiffKind};
+use mast_proto::{Chat, DiffCheckoutCandidate, DiffCheckoutKind, RefDiffCandidate, RefDiffKind};
 
 use crate::work_outline::execution::ref_label;
 

@@ -30,7 +30,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zeron_proto::artifacts::{
+use mast_proto::artifacts::{
     ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
     ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentStatus, MAX_COMMENTS,
     MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, kind_supports_comments, next_comment_id,
@@ -45,7 +45,7 @@ use zeron_proto::artifacts::{
     clean_title, content_hash, count_open_questions, count_unverified_claims,
     is_safe_relative_path, mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
 };
-use zeron_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
+use mast_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
 
 use crate::workspace_host::WorkspaceHost;
 
@@ -55,7 +55,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn clean_answer(answer: &str) -> String {
     let answer = answer.trim();
-    match answer.char_indices().nth(zeron_proto::artifacts::MAX_ANSWER_CHARS) {
+    match answer.char_indices().nth(mast_proto::artifacts::MAX_ANSWER_CHARS) {
         Some((cut, _)) => answer[..cut].to_owned(),
         None => answer.to_owned(),
     }
@@ -79,7 +79,7 @@ const MARKER_LEDGER_PREFIX: &str = "artifact-marker:";
 // ── git helpers (synchronous; callers run on blocking threads) ──────────────
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -232,7 +232,7 @@ fn default_title_for(path: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("artifact");
     let html = name.to_ascii_lowercase().ends_with(".html");
-    html.then(|| zeron_proto::visualize::default_title(name))
+    html.then(|| mast_proto::visualize::default_title(name))
         .flatten()
         .or_else(|| {
             Path::new(name)
@@ -632,7 +632,7 @@ struct Inner {
     snapshots: PathBuf,
     /// Questions of each artifact's current revision, by artifact id and
     /// revision hash.
-    questions: Mutex<HashMap<String, (String, Vec<zeron_proto::PlanQuestion>)>>,
+    questions: Mutex<HashMap<String, (String, Vec<mast_proto::PlanQuestion>)>>,
     /// Serializes every artifact write and the watcher; holds the watcher
     /// cache keyed by stored path.
     gate: Mutex<HashMap<String, SeenFile>>,
@@ -828,7 +828,7 @@ impl ArtifactsService {
                 return Ok(existing.folder);
             }
             let inputs = self.workspace().work_outline_inputs(&space.id);
-            let snapshot = zeron_doc::materialize_work_outline(&space.id, &inputs);
+            let snapshot = mast_doc::materialize_work_outline(&space.id, &inputs);
             let title = snapshot
                 .item(item)
                 .map(|i| i.title.clone())
@@ -875,10 +875,10 @@ impl ArtifactsService {
         let mut source = request.source.clone();
         let mut kind = request.kind;
         let source_text = source.to_string_lossy().into_owned();
-        if let Some(zeron_proto::visualize::HtmlArtifactKind::Preview) =
-            zeron_proto::visualize::html_artifact_kind(&source_text)
+        if let Some(mast_proto::visualize::HtmlArtifactKind::Preview) =
+            mast_proto::visualize::html_artifact_kind(&source_text)
         {
-            match zeron_proto::visualize::fragment_sibling(&source_text) {
+            match mast_proto::visualize::fragment_sibling(&source_text) {
                 Some(fragment) if Path::new(&fragment).is_file() => {
                     source = PathBuf::from(fragment);
                     kind = Some(ArtifactKind::HtmlFragment);
@@ -1001,11 +1001,11 @@ impl ArtifactsService {
         // A fragment's standalone preview travels with it.
         if kind == ArtifactKind::HtmlFragment
             && let Some(preview) =
-                zeron_proto::visualize::preview_sibling(&source.to_string_lossy())
+                mast_proto::visualize::preview_sibling(&source.to_string_lossy())
             && Path::new(&preview).is_file()
         {
             let stored_preview =
-                zeron_proto::visualize::preview_sibling(&view.stored_path).map(PathBuf::from);
+                mast_proto::visualize::preview_sibling(&view.stored_path).map(PathBuf::from);
             if let Some(stored_preview) = stored_preview {
                 if Path::new(&preview) != stored_preview {
                     let preview_bytes = read_file(&self.authorize_source(Path::new(&preview))?)?;
@@ -1326,7 +1326,7 @@ impl ArtifactsService {
     /// The questions in the artifact's current revision, read from its
     /// stored snapshot (falling back to the file) and cached by revision
     /// hash. Empty for kinds without questions or unreadable content.
-    pub(crate) fn plan_questions(&self, artifact: &ArtifactView) -> Vec<zeron_proto::PlanQuestion> {
+    pub(crate) fn plan_questions(&self, artifact: &ArtifactView) -> Vec<mast_proto::PlanQuestion> {
         let Some(current) = artifact.current() else {
             return Vec::new();
         };
@@ -1339,7 +1339,7 @@ impl ArtifactsService {
             .ok()
             .or_else(|| self.current_bytes(artifact).ok())
             .unwrap_or_default();
-        let questions = zeron_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
+        let questions = mast_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
         lock(&self.inner.questions).insert(artifact.id.clone(), (current.hash.clone(), questions.clone()));
         questions
     }
@@ -1348,10 +1348,10 @@ impl ArtifactsService {
     /// the checkouts the work item's chats work in (their cwd and bound diff
     /// targets). Checkouts on the repository's main / master branch are
     /// skipped: their history is everyone's, not this work's.
-    pub fn drift(&self, artifact_id: &str) -> Outcome<zeron_proto::ArtifactDriftReply> {
+    pub fn drift(&self, artifact_id: &str) -> Outcome<mast_proto::ArtifactDriftReply> {
         let artifact = self.local_artifact(artifact_id)?;
         let since = artifact.revisions.first().map_or(artifact.updated_at, |r| r.at);
-        let mut reply = zeron_proto::ArtifactDriftReply {
+        let mut reply = mast_proto::ArtifactDriftReply {
             artifact_id: artifact.id.clone(),
             since,
             ..Default::default()
@@ -1408,9 +1408,9 @@ impl ArtifactsService {
     /// the owning device's reconcile pass resolves the Required Action.
     pub fn answer_question(
         &self,
-        params: &zeron_proto::ArtifactAnswerQuestionParams,
+        params: &mast_proto::ArtifactAnswerQuestionParams,
         by: WorkOutlineActor,
-    ) -> Outcome<zeron_proto::ArtifactAnswerQuestionReply> {
+    ) -> Outcome<mast_proto::ArtifactAnswerQuestionReply> {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
@@ -1424,7 +1424,7 @@ impl ArtifactsService {
             return Err(ArtifactError::invalid("answer must not be empty"));
         }
         self.record_answer(&artifact, &id, answer, by)?;
-        Ok(zeron_proto::ArtifactAnswerQuestionReply {
+        Ok(mast_proto::ArtifactAnswerQuestionReply {
             artifact_id: artifact.id,
             question_id: id,
         })
@@ -1590,14 +1590,14 @@ impl ArtifactsService {
     ) -> Outcome<()> {
         let mut answers = artifact.answers.clone();
         answers.retain(|a| !a.id.eq_ignore_ascii_case(question_id));
-        answers.push(zeron_proto::ArtifactQuestionAnswer {
+        answers.push(mast_proto::ArtifactQuestionAnswer {
             id: question_id.to_owned(),
             answer,
             at: now_ms(),
             by,
             revision: artifact.current_revision,
         });
-        let excess = answers.len().saturating_sub(zeron_proto::artifacts::MAX_ANSWERS);
+        let excess = answers.len().saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
         answers.drain(..excess);
         self.workspace()
             .set_artifact_answers(&artifact.id, &answers)
@@ -1613,10 +1613,10 @@ impl ArtifactsService {
     /// it again; the caller (RPC) then resolves any `artopt:` request.
     pub fn pick_option(
         &self,
-        params: &zeron_proto::ArtifactPickOptionParams,
+        params: &mast_proto::ArtifactPickOptionParams,
         by: WorkOutlineActor,
-    ) -> Outcome<zeron_proto::ArtifactPickOptionReply> {
-        use zeron_proto::artifacts::{ArtifactOptionPick, MAX_PICK_CHARS, MAX_PICK_ID_CHARS};
+    ) -> Outcome<mast_proto::ArtifactPickOptionReply> {
+        use mast_proto::artifacts::{ArtifactOptionPick, MAX_PICK_CHARS, MAX_PICK_ID_CHARS};
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
@@ -1647,7 +1647,7 @@ impl ArtifactsService {
             .map_err(|e| ArtifactError::io(e.to_string()))?
             .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
         self.sync_pick_answer(&artifact, pick.as_ref());
-        Ok(zeron_proto::ArtifactPickOptionReply {
+        Ok(mast_proto::ArtifactPickOptionReply {
             artifact_id: artifact.id,
             picked: pick,
         })
@@ -1655,7 +1655,7 @@ impl ArtifactsService {
 
     /// Mirror the pick into the plan question the manifest names, if any.
     /// Best effort: the pick itself is already stored.
-    fn sync_pick_answer(&self, artifact: &ArtifactView, pick: Option<&zeron_proto::ArtifactOptionPick>) {
+    fn sync_pick_answer(&self, artifact: &ArtifactView, pick: Option<&mast_proto::ArtifactOptionPick>) {
         let Some(question_id) = self
             .current_bytes(artifact)
             .ok()
@@ -1905,7 +1905,7 @@ impl ArtifactsService {
     pub fn agent_publish(&self, caller: &AgentCaller, arguments: &Value) -> Outcome<Value> {
         let args: PublishArgs = parse_args(arguments)?;
         let key =
-            zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
+            mast_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
                 .map_err(ArtifactError::invalid)?;
         let kind = match args
             .kind
@@ -2145,9 +2145,9 @@ impl ArtifactsService {
     /// (and Codex `visualize` references) once per (chat, path). Best effort:
     /// failures are logged. Runs on a blocking thread when a runtime exists.
     pub fn note_assistant_text(&self, chat_id: &str, text: &str) {
-        let has_marker = text.contains(zeron_proto::artifacts::ARTIFACT_URL_SCHEME);
-        let has_visualize = text.contains(zeron_proto::visualize::ENVELOPE_PREFIX)
-            || text.contains(zeron_proto::visualize::LINE_PREFIX);
+        let has_marker = text.contains(mast_proto::artifacts::ARTIFACT_URL_SCHEME);
+        let has_visualize = text.contains(mast_proto::visualize::ENVELOPE_PREFIX)
+            || text.contains(mast_proto::visualize::LINE_PREFIX);
         if !has_marker && !has_visualize {
             return;
         }
@@ -2192,7 +2192,7 @@ impl ArtifactsService {
             .filter(|link| !link.is_id())
             .map(|link| (link.target, link.label, None))
             .collect();
-        for reference in zeron_proto::visualize::references(text) {
+        for reference in mast_proto::visualize::references(text) {
             wanted.push((
                 reference.path,
                 reference.title,
@@ -2207,7 +2207,7 @@ impl ArtifactsService {
             };
             let key = format!(
                 "{MARKER_LEDGER_PREFIX}{}",
-                zeron_proto::derive_id(
+                mast_proto::derive_id(
                     &format!("{chat_id}\u{0}{}", path.display()),
                     "artifact-marker"
                 )

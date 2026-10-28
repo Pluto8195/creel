@@ -31,13 +31,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use zeron_proto::artifacts::{ArtifactQuestionAnswer, PlanQuestion, PlanQuestionStatus};
-use zeron_proto::work_outline::{WorkOutlineActorKind, derive_id};
-use zeron_proto::work_outline_user_actions::{
+use mast_proto::artifacts::{ArtifactQuestionAnswer, PlanQuestion, PlanQuestionStatus};
+use mast_proto::work_outline::{WorkOutlineActorKind, derive_id};
+use mast_proto::work_outline_user_actions::{
     CreateUserActionRequestParams, ResolveUserActionRequestParams, UserActionOriginKind,
     UserActionRequestOrigin, UserActionRequestView, user_action_limits,
 };
-use zeron_proto::{ArtifactView, WorkOutlineMutation};
+use mast_proto::{ArtifactView, WorkOutlineMutation};
 
 use crate::artifacts::ArtifactsService;
 use crate::work_outline::WorkOutlineService;
@@ -258,7 +258,7 @@ impl ArtifactQuestionSync {
                 if open_in_doc && !already && resolution.at >= first_revision_at(&artifact) {
                     let answer = ArtifactQuestionAnswer {
                         id,
-                        answer: truncate(note, zeron_proto::artifacts::MAX_ANSWER_CHARS),
+                        answer: truncate(note, mast_proto::artifacts::MAX_ANSWER_CHARS),
                         at: resolution.at,
                         by: resolution.by.clone(),
                         revision: artifact.current_revision,
@@ -269,7 +269,7 @@ impl ArtifactQuestionSync {
             }
         }
         if !answered_now.is_empty() {
-            let excess = answers.len().saturating_sub(zeron_proto::artifacts::MAX_ANSWERS);
+            let excess = answers.len().saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
             answers.drain(..excess);
             match ws.set_artifact_answers(&artifact.id, &answers) {
                 Ok(_) => changes += answered_now.len(),
@@ -281,7 +281,7 @@ impl ArtifactQuestionSync {
         }
 
         // 2. Desired state.
-        let open: Vec<&PlanQuestion> = zeron_proto::artifacts::open_unanswered(&questions, &answers);
+        let open: Vec<&PlanQuestion> = mast_proto::artifacts::open_unanswered(&questions, &answers);
         let blocking: Vec<&PlanQuestion> = open.iter().copied().filter(|q| q.blocking).collect();
         let rollup: Vec<&PlanQuestion> = open.iter().copied().filter(|q| !q.blocking).collect();
         let origin = self.origin_for(&artifact);

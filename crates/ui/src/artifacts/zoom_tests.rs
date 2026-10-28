@@ -7,7 +7,7 @@ use gpui::{
     AppContext as _, Entity, Modifiers, PinchEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
     TouchPhase, VisualTestContext, point, px,
 };
-use zeron_proto::{ArtifactContentEncoding, ArtifactKind};
+use mast_proto::{ArtifactContentEncoding, ArtifactKind};
 
 use super::find::{FrameCommand, command_script};
 use super::tab::{ArtifactTab, FakeWebHost, WebProbe};

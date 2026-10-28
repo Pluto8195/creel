@@ -17,7 +17,7 @@
 //!   endCursor }`), most recently updated first (`orderBy: updatedAt`).
 
 use serde_json::{Value, json};
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearIssueSummary, LinearLabel, LinearProjectDetail, LinearProjectRef, LinearProjectSummary,
     LinearProjectUpdate, LinearState, LinearTeamRef, LinearUser, MAX_PROJECT_UPDATES,
     MAX_UPDATE_BODY_CHARS,

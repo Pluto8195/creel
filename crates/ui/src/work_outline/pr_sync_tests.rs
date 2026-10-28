@@ -22,7 +22,7 @@ fn sync_snapshot(destination: Option<&str>) -> WorkOutlineSnapshot {
 fn default_reply(
     method: &str,
     params: &serde_json::Value,
-) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+) -> Result<serde_json::Value, mast_rpc::RpcError> {
     Ok(match method {
         "PrStatus" => {
             let repo = params["repo"].as_str().unwrap_or("launch");
@@ -36,7 +36,7 @@ fn default_reply(
         .unwrap(),
         "PrMyOpen" => {
             let mut mine = gf::summary("app", 3, "My change");
-            mine.my_review_state = zeron_proto::PullRequestMyReviewState::None;
+            mine.my_review_state = mast_proto::PullRequestMyReviewState::None;
             serde_json::to_value(vec![mine]).unwrap()
         }
         "PrReviewSyncNow" => serde_json::json!({"created": 1, "updated": 2, "resolved": 0}),
@@ -52,7 +52,7 @@ fn pr_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -105,7 +105,7 @@ fn advertise_pr_sync(overview: &Entity<Overview>, vcx: &mut gpui::VisualTestCont
         state.devices = vec![
             serde_json::from_value(serde_json::json!({
                 "id": "d", "name": "Mac", "platform": "macos", "lastSeenAt": null,
-                "capabilities": [zeron_proto::capabilities::PR_REVIEW_SYNC_V1],
+                "capabilities": [mast_proto::capabilities::PR_REVIEW_SYNC_V1],
             }))
             .unwrap(),
         ];
@@ -252,7 +252,7 @@ fn pr_chips_from_pr_status_and_the_destination_marker(cx: &mut gpui::TestAppCont
     );
     let state = overview.read_with(vcx, |o, _| o.state.clone());
     state.read_with(vcx, |state, _| {
-        let pr = zeron_proto::PullRequestRef::new("acme", "launch", 42);
+        let pr = mast_proto::PullRequestRef::new("acme", "launch", 42);
         let ready = state.github.ready(&pr).expect("cached");
         assert_eq!(
             crate::github::chip::chip_text(ready),
@@ -303,7 +303,7 @@ fn cmd_enter_on_a_pr_item_starts_a_review_filed_under_it(cx: &mut gpui::TestAppC
         let (pr, item, action) = o.captured_pr_review.take().expect("StartPrReview");
         assert_eq!(pr.external_id(), "acme/launch#42");
         assert_eq!(item, Some(("s1".to_string(), API.to_string())));
-        assert_eq!(action, zeron_proto::PrReviewAction::CodeReview);
+        assert_eq!(action, mast_proto::PrReviewAction::CodeReview);
     });
 
     // Without a destination API is a feature item linking its PR.
@@ -736,7 +736,7 @@ fn system_required_actions_resolve_only_and_open_the_pr_item(cx: &mut gpui::Test
         "",
         "Review requested: launch#42 Add auth endpoints",
     );
-    request.origin_kind = zeron_proto::UserActionOriginKind::System;
+    request.origin_kind = mast_proto::UserActionOriginKind::System;
     request.origin_chat_available = false;
     request.created_by = None;
     snapshot.user_action_requests = vec![request];
@@ -792,10 +792,10 @@ fn unknown_method_reads_as_not_available(cx: &mut gpui::TestAppContext) {
         sync_snapshot(Some(LAUNCH)),
         |method, params| {
             if method.starts_with("Pr") {
-                return Err(zeron_rpc::RpcError::UnknownMethod(method.to_string()));
+                return Err(mast_rpc::RpcError::UnknownMethod(method.to_string()));
             }
             if params["op"] == "setPrReviewSyncDestination" {
-                return Err(zeron_rpc::RpcError::Failed(
+                return Err(mast_rpc::RpcError::Failed(
                     "unknown variant `setPrReviewSyncDestination`".into(),
                 ));
             }
@@ -838,17 +838,17 @@ fn unknown_method_reads_as_not_available(cx: &mut gpui::TestAppContext) {
 fn a_ticket_item_with_linked_prs_shows_each_and_starts_a_chat(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let mut snapshot = sync_snapshot(Some(UI));
-    let system = zeron_proto::WorkOutlineActor {
-        kind: zeron_proto::WorkOutlineActorKind::System,
+    let system = mast_proto::WorkOutlineActor {
+        kind: mast_proto::WorkOutlineActorKind::System,
         device_id: "d".into(),
         chat_id: None,
         message_id: None,
     };
     let mut add = |provider: &str, kind: &str, external_id: &str, url: &str, at: i64| {
-        let id = zeron_proto::external_reference_id(API, provider, kind, external_id);
+        let id = mast_proto::external_reference_id(API, provider, kind, external_id);
         snapshot
             .external_references
-            .push(zeron_proto::WorkItemExternalReferenceView {
+            .push(mast_proto::WorkItemExternalReferenceView {
                 id: id.clone(),
                 space_id: "s1".into(),
                 work_item_id: API.into(),
@@ -923,7 +923,7 @@ fn a_ticket_item_with_linked_prs_shows_each_and_starts_a_chat(cx: &mut gpui::Tes
 /// The PR chip text of `pr` as the Outline would render it right now
 /// (`#n` alone while there is nothing cached).
 fn shown_pr_text(state: &Entity<AppState>, vcx: &mut gpui::VisualTestContext, number: u64) -> String {
-    let pr = zeron_proto::PullRequestRef::new("acme", "launch", number);
+    let pr = mast_proto::PullRequestRef::new("acme", "launch", number);
     state.read_with(vcx, |state, _| match state.github.status(&pr) {
         Some(crate::github::store::PrEntry::Ready { status, .. }) => {
             crate::github::chip::chip_text(status)
@@ -934,14 +934,14 @@ fn shown_pr_text(state: &Entity<AppState>, vcx: &mut gpui::VisualTestContext, nu
 
 /// Scripted `PrStatus` whose answer a test swaps between pulls; `None` = the
 /// pull fails.
-type PrAnswer = std::sync::Arc<std::sync::Mutex<Option<zeron_proto::PullRequestStatusSummary>>>;
+type PrAnswer = std::sync::Arc<std::sync::Mutex<Option<mast_proto::PullRequestStatusSummary>>>;
 
-fn pr_status_reply(answer: &PrAnswer) -> impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> + Send + Sync + 'static {
+fn pr_status_reply(answer: &PrAnswer) -> impl Fn(&str, &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> + Send + Sync + 'static {
     let answer = answer.clone();
     move |method, params| match method {
         "PrStatus" => match answer.lock().unwrap().clone() {
             Some(status) => Ok(serde_json::to_value(status).unwrap()),
-            None => Err(zeron_rpc::RpcError::Failed("gh unavailable".into())),
+            None => Err(mast_rpc::RpcError::Failed("gh unavailable".into())),
         },
         _ => default_reply(method, params),
     }
@@ -968,7 +968,7 @@ fn pr_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
     );
     let state = overview.read_with(vcx, |o, _| o.state.clone());
     vcx.run_until_parked();
-    let pr = zeron_proto::PullRequestRef::new("acme", "launch", 42);
+    let pr = mast_proto::PullRequestRef::new("acme", "launch", 42);
     let before = shown_pr_text(&state, vcx, 42);
     assert_eq!(
         before,
@@ -994,8 +994,8 @@ fn pr_chip_text_is_stable_across_refreshes_and_changes_with_the_data(
 
     // Real changes show.
     let mut changed = gf::summary("launch", 42, "Add auth endpoints");
-    changed.ci_status = zeron_proto::PullRequestCiStatus::Failing;
-    changed.state = zeron_proto::PullRequestState::Draft;
+    changed.ci_status = mast_proto::PullRequestCiStatus::Failing;
+    changed.state = mast_proto::PullRequestState::Draft;
     *answer.lock().unwrap() = Some(changed);
     vcx.update(|_, cx| crate::github::store::request_status(&state, &pr, true, cx));
     vcx.run_until_parked();
@@ -1026,8 +1026,8 @@ fn partial_list_rows_do_not_overwrite_a_full_pr_status(cx: &mut gpui::TestAppCon
     let full = shown_pr_text(&state, vcx, 42);
 
     let mut hit = gf::summary("launch", 42, "Add auth endpoints");
-    hit.ci_status = zeron_proto::PullRequestCiStatus::None;
-    hit.my_review_state = zeron_proto::PullRequestMyReviewState::None;
+    hit.ci_status = mast_proto::PullRequestCiStatus::None;
+    hit.my_review_state = mast_proto::PullRequestMyReviewState::None;
     state.update(vcx, |state, _| state.github.remember([&hit]));
     assert_eq!(shown_pr_text(&state, vcx, 42), full, "full status wins");
 
@@ -1037,7 +1037,7 @@ fn partial_list_rows_do_not_overwrite_a_full_pr_status(cx: &mut gpui::TestAppCon
     });
     let fetches = |calls: &PrCalls| calls_to(calls, "PrStatus").len();
     let before = fetches(&calls);
-    let pr7 = zeron_proto::PullRequestRef::new("acme", "launch", 7);
+    let pr7 = mast_proto::PullRequestRef::new("acme", "launch", 7);
     vcx.update(|_, cx| crate::github::store::request_status(&state, &pr7, false, cx));
     vcx.run_until_parked();
     assert_eq!(fetches(&calls), before + 1, "a partial row is fetched in full");
@@ -1061,12 +1061,12 @@ fn icon_snapshot() -> WorkOutlineSnapshot {
             item.external_reference_ids = vec!["r-7".into()];
         }
         if item.id == API {
-            item.effective_status = zeron_proto::WorkItemEffectiveStatus::UserActionRequired;
+            item.effective_status = mast_proto::WorkItemEffectiveStatus::UserActionRequired;
             item.rollup.unresolved_user_action_count = 2;
         }
         // Only the API row needs the user (its child's request is moved up).
         if item.id == API_AUTH {
-            item.effective_status = zeron_proto::WorkItemEffectiveStatus::Pending;
+            item.effective_status = mast_proto::WorkItemEffectiveStatus::Pending;
             item.rollup.unresolved_user_action_count = 0;
         }
     }
@@ -1078,14 +1078,14 @@ fn icon_snapshot() -> WorkOutlineSnapshot {
 fn icon_reply(
     method: &str,
     params: &serde_json::Value,
-) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+) -> Result<serde_json::Value, mast_rpc::RpcError> {
     if method == "PrStatus" && params["number"] == 7 {
         let mut bare = gf::summary("launch", 7, "Fix login");
         bare.author = "alexander-the-great".into();
-        bare.state = zeron_proto::PullRequestState::Draft;
-        bare.ci_status = zeron_proto::PullRequestCiStatus::None;
+        bare.state = mast_proto::PullRequestState::Draft;
+        bare.ci_status = mast_proto::PullRequestCiStatus::None;
         bare.review_decision = None;
-        bare.my_review_state = zeron_proto::PullRequestMyReviewState::None;
+        bare.my_review_state = mast_proto::PullRequestMyReviewState::None;
         return Ok(serde_json::to_value(bare).unwrap());
     }
     default_reply(method, params)
@@ -1236,7 +1236,7 @@ fn unloaded_pr_shows_only_the_pr_icon(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (_overview, _calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), |method, params| {
         if method == "PrStatus" {
-            return Err(zeron_rpc::RpcError::Failed("gh unavailable".into()));
+            return Err(mast_rpc::RpcError::Failed("gh unavailable".into()));
         }
         default_reply(method, params)
     });
@@ -1305,7 +1305,7 @@ fn author_reads_you_only_for_the_viewers_own_prs(cx: &mut gpui::TestAppContext) 
     // `PrViewer` fails: the login stays unknown.
     let (overview, calls, vcx) = pr_overview(cx, dir.path(), icon_snapshot(), |method, params| {
         if method == "PrViewer" {
-            return Err(zeron_rpc::RpcError::Failed("gh unavailable".into()));
+            return Err(mast_rpc::RpcError::Failed("gh unavailable".into()));
         }
         icon_reply(method, params)
     });
@@ -1536,7 +1536,7 @@ fn an_assigned_chat_marks_the_review_item_row(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn only_manual_and_launcher_links_mark_a_pr_row(cx: &mut gpui::TestAppContext) {
     use crate::review_chats::note_chat_links;
-    use zeron_proto::ChatLinkSource;
+    use mast_proto::ChatLinkSource;
     let url = "https://github.com/acme/launch/pull/7".to_owned();
 
     let dir = tempfile::tempdir().unwrap();

@@ -5,7 +5,7 @@
 //! updates (`export(updates)`) between the two engines' workspace docs on a timer,
 //! which is exactly what `RoomClient` + the SessionRoom DO do over the wire. A live
 //! variant against a real edge runs behind `#[ignore]` (ZERON_EDGE_WS, like
-//! zeron-sync's edge_convergence test).
+//! mast-sync's edge_convergence test).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,14 +14,14 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::{CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SessionStatus, SteeringMode,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 const VIEWER: &str = "viewer-device";
 
@@ -122,8 +122,8 @@ fn assemble(dir: &std::path::Path, device_id: &str) -> EngineCore {
 async fn bridge(
     a: &EngineCore,
     b: &EngineCore,
-) -> zeron_sync::registry::mock_server::MockRegistryServer {
-    let server = zeron_sync::registry::mock_server::MockRegistryServer::start().await;
+) -> mast_sync::registry::mock_server::MockRegistryServer {
+    let server = mast_sync::registry::mock_server::MockRegistryServer::start().await;
     a.workspace.connect_registry_url(&server.url());
     b.workspace.connect_registry_url(&server.url());
     server
@@ -226,8 +226,8 @@ async fn two_engines_share_a_workspace() {
 
     // CreateSpace + CreateChat on A (Mutate over the real RPC surface), hosted
     // by dev-a via the space.
-    let client_a = zeron_rpc::memory_client(a.rpc_service());
-    let client_b = zeron_rpc::memory_client(b.rpc_service());
+    let client_a = mast_rpc::memory_client(a.rpc_service());
+    let client_b = mast_rpc::memory_client(b.rpc_service());
     client_a
         .call(
             methods::MUTATE,
@@ -427,7 +427,7 @@ async fn projectless_claim_syncs_after_offline_creation_and_survives_viewer_rest
 async fn claim_resolves_a_worktree_cwd_to_the_repo_root_space() {
     let dir = tempfile::tempdir().unwrap();
     let core = assemble(dir.path(), "dev-a");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     // A checkout with a linked worktree — fs layout only; the claim path
     // reads `.git` without spawning git.
@@ -578,7 +578,7 @@ async fn chat_config_selects_the_run_harness() {
         || {
             handle.doc().read_entries().unwrap_or_default().iter().any(|e| {
                 e.parts.iter().any(
-                    |p| matches!(p, zeron_doc::MessagePart::Text { text, .. } if text == "From cursor"),
+                    |p| matches!(p, mast_doc::MessagePart::Text { text, .. } if text == "From cursor"),
                 )
             })
         },
@@ -597,7 +597,7 @@ async fn chat_config_selects_the_run_harness() {
 async fn set_chat_auto_approve_round_trips_on_the_chat_config() {
     let dir = tempfile::tempdir().unwrap();
     let core = assemble(dir.path(), "dev-a");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     core.workspace
         .create_space("space-aa", "dev-a", "/tmp/aa", None, false)
         .expect("create space");
@@ -675,12 +675,12 @@ async fn set_chat_auto_approve_round_trips_on_the_chat_config() {
 /// the TS edge (`wrangler dev` in `edge/` with AUTH_MODE=dev):
 ///
 /// ```sh
-/// ZERON_EDGE_WS=ws://127.0.0.1:8787 cargo test -p zeron-engine -- --ignored
+/// ZERON_EDGE_WS=ws://127.0.0.1:8787 cargo test -p mast-engine -- --ignored
 /// ```
 #[tokio::test]
 #[ignore = "requires a live edge: set ZERON_EDGE_WS (e.g. ws://127.0.0.1:8787)"]
 async fn two_engines_converge_through_a_real_workspace_room() {
-    use zeron_engine::doc_host::EdgeConfig;
+    use mast_engine::doc_host::EdgeConfig;
 
     let base = std::env::var("ZERON_EDGE_WS")
         .expect("set ZERON_EDGE_WS to the edge origin, e.g. ws://127.0.0.1:8787");
@@ -745,15 +745,15 @@ async fn two_engines_converge_through_a_real_workspace_room() {
 
 #[tokio::test]
 async fn legacy_workspace_doc_migrates_instantly_on_first_boot() {
-    use zeron_proto::{Chat, Device, Session, Space};
+    use mast_proto::{Chat, Device, Session, Space};
 
     let dir_a = tempfile::tempdir().unwrap();
     // Seed the identity-scoped store with a LEGACY Loro workspace snapshot —
     // what an updated engine finds on its first boot after the registry change.
     let org_dir = dir_a.path().join("orgs").join("dev-org").join("dev-user");
     {
-        let store = zeron_sync::DocsStore::open(&org_dir).expect("open store");
-        let legacy = zeron_doc::WorkspaceDoc::new();
+        let store = mast_sync::DocsStore::open(&org_dir).expect("open store");
+        let legacy = mast_doc::WorkspaceDoc::new();
         let now = chrono::Utc::now();
         legacy
             .upsert_device(&Device {
@@ -875,10 +875,10 @@ async fn legacy_workspace_doc_migrates_instantly_on_first_boot() {
     b.shutdown().await;
 
     // The registry snapshot now exists; the legacy snapshot is kept for rollback.
-    let store = zeron_sync::DocsStore::open(&org_dir).expect("reopen store");
+    let store = mast_sync::DocsStore::open(&org_dir).expect("reopen store");
     assert!(
         store
-            .load_snapshot(zeron_doc::REGISTRY_DOC_ID)
+            .load_snapshot(mast_doc::REGISTRY_DOC_ID)
             .expect("load registry snapshot")
             .is_some(),
         "registry snapshot persisted"

@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use zeron_engine::agent_tools::AgentTokenLease;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::artifacts::{EDITED_WITHOUT_NOTE, IMPORTED_NOTE};
-use zeron_proto::{ArtifactKind, ArtifactView, ArtifactsSnapshot, HarnessId, derive_id, roles};
-use zeron_rpc::{RpcClient, methods};
+use mast_engine::agent_tools::AgentTokenLease;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::artifacts::{EDITED_WITHOUT_NOTE, IMPORTED_NOTE};
+use mast_proto::{ArtifactKind, ArtifactView, ArtifactsSnapshot, HarnessId, derive_id, roles};
+use mast_rpc::{RpcClient, methods};
 
 const SPACE: &str = "space-1";
 const CHAT: &str = "chat-agent";
@@ -100,7 +100,7 @@ async fn rig() -> Rig {
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     mutate(
         &client,
         json!({ "op": "createSpace", "spaceId": SPACE, "deviceId": core.device_id,
@@ -166,7 +166,7 @@ async fn rig() -> Rig {
 async fn tool(rig: &Rig, token: &str, name: &str, arguments: Value) -> Result<Value, String> {
     rig.client
         .call(
-            zeron_proto::agent_tools::TOOL_CALL_METHOD,
+            mast_proto::agent_tools::TOOL_CALL_METHOD,
             json!({ "token": token, "tool": name, "arguments": arguments }),
         )
         .await
@@ -307,7 +307,7 @@ async fn publish_copies_into_the_main_checkout_and_records_revisions_idempotentl
     assert_ne!(doc_stored, stored);
 
     // Content reads: current and revision 1.
-    let current: zeron_proto::ArtifactContentReply = serde_json::from_value(
+    let current: mast_proto::ArtifactContentReply = serde_json::from_value(
         rig.client
             .call(methods::ARTIFACT_CONTENT, json!({ "artifactId": id }))
             .await
@@ -316,7 +316,7 @@ async fn publish_copies_into_the_main_checkout_and_records_revisions_idempotentl
     .unwrap();
     assert_eq!(current.content, "# Plan v2\n");
     assert_eq!(current.revision, 2);
-    let old: zeron_proto::ArtifactContentReply = serde_json::from_value(
+    let old: mast_proto::ArtifactContentReply = serde_json::from_value(
         rig.client
             .call(
                 methods::ARTIFACT_CONTENT,
@@ -687,7 +687,7 @@ async fn external_edits_become_revisions_without_a_note() {
     assert_eq!(row.revisions[0].note, EDITED_WITHOUT_NOTE);
     assert_eq!(
         row.revisions[0].by.kind,
-        zeron_proto::WorkOutlineActorKind::System
+        mast_proto::WorkOutlineActorKind::System
     );
     assert_eq!(rig.core.artifacts.scan_external_edits(), 0);
 }
@@ -766,7 +766,7 @@ async fn register_imports_an_existing_space_file_as_revision_one() {
     assert_eq!(row.revisions[0].note, IMPORTED_NOTE);
     assert_eq!(
         row.revisions[0].by.kind,
-        zeron_proto::WorkOutlineActorKind::User
+        mast_proto::WorkOutlineActorKind::User
     );
     assert!(
         row.stored_path
@@ -836,7 +836,7 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
     assert!(err.contains("artifact/renderUnavailable"), "{err}");
 
     // A fake headed UI subscribes and answers.
-    let ui = zeron_rpc::memory_client(rig.core.rpc_service());
+    let ui = mast_rpc::memory_client(rig.core.rpc_service());
     let mut requests = ui
         .subscribe(
             methods::WATCH_ARTIFACT_RENDER_REQUESTS,
@@ -846,7 +846,7 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
         .unwrap();
     let responder = tokio::spawn(async move {
         let item = requests.recv().await.unwrap();
-        let request: zeron_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
+        let request: mast_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
         assert_eq!(request.kind, ArtifactKind::HtmlFragment);
         assert_eq!(request.content, "<div>flow</div>");
         assert_eq!(request.viewport.width, 900);
@@ -863,11 +863,11 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
         // The single `viewport` replaced the default list.
         assert_eq!(request.viewports.len(), 1);
         assert_eq!(request.viewports[0].width, 900);
-        assert!(request.themes == [zeron_proto::ArtifactRenderTheme::System]);
+        assert!(request.themes == [mast_proto::ArtifactRenderTheme::System]);
 
         // Second check: the defaults (narrow + wide) and both themes.
         let item = requests.recv().await.unwrap();
-        let request: zeron_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
+        let request: mast_proto::ArtifactRenderRequest = serde_json::from_value(item).unwrap();
         let labels: Vec<_> = request
             .viewports
             .iter()
@@ -881,8 +881,8 @@ async fn render_checks_route_to_the_ui_or_report_unavailable() {
         assert_eq!(
             request.themes,
             [
-                zeron_proto::ArtifactRenderTheme::Light,
-                zeron_proto::ArtifactRenderTheme::Dark
+                mast_proto::ArtifactRenderTheme::Light,
+                mast_proto::ArtifactRenderTheme::Dark
             ]
         );
         assert_eq!(request.viewport.width, 800);
@@ -1151,12 +1151,12 @@ async fn publish_accepts_any_local_file_outside_the_deny_list() {
 
 // ── Artifacts phase 3: plan questions → Required Actions, drift ─────────────
 
-use zeron_engine::artifact_questions::{ArtifactQuestionSync, question_key, rollup_key};
-use zeron_proto::UserActionRequestView;
+use mast_engine::artifact_questions::{ArtifactQuestionSync, question_key, rollup_key};
+use mast_proto::UserActionRequestView;
 
 fn requests(rig: &Rig, artifact_id: &str) -> Vec<UserActionRequestView> {
     let prefix = format!("artq:{artifact_id}:");
-    zeron_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
+    mast_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
         .snapshot(SPACE)
         .user_action_requests
         .into_iter()
@@ -1320,7 +1320,7 @@ async fn resolving_the_action_marks_the_question_answered() {
     sync.reconcile(&id);
     let row = artifact(&rig, &id);
     assert_eq!(row.answer_of("Q-1").unwrap().answer, "Merge by MPN");
-    assert_eq!(row.answer_of("Q-1").unwrap().by.kind, zeron_proto::WorkOutlineActorKind::User);
+    assert_eq!(row.answer_of("Q-1").unwrap().by.kind, mast_proto::WorkOutlineActorKind::User);
     assert_eq!(open_texts(&rig, &id), ["2 open questions in Receiving plan"]);
 
     // Resolving the roll-up (no note) answers every question it listed.
@@ -1475,7 +1475,7 @@ async fn picking_resolves_the_linked_question_and_artopt_requests() {
     )
     .await;
     let outline_open = || {
-        zeron_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
+        mast_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone())
             .snapshot(SPACE)
             .user_action_requests
             .into_iter()
@@ -1655,7 +1655,7 @@ async fn publishing_with_addressed_comments_resolves_them_and_get_plan_lists_onl
 async fn comments_trim_to_the_limit_dropping_resolved_first() {
     let rig = rig().await;
     let id = publish_html(&rig, FLOW_V1, "v1").await;
-    for n in 0..zeron_proto::artifacts::MAX_COMMENTS {
+    for n in 0..mast_proto::artifacts::MAX_COMMENTS {
         add_comment(&rig, &id, json!({ "id": "intake" }), "", &format!("c{n}")).await.unwrap();
     }
     rig.client
@@ -1667,13 +1667,13 @@ async fn comments_trim_to_the_limit_dropping_resolved_first() {
         .unwrap();
     add_comment(&rig, &id, json!({ "id": "intake" }), "", "overflow").await.unwrap();
     let row = artifact(&rig, &id);
-    assert_eq!(row.comments.len(), zeron_proto::artifacts::MAX_COMMENTS);
+    assert_eq!(row.comments.len(), mast_proto::artifacts::MAX_COMMENTS);
     assert!(row.comments.iter().all(|c| c.id != "C-5"), "resolved dropped first");
     assert!(row.comments.iter().any(|c| c.id == "C-1"));
     // Nothing resolved: the oldest goes.
     add_comment(&rig, &id, json!({ "id": "intake" }), "", "again").await.unwrap();
     let row = artifact(&rig, &id);
-    assert_eq!(row.comments.len(), zeron_proto::artifacts::MAX_COMMENTS);
+    assert_eq!(row.comments.len(), mast_proto::artifacts::MAX_COMMENTS);
     assert!(row.comments.iter().all(|c| c.id != "C-1"));
 }
 

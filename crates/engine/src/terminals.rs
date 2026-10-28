@@ -26,8 +26,8 @@ use portable_pty::{CommandBuilder, native_pty_system};
 mod windows;
 use tokio::sync::mpsc;
 
-use zeron_doc::TERMINAL_OUTPUT_BATCH_MS;
-use zeron_proto::{TerminalEvent, TerminalSession};
+use mast_doc::TERMINAL_OUTPUT_BATCH_MS;
+use mast_proto::{TerminalEvent, TerminalSession};
 
 use crate::{EngineError, new_id};
 
@@ -645,7 +645,7 @@ mod windows_tests {
 
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
-    use zeron_proto::TerminalEvent;
+    use mast_proto::TerminalEvent;
 
     use super::Terminals;
 
