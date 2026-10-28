@@ -62,7 +62,6 @@ pub(crate) mod pr_review_launch;
 pub mod project_actions;
 pub mod queue;
 pub mod rail;
-pub mod repository_topology;
 mod review_chats;
 pub mod settings;
 pub mod shell;

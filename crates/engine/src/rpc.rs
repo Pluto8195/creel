@@ -2018,7 +2018,6 @@ fn forwardable(method: &str) -> bool {
             | methods::STEER_QUEUED_MESSAGE_NOW
             // Repos/worktrees/folders are device-local filesystem state.
             | methods::LIST_REPOS
-            | methods::GET_REPOSITORY_TOPOLOGY
             | methods::ADD_REPO
             | methods::CLONE_REPO
             | methods::CREATE_REPO
@@ -4132,49 +4131,6 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::LIST_REPOS => RpcReply::value(&self.repos.list().await),
-            methods::GET_REPOSITORY_TOPOLOGY => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct P {
-                    space_id: String,
-                }
-                let p: P = parse_params(params)?;
-                let space = self.local_project_action_space(&p.space_id)?;
-                let chats: Vec<_> = self
-                    .workspace
-                    .read_chats()
-                    .map_err(|error| RpcError::Failed(error.to_string()))?
-                    .into_iter()
-                    // A chat can live in a Space rooted at a linked worktree
-                    // while this map is opened from the repository's parent
-                    // Space. Checkout/path identity below is the repository
-                    // boundary; filtering by Space here drops those chats.
-                    .filter(|chat| chat.device_id == space.device_id)
-                    .collect();
-                let mut linked_pr_urls = std::collections::HashMap::new();
-                for chat in &chats {
-                    let urls = self
-                        .workspace
-                        .chat_pr_links(&chat.id)
-                        .map_err(|error| RpcError::Failed(error.to_string()))?
-                        .into_iter()
-                        .map(|link| link.url)
-                        .collect();
-                    linked_pr_urls.insert(chat.id.clone(), urls);
-                }
-                let sessions = self.sessions.watch_sessions().borrow().clone();
-                let topology = crate::repository_topology::build(
-                    &self.repos,
-                    self.doc_host.device_id(),
-                    &space,
-                    chats,
-                    sessions,
-                    linked_pr_urls,
-                )
-                .await
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
-                RpcReply::value(&topology)
-            }
             methods::ADD_REPO => {
                 #[derive(Deserialize)]
                 struct P {

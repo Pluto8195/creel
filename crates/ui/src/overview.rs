@@ -4566,45 +4566,6 @@ impl Render for Overview {
         };
 
         let new_chat_button = self.render_new_chat_button(&theme, cx);
-        let repository_map_shortcut = self
-            .shell
-            .upgrade()
-            .map(|shell| shell.read(cx).repository_topology_shortcut_label());
-        let repository_map_tooltip: SharedString = repository_map_shortcut
-            .as_ref()
-            .map_or_else(
-                || "Open repository map".to_string(),
-                |shortcut| format!("Open repository map ({shortcut})"),
-            )
-            .into();
-        let repository_map_button = div()
-            .id("overview-repository-map")
-            .h(px(28.0))
-            .px(px(9.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .text_size(crate::typography::ui_rems(11.0))
-            .text_color(theme.text_muted)
-            .hover(|element| element.bg(theme.element_hover).text_color(theme.text))
-            .child(crate::icons::icon(crate::icons::FILE_TREE).size(px(12.0)))
-            .child("Repository map")
-            .when_some(repository_map_shortcut, |button, shortcut| {
-                button.child(popover::kbd_hint(&theme, &shortcut))
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                if let Some(shell) = this.shell.upgrade() {
-                    shell.update(cx, |shell, cx| shell.open_repository_topology(cx));
-                }
-            }))
-            .tooltip(move |_, cx| {
-                cx.new(|_| LinkSourceTooltip(repository_map_tooltip.clone()))
-                    .into()
-            });
 
         let title_row = div()
             .flex()
@@ -4652,7 +4613,6 @@ impl Render for Overview {
                     // Leftmost of the header's action cluster — the overview's
                     // one clearly-primary button (see `render_new_chat_button`).
                     .child(new_chat_button)
-                    .child(repository_map_button)
                     .child(
                         div()
                             .flex()

@@ -618,7 +618,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(find_open(vcx), "⌘F in the tab opens find");
         // Typing in the field (a deeper key context than the tab) and
-        // stepping with the app's global ⇧⌘G still reaches find.
+        // stepping with the app's global ⇧⌘G still steps find.
         vcx.simulate_keystrokes("p l a n");
         vcx.run_until_parked();
         let label = |vcx: &mut gpui::VisualTestContext| {
@@ -628,11 +628,7 @@ mod tests {
         vcx.simulate_keystrokes(&crate::settings::platform_combo("mod-g"));
         assert_eq!(label(vcx), "2 of 2");
         vcx.simulate_keystrokes(&crate::settings::platform_combo("mod-shift-g"));
-        assert_eq!(
-            label(vcx),
-            "1 of 2",
-            "⇧⌘G steps back, not Repository Topology"
-        );
+        assert_eq!(label(vcx), "1 of 2", "⇧⌘G steps back");
         // ⌘F again from the field selects its text: typing replaces it.
         vcx.simulate_keystrokes(&combo);
         vcx.simulate_keystrokes("o n e");

@@ -111,7 +111,6 @@ actions!(
         ArchiveSession,
         OpenOverview,
         FocusOverviewSearch,
-        OpenRepositoryTopology,
         OpenPrReviewChats
     ]
 );
@@ -121,7 +120,6 @@ actions!(
 /// contexts that own Find themselves (the file editor's `Search`) still win,
 /// and every other route ignores it.
 pub(crate) const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
-const OPEN_REPOSITORY_TOPOLOGY_COMBO: &str = "mod-shift-g";
 pub(crate) const OPEN_PR_REVIEW_CHATS_COMBO: &str = "mod-shift-p";
 
 /// Restore a default focus only after an in-flight handoff has had a frame to
@@ -443,11 +441,6 @@ pub fn apply_keymap(
             None,
         ),
         KeyBinding::new(
-            &platform_combo(OPEN_REPOSITORY_TOPOLOGY_COMBO),
-            OpenRepositoryTopology,
-            None,
-        ),
-        KeyBinding::new(
             &platform_combo(OPEN_PR_REVIEW_CHATS_COMBO),
             OpenPrReviewChats,
             None,
@@ -541,8 +534,6 @@ pub enum Route {
     Settings(SettingsSection),
     /// Multi-chat overview (ticket 002): every chat at once, not one at a time.
     Overview,
-    /// Workspace repository/submodule/worktree ownership graph.
-    RepositoryTopology,
     /// The PR page: dashboards plus the chats launched to review PRs.
     PrReviewChats,
 }
@@ -654,7 +645,6 @@ pub enum NavEntry {
     Chat(String),
     Settings(SettingsSection),
     Overview,
-    RepositoryTopology,
     PrReviewChats,
 }
 
@@ -1525,10 +1515,9 @@ impl Render for SidebarPane {
             let theme = Theme::of(cx).clone();
             match shell.route {
                 Route::Settings(section) => shell.render_settings_nav(section, &theme, cx),
-                // Overview and repository map keep the normal chat sidebar.
+                // Overview keeps the normal chat sidebar.
                 Route::Chat
                 | Route::Overview
-                | Route::RepositoryTopology
                 | Route::PrReviewChats => shell.render_chat_sidebar(&theme, cx),
             }
         });
@@ -1633,7 +1622,6 @@ pub struct Shell {
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     overview_page: Option<Entity<crate::overview::Overview>>,
-    repository_topology_page: Option<Entity<crate::repository_topology::RepositoryTopology>>,
     pr_review_chats_page: Option<Entity<crate::chat_type_view::ChatTypeView>>,
     /// `StartPrReview` operation ids (one per PR + action + agent).
     pr_review_ops: crate::pr_review_launch::PrReviewOperations,
@@ -2030,7 +2018,6 @@ impl Shell {
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/appshots") => Route::Settings(SettingsSection::Appshots),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            Some("topology") | Some("repository-topology") => Route::RepositoryTopology,
             Some("pr-reviews") | Some("pr-review-chats") => Route::PrReviewChats,
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -2061,7 +2048,6 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
             Route::Overview => NavEntry::Overview,
-            Route::RepositoryTopology => NavEntry::RepositoryTopology,
             Route::PrReviewChats => NavEntry::PrReviewChats,
         });
         // Parent notifications carry presentation changes (session status,
@@ -2123,7 +2109,6 @@ impl Shell {
             nav,
             devices_page: None,
             overview_page: None,
-            repository_topology_page: None,
             pr_review_chats_page: None,
             pr_review_ops: Default::default(),
             #[cfg(test)]
@@ -4558,10 +4543,6 @@ impl Shell {
         matches!(self.route, Route::PrReviewChats)
     }
 
-    pub(crate) fn is_repository_topology_route(&self) -> bool {
-        matches!(self.route, Route::RepositoryTopology)
-    }
-
     /// The overview's "View full chat →": select `chat_id` so the shared
     /// transcript/composer bind to it, WITHOUT leaving `Route::Overview`.
     /// Sending, queueing, the question wizard, interrupt and resume all key
@@ -4633,34 +4614,6 @@ impl Shell {
             cx.new(|cx| crate::overview::Overview::new(state, weak, transcript, composer, cx));
         self.overview_page = Some(page.clone());
         page
-    }
-
-    /// Open the workspace's repository/worktree ownership graph. Kept as its
-    /// own route because it has a different data source and deterministic
-    /// hierarchy from the chat overview.
-    pub(crate) fn open_repository_topology(&mut self, cx: &mut Context<Self>) {
-        self.command_palette = None;
-        self.route = Route::RepositoryTopology;
-        self.nav.push(NavEntry::RepositoryTopology);
-        self.close_user_menu(cx);
-        self.close_chat_menu(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn repository_topology_shortcut_label(&self) -> String {
-        badge_combo(OPEN_REPOSITORY_TOPOLOGY_COMBO)
-    }
-
-    fn repository_topology_outlet(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(page) = &self.repository_topology_page {
-            return page.clone().into_any_element();
-        }
-        let state = self.state.clone();
-        let shell = cx.entity().downgrade();
-        let page =
-            cx.new(|cx| crate::repository_topology::RepositoryTopology::new(state, shell, cx));
-        self.repository_topology_page = Some(page.clone());
-        page.into_any_element()
     }
 
     pub(crate) fn open_pr_review_chats(&mut self, cx: &mut Context<Self>) {
@@ -4765,9 +4718,6 @@ impl Shell {
             }
             NavEntry::Overview => {
                 self.route = Route::Overview;
-            }
-            NavEntry::RepositoryTopology => {
-                self.route = Route::RepositoryTopology;
             }
             NavEntry::PrReviewChats => {
                 self.route = Route::PrReviewChats;
@@ -6318,25 +6268,6 @@ impl Shell {
                     );
                 let bar = div().h(px(Theme::TITLEBAR_HEIGHT)).flex_none().child(inner);
                 self.titlebar_drag_region("overview-header-titlebar", bar, cx)
-                    .into_any_element()
-            }
-            Route::RepositoryTopology => {
-                let theme = Theme::of(cx).clone();
-                let inner = div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .pt(px(Theme::TITLEBAR_TOP_PAD))
-                    .pl(px(self.title_bar_content_start()))
-                    .pr(px(self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET)))
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from("Repository map")),
-                    );
-                let bar = div().h(px(Theme::TITLEBAR_HEIGHT)).flex_none().child(inner);
-                self.titlebar_drag_region("repository-topology-header-titlebar", bar, cx)
                     .into_any_element()
             }
             Route::PrReviewChats => {
@@ -9637,19 +9568,6 @@ impl Shell {
                 .into_any_element();
         }
 
-        if let Route::RepositoryTopology = self.route {
-            let outlet = self.repository_topology_outlet(cx);
-            return div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .pt(px(Theme::TITLEBAR_HEIGHT))
-                .flex()
-                .flex_col()
-                .child(div().flex_1().min_h_0().child(outlet))
-                .into_any_element();
-        }
-
         if let Route::PrReviewChats = self.route {
             let outlet = self.pr_review_chats_outlet(cx);
             return div()
@@ -12163,16 +12081,6 @@ impl Render for Shell {
                     }
                 }
             }))
-            .on_action(cx.listener(|this, _: &OpenRepositoryTopology, _, cx| {
-                if matches!(this.route, Route::Overview) {
-                    if !this.overlay_owns_keyboard(cx) {
-                        this.open_repository_topology(cx);
-                    }
-                } else {
-                    // ⇧⌘G is also "find previous" inside an Artifact tab.
-                    cx.propagate();
-                }
-            }))
             .on_action(cx.listener(|this, _: &OpenPrReviewChats, window, cx| {
                 if !this.overlay_owns_keyboard(cx) {
                     this.open_pr_review_chats_focused(window, cx);
@@ -12716,7 +12624,6 @@ mod tests {
     fn overview_navigation_shortcuts_parse_and_do_not_conflict_with_defaults() {
         let fixed = [
             FOCUS_OVERVIEW_SEARCH_COMBO,
-            OPEN_REPOSITORY_TOPOLOGY_COMBO,
             OPEN_PR_REVIEW_CHATS_COMBO,
             "mod-k",
             "mod-shift-o",
@@ -13571,14 +13478,6 @@ mod tests {
     }
 
     #[test]
-    fn repository_topology_is_a_first_class_history_entry() {
-        let mut nav = NavHistory::new(NavEntry::Overview);
-        nav.push(NavEntry::RepositoryTopology);
-        assert_eq!(nav.back(), Some(NavEntry::Overview));
-        assert_eq!(nav.forward(), Some(NavEntry::RepositoryTopology));
-    }
-
-    #[test]
     fn pr_review_chats_is_a_first_class_history_entry() {
         let mut nav = NavHistory::new(NavEntry::Overview);
         nav.push(NavEntry::PrReviewChats);
@@ -14327,52 +14226,6 @@ mod exit_regressions {
                 );
                 shell.navigate_back(cx);
                 assert!(matches!(shell.route, Route::Overview));
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn repository_topology_route_round_trips_through_history(cx: &mut TestAppContext) {
-        let dir = tempfile::tempdir().unwrap();
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-            crate::app_menus::init(cx);
-            crate::history::init(
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                cx,
-            );
-            settings::init(settings::UiSettings::default(), dir.path(), cx);
-        });
-        let window = cx.add_window(|_, cx| {
-            let state = cx.new(|_| AppState::new());
-            Shell::new(
-                state,
-                EngineBootConfig {
-                    data_dir: dir.path().into(),
-                    ipc_port: 0,
-                    edge_url: "http://127.0.0.1:1".into(),
-                    edge_token: None,
-                    org_id: None,
-                    workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
-                },
-                cx,
-            )
-        });
-        window
-            .update(cx, |shell, _, cx| {
-                shell.open_overview(cx);
-                shell.open_repository_topology(cx);
-                assert!(matches!(shell.route, Route::RepositoryTopology));
-                assert_eq!(*shell.nav.current(), NavEntry::RepositoryTopology);
-                shell.navigate_back(cx);
-                assert!(matches!(shell.route, Route::Overview));
-                shell.navigate_forward(cx);
-                assert!(matches!(shell.route, Route::RepositoryTopology));
             })
             .unwrap();
     }
