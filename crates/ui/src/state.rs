@@ -781,6 +781,11 @@ pub struct AppState {
     /// Tests: answer every Work Outline mutation/query with this facade.
     #[cfg(test)]
     pub(crate) work_outline_actions_override: Option<crate::work_outline::WorkOutlineActions>,
+    /// Latest managed-accounts snapshot per owning device id (accounts are
+    /// device-local).
+    pub managed_accounts: HashMap<String, zeron_proto::ManagedAccountsSnapshot>,
+    #[cfg(test)]
+    pub(crate) accounts_rpc_override: Option<crate::managed_accounts::ScriptedAccountsRpc>,
     /// Per bound Chat: the latest `ValidateExecutionConfiguration {chatId}`
     /// reply and the repository picked for branch/diff (Milestone 3). Shared
     /// by the composer's branch indicator and the Changes pane.
@@ -888,6 +893,9 @@ impl AppState {
             artifact_render_task: None,
             #[cfg(test)]
             work_outline_actions_override: None,
+            managed_accounts: HashMap::new(),
+            #[cfg(test)]
+            accounts_rpc_override: None,
             chat_execution: HashMap::new(),
             chat_diff_targets: HashMap::new(),
             chat_ref_targets: HashMap::new(),
@@ -2981,6 +2989,7 @@ impl AppState {
         self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
+        self.load_managed_accounts(None, cx);
         let mut watch_tasks = Vec::with_capacity(11);
         if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
             watch_tasks.push(task);

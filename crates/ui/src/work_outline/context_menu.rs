@@ -96,6 +96,8 @@ pub(crate) enum MenuAction {
     RenameSpace(String),
     /// The sidebar's Remove project confirmation.
     DeleteSpace(String),
+    /// Open the project agent-account picker for one harness.
+    ProjectAccount(String, zeron_proto::HarnessId),
     /// Linear integration entries (`crate::linear::menu`).
     Linear(crate::linear::menu::LinearMenuAction),
     /// PR review sync entries (`crate::github::menu`).
@@ -144,7 +146,8 @@ impl MenuAction {
             | Self::HideSpace(_)
             | Self::UnhideSpace(_)
             | Self::RenameSpace(_)
-            | Self::DeleteSpace(_) => HintKey::None,
+            | Self::DeleteSpace(_)
+            | Self::ProjectAccount(..) => HintKey::None,
         }
     }
 }
@@ -270,6 +273,8 @@ pub(crate) struct SpaceRowMenu {
     /// Why Move Up / Move Down would do nothing.
     pub up_blocked: Option<&'static str>,
     pub down_blocked: Option<&'static str>,
+    /// Per-project agent account entries ("Claude account: Work…").
+    pub account_labels: Vec<(zeron_proto::HarnessId, String)>,
 }
 
 /// The Space root's menu (a multi-Space Space row, or the single-Space
@@ -359,8 +364,28 @@ fn space_root_menu(
                 MenuAction::RenameSpace(id.clone()),
             ),
         ];
+        let accounts: Vec<MenuEntry> = row
+            .account_labels
+            .iter()
+            .map(|(harness, label)| {
+                MenuEntry::new(
+                    match harness {
+                        zeron_proto::HarnessId::Codex => "codex-account",
+                        _ => "claude-account",
+                    },
+                    label.clone(),
+                    icons::KEY_MINIMALISTIC,
+                    MenuAction::ProjectAccount(id.clone(), *harness),
+                )
+            })
+            .collect();
         // After Execution Setup, before the global entries.
         entries.splice(3..3, manage);
+        let rename_at = entries
+            .iter()
+            .position(|e| e.id == "rename-space")
+            .map_or(entries.len(), |i| i + 1);
+        entries.splice(rename_at..rename_at, accounts);
         entries.push(
             MenuEntry::new(
                 "delete-space",
@@ -440,6 +465,19 @@ impl OutlineView {
                         hidden: *hidden,
                         up_blocked: self.space_move_blocked(space_id, true),
                         down_blocked: self.space_move_blocked(space_id, false),
+                        account_labels: {
+                            let state = self.state.read(cx);
+                            let snapshot = state
+                                .space_row(space_id)
+                                .and_then(|space| state.managed_accounts_for(Some(&space.device_id)));
+                            [
+                                zeron_proto::HarnessId::ClaudeCode,
+                                zeron_proto::HarnessId::Codex,
+                            ]
+                            .into_iter()
+                            .map(|h| (h, crate::managed_accounts::menu_label(snapshot, space_id, h)))
+                            .collect()
+                        },
                     }),
                 );
                 crate::linear::menu::insert_space_entries(
@@ -1056,6 +1094,10 @@ mod tests {
             hidden: false,
             up_blocked: Some("Already the first project"),
             down_blocked: None,
+            account_labels: vec![(
+                zeron_proto::HarnessId::Codex,
+                "Codex account: Default\u{2026}".into(),
+            )],
         };
         let menu = space_root_menu(Some("space:s1".into()), "s1", None, Some(row));
         let ids: Vec<_> = menu.entries.iter().map(|entry| entry.id).collect();
@@ -1069,6 +1111,7 @@ mod tests {
                 "move-down",
                 "hide-space",
                 "rename-space",
+                "codex-account",
                 "required-actions",
                 "undo",
                 "redo",

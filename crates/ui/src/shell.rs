@@ -1671,6 +1671,9 @@ pub struct Shell {
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    /// Per-project agent account picker / add-account sign-in.
+    account_flow: Option<Entity<crate::managed_accounts::AccountFlow>>,
+    account_flow_sub: Option<Subscription>,
     sidebar_section_migration: Option<(String, crate::state::EngineHandle)>,
     section_dialog: Option<sidebar_sections::SectionDialog>,
     section_menu: Option<(String, Point<Pixels>)>,
@@ -2140,6 +2143,8 @@ impl Shell {
             closeout_seq: 0,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
+            account_flow: None,
+            account_flow_sub: None,
             sidebar_section_migration: None,
             section_dialog: None,
             section_menu: None,
@@ -8937,6 +8942,10 @@ impl Shell {
         if self.rename_space_dialog.is_some() {
             self.rename_space_dialog = None;
             cx.notify();
+            return true;
+        }
+        if let Some(flow) = self.account_flow.clone() {
+            flow.update(cx, |flow, cx| flow.cancel(cx));
             return true;
         }
         if self.add_space.is_some() {

@@ -440,6 +440,9 @@ impl Shell {
                 self.delete_space_confirm = Some(space_id);
                 cx.notify();
             }
+            MenuAction::ProjectAccount(space_id, harness) => {
+                self.open_project_account_picker(space_id, harness, cx)
+            }
             MenuAction::Linear(action) => self.run_linear_menu_action(action, window, cx),
             MenuAction::Github(action) => self.run_github_menu_action(action, window, cx),
             MenuAction::Outline(_)
@@ -1732,6 +1735,8 @@ mod tests {
                 "move-down",
                 "hide-space",
                 "rename-space",
+                "claude-account",
+                "codex-account",
                 "required-actions",
                 "undo",
                 "redo",
