@@ -18,7 +18,9 @@
 #![allow(dead_code)]
 
 pub(crate) mod actions;
+pub(crate) mod bridge;
 pub(crate) mod cards;
+pub(crate) mod comments;
 pub(crate) mod compare;
 pub(crate) mod document;
 pub(crate) mod find;
@@ -36,6 +38,8 @@ pub(crate) mod store;
 pub(crate) mod tab;
 pub(crate) mod zoom;
 
+#[cfg(test)]
+mod comments_tests;
 #[cfg(test)]
 mod compare_tests;
 #[cfg(test)]

@@ -225,6 +225,30 @@ Code: `crates/proto/src/artifacts/questions.rs`, `crates/engine/src/artifact_que
 - **Known limits.** Answers written from two devices at once are last-writer-wins; the checkout
   scan is limited to the owning device; unrelated commits on a shared feature branch count.
 
+## Amendment: phase 4, comments on HTML and Mermaid artifacts (2026-10-28)
+
+- **Storage.** Comments live on the artifact row as `comments` (at most 40, oldest resolved
+  dropped first, else oldest), never in the file and never a revision. Written with the `comments`
+  field only, from any device, like `answers`. Only HTML (fragment/page) and Mermaid artifacts
+  take comments; Markdown, images and options are refused.
+- **Anchors.** In order of stability: an element `id` or `data-zeron-anchor` value; for Mermaid
+  `mermaid:<node id>`; a text-quote selector (`prefix` / `exact` / `suffix` over the visible text,
+  whitespace collapsed); a CSS `selector` as a last resort, evaluated by the frame only.
+- **Outdated.** A comment whose anchor is not found in the current revision is *outdated*. This
+  is computed (`proto::resolve_anchor`) from the current revision's source, never stored; outdated
+  comments stay listed. `artifact_get_plan` reports `anchorStatus` `found`, `outdated`, or
+  `unknown` (source unreadable, e.g. owned by another device).
+- **RPCs.** `ArtifactAddComment {artifactId, anchor, quote, text}` and `ArtifactResolveComment
+  {artifactId, commentId, resolved}` (`resolved: false` reopens). Both are local registry writes,
+  not forwardable. Text is clipped to 600 chars, quote to 240.
+- **Resolution.** By a person (RPC, `resolvedBy: "user"`), or by the agent: `artifact_publish`
+  takes `addressedComments: ["C-1", ...]`; after the publish those open comments become Resolved
+  with `resolvedBy: "agent"` and `addressedIn` = the resulting revision. Unknown ids are ignored.
+- **Agent view.** `artifact_get_plan.comments` lists the open comments only: `{id, text, quote,
+  anchor, revision, at, anchorStatus}`.
+- **Chat message.** The UI messages the publishing chat with `proto::comment_message`:
+  ``Comment C-n on *title* rN · `id` ("quote"): text``.
+
 ## Amendment: phase 5, option picks and the canonical plan (2026-10-28)
 
 Code: `crates/proto/src/artifacts/picks.rs`, `ArtifactsService::pick_option`,

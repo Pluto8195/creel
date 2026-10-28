@@ -208,3 +208,13 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 Give diagram nodes and major HTML sections an `id` or `data-zeron-anchor="<name>"`. User comments
 attach to these anchors and survive later revisions; elements without anchors attach by position
 and may be marked outdated after a revision.
+
+## Comments on HTML and Mermaid artifacts
+
+Users can comment on parts of an HTML or Mermaid artifact in Mast. Give sections, headings, cards
+and diagram nodes a stable `id` (or `data-zeron-anchor="..."`) and keep it across revisions, so a
+comment stays attached when the text around it changes; without one it falls back to the quoted
+text and goes *outdated* once that text is gone. Call `artifact_get_plan` to read the open
+`comments` (each has its anchor and quoted text), address them in the next revision, and pass their
+ids as `addressedComments` (for example `["C-1", "C-3"]`) to `artifact_publish`; they are then
+marked resolved.

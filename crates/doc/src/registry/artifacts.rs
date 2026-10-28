@@ -243,6 +243,49 @@ impl RegistryDoc {
         }
     }
 
+    /// Replace the artifact's comments (the `comments` field only). When the
+    /// op does not fit, the oldest resolved comment is dropped first, else
+    /// the oldest. `None` when the artifact is not live.
+    pub fn set_artifact_comments(
+        &mut self,
+        id: &str,
+        comments: &[zeron_proto::artifacts::ArtifactComment],
+        now_ms: i64,
+    ) -> Result<Option<Vec<zeron_proto::artifacts::ArtifactComment>>, DocError> {
+        if self.artifact(id).is_none() {
+            return Ok(None);
+        }
+        let mut comments = comments.to_vec();
+        self.observe_row(KIND_ARTIFACTS, id);
+        let hlc = self.next_hlc();
+        loop {
+            let value = serde_json::to_value(&comments)
+                .map_err(|e| DocError::Schema(format!("comments: {e}")))?;
+            let op = RowOp {
+                kind: KIND_ARTIFACTS.to_owned(),
+                id: id.to_owned(),
+                op: OpKind::Update,
+                set: Some(BTreeMap::from([
+                    ("comments".to_owned(), value),
+                    ("updatedAt".to_owned(), Value::from(now_ms)),
+                ])),
+                hlc: hlc.clone(),
+                clocks: None,
+            };
+            match check_op_size(&op) {
+                Ok(()) => {
+                    self.write_ops(vec![op])?;
+                    return Ok(Some(comments));
+                }
+                Err(error) if comments.len() <= 1 => return Err(error),
+                Err(_) => {
+                    let at = comments.iter().position(|c| !c.is_open()).unwrap_or(0);
+                    comments.remove(at);
+                }
+            }
+        }
+    }
+
     /// Record (or, with `None`, clear) the artifact's picked option. Writes
     /// the `picked` field alone. `None` when the artifact is not live.
     pub fn set_artifact_pick(
@@ -370,5 +413,32 @@ mod tests {
         doc.delete_row_ops(&[(KIND_ARTIFACTS, "a1")]);
         assert!(doc.put_artifact(&view("a1", "item-1", 2)).is_err());
         assert!(doc.artifact("a1").is_none());
+    }
+
+    #[test]
+    fn set_artifact_comments_roundtrips_and_trims_resolved_first() {
+        use zeron_proto::artifacts::{ArtifactComment, CommentAnchor, CommentStatus};
+        let mut doc = RegistryDoc::new("dev-1");
+        doc.put_artifact(&view("a1", "item-1", 1)).unwrap();
+        let mk = |n: u32, status: CommentStatus| ArtifactComment {
+            id: format!("C-{n}"),
+            anchor: CommentAnchor { id: Some("intake".into()), ..Default::default() },
+            text: "x".repeat(600),
+            quote: "q".repeat(240),
+            status,
+            ..Default::default()
+        };
+        let one = vec![mk(1, CommentStatus::Open)];
+        doc.set_artifact_comments("a1", &one, 5).unwrap().unwrap();
+        assert_eq!(doc.artifact("a1").unwrap().comments, one);
+        assert_eq!(doc.artifact("a1").unwrap().current_revision, 1);
+        assert!(doc.set_artifact_comments("nope", &one, 5).unwrap().is_none());
+
+        let mut many = vec![mk(1, CommentStatus::Open), mk(2, CommentStatus::Resolved)];
+        many.extend((3..=40).map(|n| mk(n, CommentStatus::Open)));
+        let kept = doc.set_artifact_comments("a1", &many, 6).unwrap().unwrap();
+        assert!(kept.len() < many.len(), "40 maximal comments do not fit one op");
+        assert!(kept.iter().all(|c| c.id != "C-2"), "resolved dropped first");
+        assert_eq!(kept.last().unwrap().id, "C-40", "newest kept");
     }
 }

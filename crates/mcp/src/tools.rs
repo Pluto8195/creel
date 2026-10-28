@@ -351,6 +351,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
                     "role": { "type": "string", "description": "plan, diagram, state-machine, comparison, or doc (free-form)." },
                     "note": { "type": "string", "description": "One line: what changed in this revision." },
                     "pinAsPlan": { "type": "boolean", "default": false, "description": "Make this the work item's plan (unpins the previous one)." },
+                    "addressedComments": { "type": "array", "items": { "type": "string" }, "description": "Comment ids (C-n from artifact_get_plan) this revision addresses; they are marked resolved." },
                     "idempotencyKey": idempotency_key_schema()
                 },
                 "required": ["path", "title", "note", "idempotencyKey"]
@@ -358,7 +359,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ARTIFACT_GET_PLAN,
-            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims, answeredQuestions: [{id, answer, at, revision}], pickedOptions: [{artifactId, title, optionId, label, note, at, revision}]}, or null. answeredQuestions are answers the user gave in Mast (the plan's question card or Required Actions) that the document may not reflect yet: fold each into the plan (`status: resolved` + `decision:`) in your next revision. pickedOptions are the options Mikey picked on your options artifacts (also in the plan-less reply): continue with that option. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
+            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims, answeredQuestions: [{id, answer, at, revision}], comments: [{id, text, quote, anchor, revision, at, anchorStatus}], pickedOptions: [{artifactId, title, optionId, label, note, at, revision}]}, or null. answeredQuestions are answers the user gave in Mast (the plan's question card or Required Actions) that the document may not reflect yet: fold each into the plan (`status: resolved` + `decision:`) in your next revision. comments are the open comments on an HTML or Mermaid plan, each with its anchor and quoted text (anchorStatus found|outdated|unknown): address them in the next revision and pass their ids as addressedComments to artifact_publish. pickedOptions are the options Mikey picked on your options artifacts (also in the plan-less reply): continue with that option. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
@@ -2117,6 +2118,24 @@ mod tests {
         assert!(def.description.contains("answeredQuestions"));
         assert!(def.description.contains("status: resolved"));
         assert!(def.description.contains("pickedOptions"));
+    }
+
+    #[test]
+    fn publish_schema_takes_addressed_comments_and_get_plan_lists_comments() {
+        let defs = artifact_catalog();
+        let publish = defs
+            .iter()
+            .find(|d| d.name == agent_tool_names::ARTIFACT_PUBLISH)
+            .expect("artifact_publish is defined");
+        assert_eq!(
+            publish.input_schema["properties"]["addressedComments"]["type"],
+            "array"
+        );
+        let plan = defs
+            .iter()
+            .find(|d| d.name == agent_tool_names::ARTIFACT_GET_PLAN)
+            .expect("artifact_get_plan is defined");
+        assert!(plan.description.contains("addressedComments"));
     }
 
     #[tokio::test]

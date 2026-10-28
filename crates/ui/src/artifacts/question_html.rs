@@ -43,6 +43,13 @@ pub(crate) const CSS: &str = r##"
 [data-zeron-question] .zq-row[data-zq-key="answer"]{padding:3px 8px;border-left:2px solid var(--primary,#4f46e5);border-radius:0 5px 5px 0;background:color-mix(in srgb,var(--primary,#4f46e5) 8%,transparent)}
 [data-zeron-question][data-zq-collapsed] .zq-row:not([data-zq-key="decision"]){display:none}
 html[data-zq-finding] [data-zeron-question] .zq-row:not([data-zq-key="decision"]){display:flex}
+[data-zeron-question] .zq-answer{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+[data-zeron-question] .zq-answer textarea{box-sizing:border-box;width:100%;min-height:54px;padding:6px 8px;border:1px solid var(--border,rgba(128,128,128,.4));border-radius:6px;background:var(--background,transparent);color:var(--foreground,inherit);font:inherit;resize:vertical}
+[data-zeron-question] .zq-answer textarea:focus{outline:2px solid var(--primary,#4f46e5);outline-offset:0}
+[data-zeron-question] .zq-actions{display:flex;gap:6px}
+[data-zeron-question] .zq-btn{padding:2px 10px;border:1px solid var(--border,rgba(128,128,128,.4));border-radius:5px;background:none;color:var(--foreground,inherit);font:inherit;font-size:12px;cursor:pointer}
+[data-zeron-question] .zq-btn[data-primary]{border-color:var(--primary,#4f46e5);background:var(--primary,#4f46e5);color:var(--primary-foreground,#fff)}
+[data-zeron-question] .zq-btn:disabled{opacity:.5;cursor:default}
 "##;
 
 /// The frame script: builds each card once the document has parsed.
@@ -57,6 +64,61 @@ pub(crate) const SCRIPT: &str = r##"(() => {
     if (cls) node.className = cls;
     if (text != null) node.textContent = text;
     return node;
+  };
+  // Answering in place: only where the app listens (`__zeronAnswerable`, set
+  // by the comments bridge script; standalone pages and render checks never
+  // get the button). The text goes to the host as `{t:"answer"}`.
+  const post = (o) => { try { parent.postMessage({ zeronMsg: o }, "*"); } catch (_) {} };
+  const openAnswer = (card, id) => {
+    if (card.querySelector(".zq-answer")) return;
+    const box = make("div", "zq-answer");
+    const area = make("textarea");
+    area.placeholder = "Your answer";
+    area.maxLength = 600;
+    const actions = make("div", "zq-actions");
+    const send = make("button", "zq-btn", "Send");
+    send.type = "button"; send.setAttribute("data-primary", "");
+    const cancel = make("button", "zq-btn", "Cancel");
+    cancel.type = "button";
+    const submit = () => {
+      const text = area.value.trim();
+      if (!text) return;
+      send.disabled = true; area.disabled = true; send.textContent = "Sending…";
+      post({ t: "answer", id, text });
+    };
+    send.addEventListener("click", submit);
+    cancel.addEventListener("click", () => box.remove());
+    area.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.stopPropagation(); box.remove(); }
+    });
+    actions.append(send, cancel);
+    box.append(area, actions);
+    card.appendChild(box);
+    area.focus();
+  };
+  const applyAnswers = (answers) => {
+    document.querySelectorAll("[data-zeron-question]").forEach((card) => {
+      const id = (card.getAttribute("data-zeron-question") || "").trim().toUpperCase();
+      const text = answers[id];
+      if (typeof text !== "string" || !text) return;
+      if ((card.getAttribute("data-status") || "open").toLowerCase() === "open") {
+        card.setAttribute("data-status", "answered");
+        const pill = card.querySelector(".zq-pill");
+        if (pill) { pill.textContent = LABELS.answered; pill.setAttribute("data-zq-status", "answered"); }
+      }
+      card.setAttribute("data-answer", text);
+      const box = card.querySelector(".zq-answer");
+      if (box) box.remove();
+      let row = card.querySelector('.zq-row[data-zq-key="answer"]');
+      if (!row) {
+        row = make("div", "zq-row"); row.setAttribute("data-zq-key", "answer");
+        row.appendChild(make("div", "zq-label", "Your answer")); row.appendChild(make("div", "zq-value"));
+        const decision = card.querySelector('.zq-row[data-zq-key="decision"]');
+        card.insertBefore(row, decision);
+      }
+      row.querySelector(".zq-value").textContent = text;
+    });
   };
   const build = (card) => {
     if (card.hasAttribute("data-zq-ready")) return;
@@ -84,6 +146,13 @@ pub(crate) const SCRIPT: &str = r##"(() => {
       row.appendChild(make("div", "zq-value", value));
       card.appendChild(row);
     }
+    if (status !== "resolved" && id && window.__zeronAnswerable) {
+      const ask = make("button", "zq-toggle", status === "answered" ? "Change answer" : "Answer");
+      ask.type = "button";
+      ask.addEventListener("click", () => openAnswer(card, id.toUpperCase()));
+      head.appendChild(make("span", "zq-spacer"));
+      head.appendChild(ask);
+    }
     if (status === "resolved") {
       card.setAttribute("data-zq-collapsed", "");
       const toggle = make("button", "zq-toggle", "Show details");
@@ -102,7 +171,8 @@ pub(crate) const SCRIPT: &str = r##"(() => {
   // While find is active, resolved cards show everything they match.
   window.addEventListener("message", (event) => {
     const data = event.data || {};
-    if ("zeronFind" in data) document.documentElement.toggleAttribute("data-zq-finding", String(data.zeronFind) !== "");
+    if ("zeronAnswers" in data) applyAnswers(data.zeronAnswers || {});
+    else if ("zeronFind" in data) document.documentElement.toggleAttribute("data-zq-finding", String(data.zeronFind) !== "");
     else if ("zeronClear" in data) document.documentElement.removeAttribute("data-zq-finding");
   });
 })();

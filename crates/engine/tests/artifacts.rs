@@ -1497,3 +1497,180 @@ async fn picking_resolves_the_linked_question_and_artopt_requests() {
     // back with the plan's next revision (create ids are per revision).
     assert!(artifact(&rig, &plan).answer_of("Q-1").is_none());
 }
+
+// ── phase 4: comments on HTML and Mermaid artifacts ────────────────────────
+
+async fn publish_html(rig: &Rig, body: &str, key: &str) -> String {
+    std::fs::write(rig.worktree.join("flow.fragment.html"), body).unwrap();
+    let reply = publish(
+        rig,
+        &rig.token,
+        json!({ "path": "flow.fragment.html", "title": "Flow", "role": "plan", "note": key,
+                "pinAsPlan": true, "idempotencyKey": key }),
+    )
+    .await;
+    reply["artifactId"].as_str().unwrap().to_owned()
+}
+
+async fn add_comment(rig: &Rig, id: &str, anchor: Value, quote: &str, text: &str) -> Result<Value, String> {
+    rig.client
+        .call(
+            methods::ARTIFACT_ADD_COMMENT,
+            json!({ "artifactId": id, "anchor": anchor, "quote": quote, "text": text }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+const FLOW_V1: &str = "<h2 id=\"intake\">Receiving</h2><p>Scan the pallet label first.</p>";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comments_add_list_resolve_and_reopen() {
+    let rig = rig().await;
+    let id = publish_html(&rig, FLOW_V1, "v1").await;
+    let reply = add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", "  Rename this  ")
+        .await
+        .unwrap();
+    assert_eq!(reply["comment"]["id"], "C-1");
+    assert_eq!(reply["comment"]["text"], "Rename this");
+    assert_eq!(reply["comment"]["quote"], "Receiving");
+    assert_eq!(reply["comment"]["revision"], 1);
+    let second = add_comment(&rig, &id, json!({ "exact": "pallet label" }), "pallet label", "Which label?")
+        .await
+        .unwrap();
+    assert_eq!(second["comment"]["id"], "C-2");
+    assert_eq!(artifact(&rig, &id).comments.len(), 2);
+
+    rig.client
+        .call(
+            methods::ARTIFACT_RESOLVE_COMMENT,
+            json!({ "artifactId": id, "commentId": "c-1", "resolved": true }),
+        )
+        .await
+        .unwrap();
+    let row = artifact(&rig, &id);
+    assert!(!row.comments[0].is_open());
+    assert_eq!(row.comments[0].resolved_by.as_deref(), Some("user"));
+    assert!(row.comments[0].resolved_at.is_some());
+    assert_eq!(row.current_revision, 1, "comments never add revisions");
+
+    rig.client
+        .call(
+            methods::ARTIFACT_RESOLVE_COMMENT,
+            json!({ "artifactId": id, "commentId": "C-1", "resolved": false }),
+        )
+        .await
+        .unwrap();
+    let row = artifact(&rig, &id);
+    assert!(row.comments[0].is_open());
+    assert!(row.comments[0].resolved_at.is_none() && row.comments[0].resolved_by.is_none());
+
+    let missing = rig
+        .client
+        .call(
+            methods::ARTIFACT_RESOLVE_COMMENT,
+            json!({ "artifactId": id, "commentId": "C-9", "resolved": true }),
+        )
+        .await;
+    assert!(missing.unwrap_err().to_string().to_lowercase().contains("not"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comments_are_refused_on_markdown_and_without_text_or_anchor() {
+    let rig = rig().await;
+    let md = publish_plan(&rig, "# Plan\n", "v1").await;
+    let err = add_comment(&rig, &md, json!({ "exact": "Plan" }), "", "hi").await.unwrap_err();
+    assert!(err.contains("HTML and Mermaid"), "{err}");
+
+    let id = publish_html(&rig, FLOW_V1, "h1").await;
+    assert!(add_comment(&rig, &id, json!({ "exact": "Receiving" }), "", "   ").await.is_err());
+    assert!(add_comment(&rig, &id, json!({ "prefix": "x" }), "", "hi").await.is_err());
+    assert!(add_comment(&rig, "missing", json!({ "exact": "Receiving" }), "", "hi").await.is_err());
+    assert!(artifact(&rig, &id).comments.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_anchors_survive_revisions_until_the_text_goes() {
+    let rig = rig().await;
+    let id = publish_html(&rig, FLOW_V1, "v1").await;
+    add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", "by id").await.unwrap();
+    add_comment(&rig, &id, json!({ "exact": "Scan the pallet label" }), "", "by quote").await.unwrap();
+    let statuses = |plan: &Value| -> Vec<String> {
+        plan["comments"].as_array().unwrap().iter()
+            .map(|c| c["anchorStatus"].as_str().unwrap().to_owned()).collect()
+    };
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(statuses(&plan), ["found", "found"]);
+    assert_eq!(plan["comments"][0]["anchor"]["id"], "intake");
+    assert_eq!(plan["comments"][1]["quote"], "Scan the pallet label");
+
+    // r2 drops the id but keeps both texts: both still found (by quote).
+    publish_html(&rig, "<h2>Receiving</h2><p>Scan the pallet label first.</p>", "v2").await;
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(plan["revision"], 2);
+    assert_eq!(statuses(&plan), ["found", "found"]);
+
+    // r3 removes the text: both outdated, but still listed.
+    publish_html(&rig, "<h2>Dock</h2><p>Check the seal.</p>", "v3").await;
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    assert_eq!(statuses(&plan), ["outdated", "outdated"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publishing_with_addressed_comments_resolves_them_and_get_plan_lists_only_open_ones() {
+    let rig = rig().await;
+    let id = publish_html(&rig, FLOW_V1, "v1").await;
+    for text in ["one", "two", "three"] {
+        add_comment(&rig, &id, json!({ "id": "intake", "exact": "Receiving" }), "", text).await.unwrap();
+    }
+    std::fs::write(rig.worktree.join("flow.fragment.html"), "<h2 id=\"intake\">Receiving</h2><p>New.</p>").unwrap();
+    let reply = publish(
+        &rig,
+        &rig.token,
+        json!({ "path": "flow.fragment.html", "title": "Flow", "role": "plan", "note": "v2",
+                "addressedComments": ["c-1", "C-3", "C-99"], "idempotencyKey": "v2" }),
+    )
+    .await;
+    assert_eq!(reply["revision"], 2);
+    let row = artifact(&rig, &id);
+    for n in [0usize, 2] {
+        let c = &row.comments[n];
+        assert!(!c.is_open());
+        assert_eq!(c.resolved_by.as_deref(), Some("agent"));
+        assert_eq!(c.addressed_in, Some(2));
+        assert!(c.resolved_at.is_some());
+    }
+    assert!(row.comments[1].is_open());
+    let plan = tool(&rig, &rig.token, "artifact_get_plan", json!({})).await.unwrap();
+    let open = plan["comments"].as_array().unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["id"], "C-2");
+    assert_eq!(open[0]["anchor"]["id"], "intake");
+    assert_eq!(open[0]["quote"], "Receiving");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comments_trim_to_the_limit_dropping_resolved_first() {
+    let rig = rig().await;
+    let id = publish_html(&rig, FLOW_V1, "v1").await;
+    for n in 0..zeron_proto::artifacts::MAX_COMMENTS {
+        add_comment(&rig, &id, json!({ "id": "intake" }), "", &format!("c{n}")).await.unwrap();
+    }
+    rig.client
+        .call(
+            methods::ARTIFACT_RESOLVE_COMMENT,
+            json!({ "artifactId": id, "commentId": "C-5", "resolved": true }),
+        )
+        .await
+        .unwrap();
+    add_comment(&rig, &id, json!({ "id": "intake" }), "", "overflow").await.unwrap();
+    let row = artifact(&rig, &id);
+    assert_eq!(row.comments.len(), zeron_proto::artifacts::MAX_COMMENTS);
+    assert!(row.comments.iter().all(|c| c.id != "C-5"), "resolved dropped first");
+    assert!(row.comments.iter().any(|c| c.id == "C-1"));
+    // Nothing resolved: the oldest goes.
+    add_comment(&rig, &id, json!({ "id": "intake" }), "", "again").await.unwrap();
+    let row = artifact(&rig, &id);
+    assert_eq!(row.comments.len(), zeron_proto::artifacts::MAX_COMMENTS);
+    assert!(row.comments.iter().all(|c| c.id != "C-1"));
+}

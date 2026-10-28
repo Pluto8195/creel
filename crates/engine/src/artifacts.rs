@@ -31,6 +31,10 @@ use futures::stream::BoxStream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use zeron_proto::artifacts::{
+    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
+    ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentStatus, MAX_COMMENTS,
+    MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, kind_supports_comments, next_comment_id,
+    normalize_comment_id, resolve_anchor,
     ARTIFACTS_DIR, ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply,
     ArtifactError, ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply,
     ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
@@ -393,6 +397,8 @@ struct PublishArgs {
     note: Option<String>,
     #[serde(default)]
     pin_as_plan: bool,
+    #[serde(default)]
+    addressed_comments: Vec<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
 }
@@ -1424,6 +1430,156 @@ impl ArtifactsService {
         })
     }
 
+    /// `ArtifactAddComment`: store a comment on an HTML or Mermaid artifact
+    /// (the `comments` field only; the document is never edited).
+    pub fn add_comment(
+        &self,
+        params: &ArtifactAddCommentParams,
+        by: WorkOutlineActor,
+    ) -> Outcome<ArtifactAddCommentReply> {
+        let artifact = self
+            .workspace()
+            .artifact(&params.artifact_id)
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+        if !kind_supports_comments(artifact.kind) {
+            return Err(ArtifactError::invalid("comments are for HTML and Mermaid artifacts"));
+        }
+        let text = clip_chars(params.text.trim(), MAX_COMMENT_CHARS);
+        if text.is_empty() {
+            return Err(ArtifactError::invalid("comment text must not be empty"));
+        }
+        let anchor = params.anchor.cleaned();
+        if anchor.is_empty() {
+            return Err(ArtifactError::invalid(
+                "comment anchor needs an id or quoted text",
+            ));
+        }
+        let quote = match params.quote.split_whitespace().collect::<Vec<_>>().join(" ") {
+            q if q.is_empty() => anchor.exact.clone(),
+            q => q,
+        };
+        let quote = clip_chars(&quote, MAX_QUOTE_CHARS);
+        let mut comments = artifact.comments.clone();
+        let comment = ArtifactComment {
+            id: next_comment_id(&comments),
+            anchor,
+            quote,
+            text,
+            status: CommentStatus::Open,
+            revision: artifact.current_revision,
+            at: now_ms(),
+            by,
+            resolved_at: None,
+            resolved_by: None,
+            addressed_in: None,
+        };
+        comments.push(comment.clone());
+        while comments.len() > MAX_COMMENTS {
+            let at = comments.iter().position(|c| !c.is_open()).unwrap_or(0);
+            comments.remove(at);
+        }
+        self.store_comments(&artifact.id, &comments)?;
+        Ok(ArtifactAddCommentReply {
+            artifact_id: artifact.id,
+            comment,
+        })
+    }
+
+    /// `ArtifactResolveComment`: a person resolves or reopens a comment.
+    pub fn resolve_comment(
+        &self,
+        params: &ArtifactResolveCommentParams,
+        _by: WorkOutlineActor,
+    ) -> Outcome<ArtifactResolveCommentReply> {
+        let artifact = self
+            .workspace()
+            .artifact(&params.artifact_id)
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+        let id = normalize_comment_id(&params.comment_id)
+            .ok_or_else(|| ArtifactError::invalid("comment id must look like C-3"))?;
+        let mut comments = artifact.comments.clone();
+        let comment = comments
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ArtifactError::not_found(format!("comment {id} not found")))?;
+        if params.resolved {
+            comment.status = CommentStatus::Resolved;
+            comment.resolved_at = Some(now_ms());
+            comment.resolved_by = Some("user".to_owned());
+        } else {
+            comment.status = CommentStatus::Open;
+            comment.resolved_at = None;
+            comment.resolved_by = None;
+            comment.addressed_in = None;
+        }
+        self.store_comments(&artifact.id, &comments)?;
+        Ok(ArtifactResolveCommentReply {
+            artifact_id: artifact.id,
+            comment_id: id,
+            resolved: params.resolved,
+        })
+    }
+
+    fn store_comments(&self, id: &str, comments: &[ArtifactComment]) -> Outcome<()> {
+        self.workspace()
+            .set_artifact_comments(id, comments)
+            .map_err(|e| ArtifactError::io(e.to_string()))?
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {id} not found")))?;
+        Ok(())
+    }
+
+    /// Mark the open comments in `ids` resolved by the agent, addressed in
+    /// `revision`. Unknown ids are ignored.
+    fn mark_comments_addressed(&self, artifact_id: &str, ids: &[String], revision: u32) -> Outcome<()> {
+        let Some(artifact) = self.workspace().artifact(artifact_id) else {
+            return Ok(());
+        };
+        let wanted: Vec<String> = ids.iter().filter_map(|i| normalize_comment_id(i)).collect();
+        let mut comments = artifact.comments.clone();
+        let mut any = false;
+        for c in comments.iter_mut().filter(|c| c.is_open() && wanted.contains(&c.id)) {
+            c.status = CommentStatus::Resolved;
+            c.resolved_at = Some(now_ms());
+            c.resolved_by = Some("agent".to_owned());
+            c.addressed_in = Some(revision);
+            any = true;
+        }
+        if any {
+            self.store_comments(artifact_id, &comments)?;
+        }
+        Ok(())
+    }
+
+    /// Open comments for `artifact_get_plan`, anchors checked against the
+    /// current revision's source.
+    fn plan_comments(&self, plan: &ArtifactView, source: Option<&str>) -> Vec<Value> {
+        plan.comments
+            .iter()
+            .filter(|c| c.is_open())
+            .map(|c| {
+                let status = match source {
+                    Some(src) if kind_supports_comments(plan.kind) => {
+                        if resolve_anchor(plan.kind, src, &c.anchor).is_found() {
+                            "found"
+                        } else {
+                            "outdated"
+                        }
+                    }
+                    _ => "unknown",
+                };
+                json!({
+                    "id": c.id,
+                    "text": c.text,
+                    "quote": c.quote,
+                    "anchor": c.anchor,
+                    "revision": c.revision,
+                    "at": c.at,
+                    "anchorStatus": status,
+                })
+            })
+            .collect()
+    }
+
     /// Store `answer` for `question_id` on the row (replacing an earlier one).
     pub(crate) fn record_answer(
         &self,
@@ -1779,6 +1935,9 @@ impl ArtifactsService {
             operation_id: Some(publish_operation_id(&caller.chat_id, key)),
             by: caller.actor(),
         })?;
+        if !args.addressed_comments.is_empty() {
+            self.mark_comments_addressed(&reply.artifact_id, &args.addressed_comments, reply.revision)?;
+        }
         Ok(json!({
             "artifactId": reply.artifact_id,
             "revision": reply.revision,
@@ -1837,6 +1996,7 @@ impl ArtifactsService {
             "answeredQuestions": plan.answers.iter().map(|a| json!({
                 "id": a.id, "answer": a.answer, "at": a.at, "revision": a.revision,
             })).collect::<Vec<_>>(),
+            "comments": self.plan_comments(&plan, content.as_deref()),
             "pickedOptions": picked_options,
         }))
     }
@@ -2269,5 +2429,12 @@ mod tests {
             ArtifactErrorCode::RateLimited
         );
         broker.check_rate("run-2").unwrap();
+    }
+}
+
+fn clip_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => text[..cut].trim_end().to_owned(),
+        None => text.to_owned(),
     }
 }

@@ -3264,7 +3264,8 @@ impl Shell {
                     this.close_right_surface(RightSurface::Browser(id), window, cx)
                 }
                 // Only static documents (artifacts) report raw links.
-                crate::browser::BrowserEvent::DocumentLink(_) => {}
+                crate::browser::BrowserEvent::DocumentLink(_)
+                | crate::browser::BrowserEvent::DocumentMessage(_) => {}
             }
         });
         self.browsers.insert(id, browser.clone());
