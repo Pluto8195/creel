@@ -485,7 +485,7 @@ pub fn render_tree(
     div()
         .flex()
         .flex_col()
-        .gap(px(MD_BLOCK_GAP))
+        .gap(crate::typography::ui_rems(MD_BLOCK_GAP))
         .children(tree.blocks.iter().enumerate().map(|(ix, top)| {
             let document = highlight(ix);
             render_block(
@@ -548,16 +548,16 @@ pub(crate) fn take_question_log() -> Vec<(String, bool, bool, usize)> {
 
 fn question_pill(label: &str, color: Hsla, filled: bool) -> gpui::Div {
     div()
-        .px(px(7.0))
-        .h(px(18.0))
+        .px(crate::typography::ui_rems(7.0))
+        .h(crate::typography::ui_rems(18.0))
         .flex()
         .items_center()
         .rounded(px(9.0))
         .border_1()
         .border_color(color.opacity(0.55))
         .when(filled, |pill| pill.bg(color.opacity(0.14)))
-        .text_size(px(11.0))
-        .line_height(px(16.0))
+        .text_size(crate::typography::ui_rems(11.0))
+        .line_height(crate::typography::ui_rems(16.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
         .child(label.to_owned())
@@ -578,8 +578,8 @@ fn answer_button(
     div()
         .id(id)
         .debug_selector(move || selector.clone())
-        .px(px(8.0))
-        .h(px(20.0))
+        .px(crate::typography::ui_rems(8.0))
+        .h(crate::typography::ui_rems(20.0))
         .flex()
         .items_center()
         .rounded(px(5.0))
@@ -587,7 +587,7 @@ fn answer_button(
         .border_1()
         .border_color(color.opacity(0.5))
         .when(primary, |button| button.bg(color.opacity(0.12)))
-        .text_size(px(11.0))
+        .text_size(crate::typography::ui_rems(11.0))
         .text_color(color)
         .hover(|style| style.bg(color.opacity(0.2)))
         .child(label)
@@ -619,7 +619,7 @@ fn answer_affordance(id: &str, ui: &AnswerUi, row_key: &SharedString, theme: &Th
     div()
         .flex()
         .flex_col()
-        .gap(px(6.0))
+        .gap(crate::typography::ui_rems(6.0))
         .child(
             div()
                 .debug_selector({
@@ -630,15 +630,15 @@ fn answer_affordance(id: &str, ui: &AnswerUi, row_key: &SharedString, theme: &Th
                 .border_1()
                 .border_color(theme.border_strong)
                 .bg(theme.surface)
-                .px(px(8.0))
-                .py(px(5.0))
+                .px(crate::typography::ui_rems(8.0))
+                .py(crate::typography::ui_rems(5.0))
                 .children(ui.input.clone()),
         )
         .child(
             div()
                 .flex()
                 .flex_row()
-                .gap(px(6.0))
+                .gap(crate::typography::ui_rems(6.0))
                 .child(
                     answer_button(
                         SharedString::from(format!("{row_key}-answer-send-{id}")),
@@ -706,19 +706,19 @@ fn render_question(
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(6.0))
+        .gap(crate::typography::ui_rems(6.0))
         .flex_wrap();
     if let Some(id) = &card.id {
         header = header.child(
             div()
-                .px(px(7.0))
-                .h(px(18.0))
+                .px(crate::typography::ui_rems(7.0))
+                .h(crate::typography::ui_rems(18.0))
                 .flex()
                 .items_center()
                 .rounded(px(5.0))
                 .bg(theme.text.opacity(0.10))
-                .text_size(px(11.0))
-                .line_height(px(16.0))
+                .text_size(crate::typography::ui_rems(11.0))
+                .line_height(crate::typography::ui_rems(16.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text)
                 .child(id.clone()),
@@ -737,11 +737,11 @@ fn render_question(
                     "{}-question-toggle",
                     opts.row_key
                 )))
-                .px(px(6.0))
+                .px(crate::typography::ui_rems(6.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
-                .text_size(px(11.0))
-                .line_height(px(18.0))
+                .text_size(crate::typography::ui_rems(11.0))
+                .line_height(crate::typography::ui_rems(18.0))
                 .text_color(theme.text_muted)
                 .hover(|style| style.bg(theme.text.opacity(0.08)))
                 .child(if expanded {
@@ -771,7 +771,7 @@ fn render_question(
             can_answer,
         ))
     });
-    let mut body = div().flex().flex_col().gap(px(6.0)).child(header);
+    let mut body = div().flex().flex_col().gap(crate::typography::ui_rems(6.0)).child(header);
     if !card.text.is_empty() {
         body = body.child(div().text_color(theme.text).child(text_element(
             &card.text,
@@ -789,13 +789,13 @@ fn render_question(
             .flex()
             .flex_row()
             .items_start()
-            .gap(px(10.0))
+            .gap(crate::typography::ui_rems(10.0))
             .child(
                 div()
                     .flex_none()
-                    .w(px(68.0))
-                    .text_size(px(11.0))
-                    .line_height(px(MD_LINE_HEIGHT))
+                    .w(crate::typography::ui_rems(68.0))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_muted)
                     .child(field.label.clone()),
@@ -816,9 +816,9 @@ fn render_question(
                 .bg(theme.success.opacity(0.08))
                 .rounded_tr(px(5.0))
                 .rounded_br(px(5.0))
-                .pl(px(8.0))
-                .pr(px(8.0))
-                .py(px(3.0))
+                .pl(crate::typography::ui_rems(8.0))
+                .pr(crate::typography::ui_rems(8.0))
+                .py(crate::typography::ui_rems(3.0))
         } else {
             row
         });
@@ -835,21 +835,21 @@ fn render_question(
                 .flex()
                 .flex_row()
                 .items_start()
-                .gap(px(10.0))
+                .gap(crate::typography::ui_rems(10.0))
                 .border_l_2()
                 .border_color(theme.accent)
                 .bg(theme.accent.opacity(0.08))
                 .rounded_tr(px(5.0))
                 .rounded_br(px(5.0))
-                .pl(px(8.0))
-                .pr(px(8.0))
-                .py(px(3.0))
+                .pl(crate::typography::ui_rems(8.0))
+                .pr(crate::typography::ui_rems(8.0))
+                .py(crate::typography::ui_rems(3.0))
                 .child(
                     div()
                         .flex_none()
-                        .w(px(68.0))
-                        .text_size(px(11.0))
-                        .line_height(px(MD_LINE_HEIGHT))
+                        .w(crate::typography::ui_rems(68.0))
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_muted)
                         .child("Your answer"),
@@ -858,8 +858,8 @@ fn render_question(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
-                        .text_size(px(MD_TEXT_SIZE))
-                        .line_height(px(MD_LINE_HEIGHT))
+                        .text_size(crate::typography::ui_rems(MD_TEXT_SIZE))
+                        .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
                         .text_color(theme.text)
                         .child(answer.clone()),
                 ),
@@ -883,9 +883,9 @@ fn render_question(
         .bg(theme.text.opacity(0.04))
         .rounded_tr(px(6.0))
         .rounded_br(px(6.0))
-        .pl(px(12.0))
-        .pr(px(10.0))
-        .py(px(8.0))
+        .pl(crate::typography::ui_rems(12.0))
+        .pr(crate::typography::ui_rems(10.0))
+        .py(crate::typography::ui_rems(8.0))
         .text_color(theme.text_muted)
         .when(status == QuestionStatus::Resolved && !expanded, |card| {
             card.opacity(0.75)
@@ -979,12 +979,12 @@ pub fn render_block(
             .bg(theme.accent.opacity(0.05))
             .rounded_tr(px(6.0))
             .rounded_br(px(6.0))
-            .pl(px(12.0))
-            .pr(px(10.0))
-            .py(px(6.0))
+            .pl(crate::typography::ui_rems(12.0))
+            .pr(crate::typography::ui_rems(10.0))
+            .py(crate::typography::ui_rems(6.0))
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(crate::typography::ui_rems(8.0))
             .text_color(theme.text_muted)
             .children(children.iter().enumerate().map(|(ci, child)| {
                 render_block(
@@ -1004,7 +1004,7 @@ pub fn render_block(
         } => div()
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(crate::typography::ui_rems(4.0))
             .children(items.iter().enumerate().map(|(item_ix, item)| {
                 // Accent markers (the inline-code hue): ordered numbers as
                 // tinted text, unordered as a REAL 5px disc — the glyph "•"
@@ -1027,8 +1027,8 @@ pub fn render_block(
                     };
                     div()
                         .flex_none()
-                        .min_w(px(18.0))
-                        .h(px(MD_LINE_HEIGHT))
+                        .min_w(crate::typography::ui_rems(18.0))
+                        .h(crate::typography::ui_rems(MD_LINE_HEIGHT))
                         .flex()
                         .items_center()
                         .child(
@@ -1045,7 +1045,7 @@ pub fn render_block(
                                 cx.stop_propagation()
                             })
                             .accessibility_label(label)
-                            .size(px(16.0))
+                            .size(crate::typography::ui_rems(16.0))
                             .border_1()
                             .rounded(px(3.0))
                             .border_color(if task.checked {
@@ -1064,7 +1064,7 @@ pub fn render_block(
                             .when(task.checked, |checkbox| {
                                 checkbox.child(
                                     crate::icons::icon(crate::icons::CHECK)
-                                        .size(px(12.0))
+                                        .size(crate::typography::ui_rems(12.0))
                                         .text_color(theme.bg),
                                 )
                             })
@@ -1080,7 +1080,7 @@ pub fn render_block(
                     match ordered_start {
                         Some(start) => div()
                             .flex_none()
-                            .min_w(px(18.0))
+                            .min_w(crate::typography::ui_rems(18.0))
                             .text_size(crate::typography::ui_rems(MD_TEXT_SIZE))
                             .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
                             .text_color(theme.accent)
@@ -1088,29 +1088,29 @@ pub fn render_block(
                             .into_any_element(),
                         None => div()
                             .flex_none()
-                            .min_w(px(18.0))
+                            .min_w(crate::typography::ui_rems(18.0))
                             // Center the disc on the first text line's cap band.
-                            .h(px(MD_LINE_HEIGHT))
+                            .h(crate::typography::ui_rems(MD_LINE_HEIGHT))
                             .flex()
                             .items_center()
                             .child(
                                 div()
                                     .ml(px(1.0))
-                                    .w(px(5.0))
-                                    .h(px(5.0))
+                                    .w(crate::typography::ui_rems(5.0))
+                                    .h(crate::typography::ui_rems(5.0))
                                     .rounded_full()
                                     .bg(theme.accent),
                             )
                             .into_any_element(),
                     }
                 };
-                div().flex().flex_row().gap(px(8.0)).child(marker).child(
+                div().flex().flex_row().gap(crate::typography::ui_rems(8.0)).child(marker).child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(px(4.0))
+                        .gap(crate::typography::ui_rems(4.0))
                         .children(item.iter().enumerate().map(|(ci, child)| {
                             let task_body;
                             let child = if ci == 0 && task.is_some() {
@@ -2231,7 +2231,7 @@ fn text_element(
             return div()
                 .flex()
                 .flex_col()
-                .gap(px(8.0))
+                .gap(crate::typography::ui_rems(8.0))
                 .children(elements)
                 .into_any_element();
         }

@@ -58,11 +58,15 @@ impl ArtifactRenderer for Rc<PngRenderer> {
     ) -> RenderFuture {
         let changed = document.contains("CHANGED");
         let tall = document.contains("TALL");
+        let content_height = document.contains("VERYTALL").then_some(40_000);
         self.documents.borrow_mut().push((document, viewport));
         Box::pin(async move {
             Ok(RenderOutput {
                 png: Some(synthetic_png(changed, tall)),
-                report: None,
+                report: content_height.map(|content_height| super::document::ProbeReport {
+                    content_height: Some(content_height),
+                    ..Default::default()
+                }),
             })
         })
     }
@@ -333,6 +337,57 @@ fn highlight_changes_diffs_two_offscreen_renders(cx: &mut TestAppContext) {
     let doc = shown.borrow().last().unwrap().1.clone();
     assert_eq!(doc.matches("data-zeron-changes").count(), 1);
     assert!(vcx.debug_bounds("artifact-compare-result").is_some());
+}
+
+#[test]
+fn coverage_notice_math() {
+    use super::document::{COMPARE_MAX_HEIGHT, compare_coverage, coverage_notice};
+    assert_eq!(compare_coverage(3000), None);
+    assert_eq!(compare_coverage(COMPARE_MAX_HEIGHT), None);
+    assert_eq!(
+        compare_coverage(COMPARE_MAX_HEIGHT + 1),
+        Some((COMPARE_MAX_HEIGHT, COMPARE_MAX_HEIGHT + 1))
+    );
+    assert_eq!(
+        coverage_notice((16_000, 42_000)),
+        "Compared the first 16,000 px of 42,000"
+    );
+    assert_eq!(
+        coverage_notice((16_000, 100_123)),
+        "Compared the first 16,000 px of 100,123"
+    );
+}
+
+#[gpui::test]
+fn very_tall_renders_say_how_much_was_compared(cx: &mut TestAppContext) {
+    let kind = ArtifactKind::HtmlFragment;
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(move |_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        let text = if revision == 1 {
+            "<p>TALL VERYTALL old</p>"
+        } else {
+            "<p>TALL VERYTALL CHANGED</p>"
+        };
+        Ok(content_reply(
+            kind,
+            revision,
+            text,
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, kind, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    tab.update_in(vcx, |tab, window, cx| tab.toggle_highlight(window, cx));
+    settle(vcx);
+    tab.read_with(vcx, |tab, _| {
+        let summary = tab.compare_view().unwrap().render_summary().unwrap();
+        assert!(
+            summary.ends_with("Compared the first 16,000 px of 40,000"),
+            "{summary}"
+        );
+    });
 }
 
 #[gpui::test]
@@ -640,6 +695,132 @@ fn markdown_compare_panes_scroll_together(cx: &mut TestAppContext) {
     );
     wheel(vcx, "artifact-compare-markdown-right", 5000.0);
     assert!(ratio(&left) < 0.01 && ratio(&right) < 0.01, "back at top");
+}
+
+#[gpui::test]
+fn markdown_compare_follows_scrollbar_drag_and_programmatic_scroll(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &tall_markdown(revision),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, ArtifactKind::Markdown, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    settle(vcx);
+    settle(vcx);
+    let (left, right) = tab.read_with(vcx, |tab, cx| {
+        let (l, r) = tab.compare_view().unwrap().markdown.clone().unwrap();
+        (l.read(cx).list_state(), r.read(cx).list_state())
+    });
+    let ratio = |list: &gpui::ListState| {
+        let top = list.logical_scroll_top();
+        super::compare::scroll_ratio(top.item_ix, 0.0, list.item_count())
+    };
+    // Scrollbar drag on the left pane: no wheel event, no scroll handler.
+    left.scrollbar_drag_started();
+    left.set_offset_from_scrollbar(gpui::point(gpui::px(0.0), gpui::px(-600.0)));
+    left.scrollbar_drag_ended();
+    settle(vcx);
+    settle(vcx);
+    assert!(ratio(&left) > 0.02, "dragged: {}", ratio(&left));
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.02,
+        "right follows the drag: {} vs {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    // Programmatic scroll (what PageDown and scroll-to-block use) on the right.
+    right.scroll_to(gpui::ListOffset {
+        item_ix: 10,
+        offset_in_item: gpui::px(0.0),
+    });
+    settle(vcx);
+    settle(vcx);
+    assert!(
+        (ratio(&left) - ratio(&right)).abs() < 0.02,
+        "left follows scroll_to: {} vs {}",
+        ratio(&left),
+        ratio(&right)
+    );
+    assert!(ratio(&left) < 0.2, "moved back up: {}", ratio(&left));
+}
+
+#[gpui::test]
+fn markdown_compare_zoom_mirrors_to_both_panes(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &tall_markdown(revision),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, ArtifactKind::Markdown, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    settle(vcx);
+    settle(vcx);
+    let zooms = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        tab.read_with(vcx, |tab, cx| {
+            let (l, r) = tab.compare_view().unwrap().markdown.clone().unwrap();
+            (l.read(cx).zoom(), r.read(cx).zoom())
+        })
+    };
+    assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
+    assert_eq!(zooms(&tab, vcx), (1.0, 1.0));
+    // A pinch over the right pane zooms both.
+    let at = vcx
+        .debug_bounds("artifact-compare-markdown-right")
+        .unwrap()
+        .center();
+    vcx.simulate_event(gpui::PinchEvent {
+        position: at,
+        delta: 0.5,
+        modifiers: Default::default(),
+        phase: gpui::TouchPhase::Moved,
+    });
+    settle(vcx);
+    let (left, right) = zooms(&tab, vcx);
+    assert!((left - 1.5).abs() < 1e-3 && left == right, "{left} {right}");
+    // So do the keys' steps and the reset.
+    tab.update(vcx, |tab, cx| assert!(tab.zoom_step(1, cx)));
+    settle(vcx);
+    let (left, right) = zooms(&tab, vcx);
+    assert!((left - 1.6).abs() < 1e-3 && left == right, "{left} {right}");
+    tab.update(vcx, |tab, cx| assert!(tab.zoom_reset(cx)));
+    settle(vcx);
+    assert_eq!(zooms(&tab, vcx), (1.0, 1.0));
+}
+
+#[gpui::test]
+fn web_compare_zoom_goes_through_the_host_to_both_frames(cx: &mut TestAppContext) {
+    let kind = ArtifactKind::HtmlFragment;
+    let _dir = init_ui(cx);
+    let (tab, _, shown, _, vcx) = open(cx, kind, by_revision(kind));
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
+    // The page script zooms (⌘-wheel, pinch) and asks the host to mirror it.
+    let doc = shown.borrow().last().unwrap().1.clone();
+    assert!(doc.contains("zeronSyncZoomTo") && doc.contains("zeronSyncZoom:"));
+    // The tab's level is adopted from the host's report and reaches both
+    // frames through the same entry point as a single page.
+    tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1000), cx));
+    tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1800), cx));
+    assert!((tab.read_with(vcx, |tab, _| tab.zoom_level()) - 1.8).abs() < 1e-3);
+    assert!(super::compare::SYNC_HOST_SCRIPT.contains("__zeronFrameCmd"));
 }
 
 #[test]

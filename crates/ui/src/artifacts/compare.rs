@@ -249,7 +249,34 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
     const max = range();
     try { parent.postMessage({ zeronSync: { ratio: max > 0 ? root().scrollTop / max : 0 } }, "*"); } catch (_) {}
   }, { passive: true });
+  // Zoom: CSS zoom on the page root, mirrored in the other pane by the host.
+  // Keep the maths in step with `find::FRAME_SCRIPT` / `zoom::anchor_offset`.
+  let zoom = 1, pinchFrom = 1;
+  const setZoom = (to, ax, ay, relay) => {
+    to = Math.round(Math.min(8, Math.max(0.25, to)) * 10000) / 10000;
+    if (!(to > 0) || to === zoom) return;
+    const se = root();
+    const x = ax == null ? innerWidth / 2 : ax, y = ay == null ? innerHeight / 2 : ay;
+    const k = to / zoom;
+    const left = Math.max(0, (se.scrollLeft + x) * k - x), top = Math.max(0, (se.scrollTop + y) * k - y);
+    zoom = to;
+    document.documentElement.style.zoom = String(to);
+    following = true;
+    se.scrollLeft = left; se.scrollTop = top;
+    requestAnimationFrame(() => { following = false; });
+    if (relay) try { parent.postMessage({ zeronSyncZoom: { level: to, x, y } }, "*"); } catch (_) {}
+  };
+  addEventListener("wheel", (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    setZoom(zoom * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY, true);
+  }, { passive: false });
+  addEventListener("gesturestart", (e) => { e.preventDefault(); pinchFrom = zoom; }, { passive: false });
+  addEventListener("gesturechange", (e) => { e.preventDefault(); setZoom(pinchFrom * e.scale, e.clientX, e.clientY, true); }, { passive: false });
+  addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
   addEventListener("message", (event) => {
+    const z = event.data && event.data.zeronSyncZoomTo;
+    if (z && typeof z.level === "number") return setZoom(z.level, z.x, z.y, false);
     const to = event.data && event.data.zeronSyncTo;
     if (!to || typeof to.ratio !== "number") return;
     following = true;
@@ -259,13 +286,29 @@ pub(crate) const SYNC_FRAME_SCRIPT: &str = r##"(() => {
 })();
 "##;
 
-/// In the host: relay one frame's scroll to the other.
-pub(crate) const SYNC_HOST_SCRIPT: &str = r##"addEventListener("message", (event) => {
-  const frames = Array.from(document.querySelectorAll("iframe"));
+/// In the host: relay one frame's scroll and zoom to the other, take zoom
+/// commands from the tab (`__zeronFrameCmd`, the same entry point as a
+/// single page) and report the zoom where the tab polls for it.
+pub(crate) const SYNC_HOST_SCRIPT: &str = r##"window.__zeronFrame = { zoom: 1000 };
+const zeronFrames = () => Array.from(document.querySelectorAll("iframe"));
+window.__zeronFrameCmd = (o) => {
+  if (!o || typeof o.zeronZoom !== "number") return;
+  window.__zeronFrame = Object.assign({}, window.__zeronFrame, { zoom: Math.round(o.zeronZoom * 1000) });
+  zeronFrames().forEach((frame) => frame.contentWindow && frame.contentWindow.postMessage({ zeronSyncZoomTo: { level: o.zeronZoom } }, "*"));
+};
+addEventListener("message", (event) => {
+  const frames = zeronFrames();
   const from = frames.findIndex((frame) => frame.contentWindow === event.source);
-  const ratio = event.data && event.data.zeronSync && event.data.zeronSync.ratio;
-  if (from < 0 || typeof ratio !== "number") return;
+  if (from < 0) return;
   const other = frames[1 - from];
+  const zoom = event.data && event.data.zeronSyncZoom;
+  if (zoom && typeof zoom.level === "number") {
+    window.__zeronFrame = Object.assign({}, window.__zeronFrame, { zoom: Math.round(zoom.level * 1000) });
+    if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncZoomTo: zoom }, "*");
+    return;
+  }
+  const ratio = event.data && event.data.zeronSync && event.data.zeronSync.ratio;
+  if (typeof ratio !== "number") return;
   if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*");
 });"##;
 

@@ -338,3 +338,132 @@ fn the_page_script_zooms_with_the_same_anchor_formula() {
         "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronZoom\":1.25});"
     );
 }
+
+#[test]
+fn drag_pan_follows_the_pointer_and_clamps() {
+    let max = (200.0, 100.0);
+    // Dragging right/down moves the content with the pointer: offset grows
+    // toward zero, and cannot pass it.
+    assert_eq!(
+        zoom::drag_pan_offset((-150.0, -80.0), (10.0, 10.0), (30.0, 15.0), max),
+        (-130.0, -75.0)
+    );
+    assert_eq!(
+        zoom::drag_pan_offset((-50.0, -20.0), (0.0, 0.0), (500.0, 500.0), max),
+        (0.0, 0.0)
+    );
+    // Dragging the other way stops at the far edge.
+    assert_eq!(
+        zoom::drag_pan_offset((-150.0, -80.0), (100.0, 100.0), (-900.0, -900.0), max),
+        (-200.0, -100.0)
+    );
+    // An axis with no overflow stays put.
+    assert_eq!(
+        zoom::drag_pan_offset((0.0, 0.0), (0.0, 0.0), (40.0, 40.0), (0.0, 100.0)),
+        (0.0, 0.0)
+    );
+}
+
+#[gpui::test]
+fn zoomed_images_pan_by_dragging_and_still_scroll(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let _dir = init_ui(cx);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(3000, 2000, image::Rgba([10, 120, 200, 255]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    let (tab, _probe, vcx) = open_in(
+        cx,
+        ArtifactKind::Image,
+        &encoded,
+        ArtifactContentEncoding::Base64,
+    );
+    let offset = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        tab.read_with(vcx, |tab, _| tab.image_offset_for_tests())
+    };
+    let at = body_center(vcx, "artifact-image");
+    // At fit nothing pans.
+    tab.update(vcx, |tab, cx| tab.image_pan_for_tests("down", at, cx));
+    tab.update(vcx, |tab, cx| {
+        tab.image_pan_for_tests("move", at + point(px(-50.0), px(-50.0)), cx)
+    });
+    assert_eq!(offset(&tab, vcx), (0.0, 0.0));
+    tab.update(vcx, |tab, cx| tab.image_pan_for_tests("up", at, cx));
+
+    press(vcx, "mod-=");
+    for _ in 0..10 {
+        press(vcx, "mod-=");
+    }
+    settle(vcx);
+    settle(vcx);
+    assert!(level(&tab, vcx) > 1.5);
+    // Dragging down moves the content down with the pointer: the offset
+    // moves toward zero by the drag distance.
+    let start = offset(&tab, vcx);
+    let max = tab.read_with(vcx, |tab, _| tab.image_max_offset_for_tests());
+    assert!(max.1 > 100.0, "pannable: {max:?}");
+    tab.update(vcx, |tab, cx| tab.image_pan_for_tests("down", at, cx));
+    tab.update(vcx, |tab, cx| {
+        tab.image_pan_for_tests("move", at + point(px(0.0), px(30.0)), cx)
+    });
+    let (_, y) = offset(&tab, vcx);
+    assert!((y - (start.1 + 30.0)).abs() < 0.5, "panned: {start:?} -> {y}");
+    // Further than the content goes: clamped to its far edge.
+    tab.update(vcx, |tab, cx| {
+        tab.image_pan_for_tests("move", at + point(px(-90_000.0), px(-90_000.0)), cx)
+    });
+    let (cx_, cy_) = offset(&tab, vcx);
+    assert!(
+        (cx_ + max.0).abs() < 0.5 && (cy_ + max.1).abs() < 0.5,
+        "{cx_} {cy_} {max:?}"
+    );
+    tab.update(vcx, |tab, cx| tab.image_pan_for_tests("up", at, cx));
+    // Moving with no drag does nothing; the wheel still scrolls.
+    tab.update(vcx, |tab, cx| {
+        tab.image_pan_for_tests("move", at + point(px(100.0), px(100.0)), cx)
+    });
+    assert_eq!(offset(&tab, vcx), (cx_, cy_));
+    vcx.simulate_event(ScrollWheelEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(40.0))),
+        ..Default::default()
+    });
+    settle(vcx);
+    assert!(offset(&tab, vcx).1 > cy_, "wheel scrolled back");
+}
+
+#[gpui::test]
+fn markdown_spacing_scales_with_the_zoom_like_the_text(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    // Paragraphs, a list and a quote: every block carries the 12 px gap, the
+    // list its item gaps, the quote its padding.
+    let source = "First paragraph.\n\n- one\n- two\n- three\n\n> quoted line\n\nLast paragraph.\n";
+    let (tab, _probe, vcx) = open_in(
+        cx,
+        ArtifactKind::Markdown,
+        source,
+        ArtifactContentEncoding::Utf8,
+    );
+    let heights = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        settle(vcx);
+        settle(vcx);
+        tab.read_with(vcx, |tab, cx| tab.markdown_item_heights_for_tests(cx))
+    };
+    let base = heights(&tab, vcx);
+    assert!(base.len() >= 4, "{base:?}");
+    for _ in 0..10 {
+        tab.update(vcx, |tab, cx| {
+            tab.zoom_step(1, cx);
+        });
+    }
+    assert!(approx(level(&tab, vcx), 2.0));
+    let zoomed = heights(&tab, vcx);
+    assert_eq!(base.len(), zoomed.len());
+    for (ix, (a, b)) in base.iter().zip(&zoomed).enumerate() {
+        assert!(
+            (b / a - 2.0).abs() < 0.03,
+            "block {ix}: {a} -> {b} should double with the zoom"
+        );
+    }
+}
