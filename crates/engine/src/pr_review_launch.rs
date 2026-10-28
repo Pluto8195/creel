@@ -1,5 +1,5 @@
 //! "Review PR" launcher (`StartPrReview`; docs/pr-review.md): a port of the
-//! Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` onto Zeron
+//! Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` onto Mast
 //! Chats.
 //!
 //! Given `github.com/<owner>/<name>#<number>`:

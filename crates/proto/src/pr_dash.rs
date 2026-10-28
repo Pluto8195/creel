@@ -150,7 +150,7 @@ pub struct PrDashDiff {
     pub docs_lines: u64,
 }
 
-/// A Zeron chat linked to a PR (shown on the row; click opens it).
+/// A Mast chat linked to a PR (shown on the row; click opens it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrDashChat {
@@ -232,7 +232,7 @@ pub struct PrDashRow {
     /// Why a Needs-you / Comments PR is there ("2 checks failing", …).
     #[serde(default)]
     pub reasons: Vec<String>,
-    /// Zeron chats linked to this PR, best first.
+    /// Mast chats linked to this PR, best first.
     #[serde(default)]
     pub chats: Vec<PrDashChat>,
 }

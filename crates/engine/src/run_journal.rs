@@ -306,7 +306,7 @@ impl RunJournal {
         self.dir.join(format!("{}.restart", sanitize_id(chat_id)))
     }
 
-    /// Stable Zeron-owned working directory for a project-less chat. Keeping
+    /// Stable Mast-owned working directory for a project-less chat. Keeping
     /// this beside (rather than inside) `journals/` lets journal scans remain
     /// file-only and gives every chat its own sandbox root.
     pub(crate) fn projectless_cwd(&self, chat_id: &str) -> Result<PathBuf, JournalError> {

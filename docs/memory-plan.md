@@ -1,7 +1,7 @@
 # Memory plan — bounded RSS without touching feel
 
 Written 2026-08-03 after a full-codebase audit plus empirical benchmarks (below).
-Problem: Activity Monitor shows Zeron at 450–600MB on viewer-only laptops and
+Problem: Activity Monitor shows Mast at 450–600MB on viewer-only laptops and
 >1GB after heavy use. Target: ~150–250MB steady-state, flat over a workday.
 
 ## 1. What we measured

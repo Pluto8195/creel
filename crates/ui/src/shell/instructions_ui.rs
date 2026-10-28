@@ -1690,7 +1690,7 @@ mod tests {
         }));
     }
 
-    /// The per-harness token decides too: a host whose Zeron delivers
+    /// The per-harness token decides too: a host whose Mast delivers
     /// instructions but not for this Chat's harness says so and keeps Apply
     /// inert until it advertises `work-outline-instruction-envelope-v1/<harness>`.
     #[gpui::test]

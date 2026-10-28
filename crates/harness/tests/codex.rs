@@ -1694,7 +1694,7 @@ fn text_of(events: &[AgentEvent]) -> String {
         .collect()
 }
 
-/// Codex gets the Zeron MCP server through the thread's `config` override
+/// Codex gets the Mast MCP server through the thread's `config` override
 /// layer only when the engine injects it; a plain run carries no
 /// `mcp_servers` keys at all (the user's `config.toml` stays authoritative).
 #[tokio::test]

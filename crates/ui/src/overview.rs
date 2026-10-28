@@ -64,7 +64,7 @@ mod linear_host;
 /// working/awaiting input, reads as stale. Adapted from
 /// `session_canvas_server.py`'s `CURSOR_STALE_SECONDS` (3600s) — that value
 /// times a continuously-polled cursor-liveness hook, a much noisier signal
-/// than Zeron's per-message timestamps, so a day is the closer match in
+/// than Mast's per-message timestamps, so a day is the closer match in
 /// spirit ("this chat has gone quiet") rather than a literal port of the
 /// number.
 const STALE_AFTER: chrono::Duration = chrono::Duration::days(7);
@@ -498,17 +498,17 @@ fn reference_status_color(status: ChatIndicator) -> gpui::Hsla {
 }
 
 /// `STATUS_STYLES` icon + label (`session_canvas.html:892-905`) mapped from
-/// Zeron's real `ChatIndicator` vocabulary. What Zeron can and can't produce:
+/// Mast's real `ChatIndicator` vocabulary. What Mast can and can't produce:
 /// - `pending_approval` (#fab219 "⚡"): no equivalent. `SessionStatus` has no
 ///   permission-wait state — an `InputRequested` event (the only "blocked on
 ///   the human" signal) maps to `AwaitingInput`, which is the web's
 ///   `needs_input`. Not invented here.
-/// - `blocked` ("✕"): Zeron's `Errored` (an unseen failed run) — labeled
+/// - `blocked` ("✕"): Mast's `Errored` (an unseen failed run) — labeled
 ///   "error", which is what it actually is.
 /// - `not_running` ("○"): no equivalent. It marked an externally imported
 ///   session with no live run, which needed its import classification;
 ///   without that every `Idle` chat is "idle" ("–").
-/// - `running`/`unknown`: aliases/fallbacks with no distinct Zeron source.
+/// - `running`/`unknown`: aliases/fallbacks with no distinct Mast source.
 fn status_style(status: ChatIndicator) -> (&'static str, &'static str) {
     match status {
         ChatIndicator::Working => ("●", "working"),
@@ -2450,7 +2450,7 @@ impl Overview {
             .filter(|row| {
                 // Web `sessionMatchesSearch` fields that exist here: name
                 // (title), branch, last message (preview), cwd, ticket id,
-                // PR title. Zeron has no separate `summary` field.
+                // PR title. Mast has no separate `summary` field.
                 let mut fields = vec![
                     row.chat.title.as_deref(),
                     row.chat.branch.as_deref(),
@@ -4041,9 +4041,9 @@ impl Overview {
     /// - pull request (title/state/draft,
     ///   review decision, checks, reviewer chips — click opens GitHub),
     ///   linear ticket (identifier/title/status — click opens Linear)
-    /// - last message (Zeron has no separate `summary` field)
+    /// - last message (Mast has no separate `summary` field)
     /// - "Open chat →" + Archive/Unarchive actions. The web's "Open in
-    ///   Terminal/Cursor" has no Zeron equivalent (the chat IS here) —
+    ///   Terminal/Cursor" has no Mast equivalent (the chat IS here) —
     ///   "Open full chat →" in the preview panel is the analog.
     fn expanded_detail_for(
         &self,

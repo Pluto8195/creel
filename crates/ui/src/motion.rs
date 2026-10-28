@@ -403,7 +403,7 @@ pub const EASE_TAILWIND: CubicBezier = CubicBezier::new(0.4, 0.0, 0.2, 1.0);
 /// CSS `transition-colors` default: 150ms over [`EASE_TAILWIND`] — the temporal
 /// blend every interactive hover wash rides in the original.
 pub const HOVER_FADE: MotionSpec = MotionSpec::new(150, EASE_TAILWIND);
-/// Zeron loader pulse period: 2.4s.
+/// Mast loader pulse period: 2.4s.
 pub const ZERON_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
 pub const GRADIENT_SPIN: MotionSpec = MotionSpec::new(750, EASE);

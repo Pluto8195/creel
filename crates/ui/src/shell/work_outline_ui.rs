@@ -122,7 +122,7 @@ pub(super) enum ReferenceOpen {
     Rejected,
 }
 
-/// Where a reference could open in Zeron.
+/// Where a reference could open in Mast.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SurfaceHost {
     /// The route on screen hosts the side pane (the Chat route with a chat).
@@ -732,7 +732,7 @@ impl Shell {
         }
     }
 
-    /// Where `url` can open in Zeron. The side pane exists only on the Chat
+    /// Where `url` can open in Mast. The side pane exists only on the Chat
     /// route, so from the PR page, the Outline or the Overview it goes to a
     /// chat: the PR's review chat, else the chat the shell has selected.
     /// With neither there is no session to hold a tab, so it opens

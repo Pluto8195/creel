@@ -1199,7 +1199,7 @@ async fn a_remote_host_without_the_harness_token_is_refused_at_ingestion() {
         .unwrap_err();
     assert_eq!(host_reason(&host_rejection(refused)), Reason::UnknownDevice);
 
-    // A host on an older Zeron.
+    // A host on an older Mast.
     let mut device: zeron_proto::Device = serde_json::from_value(serde_json::json!({
         "id": "device-b", "name": "Studio", "platform": "macos", "lastSeenAt": null,
         "version": "0.2.81"

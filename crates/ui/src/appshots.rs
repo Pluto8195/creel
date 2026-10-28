@@ -605,7 +605,7 @@ pub async fn capture_active_window() -> Result<CapturedAppshot, CaptureError> {
     result
 }
 
-/// Ask the running headed Zeron process to capture an Appshot. Linux desktop
+/// Ask the running headed Mast process to capture an Appshot. Linux desktop
 /// environments that do not implement the Global Shortcuts portal can bind
 /// `zeron appshot` in their native Keyboard Shortcuts settings.
 #[cfg(target_os = "linux")]

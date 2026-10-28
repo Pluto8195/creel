@@ -1041,7 +1041,7 @@ impl WorkItemLaunchService {
 
     // ── child Chats ─────────────────────────────────────────────────────
 
-    /// A Zeron-created child Chat (`parentChatId`) inherits its parent's
+    /// A Mast-created child Chat (`parentChatId`) inherits its parent's
     /// work-item assignment, selected instruction revision (application
     /// reason `forkInherit`), and execution binding (acceptance 19). Ids
     /// derive from the child's id, so a retried create is a no-op. Each part

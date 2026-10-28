@@ -4,7 +4,7 @@
 //! `docs/planning-artifact-conventions.md`. Design:
 //! `docs/plans/planning-artifacts-design.md`.
 //!
-//! - An artifact is a file Zeron owns under the work item's canonical
+//! - An artifact is a file Mast owns under the work item's canonical
 //!   checkout: `<canonical>/.zeron/artifacts/<folder>/<file>` (chats without a
 //!   work item: `<canonical>/.zeron/artifacts/_chats/<chatId>/`). The
 //!   canonical checkout is the main checkout of the item's primary
@@ -16,7 +16,7 @@
 //!   forwardable [`methods`] `ArtifactContent`.
 //! - Agents publish through the `zeron-agent` MCP tools
 //!   ([`crate::agent_tools::tools::ARTIFACTS`]); harnesses without tools link
-//!   `[title](zeron-artifact:<path>)` and Zeron imports the file once.
+//!   `[title](zeron-artifact:<path>)` and Mast imports the file once.
 //! - Render checks are served by a headed UI on the owning device: the UI
 //!   subscribes to `WatchArtifactRenderRequests`, renders each
 //!   [`ArtifactRenderRequest`] offscreen, and answers with
@@ -39,7 +39,7 @@ pub const KIND_ARTIFACTS: &str = "artifacts";
 pub const ARTIFACTS_CAPABILITY_V1: &str = "artifacts-v1";
 /// Link scheme: `zeron-artifact:<artifactId>` or `zeron-artifact:<path>`.
 pub const ARTIFACT_URL_SCHEME: &str = "zeron-artifact:";
-/// Zeron's folder in a canonical checkout (listed in `info/exclude`).
+/// Mast's folder in a canonical checkout (listed in `info/exclude`).
 pub const ZERON_DIR: &str = ".zeron";
 /// Artifact root, relative to the canonical checkout.
 pub const ARTIFACTS_DIR: &str = ".zeron/artifacts";
@@ -50,7 +50,7 @@ pub const SPACE_FOLDER: &str = "_space";
 /// Where `ArtifactPromote` copies the current revision (relative to the
 /// canonical checkout).
 pub const PROMOTE_DIR: &str = "docs/plans";
-/// The note of a revision Zeron recorded for an edit made outside
+/// The note of a revision Mast recorded for an edit made outside
 /// `artifact_publish`.
 pub const EDITED_WITHOUT_NOTE: &str = "edited without a note";
 /// The note of an imported file's first revision when none was given.
@@ -67,7 +67,7 @@ pub mod artifact_limits {
     pub const MAX_TITLE_CHARS: usize = 200;
     /// Role, in Unicode scalar values.
     pub const MAX_ROLE_CHARS: usize = 64;
-    /// Largest file Zeron publishes or imports.
+    /// Largest file Mast publishes or imports.
     pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
     /// Companion files of one `options` manifest.
     pub const MAX_COMPANIONS: usize = 16;
@@ -289,7 +289,7 @@ pub struct ArtifactView {
     /// The work item's (or chat's) plan. At most one per scope.
     #[serde(default)]
     pub pinned_as_plan: bool,
-    /// Answers given in Zeron to the plan's questions (Artifacts phase 3 D).
+    /// Answers given in Mast to the plan's questions (Artifacts phase 3 D).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<ArtifactQuestionAnswer>,
     /// Comments on the rendered artifact (Artifacts phase 4 G). Never in the file.
@@ -851,7 +851,7 @@ pub enum ArtifactErrorCode {
     TooLarge,
     /// The Space lives on another device (call it there).
     WrongDevice,
-    /// No headed Zeron window on the owning device can render.
+    /// No headed Mast window on the owning device can render.
     RenderUnavailable,
     /// The UI did not answer within the timeout.
     RenderTimeout,

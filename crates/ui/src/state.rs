@@ -1717,7 +1717,7 @@ impl AppState {
     // ---- queries ----
 
     /// Non-archived, top-level chats in sidebar order. Chats spawned by
-    /// another chat (`parent_chat_id`, the Zeron MCP's orchestration link)
+    /// another chat (`parent_chat_id`, the Mast MCP's orchestration link)
     /// are the parent's workers, not sessions the user started: they stay
     /// reachable by id/deep link but never take a sidebar row or jump slot.
     pub fn visible_chats(&self) -> impl Iterator<Item = &Chat> {
@@ -3486,7 +3486,7 @@ pub(crate) enum InstructionHostSupport {
     Supported,
     /// The host's device row is not synced (or the Chat is unknown).
     UnknownDevice,
-    /// The host's Zeron predates instruction delivery.
+    /// The host's Mast predates instruction delivery.
     ZeronUpgradeRequired,
     /// The host delivers instructions, but not for this harness.
     HarnessUnsupported(zeron_proto::HarnessId),

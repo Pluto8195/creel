@@ -48,7 +48,7 @@ pub struct ImportReport {
     pub fallbacks: Vec<String>,
     pub dropped: Vec<String>,
     pub warnings: Vec<String>,
-    /// Deterministic repairs made after mapping so the compiled Zeron roles
+    /// Deterministic repairs made after mapping so the compiled Mast roles
     /// remain usable without erasing the source theme's syntax identity.
     #[serde(default)]
     pub adjustments: Vec<ImportAdjustment>,

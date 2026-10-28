@@ -1,5 +1,5 @@
 //! Work Outline agent tools (Milestone 4) against a real offline engine:
-//! - a Run of a Chat in a Space gets the Zeron MCP injection with a token
+//! - a Run of a Chat in a Space gets the Mast MCP injection with a token
 //!   bound to that Chat and Run, revoked when the Run ends; a projectless
 //!   Chat's Run gets plain `run()` and no token;
 //! - `AgentToolCall` authenticates by token only (forged / absent / revoked

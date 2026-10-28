@@ -20,7 +20,7 @@ wins. Unrelated listeners and non-HTTP services are excluded. HTTP probes are
 bounded and run every two seconds, using HEAD and accepting valid HTTP status
 responses (including authentication and application errors).
 
-Zeron terminal/task/agent descendants are marked as Zeron-owned. Framework
+Mast terminal/task/agent descendants are marked as Mast-owned. Framework
 commands identify Vite, Next.js, Astro, Miniflare and Node servers; otherwise the
 list uses a generic HTTP label. Before a local backend connection, the daemon
 rechecks the listener's process identity and cwd to reject stale port reuse.

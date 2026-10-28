@@ -607,7 +607,7 @@ impl UserActionNotifier {
 
 /// Which outputs a notice may produce under the user's settings: the
 /// `Request` chime (master sound + input sound) and the desktop banner
-/// (notifications on, and not suppressed by background-only while a Zeron
+/// (notifications on, and not suppressed by background-only while a Mast
 /// window is focused). Required Actions list every request regardless.
 pub(crate) fn notice_outputs(
     settings: &crate::settings::UiSettings,

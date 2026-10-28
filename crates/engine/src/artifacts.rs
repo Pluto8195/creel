@@ -12,7 +12,7 @@
 //! - **Writers.** `artifact_publish` (agents), `ArtifactRegister` (user
 //!   import), the marker fallback (assistant text), and the watcher
 //!   (external edits) all go through [`ArtifactsService::record`] under one
-//!   gate, so the watcher never mistakes Zeron's own write for an edit.
+//!   gate, so the watcher never mistakes Mast's own write for an edit.
 //! - **Render checks.** [`RenderBroker`]: the headed UI holds
 //!   `WatchArtifactRenderRequests` open; a request goes to the newest live
 //!   subscriber and waits up to 30 s for `ArtifactRenderResult`.
@@ -1106,7 +1106,7 @@ impl ArtifactsService {
                 .set_artifact_pin(&id, true)
                 .map_err(|e| ArtifactError::io(e.to_string()))?;
         }
-        // Zeron's own write is not an external edit.
+        // Mast's own write is not an external edit.
         let meta = std::fs::metadata(&stored).ok();
         seen.insert(
             view.stored_path.clone(),
@@ -1128,7 +1128,7 @@ impl ArtifactsService {
     // ── watcher ─────────────────────────────────────────────────────────────
 
     /// One watcher pass over this device's stored files: a content change
-    /// Zeron did not make becomes a revision noted "edited without a note".
+    /// Mast did not make becomes a revision noted "edited without a note".
     /// Returns how many revisions it recorded.
     pub fn scan_external_edits(&self) -> usize {
         let mut seen = lock(&self.inner.gate);

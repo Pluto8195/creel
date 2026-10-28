@@ -38,11 +38,11 @@
 //! Whether an imported subagent should become its own child `Chat` (reusing
 //! `Chat::parent_chat_id`) is explicitly NOT decided here. That field is
 //! documented (`crates/proto/src/entities.rs`) as "the chat whose agent
-//! created this one (via the Zeron MCP server)" — Zeron's own live
+//! created this one (via the Mast MCP server)" — Mast's own live
 //! in-app orchestration links, established by a running MCP tool call, not
 //! by scanning history after the fact. Reusing it for an external session's
 //! after-the-fact-discovered subagents would conflate two different
-//! provenances (a live Zeron-orchestrated spawn vs. a fact discovered by
+//! provenances (a live Mast-orchestrated spawn vs. a fact discovered by
 //! scanning someone else's already-finished directory tree) under one field
 //! with no way to tell them apart later. This pass does not create any
 //! `Chat` rows for subagents at all, so the question doesn't need answering

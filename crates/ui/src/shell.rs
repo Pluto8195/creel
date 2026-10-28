@@ -358,7 +358,7 @@ pub fn apply_keymap(
     cx.clear_key_bindings();
     // `clear_key_bindings` also removes the contextual editing actions that
     // gpui-base installed at startup. Reinitialize the component layer before
-    // rebuilding Zeron's bindings so the file editor keymap remains active.
+    // rebuilding Mast's bindings so the file editor keymap remains active.
     gpui_base::init(cx);
     crate::composer::init(cx, composer_send_behavior);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
@@ -2486,9 +2486,9 @@ impl Shell {
                 )
             };
             // Background-only banners: `active_window()` is app-level (any
-            // Zeron window being key), so a ping for a *background chat* in a
+            // Mast window being key), so a ping for a *background chat* in a
             // focused app still stays a chime — you're already looking at
-            // Zeron; the sidebar dot carries the rest.
+            // Mast; the sidebar dot carries the rest.
             let app_focused = cx.active_window().is_some();
             for (chat_id, status, send_pending, title) in sessions {
                 let prev = self.sound_prev.insert(chat_id.clone(), status.clone());
@@ -6532,7 +6532,7 @@ impl Shell {
         self.shortcut_badge(ShortcutId::NewSession)
     }
 
-    /// Native Windows caption controls integrated into Zeron's unified
+    /// Native Windows caption controls integrated into Mast's unified
     /// titlebar. `WindowControlArea` maps these hit targets to HTMINBUTTON,
     /// HTMAXBUTTON, and HTCLOSE, so Windows owns their behavior (including
     /// Snap Layouts) while GPUI renders the system Segoe caption glyphs.
@@ -6652,7 +6652,7 @@ impl Shell {
         )
     }
 
-    /// Zeron-drawn Linux caption controls, one overlay per populated side.
+    /// Mast-drawn Linux caption controls, one overlay per populated side.
     /// Shell-level chrome like the Windows cluster: mounted at the root so
     /// they stay above the splash and every auth/org/error gate.
     fn render_linux_caption_controls(&self, window: &Window, cx: &App) -> Vec<AnyElement> {
@@ -8325,7 +8325,7 @@ impl Shell {
         }
     }
 
-    /// Fetch the manifest and stage the new Zeron desktop bundle under the data dir
+    /// Fetch the manifest and stage the new Mast desktop bundle under the data dir
     /// (tokio — reqwest); the strip flips to "restart to apply" when done.
     fn begin_update_download(&mut self, cx: &mut Context<Self>) {
         let edge_url = self.boot.edge_url.clone();
@@ -11134,7 +11134,7 @@ impl Shell {
                 )
                 .into_any_element(),
             // Login card (zeron App.tsx Gate): centered card on the grid —
-            // logo, "Log in to Zeron", copy, full-width white Log in button.
+            // logo, "Log in to Mast", copy, full-width white Log in button.
             _ => div()
                 .w(px(360.0))
                 .px(px(32.0))
@@ -14630,7 +14630,7 @@ mod exit_regressions {
                     ),
                     LinkOutcome::External(preview_url.clone())
                 );
-                // "Open in Zeron" on the export shows its fragment.
+                // "Open in Mast" on the export shows its fragment.
                 assert_eq!(
                     activate(
                         shell,

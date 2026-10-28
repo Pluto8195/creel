@@ -963,7 +963,7 @@ mod rendered_tests {
                 assert_eq!(log.borrow().len(), 2);
                 assert_eq!(log.borrow()[0].target.original, "https://example.com/one");
                 assert_eq!(log.borrow()[1].target.original, "https://example.org/two");
-                // Menu starts on Open in Zeron; choose the external action.
+                // Menu starts on Open in Mast; choose the external action.
                 for key in ["down", "enter"] {
                     window.dispatch_event(
                         gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {

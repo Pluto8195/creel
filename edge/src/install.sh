@@ -1,5 +1,5 @@
 #!/bin/sh
-# Zeron (native) headless installer.
+# Mast (native) headless installer.
 #
 #   curl -fsSL https://zeron.sh/install.sh | sh
 #

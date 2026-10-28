@@ -384,7 +384,7 @@ pub(crate) fn installed_shim(pin: &NpmPin, shim_name: &str, contents: &str) -> O
     materialize_shim(&dir, shim_name, contents).ok()
 }
 
-/// Different running Zeron builds must never replace each other's shim.
+/// Different running Mast builds must never replace each other's shim.
 /// Publish complete, content-addressed files; a reader never sees a partial write.
 fn materialize_shim(dir: &Path, name: &str, contents: &str) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};

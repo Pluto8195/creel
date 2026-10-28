@@ -535,7 +535,7 @@ pub enum PickerKind {
     /// project pick implies its own host and overrides this).
     Device,
     /// New-session canvas only: browse Claude Code sessions found on disk
-    /// (started outside Zeron) and import one into a brand-new chat.
+    /// (started outside Mast) and import one into a brand-new chat.
     Import,
 }
 
@@ -710,7 +710,7 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
-    /// External-session candidates (`~/.claude/projects` sessions Zeron
+    /// External-session candidates (`~/.claude/projects` sessions Mast
     /// didn't launch itself), newest first.
     import_candidates: Loadable<Vec<ExternalSessionCandidate>>,
     import_candidates_task: Option<Task<()>>,

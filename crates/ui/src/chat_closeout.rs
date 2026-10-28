@@ -8,7 +8,7 @@
 //!   second, explicit permanent-discard confirmation before `force` is sent.
 //!
 //! The action is offered when a chat cwd cheaply looks like an agent worktree:
-//! either it has Zeron's `.workspace-root` marker or its `.git` metadata is a
+//! either it has Mast's `.workspace-root` marker or its `.git` metadata is a
 //! file, as Git uses for linked worktrees. The engine remains authoritative
 //! about whether the candidate is actually safe and eligible to remove.
 //! Everything here is pure so the decode/format/state logic is unit-testable
@@ -36,7 +36,7 @@ pub const DIRTY_FILES_SHOWN: usize = 5;
 
 /// Cheap visibility predicate for the "Close out worktree…" action.
 ///
-/// Zeron-created worktrees may carry a `.workspace-root` marker. Imported or
+/// Mast-created worktrees may carry a `.workspace-root` marker. Imported or
 /// otherwise ordinary linked worktrees instead have a `.git` *file* at their
 /// root (main checkouts have a `.git` directory). This intentionally only
 /// decides whether to expose the action; the engine plan validates that the

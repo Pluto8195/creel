@@ -5,7 +5,7 @@
 //! Two sources, tried in order:
 //!
 //! 1. **Live**: the chat's own [`zeron_doc::SessionDoc`] `contextUsage` meta
-//!    stamp. Zeron's live run loop already tracks this for the composer's own
+//!    stamp. Mast's live run loop already tracks this for the composer's own
 //!    context meter — `crates/harness/src/claude/normalize.rs`'s
 //!    `Frame::Assistant` handling sums the harness's assistant-message
 //!    `usage.{input_tokens,cache_read_input_tokens,cache_creation_input_tokens}`
@@ -154,7 +154,7 @@ impl ContextUsageProvider {
     /// same two-source resolution and risk quietly covering fewer chats than
     /// context-usage lookups do — which is exactly what happened before this
     /// method existed: subagent scanning only ever tried the import-cursor
-    /// source, so a chat Zeron itself launched (the common case for one
+    /// source, so a chat Mast itself launched (the common case for one
     /// actively spawning subagents) never resolved a transcript at all.
     pub fn transcript_path_for_chat(
         &self,
@@ -187,7 +187,7 @@ impl ContextUsageProvider {
     /// Fallback path's transcript resolution when the chat never went
     /// through the external-import flow (so `transcript_path_for` has no
     /// cursor to read) but DOES have a recorded harness session — e.g. a
-    /// chat Zeron itself launched or resumed, whose live doc stamp just
+    /// chat Mast itself launched or resumed, whose live doc stamp just
     /// hasn't landed yet this process. The empty-string "do not resume"
     /// tombstone (`WorkspaceHost::chat_harness_session`'s own contract)
     /// resolves to no session, same as having none at all.

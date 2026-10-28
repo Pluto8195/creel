@@ -678,7 +678,7 @@ async fn external_edits_become_revisions_without_a_note() {
     )
     .await;
     let id = reply["artifactId"].as_str().unwrap();
-    // Zeron's own write is not an edit.
+    // Mast's own write is not an edit.
     assert_eq!(rig.core.artifacts.scan_external_edits(), 0);
     std::fs::write(reply["storedPath"].as_str().unwrap(), "edited by hand\n").unwrap();
     assert_eq!(rig.core.artifacts.scan_external_edits(), 1);

@@ -96,7 +96,7 @@ const { Agent, Cursor, FileCredentialStore, JsonlLocalAgentStore } = sdk;
 // ---- per-run agent store --------------------------------------------------
 // The SDK's default local store is SQLite keyed by WORKSPACE
 // (`getDefaultSdkStateRoot(cwd)`), designed for one process per workspace.
-// Zeron runs concurrent shims on the same cwd as a matter of course — the
+// Mast runs concurrent shims on the same cwd as a matter of course — the
 // chat turn and its title generation start together, and two chats can share
 // a worktree — and the second `Agent.create` dies with "database is locked"
 // (reproduced live, 1.0.28). The shared-root JSONL backend is no better: its

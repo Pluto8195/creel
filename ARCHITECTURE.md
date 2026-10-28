@@ -81,7 +81,7 @@ This first local-first change does not upload, import, link, or delete local ses
 
 Devices authenticated to the same synced account are trusted peers for remote workspace control. A peer may send relay-forwarded workspace file requests to the device that owns a checkout; the owning engine resolves the target and enforces workspace-relative path, containment, symlink, and write-conflict checks before touching its filesystem.
 
-Ignored-file visibility is not an authorization boundary. A remote peer may request ignored entries and then read or write them, including potentially sensitive files such as `.env`, when `includeIgnored` is enabled. `.git` remains unavailable regardless of that option. Zeron intentionally does not maintain a filename denylist because it would be incomplete and could imply a security guarantee it cannot provide.
+Ignored-file visibility is not an authorization boundary. A remote peer may request ignored entries and then read or write them, including potentially sensitive files such as `.env`, when `includeIgnored` is enabled. `.git` remains unavailable regardless of that option. Mast intentionally does not maintain a filename denylist because it would be incomplete and could imply a security guarantee it cannot provide.
 
 If authenticated devices must no longer trust one another with the full workspace, that policy must be enforced by the owning engine for remote requests. Hiding entries only in the UI is not a security control.
 

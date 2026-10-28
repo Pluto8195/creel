@@ -107,7 +107,7 @@ pub fn login_command(config_dir: &std::path::Path) -> Result<Command, HarnessErr
 /// it at a fake CLI with [`ClaudeHarness::with_executable`].
 pub struct ClaudeHarness {
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Grace between the interrupt control request and SIGTERM.
     interrupt_grace: Duration,
@@ -119,12 +119,12 @@ pub struct ClaudeHarness {
     /// (project-scoped `.claude/commands` and skills) — kept separate from
     /// `initialize` for that reason; see [`discovery::CommandsCache`].
     commands_cache: discovery::CommandsCache,
-    /// Zeron-owned directory for Work Outline envelope files (see
+    /// Mast-owned directory for Work Outline envelope files (see
     /// [`instructions`]); defaults beside the model-discovery directory.
     instruction_dir: Option<PathBuf>,
     /// `claude --help` instruction-flag probe, cached per executable identity.
     instruction_probe: crate::instruction_support::ProbeCache,
-    /// Zeron-owned directory for per-Run `--mcp-config` files (see
+    /// Mast-owned directory for per-Run `--mcp-config` files (see
     /// [`crate::agent_tools`]); defaults beside the model-discovery directory.
     agent_tools_dir: Option<PathBuf>,
     /// Managed account home (`CLAUDE_CONFIG_DIR`); `None` = the Default login.
@@ -171,19 +171,19 @@ impl ClaudeHarness {
         crate::account_home::apply(cmd, HarnessId::ClaudeCode, self.account_home.as_deref());
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
     }
 
-    /// Write Work Outline envelope files under this Zeron-owned directory.
+    /// Write Work Outline envelope files under this Mast-owned directory.
     pub fn with_instruction_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.instruction_dir = Some(path.into());
         self
     }
 
-    /// Write per-Run agent-tools MCP config files under this Zeron-owned
+    /// Write per-Run agent-tools MCP config files under this Mast-owned
     /// directory.
     pub fn with_agent_tools_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.agent_tools_dir = Some(path.into());
@@ -198,7 +198,7 @@ impl ClaudeHarness {
 
     /// `--mcp-config <file>` for a Run with agent tools, plus the file guard
     /// the Run holds until it ends. Never `--strict-mcp-config`: the user's
-    /// own MCP servers keep loading beside Zeron's.
+    /// own MCP servers keep loading beside Mast's.
     fn agent_tools_args(
         &self,
         tools: Option<&crate::AgentToolsInjection>,
@@ -371,7 +371,7 @@ impl ClaudeHarness {
     }
 
     /// Share the complete initialize response for the MODEL catalog, which is
-    /// cwd-independent — the probe runs in a Zeron-owned discovery directory.
+    /// cwd-independent — the probe runs in a Mast-owned discovery directory.
     /// No user message is written; the short-lived child is retired after
     /// initialize. Command discovery uses its own per-cwd probe/cache
     /// instead (see [`Self::discover_commands`]) since project-scoped
@@ -417,7 +417,7 @@ impl ClaudeHarness {
             .await
     }
 
-    /// `cwd`: `None` runs in a Zeron-owned discovery directory (the model
+    /// `cwd`: `None` runs in a Mast-owned discovery directory (the model
     /// catalog's use, which doesn't need a specific project); `Some` spawns
     /// the CLI there instead, so its `initialize` response reflects
     /// THAT directory's project-scoped commands/skills (command discovery's
@@ -1325,7 +1325,7 @@ mod tests {
         }
     }
 
-    /// Agent tools ride `--mcp-config <Zeron-owned file>` only when the
+    /// Agent tools ride `--mcp-config <Mast-owned file>` only when the
     /// engine injects them, never `--strict-mcp-config` (the user's own MCP
     /// servers keep loading), and the token never reaches argv.
     #[cfg(unix)]

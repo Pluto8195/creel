@@ -387,7 +387,7 @@ pub fn listeners() -> Vec<Listener> {
         // against its already-authorized project roots and only canonicalizes
         // a matching candidate. Canonicalizing every user's listener cwd here
         // can otherwise touch Music, Pictures, or another privacy-managed
-        // folder that has nothing to do with Zeron.
+        // folder that has nothing to do with Mast.
         let Some(cwd) = cwds.get(&pid).map(PathBuf::from) else {
             continue;
         };

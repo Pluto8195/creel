@@ -182,7 +182,7 @@ pub struct LinearProjectRef {
     pub url: String,
 }
 
-/// One Linear issue as Zeron shows it (chips, the Linear panel, agents).
+/// One Linear issue as Mast shows it (chips, the Linear panel, agents).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearIssueSummary {

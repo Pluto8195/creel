@@ -1,5 +1,5 @@
 //! `ExternalSessionImporter::repair_missing_titles`, cursor-less case: a chat
-//! Zeron itself launched (via `WorkspaceHost::set_chat_harness_session`, e.g.
+//! Mast itself launched (via `WorkspaceHost::set_chat_harness_session`, e.g.
 //! the `review-zeron-fork` registry-file case) has no import cursor at all,
 //! so the OLD `read_cursor(chat_id).is_some()` gate skipped it forever even
 //! though it has a real, findable transcript and a registry entry. Kept in

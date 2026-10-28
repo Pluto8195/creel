@@ -1,5 +1,5 @@
 //! External-session import: on-disk Claude Code transcript → a brand-new
-//! Zeron chat with the same content a live session would have produced.
+//! Mast chat with the same content a live session would have produced.
 
 use std::sync::Arc;
 

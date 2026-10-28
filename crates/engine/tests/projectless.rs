@@ -1,6 +1,6 @@
 //! "Don't work in a project" against a real engine: a chat minted through the
 //! UI's exact wire shape (`Mutate createChat` with a `deviceId` and no
-//! `spaceId`) stores cwd `~`, spawns its run from a stable Zeron-owned scratch
+//! `spaceId`) stores cwd `~`, spawns its run from a stable Mast-owned scratch
 //! directory, and never mints a space row. In particular, the agent must not
 //! run from HOME and trigger macOS protected-folder access prompts.
 
@@ -210,7 +210,7 @@ async fn exercise_projectless(command_first: bool) {
             .unwrap();
     }
 
-    // The harness must see a stable per-chat Zeron-owned directory, never the
+    // The harness must see a stable per-chat Mast-owned directory, never the
     // host's real HOME (which contains TCC-protected folders on macOS).
     let cwds: Vec<String> = requests
         .lock()

@@ -1403,7 +1403,7 @@ impl WorkspaceHost {
     /// and base cwd (`cwd` override = an isolated-worktree path). With no
     /// `space_id` the chat is project-less: `device_id` picks the host and the
     /// cwd defaults to the portable `~` marker (resolved host-side to a
-    /// Zeron-owned per-chat scratch directory when the run spawns).
+    /// Mast-owned per-chat scratch directory when the run spawns).
     pub fn create_chat(
         &self,
         chat_id: &str,
@@ -1416,7 +1416,7 @@ impl WorkspaceHost {
     }
 
     /// [`create_chat`](Self::create_chat) recording the creating chat
-    /// (`parentChatId`) — the Zeron MCP's orchestration link.
+    /// (`parentChatId`) — the Mast MCP's orchestration link.
     pub fn create_chat_with_parent(
         &self,
         chat_id: &str,

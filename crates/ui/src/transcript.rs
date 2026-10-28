@@ -1069,7 +1069,7 @@ pub enum RowKind {
         name: String,
         mime_type: String,
     },
-    /// A Codex `visualize` control envelope. Zeron does not execute local
+    /// A Codex `visualize` control envelope. Mast does not execute local
     /// HTML in the embedded browser; the row instead opens a validated file
     /// inside the current workspace. `None` is a malformed envelope, kept as
     /// a quiet unavailable card so private-use control bytes never leak.
@@ -8385,7 +8385,7 @@ fn reveal_tool_row(row: AnyElement, height: f32, progress: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// BoardUI-style task tree with Zeron's tool glyph restored at each branch tip.
+/// BoardUI-style task tree with Mast's tool glyph restored at each branch tip.
 /// The previous row draws the first leg of a new arrival to its lower boundary;
 /// this row then continues down, rounds the elbow, and finally reveals the icon.
 /// One paint owns every segment in a row, avoiding alpha-darkened joints.

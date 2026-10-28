@@ -111,7 +111,7 @@ pub struct RepositoryBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     /// Branch (`main`, `refs/heads/main`) or commit sha the checkout must be
-    /// on. Zeron never switches to it; a mismatch blocks.
+    /// on. Mast never switches to it; a mismatch blocks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_ref: Option<String>,
 }
@@ -336,7 +336,7 @@ pub struct ConfigureExecutionParams {
     pub operation_id: String,
 }
 
-/// Host facts that relax validation. Zeron never widens the sandbox on its
+/// Host facts that relax validation. Mast never widens the sandbox on its
 /// own (contract 6.4.3): `additionalDirectories` is true only when the
 /// harness that will run can be given member paths outside the root.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,7 +452,7 @@ pub enum ExecutionValidationError {
     #[serde(rename_all = "camelCase")]
     RootNotDirectory { path: String },
     /// The execution root is the user's home directory: agents would probe
-    /// every personal folder, and Zeron treats HOME as projectless.
+    /// every personal folder, and Mast treats HOME as projectless.
     #[serde(rename_all = "camelCase")]
     HomeDirectoryRoot { path: String },
     #[serde(rename_all = "camelCase")]

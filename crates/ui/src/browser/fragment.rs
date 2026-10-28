@@ -5,7 +5,7 @@
 //!
 //! - an inner frame document with a strict CSP (scripts are part of the
 //!   protocol; network only for the skill's CDN allowlist, no `connect-src`
-//!   beyond `blob:`/`data:`), Zeron-themed base CSS, a local `window.openai`
+//!   beyond `blob:`/`data:`), Mast-themed base CSS, a local `window.openai`
 //!   stub and a small runtime for tabs, tooltips and icons;
 //! - an outer document whose only content is
 //!   `<iframe sandbox="allow-scripts" srcdoc=…>` — an opaque origin with no
@@ -13,7 +13,7 @@
 //!
 //! The browser loads the outer document as a string with no base URL, so
 //! neither level can address `file://`. No page-to-engine channel exists.
-//! The base stylesheet and scripts here are Zeron's own implementation of the
+//! The base stylesheet and scripts here are Mast's own implementation of the
 //! skill's documented contract; Codex's proprietary kit is not vendored.
 
 use crate::files::client::FilesClientError;
@@ -50,7 +50,7 @@ pub fn host_csp() -> String {
     frame_csp().replace("frame-src 'none'", "frame-src 'self' about:")
 }
 
-/// Theme tokens the fragment contract names, resolved from Zeron's theme.
+/// Theme tokens the fragment contract names, resolved from Mast's theme.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FragmentTheme {
     pub dark: bool,

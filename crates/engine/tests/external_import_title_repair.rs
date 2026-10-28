@@ -333,7 +333,7 @@ async fn repair_never_touches_a_native_chat_with_no_import_cursor() {
     core.shutdown().await;
 }
 
-// The cursor-less "chat Zeron itself launched" case (the actual reported
+// The cursor-less "chat Mast itself launched" case (the actual reported
 // miss) and the "harness session but no findable transcript at all" marker
 // case live in their own test files —
 // `external_import_title_repair_harness_session.rs` /

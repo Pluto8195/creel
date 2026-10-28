@@ -273,7 +273,7 @@ pub fn run_app(config: UiConfig) {
     });
 }
 
-/// A clicked banner: bring Zeron forward on that chat through the sidebar's
+/// A clicked banner: bring Mast forward on that chat through the sidebar's
 /// own path (chat route + composer focus), reopening the main window first if
 /// ⌘W closed it.
 fn open_notified_chat(chat_id: String, state: &gpui::Entity<state::AppState>, cx: &mut App) {
@@ -459,7 +459,7 @@ fn start_appshot_service(activation_dir: std::path::PathBuf, cx: &mut App) {
             };
             let capture = capture.await;
             // Coalesce presses made while capture was in flight. Delivery
-            // focuses Zeron; replaying old activations would capture the wrong
+            // focuses Mast; replaying old activations would capture the wrong
             // app or show a misleading self-capture error after success.
             while matches!(shortcuts.next().now_or_never(), Some(Some(()))) {}
             cx.update(|cx| deliver_appshot(capture, cx));
@@ -470,7 +470,7 @@ fn start_appshot_service(activation_dir: std::path::PathBuf, cx: &mut App) {
 
 /// Check viewer focus on the UI thread before any native capture or portal
 /// request. Portals do not identify the source window, so their backends cannot
-/// reject Zeron after the picker or capture has already started.
+/// reject Mast after the picker or capture has already started.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn start_appshot_capture(
     cx: &mut App,
@@ -502,7 +502,7 @@ mod appshot_activation_tests {
 
     #[gpui::test]
     fn appshot_capture_skips_any_focused_viewer_window(cx: &mut gpui::TestAppContext) {
-        // The guard must cover every Zeron window, not only a Shell/chat root.
+        // The guard must cover every Mast window, not only a Shell/chat root.
         for _ in 0..2 {
             let window = cx.add_window(|_, _| ViewerWindow);
             window

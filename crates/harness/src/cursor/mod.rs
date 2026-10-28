@@ -91,7 +91,7 @@ fn cursor_cli_paths() -> Vec<PathBuf> {
 pub struct CursorHarness {
     /// Test seam: run this program AS the shim instead of node+managed SDK.
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     interrupt_grace: Duration,
     kill_grace: Duration,
@@ -130,7 +130,7 @@ impl CursorHarness {
         self
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self

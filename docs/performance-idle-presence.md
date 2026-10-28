@@ -14,7 +14,7 @@ at 46.14 MiB while process physical footprint was approximately 371–382 MiB.
 An Allocations launch trace reported 8.63 MiB of persistent heap allocations.
 Virtual IOAccelerator mappings in that trace are not physical memory totals.
 
-A standalone reproduction isolates the mechanism without Zeron, a window,
+A standalone reproduction isolates the mechanism without Mast, a window,
 history, network traffic, or streaming. It submits one GPU command every
 15 seconds, waits for completion, and samples physical footprint every 500 ms.
 On the test M4 Pro with macOS 26.0.1:
@@ -35,7 +35,7 @@ The blur test also reproduces the transient charge without an explicit blit.
 These sizes and retention times are measurements on this OS/GPU, not Metal API
 guarantees or universal limits.
 
-Zeron's rendering uses these command types. Reducing unnecessary submissions
+Mast's rendering uses these command types. Reducing unnecessary submissions
 reduces how often the transient charge is incurred. Keeping it resident would
 only hold the process at the higher footprint. Streaming and visible animations
 still submit GPU work; this change does not promise a flat low footprint while

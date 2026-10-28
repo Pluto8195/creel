@@ -30,7 +30,7 @@ pub const MAX_COMMENTS: usize = 40;
 pub enum CommentStatus {
     #[default]
     Open,
-    /// Resolved by a person in Zeron, or addressed by a published revision.
+    /// Resolved by a person in Mast, or addressed by a published revision.
     Resolved,
 }
 
@@ -103,7 +103,7 @@ pub struct ArtifactComment {
     pub by: WorkOutlineActor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<i64>,
-    /// `"user"` (resolved in Zeron) or `"agent"` (addressed by a revision).
+    /// `"user"` (resolved in Mast) or `"agent"` (addressed by a revision).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<String>,
     /// The revision that addressed it (agent resolution).

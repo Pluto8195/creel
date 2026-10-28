@@ -34,7 +34,7 @@ pub enum CustomThemeSource {
     LinkedPackage {
         path: PathBuf,
     },
-    /// A native resolved-family file created by Zeron for direct editing.
+    /// A native resolved-family file created by Mast for direct editing.
     EditableFile {
         path: PathBuf,
     },

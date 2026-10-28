@@ -1,4 +1,4 @@
-//! Zeron's source-neutral theme domain model.
+//! Mast's source-neutral theme domain model.
 //!
 //! Runtime code consumes complete [`ThemeVariant`] values. Import formats such
 //! as VS Code are deliberately isolated in [`vscode`], so a component never

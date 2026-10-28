@@ -1,4 +1,4 @@
-//! Every Linear GraphQL document Zeron sends, and the parsers for their
+//! Every Linear GraphQL document Mast sends, and the parsers for their
 //! responses. Read-only: no mutations exist here.
 //!
 //! Schema notes (Linear public API, `https://api.linear.app/graphql`):

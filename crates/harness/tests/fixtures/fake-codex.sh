@@ -100,7 +100,7 @@ case "$turnline" in
 
 
 *scenario:agent-tools*)
-  # Report whether thread/start carried the Zeron MCP server overrides.
+  # Report whether thread/start carried the Mast MCP server overrides.
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   if has "$thread_line" '"mcp_servers.zeron-agent.command":"/opt/zeron/bin/zeron"' \
     && has "$thread_line" '"mcp_servers.zeron-agent.args":["mcp"]' \

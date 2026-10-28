@@ -196,7 +196,7 @@ pub struct ChatLinkStatus {
 
 /// `is_worktree` (`session_canvas_server.py:300-304`): the cwd sits under a
 /// `.worktrees/` or `.agent-worktrees/` directory anywhere along its path —
-/// covers both Zeron's own worktree layout and agent-mode.sh's legacy one.
+/// covers both Mast's own worktree layout and agent-mode.sh's legacy one.
 pub fn is_worktree_cwd(cwd: &str) -> bool {
     cwd.contains("/.worktrees/") || cwd.contains("/.agent-worktrees/")
 }

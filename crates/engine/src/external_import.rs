@@ -1,6 +1,6 @@
-//! One-time import of a Claude Code session Zeron didn't launch itself
+//! One-time import of a Claude Code session Mast didn't launch itself
 //! (e.g. one started via a bare `claude` CLI in a terminal) into a brand-new
-//! Zeron chat.
+//! Mast chat.
 //!
 //! The on-disk transcript (`~/.claude/projects/<project>/<uuid>.jsonl`) is a
 //! *different* format from the live `--output-format stream-json` wire
@@ -15,7 +15,7 @@
 //! on-disk bookkeeping, never to stdout). So only `user`/`assistant` lines
 //! carry real transcript content; everything else is either redundant
 //! (`queue-operation`/`last-prompt` duplicate the adjacent `user` line) or
-//! CLI-internal context injection (`attachment`) that a live Zeron chat never
+//! CLI-internal context injection (`attachment`) that a live Mast chat never
 //! saw either.
 //!
 //! Content-block → [`MessagePart`] construction reuses
@@ -205,7 +205,7 @@ fn file_stamp(path: &Path) -> Option<(i64, u64)> {
     Some((mtime, meta.len()))
 }
 
-/// Imports external Claude Code sessions into brand-new Zeron chats. Cheap to
+/// Imports external Claude Code sessions into brand-new Mast chats. Cheap to
 /// clone (holds only an `Arc<DocsStore>` + a `WorkspaceHost`, itself cheaply
 /// cloneable).
 #[derive(Clone)]
@@ -358,7 +358,7 @@ impl ExternalSessionImporter {
     /// talking to it in the original terminal). Read-only with respect to
     /// the source file — never writes back to it, so this carries none of
     /// the concurrent-*write* risk two processes both resuming the same
-    /// session would; it's just tailing a file Zeron doesn't own.
+    /// session would; it's just tailing a file Mast doesn't own.
     ///
     /// Re-parses the WHOLE transcript on every call (simplest correct
     /// approach — verified fast even on an 11k-line real file) rather than
@@ -683,7 +683,7 @@ impl ExternalSessionImporter {
     /// does (`ContextUsageProvider::transcript_path_for_chat` — import
     /// cursor first, then a `harness_session_id` glob under
     /// `~/.claude/projects/*/*.jsonl`), which is exactly the source this
-    /// repair was missing: a chat Zeron itself launched (e.g. via
+    /// repair was missing: a chat Mast itself launched (e.g. via
     /// `review-zeron-fork`'s session-id registry file) has no cursor at all
     /// but does have a recorded harness session and a findable transcript.
     ///
@@ -821,7 +821,7 @@ impl ExternalSessionImporter {
     /// two-source way `CHAT_CONTEXT_USAGE`/`SCAN_CHAT_SUBAGENTS` do
     /// (`ContextUsageProvider::transcript_path_for_chat`) — the import
     /// cursor alone only covers chats that went through THIS importer; a
-    /// chat Zeron itself launched has no cursor but does have a recorded
+    /// chat Mast itself launched has no cursor but does have a recorded
     /// harness session.
     ///
     /// PR-creation results (a `gh pr create`-shaped tool call whose result
@@ -1075,7 +1075,7 @@ impl ExternalSessionImporter {
     }
 
     /// Background auto-adopt sweep: import external Claude Code sessions
-    /// (terminal, `agent-mode.sh`) that no Zeron chat has claimed yet, so the
+    /// (terminal, `agent-mode.sh`) that no Mast chat has claimed yet, so the
     /// overview is complete without the manual import picker. Mirrors the web
     /// reference's `scan_external_claude_sessions`. Returns the number of
     /// chats adopted. Blocking; run off the async path.
@@ -1084,7 +1084,7 @@ impl ExternalSessionImporter {
     /// - transcript mtime within [`AUTO_ADOPT_MAX_AGE`] (14 days);
     /// - not claimed: [`Self::scan`] already excludes every chat's
     ///   `harness_session_id` (Zeron-launched AND previously imported chats,
-    ///   the critical guard against duplicating Zeron's own chats), classifier/
+    ///   the critical guard against duplicating Mast's own chats), classifier/
     ///   title-gen junk and transcripts with no real first user message; this
     ///   sweep additionally excludes any session id in an import cursor;
     /// - does NOT look live per [`crate::liveness::check_liveness`]. Adopting
@@ -1548,7 +1548,7 @@ fn truncate_preview(text: &str) -> String {
 pub(crate) const TITLEGEN_PROMPT_PREFIX: &str = "Reply with ONLY a concise";
 const CLASSIFY_PROMPT_PREFIX: &str = "Classify this coding-agent chat";
 
-/// Zeron's OWN chat-title generator (`titles.rs` -> `Harness::run_title`)
+/// Mast's OWN chat-title generator (`titles.rs` -> `Harness::run_title`)
 /// spawns a throwaway `claude` process whose first (and only) user message is
 /// `zeron_harness::TITLE_INSTRUCTIONS` + `"\n\nSession request (JSON
 /// string):\n<json>"`. Like any `claude` run it writes a full transcript
@@ -2564,7 +2564,7 @@ mod title_registry_tests {
     }
 
     /// The literal prefix must keep matching what the real title generator
-    /// sends, or Zeron's own throwaway title runs leak back in as chats.
+    /// sends, or Mast's own throwaway title runs leak back in as chats.
     #[test]
     fn title_instructions_start_with_zeron_title_prompt_prefix() {
         assert!(zeron_harness::TITLE_INSTRUCTIONS.starts_with(ZERON_TITLE_PROMPT_PREFIX));

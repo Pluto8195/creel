@@ -3,7 +3,7 @@
 // Usage: node scripts/resource-profile.mjs BINARY OUTPUT_DIR [claude-code|mock]
 // DISPLAY must name a working X server; unset WAYLAND_DISPLAY for Xvfb.
 // Uses isolated local data and a real harness (Haiku by default). This costs
-// one API turn. RSS/CPU for the CLI child are reported separately from Zeron.
+// one API turn. RSS/CPU for the CLI child are reported separately from Mast.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync, createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
@@ -176,7 +176,7 @@ try {
   if (!macOS && process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     await sleep(2000);
     const windows = execFileSync('xdotool', ['search', '--class', '^zeron$'], { encoding: 'utf8' }).trim().split('\n');
-    if (windows.length !== 1) throw Error('Use a dedicated X display with exactly one Zeron window');
+    if (windows.length !== 1) throw Error('Use a dedicated X display with exactly one Mast window');
     execFileSync('xdotool', ['windowraise', windows[0], 'windowsize', windows[0], '1280', '800', 'windowfocus', windows[0]]);
   }
   sampler = setInterval(() => {

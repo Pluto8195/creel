@@ -1,6 +1,6 @@
 //! `ExternalSessionImporter::sync`: catching an already-imported chat up on
 //! new content its source session accumulated after import (the user kept
-//! talking to it outside Zeron).
+//! talking to it outside Mast).
 //!
 //! Key semantic under test: an assistant turn is only "safe" to sync once a
 //! genuine FOLLOWING HUMAN MESSAGE closes it — not merely by more lines of

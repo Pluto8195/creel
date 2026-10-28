@@ -858,7 +858,7 @@ enum Launch {
 pub struct AcpHarness {
     spec: AcpAgentSpec,
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Override of the agent's on-disk sessions root (grok's
     /// `~/.grok/sessions`), where subagent transcripts are tailed from.
@@ -1939,7 +1939,7 @@ fn initialize_params(harness: HarnessId) -> Value {
         // Devin otherwise exposes only the parent's run_subagent call. This
         // unlocks lifecycle tags plus every nested message, thought, and tool
         // update, all of which DevinTracker can route. Do not advertise the
-        // separate subagentControl extension: Zeron has no matching UI yet.
+        // separate subagentControl extension: Mast has no matching UI yet.
         capabilities["_meta"] = json!({ "cognition.ai/subagentSupport": true });
     }
     json!({

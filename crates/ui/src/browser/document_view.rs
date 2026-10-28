@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::artifacts::links::{ArtifactLink, BlockedReason, classify};
 
-    /// What the Zeron side does for a fake navigation action: `None` for an
+    /// What the Mast side does for a fake navigation action: `None` for an
     /// allowed (in-page) navigation, else the classification of the link the
     /// delegate reports.
     fn route(url: &str, link_activated: bool) -> (bool, Option<ArtifactLink>) {

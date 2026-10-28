@@ -574,7 +574,7 @@ impl Repos {
     }
 
     /// Public commit history in topological order. Only user-facing branches,
-    /// remotes, and tags seed the walk, so Zeron's internal refs never leak
+    /// remotes, and tags seed the walk, so Mast's internal refs never leak
     /// into the graph or keep otherwise-unreachable checkpoints visible.
     pub async fn history(
         &self,
@@ -2054,8 +2054,8 @@ fn rank_file_matches(
         .collect()
 }
 
-/// Turn a generated chat title into the semantic portion of a Zeron branch
-/// (port of zeron's `worktreeBranchFromTitle`). Zeron NFKD-normalizes accented
+/// Turn a generated chat title into the semantic portion of a Mast branch
+/// (port of zeron's `worktreeBranchFromTitle`). Mast NFKD-normalizes accented
 /// letters first; native keeps it ASCII-only (generated titles are Title Case
 /// English), so non-ASCII characters collapse into the `-` separator.
 pub fn worktree_branch_from_title(title: &str) -> String {

@@ -114,7 +114,7 @@ pub struct RenderOptions {
 pub struct QuestionUi {
     pub expanded: Rc<std::collections::HashSet<String>>,
     pub toggle: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
-    /// Answers given in Zeron and the inline Answer affordance (artifact
+    /// Answers given in Mast and the inline Answer affordance (artifact
     /// tabs only). `None` renders cards from the document alone.
     pub answers: Option<AnswerUi>,
 }

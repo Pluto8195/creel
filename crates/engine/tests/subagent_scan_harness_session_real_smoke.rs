@@ -1,6 +1,6 @@
 //! Manual smoke test against REAL data on this machine for the exact bug
 //! reported live: `SCAN_CHAT_SUBAGENTS` never showed subagent rows for a chat
-//! Zeron itself launched (as opposed to one adopted via
+//! Mast itself launched (as opposed to one adopted via
 //! `ExternalSessionImporter::import`), because the RPC handler only ever
 //! tried `ExternalSessionImporter::transcript_path_for` (which reads a
 //! per-chat import-cursor file that a live-launched chat never has) instead
@@ -53,7 +53,7 @@ async fn resolves_and_scans_subagents_for_a_harness_session_chat_never_imported(
     // The live run loop's own path (`sessions.rs`) for stamping a chat with
     // its harness session id — deliberately NOT going through
     // `ExternalSessionImporter::import`, so no sync-cursor file exists for
-    // this chat. This is exactly the shape of every chat Zeron itself
+    // this chat. This is exactly the shape of every chat Mast itself
     // launches or resumes.
     core.workspace
         .set_chat_harness_session(chat_id, real_session_id, real_cwd);

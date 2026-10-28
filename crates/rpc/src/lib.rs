@@ -377,7 +377,7 @@ pub mod methods {
     /// (empty for a chat with no resolvable transcript or no subagents).
     /// Resolves the chat's transcript path server-side — via its
     /// external-import cursor if it has one, else its recorded harness
-    /// session id (covers a chat Zeron itself launched/resumed, never
+    /// session id (covers a chat Mast itself launched/resumed, never
     /// imported; same two-source resolution `CHAT_CONTEXT_USAGE` uses,
     /// `ContextUsageProvider::transcript_path_for_chat`) — and delegates to
     /// `crate::subagent_scan::scan_subagents`: a `chatId`-keyed convenience
@@ -409,7 +409,7 @@ pub mod methods {
     /// IPC-only (not forwardable), same reason as `MY_OPEN_PRS`.
     pub const REVIEW_REQUESTED_PRS: &str = "ReviewRequestedPrs";
     /// The PR page (pr-dash port): `PrDashParams` → `PrDashReply`. One tab per
-    /// call; rows are classified and carry the Zeron chats linked to each PR.
+    /// call; rows are classified and carry the Mast chats linked to each PR.
     /// IPC-only (it shells out to the local `gh`).
     pub const PR_DASHBOARD: &str = "PrDashboard";
     /// One-time migration: import every remaining Claude Code session on disk

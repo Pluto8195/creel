@@ -36,7 +36,7 @@ pub(crate) enum ArtifactLink {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockedReason {
-    /// A scheme Zeron never follows from an artifact.
+    /// A scheme Mast never follows from an artifact.
     Scheme,
     /// A path that is outside the checkouts, unsafe, or not a plain path.
     Path,

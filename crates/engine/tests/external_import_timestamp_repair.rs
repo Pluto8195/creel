@@ -109,7 +109,7 @@ async fn a_chat_with_no_harness_session_is_never_touched() {
         "dev-user",
     ));
 
-    // An ordinary Zeron-native chat (no harness_session_id at all) must be
+    // An ordinary Mast-native chat (no harness_session_id at all) must be
     // left alone by this repair — it's scoped to external-session imports only.
     core.workspace
         .create_chat("native-chat", None, Some(&core.device_id), None, None)

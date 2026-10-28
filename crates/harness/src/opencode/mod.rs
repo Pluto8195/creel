@@ -218,7 +218,7 @@ fn free_localhost_port() -> Option<u16> {
 
 pub struct OpencodeHarness {
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Test seam: an already-running server (no spawn, no auth unless given).
     base_url: Option<String>,
@@ -259,7 +259,7 @@ impl OpencodeHarness {
         self
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self

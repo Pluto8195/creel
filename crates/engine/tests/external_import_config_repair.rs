@@ -147,7 +147,7 @@ async fn repair_never_touches_a_chat_with_no_harness_session() {
         "dev-user",
     ));
 
-    // An ordinary Zeron-native chat (no harness_session_id at all) must be
+    // An ordinary Mast-native chat (no harness_session_id at all) must be
     // left alone by this repair — it's scoped to external-session imports
     // only. Native chats with no config are expected (no run yet); backfilling
     // a harness onto them would be wrong.

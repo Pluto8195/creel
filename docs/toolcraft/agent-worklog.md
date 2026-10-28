@@ -63,14 +63,14 @@ Tier 2: compile and test the affected Rust UI crate, then visually inspect the s
 > for supported platforms, settings, and validation limits.
 
 - Product goal: capture the frontmost application from a global shortcut and
-  stage screenshot plus semantic application context in a Zeron composer.
+  stage screenshot plus semantic application context in a Mast composer.
 - Visible output: a distinct, removable Appshot card in the destination draft;
   the existing paperclip and ordinary attachment flows remain unchanged.
 - Editable entities: global shortcut, destination policy, staged Appshot, and
   the user's accompanying prompt.
 - Required controls: documented by workflow in
   `docs/research/appshots.md#control-section-inventory`.
-- Export behavior: none. A send reuses Zeron's attachment upload and prompt
+- Export behavior: none. A send reuses Mast's attachment upload and prompt
   transport.
 - Persistence: device-local settings; unsent-capture persistence remains an
   explicit product decision.

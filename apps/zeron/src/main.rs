@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// Open a Zeron conversation URL.
+    /// Open a Mast conversation URL.
     #[arg(value_name = "URL")]
     open_url: Option<String>,
     #[cfg(windows)]
@@ -44,7 +44,7 @@ enum Command {
     #[cfg(target_os = "linux")]
     /// Trigger an Appshot in the running headed instance (desktop shortcut fallback).
     Appshot,
-    /// Serve the Zeron MCP (Model Context Protocol) server on stdin/stdout,
+    /// Serve the Mast MCP (Model Context Protocol) server on stdin/stdout,
     /// proxying to the running engine's IPC. Agents use it to create, read,
     /// and message chats. Logs go to stderr; stdout is the protocol.
     Mcp,

@@ -138,7 +138,7 @@ pub fn login_command(codex_home: &std::path::Path) -> Result<Command, HarnessErr
 pub struct CodexHarness {
     models_cache: crate::catalog::Catalog,
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Grace between `turn/interrupt` and SIGTERM.
     interrupt_grace: Duration,
@@ -186,7 +186,7 @@ impl CodexHarness {
         crate::account_home::apply(cmd, HarnessId::Codex, self.account_home.as_deref());
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
@@ -392,7 +392,7 @@ fn reasoning_level(value: &str) -> Option<ReasoningLevel> {
     })
 }
 
-/// Codex accepts both names, but Zeron has historically persisted `fast`.
+/// Codex accepts both names, but Mast has historically persisted `fast`.
 /// Normalize the app server's `priority` id so live and fallback catalogs do
 /// not produce two different settings for the same tier.
 fn normalized_service_tier(value: &str) -> &str {
@@ -687,7 +687,7 @@ impl Harness for CodexHarness {
     /// Skills from a short-lived `skills/list` probe (see
     /// [`Self::discover_commands`]). The composer owns the five-minute cache;
     /// discovery must stay fresh so newly installed user skills appear after
-    /// that cache expires without restarting Zeron.
+    /// that cache expires without restarting Mast.
     // codex's `skills/list` probe boots without a chat cwd (see
     // `discover_commands`'s own doc comment) — that's this harness's own
     // existing, deliberate simplification, unchanged here.
@@ -854,7 +854,7 @@ struct Session {
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     request: RunRequest,
-    /// The Zeron MCP server for this thread (Chats in a Space only).
+    /// The Mast MCP server for this thread (Chats in a Space only).
     agent_tools: Option<crate::AgentToolsInjection>,
     interrupt_grace: Duration,
     kill_grace: Duration,
@@ -1016,7 +1016,7 @@ fn thread_start_params(request: &RunRequest, title_only: bool) -> serde_json::Ma
     p
 }
 
-/// Add the Zeron MCP server to one thread through the `config` override
+/// Add the Mast MCP server to one thread through the `config` override
 /// layer (dotted `mcp_servers.zeron-agent.*` keys), leaving the user's
 /// `~/.codex/config.toml` servers untouched. A no-op without an injection.
 fn with_agent_tools(
@@ -2116,7 +2116,7 @@ mod tests {
         assert_eq!(resumed["developerInstructions"], json!("ENVELOPE-1\n"));
     }
 
-    /// The Zeron MCP server rides the thread `config` layer on thread/start
+    /// The Mast MCP server rides the thread `config` layer on thread/start
     /// AND on every thread/resume (the resume params clone the start params).
     #[test]
     fn agent_tools_ride_thread_start_and_resume_config() {

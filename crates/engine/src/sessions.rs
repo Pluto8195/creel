@@ -10,7 +10,7 @@
 //! - a `Steered` event splits the assistant entry at the exact boundary;
 //! - recovery (interrupt or a stale journal at boot) stamps the streaming entry `aborted`.
 //!
-//! Scope notes: sessions are keyed by chat id (one live run per chat). Zeron's pulse
+//! Scope notes: sessions are keyed by chat id (one live run per chat). Mast's pulse
 //! loop is ported as the 15s liveness heartbeat in `drive_run`; its stall watchdog is
 //! deliberately NOT ported (rejected in review — agents may legitimately wait on
 //! something for far longer than any timeout, and a live child IS the working signal).
@@ -769,8 +769,8 @@ impl SessionsEngine {
         // device cannot name a host-local path). Never expand that marker to
         // the person's real HOME: agent startup and broad file tools would
         // then probe Desktop/Documents/Music/Pictures and macOS attributes the
-        // privacy prompts to Zeron. Existing `~` chats migrate automatically
-        // to a stable per-chat Zeron-owned directory on their next dispatch.
+        // privacy prompts to Mast. Existing `~` chats migrate automatically
+        // to a stable per-chat Mast-owned directory on their next dispatch.
         // A bound Chat's cwd is its validated execution root (the dispatch
         // chokepoint overwrote it); it is never remapped.
         request.cwd = self.inner.resolve_dispatch_cwd(chat_id, &request.cwd)?;
@@ -2265,7 +2265,7 @@ fn finish_segment<'a>(
 }
 
 /// Resolve the portable project-less marker and legacy persisted HOME values
-/// to a Zeron-owned per-chat directory. Explicit `~/some/path` values retain
+/// to a Mast-owned per-chat directory. Explicit `~/some/path` values retain
 /// their conventional HOME expansion.
 fn resolve_run_cwd(journal: &RunJournal, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
     if matches!(cwd, "~" | "~/") {

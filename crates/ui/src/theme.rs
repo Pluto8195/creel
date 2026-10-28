@@ -846,7 +846,7 @@ impl Theme {
     /// The selected theme's shell tint painted over the blurred window
     /// background (macOS glass). Keeping the hue theme-owned matters when a
     /// user forces frost onto a palette authored for an opaque workbench: a
-    /// fixed Zeron grey would erase that palette's identity.
+    /// fixed Mast grey would erase that palette's identity.
     pub fn glass(&self) -> Hsla {
         if self.surface_treatment == SurfaceTreatment::Opaque {
             return self.surface;
@@ -867,7 +867,7 @@ impl Theme {
         self.contrast_checked_tint_alpha(self.surface, base, self.adverse_backdrop())
     }
 
-    /// Increase tint coverage only as far as needed for Zeron's shared text
+    /// Increase tint coverage only as far as needed for Mast's shared text
     /// roles. This is used for both window glass and in-app frosted surfaces,
     /// whose blurred content can otherwise invalidate an imported palette's
     /// original solid-background assumptions.
@@ -927,7 +927,7 @@ impl Theme {
 
     /// Theme-owned hover wash for chrome that sits on glass (sidebar rows,
     /// tabs, titlebar buttons). The importer maps this role from the source
-    /// theme, so forcing frost does not reintroduce Zeron's neutral hover.
+    /// theme, so forcing frost does not reintroduce Mast's neutral hover.
     pub fn glass_hover(&self) -> Hsla {
         self.element_hover
     }

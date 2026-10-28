@@ -1,4 +1,4 @@
-//! Zeron agent tools injection (Work Outline Milestone 4).
+//! Mast agent tools injection (Work Outline Milestone 4).
 //!
 //! The engine hands a Run an [`AgentToolsInjection`] only for Chats in a
 //! Space whose harness reports [`crate::Harness::supports_agent_tools`]: the
@@ -8,7 +8,7 @@
 //!
 //! - Claude Code: `--mcp-config <file>` WITHOUT `--strict-mcp-config`, so the
 //!   user's own servers still load. The file is written in a fresh per-Run
-//!   `0700` directory under a verified owner-only Zeron directory, and both
+//!   `0700` directory under a verified owner-only Mast directory, and both
 //!   are removed when the Run ends; the token lives in the file's `env`
 //!   block, never in argv (visible to `ps`).
 //! - Codex: dotted `mcp_servers.<name>.*` overrides in the `thread/start` /
@@ -159,7 +159,7 @@ pub fn write_claude_mcp_config(
     Ok(guard)
 }
 
-/// Default Zeron-owned directory for Claude MCP config files: beside the
+/// Default Mast-owned directory for Claude MCP config files: beside the
 /// profile's model-discovery directory (`<store_root>/agent-tools`), else a
 /// per-process directory in the temp dir (created and verified owner-only by
 /// [`write_claude_mcp_config`]). Never the user's checkout or `~/.claude`.

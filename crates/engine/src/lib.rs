@@ -181,7 +181,7 @@ pub struct EngineCore {
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
-    /// Import of a Claude Code session Zeron didn't launch itself (any
+    /// Import of a Claude Code session Mast didn't launch itself (any
     /// profile scope — unlike `local_import`, not account-scoped).
     pub external_import: external_import::ExternalSessionImporter,
     /// PR/ticket linkage cache for the multi-chat overview (ticket 002 phase
@@ -388,7 +388,7 @@ impl EngineCore {
         // classifier/title-gen throwaway transcripts (see
         // `repair_junk_imports`'s doc comment) — hard-deletes the junk chats
         // a bulk import from before this fix left behind. Also purges chats
-        // adopted from Zeron's own title-generator runs (first message =
+        // adopted from Mast's own title-generator runs (first message =
         // `TITLE_INSTRUCTIONS`; see `ZERON_TITLE_PROMPT_PREFIX`), since the
         // pass keys off `is_synthetic_prompt`.
         {
@@ -429,7 +429,7 @@ impl EngineCore {
         // doc comment): without it, a chat with no `ai-title` record landed
         // with `title: None`, rendered "New session" by every UI surface.
         // Also covers chats with no import cursor at all but a recorded
-        // harness session (e.g. one Zeron itself launched) — same
+        // harness session (e.g. one Mast itself launched) — same
         // cursor-or-harness-session transcript resolution `repair_missing_links`
         // uses, via `context_usage`.
         {

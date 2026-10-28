@@ -181,7 +181,7 @@ pub(crate) fn request_document(
 /// Why a request has no web render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RenderSkip {
-    /// Rendered natively by Zeron (Markdown): nothing to snapshot.
+    /// Rendered natively by Mast (Markdown): nothing to snapshot.
     Native,
     Invalid(String),
 }

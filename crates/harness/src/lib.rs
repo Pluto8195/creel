@@ -200,13 +200,13 @@ pub trait Harness: Send + Sync {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError>;
 
     /// Whether [`Self::run_with_agent_tools`] actually gives the agent the
-    /// Zeron MCP server. Default `false`: the engine then mints no token and
+    /// Mast MCP server. Default `false`: the engine then mints no token and
     /// calls plain [`Self::run`] (no tools, no error).
     fn supports_agent_tools(&self) -> bool {
         false
     }
 
-    /// [`Self::run`] with the Zeron agent tools injected through the CLI's
+    /// [`Self::run`] with the Mast agent tools injected through the CLI's
     /// own MCP mechanism, alongside the user's configuration (see
     /// [`agent_tools`]). The default ignores the injection, so an adapter
     /// that cannot inject runs exactly as before.

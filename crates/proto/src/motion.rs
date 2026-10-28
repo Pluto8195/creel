@@ -10,7 +10,7 @@
 //! it from a frame delta or from wall-clock elapsed time and get identical
 //! output.
 
-/// Zeron loader pulse period.
+/// Mast loader pulse period.
 pub const ZERON_PULSE_MS: u64 = 2_400;
 /// Gradient matrix spinner wave period.
 pub const GRADIENT_SPIN_MS: u64 = 750;
@@ -20,7 +20,7 @@ pub const ZERON_CELLS: usize = 5;
 /// Side length of the gradient spinner matrix.
 pub const MATRIX_SIDE: usize = 3;
 
-/// Zeron loader cells rest at this opacity between pulses.
+/// Mast loader cells rest at this opacity between pulses.
 pub const PULSE_MIN_OPACITY: f32 = 0.08;
 /// …and at this scale.
 pub const PULSE_MIN_SCALE: f32 = 0.9;
@@ -55,12 +55,12 @@ pub fn pulse_wave(phase: f32) -> f32 {
     0.5 - 0.5 * (phase * std::f32::consts::TAU).cos()
 }
 
-/// Zeron loader cell opacity for a phase: 0.08 → 1 → 0.08.
+/// Mast loader cell opacity for a phase: 0.08 → 1 → 0.08.
 pub fn pulse_opacity(phase: f32) -> f32 {
     PULSE_MIN_OPACITY + (1.0 - PULSE_MIN_OPACITY) * pulse_wave(phase)
 }
 
-/// Zeron loader cell scale for a phase: 0.9 → 1 → 0.9.
+/// Mast loader cell scale for a phase: 0.9 → 1 → 0.9.
 pub fn pulse_scale(phase: f32) -> f32 {
     PULSE_MIN_SCALE + (1.0 - PULSE_MIN_SCALE) * pulse_wave(phase)
 }

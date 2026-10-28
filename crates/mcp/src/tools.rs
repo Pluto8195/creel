@@ -1714,7 +1714,7 @@ enum Reach {
     SelfOrChild,
 }
 
-/// Whether the token's Chat may reach `chat`: one it created (Zeron-created
+/// Whether the token's Chat may reach `chat`: one it created (Mast-created
 /// children carry the creating Chat as `parentChatId`), or itself.
 fn reachable(origin: &AgentOrigin, chat: &Chat, allow_self: bool) -> bool {
     chat.parent_chat_id.as_deref() == Some(origin.chat_id.as_str())

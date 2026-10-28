@@ -65,7 +65,7 @@ const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewThreadComposerBackground {
-    /// Managed copy inside Zeron's device-local data directory.
+    /// Managed copy inside Mast's device-local data directory.
     pub path: String,
     /// Original file name shown in Appearance settings.
     pub name: String,
@@ -308,7 +308,7 @@ pub fn current(cx: &App) -> UiSettings {
         .unwrap_or_default()
 }
 
-/// Copy a selected image into Zeron's device-local data directory and make it
+/// Copy a selected image into Mast's device-local data directory and make it
 /// the new-thread canvas background. A unique file name avoids stale image
 /// caches when the background is replaced.
 pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Result<(), String> {
@@ -674,7 +674,7 @@ pub struct UiSettings {
     /// Desktop banner notifications on the same transitions.
     /// `ZERON_DISABLE_NOTIFICATIONS` overrides.
     pub notifications_enabled: bool,
-    /// Suppress the banner while a Zeron window is focused (the chime covers
+    /// Suppress the banner while a Mast window is focused (the chime covers
     /// the foreground case).
     pub notifications_background_only: bool,
     /// Live status light: the Dock icon, Dock badge and in-app logo follow what

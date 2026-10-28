@@ -619,7 +619,7 @@ enum MutateParams {
         /// The project the chat is created in — fixes host device + base cwd.
         /// `None` mints a project-less chat: `deviceId` picks the host and the
         /// cwd defaults to the portable `~` marker (resolved on the host to a
-        /// Zeron-owned per-chat scratch directory at run time).
+        /// Mast-owned per-chat scratch directory at run time).
         #[serde(default)]
         space_id: Option<String>,
         /// Host device for a project-less chat; ignored when `spaceId` is set.
@@ -634,7 +634,7 @@ enum MutateParams {
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
         cwd: Option<String>,
-        /// The chat whose agent is creating this one (Zeron MCP); recorded
+        /// The chat whose agent is creating this one (Mast MCP); recorded
         /// on the row as `parentChatId` for orchestration trees.
         #[serde(default)]
         parent_chat_id: Option<String>,
@@ -3460,7 +3460,7 @@ impl RpcService for EngineRpc {
                     // Same two-source transcript resolution `CHAT_CONTEXT_USAGE`
                     // uses (`ContextUsageProvider::transcript_path_for_chat`):
                     // the import cursor alone only covers chats that went
-                    // through `ExternalSessionImporter::import` — a chat Zeron
+                    // through `ExternalSessionImporter::import` — a chat Mast
                     // itself launched (harness_session_id set directly by the
                     // run loop, never imported) has no cursor at all, so
                     // relying on the cursor exclusively silently returned no
@@ -4648,7 +4648,7 @@ impl RpcService for EngineRpc {
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
                 // The terminal runs in the chat's checkout. Project-less (`~`)
-                // and not-yet-materialized chats use the same Zeron-owned
+                // and not-yet-materialized chats use the same Mast-owned
                 // per-chat scratch as agent runs, never the person's HOME.
                 let stored_cwd = self
                     .workspace

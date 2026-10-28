@@ -329,7 +329,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
     }
 }
 
-/// Queue a plain Run the way any device (or the Zeron MCP `send`) does.
+/// Queue a plain Run the way any device (or the Mast MCP `send`) does.
 fn queue_run(rig: &Rig, chat: &str, prompt: &str, cwd: &str) -> String {
     rig.core
         .doc_host
@@ -848,7 +848,7 @@ async fn bound_chats_cannot_be_retargeted() {
         )
         .await
         .unwrap();
-    // The Zeron MCP `send` shape: a Run built from another cwd still runs in
+    // The Mast MCP `send` shape: a Run built from another cwd still runs in
     // the bound root.
     let id = queue_run(&rig, &chat, "launch pin mcp", &elsewhere.to_string_lossy());
     let entry = wait_command(&rig, &chat, &id).await;

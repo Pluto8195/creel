@@ -43,7 +43,7 @@ when inspecting a large history. VoiceOver page scrolling and Earlier/Later
 messages actions expose adjacent pages without building the entire transcript.
 
 The visual pass adopts Anara iOS's 17pt chat-body scale and larger secondary
-labels, while retaining Zeron's Geist fonts and desktop palette. Code line
+labels, while retaining Mast's Geist fonts and desktop palette. Code line
 heights and list markers scale with Dynamic Type. Tool calls use the desktop
 activity rail with quiet group summaries, per-tool failure labels, expandable
 commands, and copy actions. Core composer and jump controls have 44pt targets

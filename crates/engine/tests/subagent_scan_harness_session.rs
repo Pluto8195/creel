@@ -1,5 +1,5 @@
 //! CI-safe (synthetic, no real machine data) regression test for the
-//! `SCAN_CHAT_SUBAGENTS` bug: a chat Zeron itself launched or resumed (via
+//! `SCAN_CHAT_SUBAGENTS` bug: a chat Mast itself launched or resumed (via
 //! `WorkspaceHost::set_chat_harness_session`, never through
 //! `ExternalSessionImporter::import`) has no external-import cursor, so
 //! `ContextUsageProvider::transcript_path_for_chat` — the same two-source
