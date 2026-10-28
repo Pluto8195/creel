@@ -10741,6 +10741,11 @@ mod logic_tests {
         );
     }
 
+    /// Resizable Work Item Details panel; shares this module's fixtures.
+    mod resizable_panes_tests {
+        include!("work_outline/resizable_panes_tests.rs");
+    }
+
     /// Milestone 4 (Required Actions, proposals); the body lives beside the
     /// Work Outline modules and shares this module's fixtures.
     mod required_actions_tests {

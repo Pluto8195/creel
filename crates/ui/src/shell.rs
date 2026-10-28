@@ -12690,6 +12690,18 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_width_yields_to_a_narrow_window_without_changing_the_preference() {
+        assert_eq!(sidebar_width_for_viewport(520.0, 1600.0), 520.0);
+        assert_eq!(
+            sidebar_width_for_viewport(520.0, 800.0),
+            800.0 - CHAT_PANEL_MIN
+        );
+        // Never below the sidebar minimum, even in a tiny window.
+        assert_eq!(sidebar_width_for_viewport(300.0, 300.0), SIDEBAR_MIN);
+        assert_eq!(sidebar_width_for_viewport(SIDEBAR_MIN, 300.0), SIDEBAR_MIN);
+    }
+
+    #[test]
     fn right_pane_ceiling_preserves_the_chat_floor() {
         assert_eq!(right_pane_max_width(1200.0, 256.0, CHAT_PANEL_MIN), 644.0);
         assert_eq!(1200.0 - 256.0 - 644.0, CHAT_PANEL_MIN);
