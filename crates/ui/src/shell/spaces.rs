@@ -1090,6 +1090,91 @@ mod pinned_session_tests {
         exercise_session_section_drops(cx, false, false);
     }
 
+    /// The sidebar chat row wears the account pill only for a chat pinned to
+    /// a managed account (not Default, not unpinned).
+    #[gpui::test]
+    fn sidebar_chat_row_shows_account_pill_only_for_managed_pins(cx: &mut gpui::TestAppContext) {
+        use super::*;
+
+        struct SidebarHost(Entity<Shell>);
+        impl Render for SidebarHost {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.0.update(cx, |shell, cx| {
+                    div()
+                        .w(px(280.0))
+                        .h(px(800.0))
+                        .child(shell.render_chat_sidebar(&Theme::default(), cx))
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            SidebarHost(cx.new(|cx| {
+                let state = cx.new(|_| AppState::new());
+                let mut shell = Shell::new(
+                    state,
+                    EngineBootConfig {
+                        data_dir: dir.path().into(),
+                        ipc_port: 0,
+                        edge_url: "http://127.0.0.1:1".into(),
+                        edge_token: None,
+                        org_id: None,
+                        workos_client_id: None,
+                        default_harness: zeron_proto::HarnessId::Mock,
+                    },
+                    cx,
+                );
+                shell.settings.sidebar_organization = SidebarOrganization::InOneList;
+                shell.state.update(cx, |state, _| {
+                    state.workspace_scope = Some(WorkspaceScope::Local);
+                    state.local_device_id = Some("local".into());
+                    state.chats = ["pinned", "plain", "unpinned"]
+                        .into_iter()
+                        .map(|id| {
+                            serde_json::from_value(serde_json::json!({
+                                "id": id, "title": id, "deviceId": "local", "archived": false,
+                                "createdAt": Utc::now(),
+                            }))
+                            .unwrap()
+                        })
+                        .collect();
+                    state.managed_accounts.insert(
+                        "local".into(),
+                        serde_json::from_value(serde_json::json!({
+                            "accounts": [{ "id": "a1", "harness": "claude-code", "label": "Work" }],
+                            "projectDefaults": [],
+                            "chatPins": [
+                                { "chatId": "pinned", "harness": "claude-code", "accountId": "a1" },
+                                { "chatId": "plain", "harness": "claude-code" }
+                            ]
+                        }))
+                        .unwrap(),
+                    );
+                });
+                shell
+            }))
+        });
+        let _ = host;
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-pinned").is_some(), "rows render");
+        assert!(cx.debug_bounds("chat-plain").is_some());
+        assert!(cx.debug_bounds("chat-account-pinned").is_some());
+        assert!(cx.debug_bounds("chat-account-plain").is_none());
+        assert!(cx.debug_bounds("chat-account-unpinned").is_none());
+    }
+
     fn exercise_session_section_drops(
         cx: &mut gpui::TestAppContext,
         compact: bool,
@@ -6321,6 +6406,41 @@ impl Shell {
         cx.notify();
     }
 
+    /// Open the per-project agent account picker (Default + managed accounts).
+    pub(super) fn open_project_account_picker(
+        &mut self,
+        space_id: String,
+        harness: zeron_proto::HarnessId,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_space_menu(cx);
+        let Some(device_id) = self
+            .state
+            .read(cx)
+            .space_row(&space_id)
+            .map(|s| s.device_id.clone())
+        else {
+            return;
+        };
+        let state = self.state.clone();
+        let flow = cx.new(|cx| {
+            crate::managed_accounts::AccountFlow::new(
+                state,
+                harness,
+                Some(space_id),
+                Some(device_id),
+                cx,
+            )
+        });
+        self.account_flow_sub = Some(cx.subscribe(&flow, |this: &mut Shell, _, _, cx| {
+            this.account_flow = None;
+            this.account_flow_sub = None;
+            cx.notify();
+        }));
+        self.account_flow = Some(flow);
+        cx.notify();
+    }
+
     pub(super) fn submit_rename_space(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self.rename_space_dialog.take() else {
             return;
@@ -6359,8 +6479,46 @@ impl Shell {
             let closing = self.space_menu.closing_since();
             let rename_id = space_id.clone();
             let delete_id = space_id.clone();
+            let account_labels: Vec<(zeron_proto::HarnessId, String)> = {
+                let state = self.state.read(cx);
+                let snapshot = state
+                    .space_row(&space_id)
+                    .and_then(|space| state.managed_accounts_for(Some(&space.device_id)));
+                [
+                    zeron_proto::HarnessId::ClaudeCode,
+                    zeron_proto::HarnessId::Codex,
+                ]
+                .into_iter()
+                .map(|h| {
+                    (
+                        h,
+                        crate::managed_accounts::menu_label(snapshot, &space_id, h),
+                    )
+                })
+                .collect()
+            };
+            let account_rows: Vec<AnyElement> = account_labels
+                .into_iter()
+                .map(|(harness, label)| {
+                    let pick_id = space_id.clone();
+                    popover::menu_row(&theme, false, format!("space-menu-account-{harness:?}"))
+                        .id(SharedString::from(format!(
+                            "space-menu-account-{harness:?}"
+                        )))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_project_account_picker(pick_id.clone(), harness, cx)
+                        }))
+                        .child(
+                            icon(icons::KEY_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from(label))
+                        .into_any_element()
+                })
+                .collect();
             let menu = popover::popover_card(&theme)
-                .w(px(170.0))
+                .w(px(230.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_space_menu(cx);
                 }))
@@ -6375,6 +6533,7 @@ impl Shell {
                         .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                         .child(SharedString::from("Rename…")),
                 )
+                .children(account_rows)
                 .child(popover::menu_separator())
                 .child(
                     popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))
@@ -6445,6 +6604,11 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("rename-space-dialog", viewport, card));
+        }
+
+        if let Some(flow) = self.account_flow.clone() {
+            let card = flow.update(cx, |flow, cx| flow.render_card(&theme, window, cx));
+            overlays.push(popover::modal("account-flow-dialog", viewport, card));
         }
 
         if let Some(space_id) = self.delete_space_confirm.clone() {

@@ -18,11 +18,12 @@ use std::time::Duration;
 
 use zeron_proto::{
     AgentAccount, AgentAccountsSnapshot, AgentLoginMode, AgentLoginPoll, AgentLoginStart,
-    AgentLoginStatus, HarnessId,
+    AgentLoginStatus, HarnessId, ManagedAccountsSnapshot,
 };
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::managed_accounts::AccountFlow;
 use crate::observe_gate::ObserveGate;
 use crate::popover::{self, Loadable};
 use crate::settings::widgets;
@@ -195,6 +196,12 @@ pub struct AccountsPage {
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    /// Project accounts section (managed accounts, device-local).
+    managed: Loadable<ManagedAccountsSnapshot>,
+    managed_error: Option<SharedString>,
+    managed_task: Option<Task<()>>,
+    account_flow: Option<Entity<AccountFlow>>,
+    account_flow_sub: Option<Subscription>,
     seen: ObserveGate<(Vec<zeron_proto::Device>, Option<String>)>,
     _observe: Subscription,
     _code_events: Subscription,
@@ -233,6 +240,11 @@ impl AccountsPage {
             load_task: None,
             action_task: None,
             poll_task: None,
+            managed: Loadable::Idle,
+            managed_error: None,
+            managed_task: None,
+            account_flow: None,
+            account_flow_sub: None,
             seen,
             _observe: observe,
             _code_events: code_events,
@@ -450,7 +462,220 @@ impl AccountsPage {
         trigger.into_any_element()
     }
 
+    fn load_managed(&mut self, cx: &mut Context<Self>) {
+        let rpc = self
+            .state
+            .read(cx)
+            .accounts_rpc(self.target_device.as_deref());
+        let device = self.target_device.clone();
+        self.managed = Loadable::Loading;
+        self.managed_task = Some(cx.spawn(async move |this, cx| {
+            let result = rpc
+                .call(methods::LIST_MANAGED_ACCOUNTS, serde_json::json!({}))
+                .await
+                .and_then(|v| {
+                    serde_json::from_value::<ManagedAccountsSnapshot>(v).map_err(|e| e.to_string())
+                });
+            this.update(cx, |page, cx| {
+                page.managed = match result {
+                    Ok(snapshot) => {
+                        let stored = snapshot.clone();
+                        page.state.update(cx, |state, cx| {
+                            if state.set_managed_accounts(device.as_deref(), stored) {
+                                cx.notify();
+                            }
+                        });
+                        Loadable::Ready(snapshot)
+                    }
+                    Err(err) => Loadable::Error(err),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn remove_managed(&mut self, account_id: String, cx: &mut Context<Self>) {
+        let rpc = self
+            .state
+            .read(cx)
+            .accounts_rpc(self.target_device.as_deref());
+        let device = self.target_device.clone();
+        self.managed_error = None;
+        self.managed_task = Some(cx.spawn(async move |this, cx| {
+            let result = rpc
+                .call(
+                    methods::REMOVE_MANAGED_ACCOUNT,
+                    serde_json::json!({ "accountId": account_id }),
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value::<ManagedAccountsSnapshot>(v).map_err(|e| e.to_string())
+                });
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        let stored = snapshot.clone();
+                        page.state.update(cx, |state, cx| {
+                            if state.set_managed_accounts(device.as_deref(), stored) {
+                                cx.notify();
+                            }
+                        });
+                        page.managed = Loadable::Ready(snapshot);
+                    }
+                    // The engine's own text (e.g. chats are pinned to it).
+                    Err(err) => page.managed_error = Some(err.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn open_account_flow(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let device = self.target_device.clone();
+        let flow = cx.new(|cx| AccountFlow::new(state, harness, None, device, cx));
+        self.account_flow_sub = Some(cx.subscribe(&flow, |this: &mut Self, _, _, cx| {
+            this.account_flow = None;
+            this.account_flow_sub = None;
+            this.load_managed(cx);
+        }));
+        self.account_flow = Some(flow);
+        cx.notify();
+    }
+
+    fn render_project_accounts(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let rows: Vec<AnyElement> = match &self.managed {
+            Loadable::Ready(snapshot) => snapshot
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(ix, account)| {
+                    let remove_id = account.id.clone();
+                    div()
+                        .id(("managed-account-row", ix))
+                        .px(px(20.0))
+                        .py(px(12.0))
+                        .when(ix > 0, |el| el.border_t_1().border_color(theme.border))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(widgets::row_title(theme, account.label.clone()))
+                                .child(
+                                    div()
+                                        .mt(px(2.0))
+                                        .truncate()
+                                        .text_size(crate::typography::ui_rems(11.5))
+                                        .text_color(theme.text_muted.opacity(0.6))
+                                        .child(SharedString::from(
+                                            crate::managed_accounts::account_detail(account),
+                                        )),
+                                ),
+                        )
+                        .child(widgets::badge(
+                            theme,
+                            crate::managed_accounts::harness_name(account.harness),
+                        ))
+                        .child(
+                            widgets::ghost_action(theme)
+                                .id(("managed-account-remove", ix))
+                                .hover(|s| widgets::ghost_hover(theme, s))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_managed(remove_id.clone(), cx)
+                                }))
+                                .child(SharedString::from("Remove")),
+                        )
+                        .into_any_element()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let empty_copy = match &self.managed {
+            Loadable::Error(message) => format!("Couldn\u{2019}t load project accounts: {message}"),
+            Loadable::Ready(_) => "No project accounts yet.".to_string(),
+            _ => "Loading\u{2026}".to_string(),
+        };
+        let card = widgets::section_card(theme).mt(px(8.0));
+        let card = if rows.is_empty() {
+            card.child(
+                div()
+                    .px(px(20.0))
+                    .py(px(24.0))
+                    .text_center()
+                    .text_size(crate::typography::ui_rems(13.0))
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from(empty_copy)),
+            )
+        } else {
+            card.children(rows)
+        };
+        div()
+            .id("project-accounts-section")
+            .mt(px(32.0))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(SharedString::from("Project accounts")),
+                    )
+                    .child(div().flex_1())
+                    .children([HarnessId::ClaudeCode, HarnessId::Codex].map(|harness| {
+                        let name = crate::managed_accounts::harness_name(harness);
+                        widgets::ghost_action(theme)
+                            .id(SharedString::from(format!("add-project-account-{name}")))
+                            .hover(|s| widgets::ghost_hover(theme, s))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_account_flow(harness, cx)
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::ADD_CIRCLE)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from(format!("Add {name} account")))
+                    })),
+            )
+            .child(widgets::page_subtitle(
+                theme,
+                "Separate logins you can assign to a project. Projects without one use the \
+                 Default login above.",
+            ))
+            .when_some(self.managed_error.clone(), |el, message| {
+                el.child(
+                    widgets::error_strip(theme, message)
+                        .id("managed-account-error")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.managed_error = None;
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(card)
+            .into_any_element()
+    }
+
     fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
+        self.load_managed(cx);
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
             return;
@@ -1235,6 +1460,12 @@ impl Render for AccountsPage {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
         let dialog = self.render_login_dialog(window.viewport_size(), cx);
+        let project_accounts = self.render_project_accounts(&theme, cx);
+        let flow_dialog = self.account_flow.clone().map(|flow| {
+            let popup_theme = Theme::of(cx).for_popup();
+            let card = flow.update(cx, |flow, cx| flow.render_card(&popup_theme, window, cx));
+            popover::modal("account-flow-dialog", window.viewport_size(), card)
+        });
         let refreshing = matches!(self.snapshot, Loadable::Loading);
         let account_count = self
             .snapshot
@@ -1505,6 +1736,7 @@ impl Render for AccountsPage {
                                 )
                             })
                             .children(sections)
+                            .child(project_accounts)
                             // Footer note (zeron: `mt-6 text-[12px] leading-relaxed
                             // text-muted-foreground/60`).
                             .child(
@@ -1524,6 +1756,7 @@ impl Render for AccountsPage {
             )
             .children(scrollbar)
             .when_some(dialog, |el, dialog| el.child(dialog))
+            .when_some(flow_dialog, |el, dialog| el.child(dialog))
     }
 }
 

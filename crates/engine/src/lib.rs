@@ -17,6 +17,7 @@ use zeron_sync::DocsStore;
 
 pub mod agent_accounts;
 pub mod agent_tools;
+pub mod artifact_questions;
 pub mod artifacts;
 pub mod auth;
 pub mod change_requests;
@@ -37,6 +38,7 @@ pub mod instruction_registry;
 pub mod linear;
 pub mod liveness;
 pub mod local_import;
+pub mod managed_accounts;
 mod model_catalogs;
 pub mod pr_chat_links;
 pub mod pr_dash;
@@ -50,18 +52,17 @@ pub mod repos;
 pub mod repository_discovery;
 pub mod rpc;
 pub mod run_journal;
-pub mod swr;
 pub mod sessions;
 pub mod source_control;
 pub mod spaces;
 pub mod subagent_scan;
 pub mod subagent_transcript;
+pub mod swr;
 pub mod terminals;
 pub mod titles;
 mod transcript_history;
 pub mod typesafe;
 pub mod uploads;
-pub mod artifact_questions;
 pub mod work_outline;
 pub mod work_outline_launch;
 pub mod work_outline_pr_links;
@@ -78,6 +79,7 @@ pub use diff_sync::{
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
+pub use managed_accounts::{ManagedAccounts, ManagedAccountsConfig};
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
@@ -174,6 +176,8 @@ pub struct EngineCore {
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
+    /// Per-project managed accounts (homes under the data dir).
+    pub managed_accounts: ManagedAccounts,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -545,12 +549,16 @@ impl EngineCore {
                 }
             });
         }
-        let agent_accounts = AgentAccounts::new(agent_accounts_config);
-        sessions.set_titles(TitleGenerator::new(
-            workspace.clone(),
-            registry.clone(),
-            repos.clone(),
+        let managed_accounts = ManagedAccounts::new(ManagedAccountsConfig::new(
+            data_dir,
+            agent_accounts_config.claude_config_dir.clone(),
+            agent_accounts_config.codex_home.clone(),
         ));
+        sessions.set_managed_accounts(managed_accounts.clone());
+        let agent_accounts = AgentAccounts::new(agent_accounts_config);
+        let titles = TitleGenerator::new(workspace.clone(), registry.clone(), repos.clone());
+        titles.set_managed_accounts(managed_accounts.clone());
+        sessions.set_titles(titles);
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         // One chat diff targets service: diff-sync reads its rows and follows
         // its changes; `EngineRpc` (via the shared `diff_sync`) serves the
@@ -591,6 +599,7 @@ impl EngineCore {
             spaces_sync,
             uploads,
             agent_accounts,
+            managed_accounts,
             device_id,
             local_import,
             external_import,
@@ -731,6 +740,7 @@ impl EngineCore {
             self.workspace_scope,
         )
         .with_auth(self.auth())
+        .with_managed_accounts(self.managed_accounts.clone())
         .with_previews(self.previews.clone())
         .with_external_import(self.external_import.clone())
         .with_pr_ticket_cache(self.pr_ticket_cache.clone())
@@ -774,6 +784,7 @@ impl EngineCore {
         self.sessions.shutdown().await;
         self.terminals.shutdown();
         self.agent_accounts.shutdown();
+        self.managed_accounts.shutdown();
         self.change_requests.shutdown();
         // Cancel + await every worker that can reach Edge before flushing: a
         // replaced synced runtime must not keep polling releases or draining

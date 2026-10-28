@@ -134,6 +134,9 @@ pub struct HarnessRegistry {
     /// Where the prefs persist; `None` (tests, bare registries) skips writes.
     prefs_path: Mutex<Option<PathBuf>>,
     listeners: Mutex<Vec<ChangeListener>>,
+    /// Harnesses scoped to a managed account home, keyed by (harness, home):
+    /// one instance per account so catalog caches stay per account.
+    scoped: Mutex<HashMap<(HarnessId, PathBuf), Arc<dyn Harness>>>,
 }
 
 impl Default for HarnessRegistry {
@@ -150,6 +153,7 @@ impl HarnessRegistry {
             prefs: Mutex::new(HarnessPrefsFile::default()),
             prefs_path: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
+            scoped: Mutex::new(HashMap::new()),
         }
     }
 
@@ -366,6 +370,29 @@ impl HarnessRegistry {
             }
             None => Err(HarnessError::NotInstalled(format!("{id:?}"))),
         }
+    }
+
+    /// [`Self::resolve`] for a chat pinned to a managed account: the same
+    /// harness bound to that account's home (`None` = Default, the shared
+    /// instance). Harnesses without per-account homes ignore the home.
+    pub fn resolve_for_home(
+        &self,
+        id: HarnessId,
+        home: Option<&Path>,
+    ) -> Result<Arc<dyn Harness>, HarnessError> {
+        let base = self.resolve(id)?;
+        let Some(home) = home else {
+            return Ok(base);
+        };
+        let mut scoped = self.scoped.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = scoped.get(&(id, home.to_path_buf())) {
+            return Ok(existing.clone());
+        }
+        let Some(harness) = base.scoped_to_account_home(home) else {
+            return Ok(base);
+        };
+        scoped.insert((id, home.to_path_buf()), harness.clone());
+        Ok(harness)
     }
 
     /// Catalog for `ListHarnesses` — never forces a lazy resolve.

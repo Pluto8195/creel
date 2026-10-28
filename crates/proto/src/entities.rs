@@ -1159,6 +1159,53 @@ pub enum AgentLoginStatus {
     Error,
 }
 
+/// A Mast-managed agent account: a CLI login that lives in its own home dir
+/// under Mast's data dir (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), never in the
+/// live `~/.claude` / `~/.codex`. Device-local, like the homes themselves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedAccount {
+    pub id: String,
+    pub harness: HarnessId,
+    pub label: String,
+    /// Identity read back from the home after sign-in (never credentials).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub signed_in: bool,
+}
+
+/// A project's default account for one harness. A project with no entry (or
+/// `account_id: None`) uses the Default login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAccountDefault {
+    pub space_id: String,
+    pub harness: HarnessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+/// The account a chat is pinned to for one harness. `account_id: None` means
+/// the Default login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAccountPin {
+    pub chat_id: String,
+    pub harness: HarnessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+/// Everything the project-account UI renders.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedAccountsSnapshot {
+    pub accounts: Vec<ManagedAccount>,
+    pub project_defaults: Vec<ProjectAccountDefault>,
+    pub chat_pins: Vec<ChatAccountPin>,
+}
+
 /// CLI plan rate-limit window (accounts settings meters) — NOT app token accounting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1366,15 +1413,24 @@ mod tests {
         assert_eq!(bare_chat(None, None).model_display(), Default);
         assert_eq!(
             bare_chat(None, Some("claude-fable-5")).model_display(),
-            Actual { actual: "claude-fable-5", configured: None }
+            Actual {
+                actual: "claude-fable-5",
+                configured: None
+            }
         );
         assert_eq!(
             bare_chat(Some("claude-opus-5-5"), Some("claude-fable-5")).model_display(),
-            Actual { actual: "claude-fable-5", configured: Some("claude-opus-5-5") }
+            Actual {
+                actual: "claude-fable-5",
+                configured: Some("claude-opus-5-5")
+            }
         );
         assert_eq!(
             bare_chat(Some("claude-fable-5"), Some("claude-fable-5")).model_display(),
-            Actual { actual: "claude-fable-5", configured: None }
+            Actual {
+                actual: "claude-fable-5",
+                configured: None
+            }
         );
         assert_eq!(
             bare_chat(Some("claude-opus-5-5"), None).model_display(),
@@ -1388,7 +1444,10 @@ mod tests {
         let mut value = serde_json::to_value(bare_chat(None, Some("m"))).unwrap();
         assert_eq!(value["actualModel"], "m");
         value.as_object_mut().unwrap().remove("actualModel");
-        assert_eq!(serde_json::from_value::<Chat>(value).unwrap().actual_model, None);
+        assert_eq!(
+            serde_json::from_value::<Chat>(value).unwrap().actual_model,
+            None
+        );
     }
 
     #[test]

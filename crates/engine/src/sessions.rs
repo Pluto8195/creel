@@ -165,6 +165,8 @@ struct Inner {
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
+    /// Per-project accounts; unset in bare test engines (everything runs on Default).
+    managed_accounts: OnceLock<crate::managed_accounts::ManagedAccounts>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
     /// Fired with `(chat_id, cwd)` when a user prompt starts a turn (fresh
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
@@ -274,6 +276,7 @@ impl SessionsEngine {
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
                 titles: OnceLock::new(),
+                managed_accounts: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 assistant_text_listener: OnceLock::new(),
@@ -397,6 +400,11 @@ impl SessionsEngine {
     /// completed exchange the run task fires it for still-untitled chats.
     pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {
         let _ = self.inner.titles.set(titles);
+    }
+
+    /// Wire per-project accounts (called once at engine assembly).
+    pub fn set_managed_accounts(&self, accounts: crate::managed_accounts::ManagedAccounts) {
+        let _ = self.inner.managed_accounts.set(accounts);
     }
 
     /// Wire the turn-start listener (called once at engine assembly).
@@ -899,7 +907,7 @@ impl SessionsEngine {
         } else {
             None
         };
-        let harness = self.inner.registry.resolve(harness_id)?;
+        let harness = self.inner.harness_for_chat_account(chat_id, harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         handle.write_user_message(&user_id, &request.prompt, now_ms())?;
@@ -1742,6 +1750,33 @@ impl Inner {
     /// an `execution-scope:resumeRootMismatch` error, never a silent fresh
     /// session. No stored session (or the explicit empty-id tombstone) starts
     /// fresh. Unbound Chats keep today's cwd-gated behavior.
+    /// The harness a chat runs on: its pinned managed account's scoped
+    /// instance, or the shared Default one. The pin is decided on the chat's
+    /// first run (see [`crate::managed_accounts::ManagedAccounts::resolve_for_chat`]).
+    pub(crate) fn harness_for_chat_account(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+    ) -> Result<Arc<dyn Harness>, EngineError> {
+        let Some(accounts) = self.managed_accounts.get() else {
+            return Ok(self.registry.resolve(harness_id)?);
+        };
+        let space_id = self
+            .workspace()
+            .and_then(|ws| ws.chat(chat_id).ok().flatten())
+            .and_then(|chat| chat.space_id);
+        let has_prior_session = self.stored_harness_session(chat_id).is_some();
+        let account = accounts.resolve_for_chat(
+            chat_id,
+            space_id.as_deref(),
+            harness_id,
+            has_prior_session,
+        )?;
+        Ok(self
+            .registry
+            .resolve_for_home(harness_id, account.as_ref().map(|a| a.home.as_path()))?)
+    }
+
     fn checked_resume_for(&self, chat_id: &str, cwd: &str) -> Result<Option<String>, EngineError> {
         // A malformed binding row is bound-and-invalid (configInvalid).
         let bound = match self.workspace() {

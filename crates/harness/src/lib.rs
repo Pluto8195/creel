@@ -160,6 +160,16 @@ pub trait Harness: Send + Sync {
     async fn commands(&self, _cwd: &str) -> Result<Vec<SlashCommand>, HarnessError> {
         Ok(Vec::new())
     }
+    /// A copy of this harness whose every spawn (runs, titles, discovery,
+    /// catalog probes) uses `home` as its CLI home (`CLAUDE_CONFIG_DIR` /
+    /// `CODEX_HOME`), with its own caches. `None` for harnesses without
+    /// per-account homes.
+    fn scoped_to_account_home(
+        &self,
+        _home: &std::path::Path,
+    ) -> Option<std::sync::Arc<dyn Harness>> {
+        None
+    }
     /// Run an isolated title request. Drivers must opt in with title-specific
     /// instructions and restrictions; never fall back to an ordinary coding run.
     async fn run_title(
@@ -223,6 +233,7 @@ pub use instruction_support::{
     InstructionChannel, InstructionReplaceStrategy, InstructionSupport, declared_replace_strategy,
     require_instruction_support,
 };
+pub mod account_home;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -731,8 +742,20 @@ mod sandbox_support_tests {
     fn read_only_is_refused_where_it_cannot_be_enforced() {
         let err = require_read_only_support(HarnessId::Opencode, &request("read-only"))
             .expect_err("read-only must be refused");
-        assert!(matches!(err, HarnessError::Sandbox { sandbox: "read-only", .. }), "{err:?}");
-        assert!(err.to_string().contains("cannot enforce the read-only sandbox"));
+        assert!(
+            matches!(
+                err,
+                HarnessError::Sandbox {
+                    sandbox: "read-only",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("cannot enforce the read-only sandbox")
+        );
         for ok in ["workspace-write", "danger-full-access"] {
             require_read_only_support(HarnessId::Opencode, &request(ok)).unwrap();
         }

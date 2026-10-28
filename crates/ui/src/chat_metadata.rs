@@ -108,6 +108,22 @@ pub(crate) fn work_item_item(short: &str, full: &str) -> MetadataItem {
     item("work-item", short, format!("Work item: {full}"))
 }
 
+/// Insert the pinned managed account (quiet pill) right after the model; a
+/// no-op when the chat uses the Default login.
+pub(crate) fn insert_account_item(items: &mut Vec<MetadataItem>, account: Option<String>) {
+    let Some(label) = account else {
+        return;
+    };
+    let at = items
+        .iter()
+        .position(|item| item.key == "model")
+        .map_or(items.len(), |i| i + 1);
+    items.insert(
+        at,
+        item("account", label.clone(), format!("Agent account: {label}")),
+    );
+}
+
 fn source_label(source: Option<ChatLinkSource>) -> &'static str {
     match source {
         Some(ChatLinkSource::Manual) => "linked manually",
@@ -516,5 +532,16 @@ mod tests {
         assert_eq!(item.label, "… › API › Auth");
         assert_eq!(item.tooltip, "Work item: Launch › API › Auth");
         assert_eq!(item.action, None);
+    }
+
+    #[test]
+    fn account_item_follows_the_model_and_only_for_a_managed_account() {
+        let mut items = vec![item("model", "Model x", ""), item("branch", "Branch b", "")];
+        insert_account_item(&mut items, None);
+        assert_eq!(items.len(), 2);
+        insert_account_item(&mut items, Some("Work".into()));
+        let keys: Vec<_> = items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, ["model", "account", "branch"]);
+        assert_eq!(items[1].label, "Work");
     }
 }

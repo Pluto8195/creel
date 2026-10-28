@@ -41,6 +41,9 @@ struct Inner {
     registry: Arc<HarnessRegistry>,
     repos: Repos,
     in_flight: Mutex<HashSet<String>>,
+    /// Titles run on the chat's pinned account when the title harness is the
+    /// chat's own; otherwise on Default.
+    managed_accounts: std::sync::OnceLock<crate::managed_accounts::ManagedAccounts>,
 }
 
 #[derive(Clone)]
@@ -65,8 +68,13 @@ impl TitleGenerator {
                 registry,
                 repos,
                 in_flight: Mutex::new(HashSet::new()),
+                managed_accounts: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    pub fn set_managed_accounts(&self, accounts: crate::managed_accounts::ManagedAccounts) {
+        let _ = self.inner.managed_accounts.set(accounts);
     }
 
     /// Fire-and-forget: title `chat_id` if it's still untitled. Called by the run
@@ -115,7 +123,7 @@ impl TitleGenerator {
 
         let context = self.title_context(chat_id, &chat);
         let generated = self
-            .run_title_model(harness_id, prompt, cwd, &context)
+            .run_title_model(chat_id, harness_id, prompt, cwd, &context)
             .await;
         // Fallback still uses the request's concrete words rather than a generic
         // label, then the same structured context formatter as model output.
@@ -212,6 +220,7 @@ impl TitleGenerator {
     /// One-shot titling run: collect TextDeltas until Done; retries on failure.
     async fn run_title_model(
         &self,
+        chat_id: &str,
         harness_id: HarnessId,
         prompt: &str,
         _cwd: &str,
@@ -234,7 +243,16 @@ impl TitleGenerator {
         }
         // No repository instructions, files, or active coding-session context.
         let scratch = tempfile::tempdir().ok()?;
-        let harness = match self.inner.registry.resolve(harness_id) {
+        let pinned_home = self
+            .inner
+            .managed_accounts
+            .get()
+            .and_then(|accounts| accounts.pinned_home(chat_id, harness_id));
+        let harness = match self
+            .inner
+            .registry
+            .resolve_for_home(harness_id, pinned_home.as_deref())
+        {
             Ok(harness) => harness,
             Err(err) => {
                 tracing::debug!(error = %err, "titling harness unavailable");
@@ -647,6 +665,7 @@ mod tests {
         assert_eq!(
             generator
                 .run_title_model(
+                    "chat-1",
                     HarnessId::Codex,
                     prompt,
                     &dir.path().to_string_lossy(),

@@ -1677,6 +1677,9 @@ pub struct Shell {
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    /// Per-project agent account picker / add-account sign-in.
+    account_flow: Option<Entity<crate::managed_accounts::AccountFlow>>,
+    account_flow_sub: Option<Subscription>,
     sidebar_section_migration: Option<(String, crate::state::EngineHandle)>,
     section_dialog: Option<sidebar_sections::SectionDialog>,
     section_menu: Option<(String, Point<Pixels>)>,
@@ -2146,6 +2149,8 @@ impl Shell {
             closeout_seq: 0,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
+            account_flow: None,
+            account_flow_sub: None,
             sidebar_section_migration: None,
             section_dialog: None,
             section_menu: None,
@@ -4505,7 +4510,11 @@ impl Shell {
             .get(&chat_id)
             .and_then(|entry| entry.status.as_ref())
             .map(crate::chat_metadata::HeaderLinks::from_status);
-        let items = crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
+        let mut items = crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
+        crate::chat_metadata::insert_account_item(
+            &mut items,
+            self.state.read(cx).chat_account_badge(&chat_id),
+        );
         let work_context = self.render_chat_work_context(&chat_id, theme, cx);
         let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
         let proposal_status = self.render_chat_proposal_status(&chat_id, theme, cx);
@@ -7481,6 +7490,14 @@ impl Shell {
                             .line_height(px(17.0))
                             .child(popover::search_highlight(title, search_query, theme)),
                     ))
+                    .when_some(self.state.read(cx).chat_account_badge(&id), |el, label| {
+                        el.child(
+                            crate::managed_accounts::account_pill(theme, label).debug_selector({
+                                let id = id.clone();
+                                move || format!("chat-account-{id}")
+                            }),
+                        )
+                    })
                     .when(!compact && !show_label && remote, |el| {
                         el.child(
                             icon(icons::REMOTE_SERVER)
@@ -8951,6 +8968,10 @@ impl Shell {
         if self.rename_space_dialog.is_some() {
             self.rename_space_dialog = None;
             cx.notify();
+            return true;
+        }
+        if let Some(flow) = self.account_flow.clone() {
+            flow.update(cx, |flow, cx| flow.cancel(cx));
             return true;
         }
         if self.add_space.is_some() {

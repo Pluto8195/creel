@@ -23,6 +23,7 @@ pub mod change_requests;
 pub mod changes;
 pub mod chat_closeout;
 mod chat_metadata;
+pub mod managed_accounts;
 pub mod chat_type_view;
 mod chat_work_context;
 mod comment_ui;

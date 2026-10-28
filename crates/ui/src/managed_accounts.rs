@@ -1,0 +1,902 @@
+//! Per-project agent accounts (managed accounts): the UI-side store of the
+//! latest `ManagedAccountsSnapshot`, pure lookup helpers, and the shared
+//! [`AccountFlow`] entity (project account picker + add-account sign-in) used
+//! by the sidebar Space menu and Settings > Accounts.
+//!
+//! Accounts are device-local, so snapshots are keyed by the owning device id
+//! and every call targets the device that owns the project.
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use gpui::{
+    AnyElement, Context, Entity, EventEmitter, Focusable, SharedString, Subscription, Task, Window,
+    div, prelude::*, px,
+};
+use zeron_proto::{
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, ManagedAccount,
+    ManagedAccountsSnapshot,
+};
+use zeron_rpc::methods;
+
+use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::popover;
+use crate::state::AppState;
+use crate::theme::Theme;
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/// Only these harnesses support managed accounts.
+pub fn supports_accounts(harness: HarnessId) -> bool {
+    matches!(harness, HarnessId::ClaudeCode | HarnessId::Codex)
+}
+
+pub fn harness_name(harness: HarnessId) -> &'static str {
+    match harness {
+        HarnessId::Codex => "Codex",
+        _ => "Claude",
+    }
+}
+
+/// The managed account a project defaults to for `harness`; `None` = Default
+/// (no entry, an explicit null, or a dangling id).
+pub fn project_account<'a>(
+    snapshot: &'a ManagedAccountsSnapshot,
+    space_id: &str,
+    harness: HarnessId,
+) -> Option<&'a ManagedAccount> {
+    let id = snapshot
+        .project_defaults
+        .iter()
+        .find(|d| d.space_id == space_id && d.harness == harness)?
+        .account_id
+        .as_deref()?;
+    snapshot
+        .accounts
+        .iter()
+        .find(|a| a.id == id && a.harness == harness)
+}
+
+/// Label of the managed account `chat_id` is pinned to; `None` for Default or
+/// no pin, so existing views stay quiet.
+pub fn chat_account_badge(snapshot: &ManagedAccountsSnapshot, chat_id: &str) -> Option<String> {
+    snapshot
+        .chat_pins
+        .iter()
+        .filter(|pin| pin.chat_id == chat_id)
+        .find_map(|pin| {
+            let id = pin.account_id.as_deref()?;
+            snapshot
+                .accounts
+                .iter()
+                .find(|a| a.id == id && a.harness == pin.harness)
+                .map(|a| a.label.clone())
+        })
+}
+
+/// Managed accounts of one harness, in engine order.
+pub fn accounts_for(
+    snapshot: &ManagedAccountsSnapshot,
+    harness: HarnessId,
+) -> Vec<&ManagedAccount> {
+    snapshot
+        .accounts
+        .iter()
+        .filter(|a| a.harness == harness)
+        .collect()
+}
+
+/// "Claude account: Work…" / "Codex account: Default…" (Space menu entry).
+pub fn menu_label(
+    snapshot: Option<&ManagedAccountsSnapshot>,
+    space_id: &str,
+    harness: HarnessId,
+) -> String {
+    let current = snapshot
+        .and_then(|s| project_account(s, space_id, harness))
+        .map(|a| a.label.as_str())
+        .unwrap_or("Default");
+    format!("{} account: {current}\u{2026}", harness_name(harness))
+}
+
+/// One selectable row of the project account picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickEntry {
+    /// `None` = Default.
+    pub account_id: Option<String>,
+    pub label: String,
+    pub detail: Option<String>,
+    pub selected: bool,
+}
+
+/// Default plus only this harness's managed accounts.
+pub fn pick_entries(
+    snapshot: Option<&ManagedAccountsSnapshot>,
+    space_id: &str,
+    harness: HarnessId,
+) -> Vec<PickEntry> {
+    let empty = ManagedAccountsSnapshot::default();
+    let snapshot = snapshot.unwrap_or(&empty);
+    let current = project_account(snapshot, space_id, harness).map(|a| a.id.as_str());
+    let mut entries = vec![PickEntry {
+        account_id: None,
+        label: "Default".into(),
+        detail: None,
+        selected: current.is_none(),
+    }];
+    entries.extend(
+        accounts_for(snapshot, harness)
+            .into_iter()
+            .map(|a| PickEntry {
+                account_id: Some(a.id.clone()),
+                label: a.label.clone(),
+                detail: Some(account_detail(a)),
+                selected: current == Some(a.id.as_str()),
+            }),
+    );
+    entries
+}
+
+/// Email, or "Not signed in".
+pub fn account_detail(account: &ManagedAccount) -> String {
+    match (&account.email, account.signed_in) {
+        (Some(email), _) => email.clone(),
+        _ => "Not signed in".into(),
+    }
+}
+
+pub fn set_project_account_params(
+    space_id: &str,
+    harness: HarnessId,
+    account_id: Option<&str>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({ "spaceId": space_id, "harness": harness });
+    if let (Some(id), Some(object)) = (account_id, value.as_object_mut()) {
+        object.insert("accountId".into(), id.into());
+    }
+    value
+}
+
+pub const PICKER_NOTE: &str =
+    "Applies to new chats in this project. Existing chats keep the account they started with.";
+
+// ---------------------------------------------------------------------------
+// RPC plumbing + store (on AppState)
+// ---------------------------------------------------------------------------
+
+/// Tests: answer every managed-accounts call with this closure.
+pub type ScriptedAccountsRpc =
+    Arc<dyn Fn(&str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+
+type RpcFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value, String>>>>;
+
+/// A cloneable handle for the managed-accounts RPCs, already targeted at the
+/// device that owns the account home.
+#[derive(Clone)]
+pub struct AccountsRpc {
+    engine: Option<crate::state::EngineHandle>,
+    target: Option<String>,
+    scripted: Option<ScriptedAccountsRpc>,
+}
+
+impl AccountsRpc {
+    pub fn call(&self, method: &'static str, params: serde_json::Value) -> RpcFuture {
+        let mut params = params;
+        if let (Some(target), Some(object)) = (&self.target, params.as_object_mut()) {
+            object.insert("targetDeviceId".into(), serde_json::json!(target));
+        }
+        if let Some(scripted) = self.scripted.clone() {
+            return Box::pin(async move { scripted(method, params) });
+        }
+        let engine = self.engine.clone();
+        Box::pin(async move {
+            let Some(engine) = engine else {
+                return Err("Engine not connected".to_string());
+            };
+            engine
+                .client()
+                .call(method, params)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
+impl AppState {
+    /// RPC handle for `device_id` (`None` = this device).
+    pub(crate) fn accounts_rpc(&self, device_id: Option<&str>) -> AccountsRpc {
+        let target = device_id
+            .filter(|id| !self.is_local_device(id))
+            .map(str::to_string);
+        #[cfg(test)]
+        let scripted = self.accounts_rpc_override.clone();
+        #[cfg(not(test))]
+        let scripted = None;
+        AccountsRpc {
+            engine: self.engine().cloned(),
+            target,
+            scripted,
+        }
+    }
+
+    fn accounts_key(&self, device_id: Option<&str>) -> Option<String> {
+        device_id
+            .map(str::to_string)
+            .or_else(|| self.local_device_id.clone())
+    }
+
+    pub fn managed_accounts_for(
+        &self,
+        device_id: Option<&str>,
+    ) -> Option<&ManagedAccountsSnapshot> {
+        let key = self.accounts_key(device_id)?;
+        self.managed_accounts.get(&key)
+    }
+
+    /// Store a snapshot; true when it changed.
+    pub fn set_managed_accounts(
+        &mut self,
+        device_id: Option<&str>,
+        snapshot: ManagedAccountsSnapshot,
+    ) -> bool {
+        let Some(key) = self.accounts_key(device_id) else {
+            return false;
+        };
+        if self.managed_accounts.get(&key) == Some(&snapshot) {
+            return false;
+        }
+        self.managed_accounts.insert(key, snapshot);
+        true
+    }
+
+    /// Badge text for a chat (its device's snapshot); `None` keeps views quiet.
+    pub fn chat_account_badge(&self, chat_id: &str) -> Option<String> {
+        let chat = self.chats.iter().find(|c| c.id == chat_id)?;
+        let snapshot = self.managed_accounts.get(&chat.device_id)?;
+        chat_account_badge(snapshot, chat_id)
+    }
+
+    /// Refresh the store from `device_id`'s engine (`None` = this device).
+    pub fn load_managed_accounts(&mut self, device_id: Option<String>, cx: &mut Context<Self>) {
+        if self.engine().is_none() && !cfg!(test) {
+            return;
+        }
+        let rpc = self.accounts_rpc(device_id.as_deref());
+        cx.spawn(async move |this, cx| {
+            let Ok(value) = rpc
+                .call(methods::LIST_MANAGED_ACCOUNTS, serde_json::json!({}))
+                .await
+            else {
+                return;
+            };
+            let Ok(snapshot) = serde_json::from_value::<ManagedAccountsSnapshot>(value) else {
+                return;
+            };
+            this.update(cx, |state, cx| {
+                if state.set_managed_accounts(device_id.as_deref(), snapshot) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared flow entity
+// ---------------------------------------------------------------------------
+
+pub enum AccountFlowEvent {
+    Closed,
+}
+
+enum Phase {
+    /// Project picker: Default + this harness's accounts + Add account.
+    Pick,
+    /// Ask for the new account's name.
+    Name,
+    /// CreateManagedAccount / StartManagedAccountLogin in flight.
+    Creating,
+    /// Browser sign-in in progress; polling.
+    Waiting {
+        login_id: String,
+    },
+    Failed(SharedString),
+}
+
+pub struct AccountFlow {
+    state: Entity<AppState>,
+    harness: HarnessId,
+    /// `Some` = project picker mode (sets the project's account); `None` =
+    /// settings mode (add an account only).
+    space_id: Option<String>,
+    device_id: Option<String>,
+    phase: Phase,
+    name_input: Entity<ComposerInput>,
+    focus_pending: bool,
+    busy: bool,
+    task: Option<Task<()>>,
+    _events: Subscription,
+}
+
+impl EventEmitter<AccountFlowEvent> for AccountFlow {}
+
+impl AccountFlow {
+    pub fn new(
+        state: Entity<AppState>,
+        harness: HarnessId,
+        space_id: Option<String>,
+        device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let name_input = cx.new(|cx| ComposerInput::new("Account name", cx));
+        let events = cx.subscribe(&name_input, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.submit_name(cx);
+            }
+        });
+        let picking = space_id.is_some();
+        let load_device = device_id.clone();
+        state.update(cx, |state, cx| state.load_managed_accounts(load_device, cx));
+        Self {
+            state,
+            harness,
+            space_id,
+            device_id,
+            phase: if picking { Phase::Pick } else { Phase::Name },
+            name_input,
+            focus_pending: !picking,
+            busy: false,
+            task: None,
+            _events: events,
+        }
+    }
+
+    fn rpc(&self, cx: &gpui::App) -> AccountsRpc {
+        self.state.read(cx).accounts_rpc(self.device_id.as_deref())
+    }
+
+    fn store(&self, snapshot: ManagedAccountsSnapshot, cx: &mut Context<Self>) {
+        let device = self.device_id.clone();
+        self.state.update(cx, |state, cx| {
+            if state.set_managed_accounts(device.as_deref(), snapshot) {
+                cx.notify();
+            }
+        });
+    }
+
+    /// Choose Default (`None`) or a managed account for the project.
+    pub fn select(&mut self, account_id: Option<String>, cx: &mut Context<Self>) {
+        let Some(space_id) = self.space_id.clone() else {
+            return;
+        };
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        let rpc = self.rpc(cx);
+        let params = set_project_account_params(&space_id, self.harness, account_id.as_deref());
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = rpc.call(methods::SET_PROJECT_ACCOUNT, params).await;
+            this.update(cx, |flow, cx| {
+                flow.busy = false;
+                match result.and_then(|v| {
+                    serde_json::from_value::<ManagedAccountsSnapshot>(v).map_err(|e| e.to_string())
+                }) {
+                    Ok(snapshot) => {
+                        flow.store(snapshot, cx);
+                        cx.emit(AccountFlowEvent::Closed);
+                    }
+                    Err(err) => flow.phase = Phase::Failed(err.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    pub fn begin_add(&mut self, cx: &mut Context<Self>) {
+        self.phase = Phase::Name;
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    /// Create the account, start its sign-in, open the browser and poll.
+    pub fn submit_name(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.phase, Phase::Name) {
+            return;
+        }
+        let label = self.name_input.read(cx).text().trim().to_string();
+        if label.is_empty() {
+            return;
+        }
+        self.phase = Phase::Creating;
+        let rpc = self.rpc(cx);
+        let harness = self.harness;
+        let space_id = self.space_id.clone();
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let created = rpc
+                .call(
+                    methods::CREATE_MANAGED_ACCOUNT,
+                    serde_json::json!({ "harness": harness, "label": label }),
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value::<ManagedAccount>(v).map_err(|e| e.to_string())
+                });
+            let account = match created {
+                Ok(account) => account,
+                Err(err) => {
+                    this.update(cx, |flow, cx| {
+                        flow.phase = Phase::Failed(err.into());
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let started = rpc
+                .call(
+                    methods::START_MANAGED_ACCOUNT_LOGIN,
+                    serde_json::json!({ "accountId": account.id }),
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value::<AgentLoginStart>(v).map_err(|e| e.to_string())
+                });
+            let start = match started {
+                Ok(start) => start,
+                Err(err) => {
+                    this.update(cx, |flow, cx| {
+                        flow.phase =
+                            Phase::Failed(format!("Sign-in failed to start: {err}").into());
+                        flow.refresh(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let login_id = start.login_id.clone();
+            let opened = this.update(cx, |flow, cx| {
+                cx.open_url(&start.url);
+                flow.phase = Phase::Waiting {
+                    login_id: start.login_id.clone(),
+                };
+                cx.notify();
+            });
+            if opened.is_err() {
+                return;
+            }
+            // Poll every 1.5s until Done / Error.
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                let polled = rpc
+                    .call(
+                        methods::POLL_MANAGED_ACCOUNT_LOGIN,
+                        serde_json::json!({ "loginId": login_id }),
+                    )
+                    .await
+                    .and_then(|v| {
+                        serde_json::from_value::<AgentLoginPoll>(v).map_err(|e| e.to_string())
+                    });
+                match polled {
+                    Ok(poll) => match poll.status {
+                        AgentLoginStatus::Pending => {}
+                        AgentLoginStatus::Error => {
+                            let message = poll.message.unwrap_or_else(|| "Sign-in failed".into());
+                            this.update(cx, |flow, cx| {
+                                flow.phase = Phase::Failed(message.into());
+                                flow.refresh(cx);
+                                cx.notify();
+                            })
+                            .ok();
+                            return;
+                        }
+                        AgentLoginStatus::Done => {
+                            let set = match &space_id {
+                                Some(space_id) => Some(
+                                    rpc.call(
+                                        methods::SET_PROJECT_ACCOUNT,
+                                        set_project_account_params(
+                                            space_id,
+                                            harness,
+                                            Some(&account.id),
+                                        ),
+                                    )
+                                    .await,
+                                ),
+                                None => None,
+                            };
+                            let snapshot = match set {
+                                Some(Ok(v)) => serde_json::from_value(v).ok(),
+                                Some(Err(err)) => {
+                                    this.update(cx, |flow, cx| {
+                                        flow.phase = Phase::Failed(err.into());
+                                        flow.refresh(cx);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                    return;
+                                }
+                                None => None,
+                            };
+                            this.update(cx, |flow, cx| {
+                                match snapshot {
+                                    Some(snapshot) => flow.store(snapshot, cx),
+                                    None => flow.refresh(cx),
+                                }
+                                cx.emit(AccountFlowEvent::Closed);
+                                cx.notify();
+                            })
+                            .ok();
+                            return;
+                        }
+                    },
+                    Err(err) => {
+                        this.update(cx, |flow, cx| {
+                            flow.phase = Phase::Failed(format!("Poll failed: {err}").into());
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    fn refresh(&self, cx: &mut Context<Self>) {
+        let device = self.device_id.clone();
+        self.state
+            .update(cx, |state, cx| state.load_managed_accounts(device, cx));
+    }
+
+    /// Cancel / close: best-effort CancelManagedAccountLogin while waiting.
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if let Phase::Waiting { login_id } = &self.phase {
+            let rpc = self.rpc(cx);
+            let params = serde_json::json!({ "loginId": login_id });
+            cx.spawn(async move |_, _| {
+                let _ = rpc
+                    .call(methods::CANCEL_MANAGED_ACCOUNT_LOGIN, params)
+                    .await;
+            })
+            .detach();
+        }
+        self.task = None;
+        self.refresh(cx);
+        cx.emit(AccountFlowEvent::Closed);
+    }
+
+    /// The dialog card (wrap in `popover::modal`).
+    pub fn render_card(
+        &mut self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = harness_name(self.harness);
+        let (title, body): (String, AnyElement) = match &self.phase {
+            Phase::Pick => (
+                format!("{name} account for this project"),
+                self.render_pick(theme, cx),
+            ),
+            Phase::Name => {
+                if std::mem::take(&mut self.focus_pending) {
+                    window.focus(&self.name_input.focus_handle(cx), cx);
+                }
+                (
+                    format!("Add {name} account"),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().mt(px(12.0)).child(popover::dialog_field(
+                            self.name_input.clone().into_any_element(),
+                        )))
+                        .child(
+                            div()
+                                .mt(px(16.0))
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .child(
+                                    popover::btn_ghost(theme, "Cancel", "account-flow-cancel")
+                                        .id("account-flow-cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                                )
+                                .child(
+                                    popover::btn_primary(theme, "Continue")
+                                        .id("account-flow-continue")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.submit_name(cx)),
+                                        ),
+                                ),
+                        )
+                        .into_any_element(),
+                )
+            }
+            Phase::Creating => (
+                format!("Add {name} account"),
+                self.status_body(theme, "Setting up the account\u{2026}", "Cancel", cx),
+            ),
+            Phase::Waiting { .. } => (
+                format!("Add {name} account"),
+                self.status_body(
+                    theme,
+                    "Waiting for sign-in in your browser\u{2026}",
+                    "Cancel",
+                    cx,
+                ),
+            ),
+            Phase::Failed(message) => (
+                format!("Add {name} account"),
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .mt(px(10.0))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.danger_muted.opacity(0.9))
+                            .child(message.clone()),
+                    )
+                    .child(self.close_row(theme, "Close", cx))
+                    .into_any_element(),
+            ),
+        };
+        popover::dialog_card(theme)
+            .child(popover::dialog_title(theme, &title))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn close_row(&self, theme: &Theme, label: &str, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .mt(px(16.0))
+            .flex()
+            .flex_row()
+            .justify_end()
+            .child(
+                popover::btn_ghost(theme, label, "account-flow-cancel")
+                    .id("account-flow-cancel")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+            )
+            .into_any_element()
+    }
+
+    fn status_body(
+        &self,
+        theme: &Theme,
+        text: &'static str,
+        button: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(crate::loaders::gradient_spinner(
+                        "account-flow-wait",
+                        theme,
+                        3.0,
+                        cx.entity_id(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id("account-flow-status")
+                            .text_size(crate::typography::ui_rems(12.5))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(text)),
+                    ),
+            )
+            .child(self.close_row(theme, button, cx))
+            .into_any_element()
+    }
+
+    fn render_pick(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let space_id = self.space_id.clone().unwrap_or_default();
+        let entries = {
+            let state = self.state.read(cx);
+            pick_entries(
+                state.managed_accounts_for(self.device_id.as_deref()),
+                &space_id,
+                self.harness,
+            )
+        };
+        let rows = entries.into_iter().map(|entry| {
+            let key = match &entry.account_id {
+                None => "account-pick-default".to_string(),
+                Some(id) => format!("account-pick-{id}"),
+            };
+            let select = entry.account_id.clone();
+            let debug_key = key.clone();
+            popover::menu_row(theme, entry.selected, key.clone())
+                .id(SharedString::from(key))
+                .debug_selector(move || debug_key.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.select(select.clone(), cx)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(entry.label)),
+                )
+                .when_some(entry.detail, |el, detail| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(detail)),
+                    )
+                })
+                .when(entry.selected, |el| {
+                    el.child(
+                        crate::icons::icon(crate::icons::CHECK)
+                            .size(px(14.0))
+                            .flex_none()
+                            .text_color(theme.text_muted),
+                    )
+                })
+                .into_any_element()
+        });
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .child(popover::dialog_body(theme, PICKER_NOTE)),
+            )
+            .child(div().mt(px(10.0)).flex().flex_col().children(rows))
+            .child(popover::menu_separator())
+            .child(
+                popover::menu_row(theme, false, "account-pick-add")
+                    .id("account-pick-add")
+                    .debug_selector(|| "account-pick-add".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.begin_add(cx)))
+                    .child(
+                        crate::icons::icon(crate::icons::ADD_CIRCLE)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(SharedString::from("Add account\u{2026}")),
+            )
+            .child(self.close_row(theme, "Close", cx))
+            .into_any_element()
+    }
+}
+
+/// Quiet neutral pill (the sidebar's small badge cloth) showing an account.
+pub fn account_pill(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
+    let tone = theme.text_muted;
+    div()
+        .h(px(16.0))
+        .flex_none()
+        .max_w(px(90.0))
+        .truncate()
+        .flex()
+        .flex_row()
+        .items_center()
+        .px(px(4.0))
+        .rounded(px(4.0))
+        .bg(tone.opacity(0.08))
+        .text_size(crate::typography::ui_rems(10.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(tone.opacity(0.85))
+        .child(label.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeron_proto::{ChatAccountPin, ProjectAccountDefault};
+
+    fn account(id: &str, harness: HarnessId, label: &str) -> ManagedAccount {
+        ManagedAccount {
+            id: id.into(),
+            harness,
+            label: label.into(),
+            email: None,
+            signed_in: false,
+        }
+    }
+
+    fn snapshot() -> ManagedAccountsSnapshot {
+        ManagedAccountsSnapshot {
+            accounts: vec![
+                account("a1", HarnessId::ClaudeCode, "Work"),
+                account("a2", HarnessId::Codex, "Side"),
+            ],
+            project_defaults: vec![ProjectAccountDefault {
+                space_id: "s1".into(),
+                harness: HarnessId::ClaudeCode,
+                account_id: Some("a1".into()),
+            }],
+            chat_pins: vec![
+                ChatAccountPin {
+                    chat_id: "c1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    account_id: Some("a1".into()),
+                },
+                ChatAccountPin {
+                    chat_id: "c2".into(),
+                    harness: HarnessId::ClaudeCode,
+                    account_id: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn project_account_resolves_per_harness_and_defaults_to_none() {
+        let snap = snapshot();
+        assert_eq!(
+            project_account(&snap, "s1", HarnessId::ClaudeCode).map(|a| a.label.as_str()),
+            Some("Work")
+        );
+        assert!(project_account(&snap, "s1", HarnessId::Codex).is_none());
+        assert!(project_account(&snap, "s2", HarnessId::ClaudeCode).is_none());
+    }
+
+    #[test]
+    fn chat_badge_only_for_pinned_managed_accounts() {
+        let snap = snapshot();
+        assert_eq!(chat_account_badge(&snap, "c1").as_deref(), Some("Work"));
+        assert_eq!(chat_account_badge(&snap, "c2"), None);
+        assert_eq!(chat_account_badge(&snap, "unpinned"), None);
+    }
+
+    #[test]
+    fn pick_entries_list_default_and_only_that_harness() {
+        let snap = snapshot();
+        let claude = pick_entries(Some(&snap), "s1", HarnessId::ClaudeCode);
+        let labels: Vec<_> = claude.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["Default", "Work"]);
+        assert!(!claude[0].selected && claude[1].selected);
+        let codex = pick_entries(Some(&snap), "s1", HarnessId::Codex);
+        let labels: Vec<_> = codex.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["Default", "Side"]);
+        assert!(codex[0].selected);
+        assert_eq!(codex[1].detail.as_deref(), Some("Not signed in"));
+    }
+
+    #[test]
+    fn menu_labels_and_params() {
+        let snap = snapshot();
+        assert_eq!(
+            menu_label(Some(&snap), "s1", HarnessId::ClaudeCode),
+            "Claude account: Work\u{2026}"
+        );
+        assert_eq!(
+            menu_label(None, "s1", HarnessId::Codex),
+            "Codex account: Default\u{2026}"
+        );
+        assert_eq!(
+            set_project_account_params("s1", HarnessId::Codex, None),
+            serde_json::json!({ "spaceId": "s1", "harness": "codex" })
+        );
+        assert_eq!(
+            set_project_account_params("s1", HarnessId::ClaudeCode, Some("a1"))["accountId"],
+            "a1"
+        );
+    }
+}

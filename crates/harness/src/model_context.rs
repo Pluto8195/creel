@@ -16,11 +16,30 @@ pub(crate) fn context(
     binary: &Path,
     extra: &[PathBuf],
 ) -> Result<ModelContext, HarnessError> {
+    context_in(id, binary, extra, None)
+}
+
+/// [`context`] for a harness bound to a managed account home: the credential
+/// and settings files are read from that home instead of the live one, so a
+/// catalog cached for one account is never served to another.
+pub(crate) fn context_in(
+    id: HarnessId,
+    binary: &Path,
+    extra: &[PathBuf],
+    account_home: Option<&Path>,
+) -> Result<ModelContext, HarnessError> {
     let home = crate::executable::home_or_current_dir();
     let files = match id {
-        HarnessId::Codex => vec![root("CODEX_HOME", home.join(".codex")).join("auth.json")],
+        HarnessId::Codex => {
+            let root = account_home
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root("CODEX_HOME", home.join(".codex")));
+            vec![root.join("auth.json")]
+        }
         HarnessId::ClaudeCode => {
-            let root = root("CLAUDE_CONFIG_DIR", home.join(".claude"));
+            let root = account_home
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root("CLAUDE_CONFIG_DIR", home.join(".claude")));
             vec![root.join("settings.json"), root.join(".credentials.json")]
         }
         HarnessId::Cursor => vec![home.join(".cursor/sdk/auth.json")],

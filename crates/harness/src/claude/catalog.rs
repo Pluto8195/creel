@@ -148,11 +148,15 @@ fn model(
 /// `pub`: besides the discovery-side enrichment here, the UI's display-side
 /// normalization borrows these labels so alias rows served by older engines
 /// still read with their version numbers ("Opus 5", not "Opus").
-pub(crate) fn configured_models() -> Vec<Model> {
-    let root = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|v| !v.is_empty())
+pub(crate) fn configured_models(account_home: Option<&std::path::Path>) -> Vec<Model> {
+    let root = account_home
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".claude"));
+        .unwrap_or_else(|| {
+            std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|v| !v.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".claude"))
+        });
     models_with_settings(&root.join("settings.json"))
 }
 
