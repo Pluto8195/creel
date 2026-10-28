@@ -72,6 +72,9 @@ pub enum BrowserEvent {
     /// A link clicked inside a static document (planning artifact), exactly
     /// as the page wrote it; the owner decides where it goes.
     DocumentLink(String),
+    /// A structured message from a static document's frame (raw JSON; the
+    /// owner validates it). Artifacts phase 4 frame → host bridge.
+    DocumentMessage(String),
     Close,
     /// Open this checkout-relative file's source in an editor tab.
     ViewSource(String),
@@ -558,6 +561,11 @@ impl BrowserSurface {
                         cx.emit(BrowserEvent::DocumentLink(raw));
                     }
                 }
+                native::NativeEvent::Message(json) => {
+                    if self.presentation == Presentation::Live {
+                        cx.emit(BrowserEvent::DocumentMessage(json));
+                    }
+                }
                 native::NativeEvent::Key(key) => {
                     if self.presentation == Presentation::Live {
                         window.focus(&self.focus, cx);
@@ -613,7 +621,7 @@ impl BrowserSurface {
                 }
             }
             // Only static documents report raw links.
-            native::NativeEvent::Link(_) => {}
+            native::NativeEvent::Link(_) | native::NativeEvent::Message(_) => {}
             native::NativeEvent::Key(key) => {
                 if self.presentation == Presentation::Live {
                     window.focus(&self.focus, cx);

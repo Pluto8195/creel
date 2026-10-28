@@ -989,6 +989,16 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_artifact_answers(id, answers, now))?)
     }
 
+    /// Replace an artifact's comments (see `RegistryDoc::set_artifact_comments`).
+    pub fn set_artifact_comments(
+        &self,
+        id: &str,
+        comments: &[zeron_proto::ArtifactComment],
+    ) -> Result<Option<Vec<zeron_proto::ArtifactComment>>, EngineError> {
+        let now = Utc::now().timestamp_millis();
+        Ok(self.mutate(|doc| doc.set_artifact_comments(id, comments, now))?)
+    }
+
     /// Whether a Space has the Linear integration turned on.
     pub fn space_linear_enabled(&self, space_id: &str) -> bool {
         self.read(|doc| doc.space_linear_enabled(space_id))

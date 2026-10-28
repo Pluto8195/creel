@@ -148,6 +148,9 @@ pub(super) enum NativeEvent {
     NewTab(String),
     /// A link activated inside a static document, as the page wrote it.
     Link(String),
+    /// A structured message from an artifact frame (raw JSON, see
+    /// `document_view::MESSAGE_BRIDGE_SCHEME`).
+    Message(String),
     Key(gpui::Keystroke),
     Favicon {
         page: String,
@@ -192,6 +195,9 @@ define_class!(
                     }
                     DocumentAction::Link(raw) => {
                         let _ = self.ivars().tx.try_send(NativeEvent::Link(raw));
+                    }
+                    DocumentAction::Message(json) => {
+                        let _ = self.ivars().tx.try_send(NativeEvent::Message(json));
                     }
                 }
                 decision.call((if decision_made.allow { WKNavigationActionPolicy::Allow } else { WKNavigationActionPolicy::Cancel },));

@@ -1034,6 +1034,10 @@ pub mod agent_tools {
                 ),
                 p("role", "plan, diagram, state-machine, comparison, or doc"),
                 p("pinAsPlan", "boolean"),
+                p(
+                    "addressedComments",
+                    "comment ids (C-n from artifact_get_plan) this revision addresses; marked resolved",
+                ),
             ],
             example: r#"{"path": "plan.md", "title": "Importer plan", "note": "first draft", "idempotencyKey": "publish-plan-1"}"#,
         },

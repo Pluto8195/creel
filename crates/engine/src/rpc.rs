@@ -2923,6 +2923,18 @@ impl RpcService for EngineRpc {
                 })
                 .await
             }
+            methods::ARTIFACT_ADD_COMMENT => {
+                let p: zeron_proto::ArtifactAddCommentParams = parse_params(params)?;
+                let by = self.work_outline.local_user();
+                self.artifact_reply(move |service| service.add_comment(&p, by))
+                    .await
+            }
+            methods::ARTIFACT_RESOLVE_COMMENT => {
+                let p: zeron_proto::ArtifactResolveCommentParams = parse_params(params)?;
+                let by = self.work_outline.local_user();
+                self.artifact_reply(move |service| service.resolve_comment(&p, by))
+                    .await
+            }
             methods::ARTIFACT_DRIFT => {
                 let p: zeron_proto::ArtifactDriftParams = parse_params(params)?;
                 self.artifact_reply(move |service| service.drift(&p.artifact_id))

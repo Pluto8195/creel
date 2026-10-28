@@ -15,6 +15,18 @@ use gpui::{Context, Window};
 /// never resolves to a URL inside an `about:srcdoc` frame.
 pub(crate) const LINK_BRIDGE_SCHEME: &str = "zeron-link:";
 
+/// Scheme of the general frame → host message bridge (Artifacts phase 4):
+/// the frame posts `{zeronMsg: {...}}` to the outer document, which
+/// activates a hidden `<a href="zeron-msg:<encoded JSON>">`. The delegate
+/// cancels it and forwards the decoded JSON ([`DocumentAction::Message`]);
+/// the Artifact tab parses and validates it (`artifacts::bridge`). Same
+/// channel and guarantees as the link bridge: only user-activated
+/// navigations count, and the payload is capped.
+pub(crate) const MESSAGE_BRIDGE_SCHEME: &str = "zeron-msg:";
+
+/// Largest accepted bridge message, in bytes of decoded JSON.
+pub(crate) const MAX_BRIDGE_MESSAGE_BYTES: usize = 16 * 1024;
+
 /// URLs a string-loaded host document and its srcdoc frame commit under.
 pub(super) fn document_navigation(url: &str) -> bool {
     url == "about:blank"
@@ -31,6 +43,8 @@ pub(super) enum DocumentAction {
     NewTab(String),
     /// Any other activated link, as the page wrote it (the owner routes it).
     Link(String),
+    /// A structured message from the page's frame (raw JSON).
+    Message(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +69,13 @@ pub(super) fn document_decision(url: &str, link_activated: bool) -> DocumentDeci
     }
     if !link_activated {
         return cancel(DocumentAction::None);
+    }
+    if let Some(encoded) = url.strip_prefix(MESSAGE_BRIDGE_SCHEME) {
+        return cancel(
+            crate::workspace_links::percent_decode_path(encoded)
+                .filter(|json| json.len() <= MAX_BRIDGE_MESSAGE_BYTES)
+                .map_or(DocumentAction::None, DocumentAction::Message),
+        );
     }
     if let Some(encoded) = url.strip_prefix(LINK_BRIDGE_SCHEME) {
         return cancel(
@@ -170,6 +191,7 @@ mod tests {
             DocumentAction::NewTab(url) | DocumentAction::Link(url) => {
                 Some(classify(&url, Some("/repo/main"), Some("/repo/chat")))
             }
+            DocumentAction::Message(_) => None,
         };
         (decision.allow, link)
     }
@@ -271,5 +293,35 @@ mod tests {
         }
         // A malformed bridge payload is dropped rather than guessed at.
         assert_eq!(route("zeron-link:%FF%FE", true), (false, None));
+    }
+
+    #[test]
+    fn messages_bridge_only_on_user_activation_and_within_the_cap() {
+        let encode = |json: &str| {
+            let mut out = String::from(MESSAGE_BRIDGE_SCHEME);
+            for byte in json.bytes() {
+                if byte.is_ascii_alphanumeric() {
+                    out.push(byte as char);
+                } else {
+                    out.push_str(&format!("%{byte:02X}"));
+                }
+            }
+            out
+        };
+        let url = encode(r#"{"t":"comment-draft","exact":"a b"}"#);
+        let decision = document_decision(&url, true);
+        assert!(!decision.allow);
+        assert_eq!(
+            decision.action,
+            DocumentAction::Message(r#"{"t":"comment-draft","exact":"a b"}"#.into())
+        );
+        // Not a click: dropped. Malformed or oversized: dropped.
+        assert_eq!(document_decision(&url, false).action, DocumentAction::None);
+        assert_eq!(
+            document_decision("zeron-msg:%FF", true).action,
+            DocumentAction::None
+        );
+        let big = encode(&"x".repeat(MAX_BRIDGE_MESSAGE_BYTES + 1));
+        assert_eq!(document_decision(&big, true).action, DocumentAction::None);
     }
 }

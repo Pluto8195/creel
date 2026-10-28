@@ -269,6 +269,13 @@ pub mod methods {
     /// `ArtifactAnswerQuestionReply`. Registry write like `ArtifactPin`:
     /// local, NOT forwardable (the owning device reconciles Required Actions).
     pub const ARTIFACT_ANSWER_QUESTION: &str = "ArtifactAnswerQuestion";
+    /// `ArtifactAddCommentParams {artifactId, anchor, quote, text}` →
+    /// `ArtifactAddCommentReply {artifactId, comment}`. Registry write like
+    /// `ArtifactPin`: local, NOT forwardable.
+    pub const ARTIFACT_ADD_COMMENT: &str = "ArtifactAddComment";
+    /// `ArtifactResolveCommentParams {artifactId, commentId, resolved}` →
+    /// `ArtifactResolveCommentReply`. Registry write: local, NOT forwardable.
+    pub const ARTIFACT_RESOLVE_COMMENT: &str = "ArtifactResolveComment";
     /// `ArtifactDriftParams {artifactId}` → `ArtifactDriftReply`. Forwardable
     /// (owning device: it reads the checkouts).
     pub const ARTIFACT_DRIFT: &str = "ArtifactDrift";
