@@ -570,7 +570,11 @@ fn answer_button(
     primary: bool,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
-    let color = if primary { theme.accent } else { theme.text_muted };
+    let color = if primary {
+        theme.accent
+    } else {
+        theme.text_muted
+    };
     div()
         .id(id)
         .debug_selector(move || selector.clone())
@@ -883,10 +887,9 @@ fn render_question(
         .pr(px(10.0))
         .py(px(8.0))
         .text_color(theme.text_muted)
-        .when(
-            status == QuestionStatus::Resolved && !expanded,
-            |card| card.opacity(0.75),
-        )
+        .when(status == QuestionStatus::Resolved && !expanded, |card| {
+            card.opacity(0.75)
+        })
         .child(body)
         .into_any_element()
 }

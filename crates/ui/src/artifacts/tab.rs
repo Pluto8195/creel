@@ -29,6 +29,7 @@ use zeron_proto::{
 
 pub(crate) mod compare_view;
 pub(crate) mod find_view;
+pub(crate) mod questions_view;
 mod zoom_view;
 pub(crate) use compare_view::CompareView;
 pub(crate) use find_view::{KEY_CONTEXT, bind_keys};
@@ -286,6 +287,8 @@ pub(crate) struct ArtifactTab {
     /// ⌘F find and the section index (`tab/find_view.rs`).
     focus: FocusHandle,
     nav: find_view::FindNav,
+    /// Plan question answers, drift and the changed-since marker.
+    questions: questions_view::QuestionState,
     /// Zoom (1.0 = 100%, fit for images), remembered per artifact.
     zoom: f32,
     /// The zoom the web page last reported (per mille), and whether the
@@ -353,6 +356,7 @@ impl ArtifactTab {
             renderer: default_renderer(),
             focus: cx.focus_handle(),
             nav: find_view::FindNav::new(cx),
+            questions: Default::default(),
             zoom: remembered_zoom,
             zoom_reported: None,
             zoom_synced: false,
@@ -1366,6 +1370,8 @@ impl gpui::Render for ArtifactTab {
                     .child(SharedString::from(text)),
             );
         };
+        self.track_questions(&artifact, window, cx);
+        let badges = self.render_badges(&artifact, &theme, cx);
         let header = self.render_header(&artifact, &theme, cx);
         let toolbar = self.render_toolbar(&artifact, &theme, cx);
         let picker = self.render_picker(&artifact, &theme, cx);
@@ -1414,6 +1420,7 @@ impl gpui::Render for ArtifactTab {
                 }
             }))
             .child(header)
+            .children(badges)
             .child(toolbar)
             .children(picker)
             .children(notice)

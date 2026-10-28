@@ -9,9 +9,9 @@ use gpui::Task;
 use serde::de::DeserializeOwned;
 use zeron_proto::{
     ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
-    ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError, ArtifactErrorCode,
-    ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams, ArtifactPromoteReply,
-    ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
+    ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
+    ArtifactErrorCode, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
     ArtifactRenderResultReply, WorkOutlineError, WorkOutlineErrorCode,
 };
 use zeron_rpc::methods;
