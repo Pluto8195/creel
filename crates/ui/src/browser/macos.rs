@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode,
+    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindowOrderingMode,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
@@ -394,12 +394,27 @@ impl NativePage {
         let monitor_shortcuts = shortcuts.clone();
         let extra_keys = Rc::new(RefCell::new(Vec::<String>::new()));
         let monitor_extra_keys = extra_keys.clone();
+        let monitor_parent = parent.clone();
+        let monitor_clip = clip.clone();
         let callback = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| {
             let e = unsafe { event.as_ref() };
             if monitor_view.isHidden()
                 || !has_focus(&monitor_view)
                 || e.window(mtm) != monitor_view.window()
             {
+                return event.as_ptr();
+            }
+            if e.r#type() != NSEventType::KeyDown {
+                // A click that lands outside the page (the composer, a
+                // popover over it) hands key focus back to GPUI's view;
+                // AppKit would otherwise leave the web view first responder.
+                let point = monitor_parent.convertPoint_fromView(e.locationInWindow(), None);
+                let in_page = monitor_parent
+                    .hitTest(point)
+                    .is_some_and(|hit| hit.isDescendantOf(&monitor_clip));
+                if click_leaves_page(in_page) {
+                    focus_view(&monitor_parent);
+                }
                 return event.as_ptr();
             }
             let mods = e.modifierFlags();
@@ -437,11 +452,40 @@ impl NativePage {
                     event.as_ptr()
                 }
             } else {
+                if combo == "escape" {
+                    // Esc in a page field returns key focus to the app. The
+                    // probe is queued ahead of the key, so it sees the field
+                    // before the page's own Esc handling can remove it.
+                    let parent = monitor_parent.clone();
+                    let completion = block2::RcBlock::new(
+                        move |value: *mut AnyObject, error: *mut NSError| {
+                            let editable = error.is_null()
+                                && unsafe { value.as_ref() }
+                                    .and_then(|value| value.downcast_ref::<NSString>())
+                                    .is_some_and(|value| value.to_string() == "1");
+                            if editable {
+                                focus_view(&parent);
+                            }
+                        },
+                    );
+                    unsafe {
+                        monitor_view.evaluateJavaScript_completionHandler(
+                            &NSString::from_str(EDITABLE_FOCUS_SCRIPT),
+                            Some(&completion),
+                        );
+                    }
+                }
                 event.as_ptr()
             }
         });
         let monitor = unsafe {
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &callback)
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown
+                    | NSEventMask::LeftMouseDown
+                    | NSEventMask::RightMouseDown
+                    | NSEventMask::OtherMouseDown,
+                &callback,
+            )
         };
         Ok(Self(Rc::new(RefCell::new(Host {
             data: data.clone(),
@@ -647,6 +691,32 @@ fn is_forwarded_key(
             .iter()
             .chain(extra)
             .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == *keystroke))
+}
+
+/// Whether the focused element of the page (looking through same-origin
+/// frames) takes typed text. Resolves to "1" or "0".
+const EDITABLE_FOCUS_SCRIPT: &str = r#"(function () {
+  let doc = document, el = doc.activeElement;
+  for (let i = 0; i < 8 && el && el.tagName === "IFRAME"; i++) {
+    try { doc = el.contentDocument; el = doc && doc.activeElement; } catch (_) { return "0"; }
+  }
+  if (!el) return "0";
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return "1";
+  return tag === "INPUT" && !/^(button|checkbox|radio|submit|reset|range|color|file|image)$/i.test(el.type) ? "1" : "0";
+})()"#;
+
+/// A mouse-down while the page is first responder takes key focus away from
+/// it unless the click lands on the page itself.
+fn click_leaves_page(in_page: bool) -> bool {
+    !in_page
+}
+
+/// Make `view` (GPUI's content view) the window's first responder.
+fn focus_view(view: &NSView) {
+    if let Some(window) = view.window() {
+        window.makeFirstResponder(Some(view));
+    }
 }
 
 fn has_focus(view: &NSView) -> bool {
@@ -981,7 +1051,7 @@ mod document_policy_tests {
 
 #[cfg(test)]
 mod forwarded_key_tests {
-    use super::{is_forwarded_key, key_name};
+    use super::{click_leaves_page, is_forwarded_key, key_name};
 
     fn forwarded(combo: &str, shortcuts: &[&str], extra: &[&str]) -> bool {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -1022,5 +1092,23 @@ mod forwarded_key_tests {
         ));
         // Plain arrows are never in the extra list: they scroll the page.
         assert!(!forwarded("up", &[], &["alt-up", "alt-down", "escape"]));
+    }
+
+    #[test]
+    fn typed_characters_are_never_forwarded_from_the_page() {
+        // The app's own shortcut list and the artifact tab's extra keys, as
+        // the page sees them while a text field has focus.
+        let shortcuts = ["cmd-s", "cmd-shift-r", "ctrl-tab", "cmd-alt-space", "cmd-/"];
+        let extra = ["alt-up", "alt-down", "cmd-=", "cmd-0"];
+        for key in ["space", "a", "z", "1", "enter", "backspace", "left", "shift-a"] {
+            assert!(!forwarded(key, &shortcuts, &extra), "{key}");
+        }
+        assert!(forwarded("cmd-f", &shortcuts, &extra));
+    }
+
+    #[test]
+    fn a_click_outside_the_page_takes_key_focus_back() {
+        assert!(click_leaves_page(false));
+        assert!(!click_leaves_page(true));
     }
 }

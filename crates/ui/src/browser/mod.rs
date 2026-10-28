@@ -114,6 +114,7 @@ pub struct BrowserSurface {
     #[cfg(target_os = "macos")]
     right_occlusion: gpui::Pixels,
     _input_sub: Subscription,
+    _focus_out_sub: Subscription,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     native: Option<native::NativePage>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -174,11 +175,18 @@ impl BrowserSurface {
         });
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = (window, context);
+        let focus = cx.focus_handle();
+        // GPUI focus moving off the browser (a shortcut that focuses the
+        // composer, a click on a field) must also pull native key focus out
+        // of the web view, or typing keeps going to the page.
+        let focus_out_sub = cx.on_focus_out(&focus, window, |this, _, _, _| {
+            this.focus_host_chrome();
+        });
         Self {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             context,
             address,
-            focus: cx.focus_handle(),
+            focus,
             page: PageState::default(),
             favicon: None,
             address_edited: false,
@@ -198,6 +206,7 @@ impl BrowserSurface {
             #[cfg(target_os = "macos")]
             right_occlusion: gpui::px(0.0),
             _input_sub: input_sub,
+            _focus_out_sub: focus_out_sub,
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             native: None,
             #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -402,6 +411,15 @@ impl BrowserSurface {
         }));
     }
 
+    /// A load only moves GPUI focus here when focus is already in this
+    /// browser (its address bar or page) or nowhere; a link opened from the
+    /// transcript must not pull focus out of the composer.
+    fn may_take_focus(&self, window: &Window, cx: &App) -> bool {
+        window.focused(cx).is_none_or(|focused| {
+            focused == self.focus || focused == self.address.focus_handle(cx)
+        })
+    }
+
     pub fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
         let url = match model::normalize_address(input) {
             Ok(url) => url,
@@ -443,7 +461,9 @@ impl BrowserSurface {
             if let Err(error) = result {
                 self.page.error = Some(format!("Could not open this page: {error}"));
             }
-            window.focus(&self.focus, cx);
+            if self.may_take_focus(window, cx) {
+                window.focus(&self.focus, cx);
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
@@ -814,6 +834,34 @@ mod tests {
                 assert_eq!(browser.address.read(cx).text(), "https://example.com/");
                 assert!(browser.focus.is_focused(window));
                 window.blur();
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn loading_a_page_never_pulls_focus_out_of_another_field(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            crate::composer::init(cx, Default::default());
+            cx.set_global(crate::theme::Theme::default());
+        });
+        let window = cx.add_window(|window, cx| {
+            BrowserSurface::new(BrowserContext::default(), false, window, cx)
+        });
+        let composer = window.update(cx, |_, _, cx| cx.focus_handle()).unwrap();
+        window
+            .update(cx, |browser, window, cx| {
+                // Nothing focused yet: the browser may take focus.
+                window.blur();
+                assert!(browser.may_take_focus(window, cx));
+                // The address bar or the page already has it: keep it there.
+                window.focus(&browser.address.focus_handle(cx), cx);
+                assert!(browser.may_take_focus(window, cx));
+                window.focus(&browser.focus, cx);
+                assert!(browser.may_take_focus(window, cx));
+                // Focus elsewhere (the composer) is never stolen.
+                window.focus(&composer, cx);
+                assert!(!browser.may_take_focus(window, cx));
             })
             .unwrap();
     }
