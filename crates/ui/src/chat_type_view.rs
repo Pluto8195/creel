@@ -8,6 +8,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus, PrStatus};
 use zeron_proto::{Chat, ChatIndicator, ChatLinkSource, PrDashTab, PrReference, PrReviewAction};
 use zeron_rpc::methods;
@@ -39,6 +40,14 @@ impl ChatViewKind {
             Self::PrReview => "No PR review chats match this view",
         }
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RowsKey {
+    state: u64,
+    links_rev: u64,
+    show_archived: bool,
+    query: String,
 }
 
 #[derive(Clone)]
@@ -189,6 +198,12 @@ pub(crate) struct ChatTypeView {
     show_archived: bool,
     active: usize,
     links: HashMap<String, ChatLinkStatus>,
+    /// Bumped whenever `links` changes; part of the row cache key.
+    links_rev: u64,
+    /// `state_fingerprint` as of the last observed change.
+    state_fingerprint: Option<u64>,
+    /// The last built list and what it was built from.
+    rows_cache: Option<(RowsKey, Rc<Vec<TypeChatRow>>)>,
     links_pending: HashSet<String>,
     /// The visible tab (default "Authored by me").
     tab: PageTab,
@@ -299,7 +314,16 @@ impl ChatTypeView {
                 }
             }
         });
-        let state_observation = cx.observe(&state, |_, _, cx| cx.notify());
+        // Repaint only when the chat list, Spaces, Work Outline loads or PR
+        // statuses it shows changed (the same fingerprint the Overview uses,
+        // plus the PR chips' store).
+        let state_observation = cx.observe(&state, |this: &mut Self, state, cx| {
+            let fingerprint = Self::state_fingerprint(state.read(cx));
+            if this.state_fingerprint != Some(fingerprint) {
+                this.state_fingerprint = Some(fingerprint);
+                cx.notify();
+            }
+        });
         Self {
             state,
             shell,
@@ -310,6 +334,9 @@ impl ChatTypeView {
             show_archived: false,
             active: 0,
             links: HashMap::new(),
+            links_rev: 0,
+            state_fingerprint: None,
+            rows_cache: None,
             links_pending: HashSet::new(),
             tab: PageTab::Dash(PrDashTab::Authored),
             dash: Default::default(),
@@ -338,12 +365,13 @@ impl ChatTypeView {
     #[cfg(test)]
     pub(crate) fn set_links_for_test(&mut self, chat_id: &str, status: ChatLinkStatus) {
         self.links.insert(chat_id.to_string(), status);
+        self.links_rev += 1;
     }
 
     /// The chat ids the launcher review chat list shows, in order.
     #[cfg(test)]
     pub(crate) fn listed_chat_ids(&mut self, cx: &mut Context<Self>) -> Vec<String> {
-        self.rows(cx).into_iter().map(|row| row.chat.id).collect()
+        self.rows(cx).iter().map(|row| row.chat.id.clone()).collect()
     }
 
     #[cfg(test)]
@@ -453,6 +481,7 @@ impl ChatTypeView {
                         &crate::review_chats::links_of_status(&status),
                     );
                     this.links.insert(chat_id.clone(), status);
+                    this.links_rev += 1;
                 }
                 cx.notify();
             })
@@ -461,11 +490,41 @@ impl ChatTypeView {
         .detach();
     }
 
-    fn rows(&mut self, cx: &mut Context<Self>) -> Vec<TypeChatRow> {
+    /// What the observer and the row cache key on: everything the Overview
+    /// fingerprint covers (chats, Spaces, Outline loads, selection) plus the
+    /// PR status store.
+    fn state_fingerprint(state: &AppState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        state.overview_fingerprint(Utc::now()).hash(&mut h);
+        state.github.fingerprint().hash(&mut h);
+        h.finish()
+    }
+
+    /// The visible chat rows. Cached: rebuilt (cloning every chat) only when
+    /// the state fingerprint, the link statuses, the archived toggle or the
+    /// search query changed, not on every render or streaming frame.
+    fn rows(&mut self, cx: &mut Context<Self>) -> Rc<Vec<TypeChatRow>> {
+        let query = self.search.read(cx).text().trim().to_lowercase();
+        let key = RowsKey {
+            state: Self::state_fingerprint(self.state.read(cx)),
+            links_rev: self.links_rev,
+            show_archived: self.show_archived,
+            query: query.clone(),
+        };
+        if let Some((cached, rows)) = &self.rows_cache
+            && *cached == key
+        {
+            return rows.clone();
+        }
+        let rows = Rc::new(self.build_rows(&query, cx));
+        self.rows_cache = Some((key, rows.clone()));
+        rows
+    }
+
+    fn build_rows(&mut self, query: &str, cx: &mut Context<Self>) -> Vec<TypeChatRow> {
         let now = Utc::now();
         let chats: Vec<Chat> = self.state.read(cx).chats.clone();
-
-        let query = self.search.read(cx).text().trim().to_lowercase();
         let mut rows = Vec::new();
         for chat in chats {
             // Whether a chat is a launcher review chat is only known from its
@@ -484,7 +543,7 @@ impl ChatTypeView {
                 pr: self.links.get(&chat.id).and_then(PrSummary::from_status),
                 chat,
             };
-            if row_matches(&row, &query) {
+            if row_matches(&row, query) {
                 rows.push(row);
             }
         }
@@ -544,7 +603,7 @@ impl ChatTypeView {
 
     fn render_row(
         &self,
-        row: TypeChatRow,
+        row: &TypeChatRow,
         index: usize,
         theme: &Theme,
         now: DateTime<Utc>,
@@ -623,7 +682,7 @@ impl ChatTypeView {
                             .child(SharedString::from(pr_title)),
                     ),
             )
-            .child(div().truncate().child(SharedString::from(row.repo)))
+            .child(div().truncate().child(SharedString::from(row.repo.clone())))
             .child(
                 div()
                     .flex()
@@ -777,7 +836,7 @@ impl Render for ChatTypeView {
         let rows = if on_chats && destination.is_none() {
             self.rows(cx)
         } else {
-            Vec::new()
+            Rc::new(Vec::new())
         };
         let count_label = match &destination {
             Some(view) => format!("{} PRs", view.items.len()),
@@ -925,7 +984,7 @@ impl Render for ChatTypeView {
                             )
                         })
                         .children(
-                            rows.into_iter()
+                            rows.iter()
                                 .enumerate()
                                 .map(|(index, row)| self.render_row(row, index, &theme, now, cx)),
                         ),
@@ -1028,6 +1087,62 @@ mod tests {
         assert!(!chat_visible(&archived, Some(&launched), false));
         assert!(chat_visible(&archived, Some(&launched), true));
         assert!(!chat_visible(&child, Some(&launched), true));
+    }
+
+    #[gpui::test]
+    fn rows_are_cached_until_something_they_show_changes(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.chats = vec![chat("a", "Alpha", 2, false), chat("b", "Beta", 1, false)];
+        });
+        let (view, vcx) = cx.add_window_view(|_, cx| {
+            ChatTypeView::new(
+                state.clone(),
+                gpui::WeakEntity::new_invalid(),
+                ChatViewKind::PrReview,
+                cx,
+            )
+        });
+        let launched = status_with(&[(7, "review_launcher")]);
+        view.update(vcx, |view, _| {
+            view.set_links_for_test("a", launched.clone());
+            view.set_links_for_test("b", launched.clone());
+        });
+        let first = view.update(vcx, |view, cx| view.rows(cx));
+        assert_eq!(first.len(), 2);
+        let again = view.update(vcx, |view, cx| view.rows(cx));
+        assert!(Rc::ptr_eq(&first, &again), "unchanged inputs reuse the list");
+
+        // Streaming into the open chat touches nothing the list shows.
+        state.update(vcx, |state, cx| {
+            state.transcript_revision += 1;
+            cx.notify();
+        });
+        let streamed = view.update(vcx, |view, cx| view.rows(cx));
+        assert!(Rc::ptr_eq(&first, &streamed));
+
+        // A visible change (a title) rebuilds it.
+        state.update(vcx, |state, cx| {
+            state.chats[0].title = Some("Renamed".into());
+            cx.notify();
+        });
+        let renamed = view.update(vcx, |view, cx| view.rows(cx));
+        assert!(!Rc::ptr_eq(&first, &renamed));
+        assert!(
+            renamed
+                .iter()
+                .any(|row| row.chat.title.as_deref() == Some("Renamed"))
+        );
+
+        // So does the archived toggle.
+        view.update(vcx, |view, _| view.show_archived = true);
+        let toggled = view.update(vcx, |view, cx| view.rows(cx));
+        assert!(!Rc::ptr_eq(&renamed, &toggled));
     }
 
     #[test]

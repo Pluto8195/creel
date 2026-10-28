@@ -112,6 +112,39 @@ impl GithubStore {
         self.viewer = ViewerEntry::Known(login.to_string());
     }
 
+    /// Cheap hash of what the chips read: which PRs have an entry, its kind
+    /// and when it was last replaced, the in-flight fetches and the viewer.
+    /// Every replacement of an entry stamps a new `Instant`, so any change a
+    /// chip could show changes the hash. Order-independent (`HashMap`).
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let hash_of = |value: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            value(&mut h);
+            h.finish()
+        };
+        let mut total = 0u64;
+        for (key, entry) in &self.statuses {
+            total ^= hash_of(&|h| {
+                key.hash(h);
+                match entry {
+                    PrEntry::Loading => 0u8.hash(h),
+                    PrEntry::Ready { at, partial, .. } => (1u8, at, partial).hash(h),
+                    PrEntry::Failed { at, .. } => (2u8, at).hash(h),
+                }
+            });
+        }
+        for key in &self.in_flight {
+            total ^= hash_of(&|h| (3u8, key).hash(h));
+        }
+        total ^ hash_of(&|h| match &self.viewer {
+            ViewerEntry::Unknown => 4u8.hash(h),
+            ViewerEntry::Loading => 5u8.hash(h),
+            ViewerEntry::Known(login) => (6u8, login).hash(h),
+            ViewerEntry::Failed(at) => (7u8, at).hash(h),
+        })
+    }
+
     pub(crate) fn status(&self, pr: &PullRequestRef) -> Option<&PrEntry> {
         self.statuses.get(&pr.key())
     }
