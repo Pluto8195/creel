@@ -339,7 +339,12 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
 
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if ("zeronComments" in d) { items = (d.zeronComments && d.zeronComments.items) || []; draw(); }
+    if ("zeronComments" in d) {
+      items = (d.zeronComments && d.zeronComments.items) || [];
+      draw();
+      // Diagrams render after load: try again for anchors not found yet.
+      if (hits.length < items.length) { setTimeout(draw, 800); setTimeout(draw, 2500); }
+    }
     else if ("zeronCommentMode" in d) { mode = !!d.zeronCommentMode; if (!mode) unhot(); document.documentElement.style.cursor = mode ? "crosshair" : ""; }
     else if ("zeronCommentFocus" in d) focus(String(d.zeronCommentFocus));
   });

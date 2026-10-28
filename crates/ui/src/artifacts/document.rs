@@ -15,6 +15,8 @@
 //! `window.__zeronProbe` once the probe has posted its report.
 use crate::browser::fragment::{self, FragmentTheme, escape_attr, escape_text};
 
+use super::bridge::HOST_SCRIPT as BRIDGE_HOST_SCRIPT;
+use super::comments::FRAME_SCRIPT as COMMENT_FRAME_SCRIPT;
 use super::find::{FRAME_SCRIPT as FIND_FRAME_SCRIPT, HOST_SCRIPT as FIND_HOST_SCRIPT};
 use super::model::WebKind;
 use super::question_html::{CSS as QUESTION_CSS, SCRIPT as QUESTION_FRAME_SCRIPT};
@@ -48,7 +50,11 @@ pub(crate) fn web_document(
             probe_script()
         )
     } else {
-        format!("{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{QUESTION_FRAME_SCRIPT}")
+        // Only the app's own view gets the comment + answer bridge; render
+        // checks and compare frames stay passive.
+        format!(
+            "{LINK_FRAME_SCRIPT}{FIND_FRAME_SCRIPT}{QUESTION_FRAME_SCRIPT}{COMMENT_FRAME_SCRIPT}"
+        )
     };
     let probe_script = Some(frame_scripts);
     let document = match kind {
@@ -282,7 +288,7 @@ pub(crate) const LINK_HOST_SCRIPT: &str = r##"window.addEventListener("message",
 fn with_link_host(document: &str) -> String {
     document.replacen(
         "</head>",
-        &format!("<script>{LINK_HOST_SCRIPT}{FIND_HOST_SCRIPT}</script>\n</head>"),
+        &format!("<script>{LINK_HOST_SCRIPT}{FIND_HOST_SCRIPT}{BRIDGE_HOST_SCRIPT}</script>\n</head>"),
         1,
     )
 }

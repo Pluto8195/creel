@@ -403,9 +403,8 @@ mod tests {
         let mut many = vec![mk(1, CommentStatus::Open), mk(2, CommentStatus::Resolved)];
         many.extend((3..=40).map(|n| mk(n, CommentStatus::Open)));
         let kept = doc.set_artifact_comments("a1", &many, 6).unwrap().unwrap();
-        if kept.len() < many.len() {
-            assert!(kept.iter().all(|c| c.id != "C-2"), "resolved dropped first");
-            assert!(kept.iter().any(|c| c.id == "C-1"));
-        }
+        assert!(kept.len() < many.len(), "40 maximal comments do not fit one op");
+        assert!(kept.iter().all(|c| c.id != "C-2"), "resolved dropped first");
+        assert_eq!(kept.last().unwrap().id, "C-40", "newest kept");
     }
 }

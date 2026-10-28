@@ -18,7 +18,9 @@
 #![allow(dead_code)]
 
 pub(crate) mod actions;
+pub(crate) mod bridge;
 pub(crate) mod cards;
+pub(crate) mod comments;
 pub(crate) mod compare;
 pub(crate) mod document;
 pub(crate) mod find;
