@@ -227,7 +227,27 @@ impl OutlineView {
         }
         // A retry of a failed attempt would replay its operation id.
         self.attempt = None;
+        // The move is in the action log as its newest entry: it is undone now.
+        self.state.update(cx, |state, _| {
+            let newest = state
+                .action_log
+                .next_undo(&toast.space_id)
+                .filter(|entry| {
+                    matches!(
+                        entry.forward,
+                        super::super::action_log::Step::Move { .. }
+                            | super::super::action_log::Step::Assign { .. }
+                            | super::super::action_log::Step::RemoveChat { .. }
+                    )
+                })
+                .map(|entry| entry.id);
+            if let Some(id) = newest {
+                state.action_log.mark_undone(&toast.space_id, id);
+            }
+        });
+        self.skip_log = true;
         self.send_direct(toast.space_id, undo, cx);
+        self.skip_log = false;
         cx.notify();
     }
 

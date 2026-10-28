@@ -650,11 +650,12 @@ mod tests {
             ]
         );
         let outline_rows: usize = groups[..3].iter().map(|group| group.rows.len()).sum();
-        // Tab / Shift+Tab and R share rows with Indent / Outdent / Rename;
+        // Tab / Shift+Tab, R, and the Ctrl aliases of Undo / Redo share rows with
+        // Indent / Outdent / Rename / Undo / Redo;
         // the Chat-row moves add their own rows.
         assert_eq!(
             outline_rows,
-            OUTLINE_NAVIGATION_KEYS.len() - 3
+            OUTLINE_NAVIGATION_KEYS.len() - 5
                 + CHAT_MOVE_KEYS.len()
                 + SPACE_MOVE_KEYS.len()
                 + OUTLINE_APP_KEYS.len()

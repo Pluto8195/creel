@@ -1597,3 +1597,86 @@ fn ten_thousand_items_materialize_within_budget() {
         started.elapsed()
     );
 }
+
+// ── undo: the inverse operations the UI's action log sends ──────────────────
+
+/// Undo is an ordinary mutation: the inverse of a move (`First` or `After`
+/// the previous sibling, under the old parent) puts an item back exactly, a
+/// field patch restores a title, and restore reverses a cascading archive.
+/// See `ui::work_outline::action_log`.
+#[test]
+fn undo_inverse_operations_restore_order_parent_fields_and_archive() {
+    let mut doc = doc_with_spaces("d1");
+    let a = create(&mut doc, "op-a", None, "A");
+    let b = create(&mut doc, "op-b", None, "B");
+    let c = create(&mut doc, "op-c", None, "C");
+    let base = titles(&snap(&doc), None);
+    assert_eq!(base, ["A", "B", "C"]);
+
+    // Reorder C to the front; the inverse is After(previous sibling = B).
+    move_to(&mut doc, "op-1", &c, None, WorkOutlinePlacement::First).unwrap();
+    assert_eq!(titles(&snap(&doc), None), ["C", "A", "B"]);
+    move_to(&mut doc, "op-1-undo", &c, None, after(&b)).unwrap();
+    assert_eq!(titles(&snap(&doc), None), base);
+
+    // Reparent A's next sibling under A (last); the inverse names the old
+    // parent and the previous sibling (A).
+    move_to(&mut doc, "op-2", &b, Some(&a), WorkOutlinePlacement::Last).unwrap();
+    assert_eq!(titles(&snap(&doc), Some(&a)), ["B"]);
+    move_to(&mut doc, "op-2-undo", &b, None, after(&a)).unwrap();
+    assert_eq!(titles(&snap(&doc), None), base);
+    assert!(titles(&snap(&doc), Some(&a)).is_empty());
+
+    // First child of a parent: the inverse placement is First.
+    move_to(&mut doc, "op-3", &a, Some(&c), WorkOutlinePlacement::Last).unwrap();
+    move_to(&mut doc, "op-3-undo", &a, None, WorkOutlinePlacement::First).unwrap();
+    assert_eq!(titles(&snap(&doc), None), base);
+
+    // A patch with the old values restores them, and nothing else changes.
+    let before = snap(&doc).item(&b).unwrap().clone();
+    for (op, title, status) in [
+        ("op-4", "B2", WorkItemStatus::Completed),
+        ("op-4-undo", "B", before.status),
+    ] {
+        apply(
+            &mut doc,
+            WorkOutlineMutation::UpdateWorkItem(UpdateWorkItemParams {
+                work_item_id: b.clone(),
+                changes: zeron_proto::WorkItemChanges {
+                    title: Some(title.into()),
+                    status: Some(status),
+                    ..Default::default()
+                },
+                operation_id: op.into(),
+            }),
+        )
+        .unwrap();
+    }
+    let after_undo = snap(&doc).item(&b).unwrap().clone();
+    assert_eq!(after_undo.title, before.title);
+    assert_eq!(after_undo.status, before.status);
+
+    // Archive with descendants, then restore: the subtree is live again.
+    let child = create(&mut doc, "op-child", Some(&a), "A child");
+    apply(
+        &mut doc,
+        WorkOutlineMutation::ArchiveWorkItem(ArchiveWorkItemParams {
+            work_item_id: a.clone(),
+            descendant_archive_policy: DescendantArchivePolicy::ArchiveDescendants,
+            operation_id: "op-5".into(),
+        }),
+    )
+    .unwrap();
+    assert!(snap(&doc).item(&child).unwrap().archived_at.is_some());
+    apply(
+        &mut doc,
+        WorkOutlineMutation::RestoreWorkItem(RestoreWorkItemParams {
+            work_item_id: a.clone(),
+            operation_id: "op-5-undo".into(),
+        }),
+    )
+    .unwrap();
+    let s = snap(&doc);
+    assert!(s.items.iter().all(|i| i.archived_at.is_none()));
+    assert_eq!(titles(&s, Some(&a)), ["A child"]);
+}

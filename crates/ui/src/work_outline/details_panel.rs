@@ -593,6 +593,19 @@ impl WorkItemDetails {
         cx: &mut Context<Self>,
         on_ok: impl FnOnce(&mut Self) + 'static,
     ) {
+        self.run_logged(key, task, None, cx, on_ok);
+    }
+
+    /// [`Self::run`] that also records `change` in the action log (for undo)
+    /// once the engine acknowledges the request.
+    pub(super) fn run_logged(
+        &mut self,
+        key: impl Into<String>,
+        task: ActionTask,
+        change: Option<super::action_log::Draft>,
+        cx: &mut Context<Self>,
+        on_ok: impl FnOnce(&mut Self) + 'static,
+    ) {
         let key = key.into();
         if !self.in_flight.insert(key.clone()) {
             return;
@@ -604,7 +617,14 @@ impl WorkItemDetails {
             this.update(cx, |this, cx| {
                 this.in_flight.remove(&key);
                 match result {
-                    Ok(_) => on_ok(this),
+                    Ok(_) => {
+                        if let Some(change) = change {
+                            let space_id = this.space_id.clone();
+                            this.state
+                                .update(cx, |state, _| state.action_log.record(&space_id, change));
+                        }
+                        on_ok(this)
+                    }
                     Err(error) => this.error = Some(error.message),
                 }
                 cx.notify();
@@ -621,6 +641,9 @@ impl WorkItemDetails {
         cx: &mut Context<Self>,
         on_ok: impl FnOnce(&mut Self) + 'static,
     ) {
+        let change = self.snapshot.as_deref().and_then(|snapshot| {
+            super::action_log::update_entry(snapshot, &self.item_id, &changes, None)
+        });
         let task =
             self.state
                 .read(cx)
@@ -630,7 +653,7 @@ impl WorkItemDetails {
                     changes,
                     operation_id: new_operation_id(),
                 });
-        self.run(key, task, cx, on_ok);
+        self.run_logged(key, task, change, cx, on_ok);
     }
 
     fn begin_title_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -762,6 +785,20 @@ impl WorkItemDetails {
         let Some(parsed) = self.linear_gate_reference(parsed, cx) else {
             return;
         };
+        let change = self.snapshot.as_deref().map(|snapshot| {
+            super::action_log::link_entry(
+                snapshot,
+                super::action_log::ReferenceData {
+                    work_item_id: self.item_id.clone(),
+                    provider: parsed.provider.clone(),
+                    reference_type: parsed.reference_type.clone(),
+                    external_id: parsed.external_id.clone(),
+                    url: parsed.url.clone(),
+                    cached_title: None,
+                },
+                None,
+            )
+        });
         let task = self
             .state
             .read(cx)
@@ -776,13 +813,16 @@ impl WorkItemDetails {
                 operation_id: new_operation_id(),
             });
         let input = self.reference_input.clone();
-        self.run("reference:add", task, cx, move |this| {
+        self.run_logged("reference:add", task, change, cx, move |this| {
             this.adding_reference = false;
             let _ = input;
         });
     }
 
     fn remove_reference(&mut self, reference_id: String, cx: &mut Context<Self>) {
+        let change = self.snapshot.as_deref().and_then(|snapshot| {
+            super::action_log::unlink_entry(snapshot, &reference_id, None)
+        });
         let task = self
             .state
             .read(cx)
@@ -791,7 +831,7 @@ impl WorkItemDetails {
                 reference_id: reference_id.clone(),
                 operation_id: new_operation_id(),
             });
-        self.run(format!("reference:{reference_id}"), task, cx, |_| {});
+        self.run_logged(format!("reference:{reference_id}"), task, change, cx, |_| {});
     }
 
     fn open_reference(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -850,6 +890,14 @@ impl WorkItemDetails {
                     return;
                 };
                 weak.update(cx, |this, cx| {
+                    let change = this.snapshot.as_deref().and_then(|snapshot| {
+                        super::action_log::archive_entry(
+                            snapshot,
+                            &this.item_id,
+                            &policy,
+                            None,
+                        )
+                    });
                     let task = this
                         .state
                         .read(cx)
@@ -859,7 +907,7 @@ impl WorkItemDetails {
                             descendant_archive_policy: policy,
                             operation_id: new_operation_id(),
                         });
-                    this.run("archive", task, cx, |_| {});
+                    this.run_logged("archive", task, change, cx, |_| {});
                 })
                 .ok();
             }),
@@ -877,6 +925,10 @@ impl WorkItemDetails {
     }
 
     pub(crate) fn restore(&mut self, cx: &mut Context<Self>) {
+        let change = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| super::action_log::restore_entry(snapshot, &self.item_id, None));
         let task = self
             .state
             .read(cx)
@@ -885,7 +937,7 @@ impl WorkItemDetails {
                 work_item_id: self.item_id.clone(),
                 operation_id: new_operation_id(),
             });
-        self.run("archive", task, cx, |_| {});
+        self.run_logged("archive", task, change, cx, |_| {});
     }
 
     // ----------------------------------------------------------------------

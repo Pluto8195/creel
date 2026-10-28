@@ -23,6 +23,7 @@
 // seams in.
 #![allow(dead_code)]
 
+pub(crate) mod action_log;
 pub(crate) mod actions;
 pub(crate) mod chips;
 pub(crate) mod command;

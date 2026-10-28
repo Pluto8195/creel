@@ -21,9 +21,11 @@ use gpui::{
     actions, div, prelude::*, px,
 };
 
+use super::action_log;
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
 mod move_toast;
+mod undo;
 mod tree_guides_view;
 
 use super::hints::{HintKey, WithHint};
@@ -79,6 +81,8 @@ actions!(
         MoveItemDown,
         IndentItem,
         OutdentItem,
+        UndoChange,
+        RedoChange,
     ]
 );
 
@@ -114,6 +118,14 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-left", OutdentItem, ctx),
         KeyBinding::new("tab", IndentItem, ctx),
         KeyBinding::new("shift-tab", OutdentItem, ctx),
+        KeyBinding::new(&crate::settings::platform_combo("mod-z"), UndoChange, ctx),
+        KeyBinding::new("ctrl-z", UndoChange, ctx),
+        KeyBinding::new(
+            &crate::settings::platform_combo("mod-shift-z"),
+            RedoChange,
+            ctx,
+        ),
+        KeyBinding::new("ctrl-shift-z", RedoChange, ctx),
     ]
 }
 
@@ -228,6 +240,9 @@ enum PickerPurpose {
     AssociateChat { chat_id: String },
     /// Associate a Chat with `item_id`; entry value = chat id.
     AssociateWithItem { item_id: String },
+    /// Undo back to (or redo up to) the chosen change; entry value = `u<id>`
+    /// / `r<id>` of the action log entry.
+    RecentChanges,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +449,10 @@ pub(crate) struct OutlineView {
     /// The non-blocking "Moved X · instructions changed" toast with Undo.
     move_toast: Option<move_toast::MoveToast>,
     move_toast_seq: u64,
+    /// An undo or redo is running (see `outline_view::undo`).
+    log_busy: bool,
+    /// The move toast's Undo is sending its inverse: it is not a new change.
+    skip_log: bool,
     /// Item whose Work Item Details are open (row highlight).
     details_key: Option<String>,
     /// Chat shown in the Overview's chat panel (row highlight).
@@ -520,6 +539,8 @@ impl OutlineView {
             move_toast: None,
             move_toast_seq: 0,
             compact_single_chat: true,
+            log_busy: false,
+            skip_log: false,
             details_key: None,
             panel_chat: None,
             shell: None,
@@ -1243,7 +1264,7 @@ impl OutlineView {
         let operation_id = edit.operation_id.clone();
         let kind = edit.kind.clone();
         let actions = self.state.read(cx).work_outline_actions();
-        let (task, space_id, change, created_key) = match kind {
+        let (task, space_id, change, created_key, draft) = match kind {
             EditKind::Create {
                 space_id,
                 parent,
@@ -1261,6 +1282,11 @@ impl OutlineView {
                     operation_id: operation_id.clone(),
                 });
                 let key = row_key::item(&space_id, &work_item_id);
+                let draft = action_log::create_entry(
+                    &work_item_id,
+                    &title,
+                    Some(operation_id.clone()),
+                );
                 let change = LocalChange::Create {
                     work_item_id,
                     parent,
@@ -1268,31 +1294,41 @@ impl OutlineView {
                     title,
                     created_at: chrono::Utc::now().timestamp_millis(),
                 };
-                (task, Some(space_id), change, Some(key))
+                (task, Some(space_id), change, Some(key), Some(draft))
             }
             EditKind::Rename { item_id, .. } => {
                 let space_id = self
                     .snapshot_with_item(&item_id)
                     .map(|snapshot| snapshot.space_id.clone());
+                let changes = zeron_proto::WorkItemChanges {
+                    title: Some(title.clone()),
+                    ..Default::default()
+                };
+                let draft = self.snapshot_with_item(&item_id).and_then(|snapshot| {
+                    action_log::update_entry(
+                        snapshot,
+                        &item_id,
+                        &changes,
+                        Some(operation_id.clone()),
+                    )
+                });
                 let task = actions.update_work_item(zeron_proto::UpdateWorkItemParams {
                     work_item_id: item_id.clone(),
-                    changes: zeron_proto::WorkItemChanges {
-                        title: Some(title.clone()),
-                        ..Default::default()
-                    },
+                    changes,
                     operation_id: operation_id.clone(),
                 });
                 let change = LocalChange::Rename {
                     work_item_id: item_id,
                     title,
                 };
-                (task, space_id, change, None)
+                (task, space_id, change, None, draft)
             }
         };
         // Show the result now; the reply only confirms (or rolls back).
         self.editing = None;
         if let Some(space_id) = space_id.as_deref() {
             self.show_optimistic(space_id, &operation_id, change, None, cx);
+            self.record_change(space_id, draft, cx);
         }
         if let Some(key) = created_key.clone() {
             if self.model.position(&key).is_some() {
@@ -1305,11 +1341,15 @@ impl OutlineView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
+                Ok(_) => {
+                    this.confirm_change(&operation_id, cx);
+                    this.acknowledge_optimistic(&operation_id, cx)
+                }
                 Err(error) => {
                     if created_key.is_some() && this.pending_select == created_key {
                         this.pending_select = None;
                     }
+                    this.forget_change(&operation_id, cx);
                     this.drop_optimistic(&operation_id, cx);
                     this.show_error(error.message.clone(), cx);
                 }
@@ -1487,6 +1527,10 @@ impl OutlineView {
             return;
         };
         let purpose = picker.purpose.clone();
+        if purpose == PickerPurpose::RecentChanges {
+            self.choose_recent_change(&entry, window, cx);
+            return;
+        }
         let operation_id = picker.operation_id.clone();
         let place_first = picker.place_first;
         let change = match &purpose {
@@ -1506,6 +1550,7 @@ impl OutlineView {
                     work_item_id: item_id.clone(),
                 })
             }
+            PickerPurpose::RecentChanges => None,
         };
         let snapshot = match &purpose {
             PickerPurpose::Move { item_id } | PickerPurpose::AssociateWithItem { item_id } => {
@@ -1518,6 +1563,7 @@ impl OutlineView {
                 .find(|chat| &chat.id == chat_id)
                 .and_then(|chat| chat.space_id.as_deref())
                 .and_then(|space| self.snapshot(space)),
+            PickerPurpose::RecentChanges => None,
         };
         let impact = change
             .as_ref()
@@ -1555,6 +1601,7 @@ impl OutlineView {
                             work_item_id: item_id.clone(),
                         })
                 }
+                PickerPurpose::RecentChanges => None,
             };
             snapshot
                 .map(|snapshot| snapshot.space_id.clone())
@@ -1589,6 +1636,7 @@ impl OutlineView {
             WorkOutlinePlacement::Last
         };
         let (task, item_id, change) = match picker.purpose.clone() {
+            PickerPurpose::RecentChanges => return,
             PickerPurpose::Move { item_id } => (
                 actions.move_work_item(zeron_proto::MoveWorkItemParams {
                     work_item_id: item_id.clone(),
@@ -1641,6 +1689,28 @@ impl OutlineView {
         let space_id = self
             .snapshot_with_item(&item_id)
             .map(|snapshot| snapshot.space_id.clone());
+        let draft = space_id.as_deref().and_then(|space_id| {
+            let mutation = match &change {
+                LocalChange::Move {
+                    work_item_id,
+                    destination_parent,
+                    placement,
+                } => DirectMutation::Move(MovePlan {
+                    work_item_id: work_item_id.clone(),
+                    destination_parent: destination_parent.clone(),
+                    placement: placement.clone(),
+                }),
+                LocalChange::AssignChat {
+                    chat_id,
+                    work_item_id,
+                } => DirectMutation::AssignChat {
+                    chat_id: chat_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                },
+                _ => return None,
+            };
+            self.direct_draft(space_id, &mutation, &operation_id)
+        });
         self.close_picker(window, cx);
         if let Some(space_id) = space_id {
             // A move: the moved row is followed (and its new parent expanded).
@@ -1658,12 +1728,17 @@ impl OutlineView {
                 _ => None,
             };
             self.show_optimistic(&space_id, &operation_id, change, follow, cx);
+            self.record_change(&space_id, draft, cx);
         }
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(_) => this.acknowledge_optimistic(&operation_id, cx),
+                Ok(_) => {
+                    this.confirm_change(&operation_id, cx);
+                    this.acknowledge_optimistic(&operation_id, cx)
+                }
                 Err(error) => {
+                    this.forget_change(&operation_id, cx);
                     this.drop_optimistic(&operation_id, cx);
                     this.dismiss_move_toast_for(&operation_id, cx);
                     this.show_error(error.message.clone(), cx);
@@ -1958,6 +2033,11 @@ impl OutlineView {
             _ => new_operation_id(),
         };
         let actions = self.state.read(cx).work_outline_actions();
+        let draft = if self.skip_log {
+            None
+        } else {
+            self.direct_draft(&space_id, &mutation, &operation_id)
+        };
         let (task, change, follow_key, expand_key) = match &mutation {
             DirectMutation::Move(plan) => (
                 actions.move_work_item(plan.params(operation_id.clone())),
@@ -2008,6 +2088,7 @@ impl OutlineView {
             self.set_collapsed(key, false, cx);
         }
         self.show_optimistic(&space_id, &operation_id, change, Some(follow_key), cx);
+        self.record_change(&space_id, draft, cx);
         tracing::info!(
             target: "work_outline_keys",
             %space_id, %operation_id,
@@ -2040,6 +2121,7 @@ impl OutlineView {
                         if ours {
                             this.attempt = None;
                         }
+                        this.confirm_change(&operation_id, cx);
                         this.acknowledge_optimistic(&operation_id, cx);
                         // Boundary no-ops send nothing: keep going until a
                         // press goes out or the queue is empty. A late reply
@@ -2072,6 +2154,7 @@ impl OutlineView {
                             this.queued_restructure.clear();
                             this.follow = None;
                         }
+                        this.forget_change(&operation_id, cx);
                         this.drop_optimistic(&operation_id, cx);
                         this.dismiss_move_toast_for(&operation_id, cx);
                         this.show_error(error.message.clone(), cx);
@@ -2104,6 +2187,7 @@ impl OutlineView {
         );
         self.queued_restructure.clear();
         self.follow = None;
+        self.forget_change(operation_id, cx);
         self.drop_optimistic(operation_id, cx);
         self.dismiss_move_toast_for(operation_id, cx);
         self.show_error("The engine did not answer in time. Try the move again", cx);
@@ -2485,7 +2569,14 @@ impl OutlineView {
             .when(submitting, |el| el.opacity(0.6))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
-                    "enter" => this.commit_edit(cx),
+                    "enter" => {
+                        this.commit_edit(cx);
+                        // The edit row goes away: keep the keys (⌘Z included)
+                        // working on the tree.
+                        if !this.is_editing() {
+                            window.focus(&this.focus, cx);
+                        }
+                    }
                     "escape" => this.cancel_edit_and_refocus(window, cx),
                     _ => return,
                 }
@@ -3807,6 +3898,8 @@ impl Render for OutlineView {
             .on_action(cx.listener(|this, _: &MoveItemDown, _, cx| {
                 this.restructure_key(RestructureOp::MoveDown, cx)
             }))
+            .on_action(cx.listener(|this, _: &UndoChange, _, cx| this.undo_change(cx)))
+            .on_action(cx.listener(|this, _: &RedoChange, _, cx| this.redo_change(cx)))
             .on_action(cx.listener(|this, _: &IndentItem, _, cx| {
                 this.restructure_key(RestructureOp::Indent, cx)
             }))

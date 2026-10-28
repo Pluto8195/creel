@@ -761,6 +761,8 @@ pub struct AppState {
     change_requests_visible: bool,
     /// Work Outline snapshots keyed by Space id, fed by `WatchWorkOutline`.
     work_outlines: crate::work_outline::WorkOutlineStore,
+    /// Work Outline changes made from this window, for undo and redo.
+    pub(crate) action_log: crate::work_outline::action_log::ActionLog,
     /// One `WatchWorkOutline` task per watched Space (single-flight per key).
     work_outline_tasks: HashMap<String, Task<()>>,
     /// Spaces the Outline presentation declared visible; the reconciler
@@ -877,6 +879,7 @@ impl AppState {
             queue_task: None,
             change_requests_visible: true,
             work_outlines: crate::work_outline::WorkOutlineStore::new(),
+            action_log: Default::default(),
             work_outline_tasks: HashMap::new(),
             work_outline_visible: Vec::new(),
             work_outline_runtime: None,

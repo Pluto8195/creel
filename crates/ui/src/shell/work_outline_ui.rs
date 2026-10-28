@@ -192,6 +192,9 @@ pub(crate) enum OutlineNavKey {
     MoveItemDown,
     IndentItem,
     OutdentItem,
+    /// Undo / redo the last Outline change (action log).
+    Undo,
+    Redo,
     /// Open the shortcut reference.
     ShowShortcuts,
 }
@@ -225,6 +228,8 @@ impl OutlineNavKey {
             Self::MoveItemDown => "Move down",
             Self::IndentItem => "Indent",
             Self::OutdentItem => "Outdent",
+            Self::Undo => "Undo change",
+            Self::Redo => "Redo change",
             Self::ShowShortcuts => "Show shortcuts",
         }
     }
@@ -241,9 +246,12 @@ impl OutlineNavKey {
             | Self::Collapse
             | Self::OpenSelected
             | Self::ShowShortcuts => OutlineKeyGroup::Navigate,
-            Self::StartChat | Self::RenameSelected | Self::CreateSibling | Self::CreateChild => {
-                OutlineKeyGroup::Edit
-            }
+            Self::StartChat
+            | Self::RenameSelected
+            | Self::CreateSibling
+            | Self::CreateChild
+            | Self::Undo
+            | Self::Redo => OutlineKeyGroup::Edit,
             Self::MoveItemUp | Self::MoveItemDown | Self::IndentItem | Self::OutdentItem => {
                 OutlineKeyGroup::Restructure
             }
@@ -289,7 +297,7 @@ impl OutlineNavKey {
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 21] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 25] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -310,6 +318,10 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 21] = [
     ("shift-left", OutlineNavKey::OutdentItem),
     ("tab", OutlineNavKey::IndentItem),
     ("shift-tab", OutlineNavKey::OutdentItem),
+    ("mod-z", OutlineNavKey::Undo),
+    ("ctrl-z", OutlineNavKey::Undo),
+    ("mod-shift-z", OutlineNavKey::Redo),
+    ("ctrl-shift-z", OutlineNavKey::Redo),
     ("?", OutlineNavKey::ShowShortcuts),
 ];
 
@@ -380,8 +392,8 @@ pub(crate) fn log_restructure_keystroke(
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
-        OpenSelected, OutdentItem, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected,
+        OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst, SelectLast, SelectNext,
+        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected, UndoChange,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
     cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| {
@@ -407,6 +419,8 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
             OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
             OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
             OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
+            OutlineNavKey::Undo => KeyBinding::new(keys, UndoChange, context),
+            OutlineNavKey::Redo => KeyBinding::new(keys, RedoChange, context),
             OutlineNavKey::ShowShortcuts => KeyBinding::new(
                 keys,
                 RunWorkOutlineCommand(WorkOutlineCommand::ShowOutlineShortcuts),

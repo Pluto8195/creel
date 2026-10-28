@@ -248,6 +248,10 @@ impl WorkItemDetails {
     }
 
     fn unlink_linear(&mut self, reference_id: String, cx: &mut Context<Self>) {
+        // Local registry row only: undo relinks it, nothing goes to Linear.
+        let change = self.snapshot.as_deref().and_then(|snapshot| {
+            crate::work_outline::action_log::unlink_entry(snapshot, &reference_id, None)
+        });
         let task = self
             .state
             .read(cx)
@@ -256,7 +260,7 @@ impl WorkItemDetails {
                 reference_id: reference_id.clone(),
                 operation_id: new_operation_id(),
             });
-        self.run(format!("reference:{reference_id}"), task, cx, |_| {});
+        self.run_logged(format!("reference:{reference_id}"), task, change, cx, |_| {});
     }
 
     /// Fix link: relink a slug-keyed project link by the real project id.
