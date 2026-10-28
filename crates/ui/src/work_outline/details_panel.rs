@@ -820,9 +820,10 @@ impl WorkItemDetails {
     }
 
     fn remove_reference(&mut self, reference_id: String, cx: &mut Context<Self>) {
-        let change = self.snapshot.as_deref().and_then(|snapshot| {
-            super::action_log::unlink_entry(snapshot, &reference_id, None)
-        });
+        let change = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| super::action_log::unlink_entry(snapshot, &reference_id, None));
         let task = self
             .state
             .read(cx)
@@ -831,7 +832,13 @@ impl WorkItemDetails {
                 reference_id: reference_id.clone(),
                 operation_id: new_operation_id(),
             });
-        self.run_logged(format!("reference:{reference_id}"), task, change, cx, |_| {});
+        self.run_logged(
+            format!("reference:{reference_id}"),
+            task,
+            change,
+            cx,
+            |_| {},
+        );
     }
 
     fn open_reference(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -891,12 +898,7 @@ impl WorkItemDetails {
                 };
                 weak.update(cx, |this, cx| {
                     let change = this.snapshot.as_deref().and_then(|snapshot| {
-                        super::action_log::archive_entry(
-                            snapshot,
-                            &this.item_id,
-                            &policy,
-                            None,
-                        )
+                        super::action_log::archive_entry(snapshot, &this.item_id, &policy, None)
                     });
                     let task = this
                         .state

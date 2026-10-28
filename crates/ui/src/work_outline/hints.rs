@@ -672,6 +672,15 @@ mod tests {
         };
         assert_eq!(row(&groups, "Show shortcuts").keys.as_deref(), Some("?"));
         assert_eq!(
+            row(&groups, "Open details").keys.as_deref(),
+            Some("\u{2318}I")
+        );
+        assert_eq!(row(&groups, "Open").keys.as_deref(), Some("\u{21a9}"));
+        assert_eq!(
+            hint_keys_on(true, &keymap, HintKey::Outline(OutlineNavKey::OpenDetails)).as_deref(),
+            Some("\u{2318}I")
+        );
+        assert_eq!(
             row(&groups, "Create from issue (Linear panel row)")
                 .keys
                 .as_deref(),

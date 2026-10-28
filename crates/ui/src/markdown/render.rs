@@ -771,7 +771,11 @@ fn render_question(
             can_answer,
         ))
     });
-    let mut body = div().flex().flex_col().gap(crate::typography::ui_rems(6.0)).child(header);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(crate::typography::ui_rems(6.0))
+        .child(header);
     if !card.text.is_empty() {
         body = body.child(div().text_color(theme.text).child(text_element(
             &card.text,
@@ -1104,37 +1108,42 @@ pub fn render_block(
                             .into_any_element(),
                     }
                 };
-                div().flex().flex_row().gap(crate::typography::ui_rems(8.0)).child(marker).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::typography::ui_rems(4.0))
-                        .children(item.iter().enumerate().map(|(ci, child)| {
-                            let task_body;
-                            let child = if ci == 0 && task.is_some() {
-                                let Block::Paragraph { runs } = child else {
-                                    unreachable!()
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(crate::typography::ui_rems(8.0))
+                    .child(marker)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(crate::typography::ui_rems(4.0))
+                            .children(item.iter().enumerate().map(|(ci, child)| {
+                                let task_body;
+                                let child = if ci == 0 && task.is_some() {
+                                    let Block::Paragraph { runs } = child else {
+                                        unreachable!()
+                                    };
+                                    task_body = Block::Paragraph {
+                                        runs: runs.iter().skip(1).cloned().collect(),
+                                    };
+                                    &task_body
+                                } else {
+                                    child
                                 };
-                                task_body = Block::Paragraph {
-                                    runs: runs.iter().skip(1).cloned().collect(),
-                                };
-                                &task_body
-                            } else {
-                                child
-                            };
-                            render_block(
-                                child,
-                                top_ix,
-                                list_child_ix(ix, item_ix, ci),
-                                opts,
-                                theme,
-                                window,
-                                None,
-                            )
-                        })),
-                )
+                                render_block(
+                                    child,
+                                    top_ix,
+                                    list_child_ix(ix, item_ix, ci),
+                                    opts,
+                                    theme,
+                                    window,
+                                    None,
+                                )
+                            })),
+                    )
             }))
             .into_any_element(),
         Block::Table {

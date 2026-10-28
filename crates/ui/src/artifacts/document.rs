@@ -288,7 +288,9 @@ pub(crate) const LINK_HOST_SCRIPT: &str = r##"window.addEventListener("message",
 fn with_link_host(document: &str) -> String {
     document.replacen(
         "</head>",
-        &format!("<script>{LINK_HOST_SCRIPT}{FIND_HOST_SCRIPT}{BRIDGE_HOST_SCRIPT}</script>\n</head>"),
+        &format!(
+            "<script>{LINK_HOST_SCRIPT}{FIND_HOST_SCRIPT}{BRIDGE_HOST_SCRIPT}</script>\n</head>"
+        ),
         1,
     )
 }

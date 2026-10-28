@@ -9,7 +9,9 @@ use zeron_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactOptionPick, Art
 use zeron_rpc::methods;
 
 use super::tab::{ArtifactTab, FakeWebHost};
-use super::tests::{Calls, Reply, SPACE, Shown, artifact, content_reply, id, init_ui, scripted, snapshot};
+use super::tests::{
+    Calls, Reply, SPACE, Shown, artifact, content_reply, id, init_ui, scripted, snapshot,
+};
 
 const OPTIONS: &str = r#"{"title":"Layouts","question":"Which layout?","options":[
   {"id":"A","label":"Grid","path":"a.fragment.html"},
@@ -37,7 +39,12 @@ fn replies(manifest: &'static str) -> Reply {
                 &format!("<p>{path}</p>"),
                 ArtifactContentEncoding::Utf8,
             ),
-            None => content_reply(ArtifactKind::Options, 2, manifest, ArtifactContentEncoding::Utf8),
+            None => content_reply(
+                ArtifactKind::Options,
+                2,
+                manifest,
+                ArtifactContentEncoding::Utf8,
+            ),
         }),
         methods::ARTIFACT_PICK_OPTION => {
             let option = params["optionId"].as_str().map(|option| {
@@ -57,7 +64,8 @@ fn replies(manifest: &'static str) -> Reply {
 fn settle(vcx: &mut VisualTestContext) {
     for _ in 0..3 {
         vcx.run_until_parked();
-        vcx.executor().advance_clock(std::time::Duration::from_secs(1));
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
         vcx.update(|window, cx| {
             window.refresh();
@@ -127,7 +135,10 @@ fn options_open_in_synced_columns_with_a_pick_button_each(cx: &mut TestAppContex
         .iter()
         .filter_map(|c| c["companion"].as_str().map(str::to_owned))
         .collect();
-    assert_eq!(companions, ["a.fragment.html", "b.fragment.html", "c.fragment.html"]);
+    assert_eq!(
+        companions,
+        ["a.fragment.html", "b.fragment.html", "c.fragment.html"]
+    );
     let doc = shown.borrow().last().unwrap().1.clone();
     assert_eq!(doc.matches("<iframe").count(), 3);
     assert_eq!(doc.matches("sandbox=\"allow-scripts\"").count(), 3);
@@ -135,7 +146,10 @@ fn options_open_in_synced_columns_with_a_pick_button_each(cx: &mut TestAppContex
     assert!(doc.contains("others.forEach"));
     assert!(doc.contains("flex:1 1 0"));
     for option in ["A", "B", "C"] {
-        assert!(has(vcx, Box::leak(format!("artifact-pick-{option}").into_boxed_str())));
+        assert!(has(
+            vcx,
+            Box::leak(format!("artifact-pick-{option}").into_boxed_str())
+        ));
     }
     // The question is the title; the zoom keys apply to the columns.
     assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
@@ -150,7 +164,10 @@ fn more_than_four_options_show_four_and_can_be_chosen(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
     let (tab, _calls, shown, vcx) = open(cx, FIVE, None);
     click(vcx, "artifact-side-by-side");
-    assert_eq!(shown.borrow().last().unwrap().1.matches("<iframe").count(), 4);
+    assert_eq!(
+        shown.borrow().last().unwrap().1.matches("<iframe").count(),
+        4
+    );
     assert!(has(vcx, "artifact-side-choose-E"));
     // Swap D for E: toggle E on is refused at four, then D off, E on.
     tab.update_in(vcx, |tab, window, cx| tab.toggle_side_option(4, window, cx));
@@ -164,7 +181,9 @@ fn more_than_four_options_show_four_and_can_be_chosen(cx: &mut TestAppContext) {
     assert!(doc.contains("e.html") && !doc.contains("d.html"));
     // Never fewer than two columns.
     for ix in [0, 1] {
-        tab.update_in(vcx, |tab, window, cx| tab.toggle_side_option(ix, window, cx));
+        tab.update_in(vcx, |tab, window, cx| {
+            tab.toggle_side_option(ix, window, cx)
+        });
     }
     settle(vcx);
     assert_eq!(tab.read_with(vcx, |tab, _| tab.side_chosen().len()), 2);
@@ -176,7 +195,9 @@ fn picking_records_the_choice_tells_the_chat_and_shows_it(cx: &mut TestAppContex
     let (tab, calls, _shown, vcx) = open(cx, OPTIONS, None);
     click(vcx, "artifact-side-by-side");
     assert!(!has(vcx, "artifact-header-picked"));
-    tab.update(vcx, |tab, cx| tab.set_pick_note_for_tests("keep the PO header", cx));
+    tab.update(vcx, |tab, cx| {
+        tab.set_pick_note_for_tests("keep the PO header", cx)
+    });
     click(vcx, "artifact-pick-B");
     let recorded = calls_of(&calls, methods::ARTIFACT_PICK_OPTION);
     assert_eq!(recorded.len(), 1);
@@ -214,9 +235,15 @@ fn the_pick_can_be_changed_and_withdrawn(cx: &mut TestAppContext) {
     // Change to C.
     click(vcx, "artifact-pick-C");
     let sent = calls_of(&calls, methods::CONTINUE_CHAT_FOR_WORK_ITEM);
-    assert_eq!(sent[0]["prompt"]["text"], "Changed my pick to option C for \"Layouts\": Cards");
     assert_eq!(
-        tab.read_with(vcx, |tab, cx| tab.picked_now(&tab.artifact(cx).unwrap()).unwrap().option_id),
+        sent[0]["prompt"]["text"],
+        "Changed my pick to option C for \"Layouts\": Cards"
+    );
+    assert_eq!(
+        tab.read_with(vcx, |tab, cx| tab
+            .picked_now(&tab.artifact(cx).unwrap())
+            .unwrap()
+            .option_id),
         "C"
     );
     // Clicking the picked column again withdraws it.
@@ -225,8 +252,15 @@ fn the_pick_can_be_changed_and_withdrawn(cx: &mut TestAppContext) {
     assert_eq!(recorded.len(), 2);
     assert!(recorded[1]["optionId"].is_null());
     let sent = calls_of(&calls, methods::CONTINUE_CHAT_FOR_WORK_ITEM);
-    assert!(sent[1]["prompt"]["text"].as_str().unwrap().starts_with("Withdrew my pick of option C"));
-    assert!(tab.read_with(vcx, |tab, cx| tab.picked_now(&tab.artifact(cx).unwrap()).is_none()));
+    assert!(
+        sent[1]["prompt"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Withdrew my pick of option C")
+    );
+    assert!(tab.read_with(vcx, |tab, cx| {
+        tab.picked_now(&tab.artifact(cx).unwrap()).is_none()
+    }));
     assert!(!has(vcx, "artifact-header-picked"));
 }
 
@@ -272,9 +306,16 @@ fn plan_tab<'a>(
     plan.pinned_as_plan = pinned;
     let mut outline = crate::work_outline::store::fixture_snapshot(SPACE);
     outline.space_settings.linear_enabled = linear_enabled;
-    outline.external_references.push(crate::linear::fixture::reference(
-        "ref", SPACE, "w-api", "project", "p-1", "https://linear.app/acme/project/p-1",
-    ));
+    outline
+        .external_references
+        .push(crate::linear::fixture::reference(
+            "ref",
+            SPACE,
+            "w-api",
+            "project",
+            "p-1",
+            "https://linear.app/acme/project/p-1",
+        ));
     let state = cx.new(|_| crate::state::AppState::new());
     state.update(cx, |state, _| {
         state.local_device_id = Some("dev".into());

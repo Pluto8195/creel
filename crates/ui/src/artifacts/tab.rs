@@ -146,31 +146,32 @@ impl BrowserWebHost {
                 browser.set_extra_forwarded_keys(page_forwarded_keys(false));
                 browser
             });
-            let subscription = window.subscribe(&browser, cx, move |_, event, window, cx| match event {
-                crate::browser::BrowserEvent::NewTab(Some(url)) => {
-                    let event = ArtifactTabEvent::OpenUrl(url.clone());
-                    tab.update(cx, |_, cx| cx.emit(event)).ok();
-                }
-                crate::browser::BrowserEvent::DocumentLink(url) => {
-                    tab.update(cx, |tab, cx| {
-                        let event = ArtifactTabEvent::OpenLink {
-                            url: url.clone(),
-                            root: tab.canonical_root(cx),
-                        };
-                        cx.emit(event)
-                    })
-                    .ok();
-                }
-                crate::browser::BrowserEvent::DocumentMessage(json) => {
-                    tab.update(cx, |tab, cx| tab.on_frame_message(json, window, cx))
+            let subscription =
+                window.subscribe(&browser, cx, move |_, event, window, cx| match event {
+                    crate::browser::BrowserEvent::NewTab(Some(url)) => {
+                        let event = ArtifactTabEvent::OpenUrl(url.clone());
+                        tab.update(cx, |_, cx| cx.emit(event)).ok();
+                    }
+                    crate::browser::BrowserEvent::DocumentLink(url) => {
+                        tab.update(cx, |tab, cx| {
+                            let event = ArtifactTabEvent::OpenLink {
+                                url: url.clone(),
+                                root: tab.canonical_root(cx),
+                            };
+                            cx.emit(event)
+                        })
                         .ok();
-                }
-                crate::browser::BrowserEvent::Changed => {
-                    tab.update(cx, |_, cx| cx.emit(ArtifactTabEvent::Changed))
-                        .ok();
-                }
-                _ => {}
-            });
+                    }
+                    crate::browser::BrowserEvent::DocumentMessage(json) => {
+                        tab.update(cx, |tab, cx| tab.on_frame_message(json, window, cx))
+                            .ok();
+                    }
+                    crate::browser::BrowserEvent::Changed => {
+                        tab.update(cx, |_, cx| cx.emit(ArtifactTabEvent::Changed))
+                            .ok();
+                    }
+                    _ => {}
+                });
             Box::new(BrowserWebHost {
                 browser,
                 _subscription: subscription,
@@ -325,7 +326,12 @@ pub(crate) struct ArtifactTab {
 
 impl EventEmitter<ArtifactTabEvent> for ArtifactTab {}
 
-type StateSlice = (Option<ArtifactView>, Option<String>, Option<usize>, Option<String>);
+type StateSlice = (
+    Option<ArtifactView>,
+    Option<String>,
+    Option<usize>,
+    Option<String>,
+);
 
 /// What the tab reads from `AppState` while rendering.
 fn state_slice(state: &crate::state::AppState, artifact_id: &str) -> StateSlice {
@@ -362,7 +368,8 @@ impl ArtifactTab {
                 if this.rendered_key != Some(render_key(cx)) {
                     this.refresh_side_theme(window, cx);
                 }
-            } else if this.mode != Mode::Compare && this.mode != Mode::SideBySide
+            } else if this.mode != Mode::Compare
+                && this.mode != Mode::SideBySide
                 && (matches!(this.body, Some(ArtifactBody::Web { .. }))
                     || this.option_shown.is_some())
             {
@@ -1042,9 +1049,9 @@ impl ArtifactTab {
                 if artifact.kind == ArtifactKind::Options {
                     el.child(
                         picker_button("artifact-side-by-side", "Side by side".into(), false)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_side_by_side(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_side_by_side(window, cx)
+                            })),
                     )
                     .child(
                         picker_button("artifact-compare", "Compare options".into(), false)

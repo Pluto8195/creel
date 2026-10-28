@@ -6,7 +6,9 @@
 //! [`model`] turns the detail into display strings (pure, tested);
 //! [`render`] draws the panel for the artifact tab and the item details.
 use chrono::{NaiveDate, TimeZone, Utc};
-use gpui::{AnyElement, IntoElement, ParentElement, SharedString, Styled, WeakEntity, div, px, prelude::*};
+use gpui::{
+    AnyElement, IntoElement, ParentElement, SharedString, Styled, WeakEntity, div, prelude::*, px,
+};
 use zeron_proto::linear::{LinearProjectDetail, LinearUser};
 
 use crate::linear::store::ProjectDetailEntry;
@@ -110,7 +112,9 @@ pub(crate) fn model(detail: &LinearProjectDetail, now_ms: i64) -> PanelModel {
         url: detail.url.clone(),
         state: detail.state.as_deref().map(state_label),
         progress: detail.progress,
-        progress_label: detail.progress.map(|p| format!("{}%", (p * 100.0).round() as u32)),
+        progress_label: detail
+            .progress
+            .map(|p| format!("{}%", (p * 100.0).round() as u32)),
         target: detail
             .target_date
             .as_deref()
@@ -168,7 +172,9 @@ pub(crate) fn render(
             .text_color(theme.text_muted)
     };
     let note = |sel: SharedString, text: String| {
-        frame(sel).child(div().min_w_0().child(SharedString::from(text))).into_any_element()
+        frame(sel)
+            .child(div().min_w_0().child(SharedString::from(text)))
+            .into_any_element()
     };
     let detail = match entry {
         Some(ProjectDetailEntry::Ready { detail, .. }) => detail,
@@ -179,11 +185,18 @@ pub(crate) fn render(
             );
         }
         _ => {
-            return note(selector("loading"), format!("Loading {}\u{2026}", fallback.0));
+            return note(
+                selector("loading"),
+                format!("Loading {}\u{2026}", fallback.0),
+            );
         }
     };
     let model = model(detail, now_ms);
-    let url = if model.url.is_empty() { fallback.1.to_owned() } else { model.url.clone() };
+    let url = if model.url.is_empty() {
+        fallback.1.to_owned()
+    } else {
+        model.url.clone()
+    };
     let title = div()
         .flex()
         .items_center()
@@ -260,7 +273,9 @@ pub(crate) fn render(
                             .w(gpui::relative(fraction.clamp(0.0, 1.0))),
                     ),
             )
-            .child(SharedString::from(model.progress_label.clone().unwrap_or_default()))
+            .child(SharedString::from(
+                model.progress_label.clone().unwrap_or_default(),
+            ))
     });
     let facts = div()
         .flex()
@@ -274,7 +289,11 @@ pub(crate) fn render(
                         let sel = selector("target");
                         move || sel.to_string()
                     })
-                    .text_color(if overdue { theme.warning } else { theme.text_muted })
+                    .text_color(if overdue {
+                        theme.warning
+                    } else {
+                        theme.text_muted
+                    })
                     .child(SharedString::from(if overdue {
                         format!("Target {date} (overdue)")
                     } else {
@@ -368,7 +387,11 @@ mod tests {
                 id: "up".into(),
                 body: "\nShipped login.\n\nNext: billing\nthird line".into(),
                 health: Some("atRisk".into()),
-                author: Some(LinearUser { id: "u".into(), name: "Ada".into(), ..Default::default() }),
+                author: Some(LinearUser {
+                    id: "u".into(),
+                    name: "Ada".into(),
+                    ..Default::default()
+                }),
                 created_at: "2026-10-25T12:00:00Z".into(),
             }],
             updated_at: String::new(),
@@ -390,8 +413,14 @@ mod tests {
 
     #[test]
     fn a_passed_target_is_overdue_and_odd_states_read_plainly() {
-        assert_eq!(target_label("2026-10-01", NOW), Some(("Oct 1, 2026".into(), true)));
-        assert_eq!(target_label("2026-10-28", NOW), Some(("Oct 28, 2026".into(), false)));
+        assert_eq!(
+            target_label("2026-10-01", NOW),
+            Some(("Oct 1, 2026".into(), true))
+        );
+        assert_eq!(
+            target_label("2026-10-28", NOW),
+            Some(("Oct 28, 2026".into(), false))
+        );
         assert_eq!(target_label("soon", NOW), None);
         assert_eq!(state_label("canceled"), ("Canceled".into(), Tone::Bad));
         assert_eq!(state_label("on hold"), ("On hold".into(), Tone::Neutral));

@@ -25,8 +25,8 @@ use super::action_log;
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
 mod move_toast;
-mod undo;
 mod tree_guides_view;
+mod undo;
 
 use super::hints::{HintKey, WithHint};
 use super::instructions::{self, OutlineChange};
@@ -73,6 +73,7 @@ actions!(
         Expand,
         Collapse,
         OpenSelected,
+        OpenDetailsSelected,
         StartChatSelected,
         RenameSelected,
         CreateSibling,
@@ -101,6 +102,11 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("left", Collapse, ctx),
         KeyBinding::new("right", Expand, ctx),
         KeyBinding::new("enter", OpenSelected, ctx),
+        KeyBinding::new(
+            &crate::settings::platform_combo("mod-i"),
+            OpenDetailsSelected,
+            ctx,
+        ),
         KeyBinding::new(
             &crate::settings::platform_combo("mod-enter"),
             StartChatSelected,
@@ -453,6 +459,9 @@ pub(crate) struct OutlineView {
     log_busy: bool,
     /// The move toast's Undo is sending its inverse: it is not a new change.
     skip_log: bool,
+    /// A press landed on a compact row's status glyph: the row's own click
+    /// (which still fires for the same press) is ignored once.
+    glyph_press: bool,
     /// Item whose Work Item Details are open (row highlight).
     details_key: Option<String>,
     /// Chat shown in the Overview's chat panel (row highlight).
@@ -541,6 +550,7 @@ impl OutlineView {
             compact_single_chat: true,
             log_busy: false,
             skip_log: false,
+            glyph_press: false,
             details_key: None,
             panel_chat: None,
             shell: None,
@@ -1005,7 +1015,22 @@ impl OutlineView {
         self.open_row(&row, cx);
     }
 
-    /// Open Work Item Details for an item (a compact row's menu entry).
+    /// ⌘I: open the selected item's Work Item Details (a compact row's
+    /// Enter opens its Chat). Selection and the action log are untouched.
+    fn open_details_selected(&mut self, cx: &mut Context<Self>) {
+        if self.is_editing() {
+            cx.propagate();
+            return;
+        }
+        if let Some(OutlineRowKind::Item(item)) = self.selected_row().map(|row| &row.kind) {
+            cx.emit(OutlineEvent::OpenDetails {
+                space_id: item.space_id.clone(),
+                item_id: item.item_id.clone(),
+            });
+        }
+    }
+
+    /// Open Work Item Details for an item (a compact row's status glyph).
     pub(crate) fn open_item_details(
         &mut self,
         space_id: String,
@@ -1282,11 +1307,8 @@ impl OutlineView {
                     operation_id: operation_id.clone(),
                 });
                 let key = row_key::item(&space_id, &work_item_id);
-                let draft = action_log::create_entry(
-                    &work_item_id,
-                    &title,
-                    Some(operation_id.clone()),
-                );
+                let draft =
+                    action_log::create_entry(&work_item_id, &title, Some(operation_id.clone()));
                 let change = LocalChange::Create {
                     work_item_id,
                     parent,
@@ -2933,10 +2955,32 @@ impl OutlineView {
                         let drift = self.drift_chip(&key, chat, theme, cx);
                         compact_chat_segment(&key, chat, drift, theme)
                     });
+                    // A compact row's status glyph opens the item's details
+                    // (the rest of the row opens the Chat).
+                    let press_glyph = cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.glyph_press = true;
+                    });
+                    let open_details = item.compact_chat.as_ref().map(|_| {
+                        let space_id = item.space_id.clone();
+                        let item_id = item.item_id.clone();
+                        let open = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            if !this.is_editing() {
+                                this.open_item_details(space_id.clone(), item_id.clone(), cx);
+                            }
+                        });
+                        (
+                            Box::new(press_glyph)
+                                as Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>,
+                            Box::new(open) as Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>,
+                        )
+                    });
                     item_body(
                         &key,
                         item,
                         compact_chat,
+                        open_details,
                         linear_outline::join_chips(
                             linear_outline::join_chips(proposals, artifacts),
                             external.chips,
@@ -3119,6 +3163,7 @@ impl OutlineView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    this.glyph_press = false;
                     if !this.is_editing() {
                         window.focus(&this.focus, cx);
                     }
@@ -3127,6 +3172,9 @@ impl OutlineView {
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     let kind = row_kind_name(&open_row.kind);
+                    if std::mem::take(&mut this.glyph_press) {
+                        return;
+                    }
                     if this.is_editing() {
                         tracing::info!(
                             target: "work_outline_keys",
@@ -3390,10 +3438,17 @@ fn status_totals_element(
 /// `pr_slots` is the PR icon cluster of a PR row: it carries the attention
 /// indicator, the descendant totals and the chat count in its slots and
 /// tooltips, so the row leaves those (and the redundant references icon) out.
+/// Press and click handlers of a compact row's status glyph.
+type GlyphHandlers = (
+    Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>,
+    Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>,
+);
+
 fn item_body(
     key: &str,
     item: &ItemRow,
     compact_chat: Option<AnyElement>,
+    open_details: Option<GlyphHandlers>,
     proposals: Option<AnyElement>,
     pr_slots: Option<AnyElement>,
     theme: &Theme,
@@ -3419,12 +3474,27 @@ fn item_body(
         .child(
             div()
                 .id(SharedString::from(format!("outline-status-{key}")))
+                .debug_selector({
+                    let selector = format!("outline-status-{key}");
+                    move || selector.clone()
+                })
                 .flex_none()
                 .w(px(12.0))
                 .text_size(crate::typography::ui_rems(11.0))
                 .text_color(color)
                 .child(glyph)
-                .tooltip(move |_, cx| cx.new(|_| TextTooltip(status_tip.clone())).into()),
+                .map(|el| match open_details {
+                    Some((press, open)) => el
+                        .cursor_pointer()
+                        .rounded(px(3.0))
+                        .hover(|el| el.bg(theme.element_hover))
+                        .hint("Open details", HintKey::Outline(OutlineNavKey::OpenDetails))
+                        .on_mouse_down(gpui::MouseButton::Left, press)
+                        .on_click(open),
+                    None => {
+                        el.tooltip(move |_, cx| cx.new(|_| TextTooltip(status_tip.clone())).into())
+                    }
+                }),
         )
         .child(
             div()
@@ -3861,6 +3931,9 @@ impl Render for OutlineView {
                 cx.listener(|this, _: &Collapse, _, cx| this.navigate(NavCommand::Collapse, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenSelected, _, cx| this.open_selected(cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenDetailsSelected, _, cx| this.open_details_selected(cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &StartChatSelected, _, cx| this.start_chat_selected(cx)),
             )

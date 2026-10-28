@@ -77,7 +77,10 @@ fn move_entry_inverse_puts_the_item_back_between_its_old_neighbours() {
     let snapshot = snap();
     // UI is after API under LAUNCH; move it under API as the last child.
     let entry = move_entry(&snapshot, UI, Some(API), &WorkOutlinePlacement::Last, None).unwrap();
-    assert_eq!(entry.label, "moved \u{2018}UI\u{2019} under \u{2018}API\u{2019}");
+    assert_eq!(
+        entry.label,
+        "moved \u{2018}UI\u{2019} under \u{2018}API\u{2019}"
+    );
     assert_eq!(
         entry.inverse,
         Step::Move {
@@ -214,7 +217,12 @@ fn archive_and_restore_invert_each_other() {
         None,
     )
     .unwrap();
-    assert_eq!(entry.inverse, Step::Restore { work_item_id: UI.into() });
+    assert_eq!(
+        entry.inverse,
+        Step::Restore {
+            work_item_id: UI.into()
+        }
+    );
     let mut state = snapshot.clone();
     apply(&mut state, &entry.forward);
     assert!(entry.after.check(&state).is_ok());
@@ -222,7 +230,12 @@ fn archive_and_restore_invert_each_other() {
     assert!(entry.before.check(&state).is_ok());
 
     let restore = restore_entry(&snapshot, RETIRED, None).unwrap();
-    assert_eq!(restore.inverse, Step::Archive { work_item_id: RETIRED.into() });
+    assert_eq!(
+        restore.inverse,
+        Step::Archive {
+            work_item_id: RETIRED.into()
+        }
+    );
     assert!(restore_entry(&snapshot, UI, None).is_none());
 }
 
@@ -242,8 +255,18 @@ fn archive_that_moves_children_out_is_not_undoable() {
 fn create_inverse_archives_and_refuses_once_the_item_gains_content() {
     let mut snapshot = snap();
     let entry = create_entry(UI, "UI", None);
-    assert_eq!(entry.inverse, Step::Archive { work_item_id: UI.into() });
-    assert_eq!(entry.forward, Step::Restore { work_item_id: UI.into() });
+    assert_eq!(
+        entry.inverse,
+        Step::Archive {
+            work_item_id: UI.into()
+        }
+    );
+    assert_eq!(
+        entry.forward,
+        Step::Restore {
+            work_item_id: UI.into()
+        }
+    );
     // UI has a chat: undoing its creation would orphan it.
     assert!(entry.after.check(&snapshot).is_err());
     // A chat-less leaf is fine, a leaf with a child is not.
@@ -285,7 +308,12 @@ fn chat_entry_restores_the_previous_item_or_unassociation() {
     assert!(entry.label.starts_with("moved chat"));
     // A loose chat gets assigned; undo disassociates it.
     let entry = chat_entry(&snapshot, CHAT_LOOSE_A, "Loose", Some(UI), None);
-    assert_eq!(entry.inverse, Step::RemoveChat { chat_id: CHAT_LOOSE_A.into() });
+    assert_eq!(
+        entry.inverse,
+        Step::RemoveChat {
+            chat_id: CHAT_LOOSE_A.into()
+        }
+    );
     // Removing an assigned chat: undo re-assigns.
     let entry = chat_entry(&snapshot, CHAT_UI, "Fix UI", None, None);
     assert_eq!(
@@ -412,10 +440,20 @@ fn instruction_move_inverse_returns_to_the_old_neighbour() {
 fn simple(label: &str) -> Draft {
     draft(
         label.into(),
-        Step::Restore { work_item_id: "a".into() },
-        Step::Archive { work_item_id: "a".into() },
-        Probe::Archived { work_item_id: "a".into(), archived: true },
-        Probe::Archived { work_item_id: "a".into(), archived: false },
+        Step::Restore {
+            work_item_id: "a".into(),
+        },
+        Step::Archive {
+            work_item_id: "a".into(),
+        },
+        Probe::Archived {
+            work_item_id: "a".into(),
+            archived: true,
+        },
+        Probe::Archived {
+            work_item_id: "a".into(),
+            archived: false,
+        },
         None,
     )
 }
@@ -499,5 +537,8 @@ fn long_titles_are_shortened_in_labels() {
     let entry = create_entry("w", &long, None);
     assert!(entry.label.chars().count() < 60, "{}", entry.label);
     assert!(entry.label.contains('…'));
-    assert_eq!(create_entry("w", "  ", None).label, "created \u{2018}Untitled\u{2019}");
+    assert_eq!(
+        create_entry("w", "  ", None).label,
+        "created \u{2018}Untitled\u{2019}"
+    );
 }

@@ -59,7 +59,12 @@ impl WorkItemDetails {
         Some((local, artifact.device_id.clone()))
     }
 
-    pub(super) fn open_artifact(&mut self, artifact_id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_artifact(
+        &mut self,
+        artifact_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.artifacts.menu = None;
         let opened = self
             .shell
@@ -457,7 +462,10 @@ impl WorkItemDetails {
                     "work-item-plan-linear",
                     entry.as_ref(),
                     (
-                        reference.cached_title.as_deref().unwrap_or("Linear project"),
+                        reference
+                            .cached_title
+                            .as_deref()
+                            .unwrap_or("Linear project"),
                         &reference.url,
                     ),
                     crate::artifacts::model::now_ms(),

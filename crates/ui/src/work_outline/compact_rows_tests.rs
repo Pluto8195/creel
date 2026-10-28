@@ -155,7 +155,10 @@ fn enter_and_double_click_open_the_chat_and_the_menu_reaches_the_item(
         assert!(ids.contains(&id), "{id} in {ids:?}");
     }
     let action = |id: &str| menu.entries.iter().find(|e| e.id == id).unwrap().action.clone();
-    assert_eq!(action("open-details"), MenuAction::OpenDetails);
+    assert_eq!(
+        action("open-details"),
+        MenuAction::Outline(crate::shell::work_outline_ui::OutlineNavKey::OpenDetails)
+    );
     assert_eq!(action("archive-chat"), MenuAction::ArchiveChat(CHAT_UI.into()));
     assert_eq!(action("archive"), MenuAction::Archive);
     // Expanded items keep the plain item menu.
@@ -163,7 +166,7 @@ fn enter_and_double_click_open_the_chat_and_the_menu_reaches_the_item(
     assert!(plain.entries.iter().all(|e| e.id != "open-chat"));
     assert_eq!(
         plain.entries.iter().find(|e| e.id == "open-details").unwrap().action,
-        MenuAction::Outline(crate::shell::work_outline_ui::OutlineNavKey::OpenSelected)
+        MenuAction::Outline(crate::shell::work_outline_ui::OutlineNavKey::OpenDetails)
     );
 }
 
@@ -315,4 +318,94 @@ fn streaming_with_compact_rows_does_no_extra_outline_work(cx: &mut gpui::TestApp
     assert!(end.observer_notifies > after.observer_notifies, "{end:?}");
     assert!(!shown(vcx, &row_key::chat(CHAT_UI)));
     assert!(shown(vcx, &item_key(UI)));
+}
+
+fn details_events(events: &Events) -> Vec<String> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            OutlineEvent::OpenDetails { item_id, .. } => Some(item_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn cmd_i_opens_details_on_compact_and_normal_rows(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, events, vcx) =
+        compact_overview(cx, dir.path(), crate::work_outline::store::fixture_snapshot("s1"));
+    // Compact row: details, not the Chat; selection stays put.
+    select_key(&outline, vcx, &item_key(UI));
+    press_keys(vcx, "cmd-i");
+    assert_eq!(details_events(&events), [UI]);
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, OutlineEvent::OpenChat(_)))
+    );
+    assert_eq!(selected_key(&outline, vcx), Some(item_key(UI)));
+    // A normal item row.
+    events.lock().unwrap().clear();
+    select_key(&outline, vcx, &item_key(LAUNCH));
+    press_keys(vcx, "cmd-i");
+    assert_eq!(details_events(&events), [LAUNCH]);
+    assert_eq!(selected_key(&outline, vcx), Some(item_key(LAUNCH)));
+    // Nothing reached the engine (so nothing is on the undo stack).
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn cmd_i_in_a_text_field_does_nothing_outline_related(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, events, vcx) =
+        compact_overview(cx, dir.path(), crate::work_outline::store::fixture_snapshot("s1"));
+    select_key(&outline, vcx, &item_key(UI));
+    press_keys(vcx, "f2");
+    assert!(outline.read_with(vcx, |o, _| o.is_editing()));
+    events.lock().unwrap().clear();
+    press_keys(vcx, "cmd-i");
+    assert!(details_events(&events).is_empty());
+    assert!(outline.read_with(vcx, |o, _| o.is_editing()));
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn status_glyph_click_opens_details_and_the_row_still_opens_the_chat(
+    cx: &mut gpui::TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_overview, outline, calls, events, vcx) =
+        compact_overview(cx, dir.path(), crate::work_outline::store::fixture_snapshot("s1"));
+    select_key(&outline, vcx, &item_key(API_AUTH));
+    events.lock().unwrap().clear();
+    let glyph = row_bounds(vcx, format!("outline-status-{}", item_key(UI)))
+        .expect("status glyph");
+    vcx.simulate_click(glyph.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(details_events(&events), [UI]);
+    // The click opened no Chat and ran no row click (no preview). Selection
+    // follows the details opened, as for Enter or the menu entry.
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, OutlineEvent::OpenChat(_) | OutlineEvent::SelectionMoved))
+    );
+    // The row body selects the row (a single click) without opening details.
+    events.lock().unwrap().clear();
+    let row = row_bounds(vcx, format!("outline-row-{}", item_key(UI))).unwrap();
+    vcx.simulate_click(
+        gpui::point(row.right() - gpui::px(80.0), row.center().y),
+        gpui::Modifiers::default(),
+    );
+    vcx.run_until_parked();
+    assert_eq!(selected_key(&outline, vcx), Some(item_key(UI)));
+    assert!(details_events(&events).is_empty());
+    assert!(calls.lock().unwrap().is_empty());
 }

@@ -408,7 +408,10 @@ fn zoomed_images_pan_by_dragging_and_still_scroll(cx: &mut TestAppContext) {
         tab.image_pan_for_tests("move", at + point(px(0.0), px(30.0)), cx)
     });
     let (_, y) = offset(&tab, vcx);
-    assert!((y - (start.1 + 30.0)).abs() < 0.5, "panned: {start:?} -> {y}");
+    assert!(
+        (y - (start.1 + 30.0)).abs() < 0.5,
+        "panned: {start:?} -> {y}"
+    );
     // Further than the content goes: clamped to its far edge.
     tab.update(vcx, |tab, cx| {
         tab.image_pan_for_tests("move", at + point(px(-90_000.0), px(-90_000.0)), cx)

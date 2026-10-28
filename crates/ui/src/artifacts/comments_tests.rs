@@ -56,7 +56,9 @@ fn by_quote(value: &str) -> CommentAnchor {
 
 fn replies(kind: ArtifactKind, page: &'static str) -> Reply {
     Arc::new(move |method, params| match method {
-        methods::ARTIFACT_CONTENT => Ok(content_reply(kind, 2, page, ArtifactContentEncoding::Utf8)),
+        methods::ARTIFACT_CONTENT => {
+            Ok(content_reply(kind, 2, page, ArtifactContentEncoding::Utf8))
+        }
         methods::ARTIFACT_DRIFT => Ok(json!({ "artifactId": params["artifactId"] })),
         methods::ARTIFACT_ADD_COMMENT => Ok(json!({
             "artifactId": params["artifactId"],
@@ -128,7 +130,9 @@ fn open(
 
 fn frame(tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext, message: serde_json::Value) {
     let json = message.to_string();
-    tab.update_in(vcx, |tab, window, cx| tab.on_frame_message(&json, window, cx));
+    tab.update_in(vcx, |tab, window, cx| {
+        tab.on_frame_message(&json, window, cx)
+    });
     settle(vcx);
 }
 
@@ -161,7 +165,11 @@ fn page_gets_markers_only_for_open_found_comments_once_ready(cx: &mut TestAppCon
     let _dir = init_ui(cx);
     let comments = vec![
         comment("C-1", by_id("intake"), CommentStatus::Open),
-        comment("C-2", by_quote("Words that were deleted"), CommentStatus::Open),
+        comment(
+            "C-2",
+            by_quote("Words that were deleted"),
+            CommentStatus::Open,
+        ),
         comment("C-3", by_id("intake"), CommentStatus::Resolved),
     ];
     let (tab, _calls, probe, _shown, vcx) = open(cx, ArtifactKind::HtmlFragment, comments);
@@ -190,7 +198,11 @@ fn list_shows_outdated_open_and_resolved_rows(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
     let comments = vec![
         comment("C-1", by_id("intake"), CommentStatus::Open),
-        comment("C-2", by_quote("Words that were deleted"), CommentStatus::Open),
+        comment(
+            "C-2",
+            by_quote("Words that were deleted"),
+            CommentStatus::Open,
+        ),
         comment("C-3", by_id("intake"), CommentStatus::Resolved),
     ];
     let (tab, _calls, _probe, _shown, vcx) = open(cx, ArtifactKind::HtmlFragment, comments);
@@ -199,7 +211,11 @@ fn list_shows_outdated_open_and_resolved_rows(cx: &mut TestAppContext) {
     // A click on a marker in the page opens the list and selects it.
     frame(&tab, vcx, json!({ "t": "focus", "id": "C-1" }));
     assert!(has(vcx, "artifact-comments-panel"));
-    for row in ["artifact-comment-C-1", "artifact-comment-C-2", "artifact-comment-C-3"] {
+    for row in [
+        "artifact-comment-C-1",
+        "artifact-comment-C-2",
+        "artifact-comment-C-3",
+    ] {
         assert!(has(vcx, row), "{row}");
     }
     tab.update(vcx, |tab, cx| {
@@ -255,11 +271,13 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
     let _dir = init_ui(cx);
     let (tab, _calls, probe, _shown, vcx) = open(cx, ArtifactKind::HtmlFragment, Vec::new());
     tab.update_in(vcx, |tab, _, cx| tab.set_pick_mode(true, cx));
-    assert!(probe
-        .scripts
-        .borrow()
-        .iter()
-        .any(|s| s.contains("\"zeronCommentMode\":true")));
+    assert!(
+        probe
+            .scripts
+            .borrow()
+            .iter()
+            .any(|s| s.contains("\"zeronCommentMode\":true"))
+    );
     frame(
         &tab,
         vcx,
@@ -267,11 +285,13 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
                 "anchor": { "id": "intake", "exact": "Receiving intake" } }),
     );
     assert!(has(vcx, "artifact-comment-draft"));
-    assert!(probe
-        .scripts
-        .borrow()
-        .iter()
-        .any(|s| s.contains("\"zeronCommentMode\":false")));
+    assert!(
+        probe
+            .scripts
+            .borrow()
+            .iter()
+            .any(|s| s.contains("\"zeronCommentMode\":false"))
+    );
 }
 
 #[gpui::test]
@@ -279,7 +299,9 @@ fn resolving_and_reopening_call_the_engine(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
     let comments = vec![comment("C-1", by_id("intake"), CommentStatus::Open)];
     let (tab, calls, _probe, _shown, vcx) = open(cx, ArtifactKind::HtmlFragment, comments);
-    tab.update_in(vcx, |tab, _, cx| tab.resolve_comment("C-1".into(), true, cx));
+    tab.update_in(vcx, |tab, _, cx| {
+        tab.resolve_comment("C-1".into(), true, cx)
+    });
     settle(vcx);
     let resolved = method_calls(&calls, methods::ARTIFACT_RESOLVE_COMMENT);
     assert_eq!(resolved.len(), 1);
@@ -293,14 +315,24 @@ fn html_question_cards_are_answered_through_the_bridge(cx: &mut TestAppContext) 
     let (tab, calls, probe, shown, vcx) = open(cx, ArtifactKind::HtmlFragment, Vec::new());
     frame(&tab, vcx, json!({ "t": "ready" }));
     let loads = shown.borrow().len();
-    frame(&tab, vcx, json!({ "t": "answer", "id": "q-1", "text": "  By MPN " }));
+    frame(
+        &tab,
+        vcx,
+        json!({ "t": "answer", "id": "q-1", "text": "  By MPN " }),
+    );
     let answered = method_calls(&calls, methods::ARTIFACT_ANSWER_QUESTION);
     assert_eq!(answered.len(), 1, "{answered:?}");
     assert_eq!(answered[0]["questionId"], "Q-1");
     assert_eq!(answered[0]["answer"], "By MPN");
     let sent = method_calls(&calls, methods::CONTINUE_CHAT_FOR_WORK_ITEM);
     assert_eq!(sent.len(), 1);
-    assert!(sent[0].to_string().contains("Re: \\\"Q-1: Merge by MPN?\\\": By MPN"), "{}", sent[0]);
+    assert!(
+        sent[0]
+            .to_string()
+            .contains("Re: \\\"Q-1: Merge by MPN?\\\": By MPN"),
+        "{}",
+        sent[0]
+    );
     // The card updates in place: a command to the page, no reload.
     settle(vcx);
     let updates: Vec<_> = probe
@@ -327,7 +359,9 @@ fn bad_frame_messages_do_nothing(cx: &mut TestAppContext) {
     ] {
         frame(&tab, vcx, bad);
     }
-    tab.update_in(vcx, |tab, window, cx| tab.on_frame_message("{not json", window, cx));
+    tab.update_in(vcx, |tab, window, cx| {
+        tab.on_frame_message("{not json", window, cx)
+    });
     settle(vcx);
     assert!(method_calls(&calls, methods::ARTIFACT_ANSWER_QUESTION).is_empty());
     assert!(!has(vcx, "artifact-comment-selection"));
@@ -361,8 +395,14 @@ fn app_documents_carry_the_bridge_and_render_checks_do_not() {
     for kind in [WebKind::Fragment, WebKind::Page, WebKind::Mermaid] {
         let live = web_document(kind, PAGE, "Flow", "text/html", &theme, false, false);
         assert!(live.contains("zeron-msg:"), "{kind:?} host bridge");
-        assert!(live.contains("__zeronCommentsInstalled"), "{kind:?} frame script");
+        assert!(
+            live.contains("__zeronCommentsInstalled"),
+            "{kind:?} frame script"
+        );
         let probed = web_document(kind, PAGE, "Flow", "text/html", &theme, false, true);
-        assert!(!probed.contains("__zeronCommentsInstalled"), "{kind:?} probe stays passive");
+        assert!(
+            !probed.contains("__zeronCommentsInstalled"),
+            "{kind:?} probe stays passive"
+        );
     }
 }

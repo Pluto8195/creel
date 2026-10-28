@@ -341,11 +341,15 @@ impl ArtifactTab {
                         }))
                         .on_mouse_up(
                             gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| this.end_image_pan(cx)),
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                                this.end_image_pan(cx)
+                            }),
                         )
                         .on_mouse_up_out(
                             gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| this.end_image_pan(cx)),
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                                this.end_image_pan(cx)
+                            }),
                         )
                         .child(
                             div()
