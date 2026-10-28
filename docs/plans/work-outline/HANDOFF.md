@@ -440,6 +440,19 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   The Work Item Details / Required Actions panel has a left-edge drag handle (double-click resets to
   380), limits 320 px–60% of the Overview with the body ≥360, persisted as `detailsPanelWidth:N` in
   the Overview UI-flags file; drag only notifies the Overview.
+- **Per-project agent accounts** (2026-10-28; plan zeron-artifact:05d0f52c4d8ddaae45242f8a3aaed976 rev 3,
+  scope per project only): managed homes under `<data>/managed-accounts/<harness>/<id>/` (0700;
+  device-local `store.json`). A project has a default account per harness; a chat resolves it at
+  its first run and stays pinned (chats with an existing harness session pin to Default). Spawns,
+  resume and title runs set `CLAUDE_CONFIG_DIR` / `CODEX_HOME` for the pinned home; Default sets
+  neither and never touches ~/.claude / ~/.codex. Claude Code 2.1.285 keys Keychain as
+  `Claude Code-credentials-<sha256(CLAUDE_CONFIG_DIR)[..8]>`, so homes are isolated (fallback switch
+  `account_home::CLAUDE_KEYCHAIN_ISOLATED`). Sign-in runs `claude auth login` / `codex login` in the
+  home. Skills/rules shared into homes (no credentials). UI: project row menu picker with Add
+  account, chat account badge, Settings → Project accounts. Not done: usage rings and model picker
+  per managed account, context-usage reader for managed homes, MCP/plugin sharing, Start Chat
+  account chip, promoting old slots, API-key accounts. Needs Mikey's hand check: real sign-in and
+  two accounts running at once.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
