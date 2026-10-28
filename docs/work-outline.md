@@ -172,9 +172,9 @@ at the top level).
 
 | Row | Entries |
 | --- | --- |
-| Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore |
+| Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore, Undo, Redo, Recent Changes… |
 | Chat | Open Chat, Open Full Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
-| Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Show Outline Shortcuts. A project row also has Move Up, Move Down, Hide from Outline (Unhide on a hidden project), Rename Project…, and Delete Project… |
+| Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Undo, Redo, Recent Changes…, Show Outline Shortcuts. A project row also has Move Up, Move Down, Hide from Outline (Unhide on a hidden project), Rename Project…, and Delete Project… |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
 
 Linear and PR review sync add their own entries where they apply (see
@@ -670,6 +670,6 @@ instruction editor, ⌘Z undoes typing and never touches the Outline.
 - **Feedback:** the Outline shows "Undid: moved ‘X’ under ‘Y’" (or "Redid: …").
 - **Conflicts:** if the item or Chat changed since your action (someone archived it, moved
   it again, edited it again), undo says so and changes nothing.
-- **Recent changes:** the **Recent changes…** command lists the last actions, newest
+- **Recent changes:** **Recent Changes…** in a work item's or project's right-click menu lists the last actions, newest
   first. Choose one to undo everything back to it; rows already undone can be redone the
   same way.

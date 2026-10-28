@@ -1056,6 +1056,9 @@ mod tests {
                 "space-instructions",
                 "execution",
                 "required-actions",
+                "undo",
+                "redo",
+                "recent-changes",
                 "shortcuts"
             ]
         );
@@ -1087,6 +1090,9 @@ mod tests {
                 "hide-space",
                 "rename-space",
                 "required-actions",
+                "undo",
+                "redo",
+                "recent-changes",
                 "shortcuts",
                 "delete-space",
             ]

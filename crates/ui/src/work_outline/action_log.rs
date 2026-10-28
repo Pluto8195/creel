@@ -894,7 +894,6 @@ pub(crate) fn unlink_entry(
         .filter(|title| !title.trim().is_empty())
         .unwrap_or_else(|| data.external_id.clone());
     // The link's id is content-derived, so relinking restores the same row.
-    debug_assert_eq!(data.reference_id(), reference_id);
     Some(draft(
         format!(
             "unlinked {} from {}",

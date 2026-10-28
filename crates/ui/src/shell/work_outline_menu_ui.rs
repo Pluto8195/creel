@@ -850,7 +850,7 @@ mod tests {
         })
     }
 
-    const ITEM_ENTRIES: [&str; 17] = [
+    const ITEM_ENTRIES: [&str; 20] = [
         "open-details",
         "start-chat",
         "rename",
@@ -868,6 +868,9 @@ mod tests {
         "copy-path",
         "archive",
         "restore",
+        "undo",
+        "redo",
+        "recent-changes",
     ];
 
     /// Right-click selects the row and opens its menu; invalid actions are
@@ -1052,6 +1055,9 @@ mod tests {
                 "space-instructions",
                 "execution",
                 "required-actions",
+                "undo",
+                "redo",
+                "recent-changes",
                 "shortcuts"
             ]
         );
@@ -1187,7 +1193,7 @@ mod tests {
         press(cx, "up");
         press(cx, "up");
         // Wraps to the last enabled entry (Restore is greyed out).
-        assert_eq!(active(&shell, cx), Some("archive"));
+        assert_eq!(active(&shell, cx), Some("recent-changes"));
         press(cx, "home");
         assert_eq!(active(&shell, cx), Some("open-details"));
         // Housekeeping is the last top-level live item: Move Down and
@@ -1734,6 +1740,9 @@ mod tests {
                 "hide-space",
                 "rename-space",
                 "required-actions",
+                "undo",
+                "redo",
+                "recent-changes",
                 "shortcuts",
                 "delete-space",
             ]
