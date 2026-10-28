@@ -2935,6 +2935,17 @@ impl RpcService for EngineRpc {
                 self.artifact_reply(move |service| service.resolve_comment(&p, by))
                     .await
             }
+            methods::ARTIFACT_PICK_OPTION => {
+                let p: zeron_proto::ArtifactPickOptionParams = parse_params(params)?;
+                let by = self.work_outline.local_user();
+                let sync = crate::artifact_questions::ArtifactQuestionSync::new(self.artifacts.clone());
+                self.artifact_reply(move |service| {
+                    let reply = service.pick_option(&p, by)?;
+                    sync.after_pick(&p.artifact_id, reply.picked.is_some());
+                    Ok(reply)
+                })
+                .await
+            }
             methods::ARTIFACT_DRIFT => {
                 let p: zeron_proto::ArtifactDriftParams = parse_params(params)?;
                 self.artifact_reply(move |service| service.drift(&p.artifact_id))
@@ -2983,6 +2994,15 @@ impl RpcService for EngineRpc {
                 Self::linear_reply(
                     self.linear
                         .project_issues(&p.project_id, p.force, p.cached_only)
+                        .await,
+                )
+                .await
+            }
+            methods::LINEAR_PROJECT_DETAIL => {
+                let p: zeron_proto::LinearProjectDetailParams = parse_params(params)?;
+                Self::linear_reply(
+                    self.linear
+                        .project_detail(&p.project_id, p.force, p.cached_only)
                         .await,
                 )
                 .await
@@ -4873,6 +4893,7 @@ mod tests {
             methods::LINEAR_MY_ISSUES,
             methods::LINEAR_MY_PROJECTS,
             methods::LINEAR_PROJECT_ISSUES,
+            methods::LINEAR_PROJECT_DETAIL,
             methods::LINEAR_REFRESH_LINKED_ITEMS,
         ] {
             assert!(!forwardable(linear), "{linear} is device-local");

@@ -999,6 +999,17 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_artifact_comments(id, comments, now))?)
     }
 
+    /// Record or clear an artifact's picked option (see
+    /// `RegistryDoc::set_artifact_pick`).
+    pub fn set_artifact_pick(
+        &self,
+        id: &str,
+        pick: Option<&zeron_proto::ArtifactOptionPick>,
+    ) -> Result<Option<()>, EngineError> {
+        let now = Utc::now().timestamp_millis();
+        Ok(self.mutate(|doc| doc.set_artifact_pick(id, pick, now))?)
+    }
+
     /// Whether a Space has the Linear integration turned on.
     pub fn space_linear_enabled(&self, space_id: &str) -> bool {
         self.read(|doc| doc.space_linear_enabled(space_id))

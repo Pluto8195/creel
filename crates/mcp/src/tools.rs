@@ -359,7 +359,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::ARTIFACT_GET_PLAN,
-            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims, answeredQuestions: [{id, answer, at, revision}], comments: [{id, text, quote, anchor, revision, at, anchorStatus}]}, or null. answeredQuestions are answers the user gave in Mast (the plan's question card or Required Actions) that the document may not reflect yet: fold each into the plan (`status: resolved` + `decision:`) in your next revision. comments are the open comments on an HTML or Mermaid plan, each with its anchor and quoted text (anchorStatus found|outdated|unknown): address them in the next revision and pass their ids as addressedComments to artifact_publish. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
+            description: "The pinned plan of your chat's work item: {artifactId, title, revision, storedPath, content, openQuestions, unverifiedClaims, answeredQuestions: [{id, answer, at, revision}], comments: [{id, text, quote, anchor, revision, at, anchorStatus}], pickedOptions: [{artifactId, title, optionId, label, note, at, revision}]}, or null. answeredQuestions are answers the user gave in Mast (the plan's question card or Required Actions) that the document may not reflect yet: fold each into the plan (`status: resolved` + `decision:`) in your next revision. comments are the open comments on an HTML or Mermaid plan, each with its anchor and quoted text (anchorStatus found|outdated|unknown): address them in the next revision and pass their ids as addressedComments to artifact_publish. pickedOptions are the options Mikey picked on your options artifacts (also in the plan-less reply): continue with that option. Call it at the start of every chat under a work item; if a plan exists, work from it and publish new revisions of it instead of writing a new one.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
@@ -2117,6 +2117,7 @@ mod tests {
             .expect("artifact_get_plan is defined");
         assert!(def.description.contains("answeredQuestions"));
         assert!(def.description.contains("status: resolved"));
+        assert!(def.description.contains("pickedOptions"));
     }
 
     #[test]

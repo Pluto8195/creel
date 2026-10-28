@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use zeron_proto::linear::{
     LinearConnectionStatus, LinearError, LinearErrorCode, LinearIssueSummary, LinearKeySource,
-    LinearProjectSummary, MAX_LIST_ISSUES,
+    LinearProjectDetail, LinearProjectSummary, MAX_LIST_ISSUES, MAX_PROJECT_UPDATES,
 };
 
 pub use client::{LINEAR_GRAPHQL_URL, LinearClient, Sleeper, tokio_sleeper};
@@ -102,6 +102,8 @@ struct Inner {
     /// cache directory is set). Keys: `my`, `project:<id>`.
     issue_lists: SwrStore<Vec<LinearIssueSummary>, LinearError>,
     project_lists: SwrStore<Vec<LinearProjectSummary>, LinearError>,
+    /// One project's detail per id (the canonical plan panel).
+    project_details: SwrStore<LinearProjectDetail, LinearError>,
     /// Serializes key changes (set/clear/forget).
     key_change: tokio::sync::Mutex<()>,
 }
@@ -156,6 +158,7 @@ impl LinearService {
                 inflight: Mutex::new(HashMap::new()),
                 issue_lists: SwrStore::new(LIST_CACHE_TTL),
                 project_lists: SwrStore::new(LIST_CACHE_TTL),
+                project_details: SwrStore::new(LIST_CACHE_TTL),
                 key_change: tokio::sync::Mutex::new(()),
             }),
         }
@@ -186,6 +189,7 @@ impl LinearService {
         lock(&self.inner.attachments).clear();
         self.inner.issue_lists.clear();
         self.inner.project_lists.clear();
+        self.inner.project_details.clear();
     }
 
     /// Keep the list caches under `dir` so a cold start can show the last
@@ -197,6 +201,9 @@ impl LinearService {
         self.inner
             .project_lists
             .attach_file(dir.join("linear-project-lists.json"));
+        self.inner
+            .project_details
+            .attach_file(dir.join("linear-project-details.json"));
     }
 
     /// The key and its source, reading the store once (off the async
@@ -545,6 +552,51 @@ impl LinearService {
                         .filter_map(queries::project_summary)
                         .filter(|p| !queries::project_is_closed(p.state.as_deref()))
                         .collect())
+                }
+                .boxed()
+            })
+            .await?;
+        Ok(entry.value)
+    }
+
+    /// `LinearProjectDetail`; same caching as [`Self::my_issues`], per project.
+    pub async fn project_detail(
+        &self,
+        project_id: &str,
+        force: bool,
+        cached_only: bool,
+    ) -> Result<LinearProjectDetail, LinearError> {
+        let project_id = project_id.trim().to_owned();
+        if project_id.is_empty() {
+            return Err(LinearError::new(
+                LinearErrorCode::Invalid,
+                "projectId is required",
+            ));
+        }
+        let store = &self.inner.project_details;
+        if cached_only {
+            return store
+                .peek(&project_id)
+                .map(|entry| entry.value)
+                .ok_or_else(not_cached);
+        }
+        let this = self.clone();
+        let id = project_id.clone();
+        let entry = store
+            .get(&project_id, force, move || {
+                async move {
+                    let data = this
+                        .call(
+                            &queries::project_detail(),
+                            json!({ "id": id, "updates": MAX_PROJECT_UPDATES }),
+                        )
+                        .await?;
+                    queries::parse_project_detail(&data).ok_or_else(|| {
+                        LinearError::new(
+                            LinearErrorCode::NotFound,
+                            "That Linear project was not found",
+                        )
+                    })
                 }
                 .boxed()
             })

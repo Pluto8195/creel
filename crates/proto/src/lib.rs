@@ -28,6 +28,7 @@ pub mod workspace;
 pub use agent::*;
 pub use artifacts::{
     ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactDriftParams,
+    ArtifactOptionPick, ArtifactPickOptionParams, ArtifactPickOptionReply, pick_message,
     ArtifactDriftReply, ArtifactQuestionAnswer, PlanQuestion, PlanQuestionStatus,
     extract_questions, ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
     ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentAnchor, CommentStatus,

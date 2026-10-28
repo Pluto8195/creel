@@ -360,6 +360,70 @@ pub struct LinearProjectIssuesParams {
     pub cached_only: bool,
 }
 
+/// `LinearProjectDetail {projectId}` → [`LinearProjectDetail`]: one project's
+/// state, progress, target date, lead and latest updates (read-only; the
+/// canonical plan panel). Cached like the lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectDetailParams {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_only: bool,
+}
+
+/// A project status update ("Project update" in Linear).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectUpdate {
+    #[serde(default)]
+    pub id: String,
+    /// Markdown body, cut to [`MAX_UPDATE_BODY_CHARS`].
+    #[serde(default)]
+    pub body: String,
+    /// `onTrack`, `atRisk`, `offTrack`, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<LinearUser>,
+    /// ISO-8601 timestamp.
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Longest project update body kept.
+pub const MAX_UPDATE_BODY_CHARS: usize = 600;
+/// Latest project updates fetched.
+pub const MAX_PROJECT_UPDATES: usize = 3;
+
+/// A Linear project in full (for the canonical plan panel).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectDetail {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    /// The project's status name, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Completed share of the project's scope, `0.0..=1.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f32>,
+    /// `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<LinearUser>,
+    /// Newest first, at most [`MAX_PROJECT_UPDATES`].
+    #[serde(default)]
+    pub updates: Vec<LinearProjectUpdate>,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
 /// `LinearRefreshLinkedItems {spaceId}` → [`LinearRefreshLinkedItemsReply`]:
 /// re-fetch every issue linked from the Space's live items (bypassing the
 /// cache) and apply title/description changes the user has not overridden.

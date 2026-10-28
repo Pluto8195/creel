@@ -1606,6 +1606,95 @@ impl ArtifactsService {
         Ok(())
     }
 
+    /// `ArtifactPickOption`: record, change or clear (no `optionId`) the
+    /// pick on an `options` artifact. Only the `picked` field is written.
+    /// A manifest `question` that is a `Q-n` id also records the pick as that plan question's
+    /// answer (so its Required Action resolves) and a cleared pick removes
+    /// it again; the caller (RPC) then resolves any `artopt:` request.
+    pub fn pick_option(
+        &self,
+        params: &zeron_proto::ArtifactPickOptionParams,
+        by: WorkOutlineActor,
+    ) -> Outcome<zeron_proto::ArtifactPickOptionReply> {
+        use zeron_proto::artifacts::{ArtifactOptionPick, MAX_PICK_CHARS, MAX_PICK_ID_CHARS};
+        let artifact = self
+            .workspace()
+            .artifact(&params.artifact_id)
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+        if artifact.kind != ArtifactKind::Options {
+            return Err(ArtifactError::invalid("only an options artifact can have a pick"));
+        }
+        let cut = |text: &str, max: usize| -> String { text.trim().chars().take(max).collect() };
+        let option_id = params
+            .option_id
+            .as_deref()
+            .map(|id| cut(id, MAX_PICK_ID_CHARS))
+            .filter(|id| !id.is_empty());
+        let pick = option_id.map(|option_id| ArtifactOptionPick {
+            label: cut(&params.label, MAX_PICK_CHARS),
+            note: params
+                .note
+                .as_deref()
+                .map(|n| cut(n, MAX_PICK_CHARS))
+                .filter(|n| !n.is_empty()),
+            option_id,
+            at: now_ms(),
+            by,
+            revision: artifact.current_revision,
+        });
+        self.workspace()
+            .set_artifact_pick(&artifact.id, pick.as_ref())
+            .map_err(|e| ArtifactError::io(e.to_string()))?
+            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+        self.sync_pick_answer(&artifact, pick.as_ref());
+        Ok(zeron_proto::ArtifactPickOptionReply {
+            artifact_id: artifact.id,
+            picked: pick,
+        })
+    }
+
+    /// Mirror the pick into the plan question the manifest names, if any.
+    /// Best effort: the pick itself is already stored.
+    fn sync_pick_answer(&self, artifact: &ArtifactView, pick: Option<&zeron_proto::ArtifactOptionPick>) {
+        let Some(question_id) = self
+            .current_bytes(artifact)
+            .ok()
+            .and_then(|b| OptionsManifest::parse(&String::from_utf8_lossy(&b)).ok())
+            .and_then(|m| m.linked_question_id())
+        else {
+            return;
+        };
+        let Some(item) = artifact.work_item_id.as_deref() else {
+            return;
+        };
+        let Some(plan) = self
+            .workspace()
+            .artifacts_of_space(&artifact.space_id)
+            .into_iter()
+            .find(|a| a.pinned_as_plan && a.archived_at.is_none() && a.work_item_id.as_deref() == Some(item))
+        else {
+            return;
+        };
+        let result = match pick {
+            Some(pick) => {
+                let label = if pick.label.is_empty() { String::new() } else { format!(": {}", pick.label) };
+                let text = clean_answer(&format!("Picked option {}{label}", pick.option_id));
+                self.record_answer(&plan, &question_id, text, pick.by.clone())
+            }
+            None => {
+                let mut answers = plan.answers.clone();
+                answers.retain(|a| !a.id.eq_ignore_ascii_case(&question_id));
+                self.workspace()
+                    .set_artifact_answers(&plan.id, &answers)
+                    .map(|_| ())
+                    .map_err(|e| ArtifactError::io(e.to_string()))
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(artifact = %artifact.id, "option pick: question answer not synced: {error:?}");
+        }
+    }
+
     /// `WatchArtifacts`: the Space's artifacts now, then one frame per
     /// change (coalesced; skipped when no artifact row changed).
     pub fn watch(&self, space_id: String) -> BoxStream<'static, Value> {
@@ -1863,6 +1952,7 @@ impl ArtifactsService {
     /// `artifact_get_plan`: the pinned plan of the Chat's work item (else of
     /// the Chat), or `null`.
     pub fn agent_get_plan(&self, caller: &AgentCaller) -> Outcome<Value> {
+        let picked_options = self.picked_options(caller);
         let plan = self
             .workspace()
             .artifacts_of_space(&caller.space_id)
@@ -1880,6 +1970,7 @@ impl ArtifactsService {
                 "artifactId": null,
                 "note": "No plan is pinned for this work item yet. Publish one with \
                          artifact_publish {role: \"plan\", pinAsPlan: true}.",
+                "pickedOptions": picked_options,
             }));
         };
         let bytes = if plan.device_id == self.device_id() {
@@ -1906,7 +1997,35 @@ impl ArtifactsService {
                 "id": a.id, "answer": a.answer, "at": a.at, "revision": a.revision,
             })).collect::<Vec<_>>(),
             "comments": self.plan_comments(&plan, content.as_deref()),
+            "pickedOptions": picked_options,
         }))
+    }
+
+    /// Options artifacts in the caller's scope with a pick:
+    /// `[{artifactId, title, optionId, label, note?, at, revision}]`.
+    fn picked_options(&self, caller: &AgentCaller) -> Vec<Value> {
+        self.workspace()
+            .artifacts_of_space(&caller.space_id)
+            .into_iter()
+            .filter(|a| a.archived_at.is_none() && a.kind == ArtifactKind::Options)
+            .filter(|a| match (&caller.work_item_id, a.plan_scope()) {
+                (Some(item), Some(PlanScope::WorkItem(theirs))) => item == theirs,
+                (None, Some(PlanScope::Chat(chat))) => chat == caller.chat_id,
+                _ => false,
+            })
+            .filter_map(|a| {
+                let pick = a.picked.clone()?;
+                Some(json!({
+                    "artifactId": a.id,
+                    "title": a.title,
+                    "optionId": pick.option_id,
+                    "label": pick.label,
+                    "note": pick.note,
+                    "at": pick.at,
+                    "revision": pick.revision,
+                }))
+            })
+            .collect()
     }
 
     /// `artifact_render_check`.

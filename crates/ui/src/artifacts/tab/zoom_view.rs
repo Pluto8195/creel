@@ -75,6 +75,7 @@ impl ArtifactTab {
             self.presenter(),
             Presenter::Markdown | Presenter::Web(_) | Presenter::Image
         ) || self.compare_zooms()
+            || self.side_shows_web()
     }
 
     /// ⌘+ / ⌘−: the next 10%. `false` when the body doesn't zoom.
@@ -135,6 +136,7 @@ impl ArtifactTab {
                     self.send_web_zoom(level, cx);
                 }
             }
+            Presenter::SideBySide => self.send_web_zoom(level, cx),
             _ => {}
         }
         cx.notify();

@@ -59,7 +59,7 @@ impl WorkItemDetails {
         Some((local, artifact.device_id.clone()))
     }
 
-    fn open_artifact(&mut self, artifact_id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_artifact(&mut self, artifact_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.artifacts.menu = None;
         let opened = self
             .shell
@@ -72,6 +72,17 @@ impl WorkItemDetails {
             self.captured_artifact_open = Some(artifact_id);
         }
         let _ = opened;
+    }
+
+    /// The item's canonical (pinned) plan, if it has one.
+    pub(super) fn pinned_plan_id(&self, item_id: &str, cx: &gpui::App) -> Option<String> {
+        self.state
+            .read(cx)
+            .artifacts()
+            .for_work_item(&self.space_id, item_id)
+            .into_iter()
+            .find(|artifact| artifact.pinned_as_plan)
+            .map(|artifact| artifact.id.clone())
     }
 
     pub(crate) fn pin_artifact(
@@ -425,6 +436,35 @@ impl WorkItemDetails {
                     }),
                 );
             section = section.child(row_el);
+            if row.pinned
+                && let Some(reference) = linear.as_ref()
+                && crate::linear::space_enabled(Some(snapshot))
+            {
+                // The canonical plan's Linear project, read-only.
+                crate::linear::store::request_project_detail(
+                    &self.state,
+                    &reference.external_id,
+                    false,
+                    cx,
+                );
+                let entry = self
+                    .state
+                    .read(cx)
+                    .linear
+                    .project_detail(&reference.external_id)
+                    .cloned();
+                section = section.child(crate::artifacts::plan_linear::render(
+                    "work-item-plan-linear",
+                    entry.as_ref(),
+                    (
+                        reference.cached_title.as_deref().unwrap_or("Linear project"),
+                        &reference.url,
+                    ),
+                    crate::artifacts::model::now_ms(),
+                    Some(self.shell.clone()),
+                    theme,
+                ));
+            }
             if menu_open {
                 let local = devices
                     .get(&id)

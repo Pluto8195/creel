@@ -295,6 +295,9 @@ pub struct ArtifactView {
     /// Comments on the rendered artifact (Artifacts phase 4 G). Never in the file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<ArtifactComment>,
+    /// The option picked for an `options` artifact (phase 5 F).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<ArtifactOptionPick>,
     /// Absolute path of the last promoted copy under `docs/plans/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_path: Option<String>,
@@ -1204,6 +1207,14 @@ pub struct OptionsManifestEntry {
 }
 
 impl OptionsManifest {
+    /// `question` when it is a plan question id (`Q-3`), upper-cased: the
+    /// question a pick answers.
+    pub fn linked_question_id(&self) -> Option<String> {
+        let id = self.question.as_deref()?.trim().to_ascii_uppercase();
+        let digits = id.strip_prefix("Q-")?;
+        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+    }
+
     /// Parse and validate: every option path relative, without `..`, at most
     /// `MAX_COMPANIONS` options.
     pub fn parse(text: &str) -> Result<Self, ArtifactError> {
@@ -1298,6 +1309,8 @@ pub fn count_unverified_claims(text: &str) -> u32 {
 
 mod comments;
 pub use comments::*;
+mod picks;
+pub use picks::*;
 mod questions;
 pub use questions::*;
 

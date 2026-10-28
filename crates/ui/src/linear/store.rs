@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity};
-use zeron_proto::linear::{LinearConnectionStatus, LinearIssueSummary, LinearProjectSummary};
+use zeron_proto::linear::{
+    LinearConnectionStatus, LinearIssueSummary, LinearProjectDetail, LinearProjectSummary,
+};
 
 use super::client::LinearUiError;
 use crate::state::AppState;
@@ -45,6 +47,23 @@ pub(crate) struct LinearStore {
     in_flight: HashSet<String>,
     /// The last "My projects" list (matches pasted project URLs).
     pub projects: Option<Vec<LinearProjectSummary>>,
+    /// Project details by project id (the canonical plan panel).
+    project_details: HashMap<String, ProjectDetailEntry>,
+}
+
+/// What the plan's Linear panel shows for one project. Data is kept across
+/// refreshes and failures (stale-while-revalidate, like the issue cache).
+#[derive(Debug, Clone)]
+pub(crate) enum ProjectDetailEntry {
+    Loading,
+    Ready {
+        detail: Box<LinearProjectDetail>,
+        at: Instant,
+    },
+    Failed {
+        error: LinearUiError,
+        at: Instant,
+    },
 }
 
 impl LinearStore {
@@ -76,6 +95,36 @@ impl LinearStore {
         match self.issue(identifier)? {
             IssueEntry::Ready { issue, .. } => Some(issue),
             _ => None,
+        }
+    }
+
+    pub(crate) fn project_detail(&self, project_id: &str) -> Option<&ProjectDetailEntry> {
+        self.project_details.get(project_id)
+    }
+
+    /// Hash of the project detail cache (what the plan panel reads).
+    pub(crate) fn project_details_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut total = 0u64;
+        for (id, entry) in &self.project_details {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            id.hash(&mut h);
+            match entry {
+                ProjectDetailEntry::Loading => 0u8.hash(&mut h),
+                ProjectDetailEntry::Ready { at, .. } => (1u8, at).hash(&mut h),
+                ProjectDetailEntry::Failed { at, .. } => (2u8, at).hash(&mut h),
+            }
+            total ^= h.finish();
+        }
+        total
+    }
+
+    fn project_needs_fetch(&self, project_id: &str, now: Instant) -> bool {
+        match self.project_detail(project_id) {
+            None => true,
+            Some(ProjectDetailEntry::Loading) => false,
+            Some(ProjectDetailEntry::Ready { at, .. }) => now.duration_since(*at) >= ISSUE_TTL,
+            Some(ProjectDetailEntry::Failed { at, .. }) => now.duration_since(*at) >= ISSUE_RETRY,
         }
     }
 
@@ -203,6 +252,88 @@ pub(crate) fn request_issue(state: &Entity<AppState>, identifier: &str, force: b
                 },
             };
             store.issues.insert(key, entry);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Show linked project `project_id`'s detail: the host's stored copy at once
+/// (never asks Linear), then the cached/fresh read behind it. Marks it
+/// loading without notifying, so it is safe to call while rendering. Data
+/// already shown survives a failed refresh. Callers only call this for
+/// Linear-enabled Spaces; Linear is only ever read.
+pub(crate) fn request_project_detail(
+    state: &Entity<AppState>,
+    project_id: &str,
+    force: bool,
+    cx: &mut App,
+) {
+    use super::client::ListRead;
+    let key = project_id.trim().to_owned();
+    if key.is_empty() {
+        return;
+    }
+    let now = Instant::now();
+    let Some((stored, fresh)) = state.update(cx, |state, _| {
+        let store = &state.linear;
+        let loading = matches!(store.project_detail(&key), Some(ProjectDetailEntry::Loading));
+        if loading || (!force && !store.project_needs_fetch(&key, now)) {
+            return None;
+        }
+        let first = store.project_detail(&key).is_none();
+        let actions = state.work_outline_actions();
+        let stored = first.then(|| actions.linear_project_detail(&key, ListRead::Stored));
+        let read = if force { ListRead::Force } else { ListRead::Cached };
+        let fresh = actions.linear_project_detail(&key, read);
+        if first {
+            state.linear.project_details.insert(key.clone(), ProjectDetailEntry::Loading);
+        }
+        Some((stored, fresh))
+    }) else {
+        return;
+    };
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        if let Some(stored) = stored
+            && let Ok(detail) = stored.await
+        {
+            state.update(cx, |state, cx| {
+                // Only fills an entry that has nothing yet; a later fresh
+                // answer replaces it.
+                if matches!(
+                    state.linear.project_details.get(&key),
+                    None | Some(ProjectDetailEntry::Loading)
+                ) {
+                    state.linear.project_details.insert(
+                        key.clone(),
+                        ProjectDetailEntry::Ready {
+                            detail: Box::new(detail),
+                            // Old enough to be refreshed by the next pass.
+                            at: Instant::now(),
+                        },
+                    );
+                    cx.notify();
+                }
+            });
+        }
+        let result = fresh.await;
+        state.update(cx, |state, cx| {
+            let at = Instant::now();
+            let entry = match result {
+                Ok(detail) => ProjectDetailEntry::Ready {
+                    detail: Box::new(detail),
+                    at,
+                },
+                Err(error) => match state.linear.project_details.remove(&key) {
+                    Some(ProjectDetailEntry::Ready { detail, .. }) => ProjectDetailEntry::Ready {
+                        detail,
+                        at: at.checked_sub(ISSUE_TTL - ISSUE_RETRY).unwrap_or(at),
+                    },
+                    _ => ProjectDetailEntry::Failed { error, at },
+                },
+            };
+            state.linear.project_details.insert(key, entry);
             cx.notify();
         });
     })

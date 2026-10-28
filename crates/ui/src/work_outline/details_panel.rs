@@ -1245,6 +1245,15 @@ impl Render for WorkItemDetails {
                     .children(status_pills),
             )
             .when_some(attention, |el, attention| el.child(attention))
+            .when_some(self.pinned_plan_id(&item.id, cx), |el, plan_id| {
+                el.child(
+                    Self::small_button("work-item-open-plan", "Open plan", &theme)
+                        .debug_selector(|| "work-item-open-plan".into())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_artifact(plan_id.clone(), window, cx)
+                        })),
+                )
+            })
             .child(div().flex_1())
             .when(item.archived_at.is_none(), |el| {
                 let space_id = self.space_id.clone();

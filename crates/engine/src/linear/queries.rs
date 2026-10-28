@@ -18,8 +18,9 @@
 
 use serde_json::{Value, json};
 use zeron_proto::linear::{
-    LinearIssueSummary, LinearLabel, LinearProjectRef, LinearProjectSummary, LinearState,
-    LinearTeamRef, LinearUser,
+    LinearIssueSummary, LinearLabel, LinearProjectDetail, LinearProjectRef, LinearProjectSummary,
+    LinearProjectUpdate, LinearState, LinearTeamRef, LinearUser, MAX_PROJECT_UPDATES,
+    MAX_UPDATE_BODY_CHARS,
 };
 
 /// Page size of every list query.
@@ -66,6 +67,57 @@ pub fn project_issues() -> String {
          filter: {{ state: {{ type: {{ nin: [\"completed\", \"canceled\"] }} }} }}) {{ \
          nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
     )
+}
+
+/// One project with its progress, target date, lead and latest updates.
+pub fn project_detail() -> String {
+    format!(
+        "query ZeronLinearProjectDetail($id: String!, $updates: Int!) {{ \
+         project(id: $id) {{ id name url state progress targetDate updatedAt \
+         lead {{ {USER_FIELDS} }} \
+         projectUpdates(first: $updates) {{ nodes {{ id body health createdAt \
+         user {{ {USER_FIELDS} }} }} }} }} }}"
+    )
+}
+
+/// Parse a `project_detail` response (`data.project`).
+pub fn parse_project_detail(data: &Value) -> Option<LinearProjectDetail> {
+    let node = data.get("project").filter(|n| !n.is_null())?;
+    let updates = node
+        .pointer("/projectUpdates/nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|n| LinearProjectUpdate {
+                    id: s(n, "id"),
+                    body: s(n, "body")
+                        .trim()
+                        .chars()
+                        .take(MAX_UPDATE_BODY_CHARS)
+                        .collect(),
+                    health: opt_s(n, "health"),
+                    author: n.get("user").and_then(user),
+                    created_at: s(n, "createdAt"),
+                })
+                .take(MAX_PROJECT_UPDATES)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(LinearProjectDetail {
+        id: opt_s(node, "id")?,
+        name: s(node, "name"),
+        url: s(node, "url"),
+        state: opt_s(node, "state"),
+        progress: node
+            .get("progress")
+            .and_then(Value::as_f64)
+            .map(|p| p.clamp(0.0, 1.0) as f32),
+        target_date: opt_s(node, "targetDate"),
+        lead: node.get("lead").and_then(user),
+        updates,
+        updated_at: s(node, "updatedAt"),
+    })
 }
 
 /// Most attachments read per issue.
@@ -273,6 +325,7 @@ mod tests {
             my_issues(),
             my_projects(),
             project_issues(),
+            project_detail(),
         ] {
             assert!(doc.starts_with("query ZeronLinear"), "{doc}");
             assert!(!doc.contains("mutation"), "{doc}");
@@ -281,6 +334,29 @@ mod tests {
         assert!(my_issues().contains("nin: [\"completed\", \"canceled\"]"));
         assert!(my_projects().contains("members: { some: { isMe: { eq: true } } }"));
         assert!(my_projects().contains("lead: { isMe: { eq: true } }"));
+    }
+
+    #[test]
+    fn project_detail_parses_leniently() {
+        let data = json!({ "project": {
+            "id": "p1", "name": "Receiving", "url": "https://linear.app/x/project/p1",
+            "state": "started", "progress": 1.7, "targetDate": "2026-12-01",
+            "lead": { "id": "u1", "name": "Ada" },
+            "projectUpdates": { "nodes": [
+                { "id": "up1", "body": "  Going well  ", "health": "onTrack",
+                  "createdAt": "2026-10-20T10:00:00Z", "user": { "id": "u1", "name": "Ada" } },
+                { "id": "up2", "body": null }
+            ] }
+        } });
+        let detail = parse_project_detail(&data).unwrap();
+        assert_eq!(detail.progress, Some(1.0));
+        assert_eq!(detail.target_date.as_deref(), Some("2026-12-01"));
+        assert_eq!(detail.lead.as_ref().unwrap().name, "Ada");
+        assert_eq!(detail.updates.len(), 2);
+        assert_eq!(detail.updates[0].body, "Going well");
+        assert_eq!(detail.updates[0].health.as_deref(), Some("onTrack"));
+        assert!(detail.updates[1].body.is_empty());
+        assert!(parse_project_detail(&json!({ "project": null })).is_none());
     }
 
     #[test]

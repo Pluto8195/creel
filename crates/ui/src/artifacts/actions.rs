@@ -11,7 +11,7 @@ use zeron_proto::{
     ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactResolveCommentParams,
     ArtifactResolveCommentReply, ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
     ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
-    ArtifactErrorCode, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactErrorCode, ArtifactPickOptionParams, ArtifactPickOptionReply, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
     ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
     ArtifactRenderResultReply, WorkOutlineError, WorkOutlineErrorCode,
 };
@@ -153,6 +153,13 @@ impl ArtifactActions {
         params: ArtifactResolveCommentParams,
     ) -> ArtifactTask<ArtifactResolveCommentReply> {
         self.call(methods::ARTIFACT_RESOLVE_COMMENT, &params)
+    }
+
+    pub(crate) fn pick_option(
+        &self,
+        params: ArtifactPickOptionParams,
+    ) -> ArtifactTask<ArtifactPickOptionReply> {
+        self.call(methods::ARTIFACT_PICK_OPTION, &params)
     }
 
     pub(crate) fn drift(&self, params: ArtifactDriftParams) -> ArtifactTask<ArtifactDriftReply> {
