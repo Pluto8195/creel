@@ -8,6 +8,7 @@ use zeron_proto::linear::{LinearConnectionStatus, LinearErrorCode, LinearKeySour
 use super::client::LinearUiError;
 use super::masked_input::{MaskedKeyEvent, MaskedKeyInput};
 use super::store;
+use crate::observe_gate::ObserveGate;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -67,6 +68,7 @@ pub(crate) struct LinearSettingsPage {
     pub(crate) saving: bool,
     pub(crate) disconnecting: bool,
     pub(crate) save_error: Option<String>,
+    seen: ObserveGate<ConnectionView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -74,7 +76,13 @@ impl LinearSettingsPage {
     pub(crate) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let key_input = cx.new(|cx| MaskedKeyInput::new("Paste a Linear personal API key", cx));
         let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
+            // The page reads only the connection card's view of the status.
+            cx.observe(&state, |this: &mut Self, state, cx| {
+                let view = connection_view(state.read(cx).linear.status.as_ref());
+                if this.seen.changed(view) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&key_input, |this: &mut Self, _, event, cx| match event {
                 MaskedKeyEvent::Submitted => this.save(cx),
                 MaskedKeyEvent::Edited => {
@@ -85,7 +93,9 @@ impl LinearSettingsPage {
             }),
         ];
         store::refresh_status(&state, false, cx);
+        let seen = ObserveGate::seeded(connection_view(state.read(cx).linear.status.as_ref()));
         Self {
+            seen,
             state,
             key_input,
             scroll: widgets::PageScroll::default(),

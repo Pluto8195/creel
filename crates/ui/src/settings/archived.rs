@@ -28,13 +28,48 @@ pub struct ArchivedPage {
     /// Unarchive reveal (`opacity-0 group-hover:opacity-100`).
     hovered: Option<usize>,
     task: Option<Task<()>>,
+    /// What the last observer pass saw; see `new`.
+    seen_rows: Vec<Chat>,
+    seen_device_names: Vec<(String, String)>,
     _observe: Subscription,
 }
 
 impl ArchivedPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // Repaint only when the archived rows or the device names the render
+        // reads change; streaming frames on live chats touch neither.
+        let observe = cx.observe(&state, |this: &mut Self, state, cx| {
+            let state = state.read(cx);
+            let rows = archived_chats(&state.chats);
+            let names: Vec<(String, String)> = state
+                .devices
+                .iter()
+                .map(|d| (d.id.clone(), d.name.clone()))
+                .collect();
+            let same = names == this.seen_device_names
+                && rows.len() == this.seen_rows.len()
+                && rows.iter().zip(&this.seen_rows).all(|(a, b)| *a == b);
+            if same {
+                return;
+            }
+            this.seen_rows = rows.into_iter().cloned().collect();
+            this.seen_device_names = names;
+            cx.notify();
+        });
+        let (seen_rows, seen_device_names) = {
+            let state = state.read(cx);
+            (
+                archived_chats(&state.chats).into_iter().cloned().collect(),
+                state
+                    .devices
+                    .iter()
+                    .map(|d| (d.id.clone(), d.name.clone()))
+                    .collect(),
+            )
+        };
         Self {
+            seen_rows,
+            seen_device_names,
             state,
             scroll: widgets::PageScroll::default(),
             error: None,

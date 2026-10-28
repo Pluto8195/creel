@@ -2029,6 +2029,83 @@ impl AppState {
         h.finish()
     }
 
+    /// [`Self::overview_fingerprint`] plus everything else the Shell's own
+    /// render reads: connection, scope, auth, update strip, connectivity,
+    /// devices, sidebar preferences, project/device picks, sync flags, the
+    /// send overlays (time-based), PR badges, artifacts, ticket and PR chips
+    /// and the subagent tabs' streaming flag. It deliberately leaves out the
+    /// selected chat's transcript, queue, echoes, context usage and the other
+    /// streaming fields, which the views that render them observe themselves,
+    /// so those frames no longer repaint the whole window.
+    pub(crate) fn shell_fingerprint(&self, now: DateTime<Utc>) -> u64 {
+        use std::fmt::Write as _;
+        use std::hash::{Hash, Hasher};
+        struct Feed<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+        impl std::fmt::Write for Feed<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0.write(text.as_bytes());
+                Ok(())
+            }
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.overview_fingerprint(now).hash(&mut h);
+        let _ = write!(
+            Feed(&mut h),
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            self.connection,
+            self.workspace_scope,
+            self.auth,
+            self.update,
+            self.connectivity,
+            self.sidebar_preferences,
+            self.devices,
+        );
+        (
+            self.connectivity_observed,
+            &self.local_device_id,
+            &self.selected_space,
+            self.no_project,
+            &self.selected_device,
+            self.auto_selected,
+            self.chats_synced,
+            self.spaces_synced,
+        )
+            .hash(&mut h);
+        // Send overlays flip with time alone (grace expiry), so hash the
+        // derived flags, not just the keys.
+        let mut sends = 0u64;
+        for (chat_id, send) in &self.pending_sends {
+            let mut sh = std::collections::hash_map::DefaultHasher::new();
+            (
+                chat_id,
+                send.started,
+                self.send_pending(chat_id, now),
+                self.send_queued(chat_id, now),
+                self.send_undelivered(chat_id, now),
+            )
+                .hash(&mut sh);
+            sends ^= sh.finish();
+        }
+        sends.hash(&mut h);
+        self.change_requests.fingerprint().hash(&mut h);
+        self.artifacts.fingerprint().hash(&mut h);
+        self.github.fingerprint().hash(&mut h);
+        self.linear.issues_fingerprint().hash(&mut h);
+        let mut subagents = 0u64;
+        for (doc_id, entries) in &self.sub_transcripts {
+            let mut sh = std::collections::hash_map::DefaultHasher::new();
+            (
+                doc_id,
+                entries.len(),
+                entries.last().map(|entry| entry.status.map(|s| std::mem::discriminant(&s))),
+            )
+                .hash(&mut sh);
+            subagents ^= sh.finish();
+        }
+        subagents.hash(&mut h);
+        h.finish()
+    }
+
     /// Current Work Outline load state for one Space.
     pub(crate) fn work_outline(&self, space_id: &str) -> crate::work_outline::WorkOutlineLoad {
         self.work_outlines.load(space_id)
@@ -4826,6 +4903,71 @@ mod tests {
                 "byte budget applies even to one whale"
             );
         });
+    }
+
+    #[test]
+    fn shell_fingerprint_ignores_streaming_fields_and_tracks_what_the_shell_shows() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.chats = vec![chat("a", 0, Some(10)), chat("b", 0, Some(5))];
+        state.selected_chat = Some("a".into());
+        let base = state.shell_fingerprint(now);
+
+        // Streaming into the selected chat touches none of what the shell reads.
+        state.transcript_revision += 1;
+        state.transcript.clear();
+        state.queue.clear();
+        state.context_usage = Some(zeron_proto::ContextUsage {
+            tokens: Some(10),
+            ..Default::default()
+        });
+        assert_eq!(state.shell_fingerprint(now), base);
+
+        // What the shell does render moves it.
+        let mut changed = vec![];
+        let mut probe = |name: &'static str, state: &mut AppState, edit: &dyn Fn(&mut AppState)| {
+            edit(state);
+            changed.push((name, state.shell_fingerprint(now) != base));
+            state.chats = vec![chat("a", 0, Some(10)), chat("b", 0, Some(5))];
+            state.selected_chat = Some("a".into());
+            state.connection = ConnectionStatus::Connecting;
+            state.auth = None;
+            state.local_device_id = None;
+            state.selected_space = None;
+            state.connectivity = Default::default();
+            state.pending_sends.clear();
+        };
+        probe("title", &mut state, &|s| s.chats[1].title = Some("New".into()));
+        probe("selection", &mut state, &|s| s.selected_chat = Some("b".into()));
+        probe("connection", &mut state, &|s| {
+            s.connection = ConnectionStatus::Ready
+        });
+        probe("auth", &mut state, &|s| {
+            s.auth = Some(zeron_proto::AuthState::SignedOut)
+        });
+        probe("local device", &mut state, &|s| {
+            s.local_device_id = Some("d".into())
+        });
+        probe("selected space", &mut state, &|s| {
+            s.selected_space = Some("sp".into())
+        });
+        probe("pending send", &mut state, &|s| {
+            s.begin_pending_send("a", "m1", now)
+        });
+        for (name, moved) in changed {
+            assert!(moved, "{name} must change the shell fingerprint");
+        }
+    }
+
+    #[test]
+    fn shell_fingerprint_follows_a_send_overlay_expiring_with_time_alone() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.chats = vec![chat("a", 0, Some(10))];
+        state.begin_pending_send("a", "m1", now);
+        let early = state.shell_fingerprint(now);
+        let late = state.shell_fingerprint(now + TimeDelta::milliseconds(UNDELIVERED_GRACE_MS + 1));
+        assert_ne!(early, late, "the Failed overlay needs a repaint");
     }
 
     #[test]

@@ -68,6 +68,8 @@ mod github_ui;
 mod instructions_ui;
 mod linear_ui;
 mod outside_file_ui;
+#[cfg(test)]
+mod perf_tests;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
@@ -1740,6 +1742,8 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
+    /// `AppState::shell_fingerprint` as of the last observed change.
+    state_fingerprint: Option<u64>,
     /// A `sidebar_notice` text that was raised as an explicit failure (so it
     /// renders as the copyable error card even when its wording is unusual).
     sidebar_error_text: Option<SharedString>,
@@ -1903,8 +1907,19 @@ pub struct Shell {
 impl Shell {
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
+            // The reconcile always runs; the repaint (which cascades to the
+            // transcript, sidebar and every other child the shell renders)
+            // only when the state the shell reads, or the shell's own
+            // outcome of reconciling it, changed. Streaming frames for the
+            // transcript and composer reach those views directly.
+            let fingerprint = state.read(cx).shell_fingerprint(Utc::now());
+            let before = this.reconcile_signature();
             this.on_state_changed(&state, cx);
-            cx.notify();
+            if this.state_fingerprint != Some(fingerprint) || before != this.reconcile_signature()
+            {
+                this.state_fingerprint = Some(fingerprint);
+                cx.notify();
+            }
         });
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         transcript.update(cx, |transcript, _| transcript.retain_for_route_exit());
@@ -2175,6 +2190,7 @@ impl Shell {
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            state_fingerprint: None,
             sidebar_error_text: None,
             outside_file_prompt: None,
             copied_chat_identity: None,
@@ -2320,6 +2336,16 @@ impl Shell {
     }
 
     // ---- splash ----
+
+    /// The shell-owned fields `on_state_changed` can change.
+    fn reconcile_signature(&self) -> (Route, Option<SharedString>, SyncFlow, SplashPhase) {
+        (
+            self.route,
+            self.sidebar_notice.clone(),
+            self.sync_flow,
+            self.splash,
+        )
+    }
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         self.prune_file_explorers(cx);

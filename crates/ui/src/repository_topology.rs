@@ -1526,6 +1526,7 @@ fn toggle_disclosure(expanded: &mut HashSet<String>, id: &str) -> bool {
 
 pub struct RepositoryTopology {
     state: Entity<AppState>,
+    seen: crate::observe_gate::ObserveGate<(Vec<WorkspaceTab>, bool, Option<String>, u64)>,
     shell: gpui::WeakEntity<Shell>,
     search: Entity<ComposerInput>,
     load: LoadState,
@@ -1573,7 +1574,13 @@ impl RepositoryTopology {
                 state.spaces_synced,
             )
         };
-        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        // Repaint only when the Space tabs, catalog readiness, local device or
+        // the chat previews shown on the map changed.
+        let subscription = cx.observe(&state, |this: &mut Self, state, cx| {
+            if this.seen.changed(Self::state_slice(state.read(cx))) {
+                cx.notify();
+            }
+        });
         let search_events = cx.subscribe(&search, |this: &mut Self, input, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 this.auto_fit = true;
@@ -1609,6 +1616,7 @@ impl RepositoryTopology {
             chat_diff_request_seq: 0,
             closeout_previews: HashMap::new(),
             closeout_preview_request_seq: 0,
+            seen: Default::default(),
             _state_subscription: subscription,
             _search_events: search_events,
             _refresh_task: refresh_task,
@@ -1730,6 +1738,25 @@ impl RepositoryTopology {
             .ok();
         })
         .detach();
+    }
+
+    /// Everything the map's render reads from `AppState`.
+    fn state_slice(state: &AppState) -> (Vec<WorkspaceTab>, bool, Option<String>, u64) {
+        use std::hash::{Hash, Hasher};
+        let mut previews = std::collections::hash_map::DefaultHasher::new();
+        for chat in &state.chats {
+            if let Some(preview) = chat.last_message_preview.as_ref()
+                && !preview.trim().is_empty()
+            {
+                (&chat.id, preview).hash(&mut previews);
+            }
+        }
+        (
+            Self::workspace_tabs(state),
+            state.spaces_synced,
+            state.local_device_id.clone(),
+            previews.finish(),
+        )
     }
 
     fn workspace_tabs(state: &AppState) -> Vec<WorkspaceTab> {

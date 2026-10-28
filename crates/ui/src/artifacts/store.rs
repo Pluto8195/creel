@@ -99,6 +99,28 @@ impl ArtifactStore {
         before != self.loads.len()
     }
 
+    /// Order-independent hash of every Space's load (kind and snapshot
+    /// identity), for views that gate on "did any snapshot change".
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut total = 0u64;
+        for (space_id, load) in &self.loads {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            space_id.hash(&mut h);
+            match load {
+                ArtifactsLoad::Loading => 0u8.hash(&mut h),
+                ArtifactsLoad::Ready(snapshot) => {
+                    1u8.hash(&mut h);
+                    (std::sync::Arc::as_ptr(snapshot) as usize).hash(&mut h);
+                }
+                ArtifactsLoad::Unsupported => 2u8.hash(&mut h),
+                ArtifactsLoad::Failed(reason) => (3u8, reason).hash(&mut h),
+            }
+            total ^= h.finish();
+        }
+        total
+    }
+
     pub(crate) fn space_ids(&self) -> impl Iterator<Item = &str> {
         self.loads.keys().map(String::as_str)
     }

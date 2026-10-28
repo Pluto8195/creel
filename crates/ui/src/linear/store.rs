@@ -48,6 +48,25 @@ pub(crate) struct LinearStore {
 }
 
 impl LinearStore {
+    /// Order-independent hash of the issue cache (which identifiers have an
+    /// entry, its kind and when it was last replaced) and the fetches under
+    /// way: what the ticket chips read.
+    pub(crate) fn issues_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut total = 0u64;
+        for (identifier, entry) in &self.issues {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            identifier.hash(&mut h);
+            match entry {
+                IssueEntry::Loading => 0u8.hash(&mut h),
+                IssueEntry::Ready { at, .. } => (1u8, at).hash(&mut h),
+                IssueEntry::Failed { at, .. } => (2u8, at).hash(&mut h),
+            }
+            total ^= h.finish();
+        }
+        total ^ (self.in_flight.len() as u64).rotate_left(17)
+    }
+
     pub(crate) fn issue(&self, identifier: &str) -> Option<&IssueEntry> {
         self.issues.get(&identifier.to_uppercase())
     }

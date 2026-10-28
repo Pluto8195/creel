@@ -4334,8 +4334,60 @@ fn slash_error_message(err: &RpcError) -> SharedString {
     }
 }
 
+/// What the composer's render reads from `AppState` (the rest is its own
+/// fields and its child entities): the selected chat and project rows, queue,
+/// review comments for the current draft key, delivery posture, device
+/// presence and capabilities, context usage and whether the run is live.
+#[derive(Debug, Clone, PartialEq)]
+struct ComposerSlice {
+    selected_chat: Option<String>,
+    chat: Option<zeron_proto::Chat>,
+    space: Option<zeron_proto::Space>,
+    effective_device: Option<String>,
+    local_device_id: Option<String>,
+    devices: Vec<(zeron_proto::Device, bool)>,
+    queue: Vec<zeron_doc::QueuedMessage>,
+    comments: Vec<crate::comments::ReviewComment>,
+    comment_flush_pending: bool,
+    delivery_degraded: bool,
+    connectivity: zeron_proto::Connectivity,
+    context_usage: Option<zeron_proto::ContextUsage>,
+    live: bool,
+}
+
+impl ComposerSlice {
+    fn read(state: &AppState, key: &str, now: chrono::DateTime<chrono::Utc>) -> Self {
+        let selected = state.selected_chat.as_deref();
+        Self {
+            selected_chat: state.selected_chat.clone(),
+            chat: state.selected_chat_row().cloned(),
+            space: state.selected_space_row().cloned(),
+            effective_device: state.effective_device_id(),
+            local_device_id: state.local_device_id.clone(),
+            devices: state
+                .devices
+                .iter()
+                .map(|d| (d.clone(), state.device_online(&d.id, now)))
+                .collect(),
+            queue: state.queue.clone(),
+            comments: state.review_comments(key).to_vec(),
+            comment_flush_pending: state.review_comment_flush_pending(key),
+            delivery_degraded: selected.is_some_and(|id| state.chat_delivery_degraded(id)),
+            connectivity: state.connectivity.clone(),
+            context_usage: state.context_usage,
+            live: selected.is_some_and(|id| {
+                matches!(
+                    state.indicator_for(id, now),
+                    Indicator::Working | Indicator::AwaitingInput
+                )
+            }),
+        }
+    }
+}
+
 pub struct Composer {
     pub(crate) state: Entity<AppState>,
+    seen: crate::observe_gate::ObserveGate<ComposerSlice>,
     pub(crate) input: Entity<ComposerInput>,
     /// Draft displaced while a queued message occupies the composer.
     pub(crate) queue_edit_draft: Option<(String, Vec<StagedAttachment>, Vec<CapturedAppshot>)>,
@@ -4649,6 +4701,7 @@ impl Composer {
             sending: false,
             launching_new_chat: false,
             failure: None,
+            seen: Default::default(),
             wizard: None,
             wizard_focus: cx.focus_handle(),
             answered_requests: HashSet::new(),
@@ -6282,7 +6335,34 @@ impl Composer {
         }
     }
 
+    /// Reconcile composer-owned state with `AppState` (draft swap on
+    /// navigation, question panel, queue-edit and interrupt bookkeeping), and
+    /// repaint only when that changed something visible: the slice of state
+    /// the composer renders differs, or the reconcile itself moved composer
+    /// state. Streaming frames and other chats' updates do neither.
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
+        let before = self.reconcile_signature();
+        self.reconcile_with_state(cx);
+        let slice = ComposerSlice::read(self.state.read(cx), &self.current_key, chrono::Utc::now());
+        let slice_changed = self.seen.changed(slice);
+        if slice_changed || before != self.reconcile_signature() {
+            cx.notify();
+        }
+    }
+
+    /// The composer-owned fields `reconcile_with_state` can change.
+    fn reconcile_signature(&self) -> impl PartialEq + use<> {
+        (
+            self.current_key.clone(),
+            self.wizard.as_ref().map(|w| w.request_id.clone()),
+            self.editing_queued.clone(),
+            self.failure.clone(),
+            self.interrupting.len(),
+            self.queue_removing.len(),
+        )
+    }
+
+    fn reconcile_with_state(&mut self, cx: &mut Context<Self>) {
         {
             let state = self.state.read(cx);
             let now = chrono::Utc::now();
@@ -6396,7 +6476,6 @@ impl Composer {
 
         // A pending agent question must not take over an active queue edit.
         if self.editing_queued.is_some() {
-            cx.notify();
             return;
         }
         // Question panel lifecycle (wizard state cached per request id).
@@ -6443,7 +6522,6 @@ impl Composer {
         let input_context = message_input_context(self.wizard.is_some());
         self.input
             .update(cx, |input, cx| input.set_key_context(input_context, cx));
-        cx.notify();
     }
 
     pub(crate) fn run_live(&self, cx: &App) -> bool {

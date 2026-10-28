@@ -23,6 +23,7 @@ use zeron_proto::{
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::observe_gate::ObserveGate;
 use crate::popover::{self, Loadable};
 use crate::settings::widgets;
 use crate::state::AppState;
@@ -194,13 +195,25 @@ pub struct AccountsPage {
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    seen: ObserveGate<(Vec<zeron_proto::Device>, Option<String>)>,
     _observe: Subscription,
     _code_events: Subscription,
 }
 
 impl AccountsPage {
+    fn slice(state: &AppState) -> (Vec<zeron_proto::Device>, Option<String>) {
+        (state.devices.clone(), state.local_device_id.clone())
+    }
+
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // Only the device switcher reads shared state (the rest is the page's
+        // own snapshot), so repaint on a device-list change alone.
+        let observe = cx.observe(&state, |this: &mut Self, state, cx| {
+            if this.seen.changed(Self::slice(state.read(cx))) {
+                cx.notify();
+            }
+        });
+        let seen = ObserveGate::seeded(Self::slice(state.read(cx)));
         let code_input = cx.new(|cx| ComposerInput::new("Paste the authorization code", cx));
         let code_events = cx.subscribe(&code_input, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
@@ -220,6 +233,7 @@ impl AccountsPage {
             load_task: None,
             action_task: None,
             poll_task: None,
+            seen,
             _observe: observe,
             _code_events: code_events,
         };
