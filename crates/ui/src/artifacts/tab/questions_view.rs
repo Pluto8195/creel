@@ -251,6 +251,13 @@ impl ArtifactTab {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_answer_text_for_tests(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(input) = self.questions.input.clone() {
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        }
+    }
+
     /// Record the typed answer, then tell the chat that published the plan.
     pub(crate) fn send_answer(&mut self, id: String, cx: &mut Context<Self>) {
         let id = id.to_ascii_uppercase();

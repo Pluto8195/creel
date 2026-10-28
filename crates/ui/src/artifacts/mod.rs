@@ -40,6 +40,8 @@ mod compare_tests;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod questions_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 mod zoom_tests;
