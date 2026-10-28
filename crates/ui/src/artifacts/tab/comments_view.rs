@@ -89,6 +89,16 @@ impl ArtifactTab {
         rows
     }
 
+    #[cfg(test)]
+    pub(crate) fn comments_document_loading_for_tests(&mut self) {
+        self.comments_document_loading();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn comment_rows_for_tests(&mut self, artifact: &ArtifactView) -> Vec<CommentRow> {
+        self.comment_rows(artifact)
+    }
+
     /// A new document is loading: the page must say it is ready again.
     pub(super) fn comments_document_loading(&mut self) {
         self.comments.ready = false;
@@ -136,7 +146,16 @@ impl ArtifactTab {
                 self.comments.focused = Some(id);
                 cx.notify();
             }
-            FrameMessage::Answer { id, text } => self.submit_answer(id, text, cx),
+            FrameMessage::Answer { id, text } => {
+                // Only the current revision's questions take answers (the
+                // Markdown cards do the same).
+                if self
+                    .artifact(cx)
+                    .is_some_and(|artifact| self.can_comment(&artifact))
+                {
+                    self.submit_answer(id, text, cx)
+                }
+            }
         }
     }
 

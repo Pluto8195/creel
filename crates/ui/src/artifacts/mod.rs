@@ -38,6 +38,8 @@ pub(crate) mod tab;
 pub(crate) mod zoom;
 
 #[cfg(test)]
+mod comments_tests;
+#[cfg(test)]
 mod compare_tests;
 #[cfg(test)]
 mod find_tests;
