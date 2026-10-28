@@ -1,6 +1,6 @@
 # Work Outline — implementation handoff
 
-Prepared 2026-10-14, last updated 2026-10-27. Read this first in a new chat picking up the Work Outline work.
+Prepared 2026-10-14, last updated 2026-10-28. Read this first in a new chat picking up the Work Outline work.
 
 ## Where things are
 
@@ -359,6 +359,29 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   (reflows, vertical pan only). HTML/Mermaid: CSS zoom in the WKWebView frame script, page handles
   pinch (WebKit gesture events) and ⌘-wheel; unverified in a real WKWebView. Images: fit × zoom in a
   two-axis scroll. Not done: compare-pane sync, image drag-pan, Markdown px paddings.
+- **Sandbox is enforced** (2026-10-28): Claude Code `read-only` passes `--disallowedTools
+  Edit,Write,MultiEdit,NotebookEdit,Bash,PowerShell` + `--permission-mode default` and never
+  bypasses permissions, even with auto-approve (so read-only Claude chats can't run git or tests).
+  Claude `workspace-write` is NOT enforced (the CLI can't confine writes to cwd; unchanged).
+  Codex `read-only` stays read-only with auto-approve forced off (it used to widen to full access).
+  ACP harnesses (opencode, cursor, generic) refuse a `read-only` start with `HarnessError::Sandbox`.
+  "No wider than the parent" holds in MCP `create_chat` and the work-item launch.
+- **AppState observers gated** (2026-10-28, `perf-remaining-observers`): shell, composer, pickers,
+  chat_type_view (rows cached in an Rc), repository_topology, context_usage, artifacts tab and the
+  settings pages only notify when the slice they render changes (fingerprints like
+  `overview_fingerprint`; counters in `shell/perf_tests.rs`). 250 chats × 50 updates: composer and
+  pickers 50 → 0, shell 50 → 0–1; transcript still follows selected-chat streaming.
+- **Artifacts phase 3** (2026-10-28): D: plan questions become Required Actions on the owning item
+  (`engine/src/artifact_questions.rs`, reconcile every 2s on the owning device). Blocking = own action
+  (key `artq:<artifactId>:<Q-n>`); the rest roll up into "N open questions in <plan>"
+  (`artq:<artifactId>:rollup`; a changed list resolves the old one as "Superseded"). Answers live on
+  the artifact row (`ArtifactView.answers`, `set_artifact_answers`); the plan file is never edited.
+  Card answer → `ArtifactAnswerQuestion` RPC (messages the publishing chat, resolves the action);
+  resolving the action marks the card answered. `artifact_get_plan` returns `answeredQuestions`.
+  C: "Updated since you last viewed · rev N → M" chip opens the compare view; drift badge (commits on
+  the item's chats' branches since the latest revision, or unreflected answers). Not done: answering
+  from HTML cards, marker on artifact lists, multi-device answers are last-writer-wins. See the
+  phase-3 amendment in `docs/plans/artifacts-contract.md`.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -369,6 +392,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     `message_queue::restart_restores_the_queue_frozen_until_an_explicit_send` (sometimes passes).
   - Flaky under full parallel load (pass alone): engine `work_outline_rpc::mutations_stay_fast_on_a_large_local_registry`,
     harness `opencode::tests::stalled_prompt_post_has_a_bounded_timeout`.
+  - Engine integration, flaky under load: `device_routing::workspace_file_surface_proxies_over_the_relay`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
@@ -436,9 +460,6 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 
 ## Next, agreed but not started
 
-- **Artifacts phase 3:** D (structured questions → Required Actions: blocking ones each own an
-  action, the rest roll up into "N open questions in <plan>", dedupe by question id, resolution
-  both ways) + C (revision diffs and a drift signal).
 - **Artifacts phase 4:** G (comments on HTML anchors).
 - **Artifacts phase 5:** F (side-by-side options + pick) and H (canonical plan with the linked
   Linear project shown next to it; no mirroring into Linear).
