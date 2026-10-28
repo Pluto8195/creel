@@ -181,6 +181,66 @@ impl ArtifactTab {
         }
     }
 
+    /// Whether the zoomed image is larger than its view, so it can be panned.
+    fn image_pannable(&self) -> bool {
+        let max = self.image_scroll.max_offset();
+        max.x > px(0.5) || max.y > px(0.5)
+    }
+
+    fn start_image_pan(&mut self, mouse: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.image_pannable() {
+            self.image_pan = Some((mouse, self.image_scroll.offset()));
+            cx.notify();
+        }
+    }
+
+    fn move_image_pan(&mut self, mouse: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((from, start)) = self.image_pan else {
+            return;
+        };
+        let max = self.image_scroll.max_offset();
+        let (x, y) = zoom::drag_pan_offset(
+            (f32::from(start.x), f32::from(start.y)),
+            (f32::from(from.x), f32::from(from.y)),
+            (f32::from(mouse.x), f32::from(mouse.y)),
+            (f32::from(max.x), f32::from(max.y)),
+        );
+        self.image_scroll.set_offset(point(px(x), px(y)));
+        cx.notify();
+    }
+
+    fn end_image_pan(&mut self, cx: &mut Context<Self>) {
+        if self.image_pan.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_offset_for_tests(&self) -> (f32, f32) {
+        let offset = self.image_scroll.offset();
+        (f32::from(offset.x), f32::from(offset.y))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_max_offset_for_tests(&self) -> (f32, f32) {
+        let max = self.image_scroll.max_offset();
+        (f32::from(max.x), f32::from(max.y))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_pan_for_tests(
+        &mut self,
+        action: &str,
+        mouse: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            "down" => self.start_image_pan(mouse, cx),
+            "move" => self.move_image_pan(mouse, cx),
+            _ => self.end_image_pan(cx),
+        }
+    }
+
     fn anchor_image_scroll(&mut self, old: f32, new: f32, anchor: Option<Point<Pixels>>) {
         let bounds = self.image_scroll.bounds();
         let anchor = anchor
@@ -229,6 +289,8 @@ impl ArtifactTab {
                 .into_any_element(),
         };
         let weak = cx.weak_entity();
+        let pannable = self.image_pannable();
+        let panning = self.image_pan.is_some();
         zoom::zoom_surface(
             self.zoom,
             false,
@@ -246,6 +308,34 @@ impl ArtifactTab {
                         .size_full()
                         .overflow_scroll()
                         .track_scroll(&self.image_scroll)
+                        .when(pannable, |el| {
+                            el.cursor(if panning {
+                                gpui::CursorStyle::ClosedHand
+                            } else {
+                                gpui::CursorStyle::OpenHand
+                            })
+                        })
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                this.start_image_pan(event.position, cx)
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                            if event.dragging() {
+                                this.move_image_pan(event.position, cx);
+                            } else {
+                                this.end_image_pan(cx);
+                            }
+                        }))
+                        .on_mouse_up(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| this.end_image_pan(cx)),
+                        )
+                        .on_mouse_up_out(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| this.end_image_pan(cx)),
+                        )
                         .child(
                             div()
                                 .min_w_full()

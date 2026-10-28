@@ -296,6 +296,8 @@ pub(crate) struct ArtifactTab {
     zoom_reported: Option<u32>,
     zoom_synced: bool,
     image_scroll: gpui::ScrollHandle,
+    /// A drag-pan in progress: the pointer and the scroll offset it began at.
+    image_pan: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
     /// The image's natural size, from its header.
     image_size: Option<(f32, f32)>,
     _load: Option<Task<()>>,
@@ -392,6 +394,7 @@ impl ArtifactTab {
             zoom_reported: None,
             zoom_synced: false,
             image_scroll: gpui::ScrollHandle::new(),
+            image_pan: None,
             image_size: None,
             _load: None,
             _compare: None,

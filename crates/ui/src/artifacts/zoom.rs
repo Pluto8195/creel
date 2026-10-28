@@ -102,6 +102,25 @@ pub(crate) fn anchor_offset(scroll: f32, anchor: f32, old: f32, new: f32) -> f32
     ((scroll + anchor) * new / old - anchor).max(0.0)
 }
 
+/// The scroll offset (negative or zero, as gpui keeps it) after dragging a
+/// grabbed image from `start_mouse` to `mouse`, the offset being `start`
+/// when the drag began: the content follows the pointer, clamped to
+/// `-max..=0` per axis.
+pub(crate) fn drag_pan_offset(
+    start: (f32, f32),
+    start_mouse: (f32, f32),
+    mouse: (f32, f32),
+    max: (f32, f32),
+) -> (f32, f32) {
+    let axis = |start: f32, from: f32, to: f32, max: f32| {
+        (start + (to - from)).clamp(-max.max(0.0), 0.0)
+    };
+    (
+        axis(start.0, start_mouse.0, mouse.0, max.0),
+        axis(start.1, start_mouse.1, mouse.1, max.1),
+    )
+}
+
 /// "125%".
 pub(crate) fn label(level: f32) -> String {
     format!("{}%", (level * 100.0).round() as i32)
