@@ -2029,6 +2029,83 @@ impl AppState {
         h.finish()
     }
 
+    /// [`Self::overview_fingerprint`] plus everything else the Shell's own
+    /// render reads: connection, scope, auth, update strip, connectivity,
+    /// devices, sidebar preferences, project/device picks, sync flags, the
+    /// send overlays (time-based), PR badges, artifacts, ticket and PR chips
+    /// and the subagent tabs' streaming flag. It deliberately leaves out the
+    /// selected chat's transcript, queue, echoes, context usage and the other
+    /// streaming fields, which the views that render them observe themselves,
+    /// so those frames no longer repaint the whole window.
+    pub(crate) fn shell_fingerprint(&self, now: DateTime<Utc>) -> u64 {
+        use std::fmt::Write as _;
+        use std::hash::{Hash, Hasher};
+        struct Feed<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+        impl std::fmt::Write for Feed<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0.write(text.as_bytes());
+                Ok(())
+            }
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.overview_fingerprint(now).hash(&mut h);
+        let _ = write!(
+            Feed(&mut h),
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            self.connection,
+            self.workspace_scope,
+            self.auth,
+            self.update,
+            self.connectivity,
+            self.sidebar_preferences,
+            self.devices,
+        );
+        (
+            self.connectivity_observed,
+            &self.local_device_id,
+            &self.selected_space,
+            self.no_project,
+            &self.selected_device,
+            self.auto_selected,
+            self.chats_synced,
+            self.spaces_synced,
+        )
+            .hash(&mut h);
+        // Send overlays flip with time alone (grace expiry), so hash the
+        // derived flags, not just the keys.
+        let mut sends = 0u64;
+        for (chat_id, send) in &self.pending_sends {
+            let mut sh = std::collections::hash_map::DefaultHasher::new();
+            (
+                chat_id,
+                send.started,
+                self.send_pending(chat_id, now),
+                self.send_queued(chat_id, now),
+                self.send_undelivered(chat_id, now),
+            )
+                .hash(&mut sh);
+            sends ^= sh.finish();
+        }
+        sends.hash(&mut h);
+        self.change_requests.fingerprint().hash(&mut h);
+        self.artifacts.fingerprint().hash(&mut h);
+        self.github.fingerprint().hash(&mut h);
+        self.linear.issues_fingerprint().hash(&mut h);
+        let mut subagents = 0u64;
+        for (doc_id, entries) in &self.sub_transcripts {
+            let mut sh = std::collections::hash_map::DefaultHasher::new();
+            (
+                doc_id,
+                entries.len(),
+                entries.last().map(|entry| entry.status.map(|s| std::mem::discriminant(&s))),
+            )
+                .hash(&mut sh);
+            subagents ^= sh.finish();
+        }
+        subagents.hash(&mut h);
+        h.finish()
+    }
+
     /// Current Work Outline load state for one Space.
     pub(crate) fn work_outline(&self, space_id: &str) -> crate::work_outline::WorkOutlineLoad {
         self.work_outlines.load(space_id)

@@ -260,6 +260,33 @@ impl ChangeRequestClientState {
         self.snapshots.retain(|key, _| targets.contains(key));
     }
 
+    /// Order-independent hash of the stored snapshots and the unsupported
+    /// devices: everything a chat row's PR badge can be derived from.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::fmt::Write as _;
+        use std::hash::{Hash, Hasher};
+        struct Feed<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+        impl std::fmt::Write for Feed<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0.write(text.as_bytes());
+                Ok(())
+            }
+        }
+        let mut total = 0u64;
+        for (key, snapshot) in &self.snapshots {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut h);
+            let _ = write!(Feed(&mut h), "{snapshot:?}");
+            total ^= h.finish();
+        }
+        for (device, version) in &self.unsupported_devices {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (device, version).hash(&mut h);
+            total ^= h.finish();
+        }
+        total
+    }
+
     pub fn change_request_for_chat<'a>(
         &'a self,
         chat: &Chat,
