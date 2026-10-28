@@ -395,6 +395,20 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   plan question), and `artifact_get_plan` returns `pickedOptions`. H: an item with a linked Linear
   project can mark one plan canonical; it shows beside the project's details (from the SWR-cached
   Linear data). Nothing is written to Linear.
+- **Artifacts phase 4** (2026-10-28): frame → host bridge (frame postMessage → outer doc hidden
+  `zeron-msg:JSON` link → WKWebView delegate → `BrowserEvent::DocumentMessage` →
+  `ArtifactTab::on_frame_message`, validated in `artifacts/bridge.rs`; user-activated only, 16 KiB
+  cap). HTML question cards are answerable in place (phase 3 path). Comments on HTML + Mermaid
+  stored on the row (`ArtifactView.comments`, ≤40); anchors id/`data-zeron-anchor` → mermaid node
+  → text-quote → CSS path; unfound = Outdated (`proto::resolve_anchor`). UI: "Comment on
+  selection", "Pick element", "Comments N" panel, page markers. Unverified in a real WKWebView.
+- **Compact single-chat rows** (2026-10-28): an item with exactly one live chat is one outline row
+  (`ItemRow.compact_chat`, `OutlineOptions.compact_single_chat`); the chat's key aliases to the item
+  row. Splits into item + chat rows on a second chat, a child item, a nested sub-chat, an archived
+  chat (with show-archived) or a dangling chat.
+- **Repository map removed** (2026-10-28): the UI (`repository_topology.rs`, route, button, ⇧⌘G),
+  proto types and the `GetRepositoryTopology` RPC are gone; the shared engine discovery code lives
+  on as `repository_discovery.rs`.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -408,6 +422,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Engine integration, flaky under load: `device_routing::workspace_file_surface_proxies_over_the_relay`.
   - Engine integration, flaky under full parallel load (pass alone): `artifacts::blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates`
     (timing on the 2s question reconcile), `m5c_accounts_uploads_titles::cursor_login_flow_spawns_shim_and_auto_activates`.
+  - Engine integration, flaky under full load (pass alone): `codex_login_resolver::codex_login_resolves_override_and_adds_its_directory_to_child_path`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
