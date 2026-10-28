@@ -1277,7 +1277,14 @@ fn render_table(
         }
         flats.push(out);
     }
-    let geo = table_columns(&content);
+    let mut geo = table_columns(&content);
+    // Minimums are laid-out pixels, so they follow the zoomed rem like the
+    // cell padding inside them.
+    let scale = f32::from(crate::typography::ui_rems(1.0).to_pixels(window.rem_size()));
+    for minimum in &mut geo.minimums {
+        *minimum *= scale;
+    }
+    geo.min_table_width *= scale;
 
     // Frameless flat-hairline chrome: 1px rules under the header and between
     // rows are the only paint (`table.gap` = 1, borderColor white@10%); the
@@ -1300,7 +1307,7 @@ fn render_table(
                 .flex_shrink(geo.naturals[c])
                 .flex_basis(px(0.0))
                 .min_w(px(geo.minimums[c]))
-                .p(px(TABLE_CELL_PADDING))
+                .p(crate::typography::ui_rems(TABLE_CELL_PADDING))
                 .text_size(crate::typography::ui_rems(MD_TEXT_SIZE))
                 .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT));
             cell = match align.get(c).copied().unwrap_or_default() {
@@ -2569,10 +2576,10 @@ fn code_block_header(
     }
     Some(
         div()
-            .h(px(CODE_HEADER_HEIGHT))
+            .h(crate::typography::ui_rems(CODE_HEADER_HEIGHT))
             .flex_none()
-            .pl(px(CODE_PADDING_X))
-            .pr(px(5.0))
+            .pl(crate::typography::ui_rems(CODE_PADDING_X))
+            .pr(crate::typography::ui_rems(5.0))
             .border_b_1()
             .border_color(theme.border)
             .bg(crate::theme::ink(0.02))
@@ -2613,7 +2620,7 @@ fn code_block_frame(
         .min_w_0()
         .flex()
         .flex_col()
-        .rounded(px(10.0))
+        .rounded(crate::typography::ui_rems(10.0))
         .bg(crate::theme::ink(0.035))
         .border_1()
         .border_color(theme.border)
@@ -2769,8 +2776,8 @@ fn render_code_block_source_with_actions(
                 el.min_w_full().flex_none()
             }
         })
-        .px(px(CODE_PADDING_X))
-        .py(px(CODE_PADDING_Y))
+        .px(crate::typography::ui_rems(CODE_PADDING_X))
+        .py(crate::typography::ui_rems(CODE_PADDING_Y))
         .font_family(theme.font_mono.clone())
         .text_size(px(theme.code_font_size))
         .line_height(px(theme.code_font_size * CODE_LINE_HEIGHT_RATIO))

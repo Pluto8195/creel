@@ -467,3 +467,39 @@ fn markdown_spacing_scales_with_the_zoom_like_the_text(cx: &mut TestAppContext) 
         );
     }
 }
+
+#[gpui::test]
+fn markdown_table_and_code_padding_scale_with_the_zoom(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    // Cell padding (12 px) and code padding (12 x 10 px, plus the language
+    // header) dominate these blocks' heights; the 1 px rules are the only
+    // fixed part.
+    let source = "| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n\n```rust\nfn main() {}\n```\n\n```\nplain\n```\n";
+    let (tab, _probe, vcx) = open_in(
+        cx,
+        ArtifactKind::Markdown,
+        source,
+        ArtifactContentEncoding::Utf8,
+    );
+    let heights = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        settle(vcx);
+        settle(vcx);
+        tab.read_with(vcx, |tab, cx| tab.markdown_item_heights_for_tests(cx))
+    };
+    let base = heights(&tab, vcx);
+    assert!(base.len() >= 3, "{base:?}");
+    for _ in 0..10 {
+        tab.update(vcx, |tab, cx| {
+            tab.zoom_step(1, cx);
+        });
+    }
+    assert!(approx(level(&tab, vcx), 2.0));
+    let zoomed = heights(&tab, vcx);
+    assert_eq!(base.len(), zoomed.len());
+    for (ix, (a, b)) in base.iter().zip(&zoomed).enumerate() {
+        assert!(
+            (b / a - 2.0).abs() < 0.05,
+            "block {ix}: {a} -> {b} should double with the zoom"
+        );
+    }
+}
