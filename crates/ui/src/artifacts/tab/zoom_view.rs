@@ -65,7 +65,7 @@ impl ArtifactTab {
         matches!(
             self.presenter(),
             Presenter::Markdown | Presenter::Web(_) | Presenter::Image
-        )
+        ) || self.compare_zooms()
     }
 
     /// ⌘+ / ⌘−: the next 10%. `false` when the body doesn't zoom.
@@ -114,6 +114,18 @@ impl ArtifactTab {
             }
             Presenter::Web(_) => self.send_web_zoom(level, cx),
             Presenter::Image => self.anchor_image_scroll(old, level, anchor),
+            // Both compare panes take the level together: the Markdown
+            // previews directly, the two frames through the host document.
+            Presenter::Compare => {
+                if let Some((left, right)) = self.compare.as_ref().and_then(|v| v.markdown.clone())
+                {
+                    for preview in [left, right] {
+                        preview.update(cx, |preview, cx| preview.set_zoom(level, cx));
+                    }
+                } else if self.compare_shows_web() {
+                    self.send_web_zoom(level, cx);
+                }
+            }
             _ => {}
         }
         cx.notify();
@@ -128,9 +140,14 @@ impl ArtifactTab {
 
     /// Re-apply the level to a surface that was just (re)created.
     pub(super) fn apply_zoom_to_new_surface(&mut self, cx: &mut Context<Self>) {
+        let level = self.zoom;
         if let Some(preview) = &self.markdown {
-            let level = self.zoom;
             preview.update(cx, |preview, cx| preview.set_zoom(level, cx));
+        }
+        if let Some((left, right)) = self.compare.as_ref().and_then(|view| view.markdown.clone()) {
+            for preview in [left, right] {
+                preview.update(cx, |preview, cx| preview.set_zoom(level, cx));
+            }
         }
         // A fresh web document starts at 100%; it gets the level once it has
         // reported in (`adopt_web_zoom`).

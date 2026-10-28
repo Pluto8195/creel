@@ -207,6 +207,17 @@ impl ArtifactTab {
                 .is_some_and(|view| view.flavor.is_visual() && view.mode == CompareMode::SideBySide)
     }
 
+    /// Whether the compare body on screen zooms: the Markdown panes, or the
+    /// two web frames (not onion skin, which stacks one picture).
+    pub(super) fn compare_zooms(&self) -> bool {
+        self.mode == Mode::Compare
+            && (self
+                .compare
+                .as_ref()
+                .is_some_and(|view| view.markdown.is_some())
+                || self.compare_shows_web())
+    }
+
     /// The revision on screen (`0` = the current file).
     fn shown_or_current(&self, artifact: &ArtifactView) -> u32 {
         self.content
@@ -582,6 +593,10 @@ impl ArtifactTab {
             preview.set_source(new_text, false, cx);
             preview.set_block_tints(new_tints, cx);
         });
+        let level = self.zoom;
+        for preview in [&left, &right] {
+            preview.update(cx, |preview, cx| preview.set_zoom(level, cx));
+        }
         if let Some(view) = self.compare.as_mut() {
             view.markdown = Some((left, right));
         }
@@ -713,6 +728,8 @@ impl ArtifactTab {
         let html =
             compare::compare_document(&left, &right, (&data.left.label, &data.right.label), &key.0);
         self.rendered_key = Some(key);
+        // A fresh document starts at 100% and gets the level once it reports.
+        self.zoom_synced = false;
         if self.web.is_none() {
             let factory = self.web_factory.clone();
             self.web = Some(factory(cx.weak_entity(), window, cx));
@@ -1330,6 +1347,8 @@ impl ArtifactTab {
                     selector: &'static str,
                     side: Side| {
             let tab = tab.clone();
+            let zoom_tab = tab.clone();
+            let level = self.zoom;
             div()
                 .flex_1()
                 .min_w_0()
@@ -1352,7 +1371,16 @@ impl ArtifactTab {
                         .min_h_0()
                         .debug_selector(move || selector.into())
                         .relative()
-                        .children(preview.cloned())
+                        .child(super::super::zoom::zoom_surface(
+                            level,
+                            true,
+                            move |input, _, cx| {
+                                zoom_tab
+                                    .update(cx, |tab, cx| tab.apply_zoom_input(input, cx))
+                                    .ok();
+                            },
+                            div().size_full().children(preview.cloned()),
+                        ))
                         // Every paint reports the pane's position, so moves
                         // the wheel handler never sees (scrollbar drag, PageUp,
                         // scroll_to) still reach the other pane.

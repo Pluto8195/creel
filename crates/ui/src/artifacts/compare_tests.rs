@@ -753,6 +753,76 @@ fn markdown_compare_follows_scrollbar_drag_and_programmatic_scroll(cx: &mut Test
     assert!(ratio(&left) < 0.2, "moved back up: {}", ratio(&left));
 }
 
+#[gpui::test]
+fn markdown_compare_zoom_mirrors_to_both_panes(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let reply: Reply = Arc::new(|_, params| {
+        let revision = params["revision"].as_u64().unwrap_or(2) as u32;
+        Ok(content_reply(
+            ArtifactKind::Markdown,
+            revision,
+            &tall_markdown(revision),
+            ArtifactContentEncoding::Utf8,
+        ))
+    });
+    let (tab, _, _, _, vcx) = open(cx, ArtifactKind::Markdown, reply);
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    settle(vcx);
+    settle(vcx);
+    let zooms = |tab: &Entity<ArtifactTab>, vcx: &mut VisualTestContext| {
+        tab.read_with(vcx, |tab, cx| {
+            let (l, r) = tab.compare_view().unwrap().markdown.clone().unwrap();
+            (l.read(cx).zoom(), r.read(cx).zoom())
+        })
+    };
+    assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
+    assert_eq!(zooms(&tab, vcx), (1.0, 1.0));
+    // A pinch over the right pane zooms both.
+    let at = vcx
+        .debug_bounds("artifact-compare-markdown-right")
+        .unwrap()
+        .center();
+    vcx.simulate_event(gpui::PinchEvent {
+        position: at,
+        delta: 0.5,
+        modifiers: Default::default(),
+        phase: gpui::TouchPhase::Moved,
+    });
+    settle(vcx);
+    let (left, right) = zooms(&tab, vcx);
+    assert!((left - 1.5).abs() < 1e-3 && left == right, "{left} {right}");
+    // So do the keys' steps and the reset.
+    tab.update(vcx, |tab, cx| assert!(tab.zoom_step(1, cx)));
+    settle(vcx);
+    let (left, right) = zooms(&tab, vcx);
+    assert!((left - 1.6).abs() < 1e-3 && left == right, "{left} {right}");
+    tab.update(vcx, |tab, cx| assert!(tab.zoom_reset(cx)));
+    settle(vcx);
+    assert_eq!(zooms(&tab, vcx), (1.0, 1.0));
+}
+
+#[gpui::test]
+fn web_compare_zoom_goes_through_the_host_to_both_frames(cx: &mut TestAppContext) {
+    let kind = ArtifactKind::HtmlFragment;
+    let _dir = init_ui(cx);
+    let (tab, _, shown, _, vcx) = open(cx, kind, by_revision(kind));
+    tab.update_in(vcx, |tab, window, cx| tab.compare_with(1, window, cx));
+    settle(vcx);
+    assert!(tab.read_with(vcx, |tab, _| tab.zoom_applies()));
+    // The page script zooms (⌘-wheel, pinch) and asks the host to mirror it.
+    let doc = shown.borrow().last().unwrap().1.clone();
+    assert!(doc.contains("zeronSyncZoomTo") && doc.contains("zeronSyncZoom:"));
+    // The tab's level is adopted from the host's report and reaches both
+    // frames through the same entry point as a single page.
+    tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1000), cx));
+    tab.update(vcx, |tab, cx| tab.adopt_web_zoom(Some(1800), cx));
+    assert!((tab.read_with(vcx, |tab, _| tab.zoom_level()) - 1.8).abs() < 1e-3);
+    assert!(super::compare::SYNC_HOST_SCRIPT.contains("__zeronFrameCmd"));
+}
+
 #[test]
 fn scroll_ratio_math_maps_item_positions_between_lists() {
     use super::compare::{scroll_ratio, scroll_target};
