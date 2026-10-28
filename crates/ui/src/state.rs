@@ -4906,6 +4906,71 @@ mod tests {
     }
 
     #[test]
+    fn shell_fingerprint_ignores_streaming_fields_and_tracks_what_the_shell_shows() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.chats = vec![chat("a", 0, Some(10)), chat("b", 0, Some(5))];
+        state.selected_chat = Some("a".into());
+        let base = state.shell_fingerprint(now);
+
+        // Streaming into the selected chat touches none of what the shell reads.
+        state.transcript_revision += 1;
+        state.transcript.clear();
+        state.queue.clear();
+        state.context_usage = Some(zeron_proto::ContextUsage {
+            tokens: Some(10),
+            ..Default::default()
+        });
+        assert_eq!(state.shell_fingerprint(now), base);
+
+        // What the shell does render moves it.
+        let mut changed = vec![];
+        let mut probe = |name: &'static str, state: &mut AppState, edit: &dyn Fn(&mut AppState)| {
+            edit(state);
+            changed.push((name, state.shell_fingerprint(now) != base));
+            state.chats = vec![chat("a", 0, Some(10)), chat("b", 0, Some(5))];
+            state.selected_chat = Some("a".into());
+            state.connection = ConnectionStatus::Connecting;
+            state.auth = None;
+            state.local_device_id = None;
+            state.selected_space = None;
+            state.connectivity = Default::default();
+            state.pending_sends.clear();
+        };
+        probe("title", &mut state, &|s| s.chats[1].title = Some("New".into()));
+        probe("selection", &mut state, &|s| s.selected_chat = Some("b".into()));
+        probe("connection", &mut state, &|s| {
+            s.connection = ConnectionStatus::Ready
+        });
+        probe("auth", &mut state, &|s| {
+            s.auth = Some(zeron_proto::AuthState::SignedOut)
+        });
+        probe("local device", &mut state, &|s| {
+            s.local_device_id = Some("d".into())
+        });
+        probe("selected space", &mut state, &|s| {
+            s.selected_space = Some("sp".into())
+        });
+        probe("pending send", &mut state, &|s| {
+            s.begin_pending_send("a", "m1", now)
+        });
+        for (name, moved) in changed {
+            assert!(moved, "{name} must change the shell fingerprint");
+        }
+    }
+
+    #[test]
+    fn shell_fingerprint_follows_a_send_overlay_expiring_with_time_alone() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.chats = vec![chat("a", 0, Some(10))];
+        state.begin_pending_send("a", "m1", now);
+        let early = state.shell_fingerprint(now);
+        let late = state.shell_fingerprint(now + TimeDelta::milliseconds(UNDELIVERED_GRACE_MS + 1));
+        assert_ne!(early, late, "the Failed overlay needs a repaint");
+    }
+
+    #[test]
     fn transcript_revision_tracks_replay_echoes_and_subagent_content() {
         let mut state = AppState::new();
         state.selected_chat = Some("c".into());
