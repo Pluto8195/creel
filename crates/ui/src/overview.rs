@@ -6640,7 +6640,7 @@ impl Overview {
     /// any other row, cancel a pending switch: the panel keeps the last
     /// previewed Chat.
     fn schedule_outline_preview(&mut self, cx: &mut Context<Self>) {
-        if self.outline.read(cx).selected_chat().is_none() {
+        if self.outline.read(cx).selected_open_chat().is_none() {
             self.outline_preview = None;
             return;
         }
@@ -6676,7 +6676,7 @@ impl Overview {
         if !shell.read(cx).is_overview_route() {
             return;
         }
-        let Some(chat_id) = self.outline.read(cx).selected_chat() else {
+        let Some(chat_id) = self.outline.read(cx).selected_open_chat() else {
             return;
         };
         if self.shown_panel_chat(cx).as_deref() == Some(chat_id.as_str()) {
@@ -8079,7 +8079,8 @@ mod logic_tests {
                         fetched_at: Instant::now(),
                     },
                 );
-                o.context_usage_fetched_at.insert(id.clone(), Instant::now());
+                o.context_usage_fetched_at
+                    .insert(id.clone(), Instant::now());
                 o.subagents_fetched_at.insert(id, Instant::now());
             }
             o.rows_dirty = true;
@@ -8127,7 +8128,10 @@ mod logic_tests {
         draw(vcx);
         let rows = overview.update(vcx, |o, cx| o.rows(cx));
         let row = rows.iter().find(|r| r.chat.id == "c0").unwrap();
-        assert_eq!(row.chat.last_message_preview.as_deref(), Some("new preview"));
+        assert_eq!(
+            row.chat.last_message_preview.as_deref(),
+            Some("new preview")
+        );
     }
 
     #[gpui::test]
@@ -8968,8 +8972,8 @@ mod logic_tests {
         draw(vcx);
         for key in [
             row_key::item("s1", LAUNCH),
+            // w-api-auth's only Chat is folded into its row.
             row_key::item("s1", API_AUTH),
-            row_key::chat(CHAT_AUTH),
             row_key::chat(CHAT_GHOST),
             row_key::unassociated(Some("s1")),
             row_key::chat(CHAT_LOOSE_A),
@@ -8979,6 +8983,7 @@ mod logic_tests {
                 "{key} renders"
             );
         }
+        assert!(row_bounds(vcx, format!("outline-row-{}", row_key::chat(CHAT_AUTH))).is_none());
         // Archived items stay out by default.
         assert!(row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", RETIRED))).is_none());
         let row = row_bounds(vcx, format!("outline-row-{}", row_key::item("s1", API))).unwrap();
@@ -10812,5 +10817,10 @@ mod logic_tests {
     /// this module's fixtures.
     mod tree_guides_tests {
         include!("work_outline/tree_guides_tests.rs");
+    }
+
+    /// Compact single-chat rows: rendering, open, menu, keys, drag.
+    mod compact_rows_tests {
+        include!("work_outline/compact_rows_tests.rs");
     }
 }

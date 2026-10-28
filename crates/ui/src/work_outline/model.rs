@@ -1499,3 +1499,215 @@ pub(crate) mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod compact_tests {
+    use std::collections::HashSet;
+
+    use super::super::nav::{NavCommand, navigate, reconcile_selection};
+    use super::super::store::fixture_ids::*;
+    use super::super::store::fixture_snapshot;
+    use super::tests::{fixture_chats, ready};
+    use super::*;
+
+    fn options(compact: bool) -> OutlineOptions {
+        OutlineOptions {
+            all_spaces: true,
+            compact_single_chat: compact,
+            ..Default::default()
+        }
+    }
+
+    fn build(
+        snapshot: WorkOutlineSnapshot,
+        chats: &[OutlineChat],
+        options: &OutlineOptions,
+    ) -> OutlineModel {
+        flatten(
+            &[ready("s1", "Repo", snapshot)],
+            chats,
+            &HashSet::new(),
+            options,
+        )
+    }
+
+    fn item(id: &str) -> String {
+        row_key::item("s1", id)
+    }
+
+    fn chat_key(id: &str) -> String {
+        row_key::chat(id)
+    }
+
+    fn compact_of<'a>(model: &'a OutlineModel, id: &str) -> Option<&'a ChatRow> {
+        model.row(&item(id)).and_then(OutlineRow::compact_chat)
+    }
+
+    #[test]
+    fn a_lone_live_chat_is_folded_into_its_item_row() {
+        let model = build(fixture_snapshot("s1"), &fixture_chats("s1"), &options(true));
+        assert!(model.position(&chat_key(CHAT_AUTH)).is_some());
+        // Its row is gone; its key resolves to the item's row.
+        let auth = model.position(&item(API_AUTH)).unwrap();
+        assert_eq!(model.position(&chat_key(CHAT_AUTH)), Some(auth));
+        assert_eq!(
+            model.canonical_key(&chat_key(CHAT_AUTH)),
+            Some(item(API_AUTH).as_str())
+        );
+        assert!(
+            !model
+                .rows
+                .iter()
+                .any(|row| row.key == chat_key(CHAT_AUTH) || row.key == chat_key(CHAT_UI))
+        );
+        assert_eq!(compact_of(&model, API_AUTH).unwrap().chat.id, CHAT_AUTH);
+        assert_eq!(compact_of(&model, UI).unwrap().chat.id, CHAT_UI);
+        let row = &model.rows[auth];
+        assert!(!row.has_children && row.child_count == 0);
+        assert_eq!(row.open_chat().unwrap().chat.id, CHAT_AUTH);
+        // One row fewer per folded Chat than the expanded outline.
+        let expanded = build(
+            fixture_snapshot("s1"),
+            &fixture_chats("s1"),
+            &options(false),
+        );
+        assert_eq!(model.len() + 2, expanded.len());
+    }
+
+    #[test]
+    fn items_that_need_their_own_chat_rows_stay_expanded() {
+        // Two chats (w-api: one live, one dangling), and child items.
+        let model = build(fixture_snapshot("s1"), &fixture_chats("s1"), &options(true));
+        assert!(compact_of(&model, API).is_none());
+        assert!(model.row(&chat_key(CHAT_API)).unwrap().chat().is_some());
+        assert!(model.row(&chat_key(CHAT_GHOST)).unwrap().chat().is_some());
+        // Items without chats are untouched.
+        assert!(compact_of(&model, LAUNCH).is_none());
+    }
+
+    #[test]
+    fn a_dangling_lone_chat_keeps_its_row() {
+        let mut snapshot = fixture_snapshot("s1");
+        // w-api: drop the live chat, leaving only the ghost.
+        let api = snapshot.items.iter_mut().find(|i| i.id == API).unwrap();
+        api.chat_ids.retain(|id| id != CHAT_API);
+        let chats: Vec<_> = fixture_chats("s1")
+            .into_iter()
+            .filter(|c| c.id != CHAT_API)
+            .collect();
+        let model = build(snapshot, &chats, &options(true));
+        assert!(compact_of(&model, API).is_none());
+        assert!(
+            model
+                .row(&chat_key(CHAT_GHOST))
+                .unwrap()
+                .chat()
+                .unwrap()
+                .dangling
+        );
+    }
+
+    #[test]
+    fn a_second_chat_expands_the_row_and_selection_stays_on_the_item() {
+        let snapshot = fixture_snapshot("s1");
+        let before = build(snapshot.clone(), &fixture_chats("s1"), &options(true));
+        assert!(compact_of(&before, UI).is_some());
+
+        let mut snapshot = snapshot;
+        let ui = snapshot.items.iter_mut().find(|i| i.id == UI).unwrap();
+        ui.chat_ids.push(CHAT_LOOSE_A.into());
+        let after = build(snapshot, &fixture_chats("s1"), &options(true));
+        assert!(compact_of(&after, UI).is_none());
+        let ui_ix = after.position(&item(UI)).unwrap();
+        let mut below = [CHAT_UI, CHAT_LOOSE_A].map(|id| after.position(&chat_key(id)).unwrap());
+        below.sort_unstable();
+        assert_eq!(below, [ui_ix + 1, ui_ix + 2]);
+
+        // Selecting the compact row keeps it (the item) once it expands.
+        assert_eq!(
+            reconcile_selection(&before, &after, &item(UI)),
+            Some(item(UI))
+        );
+    }
+
+    #[test]
+    fn a_child_item_or_a_sub_chat_expands_the_row() {
+        let mut snapshot = fixture_snapshot("s1");
+        // Move w-housekeeping under w-ui.
+        snapshot.root_work_item_ids.retain(|id| id != HOUSEKEEPING);
+        snapshot
+            .items
+            .iter_mut()
+            .find(|i| i.id == UI)
+            .unwrap()
+            .child_ids
+            .push(HOUSEKEEPING.into());
+        let model = build(snapshot, &fixture_chats("s1"), &options(true));
+        assert!(compact_of(&model, UI).is_none());
+        assert!(model.row(&chat_key(CHAT_UI)).unwrap().chat().is_some());
+
+        // A sub-chat nested under the item's chat.
+        let mut chats = fixture_chats("s1");
+        chats
+            .iter_mut()
+            .find(|c| c.id == CHAT_LOOSE_A)
+            .unwrap()
+            .parent_chat_id = Some(CHAT_UI.into());
+        let model = build(fixture_snapshot("s1"), &chats, &options(true));
+        assert!(compact_of(&model, UI).is_none());
+        let ui = model.position(&chat_key(CHAT_UI)).unwrap();
+        assert_eq!(model.rows[ui + 1].key, chat_key(CHAT_LOOSE_A));
+    }
+
+    #[test]
+    fn an_archived_chat_keeps_its_own_row() {
+        let mut chats = fixture_chats("s1");
+        chats.iter_mut().find(|c| c.id == CHAT_UI).unwrap().archived = true;
+        let model = build(fixture_snapshot("s1"), &chats, &options(true));
+        assert!(compact_of(&model, UI).is_none());
+        assert!(
+            model
+                .row(&chat_key(CHAT_UI))
+                .unwrap()
+                .chat()
+                .unwrap()
+                .chat
+                .archived
+        );
+    }
+
+    #[test]
+    fn selection_survives_compact_and_expanded_in_both_directions() {
+        let chats = fixture_chats("s1");
+        let expanded = build(fixture_snapshot("s1"), &chats, &options(false));
+        let compact = build(fixture_snapshot("s1"), &chats, &options(true));
+        // The Chat row was selected, then folded: the item row takes it.
+        assert_eq!(
+            reconcile_selection(&expanded, &compact, &chat_key(CHAT_UI)),
+            Some(item(UI))
+        );
+        // The item row was selected, then expanded: still the item.
+        assert_eq!(
+            reconcile_selection(&compact, &expanded, &item(UI)),
+            Some(item(UI))
+        );
+    }
+
+    #[test]
+    fn keyboard_navigation_treats_the_compact_row_as_one_row() {
+        let model = build(fixture_snapshot("s1"), &fixture_chats("s1"), &options(true));
+        let step = |from: &str, command| navigate(&model, Some(from), command).select;
+        // Down from w-api-auth lands on the next row, not a Chat row below it.
+        assert_eq!(
+            step(&item(API_AUTH), NavCommand::Next),
+            Some(chat_key(CHAT_API))
+        );
+        assert_eq!(
+            step(&chat_key(CHAT_API), NavCommand::Previous),
+            Some(item(API_AUTH))
+        );
+        // No child to descend into.
+        assert_eq!(step(&item(UI), NavCommand::Child), None);
+        assert_eq!(step(&item(UI), NavCommand::Parent), Some(item(LAUNCH)));
+    }
+}

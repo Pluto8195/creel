@@ -1915,8 +1915,7 @@ impl Shell {
             let fingerprint = state.read(cx).shell_fingerprint(Utc::now());
             let before = this.reconcile_signature();
             this.on_state_changed(&state, cx);
-            if this.state_fingerprint != Some(fingerprint) || before != this.reconcile_signature()
-            {
+            if this.state_fingerprint != Some(fingerprint) || before != this.reconcile_signature() {
                 this.state_fingerprint = Some(fingerprint);
                 cx.notify();
             }

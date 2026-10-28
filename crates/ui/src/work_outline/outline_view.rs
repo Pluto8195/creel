@@ -759,7 +759,12 @@ impl OutlineView {
             if let Some((after, depth)) = place(&self.model) {
                 if before != Some((after, depth)) {
                     // The moved item's new place: select and reveal it.
-                    self.selected = Some(self.model.canonical_key(&follow).unwrap_or(&follow).to_string());
+                    self.selected = Some(
+                        self.model
+                            .canonical_key(&follow)
+                            .unwrap_or(&follow)
+                            .to_string(),
+                    );
                     self.follow = None;
                     self.scroll.scroll_to_item(after, ScrollStrategy::Nearest);
                     return;
@@ -842,6 +847,16 @@ impl OutlineView {
     pub(crate) fn selected_chat(&self) -> Option<String> {
         self.selected_row()
             .and_then(OutlineRow::chat)
+            .filter(|chat| !chat.dangling)
+            .map(|chat| chat.chat.id.clone())
+    }
+
+    /// The Chat the selection stands for when it is opened or previewed: a
+    /// Chat row's, or a compact item row's. Rename / move keys keep acting on
+    /// the item ([`Self::selected_chat`] is `None` there).
+    pub(crate) fn selected_open_chat(&self) -> Option<String> {
+        self.selected_row()
+            .and_then(OutlineRow::open_chat)
             .filter(|chat| !chat.dangling)
             .map(|chat| chat.chat.id.clone())
     }
@@ -2563,9 +2578,7 @@ impl OutlineView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     if let Some(shell) = this.shell.as_ref().and_then(WeakEntity::upgrade) {
-                        shell.update(cx, |shell, cx| {
-                            shell.open_instruction_compare(&chat_id, cx)
-                        });
+                        shell.update(cx, |shell, cx| shell.open_instruction_compare(&chat_id, cx));
                     }
                 }))
                 .into_any_element()
@@ -3349,29 +3362,32 @@ fn item_body(
             ))
         })
         .children(proposals)
-        .when(item.chat_count > 0 && !compact_pr && item.compact_chat.is_none(), |el| {
-            el.child(
-                div()
-                    .id(SharedString::from(format!("outline-chats-{key}")))
-                    .debug_selector({
-                        let selector = format!("outline-chats-{key}");
-                        move || selector.clone()
-                    })
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .text_size(crate::typography::ui_rems(10.0))
-                    .text_color(theme.text_faint)
-                    .child(
-                        crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
-                            .size(px(10.0))
-                            .text_color(theme.text_faint),
-                    )
-                    .child(SharedString::from(item.chat_count.to_string()))
-                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(chats_tip.clone())).into()),
-            )
-        })
+        .when(
+            item.chat_count > 0 && !compact_pr && item.compact_chat.is_none(),
+            |el| {
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("outline-chats-{key}")))
+                        .debug_selector({
+                            let selector = format!("outline-chats-{key}");
+                            move || selector.clone()
+                        })
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .text_color(theme.text_faint)
+                        .child(
+                            crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                .size(px(10.0))
+                                .text_color(theme.text_faint),
+                        )
+                        .child(SharedString::from(item.chat_count.to_string()))
+                        .tooltip(move |_, cx| cx.new(|_| TextTooltip(chats_tip.clone())).into()),
+                )
+            },
+        )
         .when(item.execution_exceptions > 0, |el| {
             let tip = super::execution::exception_tooltip(item.execution_exceptions as usize);
             el.child(

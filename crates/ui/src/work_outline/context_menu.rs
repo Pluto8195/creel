@@ -634,7 +634,10 @@ impl OutlineView {
             // The Archive shortcut stays the item's; this one is the Chat's.
             chat_entries[2].hint = HintKey::None;
             chat_entries[0].separator_before = true;
-            let at = entries.iter().position(|e| e.id == "start-chat").unwrap_or(1);
+            let at = entries
+                .iter()
+                .position(|e| e.id == "start-chat")
+                .unwrap_or(1);
             entries.splice(at..at, chat_entries);
         }
         let status = |id: &'static str, status: WorkItemStatus| {

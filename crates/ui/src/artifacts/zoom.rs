@@ -112,9 +112,8 @@ pub(crate) fn drag_pan_offset(
     mouse: (f32, f32),
     max: (f32, f32),
 ) -> (f32, f32) {
-    let axis = |start: f32, from: f32, to: f32, max: f32| {
-        (start + (to - from)).clamp(-max.max(0.0), 0.0)
-    };
+    let axis =
+        |start: f32, from: f32, to: f32, max: f32| (start + (to - from)).clamp(-max.max(0.0), 0.0);
     (
         axis(start.0, start_mouse.0, mouse.0, max.0),
         axis(start.1, start_mouse.1, mouse.1, max.1),
