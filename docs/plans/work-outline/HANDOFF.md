@@ -387,6 +387,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   zoomable and panes zoom together (HTML/Mermaid frames mirror via SYNC scripts and
   `__zeronFrameCmd`). Zoomed images click-drag pan with a grab cursor and edge clamping. Markdown
   block gaps, list/quote/callout/question-card and preview padding scale with zoom.
+- **Artifacts phase 5** (2026-10-28): F: "Side by side" on options artifacts shows 2–4 options in
+  equal columns of one web doc (scroll + zoom synced across frames; >4 options pick which 4 via
+  chips). Per-column "Pick this" / "Change pick to this" / "Picked · withdraw" with an optional
+  note: stored as `ArtifactView.picked` (`ArtifactPickOption` RPC, files never edited), messages
+  the publishing chat, resolves related Required Actions (`artopt:<artifactId>`, or the matching
+  plan question), and `artifact_get_plan` returns `pickedOptions`. H: an item with a linked Linear
+  project can mark one plan canonical; it shows beside the project's details (from the SWR-cached
+  Linear data). Nothing is written to Linear.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -398,6 +406,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Flaky under full parallel load (pass alone): engine `work_outline_rpc::mutations_stay_fast_on_a_large_local_registry`,
     harness `opencode::tests::stalled_prompt_post_has_a_bounded_timeout`.
   - Engine integration, flaky under load: `device_routing::workspace_file_surface_proxies_over_the_relay`.
+  - Engine integration, flaky under full parallel load (pass alone): `artifacts::blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates`
+    (timing on the 2s question reconcile), `m5c_accounts_uploads_titles::cursor_login_flow_spawns_shim_and_auto_activates`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
@@ -475,6 +485,11 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
   execution root). The work-context strip shipped; the rest is waiting on Mikey's approval.
 
 ## Parked (do not start unasked)
+
+Decisions 2026-10-28: Linear automatic project sync / status write-back stays parked (manual
+sync is fine; auto changes could make a mess). The internal zeron → mast code rename goes on its
+own branch `rename-zeron-to-mast`, not merged until Mikey reviews it. Active-checkout tracking
+stays parked.
 
 See `parked-proposals.md`: active-checkout branch tracking, Linear v2 automatic project sync and
 status write-back, a "Waiting for input" group (declined), Tod-style action log / undo.
