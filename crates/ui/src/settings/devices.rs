@@ -9,10 +9,11 @@ use gpui::{
 };
 use std::time::Duration;
 
-use zeron_proto::WorkspaceScope;
+use zeron_proto::{Device, WorkspaceScope};
 use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::observe_gate::ObserveGate;
 use crate::popover;
 use crate::settings::widgets;
 use crate::state::AppState;
@@ -70,13 +71,32 @@ pub struct DevicesPage {
     error: Option<SharedString>,
     task: Option<Task<()>>,
     copy_task: Option<Task<()>>,
+    seen: ObserveGate<DevicesSlice>,
     _observe: Subscription,
 }
 
+type DevicesSlice = (Vec<Device>, Option<String>, Option<WorkspaceScope>);
+
 impl DevicesPage {
+    fn slice(state: &AppState) -> DevicesSlice {
+        (
+            state.devices.clone(),
+            state.local_device_id.clone(),
+            state.workspace_scope,
+        )
+    }
+
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // Repaint only when what the render reads (the device list, which one is
+        // local, the workspace scope) changes.
+        let observe = cx.observe(&state, |this: &mut Self, state, cx| {
+            if this.seen.changed(Self::slice(state.read(cx))) {
+                cx.notify();
+            }
+        });
+        let seen = ObserveGate::seeded(Self::slice(state.read(cx)));
         Self {
+            seen,
             state,
             scroll: widgets::PageScroll::default(),
             rename: None,

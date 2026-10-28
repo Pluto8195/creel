@@ -30,6 +30,7 @@ pub mod comments;
 pub mod composer;
 mod composer_dock;
 mod context_usage;
+pub(crate) mod observe_gate;
 mod diff_targets;
 pub mod edge_fade;
 mod error_notice;
