@@ -351,6 +351,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   reused 30 min, a forced refresh reuses one from the last 120s, then re-probes.
   `backfill_actual_models` writes a `<chat>.modelchecked` sidecar (journal byte length) when no
   model is found and skips the chat until the journal grows.
+- **Artifact zoom** (2026-10-27): `artifacts/zoom.rs` (25–800%, 10% key steps, continuous pinch
+  and ⌘/Ctrl-scroll anchored at the pointer, per-artifact session memory, `ZoomSurface`). Keys ⌘= ⌘+
+  ⌘− ⌘0 in the `ArtifactTab` context (registered from `find_view::bind_keys`; ⌘0 shadows "jump to
+  session 10" only while an artifact has focus; keys propagate on Options/Source/Compare). Toolbar
+  "− 100% +" (dim at 100%, click % to reset). Markdown: native rem-scaled text via gpui `PinchEvent`
+  (reflows, vertical pan only). HTML/Mermaid: CSS zoom in the WKWebView frame script, page handles
+  pinch (WebKit gesture events) and ⌘-wheel; unverified in a real WKWebView. Images: fit × zoom in a
+  two-axis scroll. Not done: compare-pane sync, image drag-pan, Markdown px paddings.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
