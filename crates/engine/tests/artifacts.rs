@@ -1196,7 +1196,9 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
     let rig = rig().await;
     let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
     let id = publish_plan(&rig, PLAN_V1, "v1").await;
-    assert!(sync.reconcile(&id) >= 2);
+    // The background sync reacts to the publish too; whichever pass writes
+    // first, passes are serialised, so after this one the state is complete.
+    sync.reconcile(&id);
     assert_eq!(
         open_texts(&rig, &id),
         ["2 open questions in Receiving plan", "Q-1: Merge by MPN?"]
@@ -1221,7 +1223,7 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
     // A new non-blocking question updates the roll-up (old one superseded).
     let v3 = format!("{PLAN_V1}\n> [!question] Q-4 · Pallet size?\n");
     publish_plan(&rig, &v3, "v3").await;
-    assert!(sync.reconcile(&id) >= 2);
+    sync.reconcile(&id);
     assert_eq!(
         open_texts(&rig, &id),
         ["3 open questions in Receiving plan", "Q-1: Merge by MPN?"]
@@ -1673,4 +1675,28 @@ async fn comments_trim_to_the_limit_dropping_resolved_first() {
     let row = artifact(&rig, &id);
     assert_eq!(row.comments.len(), zeron_proto::artifacts::MAX_COMMENTS);
     assert!(row.comments.iter().all(|c| c.id != "C-1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publishing_and_resolving_trigger_the_background_sync_without_a_tick() {
+    let rig = rig().await;
+    // No direct `reconcile`: only the event-driven loop can create these, and
+    // the 5 minute safety sweep is far outside this deadline.
+    let id = publish_plan(&rig, PLAN_V1, "v1").await;
+    let started = std::time::Instant::now();
+    while open_texts(&rig, &id).len() < 2 {
+        assert!(started.elapsed() < Duration::from_secs(5), "no event-driven pass");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        open_texts(&rig, &id),
+        ["2 open questions in Receiving plan", "Q-1: Merge by MPN?"]
+    );
+    // Dropping every question resolves the requests on the next event.
+    publish_plan(&rig, "# Plan\n\nAll settled.\n", "v2").await;
+    let started = std::time::Instant::now();
+    while !open_texts(&rig, &id).is_empty() {
+        assert!(started.elapsed() < Duration::from_secs(5), "no event-driven resolve");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

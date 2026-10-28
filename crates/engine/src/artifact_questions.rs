@@ -1,8 +1,12 @@
 //! Plan questions → Required Actions (Artifacts phase 3 D).
 //!
-//! `ArtifactQuestionSync::reconcile` runs on the artifact's owning device
-//! (every [`INTERVAL`], and right after an answer) and keeps the work item's
-//! Required Actions in step with the plan's open questions:
+//! `ArtifactQuestionSync::reconcile` runs on the artifact's owning device and
+//! keeps the work item's Required Actions in step with the plan's open
+//! questions. It is event-driven (see [`ArtifactQuestionSync::spawn_loop`]):
+//! once on boot, whenever an outline or artifact row changes (a revision
+//! published, an answer or pick recorded, a Required Action created or
+//! resolved, here or on another device), right after an answer or pick, and
+//! on a slow [`SAFETY_SWEEP`]. Passes are serialised.
 //!
 //! - a **blocking** open question owns a request, dedupe key
 //!   `artq:<artifactId>:<Q-n>`, text `Q-n: <question>`;
@@ -38,7 +42,17 @@ use zeron_proto::{ArtifactView, WorkOutlineMutation};
 use crate::artifacts::ArtifactsService;
 use crate::work_outline::WorkOutlineService;
 
-pub const INTERVAL: Duration = Duration::from_secs(2);
+/// Registry changes closer together than this share one pass.
+const DEBOUNCE: Duration = Duration::from_millis(50);
+/// Safety net: every registry write is an event, but a pass can still read a
+/// revision's snapshot before its file lands (the row is written first), and a
+/// lagged or dropped watch would otherwise leave questions stale until the
+/// next change. One pass this often bounds that.
+pub const SAFETY_SWEEP: Duration = Duration::from_secs(300);
+/// Serialises passes: the background loop, an answer's immediate pass and
+/// tests all call `reconcile`, and two concurrent passes would both create a
+/// request for the same question.
+static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const KEY_PREFIX: &str = "artq:";
 /// Dedupe key of a Required Action about an options artifact's choice
 /// (`artopt:<artifactId>`); an agent raises it, a pick resolves it.
@@ -106,15 +120,38 @@ impl ArtifactQuestionSync {
         changes
     }
 
+    /// Reconcile on boot, then whenever the outline or artifact rows change
+    /// (the registry change watch, filtered by the outline kinds' generation
+    /// so chat and presence churn costs nothing), plus every [`SAFETY_SWEEP`].
     pub fn spawn_loop(&self) {
         let sync = self.clone();
+        let ws = self.artifacts.workspace().clone();
+        let mut changes = ws.watch_changes();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut sweep = tokio::time::interval(SAFETY_SWEEP);
+            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            sweep.tick().await; // the boot pass below stands in for the first tick
+            let mut seen: Option<u64> = None;
             loop {
-                interval.tick().await;
-                let sync = sync.clone();
-                let _ = tokio::task::spawn_blocking(move || sync.reconcile_all()).await;
+                // Read before the pass: our own writes move the marker, so one
+                // more pass runs (writing nothing) and the marker then settles.
+                let generation = ws.work_outline_kinds_generation();
+                if seen != Some(generation) {
+                    seen = Some(generation);
+                    let sync = sync.clone();
+                    let _ = tokio::task::spawn_blocking(move || sync.reconcile_all()).await;
+                    continue;
+                }
+                tokio::select! {
+                    changed = changes.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        tokio::time::sleep(DEBOUNCE).await;
+                        changes.borrow_and_update();
+                    }
+                    _ = sweep.tick() => seen = None,
+                }
             }
         });
     }
@@ -160,6 +197,7 @@ impl ArtifactQuestionSync {
 
     /// Reconcile one artifact; see the module docs.
     pub fn reconcile(&self, artifact_id: &str) -> usize {
+        let _pass = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let ws = self.artifacts.workspace();
         let Some(artifact) = ws.artifact(artifact_id) else {
             return 0;

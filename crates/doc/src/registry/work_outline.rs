@@ -436,6 +436,12 @@ impl RegistryDoc {
         base.max(self.kinds_generation(&[KIND_SPACES, KIND_CHATS, KIND_SESSIONS]))
     }
 
+    /// Change marker of the outline kinds alone (work items, Required Actions,
+    /// planning artifacts; no chat or session churn).
+    pub fn work_outline_kinds_generation(&self) -> u64 {
+        self.kinds_generation(WORK_OUTLINE_KINDS)
+    }
+
     /// Convenience: inputs + materialization in one call (tests, small reads).
     pub fn work_outline_snapshot(&self, space_id: &str, synced: bool) -> WorkOutlineSnapshot {
         materialize_work_outline(space_id, &self.work_outline_inputs(space_id, synced))
