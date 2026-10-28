@@ -362,13 +362,6 @@ impl Shell {
         }
         let target = menu.space_id.clone().zip(menu.item_id.clone());
         match action {
-            MenuAction::OpenDetails => {
-                if let (Some(outline), Some((space_id, item_id))) = (outline.upgrade(), target) {
-                    outline.update(cx, |outline, cx| {
-                        outline.open_item_details(space_id, item_id, cx)
-                    });
-                }
-            }
             MenuAction::SetStatus(status) => {
                 self.with_menu_details(target, window, cx, move |details, _, cx| {
                     details.set_status(status, cx)

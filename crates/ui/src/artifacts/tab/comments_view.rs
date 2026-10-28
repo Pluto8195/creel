@@ -11,11 +11,11 @@ use gpui::{
     AnyElement, Context, Entity, Focusable, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
 };
+use zeron_proto::artifacts::comment_message;
 use zeron_proto::{
     ArtifactAddCommentParams, ArtifactComment, ArtifactResolveCommentParams, ArtifactView,
     CommentAnchor,
 };
-use zeron_proto::artifacts::comment_message;
 
 use super::ArtifactTab;
 use crate::artifacts::bridge::FrameMessage;
@@ -270,8 +270,10 @@ impl ArtifactTab {
                 match reply {
                     Ok(reply) => this.comment_recorded(&artifact, reply.comment, cx),
                     Err(error) => {
-                        this.notice =
-                            Some(format!("Couldn\u{2019}t save the comment: {}", error.text()));
+                        this.notice = Some(format!(
+                            "Couldn\u{2019}t save the comment: {}",
+                            error.text()
+                        ));
                         cx.notify();
                     }
                 }
@@ -335,20 +337,22 @@ impl ArtifactTab {
         let Some(artifact) = self.artifact(cx) else {
             return;
         };
-        let call = self
-            .state
-            .read(cx)
-            .artifact_actions()
-            .resolve_comment(ArtifactResolveCommentParams {
-                artifact_id: artifact.id,
-                comment_id: id,
-                resolved,
-            });
+        let call =
+            self.state
+                .read(cx)
+                .artifact_actions()
+                .resolve_comment(ArtifactResolveCommentParams {
+                    artifact_id: artifact.id,
+                    comment_id: id,
+                    resolved,
+                });
         let task = cx.spawn(async move |this, cx| {
             if let Err(error) = call.await {
                 this.update(cx, |this, cx| {
-                    this.notice =
-                        Some(format!("Couldn\u{2019}t update the comment: {}", error.text()));
+                    this.notice = Some(format!(
+                        "Couldn\u{2019}t update the comment: {}",
+                        error.text()
+                    ));
                     cx.notify();
                 })
                 .ok();
@@ -466,18 +470,13 @@ impl ArtifactTab {
             format!("Comments {open}").into()
         };
         out.push(
-            label(
-                "artifact-comments-toggle",
-                count,
-                self.comments.open,
-                true,
-            )
-            .child(icons::icon(icons::CHAT_ROUND_LINE).size(px(11.0)))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.comments.open = !this.comments.open;
-                cx.notify();
-            }))
-            .into_any_element(),
+            label("artifact-comments-toggle", count, self.comments.open, true)
+                .child(icons::icon(icons::CHAT_ROUND_LINE).size(px(11.0)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.comments.open = !this.comments.open;
+                    cx.notify();
+                }))
+                .into_any_element(),
         );
         out
     }
@@ -612,9 +611,8 @@ impl ArtifactTab {
                     .flex()
                     .gap(px(6.0))
                     .child(
-                        action_button("artifact-comment-add", "Comment", true, theme).on_click(
-                            cx.listener(|this, _, _, cx| this.submit_comment(cx)),
-                        ),
+                        action_button("artifact-comment-add", "Comment", true, theme)
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_comment(cx))),
                     )
                     .child(
                         action_button("artifact-comment-cancel", "Cancel", false, theme)
@@ -655,7 +653,8 @@ impl ArtifactTab {
         let select_id = id.clone();
         let toggle_id = id.clone();
         let selector: SharedString = format!("artifact-comment-{}", comment.id).into();
-        let toggle_selector: SharedString = format!("artifact-comment-toggle-{}", comment.id).into();
+        let toggle_selector: SharedString =
+            format!("artifact-comment-toggle-{}", comment.id).into();
         div()
             .id(selector.clone())
             .debug_selector({
@@ -671,9 +670,8 @@ impl ArtifactTab {
             .border_color(if focused { theme.accent } else { theme.border })
             .when(resolved, |el| el.opacity(0.65))
             .when(row.state == CommentState::Open, |el| {
-                el.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                    this.focus_comment(&select_id, cx)
-                }))
+                el.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.focus_comment(&select_id, cx)))
             })
             .child(
                 div()
@@ -758,7 +756,9 @@ fn action_button(
         .rounded(px(5.0))
         .border_1()
         .border_color(if primary { theme.accent } else { theme.border })
-        .when(primary, |el| el.bg(theme.accent).text_color(theme.on_accent))
+        .when(primary, |el| {
+            el.bg(theme.accent).text_color(theme.on_accent)
+        })
         .when(!primary, |el| el.text_color(theme.text_muted))
         .text_size(crate::typography::ui_rems(11.0))
         .cursor_pointer()

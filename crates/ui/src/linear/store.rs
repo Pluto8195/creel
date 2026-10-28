@@ -277,17 +277,27 @@ pub(crate) fn request_project_detail(
     let now = Instant::now();
     let Some((stored, fresh)) = state.update(cx, |state, _| {
         let store = &state.linear;
-        let loading = matches!(store.project_detail(&key), Some(ProjectDetailEntry::Loading));
+        let loading = matches!(
+            store.project_detail(&key),
+            Some(ProjectDetailEntry::Loading)
+        );
         if loading || (!force && !store.project_needs_fetch(&key, now)) {
             return None;
         }
         let first = store.project_detail(&key).is_none();
         let actions = state.work_outline_actions();
         let stored = first.then(|| actions.linear_project_detail(&key, ListRead::Stored));
-        let read = if force { ListRead::Force } else { ListRead::Cached };
+        let read = if force {
+            ListRead::Force
+        } else {
+            ListRead::Cached
+        };
         let fresh = actions.linear_project_detail(&key, read);
         if first {
-            state.linear.project_details.insert(key.clone(), ProjectDetailEntry::Loading);
+            state
+                .linear
+                .project_details
+                .insert(key.clone(), ProjectDetailEntry::Loading);
         }
         Some((stored, fresh))
     }) else {

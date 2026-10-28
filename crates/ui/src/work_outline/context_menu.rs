@@ -77,8 +77,6 @@ pub(crate) enum MenuAction {
     CopyPath(String),
     Archive,
     Restore,
-    /// Open Work Item Details (a compact row's Enter opens its Chat).
-    OpenDetails,
     SpaceInstructions,
     ExecutionSetup,
     RemoveFromWorkItem(String),
@@ -135,7 +133,6 @@ impl MenuAction {
             | Self::AddInstruction
             | Self::CopyPath(_)
             | Self::Restore
-            | Self::OpenDetails
             | Self::SpaceInstructions
             | Self::ExecutionSetup
             | Self::RemoveFromWorkItem(_)
@@ -157,8 +154,9 @@ impl MenuAction {
 pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
     use super::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
-        OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected, UndoChange,
+        OpenDetailsSelected, OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst,
+        SelectLast, SelectNext, SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        StartChatSelected, UndoChange,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -170,6 +168,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::Expand => Box::new(Expand),
         OutlineNavKey::Collapse => Box::new(Collapse),
         OutlineNavKey::OpenSelected => Box::new(OpenSelected),
+        OutlineNavKey::OpenDetails => Box::new(OpenDetailsSelected),
         OutlineNavKey::StartChat => Box::new(StartChatSelected),
         OutlineNavKey::RenameSelected => Box::new(RenameSelected),
         OutlineNavKey::CreateSibling => Box::new(CreateSibling),
@@ -388,19 +387,8 @@ fn space_root_menu(
 /// their keys and say "Nothing to undo" themselves when the log is empty.
 fn history_entries() -> [MenuEntry; 3] {
     [
-        MenuEntry::new(
-            "undo",
-            "Undo",
-            "",
-            MenuAction::Outline(OutlineNavKey::Undo),
-        )
-        .separated(),
-        MenuEntry::new(
-            "redo",
-            "Redo",
-            "",
-            MenuAction::Outline(OutlineNavKey::Redo),
-        ),
+        MenuEntry::new("undo", "Undo", "", MenuAction::Outline(OutlineNavKey::Undo)).separated(),
+        MenuEntry::new("redo", "Redo", "", MenuAction::Outline(OutlineNavKey::Redo)),
         MenuEntry::new(
             "recent-changes",
             "Recent Changes\u{2026}",
@@ -513,22 +501,14 @@ impl OutlineView {
             .unwrap_or_else(|| item.title.clone());
         let compact_chat = item.compact_chat.as_ref();
         let mut entries = vec![
-            // A compact row opens its Chat on Enter / click, so the item's
-            // details need their own entry.
-            match compact_chat {
-                Some(_) => MenuEntry::new(
-                    "open-details",
-                    "Open Details",
-                    icons::EYE,
-                    MenuAction::OpenDetails,
-                ),
-                None => MenuEntry::new(
-                    "open-details",
-                    "Open Details",
-                    icons::EYE,
-                    MenuAction::Outline(OutlineNavKey::OpenSelected),
-                ),
-            },
+            // ⌘I: a compact row opens its Chat on Enter / click, so the item's
+            // details have their own key.
+            MenuEntry::new(
+                "open-details",
+                "Open Details",
+                icons::EYE,
+                MenuAction::Outline(OutlineNavKey::OpenDetails),
+            ),
             MenuEntry::new(
                 "start-chat",
                 "Start Chat",

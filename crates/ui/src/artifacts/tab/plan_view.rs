@@ -1,7 +1,9 @@
 //! The canonical plan's Linear project panel in the artifact tab (Artifacts
 //! phase 5 H). It shows under the header of the item's pinned plan when the
 //! item links a Linear project and its Space has Linear on. Read-only.
-use gpui::{AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, px, prelude::*};
+use gpui::{
+    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+};
 use zeron_proto::ArtifactView;
 
 use super::ArtifactTab;

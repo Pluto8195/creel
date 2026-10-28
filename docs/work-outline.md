@@ -61,7 +61,8 @@ inline editor, a picker, the search field, or any other text input.
 | First / last row | `Home` / `End` | `Home` / `End` |
 | Collapse / expand | `←` / `→` | `←` / `→` |
 | Previous / next sibling (skips subtrees) | `⌥↑` / `⌥↓` | `Alt+↑` / `Alt+↓` |
-| Open Work Item Details | `↩` | `Enter` |
+| Open (Work Item Details; a compact single-Chat row opens its Chat) | `↩` | `Enter` |
+| Open Work Item Details on any item row, compact or not (a compact row's status glyph does the same on click) | `⌘I` | `Ctrl+I` |
 | Start a Chat in the selected work item (on a Chat row: in the Chat's work item; on a PR review item: review its PR, see [PR review sync](#pr-review-sync)) | `⌘↩` | `Ctrl+Enter` |
 | Rename (a work item in place; a Chat row opens the rename dialog) | `F2` or `R` | `F2` or `R` |
 | New sibling / new child | `N` / `⇧N` | `N` / `Shift+N` |

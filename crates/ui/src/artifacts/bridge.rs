@@ -48,11 +48,17 @@ pub(crate) enum FrameMessage {
     /// The page finished loading and its scripts are listening.
     Ready,
     /// The reader selected text (a comment can be started on it).
-    Selection { anchor: CommentAnchor, quote: String },
+    Selection {
+        anchor: CommentAnchor,
+        quote: String,
+    },
     /// The selection was cleared.
     SelectionCleared,
     /// The reader picked an element in comment mode.
-    Draft { anchor: CommentAnchor, quote: String },
+    Draft {
+        anchor: CommentAnchor,
+        quote: String,
+    },
     /// The reader clicked a comment marker.
     FocusComment(String),
     /// The reader answered a plan question card in place.
@@ -141,7 +147,10 @@ mod tests {
 
     #[test]
     fn known_messages_parse_with_limits() {
-        assert_eq!(FrameMessage::parse(r#"{"t":"ready"}"#), Some(FrameMessage::Ready));
+        assert_eq!(
+            FrameMessage::parse(r#"{"t":"ready"}"#),
+            Some(FrameMessage::Ready)
+        );
         assert_eq!(
             FrameMessage::parse(r#"{"t":"selection-clear"}"#),
             Some(FrameMessage::SelectionCleared)
@@ -164,7 +173,10 @@ mod tests {
         );
         assert_eq!(
             FrameMessage::parse(r#"{"t":"answer","id":"q-3","text":"  Use MPN  "}"#),
-            Some(FrameMessage::Answer { id: "Q-3".into(), text: "Use MPN".into() })
+            Some(FrameMessage::Answer {
+                id: "Q-3".into(),
+                text: "Use MPN".into()
+            })
         );
     }
 
@@ -197,7 +209,8 @@ mod tests {
             panic!("answer");
         };
         assert_eq!(text.chars().count(), MAX_COMMENT_CHARS);
-        let json = json!({ "t": "selection", "anchor": { "exact": long }, "quote": long }).to_string();
+        let json =
+            json!({ "t": "selection", "anchor": { "exact": long }, "quote": long }).to_string();
         let Some(FrameMessage::Selection { anchor, quote }) = FrameMessage::parse(&json) else {
             panic!("selection");
         };

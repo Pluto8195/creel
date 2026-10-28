@@ -183,6 +183,9 @@ pub(crate) enum OutlineNavKey {
     Expand,
     Collapse,
     OpenSelected,
+    /// Open the selected item's Work Item Details (a compact row's Enter opens
+    /// its Chat).
+    OpenDetails,
     /// Start a Chat in the selected work item (or a Chat row's work item).
     StartChat,
     RenameSelected,
@@ -219,7 +222,8 @@ impl OutlineNavKey {
             Self::SelectPreviousSibling => "Previous sibling",
             Self::Expand => "Expand",
             Self::Collapse => "Collapse",
-            Self::OpenSelected => "Open details",
+            Self::OpenSelected => "Open",
+            Self::OpenDetails => "Open details",
             Self::StartChat => "Start Chat",
             Self::RenameSelected => "Rename",
             Self::CreateSibling => "New sibling",
@@ -245,6 +249,7 @@ impl OutlineNavKey {
             | Self::Expand
             | Self::Collapse
             | Self::OpenSelected
+            | Self::OpenDetails
             | Self::ShowShortcuts => OutlineKeyGroup::Navigate,
             Self::StartChat
             | Self::RenameSelected
@@ -283,7 +288,9 @@ impl OutlineNavKey {
 /// - On a project (Space root) row of a multi-project Outline, Shift+Up /
 ///   Shift+Down reorder the project roots (device-local view state);
 ///   Shift+Right / Shift+Left (Tab / Shift+Tab) propagate.
-/// - Enter: open the selected item (Work Item Details)
+/// - Enter: open the selected item (Work Item Details; a compact row opens
+///   its Chat)
+/// - Mod+I: open the selected item's Work Item Details, compact row or not
 /// - Mod+Enter (Cmd on macOS, Ctrl elsewhere): Start Chat in the selected
 ///   work item, or in a Chat row's work item. Stored as `mod-enter` and bound
 ///   through `platform_combo`; scoped like every key here, so it can never
@@ -297,7 +304,7 @@ impl OutlineNavKey {
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 25] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 26] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -307,6 +314,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 25] = [
     ("alt-up", OutlineNavKey::SelectPreviousSibling),
     ("alt-down", OutlineNavKey::SelectNextSibling),
     ("enter", OutlineNavKey::OpenSelected),
+    ("mod-i", OutlineNavKey::OpenDetails),
     ("mod-enter", OutlineNavKey::StartChat),
     ("f2", OutlineNavKey::RenameSelected),
     ("r", OutlineNavKey::RenameSelected),
@@ -392,8 +400,9 @@ pub(crate) fn log_restructure_keystroke(
 pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
     use crate::work_outline::outline_view::{
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
-        OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst, SelectLast, SelectNext,
-        SelectNextSibling, SelectPrevious, SelectPreviousSibling, StartChatSelected, UndoChange,
+        OpenDetailsSelected, OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst,
+        SelectLast, SelectNext, SelectNextSibling, SelectPrevious, SelectPreviousSibling,
+        StartChatSelected, UndoChange,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
     cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| {
@@ -411,6 +420,7 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
             OutlineNavKey::Expand => KeyBinding::new(keys, Expand, context),
             OutlineNavKey::Collapse => KeyBinding::new(keys, Collapse, context),
             OutlineNavKey::OpenSelected => KeyBinding::new(keys, OpenSelected, context),
+            OutlineNavKey::OpenDetails => KeyBinding::new(keys, OpenDetailsSelected, context),
             OutlineNavKey::StartChat => KeyBinding::new(keys, StartChatSelected, context),
             OutlineNavKey::RenameSelected => KeyBinding::new(keys, RenameSelected, context),
             OutlineNavKey::CreateSibling => KeyBinding::new(keys, CreateSibling, context),

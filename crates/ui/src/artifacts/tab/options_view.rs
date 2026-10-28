@@ -9,8 +9,12 @@
 //! withdrawn. The note field is optional and travels with the pick.
 use std::collections::HashMap;
 
-use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use zeron_proto::{ArtifactKind, ArtifactOptionPick, ArtifactPickOptionParams, ArtifactView, pick_message};
+use gpui::{
+    AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
+};
+use zeron_proto::{
+    ArtifactKind, ArtifactOptionPick, ArtifactPickOptionParams, ArtifactView, pick_message,
+};
 
 use super::*;
 use crate::artifacts::{compare, model, questions_ui};
@@ -107,7 +111,12 @@ impl ArtifactTab {
     }
 
     /// Add or remove an option from the columns (2-4 stay chosen).
-    pub(crate) fn toggle_side_option(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_side_option(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if index >= self.manifest_options().len() {
             return;
         }
@@ -150,7 +159,10 @@ impl ArtifactTab {
             .iter()
             .map(|path| {
                 let params = self.content_params(None, Some(path.clone()), cx);
-                (path.clone(), self.state.read(cx).artifact_actions().content(params))
+                (
+                    path.clone(),
+                    self.state.read(cx).artifact_actions().content(params),
+                )
             })
             .collect();
         let task = cx.spawn_in(window, async move |this, cx| {
@@ -197,7 +209,12 @@ impl ArtifactTab {
             .iter()
             .filter_map(|ix| options.get(*ix))
             .map(|option| {
-                let source = self.side.sources.get(&option.path).cloned().unwrap_or_default();
+                let source = self
+                    .side
+                    .sources
+                    .get(&option.path)
+                    .cloned()
+                    .unwrap_or_default();
                 let frame = document::compare_frame(
                     WebKind::Fragment,
                     &source,
@@ -208,11 +225,16 @@ impl ArtifactTab {
                     compare::SYNC_FRAME_SCRIPT,
                     "",
                 );
-                (frame, format!("{} \u{b7} {}", option.id, Self::option_label(option)))
+                (
+                    frame,
+                    format!("{} \u{b7} {}", option.id, Self::option_label(option)),
+                )
             })
             .collect();
-        let panes: Vec<(&crate::artifacts::document::CompareFrame, &str)> =
-            frames.iter().map(|(frame, label)| (frame, label.as_str())).collect();
+        let panes: Vec<(&crate::artifacts::document::CompareFrame, &str)> = frames
+            .iter()
+            .map(|(frame, label)| (frame, label.as_str()))
+            .collect();
         let html = compare::options_document(&panes, &key.0);
         self.rendered_key = Some(key);
         self.zoom_synced = false;
@@ -302,12 +324,16 @@ impl ArtifactTab {
         let previous = self.picked_now(&artifact);
         let note = pick.as_ref().and_then(|_| self.typed_note(cx));
         self.side.busy = true;
-        let call = self.state.read(cx).artifact_actions().pick_option(ArtifactPickOptionParams {
-            artifact_id: artifact.id.clone(),
-            option_id: pick.as_ref().map(|(id, _)| id.clone()),
-            label: pick.map(|(_, label)| label).unwrap_or_default(),
-            note,
-        });
+        let call = self
+            .state
+            .read(cx)
+            .artifact_actions()
+            .pick_option(ArtifactPickOptionParams {
+                artifact_id: artifact.id.clone(),
+                option_id: pick.as_ref().map(|(id, _)| id.clone()),
+                label: pick.map(|(_, label)| label).unwrap_or_default(),
+                note,
+            });
         let task = cx.spawn(async move |this, cx| {
             let reply = call.await;
             this.update(cx, |this, cx| {
@@ -315,7 +341,8 @@ impl ArtifactTab {
                 match reply {
                     Ok(reply) => this.pick_recorded(&artifact, previous, reply.picked, cx),
                     Err(error) => {
-                        this.notice = Some(format!("Couldn\u{2019}t save the pick: {}", error.text()));
+                        this.notice =
+                            Some(format!("Couldn\u{2019}t save the pick: {}", error.text()));
                         cx.notify();
                     }
                 }
@@ -392,7 +419,9 @@ impl ArtifactTab {
     pub(super) fn render_side_by_side(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let options = self.manifest_options();
         let artifact = self.artifact(cx);
-        let picked = artifact.as_ref().and_then(|artifact| self.picked_now(artifact));
+        let picked = artifact
+            .as_ref()
+            .and_then(|artifact| self.picked_now(artifact));
         let question = match &self.body {
             Some(ArtifactBody::Options(manifest)) => manifest.question.clone(),
             _ => None,
@@ -425,7 +454,9 @@ impl ArtifactTab {
         };
         let columns = self.side.chosen.iter().copied().filter_map(|ix| {
             let option = options.get(ix)?.clone();
-            let is_picked = picked.as_ref().is_some_and(|pick| pick.option_id == option.id);
+            let is_picked = picked
+                .as_ref()
+                .is_some_and(|pick| pick.option_id == option.id);
             let selector = format!("artifact-pick-{}", option.id);
             let button = if is_picked {
                 text_button(selector, "\u{2713} Picked \u{b7} withdraw".into(), true)
@@ -434,14 +465,9 @@ impl ArtifactTab {
             } else {
                 text_button(selector, "Pick this".into(), true)
             };
-            Some(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .justify_center()
-                    .child(button.on_click(cx.listener(move |this, _, _, cx| this.pick_option(ix, cx)))),
-            )
+            Some(div().flex_1().min_w_0().flex().justify_center().child(
+                button.on_click(cx.listener(move |this, _, _, cx| this.pick_option(ix, cx))),
+            ))
         });
         // More than four options: chips choose which ones are shown.
         let chooser = (options.len() > MAX_COLUMNS).then(|| {
@@ -472,7 +498,10 @@ impl ArtifactTab {
         let status: Option<AnyElement> = if self.side.loading {
             Some(self.side_message("Loading options\u{2026}", theme))
         } else {
-            self.side.error.clone().map(|error| self.side_message(&error, theme))
+            self.side
+                .error
+                .clone()
+                .map(|error| self.side_message(&error, theme))
         };
         let body = match status {
             Some(message) => message,
@@ -505,15 +534,13 @@ impl ArtifactTab {
                             .gap(px(8.0))
                             .text_size(crate::typography::ui_rems(11.5))
                             .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(
+                                div().min_w_0().truncate().text_color(theme.text).child(
+                                    SharedString::from(
                                         question
                                             .filter(|q| !q.trim().is_empty())
                                             .unwrap_or_else(|| "Pick an option".to_owned()),
-                                    )),
+                                    ),
+                                ),
                             )
                             .children(picked.clone().map(|pick| {
                                 div()
@@ -529,10 +556,14 @@ impl ArtifactTab {
                             .child(div().flex_1())
                             .children(chooser)
                             .child(
-                                text_button("artifact-side-close".into(), "All options".into(), false)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.close_side_by_side(window, cx)
-                                    })),
+                                text_button(
+                                    "artifact-side-close".into(),
+                                    "All options".into(),
+                                    false,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.close_side_by_side(window, cx),
+                                )),
                             ),
                     )
                     .child(

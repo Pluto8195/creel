@@ -451,7 +451,11 @@ impl ActionLog {
     /// `entry_id` was just redone (it must be the next redo).
     pub(crate) fn mark_redone(&mut self, space_id: &str, entry_id: u64) {
         if let Some(log) = self.spaces.get_mut(space_id) {
-            if log.entries.get(log.applied).is_some_and(|e| e.id == entry_id) {
+            if log
+                .entries
+                .get(log.applied)
+                .is_some_and(|e| e.id == entry_id)
+            {
                 log.applied += 1;
             }
         }
@@ -615,11 +619,7 @@ pub(crate) fn move_entry(
 }
 
 /// A new item. `work_item_id` is `derive_id(operationId, "item")`.
-pub(crate) fn create_entry(
-    work_item_id: &str,
-    title: &str,
-    operation_id: Option<String>,
-) -> Draft {
+pub(crate) fn create_entry(work_item_id: &str, title: &str, operation_id: Option<String>) -> Draft {
     draft(
         format!("created {}", quoted(title)),
         Step::Restore {

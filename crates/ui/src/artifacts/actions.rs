@@ -8,12 +8,13 @@
 use gpui::Task;
 use serde::de::DeserializeOwned;
 use zeron_proto::{
-    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactResolveCommentParams,
-    ArtifactResolveCommentReply, ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactContentParams,
-    ArtifactContentReply, ArtifactDriftParams, ArtifactDriftReply, ArtifactError,
-    ArtifactErrorCode, ArtifactPickOptionParams, ArtifactPickOptionReply, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
+    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactAnswerQuestionParams,
+    ArtifactAnswerQuestionReply, ArtifactContentParams, ArtifactContentReply, ArtifactDriftParams,
+    ArtifactDriftReply, ArtifactError, ArtifactErrorCode, ArtifactPickOptionParams,
+    ArtifactPickOptionReply, ArtifactPinParams, ArtifactPinReply, ArtifactPromoteParams,
     ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderResultParams,
-    ArtifactRenderResultReply, WorkOutlineError, WorkOutlineErrorCode,
+    ArtifactRenderResultReply, ArtifactResolveCommentParams, ArtifactResolveCommentReply,
+    WorkOutlineError, WorkOutlineErrorCode,
 };
 use zeron_rpc::methods;
 

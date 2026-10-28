@@ -64,8 +64,11 @@ pub(crate) fn rows(
                 CommentStatus::Resolved => CommentState::Resolved,
                 CommentStatus::Open => match source {
                     Some(source)
-                        if zeron_proto::artifacts::resolve_anchor(kind, source, &comment.anchor)
-                            == AnchorStatus::Outdated =>
+                        if zeron_proto::artifacts::resolve_anchor(
+                            kind,
+                            source,
+                            &comment.anchor,
+                        ) == AnchorStatus::Outdated =>
                     {
                         CommentState::Outdated
                     }
@@ -379,11 +382,19 @@ mod tests {
             comment("C-2", "Gone words", CommentStatus::Open),
             comment("C-3", "Gone words", CommentStatus::Resolved),
         ];
-        let rows = rows(ArtifactKind::HtmlFragment, Some("<h2>Receiving</h2>"), &comments);
+        let rows = rows(
+            ArtifactKind::HtmlFragment,
+            Some("<h2>Receiving</h2>"),
+            &comments,
+        );
         let states: Vec<_> = rows.iter().map(|r| r.state.clone()).collect();
         assert_eq!(
             states,
-            vec![CommentState::Open, CommentState::Outdated, CommentState::Resolved]
+            vec![
+                CommentState::Open,
+                CommentState::Outdated,
+                CommentState::Resolved
+            ]
         );
         assert_eq!(open_count(&rows), 2);
         // Still loading: nothing is called outdated yet.
@@ -398,12 +409,18 @@ mod tests {
             comment("C-2", "Gone words", CommentStatus::Open),
             comment("C-3", "Receiving", CommentStatus::Resolved),
         ];
-        let rows = rows(ArtifactKind::HtmlFragment, Some("<h2>Receiving</h2>"), &comments);
+        let rows = rows(
+            ArtifactKind::HtmlFragment,
+            Some("<h2>Receiving</h2>"),
+            &comments,
+        );
         let script = markers_script(&rows);
         assert!(script.contains("\"C-1\""));
         assert!(!script.contains("\"C-2\""));
         assert!(!script.contains("\"C-3\""));
-        assert!(script.starts_with("window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronComments\""));
+        assert!(
+            script.starts_with("window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronComments\"")
+        );
         assert!(mode_script(true).contains("\"zeronCommentMode\":true"));
         assert!(focus_script("C-1").contains("\"zeronCommentFocus\":\"C-1\""));
     }
@@ -411,7 +428,10 @@ mod tests {
     #[test]
     fn frame_script_is_self_contained_and_guarded() {
         assert!(FRAME_SCRIPT.contains("__zeronCommentsInstalled"));
-        assert!(!FRAME_SCRIPT.contains("</script"), "would end the inline script");
+        assert!(
+            !FRAME_SCRIPT.contains("</script"),
+            "would end the inline script"
+        );
         // Messages out match `bridge::FrameMessage`.
         for kind in ["ready", "selection", "selection-clear", "draft", "focus"] {
             assert!(FRAME_SCRIPT.contains(&format!("t: \"{kind}\"")), "{kind}");

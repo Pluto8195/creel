@@ -14,8 +14,13 @@ fn watch<T: 'static>(cx: &mut TestAppContext, name: &'static str, entity: &Entit
     let count = Rc::new(Cell::new(0));
     let seen = count.clone();
     cx.update(|cx| {
-        cx.observe(entity, move |_, _| { if std::env::var("PERF_BT").is_ok_and(|v| v == name) && seen.get() == 3 { eprintln!("{}", std::backtrace::Backtrace::force_capture()); } seen.set(seen.get() + 1) })
-            .detach()
+        cx.observe(entity, move |_, _| {
+            if std::env::var("PERF_BT").is_ok_and(|v| v == name) && seen.get() == 3 {
+                eprintln!("{}", std::backtrace::Backtrace::force_capture());
+            }
+            seen.set(seen.get() + 1)
+        })
+        .detach()
     });
     (name, count)
 }
@@ -53,7 +58,10 @@ fn totals(counters: &[Counter]) -> Vec<(&'static str, u64)> {
     counters.iter().map(|(n, c)| (*n, c.get())).collect()
 }
 
-fn delta(before: &[(&'static str, u64)], after: &[(&'static str, u64)]) -> Vec<(&'static str, u64)> {
+fn delta(
+    before: &[(&'static str, u64)],
+    after: &[(&'static str, u64)],
+) -> Vec<(&'static str, u64)> {
     before
         .iter()
         .zip(after)
@@ -104,7 +112,8 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
         state.data_dir = Some(dir.path().to_path_buf());
     });
     let shell = window.root(cx).unwrap();
-    let (transcript, composer) = shell.read_with(cx, |s, _| (s.transcript.clone(), s.composer.clone()));
+    let (transcript, composer) =
+        shell.read_with(cx, |s, _| (s.transcript.clone(), s.composer.clone()));
     let pickers = composer.read_with(cx, |c, _| c.pickers().clone());
     let weak = shell.downgrade();
     let chat_types = cx.new(|cx| {
@@ -118,12 +127,12 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
     let accounts = cx.new(|cx| crate::settings::accounts::AccountsPage::new(state.clone(), cx));
     let archived = cx.new(|cx| crate::settings::archived::ArchivedPage::new(state.clone(), cx));
     let devices = cx.new(|cx| crate::settings::devices::DevicesPage::new(state.clone(), cx));
-    let linear = cx.new(|cx| crate::linear::settings_page::LinearSettingsPage::new(state.clone(), cx));
+    let linear =
+        cx.new(|cx| crate::linear::settings_page::LinearSettingsPage::new(state.clone(), cx));
     let changes = cx.new(|cx| crate::changes::Changes::new(state.clone(), cx));
     let terminal = cx.new(|cx| crate::terminal::panel::TerminalPanel::new(state.clone(), cx));
-    let files = cx.new(|cx| {
-        crate::files::FilesSurface::new_explorer(state.clone(), "c0".into(), false, cx)
-    });
+    let files = cx
+        .new(|cx| crate::files::FilesSurface::new_explorer(state.clone(), "c0".into(), false, cx));
     cx.run_until_parked();
 
     let counters = vec![
@@ -195,7 +204,10 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
     let after_selected = totals(&counters);
 
     eprintln!("PERF notifies per view (50 updates each)");
-    eprintln!("{:<22}{:>12}{:>12}{:>12}", "view", "heartbeat", "preview", "selected");
+    eprintln!(
+        "{:<22}{:>12}{:>12}{:>12}",
+        "view", "heartbeat", "preview", "selected"
+    );
     let a = delta(&start, &after_heartbeats);
     let b = delta(&after_heartbeats, &after_previews);
     let c = delta(&after_previews, &after_selected);

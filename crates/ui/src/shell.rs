@@ -1516,9 +1516,9 @@ impl Render for SidebarPane {
             match shell.route {
                 Route::Settings(section) => shell.render_settings_nav(section, &theme, cx),
                 // Overview keeps the normal chat sidebar.
-                Route::Chat
-                | Route::Overview
-                | Route::PrReviewChats => shell.render_chat_sidebar(&theme, cx),
+                Route::Chat | Route::Overview | Route::PrReviewChats => {
+                    shell.render_chat_sidebar(&theme, cx)
+                }
             }
         });
         div().size_full().child(inner).into_any_element()
@@ -1903,8 +1903,7 @@ impl Shell {
             let fingerprint = state.read(cx).shell_fingerprint(Utc::now());
             let before = this.reconcile_signature();
             this.on_state_changed(&state, cx);
-            if this.state_fingerprint != Some(fingerprint) || before != this.reconcile_signature()
-            {
+            if this.state_fingerprint != Some(fingerprint) || before != this.reconcile_signature() {
                 this.state_fingerprint = Some(fingerprint);
                 cx.notify();
             }

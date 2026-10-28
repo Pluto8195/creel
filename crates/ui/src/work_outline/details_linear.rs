@@ -260,7 +260,13 @@ impl WorkItemDetails {
                 reference_id: reference_id.clone(),
                 operation_id: new_operation_id(),
             });
-        self.run_logged(format!("reference:{reference_id}"), task, change, cx, |_| {});
+        self.run_logged(
+            format!("reference:{reference_id}"),
+            task,
+            change,
+            cx,
+            |_| {},
+        );
     }
 
     /// Fix link: relink a slug-keyed project link by the real project id.
