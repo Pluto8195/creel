@@ -959,6 +959,12 @@ impl WorkspaceHost {
         self.read(|doc| doc.artifacts_generation())
     }
 
+    /// Change marker of the work outline kinds (work items, Required Actions,
+    /// planning artifacts): unchanged ⇒ nothing plan-question sync reads changed.
+    pub fn work_outline_kinds_generation(&self) -> u64 {
+        self.read(|doc| doc.work_outline_kinds_generation())
+    }
+
     /// Create or update one artifact row (returns the row as written).
     pub fn put_artifact(
         &self,
