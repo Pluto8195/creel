@@ -545,8 +545,9 @@ async fn auto_approve_keeps_yolo_wire_and_never_asks_the_user() {
         interrupt: CancellationToken::new(),
     };
     let mut req = request("scenario:ask-yolo");
-    // A requested sandbox is overridden, not honored, under auto_approve.
-    req.sandbox = SandboxLevel::ReadOnly;
+    // A requested workspace-write sandbox is widened under auto_approve
+    // (read-only is the exception: it stays read-only, auto-approve off).
+    req.sandbox = SandboxLevel::WorkspaceWrite;
     let events = run_to_end(&harness(), req, controls).await;
     assert_eq!(*asked.lock().unwrap(), 0, "{events:?}");
     assert!(
