@@ -435,6 +435,11 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   page text field returns focus to the app; loads only take focus when it's already in the browser
   or nowhere (`may_take_focus`); plain keys are never forwarded. Still forwarded from page fields:
   ⌥↑/⌥↓ and Esc with the find bar open. HTML question-card typing: no blocker found, verify by hand.
+- **Resizable panes** (2026-10-28): the chat-view sidebar (already draggable, `settings.sidebar_width`)
+  now ranges 200–520 px and its shown width is clamped so the conversation keeps `CHAT_PANEL_MIN`.
+  The Work Item Details / Required Actions panel has a left-edge drag handle (double-click resets to
+  380), limits 320 px–60% of the Overview with the body ≥360, persisted as `detailsPanelWidth:N` in
+  the Overview UI-flags file; drag only notifies the Overview.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
