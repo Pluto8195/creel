@@ -382,6 +382,11 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   the item's chats' branches since the latest revision, or unreflected answers). Not done: answering
   from HTML cards, marker on artifact lists, multi-device answers are last-writer-wins. See the
   phase-3 amendment in `docs/plans/artifacts-contract.md`.
+- **Compare and zoom gaps** (2026-10-28): Markdown compare panes sync on scrollbar drag, paging and
+  `scroll_to` (each pane reports position on paint; follower moves aren't echoed). Compare view is
+  zoomable and panes zoom together (HTML/Mermaid frames mirror via SYNC scripts and
+  `__zeronFrameCmd`). Zoomed images click-drag pan with a grab cursor and edge clamping. Markdown
+  block gaps, list/quote/callout/question-card and preview padding scale with zoom.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -447,9 +452,12 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 
 ## Known gaps
 
-- Visual compare:
-  - Dragging the Markdown scrollbar doesn't sync the panes.
-  - Diffs of renders taller than 8000 CSS px are cut off without a notice.
+- Visual compare / zoom (after `compare-zoom-gaps`, 2026-10-28):
+  - Render diffs are capped at 16,000 CSS px (no tiling); longer pages show "Compared the first
+    16,000 px of N". Unverified in a real WKWebView at that height.
+  - HTML/Mermaid compare zoom mirroring is headless-tested only. Onion skin doesn't zoom.
+  - Markdown table and code-block padding don't scale with zoom.
+  - HTML plan question cards can't be answered in place (needs frame → host messaging).
   - Option revisions recorded before 2026-10-20 can't be compared across revisions.
 - Linear GraphQL (projects, attachments) unverified against the real API.
 - **Usage (2026-10-27):** a 7-day audit of `~/.claude/projects/*.jsonl` found about 43% of usage
