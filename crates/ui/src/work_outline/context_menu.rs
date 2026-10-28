@@ -467,15 +467,20 @@ impl OutlineView {
                         down_blocked: self.space_move_blocked(space_id, false),
                         account_labels: {
                             let state = self.state.read(cx);
-                            let snapshot = state
-                                .space_row(space_id)
-                                .and_then(|space| state.managed_accounts_for(Some(&space.device_id)));
+                            let snapshot = state.space_row(space_id).and_then(|space| {
+                                state.managed_accounts_for(Some(&space.device_id))
+                            });
                             [
                                 zeron_proto::HarnessId::ClaudeCode,
                                 zeron_proto::HarnessId::Codex,
                             ]
                             .into_iter()
-                            .map(|h| (h, crate::managed_accounts::menu_label(snapshot, space_id, h)))
+                            .map(|h| {
+                                (
+                                    h,
+                                    crate::managed_accounts::menu_label(snapshot, space_id, h),
+                                )
+                            })
                             .collect()
                         },
                     }),

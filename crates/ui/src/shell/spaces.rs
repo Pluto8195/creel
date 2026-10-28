@@ -1090,6 +1090,91 @@ mod pinned_session_tests {
         exercise_session_section_drops(cx, false, false);
     }
 
+    /// The sidebar chat row wears the account pill only for a chat pinned to
+    /// a managed account (not Default, not unpinned).
+    #[gpui::test]
+    fn sidebar_chat_row_shows_account_pill_only_for_managed_pins(cx: &mut gpui::TestAppContext) {
+        use super::*;
+
+        struct SidebarHost(Entity<Shell>);
+        impl Render for SidebarHost {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.0.update(cx, |shell, cx| {
+                    div()
+                        .w(px(280.0))
+                        .h(px(800.0))
+                        .child(shell.render_chat_sidebar(&Theme::default(), cx))
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            SidebarHost(cx.new(|cx| {
+                let state = cx.new(|_| AppState::new());
+                let mut shell = Shell::new(
+                    state,
+                    EngineBootConfig {
+                        data_dir: dir.path().into(),
+                        ipc_port: 0,
+                        edge_url: "http://127.0.0.1:1".into(),
+                        edge_token: None,
+                        org_id: None,
+                        workos_client_id: None,
+                        default_harness: zeron_proto::HarnessId::Mock,
+                    },
+                    cx,
+                );
+                shell.settings.sidebar_organization = SidebarOrganization::InOneList;
+                shell.state.update(cx, |state, _| {
+                    state.workspace_scope = Some(WorkspaceScope::Local);
+                    state.local_device_id = Some("local".into());
+                    state.chats = ["pinned", "plain", "unpinned"]
+                        .into_iter()
+                        .map(|id| {
+                            serde_json::from_value(serde_json::json!({
+                                "id": id, "title": id, "deviceId": "local", "archived": false,
+                                "createdAt": Utc::now(),
+                            }))
+                            .unwrap()
+                        })
+                        .collect();
+                    state.managed_accounts.insert(
+                        "local".into(),
+                        serde_json::from_value(serde_json::json!({
+                            "accounts": [{ "id": "a1", "harness": "claude-code", "label": "Work" }],
+                            "projectDefaults": [],
+                            "chatPins": [
+                                { "chatId": "pinned", "harness": "claude-code", "accountId": "a1" },
+                                { "chatId": "plain", "harness": "claude-code" }
+                            ]
+                        }))
+                        .unwrap(),
+                    );
+                });
+                shell
+            }))
+        });
+        let _ = host;
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-pinned").is_some(), "rows render");
+        assert!(cx.debug_bounds("chat-plain").is_some());
+        assert!(cx.debug_bounds("chat-account-pinned").is_some());
+        assert!(cx.debug_bounds("chat-account-plain").is_none());
+        assert!(cx.debug_bounds("chat-account-unpinned").is_none());
+    }
+
     fn exercise_session_section_drops(
         cx: &mut gpui::TestAppContext,
         compact: bool,
@@ -6417,7 +6502,9 @@ impl Shell {
                 .map(|(harness, label)| {
                     let pick_id = space_id.clone();
                     popover::menu_row(&theme, false, format!("space-menu-account-{harness:?}"))
-                        .id(SharedString::from(format!("space-menu-account-{harness:?}")))
+                        .id(SharedString::from(format!(
+                            "space-menu-account-{harness:?}"
+                        )))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_project_account_picker(pick_id.clone(), harness, cx)
                         }))

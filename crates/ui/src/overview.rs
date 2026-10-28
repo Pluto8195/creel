@@ -3475,6 +3475,10 @@ impl Overview {
             .map(|entry| header_links(&entry.status));
         let mut metadata =
             crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
+        crate::chat_metadata::insert_account_item(
+            &mut metadata,
+            self.state.read(cx).chat_account_badge(&chat_id),
+        );
         if let Some(path) = self
             .work_item_index
             .item_for_chat(&chat_id)

@@ -1824,4 +1824,108 @@ mod tests {
             );
         });
     }
+    type AccountCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
+    fn accounts_snapshot() -> zeron_proto::ManagedAccountsSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "accounts": [
+                { "id": "a1", "harness": "claude-code", "label": "Work", "signedIn": true,
+                  "email": "w@example.com" },
+                { "id": "a2", "harness": "codex", "label": "Side", "signedIn": false }
+            ],
+            "projectDefaults": [],
+            "chatPins": [
+                { "chatId": "chat-api", "harness": "claude-code", "accountId": "a1" },
+                { "chatId": "chat-ui", "harness": "claude-code" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn script_accounts(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) -> AccountCalls {
+        let calls: AccountCalls = Arc::default();
+        let sink = calls.clone();
+        let snapshot = accounts_snapshot();
+        let reply = serde_json::to_value(&snapshot).unwrap();
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.managed_accounts.insert("d".into(), snapshot);
+                state.accounts_rpc_override = Some(Arc::new(move |method, params| {
+                    sink.lock().unwrap().push((method.to_string(), params));
+                    Ok(reply.clone())
+                }));
+            })
+        });
+        calls
+    }
+
+    /// The Space menu lists a per-harness account entry; its picker lists
+    /// Default plus only that harness's accounts and Selecting one sends
+    /// SetProjectAccount for the project.
+    #[gpui::test]
+    fn project_account_picker_lists_harness_accounts_and_sets_project(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _outline, _calls, cx) = two_space_shell(cx, dir.path());
+        let accounts = script_accounts(&shell, cx);
+        let beta = row_key::space("s2");
+
+        right_click(cx, &beta);
+        assert_eq!(
+            row(&shell, cx, "claude-account").label,
+            "Claude account: Default\u{2026}"
+        );
+        click(cx, "claude-account");
+        assert!(cx.debug_bounds("account-pick-default").is_some());
+        assert!(cx.debug_bounds("account-pick-a1").is_some());
+        assert!(
+            cx.debug_bounds("account-pick-a2").is_none(),
+            "Codex accounts are not offered for Claude"
+        );
+        assert!(cx.debug_bounds("account-pick-add").is_some());
+
+        let work = cx.debug_bounds("account-pick-a1").unwrap();
+        cx.simulate_click(work.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        redraw(cx);
+        let set: Vec<_> = accounts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| m == zeron_rpc::methods::SET_PROJECT_ACCOUNT)
+            .cloned()
+            .collect();
+        assert_eq!(set.len(), 1, "{set:?}");
+        assert_eq!(
+            set[0].1,
+            serde_json::json!({
+                "spaceId": "s2", "harness": "claude-code", "accountId": "a1",
+                "targetDeviceId": "d"
+            })
+        );
+        assert!(
+            cx.debug_bounds("account-pick-default").is_none(),
+            "picker closes after choosing"
+        );
+    }
+
+    /// The chat account pill shows only for a chat pinned to a managed
+    /// account; Default and unpinned chats stay quiet.
+    #[gpui::test]
+    fn chat_account_badge_state_only_for_a_pinned_managed_account(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _outline, _calls, cx) = two_space_shell(cx, dir.path());
+        let _ = script_accounts(&shell, cx);
+        redraw(cx);
+        shell.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            assert_eq!(
+                state.chat_account_badge("chat-api").as_deref(),
+                Some("Work")
+            );
+            assert_eq!(state.chat_account_badge("chat-ui"), None);
+            assert_eq!(state.chat_account_badge("chat-auth"), None);
+        });
+    }
 }
