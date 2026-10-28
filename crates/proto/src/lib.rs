@@ -29,7 +29,8 @@ pub use agent::*;
 pub use artifacts::{
     ArtifactAnswerQuestionParams, ArtifactAnswerQuestionReply, ArtifactDriftParams,
     ArtifactDriftReply, ArtifactQuestionAnswer, PlanQuestion, PlanQuestionStatus,
-    extract_questions,
+    extract_questions, ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
+    ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentAnchor, CommentStatus,
     ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
     ArtifactErrorCode, ArtifactKind, ArtifactLayoutWarning, ArtifactPinParams, ArtifactPinReply,
     ArtifactPromoteParams, ArtifactPromoteReply, ArtifactPublishReply, ArtifactRegisterParams,

@@ -292,6 +292,9 @@ pub struct ArtifactView {
     /// Answers given in Zeron to the plan's questions (Artifacts phase 3 D).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<ArtifactQuestionAnswer>,
+    /// Comments on the rendered artifact (Artifacts phase 4 G). Never in the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<ArtifactComment>,
     /// Absolute path of the last promoted copy under `docs/plans/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_path: Option<String>,
@@ -1293,6 +1296,8 @@ pub fn count_unverified_claims(text: &str) -> u32 {
         + text.matches("data-claim=\"unverified\"").count()) as u32
 }
 
+mod comments;
+pub use comments::*;
 mod questions;
 pub use questions::*;
 
