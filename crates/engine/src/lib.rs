@@ -47,7 +47,7 @@ pub mod profile;
 pub mod project_actions;
 pub mod registry;
 pub mod repos;
-pub mod repository_topology;
+pub mod repository_discovery;
 pub mod rpc;
 pub mod run_journal;
 pub mod swr;

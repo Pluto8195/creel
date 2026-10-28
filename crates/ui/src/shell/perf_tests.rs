@@ -115,7 +115,6 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let topology = cx.new(|cx| crate::repository_topology::RepositoryTopology::new(state.clone(), weak, cx));
     let accounts = cx.new(|cx| crate::settings::accounts::AccountsPage::new(state.clone(), cx));
     let archived = cx.new(|cx| crate::settings::archived::ArchivedPage::new(state.clone(), cx));
     let devices = cx.new(|cx| crate::settings::devices::DevicesPage::new(state.clone(), cx));
@@ -133,7 +132,6 @@ fn streaming_one_chat_among_many_notifies_few_views(cx: &mut TestAppContext) {
         watch(cx, "composer", &composer),
         watch(cx, "pickers", &pickers),
         watch(cx, "chat_type_view", &chat_types),
-        watch(cx, "repository_topology", &topology),
         watch(cx, "settings accounts", &accounts),
         watch(cx, "settings archived", &archived),
         watch(cx, "settings devices", &devices),

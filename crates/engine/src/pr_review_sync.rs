@@ -790,7 +790,7 @@ impl PrReviewSyncService {
             return Err(invalid("PR review sync needs a specific project folder"));
         }
         let root = std::fs::canonicalize(&root).unwrap_or(root);
-        let paths = crate::repository_topology::repository_paths(&self.inner.repos, &root)
+        let paths = crate::repository_discovery::repository_paths(&self.inner.repos, &root)
             .await
             .map_err(|e| invalid(format!("Could not read the Space's repositories: {e}")))?;
         let mut slugs = BTreeSet::new();

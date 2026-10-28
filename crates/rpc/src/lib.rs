@@ -434,11 +434,6 @@ pub mod methods {
     pub const CHAT_CONTEXT_USAGE: &str = "ChatContextUsage";
     // Repos / worktrees / folders (ControlRpc, relay-forwardable).
     pub const LIST_REPOS: &str = "ListRepos";
-    /// Point-in-time repository graph for one Space. `{spaceId}` →
-    /// `RepositoryTopology`: the workspace repository (when git), recursive
-    /// submodules/nested repositories, every registered worktree, and chats /
-    /// primary agents attached by checkout identity. Read-only; never fetches.
-    pub const GET_REPOSITORY_TOPOLOGY: &str = "GetRepositoryTopology";
     pub const ADD_REPO: &str = "AddRepo";
     pub const CLONE_REPO: &str = "CloneRepo";
     pub const CREATE_REPO: &str = "CreateRepo";

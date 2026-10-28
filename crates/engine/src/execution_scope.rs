@@ -39,7 +39,7 @@ use zeron_proto::{
 
 use crate::EngineError;
 use crate::repos::Repos;
-use crate::repository_topology::{parse_worktree_porcelain_z, stable_id};
+use crate::repository_discovery::{parse_worktree_porcelain_z, stable_id};
 use crate::workspace_host::WorkspaceHost;
 
 /// Prefix of a dispatch rejection message (`execution-scope:<code>: …`), so a
