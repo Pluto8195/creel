@@ -1825,6 +1825,8 @@ mod tests {
         created: Mutex<Vec<Value>>,
         /// `create_chat` claims: idempotency key → inputs hash.
         claims: Mutex<std::collections::HashMap<String, String>>,
+        /// When set, chat-beta-2 (the agent) runs with this sandbox.
+        beta_sandbox: Option<&'static str>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1886,6 +1888,12 @@ mod tests {
                             "createdAt": "2026-09-02T00:00:00Z"
                         }),
                     ];
+                    if let Some(sandbox) = self.beta_sandbox {
+                        chats[1]["config"] = json!({
+                            "harness": "claude-code", "model": "opus", "reasoning": null,
+                            "sandbox": sandbox
+                        });
+                    }
                     chats.extend(self.created.lock().unwrap().iter().cloned());
                     stream(Value::Array(chats))
                 }
@@ -2421,6 +2429,48 @@ mod tests {
             assert_eq!(create["config"]["autoApprove"], false);
             assert_eq!(create["spaceId"], "space-1");
             assert_eq!(create["parentChatId"], "chat-beta-2");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_parent_clamps_every_child_to_read_only() {
+        let world = Arc::new(World {
+            beta_sandbox: Some("read-only"),
+            ..Default::default()
+        });
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        for (i, wider) in ["workspace-write", "danger-full-access"].into_iter().enumerate() {
+            let err = tools
+                .call(
+                    "create_chat",
+                    json!({ "idempotency_key": format!("wide-{i}"), "sandbox": wider }),
+                )
+                .await
+                .unwrap_err();
+            assert!(err.contains("more permissive"), "{wider}: {err}");
+        }
+        assert!(world.writes_of(methods::MUTATE).is_empty(), "nothing created");
+        // Omitted: capped at the parent's read-only, not the workspace-write default.
+        tools
+            .call("create_chat", json!({ "idempotency_key": "default" }))
+            .await
+            .unwrap();
+        tools
+            .call(
+                "create_chat",
+                json!({ "idempotency_key": "explicit", "sandbox": "read-only" }),
+            )
+            .await
+            .unwrap();
+        let creates: Vec<Value> = world
+            .writes_of(methods::MUTATE)
+            .into_iter()
+            .filter(|m| m["op"] == "createChat")
+            .collect();
+        assert_eq!(creates.len(), 2);
+        for create in &creates {
+            assert_eq!(create["config"]["sandbox"], "read-only");
+            assert_eq!(create["config"]["autoApprove"], false);
         }
     }
 
