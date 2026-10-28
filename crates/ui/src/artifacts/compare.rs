@@ -300,16 +300,16 @@ addEventListener("message", (event) => {
   const frames = zeronFrames();
   const from = frames.findIndex((frame) => frame.contentWindow === event.source);
   if (from < 0) return;
-  const other = frames[1 - from];
+  const others = frames.filter((_, i) => i !== from);
   const zoom = event.data && event.data.zeronSyncZoom;
   if (zoom && typeof zoom.level === "number") {
     window.__zeronFrame = Object.assign({}, window.__zeronFrame, { zoom: Math.round(zoom.level * 1000) });
-    if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncZoomTo: zoom }, "*");
+    others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ zeronSyncZoomTo: zoom }, "*"));
     return;
   }
   const ratio = event.data && event.data.zeronSync && event.data.zeronSync.ratio;
   if (typeof ratio !== "number") return;
-  if (other && other.contentWindow) other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*");
+  others.forEach((other) => other.contentWindow && other.contentWindow.postMessage({ zeronSyncTo: { ratio } }, "*"));
 });"##;
 
 /// The CSS height of an onion-skin stack for renders `width` x `height`
@@ -379,36 +379,65 @@ pub(crate) fn compare_document(
     labels: (&str, &str),
     theme: &FragmentTheme,
 ) -> String {
+    host_document(
+        &[(left, labels.0), (right, labels.1)],
+        false,
+        "Compare revisions",
+        theme,
+    )
+}
+
+/// The host document for 2-4 options side by side: equal-width columns (so
+/// the native pick buttons above line up), frames at the same viewport
+/// width, scroll and zoom synchronized across all of them.
+pub(crate) fn options_document(panes: &[(&CompareFrame, &str)], theme: &FragmentTheme) -> String {
+    host_document(panes, true, "Compare options", theme)
+}
+
+fn host_document(
+    panes: &[(&CompareFrame, &str)],
+    equal: bool,
+    title: &str,
+    theme: &FragmentTheme,
+) -> String {
     let background = theme
         .vars
         .iter()
         .find(|(name, _)| *name == "--background")
         .map_or("transparent", |(_, value)| value.as_str());
     let pane = |frame: &CompareFrame, label: &str| {
+        let size = if equal {
+            "flex:1 1 0".to_owned()
+        } else {
+            format!("flex:none;width:{}px", frame.width)
+        };
         format!(
-            "<div class=\"pane\" style=\"width:{width}px\"><div class=\"label\">{label}</div>\
+            "<div class=\"pane\" style=\"{size}\"><div class=\"label\">{label}</div>\
 <iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" title=\"{title}\" srcdoc=\"{srcdoc}\"></iframe></div>",
-            width = frame.width,
             label = escape_text(label),
             title = escape_attr(label),
             srcdoc = escape_attr(&frame.html),
         )
     };
+    let panes_html: String = panes
+        .iter()
+        .map(|(frame, label)| pane(frame, label))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"referrer\" content=\"no-referrer\">\n\
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n\
-<title>Compare revisions</title>\n<style>:root{{color-scheme:{scheme};background:{background}}}\
+<title>{title}</title>\n<style>:root{{color-scheme:{scheme};background:{background}}}\
 html,body{{margin:0;height:100%}}\
 body{{box-sizing:border-box;padding:8px 12px 12px;display:flex;gap:12px;justify-content:center;overflow-x:auto;font:600 11px/20px system-ui,sans-serif}}\
-.pane{{flex:none;display:flex;flex-direction:column;height:100%;min-width:0}}\
+.pane{{display:flex;flex-direction:column;height:100%;min-width:0}}\
 .label{{flex:none;height:20px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}\
 iframe{{flex:1;min-height:0;width:100%;border:0;background:transparent;box-shadow:0 0 0 1px rgba(128,128,128,.35)}}\
-</style>\n<script>{SYNC_HOST_SCRIPT}</script>\n</head>\n<body>\n{left_pane}\n{right_pane}\n</body>\n</html>\n",
+</style>\n<script>{SYNC_HOST_SCRIPT}</script>\n</head>\n<body>\n{panes_html}\n</body>\n</html>\n",
         csp = escape_attr(&fragment::host_csp()),
         scheme = if theme.dark { "dark" } else { "light" },
-        left_pane = pane(left, labels.0),
-        right_pane = pane(right, labels.1),
+        title = escape_text(title),
     )
 }
 

@@ -29,6 +29,7 @@ use zeron_proto::{
 
 pub(crate) mod compare_view;
 pub(crate) mod find_view;
+pub(crate) mod options_view;
 pub(crate) mod plan_view;
 pub(crate) mod questions_view;
 mod zoom_view;
@@ -243,6 +244,8 @@ pub(crate) enum Presenter {
     Text,
     Source,
     Compare,
+    /// 2-4 options in columns with pick buttons (phase 5 F).
+    SideBySide,
     Message(String),
 }
 
@@ -257,6 +260,7 @@ enum Mode {
     Rendered,
     Source,
     Compare,
+    SideBySide,
 }
 
 pub(crate) struct ArtifactTab {
@@ -292,6 +296,8 @@ pub(crate) struct ArtifactTab {
     questions: questions_view::QuestionState,
     /// Canonical plan panel state (phase 5 H).
     plan: plan_view::PlanState,
+    /// Options side by side and the pick (phase 5 F).
+    side: options_view::SideBySide,
     /// Zoom (1.0 = 100%, fit for images), remembered per artifact.
     zoom: f32,
     /// The zoom the web page last reported (per mille), and whether the
@@ -345,7 +351,11 @@ impl ArtifactTab {
                 if this.rendered_key != Some(render_key(cx)) {
                     this.refresh_compare_theme(window, cx);
                 }
-            } else if this.mode != Mode::Compare
+            } else if this.side_shows_web() {
+                if this.rendered_key != Some(render_key(cx)) {
+                    this.refresh_side_theme(window, cx);
+                }
+            } else if this.mode != Mode::Compare && this.mode != Mode::SideBySide
                 && (matches!(this.body, Some(ArtifactBody::Web { .. }))
                     || this.option_shown.is_some())
             {
@@ -394,6 +404,7 @@ impl ArtifactTab {
             nav: find_view::FindNav::new(cx),
             questions: Default::default(),
             plan: Default::default(),
+            side: Default::default(),
             zoom: remembered_zoom,
             zoom_reported: None,
             zoom_synced: false,
@@ -454,7 +465,9 @@ impl ArtifactTab {
     /// Whether the body shows the web view right now (Source, Compare, and
     /// native kinds hide it).
     pub(crate) fn shows_web(&self) -> bool {
-        matches!(self.presenter(), Presenter::Web(_)) || self.compare_shows_web()
+        matches!(self.presenter(), Presenter::Web(_))
+            || self.compare_shows_web()
+            || self.side_shows_web()
     }
 
     /// The component the body renders with right now.
@@ -462,6 +475,7 @@ impl ArtifactTab {
         match self.mode {
             Mode::Source => return Presenter::Source,
             Mode::Compare => return Presenter::Compare,
+            Mode::SideBySide => return Presenter::SideBySide,
             Mode::Rendered => {}
         }
         if self.option_shown.is_some() {
@@ -515,6 +529,9 @@ impl ArtifactTab {
         self.loading = true;
         self.picker = None;
         self.option_shown = None;
+        if self.mode == Mode::SideBySide {
+            self.mode = Mode::Rendered;
+        }
         if self.mode == Mode::Compare {
             self.mode = Mode::Rendered;
             self.compare = None;
@@ -892,7 +909,12 @@ impl ArtifactTab {
                                 .child(chip("Plan".into(), theme.accent, theme)),
                         )
                     })
-                    .children(linear),
+                    .children(linear)
+                    .children(self.picked_now(artifact).map(|pick| {
+                        div()
+                            .debug_selector(|| "artifact-header-picked".into())
+                            .child(chip(Self::pick_label(&pick), theme.accent, theme))
+                    })),
             )
             .child(
                 div()
@@ -1010,6 +1032,12 @@ impl ArtifactTab {
             .when(compare_available, |el| {
                 if artifact.kind == ArtifactKind::Options {
                     el.child(
+                        picker_button("artifact-side-by-side", "Side by side".into(), false)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_side_by_side(window, cx)),
+                            ),
+                    )
+                    .child(
                         picker_button("artifact-compare", "Compare options".into(), false)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.compare_options(window, cx)),
@@ -1372,6 +1400,7 @@ impl ArtifactTab {
                 None => message("No text source for this artifact.".into()),
             },
             Presenter::Compare => self.render_compare(theme, cx),
+            Presenter::SideBySide => self.render_side_by_side(theme, cx),
         }
     }
 }

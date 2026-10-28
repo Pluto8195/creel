@@ -224,3 +224,42 @@ Code: `crates/proto/src/artifacts/questions.rs`, `crates/engine/src/artifact_que
   (`unreflected_answers`). Shown as a badge with a tooltip; no LLM.
 - **Known limits.** Answers written from two devices at once are last-writer-wins; the checkout
   scan is limited to the owning device; unrelated commits on a shared feature branch count.
+
+## Amendment: phase 5, option picks and the canonical plan (2026-10-28)
+
+Code: `crates/proto/src/artifacts/picks.rs`, `ArtifactsService::pick_option`,
+`ArtifactQuestionSync::after_pick`, `LinearService::project_detail`; UI in
+`crates/ui/src/artifacts/{plan_linear.rs, tab/options_view.rs, tab/plan_view.rs}`.
+
+- **F: picks live on the row.** `ArtifactView.picked: {optionId, label, note?, at, by,
+  revision}` (an `options` artifact only), written alone by `set_artifact_pick` like answers
+  (`ArtifactPickOption {artifactId, optionId?, label, note?}`, local, not forwardable; no
+  `optionId` clears the pick). The manifest and fragments are never edited, and a new revision of
+  the options keeps the pick (it records the revision it was made on). The UI sends the label (it
+  has the manifest); the engine caps label/note at 400 chars, id at 80.
+- **Message.** The UI then messages the publishing chat, same target and path as a question answer:
+  `Picked option B for "<title>": <label>` + `\n\nNote: <note>`; `Changed my pick to option C …`
+  when changing; `Withdrew my pick of option B for "<title>": I haven't chosen yet.` on un-pick.
+- **Required Actions.** A manifest `question` that is a plan question id (`Q-2`) also records the
+  pick as that question's answer on the item's pinned plan (`Picked option B: Grouped`), so the
+  question card and its Required Action resolve through the phase-3 path; changing the pick
+  rewrites the answer, clearing removes it (the Required Action comes back with the plan's next
+  revision, because create ids are per revision). Open requests on the item with dedupe key
+  `artopt:<artifactId>` (agents may raise one for an unanswered choice) resolve on a pick.
+- **Agents.** `artifact_get_plan` adds `pickedOptions: [{artifactId, title, optionId, label, note,
+  at, revision}]` for every options artifact in the caller's scope that has a pick, with or without
+  a pinned plan. Agents continue with the picked option.
+- **H: the canonical plan is the pinned plan** (`pinnedAsPlan`, one per work item; pin/unpin from
+  the Artifacts section or the tab). No second marker was added. With Linear on in the Space and a
+  linked Linear project (`linearProject` reference), the plan's tab shows a project panel under the
+  header (collapsible), and the item details show it under the pinned plan plus an "Open plan" link
+  in the header.
+- **Linear project detail** (read-only): `LinearProjectDetail {projectId, force?, cachedOnly?}` →
+  `{id, name, url, state?, progress?, targetDate?, lead?, updates[≤3 {id, body (≤600), health?,
+  author?, createdAt}], updatedAt}`, device-local. Served through an `SwrStore` (same TTL as the
+  lists, persisted in `linear-project-details.json`); the UI reads the stored copy first
+  (`cachedOnly`), then the cached/fresh read, and keeps data through a failed refresh. No mutation
+  or mirroring into Linear exists. The GraphQL (`project { progress targetDate projectUpdates }`)
+  is unverified against the real API, like the rest of the Linear projects/attachments queries.
+- **Not done.** Option picking from inside an HTML frame (needs phase 4's frame ↔ host bridge);
+  multi-device picks are last-writer-wins.
