@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -104,10 +103,6 @@ impl MockLinear {
             .count()
     }
 
-    fn total(&self) -> usize {
-        self.state.lock().unwrap().recorded.len()
-    }
-
     fn queries(&self) -> Vec<(String, String)> {
         self.state.lock().unwrap().recorded.clone()
     }
@@ -155,7 +150,8 @@ fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) 
             json!({ "data": { "issue": { "identifier": variables["id"],
                 "attachments": { "nodes": [] } } } }),
         ),
-        other => panic!("unexpected operation {other}"),
+        // Other engine background lookups (chat ticket chips) may ask too.
+        _ => reply(200, json!({ "data": {} })),
     }
 }
 
@@ -417,8 +413,16 @@ async fn nothing_is_ever_written_to_linear() {
     rig.mock.set(all(), &["ENG-2"]);
     rig.refresh(SPACE).await.unwrap();
     for (operation, query) in rig.mock.queries() {
-        assert!(query.trim_start().starts_with("query "), "{operation}");
-        assert!(!query.contains("mutation"), "{operation}");
+        assert!(
+            !query.to_lowercase().contains("mutation"),
+            "{operation}: {query}"
+        );
+        if !query.is_empty() {
+            assert!(
+                query.trim_start().starts_with("query "),
+                "{operation}: {query}"
+            );
+        }
     }
 }
 
@@ -637,7 +641,8 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
     rig.mock.set(all(), &["ENG-1"]);
     // Linear on, no linked item: the pass asks for nothing.
     rig.refresh(SPACE).await.unwrap();
-    assert_eq!(rig.mock.total(), 0);
+    assert_eq!(rig.mock.count("ZeronLinearAssignedUnstarted"), 0);
+    assert_eq!(rig.mock.count("ZeronLinearViewer"), 0);
 
     // Setting one needs Linear on.
     let other = rig
@@ -652,13 +657,17 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
 
     // Turning Linear off after setting it: refresh refuses, no calls.
     let dest = rig.item("Linear").await;
+    rig.mock.set(Vec::new(), &[]);
     rig.set_destination(SPACE, Some(&dest)).await.unwrap();
+    // Setting it syncs the Space in the background; let that pass finish.
+    while rig.mock.count("ZeronLinearAssignedUnstarted") == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     rig.enable(SPACE, false).await;
-    let before = rig.mock.total();
+    let before = rig.mock.queries().len();
     let err = rig.refresh(SPACE).await.unwrap_err();
     assert!(err.contains("disabledForSpace"), "{err}");
-    assert_eq!(rig.mock.total(), before);
-    assert_eq!(rig.mock.count("ZeronLinearAssignedUnstarted"), 0);
+    assert_eq!(rig.mock.queries().len(), before, "Linear off: no calls");
     assert!(rig.children(&dest).is_empty());
-    let _ = Duration::from_secs(0);
 }

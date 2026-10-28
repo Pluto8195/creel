@@ -405,3 +405,86 @@ async fn leave(
     pass.record(&item.id, marked).await;
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeron_proto::linear::{LinearProjectRef, LinearState, LinearUser};
+
+    fn issue(state: LinearStateType, assignee: &str, project: Option<&str>) -> LinearIssueSummary {
+        LinearIssueSummary {
+            identifier: "ENG-1".into(),
+            state: LinearState {
+                state_type: state,
+                ..Default::default()
+            },
+            assignee: Some(LinearUser {
+                id: assignee.into(),
+                ..Default::default()
+            }),
+            project: project.map(|name| LinearProjectRef {
+                id: "p".into(),
+                name: name.into(),
+                url: String::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matching_needs_me_an_unstarted_state_and_no_project() {
+        for state in [
+            LinearStateType::Backlog,
+            LinearStateType::Unstarted,
+            LinearStateType::Triage,
+        ] {
+            assert!(issue(state, "me", None).is_assigned_unstarted("me"));
+            assert!(leave_reason(&issue(state, "me", None), "me").is_none());
+        }
+        for state in [
+            LinearStateType::Started,
+            LinearStateType::Completed,
+            LinearStateType::Canceled,
+            LinearStateType::Unknown,
+        ] {
+            assert!(!issue(state, "me", None).is_assigned_unstarted("me"));
+        }
+        assert!(!issue(LinearStateType::Backlog, "you", None).is_assigned_unstarted("me"));
+        assert!(!issue(LinearStateType::Backlog, "me", Some("P")).is_assigned_unstarted("me"));
+        let mut unassigned = issue(LinearStateType::Backlog, "me", None);
+        unassigned.assignee = None;
+        assert!(!unassigned.is_assigned_unstarted("me"));
+    }
+
+    #[test]
+    fn leave_reasons_name_what_changed() {
+        let reason = |i: LinearIssueSummary| leave_reason(&i, "me").unwrap();
+        assert_eq!(
+            reason(issue(LinearStateType::Started, "me", None)),
+            "Started in Linear"
+        );
+        assert_eq!(
+            reason(issue(LinearStateType::Completed, "me", None)),
+            "Completed in Linear"
+        );
+        assert_eq!(
+            reason(issue(LinearStateType::Canceled, "me", None)),
+            "Canceled in Linear"
+        );
+        assert_eq!(
+            reason(issue(LinearStateType::Backlog, "you", None)),
+            "Reassigned in Linear"
+        );
+        assert_eq!(
+            reason(issue(LinearStateType::Backlog, "me", Some("Auth"))),
+            "Moved to project Auth"
+        );
+    }
+
+    #[test]
+    fn derived_ids_fit_the_operation_id_cap() {
+        let long = "s".repeat(200);
+        assert!(create_operation(&long, "ENG-123456").len() <= 64);
+        assert!(archive_operation(&long, "ENG-123456", "Moved to project Something").len() <= 64);
+    }
+}

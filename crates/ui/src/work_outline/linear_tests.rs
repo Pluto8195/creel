@@ -1537,3 +1537,84 @@ fn stored_lists_show_and_survive_a_failed_refresh(cx: &mut gpui::TestAppContext)
     assert!(vcx.debug_bounds("linear-issue-row-ENG-1").is_some(), "stored issues render");
     assert!(vcx.debug_bounds("linear-project-row-p-launch").is_some());
 }
+
+/// The linked Linear item: `UI` is the Space's destination with two
+/// auto-added children. Its row gets the destination marker; each child is an
+/// ordinary Linear row (ticket-ID link); a kept child shows why its ticket
+/// stopped matching, a matching one shows nothing.
+fn linked_item_snapshot(enabled: bool) -> WorkOutlineSnapshot {
+    let mut snapshot = with_created(linear_snapshot(enabled), "w-eng-2", UI);
+    snapshot = with_created(snapshot, "w-eng-3", UI);
+    for (id, identifier) in [("w-eng-2", "ENG-2"), ("w-eng-3", "ENG-3")] {
+        snapshot.external_references.push(lf::reference(
+            &format!("r-{id}"),
+            "s1",
+            id,
+            "issue",
+            identifier,
+            &format!("https://linear.app/acme/issue/{identifier}"),
+        ));
+        for item in snapshot.items.iter_mut().filter(|i| i.id == id) {
+            item.title = format!("{identifier} \u{00b7} Ticket");
+            item.external_sync_state = Some(zeron_proto::WorkItemExternalSyncState {
+                provider: "linear".into(),
+                external_id: identifier.into(),
+                round: 1,
+                marker: (id == "w-eng-3").then(|| "Started in Linear".to_string()),
+                ..Default::default()
+            });
+        }
+    }
+    snapshot.space_settings.linear_assigned_work_item_id = Some(UI.into());
+    snapshot
+}
+
+#[gpui::test]
+fn linked_linear_item_and_its_children_render(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, _calls, vcx) =
+        linear_overview(cx, dir.path(), linked_item_snapshot(true), default_reply);
+    draw(vcx);
+    let destination = format!("outline-linear-assigned-{}", row_key::item("s1", UI));
+    assert!(row_bounds(vcx, destination).is_some(), "destination marker");
+    // The children are ordinary Linear rows: the ticket link carries the ID.
+    for id in ["w-eng-2", "w-eng-3"] {
+        let link = format!("outline-linear-{}", row_key::item("s1", id));
+        assert!(row_bounds(vcx, link).is_some(), "{id} ticket link");
+    }
+    let left = |id: &str| format!("outline-linear-left-{}", row_key::item("s1", id));
+    assert!(row_bounds(vcx, left("w-eng-3")).is_some(), "kept child's marker");
+    assert!(row_bounds(vcx, left("w-eng-2")).is_none(), "matching child has none");
+    // The menu offers to stop on the destination and to start elsewhere.
+    overview.read_with(vcx, |o, cx| {
+        let outline = o.outline.read(cx);
+        let on = outline.context_menu(&row_key::item("s1", UI), cx).unwrap();
+        assert!(on.entries.iter().any(|e| e.id == "linear-clear-assigned"));
+        let other = outline.context_menu(&row_key::item("s1", API), cx).unwrap();
+        assert!(other.entries.iter().any(|e| e.id == "linear-use-assigned"));
+    });
+}
+
+#[gpui::test]
+fn linked_linear_item_shows_nothing_with_linear_off(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (overview, calls, vcx) =
+        linear_overview(cx, dir.path(), linked_item_snapshot(false), default_reply);
+    draw(vcx);
+    for selector in [
+        format!("outline-linear-assigned-{}", row_key::item("s1", UI)),
+        format!("outline-linear-left-{}", row_key::item("s1", "w-eng-3")),
+        format!("outline-linear-{}", row_key::item("s1", "w-eng-2")),
+    ] {
+        assert!(row_bounds(vcx, selector.clone()).is_none(), "{selector}");
+    }
+    overview.read_with(vcx, |o, cx| {
+        let menu = o
+            .outline
+            .read(cx)
+            .context_menu(&row_key::item("s1", UI), cx)
+            .unwrap();
+        assert!(!menu.entries.iter().any(|e| e.id.starts_with("linear-")));
+    });
+    assert_eq!(called(&calls, "LinearIssue"), 0, "no Linear calls");
+}
