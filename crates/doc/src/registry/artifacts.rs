@@ -199,6 +199,49 @@ impl RegistryDoc {
         self.write_ops(ops)?;
         Ok(Some(unpin))
     }
+
+    /// Replace the artifact's recorded question answers (the `answers` field
+    /// only, so a device that does not own the content never rewrites its
+    /// revisions). Oldest answers are dropped until the op fits. `None` when
+    /// the artifact is not live.
+    pub fn set_artifact_answers(
+        &mut self,
+        id: &str,
+        answers: &[zeron_proto::artifacts::ArtifactQuestionAnswer],
+        now_ms: i64,
+    ) -> Result<Option<Vec<zeron_proto::artifacts::ArtifactQuestionAnswer>>, DocError> {
+        if self.artifact(id).is_none() {
+            return Ok(None);
+        }
+        let mut answers = answers.to_vec();
+        self.observe_row(KIND_ARTIFACTS, id);
+        let hlc = self.next_hlc();
+        loop {
+            let value = serde_json::to_value(&answers)
+                .map_err(|e| DocError::Schema(format!("answers: {e}")))?;
+            let op = RowOp {
+                kind: KIND_ARTIFACTS.to_owned(),
+                id: id.to_owned(),
+                op: OpKind::Update,
+                set: Some(BTreeMap::from([
+                    ("answers".to_owned(), value),
+                    ("updatedAt".to_owned(), Value::from(now_ms)),
+                ])),
+                hlc: hlc.clone(),
+                clocks: None,
+            };
+            match check_op_size(&op) {
+                Ok(()) => {
+                    self.write_ops(vec![op])?;
+                    return Ok(Some(answers));
+                }
+                Err(error) if answers.len() <= 1 => return Err(error),
+                Err(_) => {
+                    answers.remove(0);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
