@@ -70,7 +70,13 @@ pub fn render(
         .child(SharedString::from(label))
         .tooltip(move |_, cx| {
             cx.new(|cx| UsageCard {
-                _subscription: cx.observe(&state, |_, _, cx| cx.notify()),
+                // The card shows only `context_usage`; repaint when it moves.
+                seen: crate::observe_gate::ObserveGate::seeded(state.read(cx).context_usage),
+                _subscription: cx.observe(&state, |this: &mut UsageCard, state, cx| {
+                    if this.seen.changed(state.read(cx).context_usage) {
+                        cx.notify();
+                    }
+                }),
                 state: state.clone(),
             })
             .into()
@@ -79,6 +85,7 @@ pub fn render(
 
 struct UsageCard {
     state: gpui::Entity<crate::state::AppState>,
+    seen: crate::observe_gate::ObserveGate<Option<ContextUsage>>,
     _subscription: gpui::Subscription,
 }
 
