@@ -304,6 +304,25 @@ pub(crate) struct ArtifactTab {
 
 impl EventEmitter<ArtifactTabEvent> for ArtifactTab {}
 
+type StateSlice = (Option<ArtifactView>, Option<String>, Option<usize>, Option<String>);
+
+/// What the tab reads from `AppState` while rendering.
+fn state_slice(state: &crate::state::AppState, artifact_id: &str) -> StateSlice {
+    let artifact = state.artifacts().artifact(artifact_id).cloned();
+    let outline = artifact.as_ref().and_then(|artifact| {
+        state
+            .work_outline(&artifact.space_id)
+            .snapshot()
+            .map(|snapshot| std::sync::Arc::as_ptr(snapshot) as usize)
+    });
+    (
+        artifact,
+        state.local_device_id.clone(),
+        outline,
+        state.artifacts().space_ids().next().map(str::to_owned),
+    )
+}
+
 impl ArtifactTab {
     pub(crate) fn new(
         state: Entity<AppState>,
@@ -328,7 +347,19 @@ impl ArtifactTab {
                 }
             }
         });
-        let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // Repaint only when this artifact's metadata, the local device, its
+        // Space's Outline snapshot or the first watched Space changed.
+        let observe = cx.observe(&state, {
+            let artifact_id = artifact_id.clone();
+            let mut seen = None;
+            move |_, state, cx| {
+                let slice = state_slice(state.read(cx), &artifact_id);
+                if seen.as_ref() != Some(&slice) {
+                    seen = Some(slice);
+                    cx.notify();
+                }
+            }
+        });
         let remembered_zoom = super::zoom::ZoomMemory::recall(cx, &artifact_id);
         let mut tab = Self {
             state,
