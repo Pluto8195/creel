@@ -852,6 +852,9 @@ impl RegistryDoc {
             WorkOutlineMutation::SetPrReviewSyncDestination(p) => self
                 .set_pr_review_sync_destination(p, now_ms)
                 .map(|_| empty),
+            WorkOutlineMutation::SetLinearAssignedDestination(p) => self
+                .set_linear_assigned_destination(p, now_ms)
+                .map(|_| empty),
         }
     }
 

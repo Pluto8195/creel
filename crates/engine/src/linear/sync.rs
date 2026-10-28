@@ -80,6 +80,8 @@ pub async fn sync_space(
     if !snapshot.available || !snapshot.space_settings.linear_enabled {
         return Err(LinearError::disabled_for_space());
     }
+    // The linked Linear item's children (no call without a destination).
+    let assigned = super::assigned::sync(linear, work_outline, &snapshot, space_id, force).await?;
     // Item -> identifier for every live issue-linked item.
     let linked: Vec<(String, String)> = snapshot
         .items
@@ -92,7 +94,7 @@ pub async fn sync_space(
         })
         .collect();
     if linked.is_empty() {
-        return Ok(0);
+        return Ok(assigned);
     }
     let mut issues: BTreeMap<String, Option<LinearIssueSummary>> = BTreeMap::new();
     for (_, identifier) in &linked {
@@ -116,7 +118,7 @@ pub async fn sync_space(
         };
         issues.insert(identifier.clone(), fetched);
     }
-    let mut updated = 0;
+    let mut updated = assigned;
     for (work_item_id, identifier) in &linked {
         let Some(Some(issue)) = issues.get(identifier) else {
             continue;

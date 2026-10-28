@@ -1010,6 +1010,11 @@ impl WorkspaceHost {
         self.read(|doc| doc.linear_enabled_space_ids())
     }
 
+    /// Live Spaces with a linked Linear item (sorted).
+    pub fn linear_assigned_space_ids(&self) -> Vec<String> {
+        self.read(|doc| doc.linear_assigned_space_ids())
+    }
+
     /// Live Spaces with a PR review sync destination (sorted).
     pub fn pr_review_sync_space_ids(&self) -> Vec<String> {
         self.read(|doc| doc.pr_review_sync_space_ids())

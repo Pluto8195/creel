@@ -76,6 +76,7 @@ pub(crate) fn decode_space_settings(row: Option<&RegistryRow>) -> WorkOutlineSpa
             .and_then(Value::as_bool)
             .unwrap_or(false),
         pr_review_sync_work_item_id: super::pr_review_sync::decode_destination(row),
+        linear_assigned_work_item_id: super::pr_review_sync::decode_linear_assigned(row),
     }
 }
 
@@ -171,7 +172,7 @@ impl RegistryDoc {
         Some(work_item_id)
     }
 
-    fn require_linear_enabled(&self, space_id: &str) -> Outcome<()> {
+    pub(super) fn require_linear_enabled(&self, space_id: &str) -> Outcome<()> {
         if self.space_linear_enabled(space_id) {
             Ok(())
         } else {

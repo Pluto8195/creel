@@ -49,6 +49,18 @@ pub fn my_issues() -> String {
     )
 }
 
+/// Issues assigned to the viewer, not started (backlog, unstarted, triage)
+/// and in no project (the linked Linear item). Read-only.
+pub fn assigned_unstarted_issues() -> String {
+    format!(
+        "query ZeronLinearAssignedUnstarted($first: Int!, $after: String) {{ viewer {{ \
+         assignedIssues(first: $first, after: $after, orderBy: updatedAt, \
+         filter: {{ state: {{ type: {{ in: [\"backlog\", \"unstarted\", \"triage\"] }} }}, \
+         project: {{ null: true }} }}) {{ \
+         nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
+    )
+}
+
 pub fn my_projects() -> String {
     format!(
         "query ZeronLinearMyProjects($first: Int!, $after: String) {{ \
@@ -323,6 +335,7 @@ mod tests {
             issue(),
             issue_attachments(),
             my_issues(),
+            assigned_unstarted_issues(),
             my_projects(),
             project_issues(),
             project_detail(),
@@ -332,6 +345,9 @@ mod tests {
             assert_eq!(doc.matches('{').count(), doc.matches('}').count(), "{doc}");
         }
         assert!(my_issues().contains("nin: [\"completed\", \"canceled\"]"));
+        let assigned = assigned_unstarted_issues();
+        assert!(assigned.contains("in: [\"backlog\", \"unstarted\", \"triage\"]"));
+        assert!(assigned.contains("project: { null: true }"));
         assert!(my_projects().contains("members: { some: { isMe: { eq: true } } }"));
         assert!(my_projects().contains("lead: { isMe: { eq: true } }"));
     }

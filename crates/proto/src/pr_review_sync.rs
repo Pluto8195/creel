@@ -287,6 +287,16 @@ pub struct WorkItemExternalSyncState {
     /// restores stays restored; a new round resets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_by_sync: Option<PrReviewRequestState>,
+    /// Linked Linear item only (`provider` = `linear`): why the ticket no
+    /// longer matches ("Started in Linear", "Moved to project X", …) on a
+    /// child the user has touched, which the sync therefore keeps. `None`
+    /// while the ticket matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// Linked Linear item only: the sync archived this untouched child
+    /// because its ticket stopped matching.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived_by_linear_sync: bool,
 }
 
 // --------------------------------------------------------------------------

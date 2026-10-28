@@ -10,6 +10,7 @@
 //!   follow Linear until the user edits them), run every 15 minutes, on
 //!   `LinearRefreshLinkedItems`, and when a Space turns Linear on.
 
+pub mod assigned;
 pub mod client;
 pub mod credentials;
 pub mod queries;
@@ -518,6 +519,32 @@ impl LinearService {
                 )
                 .await?;
             Ok(open_issues(&nodes))
+        })
+        .await
+    }
+
+    /// The viewer's not-started, project-less issues (the linked Linear
+    /// item). Same SWR store as [`Self::my_issues`]; the response is also
+    /// filtered locally so a lenient server cannot widen the set.
+    pub async fn assigned_unstarted_issues(
+        &self,
+        force: bool,
+    ) -> Result<Vec<LinearIssueSummary>, LinearError> {
+        let this = self.clone();
+        self.issue_list("assigned-unstarted", force, false, move || async move {
+            let (nodes, _) = this
+                .paginate(
+                    &queries::assigned_unstarted_issues(),
+                    json!({}),
+                    "/viewer/assignedIssues",
+                    MAX_LIST_ISSUES,
+                )
+                .await?;
+            Ok(nodes
+                .iter()
+                .filter_map(queries::issue_summary)
+                .filter(|i| i.state.state_type.is_unstarted() && i.project.is_none())
+                .collect())
         })
         .await
     }

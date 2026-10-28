@@ -1211,6 +1211,8 @@ pub(crate) mod tests {
             round: 1,
             request_state: zeron_proto::PrReviewRequestState::Merged,
             archived_by_sync: Some(zeron_proto::PrReviewRequestState::Merged),
+            marker: None,
+            archived_by_linear_sync: false,
             ..Default::default()
         });
         let mut chats = fixture_chats("s1");

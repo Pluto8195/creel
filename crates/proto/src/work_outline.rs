@@ -427,6 +427,11 @@ pub struct WorkOutlineSpaceSettings {
     /// requests the user's review (`None` = the sync is off for this Space).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_review_sync_work_item_id: Option<String>,
+    /// Linked Linear item: the work item that receives one child per Linear
+    /// ticket assigned to the user that is not started and not in a project
+    /// (`None` = off for this Space).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_assigned_work_item_id: Option<String>,
 }
 
 /// How a Chat relates to the outline. Lenient: unknown reads as `unassociated`.
@@ -818,6 +823,12 @@ impl WorkOutlineSnapshot {
     /// The Space's PR review sync destination, when set.
     pub fn pr_review_sync_destination(&self) -> Option<&str> {
         self.space_settings.pr_review_sync_work_item_id.as_deref()
+    }
+
+    /// The Space's linked Linear item (assigned, unstarted, project-less
+    /// tickets), when set.
+    pub fn linear_assigned_destination(&self) -> Option<&str> {
+        self.space_settings.linear_assigned_work_item_id.as_deref()
     }
 
     pub fn item(&self, id: &str) -> Option<&WorkItemView> {
@@ -1223,6 +1234,22 @@ pub struct SetPrReviewSyncDestinationParams {
     pub operation_id: String,
 }
 
+/// `setLinearAssignedDestination` (linked Linear item): pick the work item
+/// that receives the Space's auto-created children for Linear tickets assigned
+/// to the user that are not started and not in a project, or turn it off with
+/// `workItemId: null` (`workOutlineSpaceSettings.linearAssignedWorkItemId`,
+/// LWW). The item must be live, not archived, and in the Space, and the Space
+/// must have Linear on to set one. Reply `{}`. Turning it off (or moving the
+/// destination) never moves, archives, or deletes children. User action only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLinearAssignedDestinationParams {
+    pub space_id: String,
+    #[serde(default)]
+    pub work_item_id: Option<String>,
+    pub operation_id: String,
+}
+
 /// The params of `WorkOutlineMutate`: one tagged enum (`op`, camelCase) so a
 /// peer that predates an operation answers a single, recognizable error.
 /// Each variant's fields sit beside `op`, e.g.
@@ -1262,6 +1289,7 @@ pub enum WorkOutlineMutation {
     LinkLinearProject(LinkLinearProjectParams),
     // ── PR review sync ──
     SetPrReviewSyncDestination(SetPrReviewSyncDestinationParams),
+    SetLinearAssignedDestination(SetLinearAssignedDestinationParams),
 }
 
 impl WorkOutlineMutation {
@@ -1295,6 +1323,7 @@ impl WorkOutlineMutation {
             Self::CreateWorkItemFromLinear(p) => &p.operation_id,
             Self::LinkLinearProject(p) => &p.operation_id,
             Self::SetPrReviewSyncDestination(p) => &p.operation_id,
+            Self::SetLinearAssignedDestination(p) => &p.operation_id,
         }
     }
 
@@ -1328,6 +1357,7 @@ impl WorkOutlineMutation {
             Self::CreateWorkItemFromLinear(_) => "createWorkItemFromLinear",
             Self::LinkLinearProject(_) => "linkLinearProject",
             Self::SetPrReviewSyncDestination(_) => "setPrReviewSyncDestination",
+            Self::SetLinearAssignedDestination(_) => "setLinearAssignedDestination",
         }
     }
 

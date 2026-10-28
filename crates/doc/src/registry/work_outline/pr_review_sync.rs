@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use zeron_proto::pr_review_sync::WorkItemExternalSyncState;
-use zeron_proto::work_outline::{SetPrReviewSyncDestinationParams, WorkOutlineErrorCode};
+use zeron_proto::work_outline::{
+    SetLinearAssignedDestinationParams, SetPrReviewSyncDestinationParams, WorkOutlineErrorCode,
+};
 
 use super::linear::{KIND_WORK_OUTLINE_SPACE_SETTINGS, decode_space_settings};
 use super::materialize::str_field;
@@ -29,6 +31,8 @@ use crate::registry::{RegistryDoc, RegistryRow, RowState};
 pub const SYNC_STATE_FIELD: &str = "externalSyncState";
 /// The settings field holding the destination.
 pub const DESTINATION_FIELD: &str = "prReviewSyncWorkItemId";
+/// The settings field holding the linked Linear item.
+pub const LINEAR_ASSIGNED_FIELD: &str = "linearAssignedWorkItemId";
 
 /// The sync record of an item row (`None` when absent or not an object).
 pub(crate) fn decode_sync_state(row: &RegistryRow) -> Option<WorkItemExternalSyncState> {
@@ -40,7 +44,16 @@ pub(crate) fn decode_sync_state(row: &RegistryRow) -> Option<WorkItemExternalSyn
 
 /// The destination recorded on a settings row (`None` when unset/empty).
 pub(crate) fn decode_destination(row: Option<&RegistryRow>) -> Option<String> {
-    row.and_then(|row| row.fields.get(DESTINATION_FIELD))
+    decode_settings_item(row, DESTINATION_FIELD)
+}
+
+/// The linked Linear item recorded on a settings row (`None` when unset).
+pub(crate) fn decode_linear_assigned(row: Option<&RegistryRow>) -> Option<String> {
+    decode_settings_item(row, LINEAR_ASSIGNED_FIELD)
+}
+
+fn decode_settings_item(row: Option<&RegistryRow>, field: &str) -> Option<String> {
+    row.and_then(|row| row.fields.get(field))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
@@ -54,6 +67,51 @@ impl RegistryDoc {
                 .as_ref(),
         )
         .pr_review_sync_work_item_id
+    }
+
+    /// The Space's linked Linear item, when set.
+    pub fn linear_assigned_destination(&self, space_id: &str) -> Option<String> {
+        decode_space_settings(
+            self.overlay_row(KIND_WORK_OUTLINE_SPACE_SETTINGS, space_id)
+                .as_ref(),
+        )
+        .linear_assigned_work_item_id
+    }
+
+    /// Live Spaces with a linked Linear item (sorted).
+    pub fn linear_assigned_space_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .overlay_rows(KIND_WORK_OUTLINE_SPACE_SETTINGS)
+            .into_iter()
+            .filter(|row| decode_linear_assigned(Some(row)).is_some())
+            .filter_map(|row| str_field(&row, "spaceId").or(Some(row.id)))
+            .filter(|space| self.row_state(KIND_SPACES, space) == RowState::Live)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// `setLinearAssignedDestination`: like [`Self::set_pr_review_sync_destination`]
+    /// for the linked Linear item; setting one needs Linear on for the Space.
+    pub fn set_linear_assigned_destination(
+        &mut self,
+        p: &SetLinearAssignedDestinationParams,
+        now_ms: i64,
+    ) -> Outcome<()> {
+        if p.work_item_id.as_deref().is_some_and(|id| !id.is_empty()) {
+            self.require_space(&p.space_id)?;
+            self.require_linear_enabled(&p.space_id)?;
+        }
+        let current = self.linear_assigned_destination(&p.space_id);
+        self.set_space_item(
+            &p.space_id,
+            p.work_item_id.as_deref(),
+            &p.operation_id,
+            LINEAR_ASSIGNED_FIELD,
+            current,
+            now_ms,
+        )
     }
 
     /// Live Spaces with a PR review sync destination (sorted).
@@ -78,13 +136,34 @@ impl RegistryDoc {
         p: &SetPrReviewSyncDestinationParams,
         now_ms: i64,
     ) -> Outcome<()> {
-        check_operation_id(&p.operation_id)?;
-        self.require_space(&p.space_id)?;
-        let destination = p.work_item_id.as_deref().filter(|id| !id.is_empty());
+        let current = self.pr_review_sync_destination(&p.space_id);
+        self.set_space_item(
+            &p.space_id,
+            p.work_item_id.as_deref(),
+            &p.operation_id,
+            DESTINATION_FIELD,
+            current,
+            now_ms,
+        )
+    }
+
+    /// LWW write of one item-valued field of the Space's settings row.
+    fn set_space_item(
+        &mut self,
+        space_id: &str,
+        work_item_id: Option<&str>,
+        operation_id: &str,
+        field: &str,
+        current: Option<String>,
+        now_ms: i64,
+    ) -> Outcome<()> {
+        check_operation_id(operation_id)?;
+        self.require_space(space_id)?;
+        let destination = work_item_id.filter(|id| !id.is_empty());
         if let Some(id) = destination {
             check_id("work item", id)?;
             let item = self.live_item(id)?;
-            if item.space_id != p.space_id {
+            if item.space_id != space_id {
                 return Err(err(
                     WorkOutlineErrorCode::CrossSpace,
                     "The destination work item belongs to another Space",
@@ -98,16 +177,16 @@ impl RegistryDoc {
             }
         }
         let value = destination.map_or(Value::Null, |id| json!(id));
-        let planned = match self.row_state(KIND_WORK_OUTLINE_SPACE_SETTINGS, &p.space_id) {
+        let planned = match self.row_state(KIND_WORK_OUTLINE_SPACE_SETTINGS, space_id) {
             RowState::Live => {
-                if self.pr_review_sync_destination(&p.space_id).as_deref() == destination {
+                if current.as_deref() == destination {
                     return Ok(());
                 }
                 Planned::update(
                     KIND_WORK_OUTLINE_SPACE_SETTINGS,
-                    &p.space_id,
+                    space_id,
                     BTreeMap::from([
-                        (DESTINATION_FIELD.to_owned(), value),
+                        (field.to_owned(), value),
                         ("updatedAt".to_owned(), json!(now_ms)),
                     ]),
                 )
@@ -118,10 +197,10 @@ impl RegistryDoc {
                 }
                 Planned::upsert(
                     KIND_WORK_OUTLINE_SPACE_SETTINGS,
-                    &p.space_id,
+                    space_id,
                     BTreeMap::from([
-                        ("spaceId".to_owned(), json!(p.space_id)),
-                        (DESTINATION_FIELD.to_owned(), value),
+                        ("spaceId".to_owned(), json!(space_id)),
+                        (field.to_owned(), value),
                         ("updatedAt".to_owned(), json!(now_ms)),
                         ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
                     ]),
@@ -129,7 +208,7 @@ impl RegistryDoc {
             }
             RowState::Tombstoned => return Err(not_found("This Space's settings were deleted")),
         };
-        let mut extra: Vec<(&str, &str)> = vec![(KIND_SPACES, p.space_id.as_str())];
+        let mut extra: Vec<(&str, &str)> = vec![(KIND_SPACES, space_id)];
         if let Some(id) = destination {
             extra.push((KIND_WORK_ITEMS, id));
         }
