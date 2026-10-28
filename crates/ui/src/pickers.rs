@@ -48,6 +48,7 @@ fn workspace_footer_row() -> gpui::Div {
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
+use crate::observe_gate::ObserveGate;
 use crate::popover::{self, Loadable, MenuKey};
 use crate::settings::composer::ComposerDefaults;
 use crate::state::{AppState, EngineHandle};
@@ -574,8 +575,59 @@ pub(crate) struct NewChatLauncher {
     pub device_id: Option<String>,
 }
 
+/// Everything the pickers' render and menus read from `AppState` outside
+/// their own fields: the selected chat and project rows, the project and
+/// device lists (with presence, which is time-based), the selected chat's
+/// execution members and change request. Streaming transcript frames and
+/// other chats' updates change none of it.
+#[derive(Debug, Clone, PartialEq)]
+struct PickersSlice {
+    selected_chat: Option<String>,
+    chat: Option<zeron_proto::Chat>,
+    selected_space: Option<String>,
+    no_project: bool,
+    selected_device: Option<String>,
+    local_device_id: Option<String>,
+    spaces: Vec<Space>,
+    devices: Vec<(zeron_proto::Device, bool)>,
+    execution: Option<(
+        Vec<crate::work_outline::execution::ExecutionMember>,
+        Option<crate::work_outline::execution::ExecutionMember>,
+    )>,
+    change_request: Option<zeron_proto::ChangeRequestSummary>,
+}
+
+impl PickersSlice {
+    fn read(state: &AppState, now: chrono::DateTime<chrono::Utc>) -> Self {
+        let chat = state.selected_chat_row();
+        Self {
+            selected_chat: state.selected_chat.clone(),
+            chat: chat.cloned(),
+            selected_space: state.selected_space.clone(),
+            no_project: state.no_project,
+            selected_device: state.selected_device.clone(),
+            local_device_id: state.local_device_id.clone(),
+            spaces: state.spaces.clone(),
+            devices: state
+                .devices
+                .iter()
+                .map(|d| (d.clone(), state.device_online(&d.id, now)))
+                .collect(),
+            execution: chat.map(|c| {
+                (
+                    state.chat_execution_members(&c.id),
+                    state.selected_execution_member(&c.id),
+                )
+            }),
+            change_request: chat.and_then(|c| state.change_request_for_chat(c).cloned()),
+        }
+    }
+}
+
 pub struct Pickers {
     state: Entity<AppState>,
+    /// What the last state observation saw of the state the pickers render.
+    seen: ObserveGate<PickersSlice>,
     /// `Some` for a launcher instance (see [`NewChatLauncher`]); `None` for
     /// the composer's own pickers.
     launcher: Option<NewChatLauncher>,
@@ -821,7 +873,9 @@ impl Pickers {
             // A launcher configures its own new chat on a fixed device: the
             // composer's selection never resets it.
             if this.launcher.is_some() {
-                cx.notify();
+                if this.seen.changed(PickersSlice::read(state.read(cx), chrono::Utc::now())) {
+                    cx.notify();
+                }
                 return;
             }
             let selected = state.read(cx).selected_chat.clone();
@@ -870,7 +924,11 @@ impl Pickers {
                 this.model_refresh_errors.clear();
                 this.catalog_rev += 1;
             }
-            cx.notify();
+            // Repaint only when something the pickers render changed, not on
+            // every streaming frame.
+            if this.seen.changed(PickersSlice::read(state.read(cx), chrono::Utc::now())) {
+                cx.notify();
+            }
         });
         // A Settings → Agents toggle changed some device's enabled set:
         // force-refresh the cached catalog so the rail/chips follow without a
@@ -959,6 +1017,7 @@ impl Pickers {
             workspace_outcomes: HashMap::new(),
             carried_auto_approve: None,
             _search_events: search_events,
+            seen: ObserveGate::default(),
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
         }

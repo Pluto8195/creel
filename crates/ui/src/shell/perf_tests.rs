@@ -14,7 +14,7 @@ fn watch<T: 'static>(cx: &mut TestAppContext, name: &'static str, entity: &Entit
     let count = Rc::new(Cell::new(0));
     let seen = count.clone();
     cx.update(|cx| {
-        cx.observe(entity, move |_, _| seen.set(seen.get() + 1))
+        cx.observe(entity, move |_, _| { if std::env::var("PERF_BT").is_ok_and(|v| v == name) && seen.get() == 3 { eprintln!("{}", std::backtrace::Backtrace::force_capture()); } seen.set(seen.get() + 1) })
             .detach()
     });
     (name, count)
