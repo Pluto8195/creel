@@ -1090,7 +1090,7 @@ mod tests {
         right_click(cx, &row_key::item("s1", API));
 
         let keys = |id: &str, cx: &mut gpui::VisualTestContext| row(&shell, cx, id).keys;
-        assert_eq!(keys("open-details", cx), Some(key_label("enter")));
+        assert_eq!(keys("open-details", cx), Some(key_label("mod-i")));
         assert_eq!(keys("rename", cx), Some(key_label("f2")));
         assert_eq!(keys("new-child", cx), Some(key_label("shift-n")));
         assert_eq!(keys("move-down", cx), Some(key_label("shift-down")));
