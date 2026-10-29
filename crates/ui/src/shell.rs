@@ -78,7 +78,7 @@ mod sidebar_sections;
 pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
-mod work_context_ui;
+mod chat_item_ui;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -111,7 +111,9 @@ actions!(
         ArchiveSession,
         OpenOverview,
         FocusOverviewSearch,
-        OpenPrReviewChats
+        OpenPrReviewChats,
+        OpenItemTab,
+        ToggleItemCard
     ]
 );
 
@@ -121,6 +123,10 @@ actions!(
 /// and every other route ignores it.
 pub(crate) const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
 pub(crate) const OPEN_PR_REVIEW_CHATS_COMBO: &str = "mod-shift-p";
+/// Open the side panel's Item tab (fixed, listed in the `?` reference).
+pub(crate) const OPEN_ITEM_TAB_COMBO: &str = "mod-;";
+/// Pin the header's context card open / release it.
+pub(crate) const TOGGLE_ITEM_CARD_COMBO: &str = "mod-alt-i";
 
 /// Restore a default focus only after an in-flight handoff has had a frame to
 /// claim the window. A synchronous focus-lost fallback can otherwise steal
@@ -445,6 +451,8 @@ pub fn apply_keymap(
             OpenPrReviewChats,
             None,
         ),
+        KeyBinding::new(&platform_combo(OPEN_ITEM_TAB_COMBO), OpenItemTab, None),
+        KeyBinding::new(&platform_combo(TOGGLE_ITEM_CARD_COMBO), ToggleItemCard, None),
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
@@ -569,6 +577,10 @@ pub enum RightSurface {
     /// A planning artifact (`mast-artifact:` links) — keys
     /// `Shell::artifact_tabs`.
     Artifact(u64),
+    /// The sticky "Item" tab: what the chat is for (work item, instructions,
+    /// where it runs, model, account, open asks). Always first in the strip,
+    /// never stored in `right_tabs`, never closed.
+    Item,
 }
 
 fn push_unique_right_surface(tabs: &mut Vec<RightSurface>, surface: RightSurface) -> bool {
@@ -1755,8 +1767,10 @@ pub struct Shell {
     /// existing multi-PR `CHAT_LINK_STATUS` endpoint.
     chat_header_links: std::collections::HashMap<String, ChatHeaderLinkCache>,
     chat_header_links_pending: std::collections::HashSet<String>,
-    /// Chats whose work-context strip (`chat_work_context`) is expanded.
-    chat_work_context_open: std::collections::HashSet<String>,
+    /// The header's hover context card (show / hide / ⌥⌘I pin) and the chat
+    /// it belongs to.
+    chat_item_card: crate::chat_item::CardState,
+    chat_item_card_chat: String,
     /// What the full-chat header adds below the metadata line (the work-context
     /// strip's line), so the transcript's top fade clears it.
     chat_header_extra_clearance: f32,
@@ -2192,7 +2206,8 @@ impl Shell {
             copied_chat_identity_clear: None,
             chat_header_links: Default::default(),
             chat_header_links_pending: Default::default(),
-            chat_work_context_open: Default::default(),
+            chat_item_card: Default::default(),
+            chat_item_card_chat: String::new(),
             chat_header_extra_clearance: 0.0,
             update_flow: UpdateFlow::Idle,
             update_task: None,
@@ -2884,7 +2899,7 @@ impl Shell {
                         browser.page.url.clone().map(Into::into),
                     )
                 }),
-                RightSurface::Picker => None,
+                RightSurface::Picker | RightSurface::Item => None,
             })
             .collect()
     }
@@ -2897,6 +2912,7 @@ impl Shell {
         let path = match surface {
             RightSurface::File(id) => self.file_surface_paths.get(&id)?.clone(),
             RightSurface::Picker
+            | RightSurface::Item
             | RightSurface::Diff(_)
             | RightSurface::Terminal(_)
             | RightSurface::Subagent(_)
@@ -2950,6 +2966,9 @@ impl Shell {
     /// go stale when their tab closes/exits — never render a dead surface.
     fn resolved_right_active(&self, cx: &App) -> RightSurface {
         let picked = self.panels.get(&self.panel_key(cx)).right_active;
+        if picked == RightSurface::Item {
+            return picked;
+        }
         let rows = self.right_surface_rows(cx);
         let exists = match picked {
             RightSurface::Picker => false,
@@ -2999,7 +3018,7 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) | RightSurface::Browser(_) | RightSurface::Artifact(_) => {}
-            RightSurface::Picker => {}
+            RightSurface::Picker | RightSurface::Item => {}
         }
         self.sync_explorer_selection(cx);
         cx.notify();
@@ -3910,7 +3929,7 @@ impl Shell {
                 }
             }
             RightSurface::Artifact(id) => self.close_artifact_tab(id, cx),
-            RightSurface::Picker => {}
+            RightSurface::Picker | RightSurface::Item => {}
         }
         self.panels.update(&key, |p| {
             if p.right_active == surface {
@@ -3972,7 +3991,7 @@ impl Shell {
             return None;
         }
         match self.resolved_right_active(cx) {
-            RightSurface::Picker => None,
+            RightSurface::Picker | RightSurface::Item => None,
             surface => Some(surface),
         }
     }
@@ -4483,61 +4502,6 @@ impl Shell {
 
     pub(crate) fn invalidate_chat_header_links(&mut self, chat_id: &str) {
         self.chat_header_links.remove(chat_id);
-    }
-
-    /// Metadata floating immediately under the overlaid titlebar. This is a
-    /// paint layer over the transcript, but participates in the column's flex
-    /// sizing so wrapping values never collide with the composer below.
-    fn render_chat_header_metadata(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let chat_id = self.state.read(cx).selected_chat.clone()?;
-        self.ensure_chat_header_links(chat_id.clone(), cx);
-        let (chat, space) = {
-            let state = self.state.read(cx);
-            let chat = state.chats.iter().find(|chat| chat.id == chat_id)?.clone();
-            let space = chat
-                .space_id
-                .as_deref()
-                .and_then(|id| state.space_row(id))
-                .cloned();
-            (chat, space)
-        };
-        let links = self
-            .chat_header_links
-            .get(&chat_id)
-            .and_then(|entry| entry.status.as_ref())
-            .map(crate::chat_metadata::HeaderLinks::from_status);
-        let mut items = crate::chat_metadata::metadata_items(&chat, space.as_ref(), links.as_ref());
-        crate::chat_metadata::insert_account_item(
-            &mut items,
-            self.state.read(cx).chat_account_badge(&chat_id),
-        );
-        let work_context = self.render_chat_work_context(&chat_id, theme, cx);
-        let instruction_status = self.render_chat_instruction_status(&chat_id, theme, cx);
-        let proposal_status = self.render_chat_proposal_status(&chat_id, theme, cx);
-        Some(
-            div()
-                .id("full-chat-header-metadata-wrap")
-                .flex_none()
-                .mt(px(Theme::TITLEBAR_HEIGHT))
-                .px(px(12.0))
-                .py(px(4.0))
-                .border_b_1()
-                .border_color(theme.border.opacity(0.7))
-                .bg(theme.surface.opacity(0.94))
-                .child(crate::chat_metadata::metadata_strip(
-                    "full-chat-header",
-                    items,
-                    theme,
-                ))
-                .when_some(work_context, |el, strip| el.child(strip))
-                .when_some(instruction_status, |el, status| el.child(status))
-                .when_some(proposal_status, |el, status| el.child(status))
-                .into_any_element(),
-        )
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
@@ -10284,6 +10248,7 @@ impl Shell {
                         .child(div().flex_1().min_h_0().child(changes))
                         .into_any_element()
                 }
+                RightSurface::Item => self.render_item_tab(cx),
                 RightSurface::Browser(id) => self
                     .browsers
                     .get(&id)
@@ -10664,7 +10629,7 @@ impl Shell {
                     .unwrap_or(icons::DOCUMENT),
                 RightSurface::Terminal(_) => icons::TERMINAL,
                 RightSurface::Browser(_) => icons::GLOBE,
-                RightSurface::Picker => icons::PLUS,
+                RightSurface::Picker | RightSurface::Item => icons::PLUS,
             };
             // A live subagent tab swaps its icon for the mini working
             // spinner (the history fetch button's in-flight recipe) — the
@@ -12140,6 +12105,10 @@ impl Render for Shell {
                     this.open_pr_review_chats_focused(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenItemTab, _, cx| this.open_item_tab(cx)))
+            .on_action(cx.listener(|this, _: &ToggleItemCard, _, cx| {
+                this.toggle_chat_item_card_pin(cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
                 // Inside Start Chat the shortcut opens the dialog's picker.
                 if let Some(pickers) = this.start_chat_pickers() {
@@ -12662,6 +12631,8 @@ mod tests {
             OPEN_PR_REVIEW_CHATS_COMBO,
             "mod-k",
             "mod-shift-o",
+            OPEN_ITEM_TAB_COMBO,
+            TOGGLE_ITEM_CARD_COMBO,
         ];
         for (index, combo) in fixed.iter().enumerate() {
             assert!(Keystroke::parse(&platform_combo(combo)).is_ok());

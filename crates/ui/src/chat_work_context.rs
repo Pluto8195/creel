@@ -25,7 +25,6 @@ use mast_proto::{
     WorkItemView, WorkOutlineSnapshot,
 };
 
-pub(crate) mod strip;
 #[cfg(test)]
 mod tests;
 

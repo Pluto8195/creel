@@ -78,6 +78,8 @@ pub(crate) struct InstructionFacts {
     /// Live instructions inherited from ancestors / the project.
     pub inherited: usize,
     pub has_state: bool,
+    /// Instruction proposals this chat made that still await review.
+    pub proposals: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,9 +296,116 @@ fn item_section(
             own,
             inherited,
             has_state: state.is_some(),
+            proposals: crate::work_outline::required_actions::pending_proposals_from_chat(
+                snapshot, chat_id,
+            )
+            .len(),
         },
         actions,
         plan,
         children,
     })
+}
+
+/// Hover delay before the context card appears.
+pub(crate) const HOVER_DELAY_MS: u64 = 400;
+/// Grace before it hides once the pointer left both header and card, so
+/// crossing the gap between them does not flicker.
+pub(crate) const HIDE_GRACE_MS: u64 = 160;
+
+/// A timer the host must run, then hand back to [`CardState::fire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardTimer {
+    Show(u64),
+    Hide(u64),
+}
+
+impl CardTimer {
+    pub(crate) fn delay_ms(self) -> u64 {
+        match self {
+            Self::Show(_) => HOVER_DELAY_MS,
+            Self::Hide(_) => HIDE_GRACE_MS,
+        }
+    }
+}
+
+/// The hover card's show / hide / pin state machine. Pure: hover events and
+/// timer expiries go in, "does the card show now" comes out. Epochs make a
+/// stale timer (the pointer moved again meanwhile) a no-op.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CardState {
+    shown: bool,
+    pinned: bool,
+    header_hover: bool,
+    card_hover: bool,
+    epoch: u64,
+}
+
+impl CardState {
+    pub(crate) fn visible(&self) -> bool {
+        self.shown || self.pinned
+    }
+
+    pub(crate) fn pinned(&self) -> bool {
+        self.pinned
+    }
+
+    fn hovered(&self) -> bool {
+        self.header_hover || self.card_hover
+    }
+
+    fn settle(&mut self) -> Option<CardTimer> {
+        self.epoch += 1;
+        if self.hovered() {
+            (!self.shown && !self.pinned).then_some(CardTimer::Show(self.epoch))
+        } else {
+            (self.shown && !self.pinned).then_some(CardTimer::Hide(self.epoch))
+        }
+    }
+
+    pub(crate) fn header_hover(&mut self, on: bool) -> Option<CardTimer> {
+        if self.header_hover == on {
+            return None;
+        }
+        self.header_hover = on;
+        self.settle()
+    }
+
+    pub(crate) fn card_hover(&mut self, on: bool) -> Option<CardTimer> {
+        if self.card_hover == on {
+            return None;
+        }
+        self.card_hover = on;
+        self.settle()
+    }
+
+    /// A timer ran out; true when the card's visibility changed.
+    pub(crate) fn fire(&mut self, timer: CardTimer) -> bool {
+        let before = self.visible();
+        match timer {
+            CardTimer::Show(epoch) if epoch == self.epoch && self.hovered() => self.shown = true,
+            CardTimer::Hide(epoch) if epoch == self.epoch && !self.hovered() => {
+                self.shown = false
+            }
+            _ => {}
+        }
+        before != self.visible()
+    }
+
+    /// ⌥⌘I: pin the card open, or release it (it then follows the pointer).
+    pub(crate) fn toggle_pin(&mut self) {
+        self.epoch += 1;
+        self.pinned = !self.pinned;
+        self.shown = self.hovered();
+    }
+
+    /// Hide at once and forget the pin (a different chat, Esc).
+    pub(crate) fn dismiss(&mut self) -> bool {
+        let before = self.visible();
+        *self = Self {
+            epoch: self.epoch + 1,
+            ..Self::default()
+        };
+        before
+    }
 }
