@@ -871,7 +871,7 @@ mod tests {
         })
     }
 
-    const ITEM_ENTRIES: [&str; 23] = [
+    const ITEM_ENTRIES: [&str; 24] = [
         "open-details",
         "start-chat",
         "rename",
@@ -885,6 +885,7 @@ mod tests {
         "group-into",
         "save-as-template",
         "new-from-template",
+        "convert-to-project",
         "set-status",
         "associate",
         "effective-instructions",

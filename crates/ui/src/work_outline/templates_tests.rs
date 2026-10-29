@@ -564,6 +564,7 @@ fn a_linear_project_row_creates_a_project_item_from_a_template_and_links_it(
     });
     vcx.run_until_parked();
     draw(vcx);
+    click(vcx, "linear-project-row-p-launch");
     click(vcx, "linear-project-template-p-launch");
 
     // Template picker, then the parent picker (entries: Top level, Launch, API, …).

@@ -1674,6 +1674,28 @@ impl LinearPanel {
             .children(marker)
             .child(
                 Self::small_button(
+                    SharedString::from(format!("linear-project-link-{id}")),
+                    if linking { "Linking\u{2026}" } else { "Link" },
+                    theme,
+                )
+                .debug_selector({
+                    let selector = format!("linear-project-link-{id}");
+                    move || selector.clone()
+                })
+                .tooltip(|_, cx| {
+                    cx.new(|_| TextTooltip("Link this project to the selected work item".into()))
+                        .into()
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.link_project(link_project.clone(), cx)
+                })),
+            );
+        let mut column = div().flex().flex_col().child(header);
+        if open {
+            let mut body = div().flex().flex_col().pl(px(14.0));
+            let template_button = div().flex().child(
+                Self::small_button(
                     SharedString::from(format!("linear-project-template-{id}")),
                     "New project item\u{2026}",
                     theme,
@@ -1698,29 +1720,8 @@ impl LinearPanel {
                         project: template_project.clone(),
                     })
                 })),
-            )
-            .child(
-                Self::small_button(
-                    SharedString::from(format!("linear-project-link-{id}")),
-                    if linking { "Linking\u{2026}" } else { "Link" },
-                    theme,
-                )
-                .debug_selector({
-                    let selector = format!("linear-project-link-{id}");
-                    move || selector.clone()
-                })
-                .tooltip(|_, cx| {
-                    cx.new(|_| TextTooltip("Link this project to the selected work item".into()))
-                        .into()
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.link_project(link_project.clone(), cx)
-                })),
             );
-        let mut column = div().flex().flex_col().child(header);
-        if open {
-            let mut body = div().flex().flex_col().pl(px(14.0));
+            body = body.child(template_button);
             match issues {
                 None | Some(Load::Loading) => {
                     body = body.child(Self::quiet("Loading\u{2026}", theme))
