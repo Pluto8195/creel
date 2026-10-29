@@ -2588,6 +2588,17 @@ impl RpcService for EngineRpc {
                     None => RpcReply::value(&serde_json::json!({ "ready": false })),
                 }
             }
+            methods::LIST_INTERRUPTED_RUNS => RpcReply::value(&self.sessions.interrupted_runs()),
+            methods::DISMISS_INTERRUPTED_RUN => {
+                let p: ChatParams = parse_params(params)?;
+                self.sessions.dismiss_interrupted(&p.chat_id);
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::RESUME_INTERRUPTED_RUN => {
+                let p: ChatParams = parse_params(params)?;
+                let resumed = self.sessions.resume_interrupted(&p.chat_id);
+                RpcReply::value(&serde_json::json!({ "resumed": resumed }))
+            }
             methods::RETRY_DELIVERY => {
                 let p: ChatParams = parse_params(params)?;
                 self.doc_host

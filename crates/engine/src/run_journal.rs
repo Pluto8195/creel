@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use mast_proto::{AgentEvent, InstructionRevisionPin};
+use mast_proto::{AgentEvent, InstructionRevisionPin, InterruptedOutcome, InterruptedRun};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -277,6 +277,11 @@ impl RunJournal {
         self.dir.join(format!("{}.resume", sanitize_id(chat_id)))
     }
 
+    fn interrupted_path(&self, chat_id: &str) -> PathBuf {
+        self.dir
+            .join(format!("{}.interrupted", sanitize_id(chat_id)))
+    }
+
     fn model_checked_path(&self, chat_id: &str) -> PathBuf {
         self.dir
             .join(format!("{}.modelchecked", sanitize_id(chat_id)))
@@ -365,6 +370,43 @@ impl RunJournal {
         }
         marked.sort();
         Ok(marked)
+    }
+
+    /// Record that boot recovery found `chat_id`'s turn interrupted and what
+    /// it did about it (see [`InterruptedOutcome`]). Replaces any earlier entry.
+    pub fn note_interrupted(&self, chat_id: &str, outcome: InterruptedOutcome, at_ms: i64) {
+        let entry = InterruptedRun {
+            chat_id: chat_id.to_owned(),
+            interrupted_at_ms: at_ms,
+            outcome,
+        };
+        let written = serde_json::to_vec(&entry)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(self.interrupted_path(chat_id), bytes));
+        if let Err(err) = written {
+            tracing::warn!(chat = %chat_id, error = %err, "interrupted-run ledger write failed");
+        }
+    }
+
+    pub fn clear_interrupted(&self, chat_id: &str) {
+        let _ = std::fs::remove_file(self.interrupted_path(chat_id));
+    }
+
+    /// The ledger, oldest first. Unreadable entries are skipped.
+    pub fn interrupted_runs(&self) -> Vec<InterruptedRun> {
+        let Ok(dir) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut runs: Vec<InterruptedRun> = dir
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("interrupted"))
+            .filter_map(|path| serde_json::from_slice(&std::fs::read(path).ok()?).ok())
+            .collect();
+        runs.sort_by(|a, b| {
+            (a.interrupted_at_ms, &a.chat_id).cmp(&(b.interrupted_at_ms, &b.chat_id))
+        });
+        runs
     }
 
     /// Auto-resume revival budget (zeron `resumeAttempt`/`MAX_AUTO_RESUME`):
@@ -942,6 +984,33 @@ mod tests {
         }
         let journal = RunJournal::open(dir.path()).unwrap();
         assert_eq!(journal.append("chat-1", &text("b")).unwrap(), 2);
+    }
+
+    #[test]
+    fn interrupted_ledger_round_trips_orders_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(journal.interrupted_runs().is_empty());
+        journal.note_interrupted("b", InterruptedOutcome::Exhausted, 20);
+        journal.note_interrupted("a", InterruptedOutcome::Resumed, 10);
+        journal.note_interrupted("b", InterruptedOutcome::Stale, 30); // replaces
+        let runs = journal.interrupted_runs();
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.chat_id.as_str(), r.outcome))
+                .collect::<Vec<_>>(),
+            [
+                ("a", InterruptedOutcome::Resumed),
+                ("b", InterruptedOutcome::Stale)
+            ]
+        );
+        // The ledger never looks like a stale journal or a restart marker.
+        assert!(journal.stale_sessions().unwrap().is_empty());
+        assert!(journal.graceful_restart_sessions().unwrap().is_empty());
+        journal.clear_interrupted("a");
+        assert_eq!(journal.interrupted_runs().len(), 1);
+        std::fs::write(dir.path().join("junk.interrupted"), b"not json").unwrap();
+        assert_eq!(journal.interrupted_runs().len(), 1, "junk is skipped");
     }
 
     #[test]

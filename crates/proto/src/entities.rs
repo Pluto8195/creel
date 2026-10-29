@@ -1768,3 +1768,27 @@ mod tests {
         );
     }
 }
+
+/// How boot recovery dealt with a turn that a restart (or crash) interrupted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InterruptedOutcome {
+    /// Re-dispatched automatically; clears once that turn completes.
+    Resumed,
+    /// Revival budget spent: needs a person.
+    Exhausted,
+    /// Too old (or nothing to re-send): left alone.
+    Stale,
+}
+
+/// One entry of the interrupted-runs ledger the engine keeps beside its run
+/// journals. Cleared when the chat's next turn completes, on an explicit Stop,
+/// or when the user dismisses or resumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptedRun {
+    pub chat_id: String,
+    /// Epoch milliseconds when boot recovery recorded it.
+    pub interrupted_at_ms: i64,
+    pub outcome: InterruptedOutcome,
+}

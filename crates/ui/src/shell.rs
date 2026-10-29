@@ -76,6 +76,7 @@ mod perf_tests;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
+mod running_ui;
 mod sidebar_pins;
 mod sidebar_sections;
 pub(crate) mod spaces;
@@ -117,7 +118,8 @@ actions!(
         OpenPrReviewChats,
         OpenItemTab,
         OpenTeamTab,
-        ToggleItemCard
+        ToggleItemCard,
+        ToggleRunningChats
     ]
 );
 
@@ -460,6 +462,11 @@ pub fn apply_keymap(
         ),
         KeyBinding::new(&platform_combo(OPEN_ITEM_TAB_COMBO), OpenItemTab, None),
         KeyBinding::new(&platform_combo(OPEN_TEAM_TAB_COMBO), OpenTeamTab, None),
+        KeyBinding::new(
+            &platform_combo(running_ui::TOGGLE_RUNNING_CHATS_COMBO),
+            ToggleRunningChats,
+            None,
+        ),
         KeyBinding::new(
             &platform_combo(TOGGLE_ITEM_CARD_COMBO),
             ToggleItemCard,
@@ -1565,6 +1572,7 @@ enum PendingExit {
     Quit,
     RuntimeChange,
     InstallUpdate(PathBuf),
+    Relaunch,
 }
 
 pub struct Shell {
@@ -1786,6 +1794,7 @@ pub struct Shell {
     /// The header's hover context card (show / hide / ⌥⌘I pin) and the chat
     /// it belongs to.
     chat_item_card: crate::chat_item::CardState,
+    running: running_ui::RunningUi,
     chat_item_card_chat: String,
     /// The Item tab's open accordion rows, its embedded Needs-you list, and
     /// the Team tab's focus target (plain `t` acts only while it is focused).
@@ -2031,6 +2040,7 @@ impl Shell {
                     // Staleness ages sessions out with no state change, and the
                     // Dock debounce needs a clock: a once-a-second check does both.
                     shell.sync_status_light(cx);
+                    shell.running_tick(cx);
                 });
                 if alive.is_err() {
                     break;
@@ -2103,6 +2113,7 @@ impl Shell {
             shell: shell.downgrade(),
             _observation: cx.observe(&shell, |_, _, cx| cx.notify()),
         });
+        let install = mast_update::detect_install();
         Self {
             state,
             sidebar_pane,
@@ -2228,6 +2239,10 @@ impl Shell {
             chat_header_links: Default::default(),
             chat_header_links_pending: Default::default(),
             chat_item_card: Default::default(),
+            running: running_ui::RunningUi::new(
+                matches!(install, mast_update::InstallKind::MacApp { .. }),
+                cx,
+            ),
             chat_item_card_chat: String::new(),
             item_tab_open: Default::default(),
             item_needs: None,
@@ -2236,7 +2251,7 @@ impl Shell {
             update_flow: UpdateFlow::Idle,
             update_task: None,
             update_dismissed: None,
-            install: mast_update::detect_install(),
+            install,
             org: None,
             sync_flow: SyncFlow::Idle,
             mutate_task: None,
@@ -5461,6 +5476,7 @@ impl Shell {
         self.command_palette.is_some()
             || self.section_dialog.is_some()
             || self.section_menu.is_some()
+            || self.running.open
             || self.add_space.is_some()
             || self.work_outline_modal.is_some()
             || self.work_outline_menu.is_open()
@@ -6478,6 +6494,7 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.open_new_session(cx)),
                     ))
             }))
+            .child(self.render_running_lamp(&theme, cx))
             .into_any_element()
     }
 
@@ -9379,6 +9396,7 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
+        overlays.extend(self.render_running_overlay(window, cx));
         if let Some(overlay) = self.render_work_outline_menu(window, cx) {
             overlays.push(overlay);
         }
@@ -11764,6 +11782,7 @@ impl Render for Shell {
                             PendingExit::InstallUpdate(staged) => {
                                 shell.apply_staged_update(staged, cx)
                             }
+                            PendingExit::Relaunch => shell.relaunch_now(cx),
                             PendingExit::Quit => unreachable!(),
                         })
                         .ok();
@@ -12133,6 +12152,9 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &OpenItemTab, _, cx| this.open_item_tab(cx)))
             .on_action(cx.listener(|this, _: &OpenTeamTab, _, cx| this.open_team_tab(cx)))
+            .on_action(cx.listener(|this, _: &ToggleRunningChats, window, cx| {
+                this.toggle_running_chats(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &ToggleItemCard, _, cx| this.toggle_chat_item_card_pin(cx)),
             )
@@ -12661,6 +12683,7 @@ mod tests {
             OPEN_ITEM_TAB_COMBO,
             OPEN_TEAM_TAB_COMBO,
             TOGGLE_ITEM_CARD_COMBO,
+            running_ui::TOGGLE_RUNNING_CHATS_COMBO,
         ];
         for (index, combo) in fixed.iter().enumerate() {
             assert!(Keystroke::parse(&platform_combo(combo)).is_ok());

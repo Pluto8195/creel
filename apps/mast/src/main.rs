@@ -117,7 +117,19 @@ fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// The build id scanned out of an installed binary by a running Mast (see
+/// `mast_ui::build_watch`). `#[used]` keeps it in the image.
+#[used]
+static BUILD_MARKER: &str = concat!(
+    "MAST-BUILD-ID:",
+    env!("MAST_BUILD_SHA"),
+    ":",
+    env!("MAST_BUILD_GIT_DIR"),
+    "\0"
+);
+
 fn main() -> anyhow::Result<()> {
+    mast_ui::build_watch::set_running_build(env!("MAST_BUILD_SHA"), env!("MAST_BUILD_GIT_DIR"));
     #[cfg(windows)]
     attach_parent_console();
     let cli = Cli::parse();
