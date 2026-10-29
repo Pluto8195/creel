@@ -405,6 +405,14 @@ pub struct WorkItemView {
     /// `None` (omitted) for every item the sync does not manage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_sync_state: Option<crate::pr_review_sync::WorkItemExternalSyncState>,
+    /// Project templates: the item is a project (`workItems.isProject`). The
+    /// nearest project at or above a Chat's item is its agent "project scope".
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_project: bool,
+    /// Project templates: the container where workers created by Chats on this
+    /// project go (`workItems.workerDestinationId`), e.g. its "Tickets" child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_destination_id: Option<String>,
 }
 
 impl WorkItemView {
@@ -732,6 +740,64 @@ impl WorkOutlineSnapshot {
         }
     }
 
+    /// The nearest project at or above `item_id` (the item itself counts).
+    /// This is the agent "project scope" root; `None` when no ancestor is
+    /// marked as a project.
+    pub fn project_root(&self, item_id: &str) -> Option<&WorkItemView> {
+        let mut cursor = self.item(item_id);
+        let mut steps = 0usize;
+        while let Some(item) = cursor {
+            if item.is_project {
+                return Some(item);
+            }
+            steps += 1;
+            if steps > self.items.len() {
+                return None;
+            }
+            cursor = item
+                .parent_work_item_id
+                .as_deref()
+                .and_then(|parent| self.item(parent));
+        }
+        None
+    }
+
+    /// Whether `target` is `root` or one of its effective descendants.
+    pub fn is_within(&self, root: &str, target: &str) -> bool {
+        let mut cursor = Some(target);
+        let mut steps = 0usize;
+        while let Some(id) = cursor {
+            if id == root {
+                return true;
+            }
+            steps += 1;
+            if steps > self.items.len() {
+                return false;
+            }
+            cursor = self
+                .item(id)
+                .and_then(|item| item.parent_work_item_id.as_deref());
+        }
+        false
+    }
+
+    /// Where workers created by a Chat on `item_id` go when the agent names
+    /// no parent: the nearest project's live worker destination, unless the
+    /// Chat's own item is already the destination or inside it (a worker's
+    /// sub-items stay under the worker).
+    pub fn worker_destination_for(&self, item_id: &str) -> Option<&str> {
+        let project = self.project_root(item_id)?;
+        let destination = project.worker_destination_id.as_deref()?;
+        let target = self.item(destination)?;
+        if target.archived_at.is_some() || !self.is_within(&project.id, destination) {
+            return None;
+        }
+        if self.is_within(destination, item_id) {
+            return None;
+        }
+        Some(destination)
+    }
+
     /// Equal in everything except the per-stream `revision` counter: the
     /// frame-dedupe comparison.
     pub fn same_content_as(&self, other: &Self) -> bool {
@@ -974,6 +1040,13 @@ pub struct WorkItemChanges {
     /// change carrying it is `unauthorized`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_sync_state: Option<crate::pr_review_sync::WorkItemExternalSyncState>,
+    /// Mark or unmark the item as a project (users only; absent = unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_project: Option<bool>,
+    /// Set or clear the project's worker destination (a live item inside the
+    /// project's own subtree; users only; absent = unchanged).
+    #[serde(default, skip_serializing_if = "FieldPatch::is_unchanged")]
+    pub worker_destination: FieldPatch<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1896,6 +1969,8 @@ mod tests {
             inherit_parent_instructions: Some(false),
             resolve_open_requests: false,
             external_sync_state: None,
+            is_project: None,
+            worker_destination: FieldPatch::Unchanged,
         };
         round_trip(
             &all,
@@ -1947,6 +2022,8 @@ mod tests {
                 },
                 external_sync_modified_fields: Vec::new(),
                 external_sync_state: None,
+                is_project: false,
+                worker_destination_id: None,
             }],
             assignments: vec![WorkItemChatAssignmentView {
                 chat_id: "chat-1".into(),
@@ -2284,6 +2361,8 @@ mod tests {
                     inherit_parent_instructions: Some(true),
                     resolve_open_requests: false,
                     external_sync_state: None,
+                    is_project: None,
+                    worker_destination: FieldPatch::Unchanged,
                 },
                 operation_id: "op".into(),
             }),

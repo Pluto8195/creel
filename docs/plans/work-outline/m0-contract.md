@@ -1649,3 +1649,39 @@ PR page parity chat-PR links (`chatPrLinks`, `ChatLinkSource`).
    after the next `bindRef` for it (pick it in the picker again); remote-device chats; an unbind
    control in the UI (the engine action exists); inline review comments on a range view are
    stored against the chat like any other pane's.
+
+## Amendment: project scope and worker destination
+
+From the project-templates design (option A, "Template as a copy"). Amends the section 8 policy
+and the coordinator agent tools amendment: the agent scope is no longer only "own item and its
+descendants".
+
+1. **Two per-item fields.** `isProject` (bool, default false) marks an item as a project;
+   `workerDestinationId` (item id, optional) names a live item inside that project's own subtree
+   where workers created by Chats on the project go (typically its "Tickets" child). Both are LWW
+   row fields written through `updateWorkItem` (`changes.isProject`, `changes.workerDestination`
+   tri-state). Only a user or system actor may set them; an agent change is `unauthorized`. A
+   destination needs the item to be a project and must be a live descendant (`invalid`
+   otherwise). Views carry `isProject` and `workerDestinationId`.
+2. **Project scope.** The nearest project at or above a Chat's item (the item itself counts) is its
+   *project scope*: that project and everything below it. A Chat with no project above it keeps
+   exactly the old scope (own item and descendants). The scope reaches:
+   - `work_outline_create_child` parents and `createWorkItem` by an agent (so a Chat on a
+     project's Planning item may create into the sibling Tickets container);
+   - `create_chat { workItemId }` targets;
+   - `work_outline_read_subtree` targets.
+   It does **not** reach `setStatus`, `associateCurrentChat`, `proposeInstruction`, resolving
+   requests, or any other mutation: those keep the own-item/descendant rule. A Chat can never
+   reach outside its project (a sibling project, the project's parent, or another phase).
+3. **Destination resolution.** `work_outline_create_child` without `parentWorkItemId`, and
+   `create_chat` whose `workItemId` is a project with a destination, resolve to the destination of
+   the nearest project, unless the Chat's own item is the destination or inside it (a worker's
+   sub-items stay under the worker). An explicit parent always wins. A missing, archived, or
+   out-of-project destination is ignored (old behaviour). The `create_child` reply carries
+   `resolvedToWorkerDestination`.
+4. **Agent hint.** The behaviour is described in the `work_outline_create_child`, `create_chat`
+   and `work_outline_read_subtree` tool descriptions; the MCP `INSTRUCTIONS` string (near its
+   budget) is unchanged.
+5. **Tests.** `crates/engine/tests/agent_tools.rs` (scope, resolution, limits),
+   `crates/doc/src/registry/work_outline/` (field validation), `crates/proto/src/work_outline.rs`
+   (snapshot helpers).

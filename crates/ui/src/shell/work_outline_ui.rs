@@ -195,6 +195,8 @@ pub(crate) enum OutlineNavKey {
     MoveItemDown,
     IndentItem,
     OutdentItem,
+    /// "Group into…": the selected items under a new or existing container.
+    GroupInto,
     /// Undo / redo the last Outline change (action log).
     Undo,
     Redo,
@@ -232,6 +234,7 @@ impl OutlineNavKey {
             Self::MoveItemDown => "Move down",
             Self::IndentItem => "Indent",
             Self::OutdentItem => "Outdent",
+            Self::GroupInto => "Group into\u{2026}",
             Self::Undo => "Undo change",
             Self::Redo => "Redo change",
             Self::ShowShortcuts => "Show shortcuts",
@@ -257,9 +260,11 @@ impl OutlineNavKey {
             | Self::CreateChild
             | Self::Undo
             | Self::Redo => OutlineKeyGroup::Edit,
-            Self::MoveItemUp | Self::MoveItemDown | Self::IndentItem | Self::OutdentItem => {
-                OutlineKeyGroup::Restructure
-            }
+            Self::MoveItemUp
+            | Self::MoveItemDown
+            | Self::IndentItem
+            | Self::OutdentItem
+            | Self::GroupInto => OutlineKeyGroup::Restructure,
         }
     }
 }
@@ -299,12 +304,14 @@ impl OutlineNavKey {
 ///   composer (`send_combo_is_reserved`).
 /// - F2 / R: rename in place (a Chat row opens the Chat rename dialog). R is
 ///   the laptop-friendly alias: F2 needs Fn there.
+/// - Mod+Shift+G: "Group into…" for the selected items (⌘-click / ⇧-click
+///   build a multi-selection; Esc or a plain click clears it)
 /// - N / Shift+N: create a sibling / child
 /// - ? (Shift+/ on US layouts): the shortcut reference. Bound to the typed
 ///   character, so it follows the keyboard layout.
 ///
 /// When an action has several keys, the first is the one tooltips show.
-pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 26] = [
+pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 27] = [
     ("up", OutlineNavKey::SelectPrevious),
     ("down", OutlineNavKey::SelectNext),
     ("home", OutlineNavKey::SelectFirst),
@@ -326,6 +333,7 @@ pub(crate) const OUTLINE_NAVIGATION_KEYS: [(&str, OutlineNavKey); 26] = [
     ("shift-left", OutlineNavKey::OutdentItem),
     ("tab", OutlineNavKey::IndentItem),
     ("shift-tab", OutlineNavKey::OutdentItem),
+    ("mod-shift-g", OutlineNavKey::GroupInto),
     ("mod-z", OutlineNavKey::Undo),
     ("ctrl-z", OutlineNavKey::Undo),
     ("mod-shift-z", OutlineNavKey::Redo),
@@ -402,7 +410,7 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenDetailsSelected, OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst,
         SelectLast, SelectNext, SelectNextSibling, SelectPrevious, SelectPreviousSibling,
-        StartChatSelected, UndoChange,
+        GroupSelected, StartChatSelected, UndoChange,
     };
     let context = Some(OUTLINE_NAVIGATION_CONTEXT);
     cx.bind_keys(OUTLINE_NAVIGATION_KEYS.iter().map(|(keys, key)| {
@@ -429,6 +437,7 @@ pub(crate) fn bind_work_outline_navigation(cx: &mut App) {
             OutlineNavKey::MoveItemDown => KeyBinding::new(keys, MoveItemDown, context),
             OutlineNavKey::IndentItem => KeyBinding::new(keys, IndentItem, context),
             OutlineNavKey::OutdentItem => KeyBinding::new(keys, OutdentItem, context),
+            OutlineNavKey::GroupInto => KeyBinding::new(keys, GroupSelected, context),
             OutlineNavKey::Undo => KeyBinding::new(keys, UndoChange, context),
             OutlineNavKey::Redo => KeyBinding::new(keys, RedoChange, context),
             OutlineNavKey::ShowShortcuts => KeyBinding::new(

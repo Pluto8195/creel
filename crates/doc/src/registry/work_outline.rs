@@ -1061,6 +1061,52 @@ impl RegistryDoc {
         {
             set.insert("inheritParentInstructions".to_owned(), json!(inherit));
         }
+        // Project templates: the project flag and the worker destination are
+        // user decisions (agents are already limited to status above).
+        let project_change = p.changes.is_project.is_some()
+            || !p.changes.worker_destination.is_unchanged();
+        if project_change && actor.kind == WorkOutlineActorKind::Agent {
+            return Err(WorkOutlineError::unauthorized(
+                "Agents may not change a project's settings",
+            ));
+        }
+        let becomes_project = p.changes.is_project.unwrap_or(item.is_project);
+        if let Some(is_project) = p.changes.is_project
+            && item.is_project != is_project
+        {
+            set.insert("isProject".to_owned(), json!(is_project));
+        }
+        match &p.changes.worker_destination {
+            FieldPatch::Unchanged => {}
+            FieldPatch::Clear => {
+                if item.worker_destination_id.is_some() {
+                    set.insert("workerDestinationId".to_owned(), Value::Null);
+                }
+            }
+            FieldPatch::Set(destination) => {
+                check_id("worker destination", destination)?;
+                if !becomes_project {
+                    return Err(invalid(
+                        "A worker destination needs the item to be a project",
+                    ));
+                }
+                let target = self.live_item(destination)?;
+                if target.archived()
+                    || !self
+                        .outline_tree(&item.space_id)
+                        .descendants(&p.work_item_id)
+                        .iter()
+                        .any(|id| id == destination)
+                {
+                    return Err(invalid(
+                        "The worker destination must be a live item inside the project",
+                    ));
+                }
+                if item.worker_destination_id.as_deref() != Some(destination.as_str()) {
+                    set.insert("workerDestinationId".to_owned(), json!(destination));
+                }
+            }
+        }
         // PR review sync: only the engine's sync (system actor) records it.
         if let Some(state) = &p.changes.external_sync_state {
             if actor.kind != WorkOutlineActorKind::System {

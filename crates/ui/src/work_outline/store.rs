@@ -240,6 +240,8 @@ pub(crate) fn fixture_item(
         rollup: WorkItemRollup::default(),
         external_sync_modified_fields: Vec::new(),
         external_sync_state: None,
+        is_project: false,
+        worker_destination_id: None,
     }
 }
 

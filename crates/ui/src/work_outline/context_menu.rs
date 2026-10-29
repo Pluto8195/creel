@@ -159,7 +159,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenDetailsSelected, OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst,
         SelectLast, SelectNext, SelectNextSibling, SelectPrevious, SelectPreviousSibling,
-        StartChatSelected, UndoChange,
+        GroupSelected, StartChatSelected, UndoChange,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -180,6 +180,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::MoveItemDown => Box::new(MoveItemDown),
         OutlineNavKey::IndentItem => Box::new(IndentItem),
         OutlineNavKey::OutdentItem => Box::new(OutdentItem),
+        OutlineNavKey::GroupInto => Box::new(GroupSelected),
         OutlineNavKey::Undo => Box::new(UndoChange),
         OutlineNavKey::Redo => Box::new(RedoChange),
         OutlineNavKey::ShowShortcuts => Box::new(RunWorkOutlineCommand(
@@ -616,6 +617,13 @@ impl OutlineView {
             )
             .disabled(restore_first("Restore this work item before moving it")),
             MenuEntry::new(
+                "group-into",
+                "Group into\u{2026}",
+                icons::SORT_VERTICAL,
+                MenuAction::Outline(OutlineNavKey::GroupInto),
+            )
+            .disabled(restore_first("Restore this work item before grouping it")),
+            MenuEntry::new(
                 "set-status",
                 "Set Status",
                 icons::CHECKLIST,
@@ -952,6 +960,11 @@ impl OutlineView {
         }
         cx.stop_propagation();
         window.focus(&self.focus, cx);
+        // Right-clicking a row of the multi-selection keeps it (the menu's
+        // Group into… acts on the whole set); any other row replaces it.
+        if !self.is_multi_selected(key) {
+            self.clear_multi(cx);
+        }
         self.select(key, cx);
         if let Some(menu) = self.context_menu(key, cx) {
             self.show_context_menu(menu, position, cx);

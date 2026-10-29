@@ -2014,3 +2014,275 @@ async fn first_guess_calls_succeed_or_say_exactly_what_to_pass() {
     .unwrap();
     assert_eq!(retry["workItemId"], child["workItemId"]);
 }
+
+// ---- project scope and worker destination ------------------------------------
+
+async fn update_item(rig: &Rig, op: &str, item: &str, changes: Value) -> Result<Value, String> {
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "updateWorkItem", "workItemId": item, "changes": changes,
+                    "operationId": op }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// `Project` (isProject, destination = Tickets) with `Planning` and `Tickets`
+/// children, a second project `Other` with its own `Other tickets`, and a
+/// bystander root.
+struct ProjectRig {
+    project: String,
+    planning: String,
+    tickets: String,
+    ticket: String,
+    other: String,
+    other_tickets: String,
+    bystander: String,
+}
+
+async fn project_rig(rig: &Rig) -> ProjectRig {
+    let project = create_item(rig, "p-proj", "Project", None).await;
+    let planning = create_item(rig, "p-plan", "Planning", Some(&project)).await;
+    let tickets = create_item(rig, "p-tix", "Tickets", Some(&project)).await;
+    let ticket = create_item(rig, "p-t1", "Ticket 1", Some(&tickets)).await;
+    let other = create_item(rig, "p-other", "Other", None).await;
+    let other_tickets = create_item(rig, "p-otix", "Other tickets", Some(&other)).await;
+    let bystander = create_item(rig, "p-by", "Bystander", None).await;
+    update_item(rig, "p-mark", &project, json!({ "isProject": true }))
+        .await
+        .unwrap();
+    update_item(
+        rig,
+        "p-dest",
+        &project,
+        json!({ "workerDestination": tickets }),
+    )
+    .await
+    .unwrap();
+    update_item(rig, "p-mark2", &other, json!({ "isProject": true }))
+        .await
+        .unwrap();
+    ProjectRig {
+        project,
+        planning,
+        tickets,
+        ticket,
+        other,
+        other_tickets,
+        bystander,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_records_its_worker_destination_and_validates_it() {
+    let rig = rig().await;
+    let p = project_rig(&rig).await;
+    let snap = snapshot(&rig);
+    let project = snap.item(&p.project).unwrap();
+    assert!(project.is_project);
+    assert_eq!(project.worker_destination_id.as_deref(), Some(p.tickets.as_str()));
+    assert!(!snap.item(&p.planning).unwrap().is_project);
+    // A destination must be inside the project, and needs a project.
+    for (op, item, dest) in [
+        ("bad-1", &p.project, &p.other_tickets),
+        ("bad-2", &p.project, &p.bystander),
+        ("bad-3", &p.planning, &p.ticket),
+    ] {
+        let error = update_item(&rig, op, item, json!({ "workerDestination": dest }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("invalid"), "{error}");
+    }
+    // Unmarking keeps clearing possible; clearing works.
+    update_item(&rig, "clear", &p.project, json!({ "workerDestination": null }))
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&rig).item(&p.project).unwrap().worker_destination_id, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_planning_chat_creates_workers_in_the_project_destination() {
+    let rig = rig().await;
+    let p = project_rig(&rig).await;
+    assign_chat(&rig, "assign-plan", CHAT, &p.planning).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    // No parent: the project's destination, though Tickets is a sibling.
+    let made = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "ENG-1", "idempotencyKey": "k1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["parentWorkItemId"], p.tickets);
+    assert_eq!(made["resolvedToWorkerDestination"], true);
+    // An explicit parent wins: the Planning item itself, a sibling, a ticket.
+    for (key, parent) in [("k2", &p.planning), ("k3", &p.tickets), ("k4", &p.ticket)] {
+        let made = tool(
+            &rig,
+            &token,
+            "work_outline_create_child",
+            json!({ "title": "x", "idempotencyKey": key, "parentWorkItemId": parent }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(made["parentWorkItemId"], *parent);
+        assert_eq!(made["resolvedToWorkerDestination"], false);
+    }
+    // The project scope ends at the project: nothing outside it is reachable.
+    for (key, parent) in [
+        ("k5", &p.other),
+        ("k6", &p.other_tickets),
+        ("k7", &p.bystander),
+    ] {
+        let error = tool(
+            &rig,
+            &token,
+            "work_outline_create_child",
+            json!({ "title": "x", "idempotencyKey": key, "parentWorkItemId": parent }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("unauthorized"), "{key}: {error}");
+    }
+    // Reads follow the same scope; the project's siblings stay hidden.
+    let read = tool(
+        &rig,
+        &token,
+        "work_outline_read_subtree",
+        json!({ "workItemId": p.tickets }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["workItemId"], p.tickets);
+    let error = tool(
+        &rig,
+        &token,
+        "work_outline_read_subtree",
+        json!({ "workItemId": p.other_tickets }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("unauthorized"), "{error}");
+    // Everything else keeps the own-item rule: no status change on a sibling.
+    let error = tool(
+        &rig,
+        &token,
+        "work_outline_set_status",
+        json!({ "status": "active", "workItemId": p.tickets, "idempotencyKey": "s1" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("unauthorized"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_project_the_scope_is_still_own_item_and_descendants() {
+    let rig = rig().await;
+    let root = create_item(&rig, "n-root", "Coordinator", None).await;
+    let step = create_item(&rig, "n-step", "Step", Some(&root)).await;
+    let sibling = create_item(&rig, "n-sib", "Sibling", Some(&root)).await;
+    assign_chat(&rig, "assign-step", CHAT, &step).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+    let made = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "x", "idempotencyKey": "k1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["parentWorkItemId"], step);
+    assert_eq!(made["resolvedToWorkerDestination"], false);
+    let error = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "x", "idempotencyKey": "k2", "parentWorkItemId": sibling }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("unauthorized"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_inside_the_destination_keeps_its_sub_items_under_itself() {
+    let rig = rig().await;
+    let p = project_rig(&rig).await;
+    assign_chat(&rig, "assign-worker", CHAT, &p.ticket).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+    let made = tool(
+        &rig,
+        &token,
+        "work_outline_create_child",
+        json!({ "title": "sub", "idempotencyKey": "k1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["parentWorkItemId"], p.ticket);
+    assert_eq!(made["resolvedToWorkerDestination"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_chat_for_a_project_starts_in_its_destination() {
+    let rig = rig().await;
+    let p = project_rig(&rig).await;
+    assign_chat(&rig, "assign-plan", CHAT, &p.planning).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    let key = "to-project";
+    tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args(key, &p.project, "workspace-write"),
+    )
+    .await
+    .unwrap();
+    let child = derive_id(
+        &mast_proto::agent_tools::operation_id(CHAT, key),
+        roles::CHAT,
+    );
+    let snap = snapshot(&rig);
+    let assignment = snap.assignments.iter().find(|a| a.chat_id == child).unwrap();
+    assert_eq!(assignment.work_item_id.as_deref(), Some(p.tickets.as_str()));
+    // A named item inside the project (the Planning item's sibling ticket) wins.
+    tool(
+        &rig,
+        &token,
+        "chat_launch_child_for_item",
+        launch_args("to-ticket", &p.ticket, "workspace-write"),
+    )
+    .await
+    .unwrap();
+    let child = derive_id(
+        &mast_proto::agent_tools::operation_id(CHAT, "to-ticket"),
+        roles::CHAT,
+    );
+    let snap = snapshot(&rig);
+    let assignment = snap.assignments.iter().find(|a| a.chat_id == child).unwrap();
+    assert_eq!(assignment.work_item_id.as_deref(), Some(p.ticket.as_str()));
+    // Outside the project: refused.
+    for (key, item) in [("out-1", &p.other_tickets), ("out-2", &p.bystander)] {
+        let error = tool(
+            &rig,
+            &token,
+            "chat_launch_child_for_item",
+            launch_args(key, item, "workspace-write"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("unauthorized"), "{key}: {error}");
+    }
+}

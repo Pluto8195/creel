@@ -653,6 +653,123 @@ impl WorkItemDetails {
         self.run_logged(key, task, change, cx, on_ok);
     }
 
+    /// Mark or unmark this item as a project.
+    pub(crate) fn set_project(&mut self, is_project: bool, cx: &mut Context<Self>) {
+        self.update_item(
+            "project",
+            WorkItemChanges {
+                is_project: Some(is_project),
+                ..Default::default()
+            },
+            cx,
+            |_| {},
+        );
+    }
+
+    /// Choose (or clear) the project's worker destination.
+    pub(crate) fn set_worker_destination(
+        &mut self,
+        destination: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_item(
+            "worker-destination",
+            WorkItemChanges {
+                worker_destination: match destination {
+                    Some(id) => FieldPatch::Set(id),
+                    None => FieldPatch::Clear,
+                },
+                ..Default::default()
+            },
+            cx,
+            |_| {},
+        );
+    }
+
+    /// "Project": whether the item is one, and which child gets the workers
+    /// agents create without naming a parent (e.g. "Tickets").
+    fn render_project_section(
+        &self,
+        item: &WorkItemView,
+        snapshot: &mast_proto::WorkOutlineSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let is_project = item.is_project;
+        let mut section = div().flex().flex_col().gap(px(4.0)).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_muted)
+                        .child("Project"),
+                )
+                .child(
+                    Self::small_button(
+                        "work-item-project-toggle",
+                        if is_project {
+                            "Not a project"
+                        } else {
+                            "Mark as project"
+                        },
+                        theme,
+                    )
+                    .debug_selector(|| "work-item-project-toggle".into())
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_project(!is_project, cx))),
+                ),
+        );
+        if !is_project {
+            return section.child(
+                div()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(theme.text_muted)
+                    .child(
+                        "Chats inside a project can create and read items anywhere in it.",
+                    ),
+            );
+        }
+        let current = item.worker_destination_id.clone();
+        let mut buttons = div().flex().flex_wrap().gap(px(4.0));
+        for (ix, child_id) in item.child_ids.iter().take(12).enumerate() {
+            let Some(child) = snapshot.item(child_id) else {
+                continue;
+            };
+            let selected = current.as_deref() == Some(child_id.as_str());
+            let id = child_id.clone();
+            buttons = buttons.child(
+                div()
+                    .id(("work-item-worker-destination", ix))
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(if selected { theme.accent } else { theme.border })
+                    .cursor_pointer()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(if selected { theme.text } else { theme.text_muted })
+                    .hover(|el| el.bg(theme.element_hover))
+                    .child(SharedString::from(child.title.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let next = (!selected).then(|| id.clone());
+                        this.set_worker_destination(next, cx)
+                    })),
+            );
+        }
+        section = section
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(theme.text_muted)
+                    .child("Worker destination: where workers created by chats on this project go."),
+            )
+            .child(buttons);
+        section
+    }
+
     fn begin_title_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self
             .item()
@@ -1704,6 +1821,9 @@ impl Render for WorkItemDetails {
             }
         }
 
+        // Project (templates): the project flag and its worker destination.
+        let project_section = self.render_project_section(&item, &snapshot, &theme, cx);
+
         // Archive / restore.
         let footer = if item.archived_at.is_some() {
             div().child(
@@ -1748,6 +1868,7 @@ impl Render for WorkItemDetails {
                 .child(chats_section)
                 .when_some(children_section, |el, section| el.child(section))
                 .child(refs_section)
+                .child(project_section)
                 .children(linear_hint)
                 .when_some(error, |el, error| {
                     el.child(

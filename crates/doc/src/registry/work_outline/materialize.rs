@@ -156,6 +156,10 @@ pub(crate) struct DecodedItem {
     pub external_sync_modified_fields: Vec<String>,
     /// `externalSyncState` (PR review sync).
     pub external_sync_state: Option<mast_proto::pr_review_sync::WorkItemExternalSyncState>,
+    /// `isProject` (project templates).
+    pub is_project: bool,
+    /// `workerDestinationId` (project templates).
+    pub worker_destination_id: Option<String>,
 }
 
 impl DecodedItem {
@@ -211,6 +215,12 @@ pub(crate) fn decode_item(row: &RegistryRow) -> Result<DecodedItem, WorkOutlineR
         updated_at: i64_field(row, "updatedAt").unwrap_or(created_at),
         external_sync_modified_fields: super::linear::decode_modified_fields(row),
         external_sync_state: super::pr_review_sync::decode_sync_state(row),
+        is_project: row
+            .fields
+            .get("isProject")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        worker_destination_id: str_field(row, "workerDestinationId").filter(|id| !id.is_empty()),
     })
 }
 
@@ -639,6 +649,8 @@ pub(crate) fn bare_view(
         rollup: WorkItemRollup::default(),
         external_sync_modified_fields: Vec::new(),
         external_sync_state: None,
+        is_project: false,
+        worker_destination_id: None,
     }
 }
 
@@ -886,6 +898,8 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             rollup,
             external_sync_modified_fields: item.external_sync_modified_fields.clone(),
             external_sync_state: item.external_sync_state.clone(),
+            is_project: item.is_project,
+            worker_destination_id: item.worker_destination_id.clone(),
         });
     }
     for index in (0..views.len()).rev() {
