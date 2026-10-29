@@ -358,6 +358,7 @@ impl Shell {
                 // second row; expand stays in this band (user request).
                 let tabs = self.render_right_tab_strip(cx);
                 let item_chip = self.render_item_tab_chip(cx);
+                let team_chip = self.render_team_tab_chip(cx);
                 // The toggle is the fixed right-edge anchor, like the left
                 // sidebar control. Only the tabs + expand section reveals to
                 // its left; including the toggle in this animated width
@@ -380,6 +381,7 @@ impl Shell {
                         // The sticky Item tab leads the strip; it is not
                         // part of the draggable, closable tab list.
                         .child(item_chip)
+                        .children(team_chip)
                         .child(
                             div()
                                 .flex_1()

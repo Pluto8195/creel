@@ -10,6 +10,9 @@ use super::*;
 
 use crate::chat_item::{CardTimer, ChatItemFacts, FactsInput, ItemSection, PathSegment, facts};
 use crate::work_outline::hints::{HintKey, WithHint};
+use crate::work_outline::model::OutlineChat;
+use crate::work_outline::required_actions::{RequestScope, SpaceSnapshot};
+use crate::work_outline::required_actions_view::{RequiredActionsEvent, RequiredActionsList};
 
 /// Height of the breadcrumb/title row the new header adds above the chips; the
 /// transcript's top fade clears it.
@@ -86,6 +89,14 @@ fn section_label(
                 .text_color(theme.text_muted)
                 .child(SharedString::from(label.to_uppercase())),
         )
+}
+
+/// The Item tab's embedded Needs-you list (the Details panel's Required
+/// Actions component, scoped to the chat's item and everything below it).
+pub(super) struct ItemNeeds {
+    key: (String, String),
+    list: Entity<RequiredActionsList>,
+    _subscription: Subscription,
 }
 
 /// Where a section list renders: the tab (full) or the hover card (condensed).
@@ -647,22 +658,560 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The Item tab's body.
+    /// The Item tab's body: path, the Needs-you block, the team roll-up, then
+    /// one-line accordion rows that expand in place.
     pub(super) fn render_item_tab(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let chat_id = self.active_chat.clone();
         let Some(facts) = self.chat_item_facts(&chat_id, cx) else {
             return div().size_full().into_any_element();
         };
-        let body = self.render_item_sections(&facts, Surface::Tab, &theme, cx);
+        let body = self.render_item_tab_sections(&facts, &theme, cx);
+        let focus = self.team_panel_focus(cx);
+        self.panel_root("chat-item-tab", focus, body, cx)
+    }
+
+    /// The Needs-you list for `(space, item)`, created on first use and fed
+    /// from the current state.
+    fn item_needs_list(
+        &mut self,
+        space_id: &str,
+        item_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<RequiredActionsList> {
+        let key = (space_id.to_owned(), item_id.to_owned());
+        let list = match &self.item_needs {
+            Some(needs) if needs.key == key => needs.list.clone(),
+            _ => {
+                let scope = RequestScope::Subtree {
+                    space_id: key.0.clone(),
+                    item_id: key.1.clone(),
+                };
+                let state = self.state.clone();
+                let list = cx.new(|cx| RequiredActionsList::new(state, scope, false, cx));
+                let weak = cx.weak_entity();
+                list.update(cx, |list, _| list.shell = Some(weak));
+                let subscription = cx.subscribe(&list, |this, _, event, cx| match event {
+                    RequiredActionsEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
+                    RequiredActionsEvent::OpenItem { space_id, item_id } => {
+                        this.open_work_item_in_overview(space_id.clone(), item_id.clone(), cx)
+                    }
+                    RequiredActionsEvent::Close => {}
+                });
+                self.item_needs = Some(ItemNeeds {
+                    key,
+                    list: list.clone(),
+                    _subscription: subscription,
+                });
+                list
+            }
+        };
+        let (spaces, chats) = {
+            let state = self.state.read(cx);
+            let spaces: Vec<SpaceSnapshot> = state
+                .work_outline(space_id)
+                .snapshot()
+                .map(|snapshot| SpaceSnapshot {
+                    space_id: space_id.to_owned(),
+                    label: state
+                        .space_row(space_id)
+                        .map(|space| space.display_name().to_owned())
+                        .unwrap_or_default(),
+                    snapshot: snapshot.clone(),
+                })
+                .into_iter()
+                .collect();
+            let now = chrono::Utc::now();
+            let chats: Vec<OutlineChat> = state
+                .chats
+                .iter()
+                .map(|chat| OutlineChat {
+                    id: chat.id.clone(),
+                    space_id: chat.space_id.clone(),
+                    parent_chat_id: chat.parent_chat_id.clone(),
+                    title: chat.title.clone().unwrap_or_else(|| "New session".to_owned()),
+                    status: state.display_status_for(chat, now),
+                    archived: chat.archived,
+                    stale: false,
+                    branch: chat.branch.clone(),
+                    harness: None,
+                    pr_number: None,
+                    visible: true,
+                    activity: chat
+                        .last_message_at
+                        .unwrap_or(chat.created_at)
+                        .timestamp_millis(),
+                })
+                .collect();
+            (spaces, chats)
+        };
+        list.update(cx, |list, _| list.set_data(spaces, std::sync::Arc::new(chats)));
+        list
+    }
+
+    /// One accordion row: icon, label, a one-line summary and a chevron; the
+    /// `body` shows only while the row is open.
+    fn item_accordion(
+        &mut self,
+        name: &'static str,
+        label: &'static str,
+        summary: String,
+        warn: bool,
+        body: Option<AnyElement>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.item_tab_open.contains(name);
+        let selector = format!("chat-item-{name}");
+        let icon_selector = format!("chat-item-{name}-icon");
+        let toggle = format!("chat-item-{name}-toggle");
         div()
-            .id("chat-item-tab")
-            .debug_selector(|| "chat-item-tab".into())
-            .size_full()
-            .overflow_y_scroll()
-            .p(px(14.0))
-            .child(body)
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .id(SharedString::from(toggle.clone()))
+                    .debug_selector(move || toggle.clone())
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .cursor_pointer()
+                    .rounded(px(4.0))
+                    .hover(|el| el.bg(theme.element_hover.opacity(0.5)))
+                    .child(
+                        crate::icons::icon(if open {
+                            crate::icons::ALT_ARROW_DOWN
+                        } else {
+                            crate::icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(10.0))
+                        .text_color(theme.text_muted),
+                    )
+                    .child(section_label(theme, section_icon(name), label, icon_selector))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(if warn { theme.warning } else { theme.text_muted })
+                            .child(SharedString::from(summary)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.item_tab_open.remove(name) {
+                            this.item_tab_open.insert(name);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(open, |el| {
+                el.children(body.map(|body| div().pl(px(15.0)).child(body)))
+            })
             .into_any_element()
+    }
+
+    fn render_item_tab_sections(
+        &mut self,
+        facts: &ChatItemFacts,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let text = |value: String| {
+            div()
+                .min_w_0()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text)
+                .child(SharedString::from(value))
+        };
+        let muted = |value: String| {
+            div()
+                .min_w_0()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text_muted)
+                .child(SharedString::from(value))
+        };
+        let link = |id: String, color: gpui::Hsla, underline: bool| {
+            let selector = id.clone();
+            div()
+                .id(SharedString::from(id))
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .px(px(4.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(11.5))
+                .text_color(color)
+                .when(underline, |el| el.underline())
+                .hover(|el| el.bg(theme.element_hover))
+        };
+        let mut col = div().flex().flex_col().gap(px(10.0));
+
+        // Path.
+        if let Some(item) = &facts.item {
+            col = col.child(
+                div()
+                    .debug_selector(|| "chat-item-path".into())
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(section_label(
+                        theme,
+                        section_icon("path"),
+                        "Path",
+                        "chat-item-path-icon".into(),
+                    ))
+                    .child(self.render_item_path(item, theme, cx)),
+            );
+        }
+
+        // Needs you: the grouped cards, inline actions, on top.
+        if let Some(item) = &facts.item {
+            let list = self.item_needs_list(&item.space_id, &item.item_id, cx);
+            let open = list.read(cx).rows().open.len();
+            col = col.child(
+                div()
+                    .debug_selector(|| "chat-item-needs-you".into())
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .p(px(8.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if open > 0 { theme.warning.opacity(0.6) } else { theme.border })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(section_label(
+                                theme,
+                                section_icon("needs-you"),
+                                "Needs you",
+                                "chat-item-needs-you-icon".into(),
+                            ))
+                            .when(open > 0, |el| {
+                                el.child(
+                                    div()
+                                        .debug_selector(|| "chat-item-needs-you-count".into())
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(theme.warning)
+                                        .child(SharedString::from(open.to_string())),
+                                )
+                            }),
+                    )
+                    .child(list),
+            );
+        }
+
+        // Team roll-up and the first workers.
+        let team = self.team_facts(&facts.chat_id, cx);
+        if !team.is_empty() {
+            col = col.child(self.render_item_tab_team(&team, theme, cx));
+        }
+
+        // Instructions.
+        if let Some(item) = &facts.item {
+            let space_id = item.space_id.clone();
+            let item_id = item.item_id.clone();
+            let summary = if item.instructions.inherited > 0 {
+                format!(
+                    "{} own \u{b7} +{} inherited",
+                    item.instructions.own, item.instructions.inherited
+                )
+            } else {
+                format!("{} own", item.instructions.own)
+            };
+            let drift = item.instructions.drift;
+            let summary = if drift {
+                format!("{summary} \u{b7} changed")
+            } else {
+                summary
+            };
+            let body = self.item_tab_open.contains("instructions").then(|| {
+                let status = self.render_chat_instruction_status(&facts.chat_id, theme, cx);
+                let proposals = self.render_chat_proposal_status(&facts.chat_id, theme, cx);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .children(item.instructions.entries.iter().map(|entry| {
+                        div()
+                            .line_clamp(2)
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .text_color(theme.text)
+                            .child(SharedString::from(format!("\u{2022} {entry}")))
+                    }))
+                    .child(
+                        link("chat-item-instructions-edit".into(), theme.success, false)
+                            .child("Edit")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_work_item_in_overview(
+                                    space_id.clone(),
+                                    item_id.clone(),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .children(status)
+                    .children(proposals)
+                    .into_any_element()
+            });
+            col = col.child(self.item_accordion(
+                "instructions",
+                "Instructions",
+                summary,
+                drift,
+                body,
+                theme,
+                cx,
+            ));
+        }
+
+        // Runs in.
+        let runs_summary = match (&facts.runs_in, &facts.branch) {
+            (Some(path), Some(branch)) => format!("{path} \u{b7} \u{2387} {branch}"),
+            (Some(path), None) => path.clone(),
+            (None, Some(branch)) => format!("\u{2387} {branch}"),
+            (None, None) => "Not started yet".to_owned(),
+        };
+        let body = self.item_tab_open.contains("runs-in").then(|| {
+            let mut block = div().flex().flex_col().gap(px(2.0));
+            if let Some(path) = &facts.runs_in {
+                block = block.child(text(path.clone()));
+            }
+            if let Some(branch) = &facts.branch {
+                block = block.child(muted(format!("\u{2387} {branch}")));
+            }
+            if facts.runs_in.is_none() && facts.branch.is_none() {
+                block = block.child(muted("Not started yet".into()));
+            }
+            block.into_any_element()
+        });
+        col = col.child(self.item_accordion("runs-in", "Runs in", runs_summary, false, body, theme, cx));
+
+        // Model.
+        let model_differs = facts.model.ran && facts.model.configured.is_some();
+        let model_summary = format!(
+            "{} \u{b7} {}",
+            facts.model.label.clone().unwrap_or_else(|| "default".into()),
+            facts.model.detail()
+        );
+        let body = self.item_tab_open.contains("model").then(|| {
+            muted(model_summary.clone())
+                .when(model_differs, |el| el.text_color(theme.warning))
+                .into_any_element()
+        });
+        col = col.child(self.item_accordion("model", "Model", model_summary.clone(), model_differs, body, theme, cx));
+
+        // Account.
+        let account_summary = facts.account.clone().unwrap_or_else(|| "Default login".into());
+        let body = self.item_tab_open.contains("account").then(|| {
+            match &facts.account {
+                Some(account) => div()
+                    .debug_selector(|| "chat-item-account-badge".into())
+                    .flex_none()
+                    .h(px(20.0))
+                    .px(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(theme.border_strong)
+                    .bg(theme.element_hover.opacity(0.55))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text)
+                    .child(
+                        crate::icons::icon(crate::icons::KEY_MINIMALISTIC)
+                            .size(px(11.0))
+                            .text_color(theme.text),
+                    )
+                    .child(SharedString::from(account.clone()))
+                    .into_any_element(),
+                None => muted("Default login".into()).into_any_element(),
+            }
+        });
+        col = col.child(self.item_accordion("account", "Account", account_summary, false, body, theme, cx));
+
+        // Links.
+        if facts.item.is_some() && (!facts.prs.is_empty() || facts.ticket.is_some()) {
+            let mut parts: Vec<String> = facts
+                .prs
+                .iter()
+                .map(|pr| {
+                    if pr.number > 0 {
+                        format!("PR #{}", pr.number)
+                    } else {
+                        "Pull request".to_owned()
+                    }
+                })
+                .collect();
+            if let Some(ticket) = &facts.ticket {
+                parts.push(ticket.identifier.clone());
+            }
+            let body = self.item_tab_open.contains("links").then(|| {
+                let mut block = div().flex().flex_col().gap(px(2.0));
+                for (ix, pr) in facts.prs.iter().enumerate() {
+                    let url = pr.url.clone();
+                    let label = if pr.number > 0 {
+                        format!("PR #{}", pr.number)
+                    } else {
+                        "Pull request".into()
+                    };
+                    block = block.child(
+                        link(format!("chat-item-pr-{ix}"), theme.text, true)
+                            .child(SharedString::from(label))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let external = window.modifiers().secondary();
+                                this.open_web_reference(&url, external, window, cx)
+                            })),
+                    );
+                }
+                if let Some(ticket) = &facts.ticket {
+                    let url = ticket.url.clone();
+                    block = block.child(
+                        link("chat-item-ticket".into(), theme.text, true)
+                            .child(SharedString::from(format!("Ticket {}", ticket.identifier)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(url) = &url {
+                                    let external = window.modifiers().secondary();
+                                    this.open_web_reference(url, external, window, cx)
+                                }
+                            })),
+                    );
+                }
+                block.into_any_element()
+            });
+            col = col.child(self.item_accordion("links", "Links", parts.join(" \u{b7} "), false, body, theme, cx));
+        }
+
+        // Plan.
+        if let Some(plan) = facts.item.as_ref().and_then(|item| item.plan.as_ref()) {
+            let id = plan.artifact_id.clone();
+            let changed = crate::artifacts::questions_ui::list_marker(
+                &plan.artifact_id,
+                plan.revision,
+                &crate::settings::current(cx).artifact_last_viewed,
+            );
+            let summary = format!("{} \u{b7} rev {}", plan.title, plan.revision);
+            let body = self.item_tab_open.contains("plan").then(|| {
+                link("chat-item-plan-open".into(), theme.text, true)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(SharedString::from(summary.clone()))
+                    .children(changed.map(|(from, to)| {
+                        crate::artifacts::questions_ui::changed_dot(
+                            "chat-item-plan-changed".to_owned(),
+                            from,
+                            to,
+                            theme,
+                        )
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_artifact(id.clone(), window, cx)
+                    }))
+                    .into_any_element()
+            });
+            col = col.child(self.item_accordion("plan", "Plan", summary.clone(), false, body, theme, cx));
+        }
+
+        // Children.
+        if let Some(item) = &facts.item
+            && !item.children.is_empty()
+        {
+            let done = item.children.iter().filter(|child| child.done).count();
+            let summary = format!("{} \u{b7} {done} done", item.children.len());
+            let body = self.item_tab_open.contains("children").then(|| {
+                let mut block = div().flex().flex_col().gap(px(2.0));
+                for child in item.children.iter().take(CHILD_ROWS) {
+                    let space_id = item.space_id.clone();
+                    let child_id = child.id.clone();
+                    let glyph = if child.done {
+                        crate::icons::icon(crate::icons::CHECK)
+                            .size(px(10.0))
+                            .text_color(theme.success)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_none()
+                            .size(px(8.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme.text_muted)
+                            .into_any_element()
+                    };
+                    block = block.child(
+                        link(format!("chat-item-child-{}", child.id), theme.text, true)
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(div().w(px(10.0)).flex().justify_center().child(glyph))
+                            .child(SharedString::from(
+                                if child.title.trim().is_empty() {
+                                    "Untitled"
+                                } else {
+                                    child.title.as_str()
+                                }
+                                .to_owned(),
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_work_item_in_overview(
+                                    space_id.clone(),
+                                    child_id.clone(),
+                                    cx,
+                                )
+                            })),
+                    );
+                }
+                if item.children.len() > CHILD_ROWS {
+                    block = block.child(muted(format!("+{} more", item.children.len() - CHILD_ROWS)));
+                }
+                block.into_any_element()
+            });
+            col = col.child(self.item_accordion("children", "Children", summary, false, body, theme, cx));
+        }
+
+        // No item: the way in.
+        if facts.item.is_none() {
+            let chat_id = facts.chat_id.clone();
+            col = col.child(
+                div()
+                    .debug_selector(|| "chat-item-work-item".into())
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(section_label(
+                        theme,
+                        section_icon("work-item"),
+                        "Work item",
+                        "chat-item-work-item-icon".into(),
+                    ))
+                    .child(muted("No item. This chat is only in its project.".into()))
+                    .child(
+                        link("chat-item-add-to-outline".into(), theme.success, false)
+                            .child("Add to outline")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reveal_chat_in_outline(&chat_id, window, cx)
+                            })),
+                    ),
+            );
+        }
+
+        let id_summary = format!(
+            "Chat {}",
+            facts.chat_id.chars().take(8).collect::<String>()
+        );
+        let body = self
+            .item_tab_open
+            .contains("identifiers")
+            .then(|| self.render_identifiers(facts, theme, cx));
+        col = col.child(self.item_accordion("identifiers", "Identifiers", id_summary, false, body, theme, cx));
+        col.into_any_element()
     }
 
     // ----------------------------------------------------------------------
@@ -1071,13 +1620,7 @@ impl Shell {
             .debug_selector(|| "chat-item-identifiers".into())
             .flex()
             .flex_col()
-            .gap(px(3.0))
-            .child(section_label(
-                theme,
-                section_icon("identifiers"),
-                "Identifiers",
-                "chat-item-identifiers-icon".into(),
-            ));
+            .gap(px(3.0));
         for (key, label, value) in rows {
             let Some(value) = value else { continue };
             let copied = self.copied_chat_identity.as_deref() == Some(key);
