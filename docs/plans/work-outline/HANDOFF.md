@@ -529,6 +529,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   only for chats with workers (child chats or chats on descendant items): per-worker state, last
   activity, PR/ticket chips with status, diff stats and Ready-to-merge jump, with a roll-up line; the
   Item tab shows the roll-up and top workers.
+- **Project templates, increment 1** (2026-10-29, `project-templates`; design option A
+  mast-artifact:d32bb551266cd62ceef33f16477b6c1a): Group into… (⌘/⇧-click multi-select item rows,
+  right-click or ⌘⇧G; new container or existing item; one undo step). Per-item `isProject` and
+  `workerDestinationId` (Details → Project section; users only). `work_outline_create_child` with no
+  parent resolves to the nearest project's destination; `create_chat { workItemId = project }` starts
+  in it; project scope (contract amendment in m0-contract.md) lets a chat on a project's Planning item
+  create into its sibling Tickets container but nothing outside the project. Gap: a bare `create_chat`
+  without `workItemId` still inherits the caller's item and nests under the caller. Increment 2
+  (templates, change review, Convert to project wizard) in progress on `project-templates-2`.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
