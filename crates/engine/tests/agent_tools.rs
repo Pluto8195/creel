@@ -2121,6 +2121,11 @@ async fn a_planning_chat_creates_workers_in_the_project_destination() {
     .unwrap();
     assert_eq!(made["parentWorkItemId"], p.tickets);
     assert_eq!(made["resolvedToWorkerDestination"], true);
+    // read_current tells the chat (and create_chat) where workers go.
+    let current = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(current["workerDestinationId"], p.tickets);
     // An explicit parent wins: the Planning item itself, a sibling, a ticket.
     for (key, parent) in [("k2", &p.planning), ("k3", &p.tickets), ("k4", &p.ticket)] {
         let made = tool(

@@ -183,9 +183,6 @@ impl RegistryDoc {
                 "The project is archived",
             ));
         }
-        if !project.is_project {
-            return Err(invalid("Only a project can be saved as a template"));
-        }
         let lowered = name.to_lowercase();
         if self
             .templates_of_space(&p.space_id)

@@ -127,7 +127,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item, one of its descendants, or anything inside your project (the nearest ancestor marked as a project; see `work_outline_read_subtree`; create items with `work_outline_create_child`). If `workItemId` is a project that has a worker destination (e.g. its \"Tickets\" container), the chat starts for that destination. A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Mast chat, idempotency_key (idempotencyKey also works) is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
+            description: "Create a chat in a project (or project-less on a device) with a harness and model. The new chat records your chat as its parent (parentChatId); a child in your project inherits your work item and instructions. To run work on a descendant of your work item, pass `workItemId`: the child is started for that item (the same way Start Chat on an item is), attached to it with that item's effective instructions and execution setup, and a `prompt` is required (`cwd` and `branch` come from the item, so they are refused). `workItemId` must be your own item, one of its descendants, or anything inside your project (the nearest ancestor marked as a project; see `work_outline_read_subtree`; create items with `work_outline_create_child`). If `workItemId` is a project that has a worker destination (e.g. its \"Tickets\" container), the chat starts for that destination. Without `workItemId`, a chat inside a project that has a worker destination (and a `prompt`) starts its worker on a NEW item created under that destination, titled from `title` or the prompt, instead of nesting under your own item. A child cannot message its parent: collect its result with `wait_for_turn` / `read_chat`, or from the Required Actions it raises (poll `work_outline_read_subtree` for open requests such as \"Ready to merge\"). Optionally send a first prompt and wait for the reply. Returns the new chat id. When you run inside a Mast chat, idempotency_key (idempotencyKey also works) is required: reuse it when retrying the same request and you get the same chat back (never a duplicate; the same key with different inputs is an error), and the chat is created in your own project on your device, with a sandbox no wider than yours.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1093,12 +1093,60 @@ impl Tools {
             }
         }
 
-        let work_item_id = args
+        let mut work_item_id = args
             .work_item_id
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_owned);
+        // A chat inside a project with a worker destination that starts a
+        // worker without `workItemId` gets a NEW item under the destination
+        // (titled from the chat title or the prompt) instead of inheriting
+        // its own item and nesting under it. Only when it could start for an
+        // item anyway (a prompt, no cwd or branch).
+        if work_item_id.is_none()
+            && origin.is_some()
+            && cwd.is_none()
+            && args.branch.as_deref().is_none_or(|b| b.trim().is_empty())
+            && let Some(key) = agent_key.as_deref()
+            && let Some(prompt) = args.prompt.as_deref().filter(|p| !p.trim().is_empty())
+        {
+            let current = self
+                .zeron
+                .agent_tool(agent_tool_names::READ_CURRENT, json!({}))
+                .await?;
+            if let Some(destination) = current.get("workerDestinationId").and_then(Value::as_str)
+            {
+                let title: String = args
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| prompt.lines().map(str::trim).find(|l| !l.is_empty()))
+                    .unwrap_or("Worker")
+                    .chars()
+                    .take(80)
+                    .collect();
+                let created = self
+                    .zeron
+                    .agent_tool(
+                        agent_tool_names::CREATE_CHILD,
+                        json!({
+                            "title": title,
+                            "parentWorkItemId": destination,
+                            "idempotencyKey": format!(
+                                "wd-{}",
+                                mast_proto::derive_id(key, "mcp-create-chat-item")
+                            ),
+                        }),
+                    )
+                    .await?;
+                work_item_id = created
+                    .get("workItemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+        }
         if work_item_id.is_some() {
             if origin.is_none() {
                 anyhow::bail!("workItemId is only available inside a Mast chat");
@@ -1828,6 +1876,8 @@ mod tests {
         claims: Mutex<std::collections::HashMap<String, String>>,
         /// When set, chat-beta-2 (the agent) runs with this sandbox.
         beta_sandbox: Option<&'static str>,
+        /// When set, the agent's project has this worker destination.
+        destination: Option<&'static str>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1946,6 +1996,18 @@ mod tests {
                                   "theme": "dark", "png": "AAAA" },
                             ],
                             "screenshot": { "mimeType": "image/png", "data": "iVBORw0KGgo=" },
+                        })));
+                    }
+                    if params["tool"] == agent_tool_names::READ_CURRENT {
+                        return Ok(RpcReply::Value(match self.destination {
+                            Some(id) => json!({ "workerDestinationId": id }),
+                            None => json!({}),
+                        }));
+                    }
+                    if params["tool"] == agent_tool_names::CREATE_CHILD {
+                        return Ok(RpcReply::Value(json!({
+                            "workItemId": "item-new",
+                            "parentWorkItemId": params["arguments"]["parentWorkItemId"],
                         })));
                     }
                     if params["tool"] == agent_tool_names::CLAIM_CHILD_CHAT {
@@ -2637,6 +2699,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("own chat"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn agent_create_chat_in_a_project_starts_the_worker_under_its_destination() {
+        let world = Arc::new(World {
+            destination: Some("item-tickets"),
+            ..World::default()
+        });
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        let created = tools
+            .call(
+                "create_chat",
+                json!({
+                    "idempotencyKey": "w1", "prompt": "fix the thing\nmore detail",
+                    "title": "ENG-1 fix",
+                }),
+            )
+            .await
+            .unwrap();
+        // A new item under the destination, titled from the chat title.
+        let items = world.agent_calls(agent_tool_names::CREATE_CHILD);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["arguments"]["parentWorkItemId"], "item-tickets");
+        assert_eq!(items[0]["arguments"]["title"], "ENG-1 fix");
+        // ...and the worker starts for that new item, not the caller's.
+        let launches = world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0]["arguments"]["workItemId"], "item-new");
+        assert_eq!(created["workItemId"], "item-new");
+
+        // The title falls back to the prompt's first line.
+        tools
+            .call(
+                "create_chat",
+                json!({ "idempotencyKey": "w2", "prompt": "  \nfirst line\nsecond" }),
+            )
+            .await
+            .unwrap();
+        let items = world.agent_calls(agent_tool_names::CREATE_CHILD);
+        assert_eq!(items[1]["arguments"]["title"], "first line");
+
+        // An explicit workItemId keeps its behaviour: no item is created.
+        tools
+            .call(
+                "create_chat",
+                json!({ "idempotencyKey": "w3", "workItemId": "item-leaf", "prompt": "go" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(world.agent_calls(agent_tool_names::CREATE_CHILD).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn agent_create_chat_without_a_destination_does_not_create_an_item() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Some(BETA_TOKEN));
+        tools
+            .call(
+                "create_chat",
+                json!({ "idempotencyKey": "p1", "prompt": "hello" }),
+            )
+            .await
+            .unwrap();
+        assert!(world.agent_calls(agent_tool_names::CREATE_CHILD).is_empty());
+        assert!(world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT).is_empty());
     }
 
     #[tokio::test]

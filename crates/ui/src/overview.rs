@@ -10878,6 +10878,10 @@ mod logic_tests {
     mod templates_tests {
         include!("work_outline/templates_tests.rs");
     }
+    /// "Template changed" chip and per-project review.
+    mod template_review_tests {
+        include!("work_outline/template_review_tests.rs");
+    }
 
     /// First-use empty state of the Outline; shares this module's fixtures.
     mod guidance_tests {

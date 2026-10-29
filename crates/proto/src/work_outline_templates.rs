@@ -160,9 +160,10 @@ impl TemplateNode {
 // --------------------------------------------------------------------------
 
 /// Freeze the live subtree of `project_id` into a template body (pure; the
-/// registry's save and the diff both use it). Drops archived items, items
-/// with external references (with their subtrees), and the children of every
-/// worker destination (tickets). Instructions are the item's live ones in
+/// registry's save and the diff both use it). Works on ANY item: Mast does
+/// not decide a project's shape. Drops archived items and the children of
+/// every worker destination (tickets); external links, chats and requests are
+/// never part of a node. Instructions are the item's live ones in
 /// order. `None` when the item is unknown. Limits are NOT checked here
 /// ([`TemplateNode::check_limits`]).
 pub fn freeze_project_subtree(
@@ -196,7 +197,7 @@ fn freeze_node(
         item.child_ids
             .iter()
             .filter_map(|id| snapshot.item(id))
-            .filter(|child| child.archived_at.is_none() && child.external_reference_ids.is_empty())
+            .filter(|child| child.archived_at.is_none())
             .map(|child| freeze_node(snapshot, child, destinations, depth + 1))
             .collect()
     };

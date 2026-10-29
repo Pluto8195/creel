@@ -1696,17 +1696,17 @@ Design option A, "Template as a copy". A per-Space Templates area outside the no
    `lastOperationId`, `v`. The snapshot carries live rows as `templates` (omitted when empty;
    part of `sameContentAs`), sorted by lowercase name then id; an undecodable row is a `malformed`
    repair. Items gain `templateId` / `templateRevision` (`workItems` fields, LWW, in the view).
-2. **What a template is.** A frozen copy of a project subtree: titles, descriptions, each item's
+2. **What a template is.** A frozen copy of ANY item's subtree (Mast never decides a project's shape; the item need not be a project): titles, descriptions, each item's
    live instruction texts in order, which item is a project, which is the worker destination.
    **Dropped:** Chats and assignments, tickets (the children of every worker destination),
-   items with external references (Linear/GitHub) with their subtrees, archived items, artifacts,
+   external links (the items themselves stay, as plain nodes), archived items, artifacts,
    statuses, execution configuration.
 3. **Limits.** At most 64 nodes, 6 levels (root = level 1), 16 instructions per node, a name of
    1..=80 characters (trimmed; unique per Space, case-insensitive, `invalid` on a duplicate), and
    a serialized body of at most 13,000 UTF-16 units. Over a limit is `limitExceeded`.
 4. **Mutations (user only; agents are `unauthorized`, the default for unlisted ops).**
    - `saveWorkItemTemplate { spaceId, projectWorkItemId, name, templateId?, operationId }`:
-     the item must be a live, non-archived project in the Space. No `templateId` creates a template
+     the item must be a live, non-archived item in the Space (any item). No `templateId` creates a template
      (reply `templateId`); `templateId` replaces that template's name and body and adds 1 to its
      revision (`notFound` when missing or deleted). In the same batch the source project's
      `templateId` / `templateRevision` are set to the saved template and revision. A replay of the
@@ -1731,3 +1731,13 @@ Design option A, "Template as a copy". A per-Space Templates area outside the no
    `crates/doc/src/registry/work_outline/templates/tests.rs` (save, re-save, delete, names,
    limits, link validation, agent denial), `crates/engine/tests/agent_tools.rs`
    (`saving_a_project_template_freezes_the_subtree_and_agents_cannot`).
+
+### Amendment addendum: `create_chat` without `workItemId` in a project
+
+`work_outline_read_current` replies with `workerDestinationId` when the Chat's nearest project has a
+live destination the Chat is not inside. `create_chat` (agent mode, with a `prompt`, no `workItemId`,
+`cwd` or `branch`) then creates a NEW item under that destination via `work_outline_create_child`
+(title = `title`, else the prompt's first line, ≤ 80 chars; idempotency key derived from the
+`create_chat` key so retries reuse the item) and starts the worker on it, instead of inheriting the
+caller's item and nesting under it. Without a destination, or with an explicit `workItemId`, the
+behaviour is unchanged.

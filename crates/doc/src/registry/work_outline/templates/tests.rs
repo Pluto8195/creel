@@ -218,8 +218,12 @@ fn save_freezes_the_subtree_and_links_the_project() {
     assert!(body.is_project);
     assert_eq!(body.instructions, vec!["Be careful"]);
     let titles: Vec<&str> = body.children.iter().map(|c| c.title.as_str()).collect();
-    // The archived and the externally linked items and the tickets are gone.
-    assert_eq!(titles, ["Planning", "Tickets"]);
+    // Archived items and the tickets are gone; an externally linked item
+    // stays as a plain node (its links are never part of a template).
+    let mut sorted = titles.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, ["Linked", "Planning", "Tickets"]);
+    assert!(titles.iter().position(|t| *t == "Planning") < titles.iter().position(|t| *t == "Tickets"));
     assert_eq!(body.children[0].instructions, vec!["Write a plan"]);
     assert!(body.children[1].is_worker_destination);
     assert!(body.children[1].children.is_empty());
@@ -273,11 +277,9 @@ fn resave_bumps_the_revision_and_replays_do_not() {
 #[test]
 fn save_validates_project_space_and_names() {
     let mut f = project();
-    // Not a project.
-    assert_eq!(
-        code(save(&mut f.doc, "n1", &f.planning, "X", None)),
-        WorkOutlineErrorCode::Invalid
-    );
+    // Any item can be saved (not only a project); it is a plain node then.
+    assert!(save(&mut f.doc, "n1", &f.planning, "Planning only", None).is_ok());
+    assert!(!snap(&f.doc).templates[0].body.is_project);
     // Missing item.
     assert_eq!(
         code(save(&mut f.doc, "n2", "nope", "X", None)),
