@@ -1837,6 +1837,13 @@ mod tests {
             "chatPins": [
                 { "chatId": "chat-api", "harness": "claude-code", "accountId": "a1" },
                 { "chatId": "chat-ui", "harness": "claude-code" }
+            ],
+            "saved": [
+                { "id": "slotsaved0000001", "harness": "claude-code",
+                  "email": "saved@example.com", "planLabel": "Max" },
+                { "id": "slotlive00000001", "harness": "claude-code",
+                  "email": "live@example.com", "active": true },
+                { "id": "slotcodex0000001", "harness": "codex", "email": "cx@example.com" }
             ]
         }))
         .unwrap()
@@ -1908,6 +1915,114 @@ mod tests {
             cx.debug_bounds("account-pick-default").is_none(),
             "picker closes after choosing"
         );
+    }
+
+    /// The sign-in sheet follows the CLI's output (URL, code prompt) and a
+    /// pasted code goes out as one SubmitManagedAccountLoginCode call, with the
+    /// field cleared afterwards.
+    #[gpui::test]
+    fn sign_in_sheet_submits_the_pasted_code(cx: &mut gpui::TestAppContext) {
+        use crate::managed_accounts::AccountFlow;
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _outline, _calls, cx) = two_space_shell(cx, dir.path());
+        let accounts = script_accounts(&shell, cx);
+        let state = shell.read_with(cx, |shell, _| shell.state.clone());
+        let flow = cx.new(|cx| {
+            AccountFlow::new(state, mast_proto::HarnessId::ClaudeCode, None, Some("d".into()), cx)
+        });
+        let poll = mast_proto::AgentLoginPoll {
+            status: mast_proto::AgentLoginStatus::Pending,
+            message: None,
+            url: Some("https://claude.example/a".into()),
+            awaiting_code: true,
+            device_code: None,
+        };
+        flow.update(cx, |flow, cx| {
+            flow.waiting_for_test("login-1");
+            flow.apply_poll(&poll, cx);
+        });
+        flow.read_with(cx, |flow, _| {
+            let view = flow.login_view();
+            assert_eq!(view.url.as_deref(), Some("https://claude.example/a"));
+            assert!(view.awaiting_code && view.opened);
+        });
+        // Empty input submits nothing.
+        flow.update(cx, |flow, cx| flow.submit_code(cx));
+        cx.run_until_parked();
+        let submitted = |accounts: &AccountCalls| {
+            accounts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| m == mast_rpc::methods::SUBMIT_MANAGED_ACCOUNT_LOGIN_CODE)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert!(submitted(&accounts).is_empty());
+
+        flow.update(cx, |flow, cx| {
+            flow.set_code_for_test("abc-123", cx);
+            flow.submit_code(cx);
+        });
+        cx.run_until_parked();
+        let calls = submitted(&accounts);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1["loginId"], "login-1");
+        assert_eq!(calls[0].1["code"], "abc-123");
+        flow.read_with(cx, |flow, cx| {
+            assert_eq!(flow.code_text_for_test(cx), "");
+            assert!(!flow.login_view().submitting);
+        });
+    }
+
+    /// Saved Settings logins show in the picker for their harness; the live
+    /// Default one is disabled, and choosing another promotes it (one RPC).
+    #[gpui::test]
+    fn project_account_picker_promotes_a_saved_login(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _outline, _calls, cx) = two_space_shell(cx, dir.path());
+        let accounts = script_accounts(&shell, cx);
+        right_click(cx, &row_key::space("s2"));
+        click(cx, "claude-account");
+        assert!(cx.debug_bounds("account-pick-saved-slotsaved0000001").is_some());
+        assert!(cx.debug_bounds("account-pick-saved-slotlive00000001").is_some());
+        assert!(
+            cx.debug_bounds("account-pick-saved-slotcodex0000001").is_none(),
+            "Codex saved logins are not offered for Claude"
+        );
+
+        let live = cx.debug_bounds("account-pick-saved-slotlive00000001").unwrap();
+        cx.simulate_click(live.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            !accounts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(m, _)| m == mast_rpc::methods::PROMOTE_SAVED_ACCOUNT),
+            "the live Default login is not selectable"
+        );
+
+        let saved = cx.debug_bounds("account-pick-saved-slotsaved0000001").unwrap();
+        cx.simulate_click(saved.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        redraw(cx);
+        let promote: Vec<_> = accounts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| m == mast_rpc::methods::PROMOTE_SAVED_ACCOUNT)
+            .cloned()
+            .collect();
+        assert_eq!(promote.len(), 1, "{promote:?}");
+        assert_eq!(
+            promote[0].1,
+            serde_json::json!({
+                "spaceId": "s2", "harness": "claude-code", "slotId": "slotsaved0000001",
+                "targetDeviceId": "d"
+            })
+        );
+        assert!(cx.debug_bounds("account-pick-default").is_none());
     }
 
     /// The chat account pill shows only for a chat pinned to a managed

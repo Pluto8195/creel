@@ -29,8 +29,7 @@ use mast_proto::{
 };
 
 use crate::agent_accounts::{
-    ensure_noop_browser, harness_slug, jwt_claims, lock, read_json, str_field, wire_login_child,
-    write_file_atomic,
+    ensure_noop_browser, harness_slug, jwt_claims, lock, read_json, str_field, write_file_atomic,
 };
 use crate::{EngineError, new_id, now_ms};
 
@@ -49,6 +48,77 @@ pub struct ManagedAccountsConfig {
     pub default_codex_home: PathBuf,
     /// Sign-in CLI overrides (tests: fake CLIs). `None` = resolve the real one.
     pub login_executables: BTreeMap<String, PathBuf>,
+    /// Where a promoted Claude login goes besides the file fallback: the
+    /// managed home's own Keychain item. Tests inject a fake.
+    pub credential_store: Arc<dyn HomeCredentialStore>,
+}
+
+/// Keychain writes for a managed Claude home. Only ever the home's own item
+/// (`Claude Code-credentials-<hash>`); the default item is never touched.
+pub trait HomeCredentialStore: Send + Sync + std::fmt::Debug {
+    /// False ⇒ the engine writes `.credentials.json` in the home instead.
+    fn available(&self) -> bool;
+    fn put(&self, service: &str, secret: &str) -> Result<(), EngineError>;
+    fn delete(&self, service: &str);
+}
+
+/// The macOS login Keychain via `security -i` (the secret goes over stdin as
+/// hex, never on a command line). Unavailable elsewhere.
+#[derive(Debug)]
+pub struct SystemCredentialStore;
+
+impl HomeCredentialStore for SystemCredentialStore {
+    fn available(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+
+    fn put(&self, service: &str, secret: &str) -> Result<(), EngineError> {
+        let hex: String = secret.bytes().map(|b| format!("{b:02x}")).collect();
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        run_security(&format!(
+            "add-generic-password -U -a \"{user}\" -s \"{service}\" -X {hex}\n"
+        ))
+    }
+
+    fn delete(&self, service: &str) {
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        let _ = run_security(&format!(
+            "delete-generic-password -a \"{user}\" -s \"{service}\"\n"
+        ));
+    }
+}
+
+fn run_security(script: &str) -> Result<(), EngineError> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("security")
+        .arg("-i")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| EngineError::Other(format!("Keychain unavailable: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(script.as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| EngineError::Other(format!("Keychain write failed: {e}")))?;
+    // `security -i` reports command errors on stderr and still exits 0.
+    if out.status.success() && out.stderr.is_empty() {
+        Ok(())
+    } else {
+        Err(EngineError::Other("Keychain write failed.".into()))
+    }
+}
+
+/// Claude Code's Keychain service for a config dir: `Claude Code-credentials-`
+/// plus the first 8 hex chars of sha256(dir).
+pub fn claude_keychain_service(home: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(home.to_string_lossy().as_bytes());
+    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("Claude Code-credentials-{hex}")
 }
 
 impl ManagedAccountsConfig {
@@ -58,6 +128,7 @@ impl ManagedAccountsConfig {
             default_claude_dir: claude_dir,
             default_codex_home: codex_home,
             login_executables: BTreeMap::new(),
+            credential_store: Arc::new(SystemCredentialStore),
         }
     }
 }
@@ -94,10 +165,187 @@ fn split_key(key: &str) -> Option<(&str, HarnessId)> {
 
 struct Login {
     account_id: String,
-    child: Arc<Mutex<Option<mast_harness::process::Child>>>,
+    harness: HarnessId,
+    proc: LoginProc,
+    started: Instant,
+}
+
+/// A login CLI running on a PTY: output is scanned for the URL and prompts,
+/// and the pasted code goes to its stdin. Output is never logged or returned.
+struct LoginProc {
     output: Arc<Mutex<String>>,
     exit: Arc<Mutex<Option<Option<i32>>>>,
-    started: Instant,
+    /// The output reader hit EOF (so nothing printed is still in flight).
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(unix)]
+    writer: Mutex<Box<dyn std::io::Write + Send>>,
+    #[cfg(unix)]
+    killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    /// Keeps the PTY open for the life of the login.
+    #[cfg(unix)]
+    _master: Box<dyn portable_pty::MasterPty + Send>,
+}
+
+impl LoginProc {
+    #[cfg(unix)]
+    fn spawn(command: &mast_harness::process::Command) -> Result<Self, EngineError> {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        let std = command.as_std();
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                // Wide, so the CLI never hard-wraps the long authorize URL.
+                cols: 4000,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| EngineError::Other(format!("Could not open a terminal: {e}")))?;
+        let mut cmd = CommandBuilder::new(std.get_program());
+        cmd.args(std.get_args());
+        for (name, value) in std.get_envs() {
+            match value {
+                Some(value) => cmd.env(name, value),
+                None => cmd.env_remove(name),
+            }
+        }
+        if let Some(dir) = std.get_current_dir() {
+            cmd.cwd(dir);
+        }
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| EngineError::Other(format!("Could not start the sign-in: {e}")))?;
+        drop(pair.slave);
+        let killer = child.clone_killer();
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| EngineError::Other(format!("Could not read the sign-in: {e}")))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| EngineError::Other(format!("Could not write to the sign-in: {e}")))?;
+        let output = Arc::new(Mutex::new(String::new()));
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let output = output.clone();
+            let closed = closed.clone();
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                let mut pending: Vec<u8> = Vec::new();
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    pending.extend_from_slice(&buf[..n]);
+                    // Keep a split UTF-8 tail for the next read.
+                    let valid = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+                    let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
+                    pending.drain(..valid);
+                    let mut out = lock(&output);
+                    out.push_str(&strip_ansi(&text));
+                    if out.len() > 256 * 1024 {
+                        let cut = out.len() - 128 * 1024;
+                        let cut = (cut..out.len())
+                            .find(|i| out.is_char_boundary(*i))
+                            .unwrap_or(out.len());
+                        out.drain(..cut);
+                    }
+                }
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        let exit: Arc<Mutex<Option<Option<i32>>>> = Arc::new(Mutex::new(None));
+        {
+            let exit = exit.clone();
+            std::thread::spawn(move || {
+                let code = child.wait().ok().map(|s| s.exit_code() as i32);
+                *lock(&exit) = Some(code);
+            });
+        }
+        Ok(Self {
+            output,
+            exit,
+            closed,
+            writer: Mutex::new(writer),
+            killer: Mutex::new(killer),
+            _master: pair.master,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn spawn(_command: &mast_harness::process::Command) -> Result<Self, EngineError> {
+        Err(EngineError::Other(
+            "Interactive sign-in is not supported on this platform.".into(),
+        ))
+    }
+
+    /// Send one line to the CLI's stdin. `\r` is Enter on a PTY (translated
+    /// to a newline when the terminal is in line mode).
+    fn send_line(&self, line: &str) -> Result<(), EngineError> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            let mut writer = lock(&self.writer);
+            writer
+                .write_all(line.as_bytes())
+                .and_then(|_| writer.write_all(b"\r"))
+                .and_then(|_| writer.flush())
+                .map_err(|_| EngineError::Other("The sign-in is no longer listening.".into()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = line;
+            Err(EngineError::Other("Not supported.".into()))
+        }
+    }
+
+    fn kill(&self) {
+        #[cfg(unix)]
+        {
+            let _ = lock(&self.killer).kill();
+        }
+    }
+}
+
+/// Drop terminal escape sequences (CSI, OSC) and bare control characters
+/// other than newlines, so scans see plain text.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                Some('[') => {
+                    for n in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(n) = chars.next() {
+                        if n == '\x07' {
+                            break;
+                        }
+                        if n == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\r' => {}
+            c if c.is_control() && c != '\n' && c != '\t' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -170,6 +418,78 @@ impl ManagedAccounts {
         Ok(self.view(&account))
     }
 
+    /// Copy a saved login (from Mast's own slot storage) into a new managed
+    /// home, in the form the CLI reads: Claude → the home's own Keychain item
+    /// (or `.credentials.json` when no Keychain) plus `oauthAccount` in the
+    /// home's `.claude.json`; Codex → `auth.json`. After this the CLI is the
+    /// only writer. Shared MCP/plugin secrets in the slot blob are dropped.
+    pub fn promote(
+        &self,
+        harness: HarnessId,
+        label: &str,
+        slot: &crate::agent_accounts::PromotableSlot,
+    ) -> Result<ManagedAccount, EngineError> {
+        let label = if label.trim().is_empty() {
+            slot.email.as_str()
+        } else {
+            label
+        };
+        let account = self.create(harness, label)?;
+        let home = self.home_of(harness, &account.id);
+        if let Err(err) = self.write_promoted_credentials(harness, &home, slot) {
+            let _ = self.remove(&account.id);
+            return Err(err);
+        }
+        Ok(self.view_by_id(&account.id).unwrap_or(account))
+    }
+
+    fn view_by_id(&self, id: &str) -> Option<ManagedAccount> {
+        let store = lock(&self.store);
+        store
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| self.view(a))
+    }
+
+    fn write_promoted_credentials(
+        &self,
+        harness: HarnessId,
+        home: &Path,
+        slot: &crate::agent_accounts::PromotableSlot,
+    ) -> Result<(), EngineError> {
+        match harness {
+            HarnessId::ClaudeCode => {
+                let oauth = slot.credentials.get("claudeAiOauth").ok_or_else(|| {
+                    EngineError::Other("The saved login has no sign-in to copy.".into())
+                })?;
+                let blob = serde_json::json!({ "claudeAiOauth": oauth }).to_string();
+                let store = &self.config.credential_store;
+                if mast_harness::account_home::CLAUDE_KEYCHAIN_ISOLATED && store.available() {
+                    store.put(&claude_keychain_service(home), &blob)?;
+                } else {
+                    write_file_atomic(&home.join(".credentials.json"), blob.as_bytes(), true)?;
+                }
+                // Identity the CLI reads to treat the home as signed in.
+                let mut config = serde_json::json!({});
+                if let Some(saved) = &slot.claude_config {
+                    for key in ["oauthAccount", "userID"] {
+                        if let Some(v) = saved.get(key) {
+                            config[key] = v.clone();
+                        }
+                    }
+                }
+                write_file_atomic(&home.join(".claude.json"), config.to_string().as_bytes(), true)
+            }
+            HarnessId::Codex => {
+                let json = serde_json::to_string_pretty(&slot.credentials)
+                    .map_err(|e| EngineError::Other(e.to_string()))?;
+                write_file_atomic(&home.join("auth.json"), json.as_bytes(), true)
+            }
+            _ => Err(EngineError::Other("Unsupported harness.".into())),
+        }
+    }
+
     /// Remove an account and its home. Refused while a chat is pinned to it
     /// (that chat's session history lives in the home) or a project uses it.
     pub fn remove(&self, id: &str) -> Result<(), EngineError> {
@@ -186,6 +506,12 @@ impl ManagedAccounts {
         store.project_defaults.retain(|_, v| v != id);
         self.save(&store)?;
         let home = self.home_of(account.harness, &account.id);
+        if account.harness == HarnessId::ClaudeCode && self.config.credential_store.available() {
+            // The home's own item only; never the default one.
+            self.config
+                .credential_store
+                .delete(&claude_keychain_service(&home));
+        }
         if home.starts_with(&self.config.root) {
             let _ = std::fs::remove_dir_all(home);
         }
@@ -232,6 +558,7 @@ impl ManagedAccounts {
                     })
                 })
                 .collect(),
+            saved: Vec::new(),
         }
     }
 
@@ -351,10 +678,6 @@ impl ManagedAccounts {
         let home = self.home_of(account.harness, &account.id);
         self.prepare_home(account.harness, &home)?;
         let mut command = self.login_command(account.harness, &home)?;
-        command
-            .stdin(mast_harness::process::Stdio::null())
-            .stdout(mast_harness::process::Stdio::piped())
-            .stderr(mast_harness::process::Stdio::piped());
         // Codex: the app opens the single authorization tab (as the global
         // Add account flow does), so mute the CLI's own browser open.
         #[cfg(unix)]
@@ -363,18 +686,17 @@ impl ManagedAccounts {
         {
             command.env("BROWSER", noop);
         }
-        let child = command
-            .spawn()
-            .map_err(|e| EngineError::Other(format!("Could not start the sign-in: {e}")))?;
-        let (child, output, exit) = wire_login_child(child);
+        let proc = LoginProc::spawn(&command)?;
+        let output = proc.output.clone();
+        let exit = proc.exit.clone();
+        let closed = proc.closed.clone();
         let login_id = new_id();
         lock(&self.logins).insert(
             login_id.clone(),
             Login {
                 account_id: account.id,
-                child,
-                output: output.clone(),
-                exit: exit.clone(),
+                harness: account.harness,
+                proc,
                 started: Instant::now(),
             },
         );
@@ -383,10 +705,12 @@ impl ManagedAccounts {
             if let Some(url) = scan_https_url(&lock(&output)) {
                 break url;
             }
-            if lock(&exit).is_some() || Instant::now() > deadline {
+            let drained = lock(&exit).is_some()
+                && closed.load(std::sync::atomic::Ordering::SeqCst);
+            if drained || Instant::now() > deadline {
                 break String::new();
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
         Ok((login_id, url))
     }
@@ -415,55 +739,89 @@ impl ManagedAccounts {
 
     pub fn poll_login(&self, login_id: &str) -> AgentLoginPoll {
         let mut logins = lock(&self.logins);
-        let Some(login) = logins.get(login_id) else {
-            return AgentLoginPoll {
-                status: AgentLoginStatus::Error,
-                message: Some("This sign-in is no longer running.".into()),
-                url: None,
-            };
+        let poll = |status, message: Option<String>| AgentLoginPoll {
+            status,
+            message,
+            url: None,
+            awaiting_code: false,
+            device_code: None,
         };
-        let exit = *lock(&login.exit);
-        let url = scan_https_url(&lock(&login.output));
+        let Some(login) = logins.get(login_id) else {
+            return poll(
+                AgentLoginStatus::Error,
+                Some("This sign-in is no longer running.".into()),
+            );
+        };
+        let exit = *lock(&login.proc.exit);
         match exit {
             None if login.started.elapsed() > LOGIN_TIMEOUT => {
-                kill_login(login);
+                login.proc.kill();
                 logins.remove(login_id);
-                AgentLoginPoll {
-                    status: AgentLoginStatus::Error,
-                    message: Some("Sign-in timed out.".into()),
-                    url: None,
-                }
+                poll(AgentLoginStatus::Error, Some("Sign-in timed out.".into()))
             }
-            None => AgentLoginPoll {
-                status: AgentLoginStatus::Pending,
-                message: None,
-                url,
-            },
-            Some(Some(0)) => {
-                logins.remove(login_id);
+            None => {
+                let output = lock(&login.proc.output).clone();
+                let url = scan_https_url(&output);
+                let prompt = prompts_for_code(&output)
+                    || (login.harness == HarnessId::ClaudeCode && url.is_some());
                 AgentLoginPoll {
-                    status: AgentLoginStatus::Done,
+                    status: AgentLoginStatus::Pending,
                     message: None,
-                    url: None,
+                    device_code: url.as_ref().and_then(|_| scan_device_code(&output)),
+                    awaiting_code: prompt,
+                    url,
                 }
             }
             Some(code) => {
+                let account_id = login.account_id.clone();
                 logins.remove(login_id);
-                AgentLoginPoll {
-                    status: AgentLoginStatus::Error,
-                    message: Some(match code {
-                        Some(code) => format!("The CLI's sign-in exited with status {code}."),
-                        None => "The CLI's sign-in was interrupted.".into(),
-                    }),
-                    url: None,
+                drop(logins);
+                match code {
+                    Some(0) if self.is_signed_in(&account_id) => {
+                        poll(AgentLoginStatus::Done, None)
+                    }
+                    Some(0) => poll(
+                        AgentLoginStatus::Error,
+                        Some(
+                            "The sign-in finished, but no login was saved in this account's \
+                             home. Try again."
+                                .into(),
+                        ),
+                    ),
+                    Some(code) => poll(
+                        AgentLoginStatus::Error,
+                        Some(format!("The CLI's sign-in exited with status {code}.")),
+                    ),
+                    None => poll(
+                        AgentLoginStatus::Error,
+                        Some("The CLI's sign-in was interrupted.".into()),
+                    ),
                 }
             }
         }
     }
 
+    fn is_signed_in(&self, account_id: &str) -> bool {
+        self.view_by_id(account_id).is_some_and(|a| a.signed_in)
+    }
+
+    /// Paste the code the browser showed into the running CLI. The code is
+    /// only written to the process; it is not stored, logged or echoed back.
+    pub fn submit_login_code(&self, login_id: &str, code: &str) -> Result<(), EngineError> {
+        let code = code.trim();
+        if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
+            return Err(EngineError::Other("That doesn't look like a code.".into()));
+        }
+        let logins = lock(&self.logins);
+        let login = logins
+            .get(login_id)
+            .ok_or_else(|| EngineError::Other("This sign-in is no longer running.".into()))?;
+        login.proc.send_line(code)
+    }
+
     pub fn cancel_login(&self, login_id: &str) {
         if let Some(login) = lock(&self.logins).remove(login_id) {
-            kill_login(&login);
+            login.proc.kill();
         }
     }
 
@@ -476,14 +834,8 @@ impl ManagedAccounts {
 
     pub fn shutdown(&self) {
         for (_, login) in std::mem::take(&mut *lock(&self.logins)) {
-            kill_login(&login);
+            login.proc.kill();
         }
-    }
-}
-
-fn kill_login(login: &Login) {
-    if let Some(child) = lock(&login.child).as_mut() {
-        let _ = child.start_kill();
     }
 }
 
@@ -502,6 +854,36 @@ fn scan_https_url(output: &str) -> Option<String> {
     let rest = &output[start..];
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     Some(rest[..end].to_string())
+}
+
+/// True when the CLI is asking for a pasted code.
+fn prompts_for_code(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    ["paste", "code here", "authorization code"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// A `XXXX-XXXX` style device code the CLI tells the user to enter in the
+/// browser (only when the output mentions a code at all).
+fn scan_device_code(output: &str) -> Option<String> {
+    if !output.to_ascii_lowercase().contains("code") {
+        return None;
+    }
+    output
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .find(|w| {
+            let Some((a, b)) = w.split_once('-') else {
+                return false;
+            };
+            let ok = |p: &str, n: std::ops::RangeInclusive<usize>| {
+                n.contains(&p.len())
+                    && p.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            };
+            ok(a, 4..=5) && ok(b, 4..=5)
+        })
+        .map(str::to_string)
 }
 
 fn has_credentials_file(harness: HarnessId, home: &Path) -> bool {

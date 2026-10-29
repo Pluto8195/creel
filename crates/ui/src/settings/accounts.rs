@@ -1140,7 +1140,9 @@ impl AccountsPage {
                                     .truncate()
                                     .text_size(crate::typography::ui_rems(11.5))
                                     .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from(if account.switchable {
+                                    .child(SharedString::from(if account.promoted {
+                                        "Moved to a project account \u{2014} no longer switchable here"
+                                    } else if account.switchable {
                                         "Usage unavailable"
                                     } else {
                                         "Credentials unavailable"
@@ -1847,6 +1849,7 @@ mod tests {
             auth_kind: None,
             switchable: true,
             saved_at: None,
+            promoted: false,
         };
         let snapshot = AgentAccountsSnapshot {
             accounts: vec![

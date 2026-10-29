@@ -539,6 +539,8 @@ pub mod methods {
     pub const START_MANAGED_ACCOUNT_LOGIN: &str = "StartManagedAccountLogin";
     pub const POLL_MANAGED_ACCOUNT_LOGIN: &str = "PollManagedAccountLogin";
     pub const CANCEL_MANAGED_ACCOUNT_LOGIN: &str = "CancelManagedAccountLogin";
+    pub const SUBMIT_MANAGED_ACCOUNT_LOGIN_CODE: &str = "SubmitManagedAccountLoginCode";
+    pub const PROMOTE_SAVED_ACCOUNT: &str = "PromoteSavedAccount";
     pub const SET_PROJECT_ACCOUNT: &str = "SetProjectAccount";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";

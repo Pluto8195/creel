@@ -111,6 +111,7 @@ fn mount<'a>(
                             harness: HarnessId::ClaudeCode,
                             account_id: Some("a1".into()),
                         }],
+                        saved: Vec::new(),
                     },
                 );
             });

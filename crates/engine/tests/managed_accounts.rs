@@ -552,3 +552,162 @@ async fn dispatch_runs_each_chat_on_its_projects_account() {
     );
     core.shutdown().await;
 }
+
+// ── interactive sign-in: URL, paste code, cancel ─────────────────────────────
+
+#[cfg(unix)]
+fn fake_cli(dir: &Path, name: &str, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+const FAKE_CLAUDE_PASTE: &str = r#"echo 'Opening browser to sign in...'
+echo 'If it did not open, visit: https://claude.example/authorize?code=true&x=1'
+printf 'Paste code here if prompted > '
+read -r code
+if [ "$code" = "good-code-123" ]; then
+  printf '{"oauthAccount":{"emailAddress":"me@work.test"}}' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  echo 'Logged in'
+  exit 0
+fi
+echo 'Invalid code'
+exit 1
+"#;
+
+#[cfg(unix)]
+async fn wait_poll(
+    accounts: &ManagedAccounts,
+    login_id: &str,
+    until: impl Fn(&mast_proto::AgentLoginPoll) -> bool,
+) -> mast_proto::AgentLoginPoll {
+    for _ in 0..200 {
+        let poll = accounts.poll_login(login_id);
+        if until(&poll) {
+            return poll;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for the sign-in");
+}
+
+#[cfg(unix)]
+fn paste_accounts(tmp: &Path, script: &str, harness: &str) -> ManagedAccounts {
+    let fake = fake_cli(tmp, "fake-cli", script);
+    let mut config =
+        ManagedAccountsConfig::new(&tmp.join("data"), tmp.join("live-c"), tmp.join("live-x"));
+    config.login_executables.insert(harness.into(), fake);
+    ManagedAccounts::new(config)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pasted_code_reaches_the_cli_and_completes_the_sign_in() {
+    let tmp = tempfile::tempdir().unwrap();
+    let accounts = paste_accounts(tmp.path(), FAKE_CLAUDE_PASTE, "claude-code");
+    let acct = accounts.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let (login_id, url) = accounts.start_login(&acct.id).await.unwrap();
+    assert_eq!(url, "https://claude.example/authorize?code=true&x=1");
+
+    let poll = wait_poll(&accounts, &login_id, |p| p.awaiting_code).await;
+    assert_eq!(poll.status, AgentLoginStatus::Pending);
+    assert_eq!(poll.url.as_deref(), Some(url.as_str()));
+
+    // Blank and control-character codes never reach the process.
+    assert!(accounts.submit_login_code(&login_id, "  ").is_err());
+    assert!(accounts.submit_login_code(&login_id, "a\nb").is_err());
+    accounts
+        .submit_login_code(&login_id, "good-code-123")
+        .unwrap();
+    let poll = wait_poll(&accounts, &login_id, |p| {
+        p.status != AgentLoginStatus::Pending
+    })
+    .await;
+    assert_eq!(poll.status, AgentLoginStatus::Done, "{:?}", poll.message);
+    // The reply never carries what was pasted.
+    assert!(!serde_json::to_string(&poll).unwrap().contains("good-code"));
+    let snapshot = accounts.snapshot();
+    assert!(snapshot.accounts[0].signed_in);
+    assert_eq!(snapshot.accounts[0].email.as_deref(), Some("me@work.test"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_wrong_code_fails_with_the_exit_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let accounts = paste_accounts(tmp.path(), FAKE_CLAUDE_PASTE, "claude-code");
+    let acct = accounts.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let (login_id, _) = accounts.start_login(&acct.id).await.unwrap();
+    wait_poll(&accounts, &login_id, |p| p.awaiting_code).await;
+    accounts.submit_login_code(&login_id, "wrong").unwrap();
+    let poll = wait_poll(&accounts, &login_id, |p| {
+        p.status != AgentLoginStatus::Pending
+    })
+    .await;
+    assert_eq!(poll.status, AgentLoginStatus::Error);
+    assert!(poll.message.unwrap().contains("status 1"));
+    assert!(!accounts.snapshot().accounts[0].signed_in);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_clean_exit_without_credentials_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let accounts = paste_accounts(tmp.path(), "echo hi\nexit 0\n", "claude-code");
+    let acct = accounts.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let (login_id, _) = accounts.start_login(&acct.id).await.unwrap();
+    let poll = wait_poll(&accounts, &login_id, |p| {
+        p.status != AgentLoginStatus::Pending
+    })
+    .await;
+    assert_eq!(poll.status, AgentLoginStatus::Error);
+    assert!(poll.message.unwrap().contains("no login was saved"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_kills_the_waiting_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("survived");
+    let script = format!(
+        "echo 'visit https://claude.example/a'\nread -r code\ntouch {}\n",
+        marker.display()
+    );
+    let accounts = paste_accounts(tmp.path(), &script, "claude-code");
+    let acct = accounts.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let (login_id, _) = accounts.start_login(&acct.id).await.unwrap();
+    accounts.cancel_login(&login_id);
+    assert_eq!(
+        accounts.poll_login(&login_id).status,
+        AgentLoginStatus::Error
+    );
+    assert!(accounts.submit_login_code(&login_id, "x").is_err());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!marker.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_device_code_flow_shows_the_code_and_completes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = r#"echo 'Open https://auth.example/device and enter code ABCD-12345'
+sleep 1
+printf '{"tokens":{}}' > "$CODEX_HOME/auth.json"
+exit 0
+"#;
+    let accounts = paste_accounts(tmp.path(), script, "codex");
+    let acct = accounts.create(HarnessId::Codex, "Work").unwrap();
+    let (login_id, url) = accounts.start_login(&acct.id).await.unwrap();
+    assert_eq!(url, "https://auth.example/device");
+    let poll = wait_poll(&accounts, &login_id, |p| p.device_code.is_some()).await;
+    assert_eq!(poll.device_code.as_deref(), Some("ABCD-12345"));
+    assert!(!poll.awaiting_code);
+    let poll = wait_poll(&accounts, &login_id, |p| {
+        p.status != AgentLoginStatus::Pending
+    })
+    .await;
+    assert_eq!(poll.status, AgentLoginStatus::Done, "{:?}", poll.message);
+}

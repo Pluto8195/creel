@@ -542,6 +542,22 @@ struct ManagedAccountIdParams {
     account_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitLoginCodeParams {
+    login_id: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromoteSavedAccountParams {
+    harness: HarnessId,
+    slot_id: String,
+    #[serde(default)]
+    space_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetProjectAccountParams {
@@ -977,6 +993,13 @@ impl EngineRpc {
     ) -> Self {
         self.managed_accounts = Some(accounts);
         self
+    }
+
+    /// The managed snapshot plus the saved logins the picker may promote.
+    fn managed_snapshot(&self) -> Result<mast_proto::ManagedAccountsSnapshot, RpcError> {
+        let mut snapshot = self.managed()?.snapshot();
+        snapshot.saved = self.agent_accounts.saved_options();
+        Ok(snapshot)
     }
 
     fn managed(&self) -> Result<&crate::managed_accounts::ManagedAccounts, RpcError> {
@@ -2110,6 +2133,8 @@ fn forwardable(method: &str) -> bool {
             | methods::START_MANAGED_ACCOUNT_LOGIN
             | methods::POLL_MANAGED_ACCOUNT_LOGIN
             | methods::CANCEL_MANAGED_ACCOUNT_LOGIN
+            | methods::SUBMIT_MANAGED_ACCOUNT_LOGIN_CODE
+            | methods::PROMOTE_SAVED_ACCOUNT
             | methods::SET_PROJECT_ACCOUNT
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
@@ -4759,7 +4784,7 @@ impl RpcService for EngineRpc {
                 self.agent_accounts.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
-            methods::LIST_MANAGED_ACCOUNTS => RpcReply::value(&self.managed()?.snapshot()),
+            methods::LIST_MANAGED_ACCOUNTS => RpcReply::value(&self.managed_snapshot()?),
             methods::CREATE_MANAGED_ACCOUNT => {
                 let p: CreateManagedAccountParams = parse_params(params)?;
                 let account = self
@@ -4774,7 +4799,7 @@ impl RpcService for EngineRpc {
                 accounts
                     .remove(&p.account_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&accounts.snapshot())
+                RpcReply::value(&self.managed_snapshot()?)
             }
             methods::START_MANAGED_ACCOUNT_LOGIN => {
                 let p: ManagedAccountIdParams = parse_params(params)?;
@@ -4798,13 +4823,45 @@ impl RpcService for EngineRpc {
                 self.managed()?.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
+            methods::SUBMIT_MANAGED_ACCOUNT_LOGIN_CODE => {
+                let p: SubmitLoginCodeParams = parse_params(params)?;
+                self.managed()?
+                    .submit_login_code(&p.login_id, &p.code)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::PROMOTE_SAVED_ACCOUNT => {
+                let p: PromoteSavedAccountParams = parse_params(params)?;
+                let accounts = self.managed()?;
+                let slot = self
+                    .agent_accounts
+                    .export_for_promotion(p.harness, &p.slot_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let account = accounts
+                    .promote(p.harness, "", &slot)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                if let Err(err) = self
+                    .agent_accounts
+                    .mark_promoted(p.harness, &p.slot_id, &account.id)
+                {
+                    // Never leave one login in two places: undo the copy.
+                    let _ = accounts.remove(&account.id);
+                    return Err(RpcError::Failed(err.to_string()));
+                }
+                if let Some(space_id) = &p.space_id {
+                    accounts
+                        .set_project_account(space_id, p.harness, Some(&account.id))
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
+                RpcReply::value(&self.managed_snapshot()?)
+            }
             methods::SET_PROJECT_ACCOUNT => {
                 let p: SetProjectAccountParams = parse_params(params)?;
                 let accounts = self.managed()?;
                 accounts
                     .set_project_account(&p.space_id, p.harness, p.account_id.as_deref())
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&accounts.snapshot())
+                RpcReply::value(&self.managed_snapshot()?)
             }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;
