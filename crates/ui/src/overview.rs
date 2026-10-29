@@ -10846,6 +10846,11 @@ mod logic_tests {
         include!("work_outline/undo_tests.rs");
     }
 
+    /// Multi-selection and "Group into…"; shares this module's fixtures.
+    mod group_tests {
+        include!("work_outline/group_tests.rs");
+    }
+
     /// First-use empty state of the Outline; shares this module's fixtures.
     mod guidance_tests {
         include!("work_outline/guidance_tests.rs");

@@ -24,6 +24,7 @@ use gpui::{
 use super::action_log;
 use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
+pub(crate) mod group;
 mod move_toast;
 mod tree_guides_view;
 mod undo;
@@ -229,6 +230,8 @@ enum EditKind {
         parent: Option<String>,
         placement: WorkOutlinePlacement,
         anchor: CreateAnchor,
+        /// "Group into… › New container…": the items to move under it.
+        group: Option<Vec<String>>,
     },
     Rename {
         item_id: String,
@@ -255,6 +258,12 @@ enum PickerPurpose {
     /// Undo back to (or redo up to) the chosen change; entry value = `u<id>`
     /// / `r<id>` of the action log entry.
     RecentChanges,
+    /// Group the items under a new container (entry value `None`) or the
+    /// chosen work item.
+    Group {
+        space_id: String,
+        item_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +458,8 @@ pub(crate) struct OutlineView {
     collapsed: HashSet<String>,
     collapsed_loaded: bool,
     selected: Option<String>,
+    /// The additive multi-selection (row keys of item rows); see `group.rs`.
+    multi: HashSet<String>,
     /// Select this key as soon as a refresh brings it in (a just-created item).
     pending_select: Option<String>,
     editing: Option<InlineEdit>,
@@ -544,6 +555,7 @@ impl OutlineView {
             collapsed: HashSet::new(),
             collapsed_loaded: false,
             selected: None,
+            multi: HashSet::new(),
             pending_select: None,
             editing: None,
             editor,
@@ -818,6 +830,7 @@ impl OutlineView {
         if let Some(selected) = self.selected.clone() {
             self.selected = nav::reconcile_selection(&previous, &self.model, &selected);
         }
+        self.prune_multi();
     }
 
     fn set_collapsed(&mut self, key: &str, collapsed: bool, cx: &mut Context<Self>) {
@@ -970,6 +983,7 @@ impl OutlineView {
             cx.propagate();
             return;
         }
+        self.clear_multi(cx);
         let result = nav::navigate(&self.model, self.selected.as_deref(), command);
         if let Some((key, collapsed)) = result.set_collapsed {
             self.set_collapsed(&key, collapsed, cx);
@@ -1222,6 +1236,7 @@ impl OutlineView {
                 parent,
                 placement,
                 anchor,
+                group: None,
             },
             operation_id: new_operation_id(),
             submitting: false,
@@ -1294,6 +1309,21 @@ impl OutlineView {
         edit.submitting = true;
         let operation_id = edit.operation_id.clone();
         let kind = edit.kind.clone();
+        if let EditKind::Create {
+            space_id,
+            group: Some(item_ids),
+            ..
+        } = &kind
+        {
+            // "Group into… › New container…": create it and move the items.
+            self.editing = None;
+            if let Err(notice) = self.group_items(space_id, item_ids, group::GroupDest::New(title), cx)
+            {
+                self.show_notice(notice, cx);
+            }
+            cx.notify();
+            return;
+        }
         let actions = self.state.read(cx).work_outline_actions();
         let (task, space_id, change, created_key, draft) = match kind {
             EditKind::Create {
@@ -1559,6 +1589,10 @@ impl OutlineView {
             self.choose_recent_change(&entry, window, cx);
             return;
         }
+        if let PickerPurpose::Group { space_id, item_ids } = purpose {
+            self.choose_group_entry(space_id, item_ids, entry, window, cx);
+            return;
+        }
         let operation_id = picker.operation_id.clone();
         let place_first = picker.place_first;
         let change = match &purpose {
@@ -1578,7 +1612,7 @@ impl OutlineView {
                     work_item_id: item_id.clone(),
                 })
             }
-            PickerPurpose::RecentChanges => None,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
         };
         let snapshot = match &purpose {
             PickerPurpose::Move { item_id } | PickerPurpose::AssociateWithItem { item_id } => {
@@ -1591,7 +1625,7 @@ impl OutlineView {
                 .find(|chat| &chat.id == chat_id)
                 .and_then(|chat| chat.space_id.as_deref())
                 .and_then(|space| self.snapshot(space)),
-            PickerPurpose::RecentChanges => None,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
         };
         let impact = change
             .as_ref()
@@ -1629,7 +1663,7 @@ impl OutlineView {
                             work_item_id: item_id.clone(),
                         })
                 }
-                PickerPurpose::RecentChanges => None,
+                PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
             };
             snapshot
                 .map(|snapshot| snapshot.space_id.clone())
@@ -1664,7 +1698,7 @@ impl OutlineView {
             WorkOutlinePlacement::Last
         };
         let (task, item_id, change) = match picker.purpose.clone() {
-            PickerPurpose::RecentChanges => return,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => return,
             PickerPurpose::Move { item_id } => (
                 actions.move_work_item(mast_proto::MoveWorkItemParams {
                     work_item_id: item_id.clone(),
@@ -2735,6 +2769,7 @@ impl OutlineView {
         };
         let key = row.key.clone();
         let selected = self.selected.as_deref() == Some(key.as_str());
+        let in_group = self.multi.contains(&key);
         let highlighted = self.details_key.as_deref() == Some(key.as_str())
             || row
                 .open_chat()
@@ -3116,9 +3151,13 @@ impl OutlineView {
             .border_1()
             .border_color(gpui::transparent_black())
             .when(highlighted, |el| el.border_color(theme.accent.opacity(0.6)))
-            .when(selected && focused, |el| el.bg(theme.element_active))
-            .when(selected && !focused, |el| el.bg(theme.element_hover))
-            .when(!selected, |el| {
+            .when((selected || in_group) && focused, |el| {
+                el.bg(theme.element_active)
+            })
+            .when((selected || in_group) && !focused, |el| {
+                el.bg(theme.element_hover)
+            })
+            .when(!(selected || in_group), |el| {
                 el.hover(|el| el.bg(theme.element_hover.opacity(0.6)))
             })
             .when(dimmed, |el| el.opacity(0.6))
@@ -3209,6 +3248,18 @@ impl OutlineView {
                         );
                         return;
                     }
+                    let modifiers = event.modifiers();
+                    if event.click_count() < 2 && open_row.item().is_some() {
+                        if modifiers.secondary() {
+                            this.toggle_multi(&click_key, cx);
+                            return;
+                        }
+                        if modifiers.shift {
+                            this.extend_multi_to(&click_key, cx);
+                            return;
+                        }
+                    }
+                    this.clear_multi(cx);
                     let moved = this.selected.as_deref() != Some(click_key.as_str());
                     this.select(&click_key, cx);
                     let opens_details = event.click_count() >= 2;
@@ -3915,6 +3966,13 @@ impl Render for OutlineView {
                 // Esc closes the move toast; every other key goes on to the
                 // tree's bindings (focus never leaves it).
                 if event.keystroke.key == "escape"
+                    && !this.is_editing()
+                    && this.clear_multi(cx)
+                {
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape"
                     && this.move_toast_text().is_some()
                     && !this.is_editing()
                 {
@@ -3996,6 +4054,9 @@ impl Render for OutlineView {
                 this.restructure_key(RestructureOp::MoveDown, cx)
             }))
             .on_action(cx.listener(|this, _: &UndoChange, _, cx| this.undo_change(cx)))
+            .on_action(
+                cx.listener(|this, _: &GroupSelected, window, cx| this.group_selected(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &RedoChange, _, cx| this.redo_change(cx)))
             .on_action(cx.listener(|this, _: &IndentItem, _, cx| {
                 this.restructure_key(RestructureOp::Indent, cx)

@@ -960,6 +960,11 @@ impl OutlineView {
         }
         cx.stop_propagation();
         window.focus(&self.focus, cx);
+        // Right-clicking a row of the multi-selection keeps it (the menu's
+        // Group into… acts on the whole set); any other row replaces it.
+        if !self.is_multi_selected(key) {
+            self.clear_multi(cx);
+        }
         self.select(key, cx);
         if let Some(menu) = self.context_menu(key, cx) {
             self.show_context_menu(menu, position, cx);

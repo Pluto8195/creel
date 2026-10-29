@@ -72,6 +72,7 @@ inline editor, a picker, the search field, or any other text input.
 | Chat row: move to the previous / next work item | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
 | Chat row: move to the parent item (out of a top-level item) | `⇧←` or `⇧⇥` | `Shift+←` or `Shift+Tab` |
 | Project row (more than one project): move the project up / down | `⇧↑` / `⇧↓` | `Shift+↑` / `Shift+↓` |
+| Group the selected items into a new or existing container (see [Restructuring](#restructuring)) | `⇧⌘G` | `Ctrl+Shift+G` |
 | Undo / redo the last Outline change (see [Undo and redo](#undo-and-redo)) | `⌘Z` or `⌃Z` / `⇧⌘Z` or `⌃⇧Z` | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Shortcut reference | `?` | `?` |
 | Archive the selected Chat, or open **Archive…** for the selected work item | `⇧⌘A` | `Ctrl+Shift+A` |
@@ -173,7 +174,7 @@ at the top level).
 
 | Row | Entries |
 | --- | --- |
-| Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore, Undo, Redo, Recent Changes… |
+| Work item | Open Details, Start Chat, Rename, New Sibling, New Child, Move Up, Move Down, Indent, Outdent, Move To…, Group into…, Set Status (Pending, Active, Completed), Associate Chat…, Open Effective Instructions, Add Instruction, Copy Path, Archive…, Restore, Undo, Redo, Recent Changes… |
 | Chat | Open Chat, Open Full Chat, Rename…, Associate with Work Item… (or Move to Work Item…), Move to Previous Item, Move to Next Item, Move to Parent Item (Move to Unassociated Chats from a top-level item), Remove from Work Item, Compare Instructions… and Apply Current Instructions (when the instructions changed), and the sidebar's Pin, Copy name + IDs, Close out worktree…, and Archive Chat |
 | Space root (a project row, or **Space root instructions** in a single-project Outline) | New Work Item, Space Instructions, Execution Setup, Required Actions, Undo, Redo, Recent Changes…, Show Outline Shortcuts. A project row also has Move Up, Move Down, Hide from Outline (Unhide on a hidden project), Rename Project…, and Delete Project… |
 | Unassociated Chats | Associate “Chat”… for the selected Chat (no menu without one) |
@@ -198,6 +199,19 @@ work item associates the Chat with it. Descendants move with their item.
 Restructuring never deletes anything. A move that changes assigned Chats'
 instructions shows an **Undo** toast instead of asking first (see Instructions,
 revisions, and drift).
+
+**Group into…** (`⇧⌘G`, or the item menu) puts several items under one
+container in a single step. `⌘`-click a row (`Ctrl`-click on Windows and Linux)
+to add or remove it from the selection, or `⇧`-click to add every item row from
+the current row to the one you click. The selected rows are highlighted; a plain
+click or `Esc` clears the selection. Only work items of one project can be
+grouped. Choose **New container…** and type a title to create a work item where
+the first selected item was and move the selection under it, or choose an
+existing work item to append them there. They keep their order on screen. An
+item selected inside another selected item moves with it, and a work item can't
+be grouped into itself or something inside it. The whole grouping is one undo
+step: `⌘Z` moves everything back and archives the container it created, and
+`⇧⌘Z` redoes it.
 
 Thin guide lines show what is nested under what. Each parent's line runs down
 from its disclosure triangle and turns into each child row (├, or └ for the

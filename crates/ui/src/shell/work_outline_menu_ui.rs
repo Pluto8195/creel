@@ -846,7 +846,7 @@ mod tests {
         })
     }
 
-    const ITEM_ENTRIES: [&str; 20] = [
+    const ITEM_ENTRIES: [&str; 21] = [
         "open-details",
         "start-chat",
         "rename",
@@ -857,6 +857,7 @@ mod tests {
         "indent",
         "outdent",
         "move-to",
+        "group-into",
         "set-status",
         "associate",
         "effective-instructions",
