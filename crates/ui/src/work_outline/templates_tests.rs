@@ -163,6 +163,7 @@ fn new_from_template(
     });
     draw(vcx);
     assert!(outline.read_with(vcx, |o, _| o.is_editing()), "the title row");
+    vcx.simulate_keystrokes("cmd-a");
     vcx.simulate_input(title);
     draw(vcx);
     vcx.simulate_keystrokes("enter");
@@ -248,7 +249,7 @@ fn save_as_template_sends_the_mutation_and_is_not_undoable(cx: &mut gpui::TestAp
     assert_eq!(sent[0]["spaceId"], "s1");
     assert_eq!(sent[0]["projectWorkItemId"], HOUSEKEEPING);
     assert_eq!(sent[0]["name"], "Housekeeping", "prefilled with the title");
-    assert!(sent[0].get("templateId").is_none(), "a new template");
+    assert!(sent[0].get("templateId").is_none_or(|t| t.is_null()), "a new template");
     let id = sent[0]["operationId"].as_str().unwrap();
     assert!(!id.is_empty() && id.len() <= 64);
     assert_eq!(

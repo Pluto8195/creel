@@ -866,7 +866,7 @@ mod tests {
         })
     }
 
-    const ITEM_ENTRIES: [&str; 21] = [
+    const ITEM_ENTRIES: [&str; 23] = [
         "open-details",
         "start-chat",
         "rename",
@@ -878,6 +878,8 @@ mod tests {
         "outdent",
         "move-to",
         "group-into",
+        "save-as-template",
+        "new-from-template",
         "set-status",
         "associate",
         "effective-instructions",
@@ -1069,6 +1071,7 @@ mod tests {
             ids(&shell, cx),
             [
                 "new-item",
+                "new-from-template",
                 "space-instructions",
                 "execution",
                 "required-actions",
@@ -1750,6 +1753,7 @@ mod tests {
             ids(&shell, cx),
             [
                 "new-item",
+                "new-from-template",
                 "space-instructions",
                 "execution",
                 "move-up",
