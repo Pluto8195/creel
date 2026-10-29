@@ -28,7 +28,13 @@ impl Render for Host {
         let tab = self.tab;
         let (header, body) = self.shell.update(cx, |shell, cx| {
             let header = shell.render_chat_header_metadata(&theme, cx);
-            let body = tab.then(|| shell.render_item_tab(cx));
+            let body = tab.then(|| {
+                if shell.resolved_right_active(cx) == RightSurface::Team {
+                    shell.render_team_tab(cx)
+                } else {
+                    shell.render_item_tab(cx)
+                }
+            });
             (header, body)
         });
         div()
@@ -160,6 +166,15 @@ fn draw(vcx: &mut VisualTestContext) {
     vcx.update(|window, cx| window.draw(cx).clear());
 }
 
+/// Expand Item tab accordion rows and repaint.
+fn expand(shell: &Entity<Shell>, vcx: &mut VisualTestContext, rows: &[&'static str]) {
+    shell.update(vcx, |shell, cx| {
+        shell.item_tab_open.extend(rows.iter().copied());
+        cx.notify();
+    });
+    draw(vcx);
+}
+
 fn has(vcx: &mut VisualTestContext, selector: &'static str) -> bool {
     vcx.debug_bounds(selector).is_some()
 }
@@ -258,7 +273,7 @@ fn the_old_strip_drift_and_proposal_lines_are_gone_from_the_header(cx: &mut Test
 
 #[gpui::test]
 fn the_item_tab_shows_the_item_sheet(cx: &mut TestAppContext) {
-    let (_, vcx) = mount(cx, CHAT_API, true, |snapshot| {
+    let (shell, vcx) = mount(cx, CHAT_API, true, |snapshot| {
         needs_attention(snapshot);
         snapshot.instruction_proposals.push(
             crate::work_outline::required_actions::fixture::proposal(
@@ -270,6 +285,7 @@ fn the_item_tab_shows_the_item_sheet(cx: &mut TestAppContext) {
             ),
         );
     });
+    expand(&shell, vcx, &["instructions", "links"]);
     for selector in [
         "chat-item-tab",
         "chat-item-path",
@@ -286,7 +302,7 @@ fn the_item_tab_shows_the_item_sheet(cx: &mut TestAppContext) {
         "chat-item-links",
         "chat-item-pr-0",
         "chat-item-needs-you",
-        "chat-item-answer-0",
+        "required-actions-row-req-ui",
     ] {
         assert!(has(vcx, selector), "{selector} should be in the Item tab");
     }
@@ -519,7 +535,7 @@ fn the_keys_are_registered_and_listed_in_the_reference(_cx: &mut TestAppContext)
         "{keys:?}"
     );
     // Both parse and neither shadows a customizable default.
-    for combo in [OPEN_ITEM_TAB_COMBO, TOGGLE_ITEM_CARD_COMBO] {
+    for combo in [OPEN_ITEM_TAB_COMBO, OPEN_TEAM_TAB_COMBO, TOGGLE_ITEM_CARD_COMBO] {
         assert!(gpui::Keystroke::parse(&crate::settings::platform_combo(combo)).is_ok());
         assert!(
             crate::settings::ShortcutId::ALL
@@ -542,7 +558,7 @@ fn the_item_tab_lists_identifiers_with_copy_for_chats_with_and_without_an_item(
                 chat.harness_session_id = Some("sess-123".into());
             })
         });
-        draw(vcx);
+        expand(&shell, vcx, &["identifiers"]);
         for selector in [
             "chat-item-identifiers",
             "chat-item-id-chat",
@@ -578,7 +594,8 @@ fn the_item_tab_lists_identifiers_with_copy_for_chats_with_and_without_an_item(
 fn a_chat_without_a_session_id_lists_no_session_row_and_the_header_has_no_identifiers(
     cx: &mut TestAppContext,
 ) {
-    let (_, vcx) = mount(cx, CHAT_API, true, |_| {});
+    let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+    expand(&shell, vcx, &["identifiers"]);
     assert!(has(vcx, "chat-item-id-chat"));
     assert!(!has(vcx, "chat-item-id-session"));
     let (_, vcx) = mount(cx, CHAT_API, false, |_| {});
@@ -672,6 +689,7 @@ mod web_references {
     fn the_item_tab_pr_link_follows_the_same_rules(cx: &mut TestAppContext) {
         let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
         select(&shell, vcx, CHAT_API, Route::Chat);
+        super::expand(&shell, vcx, &["links"]);
         click(vcx, "chat-item-pr-0", Modifiers::default());
         assert_eq!(tabs(&shell, vcx), [PR_7]);
         assert!(vcx.opened_url().is_none());
@@ -847,7 +865,8 @@ fn chip_tones_use_theme_tokens(_cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn the_item_tab_keeps_rows_tight_and_actions_together(cx: &mut TestAppContext) {
-    let (_, vcx) = mount(cx, CHAT_API, true, needs_attention);
+    let (shell, vcx) = mount(cx, CHAT_API, true, needs_attention);
+    expand(&shell, vcx, &["instructions", "links", "account"]);
     // A link is one text line, not an empty line plus its label.
     let pr = vcx.debug_bounds("chat-item-pr-0").unwrap();
     assert!(pr.size.height < px(24.0), "{:?}", pr.size);
@@ -865,7 +884,8 @@ fn the_item_tab_keeps_rows_tight_and_actions_together(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn child_rows_are_tight_single_lines(cx: &mut TestAppContext) {
-    let (_, vcx) = mount(cx, CHAT_API, true, |_| {});
+    let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+    expand(&shell, vcx, &["children"]);
     assert!(has(vcx, "chat-item-children"));
     let row = vcx
         .debug_bounds(Box::leak(
@@ -894,6 +914,7 @@ fn the_plan_row_shows_the_changed_marker_until_the_plan_is_viewed(cx: &mut TestA
         });
         draw(vcx);
     };
+    expand(&shell, vcx, &["plan"]);
     // Seen at the current revision: the plan row, no marker.
     viewed(vcx, 2);
     assert!(has(vcx, "chat-item-plan-open"));
@@ -904,4 +925,288 @@ fn the_plan_row_shows_the_changed_marker_until_the_plan_is_viewed(cx: &mut TestA
     // Opening the plan records r2: cleared.
     viewed(vcx, 2);
     assert!(!has(vcx, "chat-item-plan-changed"));
+}
+
+// ----------------------------------------------------------------------
+// A1: the Needs-you block and the accordion rows
+// ----------------------------------------------------------------------
+
+/// A blocking ask (old and new), two ready-to-merge asks from worker chats,
+/// and one FYI roll-up, created out of order.
+fn mixed_needs(snapshot: &mut WorkOutlineSnapshot) {
+    let at = |id: &str, chat: &str, text: &str, created: i64| {
+        let mut r = request(id, "s1", API, chat, text);
+        r.created_at = created;
+        r
+    };
+    snapshot.user_action_requests.extend([
+        at("r-fyi", CHAT_API, "2 open plan questions", 1_000),
+        at("r-ready-new", "w-1", "Ready to merge: branch-b", 5_000),
+        at("r-block-new", CHAT_API, "Which tenant?", 4_000),
+        at("r-ready-old", "w-0", "Ready to merge: branch-a", 2_000),
+        at("r-block-old", CHAT_API, "Pick the auth provider", 3_000),
+    ]);
+    if let Some(r) = snapshot.user_action_requests.iter_mut().find(|r| r.id == "r-fyi") {
+        r.dedupe_key = Some("artq:art1:rollup".into());
+    }
+}
+
+fn row_top(vcx: &mut VisualTestContext, id: &str) -> gpui::Pixels {
+    let selector: &'static str = Box::leak(format!("required-actions-row-{id}").into_boxed_str());
+    vcx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} not drawn"))
+        .top()
+}
+
+#[gpui::test]
+fn needs_you_cards_group_blocking_then_ready_to_merge_then_fyi_oldest_first(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, true, mixed_needs);
+    for heading in [
+        "required-actions-group-Blocking",
+        "required-actions-group-Ready to merge",
+        "required-actions-group-FYI",
+    ] {
+        assert!(has(vcx, heading), "{heading}");
+    }
+    let order = ["r-block-old", "r-block-new", "r-ready-old", "r-ready-new", "r-fyi"];
+    let tops: Vec<_> = order.iter().map(|id| row_top(vcx, id)).collect();
+    assert!(tops.windows(2).all(|w| w[0] < w[1]), "{tops:?}");
+    assert!(has(vcx, "chat-item-needs-you-count"));
+}
+
+#[gpui::test]
+fn cards_offer_the_inline_actions_for_their_group(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, true, mixed_needs);
+    // Blocking: Reply & resolve, Resolve, Open (origin chat). No Approve.
+    for selector in [
+        "required-actions-reply-r-block-old",
+        "required-actions-resolve-r-block-old",
+        "required-actions-open-r-block-old",
+    ] {
+        assert!(has(vcx, selector), "{selector}");
+    }
+    assert!(!has(vcx, "required-actions-approve-r-block-old"));
+    // Ready to merge: Approve and a jump to the worker's chat.
+    for selector in [
+        "required-actions-approve-r-ready-old",
+        "required-actions-open-r-ready-old",
+    ] {
+        assert!(has(vcx, selector), "{selector}");
+    }
+}
+
+#[gpui::test]
+fn the_item_tab_has_no_other_sections_expanded_until_asked(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, true, needs_attention);
+    // One line each: the rows exist, their bodies do not.
+    for row in ["chat-item-instructions", "chat-item-runs-in", "chat-item-model", "chat-item-account", "chat-item-links"] {
+        assert!(has(vcx, row), "{row}");
+    }
+    for body in ["chat-item-instructions-edit", "chat-item-account-badge", "chat-item-pr-0"] {
+        assert!(!has(vcx, body), "{body} starts collapsed");
+    }
+    let row = vcx.debug_bounds("chat-item-model-toggle").unwrap();
+    assert!(row.size.height <= px(24.0), "{:?}", row.size);
+    // Click expands; click again collapses.
+    let at = vcx.debug_bounds("chat-item-instructions-toggle").unwrap().center();
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    draw(vcx);
+    assert!(has(vcx, "chat-item-instructions-edit"));
+    let at = vcx.debug_bounds("chat-item-instructions-toggle").unwrap().center();
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    draw(vcx);
+    assert!(!has(vcx, "chat-item-instructions-edit"));
+    shell.read_with(vcx, |shell, _| assert!(shell.item_tab_open.is_empty()));
+}
+
+#[gpui::test]
+fn instructions_are_summarised_and_expand_to_their_entries(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, true, |snapshot| {
+        snapshot.instructions.push(crate::work_outline::instructions::fixture::instruction(
+            "ins-long",
+            "s1",
+            Some(API),
+            "a0",
+            &format!("First line\n{}", "long ".repeat(80)),
+        ));
+    });
+    let facts = shell.read_with(vcx, |shell, cx| shell.chat_item_facts(CHAT_API, cx).unwrap());
+    let entries = &facts.item.unwrap().instructions.entries;
+    assert!(entries.iter().any(|e| e == "First line"), "{entries:?}");
+    assert!(entries.iter().all(|e| e.chars().count() <= 141), "{entries:?}");
+}
+
+#[gpui::test]
+fn the_item_tab_stays_readable_with_maximal_data(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, true, |snapshot| {
+        needs_attention(snapshot);
+        mixed_needs(snapshot);
+        for n in 0..9 {
+            let mut r = request(&format!("r-more-{n}"), "s1", API, CHAT_API, &"A very long question. ".repeat(20));
+            r.created_at = 10_000 + n;
+            r.info = Some("detail ".repeat(100));
+            snapshot.user_action_requests.push(r);
+        }
+    });
+    add_workers(&shell, vcx, 15);
+    expand(&shell, vcx, &["instructions", "links"]);
+    let tab = vcx.debug_bounds("chat-item-tab").unwrap();
+    // Nothing spills sideways, and a long question stays two lines.
+    for id in ["r-block-old", "r-more-0", "r-more-8", "r-fyi"] {
+        let selector: &'static str = Box::leak(format!("required-actions-row-{id}").into_boxed_str());
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector}"));
+        assert!(bounds.right() <= tab.right(), "{selector} {bounds:?} in {tab:?}");
+    }
+    let long = vcx.debug_bounds("required-actions-row-r-more-0").unwrap();
+    assert!(long.size.height < px(120.0), "clamped to two lines: {:?}", long.size);
+    // The team block keeps to the roll-up and three workers.
+    let shown = (0..15).filter(|i| has(vcx, Box::leak(format!("chat-item-worker-w-{i}").into_boxed_str()))).count();
+    assert_eq!(shown, 3);
+    assert!(has(vcx, "chat-item-team-all"));
+}
+
+// ----------------------------------------------------------------------
+// B2: the Team tab
+// ----------------------------------------------------------------------
+
+/// `n` workers under CHAT_API: child chats on the same project. Worker 0 is
+/// working, 1 waits on an ask, 2 has a Ready-to-merge ask; the rest idle.
+fn add_workers(shell: &Entity<Shell>, vcx: &mut VisualTestContext, n: usize) {
+    shell.update(vcx, |shell, cx| {
+        let now = chrono::Utc::now();
+        shell.state.update(cx, |state, _| {
+            for i in 0..n {
+                let id = format!("w-{i}");
+                let mut worker = chat(&id);
+                worker.parent_chat_id = Some(CHAT_API.into());
+                worker.branch = Some(format!("feature/w-{i}"));
+                worker.last_message_preview = Some(format!("Editing file {i}\nmore"));
+                worker.last_message_at = Some(now - chrono::Duration::minutes(i as i64));
+                state.chats.push(worker);
+                if i == 0 {
+                    state.sessions.push(mast_proto::Session {
+                        last_completed_turn: None,
+                        chat_id: id.clone(),
+                        device_id: "device".into(),
+                        status: mast_proto::SessionStatus::Working,
+                        started_at: Some(now),
+                        updated_at: now,
+                    });
+                }
+            }
+        });
+        for i in 0..n {
+            shell.chat_header_links.insert(
+                format!("w-{i}"),
+                ChatHeaderLinkCache {
+                    status: None,
+                    fetched_at: Instant::now(),
+                },
+            );
+        }
+        cx.notify();
+    });
+    draw(vcx);
+}
+
+fn worker_asks(snapshot: &mut WorkOutlineSnapshot) {
+    snapshot.user_action_requests.push(request("a1", "s1", API, "w-1", "Which database?"));
+    snapshot.user_action_requests.push(request("a2", "s1", API, "w-2", "Ready to merge: feature/w-2"));
+}
+
+#[gpui::test]
+fn a_chat_without_workers_has_no_team_tab_and_the_key_does_nothing(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_LOOSE_A, false, |_| {});
+    assert!(!has(vcx, "right-surface-team-tab"));
+    shell.update(vcx, |shell, cx| shell.open_team_tab(cx));
+    shell.read_with(vcx, |shell, cx| {
+        assert_ne!(shell.resolved_right_active(cx), RightSurface::Team);
+        assert!(!shell.right_pane_open(cx));
+    });
+}
+
+#[gpui::test]
+fn the_team_tab_lists_a_worker_per_row_with_state_activity_and_a_roll_up(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, false, worker_asks);
+    add_workers(&shell, vcx, 4);
+    shell.update(vcx, |shell, cx| shell.open_team_tab(cx));
+    shell.read_with(vcx, |shell, cx| {
+        assert!(shell.right_pane_open(cx));
+        assert_eq!(shell.resolved_right_active(cx), RightSurface::Team);
+        // Not an ordinary, closable tab.
+        assert!(shell.right_surface_rows(cx).is_empty());
+        assert_eq!(shell.closable_right_surface(cx), None);
+    });
+    let facts = shell.update(vcx, |shell, cx| shell.team_facts(CHAT_API, cx));
+    assert_eq!(facts.workers.len(), 4);
+    assert_eq!(facts.roll_up(), "1 working \u{b7} 1 waiting on you \u{b7} 1 ready to merge");
+    // Waiting first, then ready to merge, working, idle.
+    let ids: Vec<_> = facts.workers.iter().map(|w| w.chat_id.as_str()).collect();
+    assert_eq!(ids, ["w-1", "w-2", "w-0", "w-3"]);
+}
+
+#[gpui::test]
+fn team_tab_rows_stack_without_overlap_for_two_and_fifteen_workers(cx: &mut TestAppContext) {
+    for n in [2usize, 15] {
+        let (shell, vcx) = mount(cx, CHAT_API, true, worker_asks);
+        add_workers(&shell, vcx, n);
+        shell.update(vcx, |shell, cx| shell.open_team_tab(cx));
+        draw(vcx);
+        assert!(has(vcx, "team-rollup"), "{n}");
+        let facts = shell.update(vcx, |shell, cx| shell.team_facts(CHAT_API, cx));
+        let tab = vcx.debug_bounds("team-tab").unwrap();
+        let mut last_bottom = px(0.0);
+        for worker in &facts.workers {
+            let selector: &'static str =
+                Box::leak(format!("team-worker-{}", worker.chat_id).into_boxed_str());
+            let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} ({n})"));
+            assert!(bounds.top() >= last_bottom, "{selector} overlaps the row above");
+            assert!(bounds.right() <= tab.right(), "{selector} spills sideways");
+            last_bottom = bounds.bottom();
+        }
+        // Each row names its branch; the waiting and ready ones say more.
+        assert!(has(vcx, "team-branch-w-0"));
+        assert!(has(vcx, "team-worker-activity-w-0"));
+        assert_eq!(has(vcx, "team-worker-jump-w-2"), n > 2, "ready-to-merge jump");
+        assert!(!has(vcx, "team-worker-jump-w-0"));
+    }
+}
+
+#[gpui::test]
+fn plain_t_opens_the_team_tab_only_when_the_panel_itself_is_focused(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, true, worker_asks);
+    add_workers(&shell, vcx, 3);
+    let panel = shell.update(vcx, |shell, cx| shell.team_panel_focus(cx));
+    // Focus in the composer (a text field): `t` types, it does not navigate.
+    let composer = shell.read_with(vcx, |shell, cx| shell.composer.read(cx).focus_handle(cx));
+    vcx.update(|window, cx| window.focus(&composer, cx));
+    vcx.simulate_keystrokes("t");
+    shell.read_with(vcx, |shell, cx| assert_ne!(shell.resolved_right_active(cx), RightSurface::Team));
+    // Panel focused: `t` opens Team.
+    vcx.update(|window, cx| window.focus(&panel, cx));
+    draw(vcx);
+    vcx.simulate_keystrokes("t");
+    shell.read_with(vcx, |shell, cx| assert_eq!(shell.resolved_right_active(cx), RightSurface::Team));
+}
+
+#[gpui::test]
+fn plain_t_does_nothing_on_a_chat_without_workers(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_LOOSE_A, true, |_| {});
+    let panel = shell.update(vcx, |shell, cx| shell.team_panel_focus(cx));
+    vcx.update(|window, cx| window.focus(&panel, cx));
+    draw(vcx);
+    vcx.simulate_keystrokes("t");
+    shell.read_with(vcx, |shell, cx| assert_ne!(shell.resolved_right_active(cx), RightSurface::Team));
+}
+
+#[gpui::test]
+fn the_team_hotkey_avoids_the_browsers_new_tab(_cx: &mut TestAppContext) {
+    // Cmd+T is New tab in the side panel's browser, so the Team tab takes
+    // Opt+Cmd+T; no customizable default claims either.
+    assert_eq!(OPEN_TEAM_TAB_COMBO, "mod-alt-t");
+    assert!(
+        crate::settings::ShortcutId::ALL
+            .into_iter()
+            .all(|id| id.default_combo() != "mod-t" && id.default_combo() != OPEN_TEAM_TAB_COMBO)
+    );
 }

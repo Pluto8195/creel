@@ -80,7 +80,13 @@ pub(crate) struct InstructionFacts {
     pub has_state: bool,
     /// Instruction proposals this chat made that still await review.
     pub proposals: usize,
+    /// The item's own live instructions, one clipped line each (the Item
+    /// tab's expanded summary).
+    pub entries: Vec<String>,
 }
+
+/// Longest instruction summary line, in characters.
+pub(crate) const INSTRUCTION_ENTRY_CHARS: usize = 140;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActionFacts {
@@ -301,6 +307,10 @@ fn item_section(
                 snapshot, chat_id,
             )
             .len(),
+            entries: instructions::live_instructions(snapshot, Some(item_id))
+                .iter()
+                .filter_map(|instruction| crate::team::activity_line_max(&instruction.text, INSTRUCTION_ENTRY_CHARS))
+                .collect(),
         },
         actions,
         plan,

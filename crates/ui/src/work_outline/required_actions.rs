@@ -45,9 +45,45 @@ pub(crate) struct SpaceSnapshot {
 /// deleted (the request stays inspectable and resolvable).
 pub(crate) const CHAT_UNAVAILABLE: &str = "Chat unavailable";
 
+/// How urgent an open request is, for the grouped Needs-you views (declared
+/// in display order: the derived `Ord` sorts Blocking first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum NeedsGroup {
+    /// An agent (or a blocking plan question) waits on an answer.
+    Blocking,
+    /// "Ready to merge: <branch>".
+    ReadyToMerge,
+    /// Roll-ups of non-blocking plan questions and engine-raised notices.
+    Fyi,
+}
+
+impl NeedsGroup {
+    pub(crate) const ALL: [NeedsGroup; 3] = [Self::Blocking, Self::ReadyToMerge, Self::Fyi];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Blocking => "Blocking",
+            Self::ReadyToMerge => "Ready to merge",
+            Self::Fyi => "FYI",
+        }
+    }
+
+    /// Classify an open request by its text, dedupe key and origin.
+    pub(crate) fn of(text: &str, dedupe_key: Option<&str>, system: bool) -> Self {
+        if crate::status_light::is_ready_to_merge(text) {
+            Self::ReadyToMerge
+        } else if system || dedupe_key.is_some_and(|key| key.starts_with("artq:") && key.ends_with(":rollup")) {
+            Self::Fyi
+        } else {
+            Self::Blocking
+        }
+    }
+}
+
 /// One Required Actions row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequiredActionRow {
+    pub group: NeedsGroup,
     pub space_id: String,
     pub request_id: String,
     pub work_item_id: String,
@@ -172,8 +208,10 @@ pub(crate) fn collect_rows(
             }
         }
     }
-    rows.open
-        .sort_by(|a, b| (a.created_at, &a.request_id).cmp(&(b.created_at, &b.request_id)));
+    // Blocking first, then Ready to merge, then FYI; oldest first within each.
+    rows.open.sort_by(|a, b| {
+        (a.group, a.created_at, &a.request_id).cmp(&(b.group, b.created_at, &b.request_id))
+    });
     rows.resolved.sort_by(|a, b| {
         let at = |row: &RequiredActionRow| row.resolution.as_ref().map_or(0, |r| r.at);
         (at(b), &b.request_id).cmp(&(at(a), &a.request_id))
@@ -213,6 +251,7 @@ fn row_for(
         .flatten()
         .map(|reference| reference.url.clone());
     RequiredActionRow {
+        group: NeedsGroup::of(&request.text, request.dedupe_key.as_deref(), system),
         space_id: space.space_id.clone(),
         request_id: request.id.clone(),
         work_item_id: request.work_item_id.clone(),
@@ -1140,5 +1179,20 @@ mod tests {
         let now = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(NOW).unwrap();
         assert_eq!(age_label(NOW - 3 * 3_600_000, now), "3h");
         assert_eq!(age_label(NOW, now), "now");
+    }
+}
+
+#[cfg(test)]
+mod needs_group_tests {
+    use super::*;
+
+    #[test]
+    fn requests_sort_into_blocking_ready_to_merge_and_fyi() {
+        assert_eq!(NeedsGroup::of("Which tenant?", None, false), NeedsGroup::Blocking);
+        assert_eq!(NeedsGroup::of("Q-2: pick", Some("artq:a:Q-2"), false), NeedsGroup::Blocking);
+        assert_eq!(NeedsGroup::of("Ready to merge: x", None, false), NeedsGroup::ReadyToMerge);
+        assert_eq!(NeedsGroup::of("2 questions", Some("artq:a:rollup"), false), NeedsGroup::Fyi);
+        assert_eq!(NeedsGroup::of("Review PR", None, true), NeedsGroup::Fyi);
+        assert!(NeedsGroup::Blocking < NeedsGroup::ReadyToMerge && NeedsGroup::ReadyToMerge < NeedsGroup::Fyi);
     }
 }

@@ -43,7 +43,7 @@ use super::actions::OperationSlot;
 use super::chips::{self, TextTooltip};
 use super::model::OutlineChat;
 use super::required_actions::{
-    self, RequestScope, RequiredActionRow, RequiredActionRows, SpaceSnapshot,
+    self, NeedsGroup, RequestScope, RequiredActionRow, RequiredActionRows, SpaceSnapshot,
 };
 use crate::composer::instruction_reset::send_failure_text;
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -860,6 +860,24 @@ impl RequiredActionsList {
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&open_row, cx))),
                 )
                 .children(pr_link)
+                .when(!resolving && row.group == NeedsGroup::ReadyToMerge, |el| {
+                    let approve_id = id.clone();
+                    el.child(
+                        Self::button(
+                            SharedString::from(format!("required-actions-approve-{id}")),
+                            "Approve",
+                            !busy,
+                            theme,
+                        )
+                        .debug_selector({
+                            let selector = format!("required-actions-approve-{id}");
+                            move || selector.clone()
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.resolve(approve_id.clone(), Some("Approved".to_owned()), cx)
+                        })),
+                    )
+                })
                 .when(!resolving, |el| {
                     el.child(
                         Self::button(
@@ -1052,6 +1070,8 @@ impl RequiredActionsList {
                             .min_w_0()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(if open { theme.text } else { theme.text_muted })
+                            // Two lines until Details expands the row.
+                            .when(open && !info_open, |el| el.line_clamp(2))
                             .child(SharedString::from(row.text.clone())),
                     ),
             )
@@ -1166,7 +1186,20 @@ impl RequiredActionsList {
                     .child("Nothing needs you right now"),
             );
         }
-        for row in rows.open {
+        // Grouped Blocking → Ready to merge → FYI (rows arrive sorted that
+        // way); a heading with its count opens each group that has rows.
+        let mut group: Option<NeedsGroup> = None;
+        let open_rows = rows.open;
+        let counts: Vec<usize> = NeedsGroup::ALL
+            .iter()
+            .map(|g| rows_in_group(&open_rows, *g))
+            .collect();
+        for row in open_rows {
+            if group != Some(row.group) {
+                group = Some(row.group);
+                let count = counts[NeedsGroup::ALL.iter().position(|g| *g == row.group).unwrap_or(0)];
+                body = body.child(group_heading(row.group, count, theme));
+            }
             body = body.child(self.render_row(row, now, theme, cx));
         }
         if let Some(replied) = self
@@ -1260,6 +1293,31 @@ impl RequiredActionsList {
         }
         body
     }
+}
+
+fn rows_in_group(rows: &[RequiredActionRow], group: NeedsGroup) -> usize {
+    rows.iter().filter(|row| row.group == group).count()
+}
+
+/// "Blocking · 2" over a run of rows.
+fn group_heading(group: NeedsGroup, count: usize, theme: &Theme) -> gpui::Div {
+    let color = match group {
+        NeedsGroup::Blocking => chips::attention_color(theme),
+        NeedsGroup::ReadyToMerge => theme.success,
+        NeedsGroup::Fyi => theme.text_muted,
+    };
+    div()
+        .debug_selector(move || format!("required-actions-group-{}", group.label()))
+        .px(px(6.0))
+        .pt(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .text_size(crate::typography::ui_rems(10.5))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(group.label())
+        .child(SharedString::from(format!("\u{b7} {count}")))
 }
 
 impl Render for RequiredActionsList {

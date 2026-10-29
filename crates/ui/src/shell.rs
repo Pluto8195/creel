@@ -81,6 +81,7 @@ mod sidebar_sections;
 pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
+mod team_ui;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -115,6 +116,7 @@ actions!(
         FocusOverviewSearch,
         OpenPrReviewChats,
         OpenItemTab,
+        OpenTeamTab,
         ToggleItemCard
     ]
 );
@@ -127,6 +129,9 @@ pub(crate) const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
 pub(crate) const OPEN_PR_REVIEW_CHATS_COMBO: &str = "mod-shift-p";
 /// Open the side panel's Item tab (fixed, listed in the `?` reference).
 pub(crate) const OPEN_ITEM_TAB_COMBO: &str = "mod-alt-;";
+/// Open the side panel's Team tab. ⌘T is the browser's New tab inside the side
+/// panel (`Browser` context), so the Team tab takes ⌥⌘T, next to ⌥⌘; for Item.
+pub(crate) const OPEN_TEAM_TAB_COMBO: &str = "mod-alt-t";
 /// Pin the header's context card open / release it.
 pub(crate) const TOGGLE_ITEM_CARD_COMBO: &str = "mod-alt-i";
 
@@ -454,6 +459,7 @@ pub fn apply_keymap(
             None,
         ),
         KeyBinding::new(&platform_combo(OPEN_ITEM_TAB_COMBO), OpenItemTab, None),
+        KeyBinding::new(&platform_combo(OPEN_TEAM_TAB_COMBO), OpenTeamTab, None),
         KeyBinding::new(
             &platform_combo(TOGGLE_ITEM_CARD_COMBO),
             ToggleItemCard,
@@ -587,6 +593,10 @@ pub enum RightSurface {
     /// where it runs, model, account, open asks). Always first in the strip,
     /// never stored in `right_tabs`, never closed.
     Item,
+    /// The sticky "Team" tab, right after Item: one row per worker of an
+    /// orchestrating chat. Present only while the chat has workers; never
+    /// stored in `right_tabs`, never closed.
+    Team,
 }
 
 fn push_unique_right_surface(tabs: &mut Vec<RightSurface>, surface: RightSurface) -> bool {
@@ -1777,6 +1787,11 @@ pub struct Shell {
     /// it belongs to.
     chat_item_card: crate::chat_item::CardState,
     chat_item_card_chat: String,
+    /// The Item tab's open accordion rows, its embedded Needs-you list, and
+    /// the Team tab's focus target (plain `t` acts only while it is focused).
+    item_tab_open: std::collections::HashSet<&'static str>,
+    item_needs: Option<chat_item_ui::ItemNeeds>,
+    team_panel_focus: Option<FocusHandle>,
     /// What the full-chat header adds below the metadata line (the work-context
     /// strip's line), so the transcript's top fade clears it.
     chat_header_extra_clearance: f32,
@@ -2214,6 +2229,9 @@ impl Shell {
             chat_header_links_pending: Default::default(),
             chat_item_card: Default::default(),
             chat_item_card_chat: String::new(),
+            item_tab_open: Default::default(),
+            item_needs: None,
+            team_panel_focus: None,
             chat_header_extra_clearance: 0.0,
             update_flow: UpdateFlow::Idle,
             update_task: None,
@@ -2905,7 +2923,7 @@ impl Shell {
                         browser.page.url.clone().map(Into::into),
                     )
                 }),
-                RightSurface::Picker | RightSurface::Item => None,
+                RightSurface::Picker | RightSurface::Item | RightSurface::Team => None,
             })
             .collect()
     }
@@ -2919,6 +2937,7 @@ impl Shell {
             RightSurface::File(id) => self.file_surface_paths.get(&id)?.clone(),
             RightSurface::Picker
             | RightSurface::Item
+            | RightSurface::Team
             | RightSurface::Diff(_)
             | RightSurface::Terminal(_)
             | RightSurface::Subagent(_)
@@ -2972,7 +2991,7 @@ impl Shell {
     /// go stale when their tab closes/exits — never render a dead surface.
     fn resolved_right_active(&self, cx: &App) -> RightSurface {
         let picked = self.panels.get(&self.panel_key(cx)).right_active;
-        if picked == RightSurface::Item {
+        if matches!(picked, RightSurface::Item | RightSurface::Team) {
             return picked;
         }
         let rows = self.right_surface_rows(cx);
@@ -3024,7 +3043,7 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) | RightSurface::Browser(_) | RightSurface::Artifact(_) => {}
-            RightSurface::Picker | RightSurface::Item => {}
+            RightSurface::Picker | RightSurface::Item | RightSurface::Team => {}
         }
         self.sync_explorer_selection(cx);
         cx.notify();
@@ -3935,7 +3954,7 @@ impl Shell {
                 }
             }
             RightSurface::Artifact(id) => self.close_artifact_tab(id, cx),
-            RightSurface::Picker | RightSurface::Item => {}
+            RightSurface::Picker | RightSurface::Item | RightSurface::Team => {}
         }
         self.panels.update(&key, |p| {
             if p.right_active == surface {
@@ -3997,7 +4016,7 @@ impl Shell {
             return None;
         }
         match self.resolved_right_active(cx) {
-            RightSurface::Picker | RightSurface::Item => None,
+            RightSurface::Picker | RightSurface::Item | RightSurface::Team => None,
             surface => Some(surface),
         }
     }
@@ -10255,6 +10274,7 @@ impl Shell {
                         .into_any_element()
                 }
                 RightSurface::Item => self.render_item_tab(cx),
+                RightSurface::Team => self.render_team_tab(cx),
                 RightSurface::Browser(id) => self
                     .browsers
                     .get(&id)
@@ -10635,7 +10655,7 @@ impl Shell {
                     .unwrap_or(icons::DOCUMENT),
                 RightSurface::Terminal(_) => icons::TERMINAL,
                 RightSurface::Browser(_) => icons::GLOBE,
-                RightSurface::Picker | RightSurface::Item => icons::PLUS,
+                RightSurface::Picker | RightSurface::Item | RightSurface::Team => icons::PLUS,
             };
             // A live subagent tab swaps its icon for the mini working
             // spinner (the history fetch button's in-flight recipe) — the
@@ -12112,6 +12132,7 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenItemTab, _, cx| this.open_item_tab(cx)))
+            .on_action(cx.listener(|this, _: &OpenTeamTab, _, cx| this.open_team_tab(cx)))
             .on_action(
                 cx.listener(|this, _: &ToggleItemCard, _, cx| this.toggle_chat_item_card_pin(cx)),
             )
@@ -12638,6 +12659,7 @@ mod tests {
             "mod-k",
             "mod-shift-o",
             OPEN_ITEM_TAB_COMBO,
+            OPEN_TEAM_TAB_COMBO,
             TOGGLE_ITEM_CARD_COMBO,
         ];
         for (index, combo) in fixed.iter().enumerate() {
