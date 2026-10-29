@@ -207,7 +207,7 @@ pub(crate) fn assigned_item<'a>(
 }
 
 /// `item_id`, then its ancestors up to the root (cycle-guarded).
-fn lineage<'a>(snapshot: &'a WorkOutlineSnapshot, item_id: &str) -> Vec<&'a WorkItemView> {
+pub(crate) fn lineage<'a>(snapshot: &'a WorkOutlineSnapshot, item_id: &str) -> Vec<&'a WorkItemView> {
     let mut out: Vec<&WorkItemView> = Vec::new();
     let mut cursor = snapshot.item(item_id);
     while let Some(item) = cursor {
@@ -256,7 +256,7 @@ fn pr_item<'a>(
     })
 }
 
-fn ticket(snapshot: &WorkOutlineSnapshot, item_id: &str) -> Option<IssueRef> {
+pub(crate) fn ticket(snapshot: &WorkOutlineSnapshot, item_id: &str) -> Option<IssueRef> {
     let reference = snapshot.nearest_linear_reference(item_id, LINEAR_ISSUE_REFERENCE)?;
     Some(IssueRef {
         identifier: reference.external_id.clone(),
