@@ -645,6 +645,27 @@ Agents cannot:
 Every change an agent makes needs an idempotency key, so retries do not create
 duplicate items.
 
+## Project templates
+
+A template is a frozen **copy** of a project's subtree (titles, descriptions, instructions, which
+item is a project and which is its worker destination). It is not live: editing the template does
+not touch projects made from it, and editing a project does not touch its template.
+
+- **Save as template…**: right-click a project (or use the button in its Project section of Work
+  Item Details). The item must be a project, otherwise the entry is greyed out ("Mark it as a
+  project first"). The prompt is prefilled with the project's title; a project that already links a
+  template offers **Update template** (replaces it, revision + 1) or **Save as new**. Saving is
+  not an undo step. Duplicate names and the size limits come back as an error card.
+- **Templates list**: the Space-root details panel lists the Space's templates (name, revision,
+  item count) with **New from template…** and **Delete** (confirms first) per row.
+- **New from template…**: in the item menu (creates the project under that item) and the Space
+  root menu (top level), or from the Templates list. Pick a template, then name the project
+  (prefilled with the template's root title). The whole project is created in order and is ONE undo
+  step: undo archives it with its items, redo restores it. A toast offers Undo.
+- **From Linear**: on a project row in the Linear panel, **New project item…** picks a template and
+  a parent, names the item after the Linear project, and links it to that project. Use "Add Issues
+  from <project>…" on the new item to pull in issues. Nothing is written to Linear.
+
 ## Limitations
 
 - Work Outline instructions are added to Claude Code's system prompt. Mast

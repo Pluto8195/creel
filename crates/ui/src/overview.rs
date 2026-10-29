@@ -10874,6 +10874,10 @@ mod logic_tests {
     mod project_ui_tests {
         include!("work_outline/project_ui_tests.rs");
     }
+    /// Project templates: save, list, New from template, Linear entry.
+    mod templates_tests {
+        include!("work_outline/templates_tests.rs");
+    }
 
     /// First-use empty state of the Outline; shares this module's fixtures.
     mod guidance_tests {

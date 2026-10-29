@@ -450,6 +450,15 @@ impl Overview {
                     outline.reveal_when_shown(&key, parent.as_deref(), cx)
                 });
             }
+            LinearPanelEvent::CreateProjectItem { space_id, project } => {
+                let mut flow = crate::work_outline::outline_view::templates::TemplateFlow::new(
+                    space_id, None,
+                );
+                flow.ask_parent = true;
+                flow.linear = Some(project);
+                self.outline
+                    .update(cx, |outline, cx| outline.request_new_from_template(flow, cx));
+            }
             LinearPanelEvent::OpenSettings => {
                 if let Some(shell) = self.shell.upgrade() {
                     cx.defer(move |cx| {
@@ -506,7 +515,9 @@ impl Overview {
             LinearPanelEvent::Created { .. } | LinearPanelEvent::Reveal { .. } => {
                 this.on_linear_panel_event(event.clone(), cx)
             }
-            LinearPanelEvent::OpenSettings => this.on_linear_panel_event(event.clone(), cx),
+            LinearPanelEvent::OpenSettings | LinearPanelEvent::CreateProjectItem { .. } => {
+                this.on_linear_panel_event(event.clone(), cx)
+            }
         });
         self.project_issue_picker = Some(picker);
         self._project_issue_picker_events = Some(events);
