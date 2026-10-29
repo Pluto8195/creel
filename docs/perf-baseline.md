@@ -98,8 +98,9 @@ HOME=/tmp/perf/fakehome MAST_PERF_REAL_COPY=$D <that binary> --ignored --nocaptu
 4. **Transcript sync is O(entries) per tick** (`transcript.rs:4488 sync`): clones every cached
    `Vec<Row>`, SipHashes ids, fingerprints every entry. 3.2 ms at 2000 messages; opening the chat
    allocates 333 MB for 11 MB of payload. Fix: incremental by revision, FxHash, `Rc` rows.
-5. **Artifact question sync retries a write that always conflicts**
-   (`artifact_questions.rs:503`, log `operationConflict`, 44 warnings in 1.5 h).
+5. **Artifact question sync re-sends an operation id with a changed payload**
+   (`artifact_questions.rs:503`, log `operationConflict`, 44 warnings in 1.5 h): the write never
+   succeeds, so it is retried on every sweep. A correctness bug more than a perf one.
 6. **RSS swings 1.6–6 GB** within a minute while agents run (see the report); no single cause
    found without a heap profiler. The boot journal parse (fixed above) was one transient source.
 7. `git` spawns take the `fork` path because `git_command()` sets `PATH` (std only uses
