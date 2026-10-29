@@ -182,13 +182,13 @@ fn limits_are_checked() {
 }
 
 #[test]
-fn freeze_drops_tickets_archived_and_linked_items() {
+fn freeze_drops_tickets_and_archived_items_and_keeps_linked_ones_as_plain_nodes() {
     let body = freeze_project_subtree(&live_project(), "p").unwrap();
     assert_eq!(body.title, "My project");
     assert!(body.is_project);
     assert_eq!(body.instructions, vec!["Be careful", "second"]);
     let titles: Vec<&str> = body.children.iter().map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, ["Planning", "Tickets"]);
+    assert_eq!(titles, ["Planning", "Tickets", "Linked"]);
     assert_eq!(body.children[0].instructions, vec!["Write a plan"]);
     assert!(body.children[1].is_worker_destination);
     assert!(body.children[1].children.is_empty());
@@ -259,10 +259,11 @@ fn instantiation_of_a_bare_template_still_links() {
 
 #[test]
 fn diff_is_empty_when_in_sync() {
-    // The project has extra tickets, an archived item and a linked item: all
-    // dropped by the freeze, so the project is "in sync".
+    // The project has extra tickets and an archived item (dropped by the
+    // freeze) and a linked item (kept as a plain node), so it is "in sync".
     let mut t = template();
     t.body.instructions.push("second".into());
+    t.body.children.push(node("Linked", &[], vec![]));
     assert_eq!(
         diff_template_against_project(&live_project(), &t, "p"),
         vec![]
@@ -273,6 +274,7 @@ fn diff_is_empty_when_in_sync() {
 #[test]
 fn diff_reports_each_kind() {
     let mut t = template();
+    t.body.children.push(node("Linked", &[], vec![]));
     t.body.children.push(node("Review", &["Check"], vec![]));
     t.body.children[0].instructions = vec!["Write a better plan".into()];
     t.body.children[1].is_worker_destination = false;
