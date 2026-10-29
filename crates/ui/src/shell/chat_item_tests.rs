@@ -248,7 +248,7 @@ fn the_old_strip_drift_and_proposal_lines_are_gone_from_the_header(cx: &mut Test
     shell.read_with(vcx, |shell, _| {
         assert_eq!(
             shell.chat_header_extra_clearance,
-            super::chat_item_ui::CHAT_HEADER_TITLE_ROW_CLEARANCE
+            super::chat_item_ui::CHAT_HEADER_STACKED_CLEARANCE
         )
     });
 }
@@ -759,4 +759,47 @@ mod web_references {
         assert!(vcx.opened_url().is_none());
         shell.read_with(vcx, |shell, _| assert!(shell.sidebar_notice.is_some()));
     }
+}
+
+#[gpui::test]
+fn header_chips_carry_icons_and_the_title_stacks_under_the_breadcrumb(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, false, |_| {});
+    for selector in [
+        "chat-header-chip-model-icon",
+        "chat-header-chip-account-icon",
+        "chat-header-chip-branch-icon",
+        "chat-header-chip-pr-0-icon",
+    ] {
+        assert!(has(vcx, selector), "{selector}");
+    }
+    let crumb = vcx.debug_bounds("chat-header-breadcrumb").unwrap();
+    let title = vcx.debug_bounds("chat-header-title").unwrap();
+    assert!(title.top() >= crumb.bottom(), "title sits under the breadcrumb");
+}
+
+#[gpui::test]
+fn item_tab_sections_lead_with_icons(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, true, needs_attention);
+    for name in [
+        "path",
+        "instructions",
+        "runs-in",
+        "model",
+        "account",
+        "links",
+        "needs-you",
+        "identifiers",
+    ] {
+        let selector: &'static str = Box::leak(format!("chat-item-{name}-icon").into_boxed_str());
+        assert!(has(vcx, selector), "{selector}");
+    }
+}
+
+#[gpui::test]
+fn chip_tones_use_theme_tokens(_cx: &mut TestAppContext) {
+    use super::chat_item_ui::{ChipTone, chip_palette};
+    let theme = Theme::default();
+    assert_eq!(chip_palette(&theme, ChipTone::Warn), (theme.warning, theme.warning));
+    assert_eq!(chip_palette(&theme, ChipTone::Link), (theme.accent, theme.text));
+    assert_eq!(chip_palette(&theme, ChipTone::Dim).1, theme.text_muted);
 }
