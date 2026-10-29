@@ -8965,6 +8965,73 @@ mod logic_tests {
         );
     }
 
+    /// The "Updated since you last viewed" dot shows in the Details list and on
+    /// the Outline row after a new revision, and clears once the last-viewed
+    /// record catches up (what opening the artifact does).
+    #[gpui::test]
+    fn changed_marker_shows_in_details_and_outline_and_clears(cx: &mut gpui::TestAppContext) {
+        use crate::artifacts::tests::{artifact, id, snapshot as artifacts_snapshot};
+        use mast_proto::ArtifactKind;
+        let dir = tempfile::tempdir().unwrap();
+        let (overview, state, vcx) = outline_overview(cx, dir.path());
+        vcx.update(|_, cx| {
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx)
+        });
+        let viewed = |vcx: &mut gpui::VisualTestContext, entries: &[(u8, u32)]| {
+            let entries: Vec<(String, u32)> = entries.iter().map(|(n, r)| (id(*n), *r)).collect();
+            vcx.update(|_, cx| {
+                crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                    settings.artifact_last_viewed = entries.into_iter().collect();
+                });
+                cx.refresh_windows();
+            });
+        };
+        let mut plan = artifact(&id(1), "Plan", ArtifactKind::Markdown);
+        plan.pinned_as_plan = true;
+        let flow = artifact(&id(2), "Flow", ArtifactKind::HtmlFragment);
+        let notes = artifact(&id(3), "Notes", ArtifactKind::Markdown);
+        state.update(vcx, |state, _| {
+            state.local_device_id = Some("d".into());
+            state.set_test_artifacts(artifacts_snapshot(vec![
+                plan.clone(),
+                flow.clone(),
+                notes.clone(),
+            ]));
+        });
+        // The plan and the notes were seen at r2 (current); the flow at r1.
+        viewed(vcx, &[(1, 2), (2, 1), (3, 2)]);
+        overview.update(vcx, |o, cx| {
+            o.set_outline_loads(
+                fixture_loads(Some(crate::work_outline::store::fixture_snapshot("s1"))),
+                cx,
+            );
+            o.set_mode(OverviewMode::Outline, cx);
+        });
+        let _details = open_details(&overview, vcx, API);
+        let outline = format!("outline-artifacts-changed-{}", row_key::item("s1", API));
+        let marked = |vcx: &mut gpui::VisualTestContext, n: u8| {
+            row_bounds(vcx, format!("work-item-artifact-changed-{}", id(n))).is_some()
+        };
+        assert!(!marked(vcx, 1) && marked(vcx, 2) && !marked(vcx, 3));
+        assert!(row_bounds(vcx, outline.clone()).is_some());
+
+        // Opening the flow records r2: every list clears.
+        viewed(vcx, &[(1, 2), (2, 2), (3, 2)]);
+        draw(vcx);
+        assert!(!marked(vcx, 2));
+        assert!(row_bounds(vcx, outline.clone()).is_none());
+
+        // A new revision of the plan brings the marker back.
+        let mut plan = plan;
+        plan.current_revision = 3;
+        state.update(vcx, |state, _| {
+            state.set_test_artifacts(artifacts_snapshot(vec![plan, flow, notes]));
+        });
+        draw(vcx);
+        assert!(marked(vcx, 1) && !marked(vcx, 2));
+        assert!(row_bounds(vcx, outline).is_some());
+    }
+
     /// Planning artifacts: Details lists the pinned plan first (with the
     /// item's Linear project beside it), then newest first; the row menu pins;
     /// "Register existing" sends `ArtifactRegister` for the item; the Outline

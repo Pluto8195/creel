@@ -171,9 +171,15 @@ pub(crate) struct ArtifactRow {
     pub(crate) revision: String,
     pub(crate) age: String,
     pub(crate) pinned: bool,
+    /// `(from, to)` when the artifact changed since it was last viewed.
+    pub(crate) changed: Option<(u32, u32)>,
 }
 
-pub(crate) fn row(artifact: &ArtifactView, now: i64) -> ArtifactRow {
+pub(crate) fn row(
+    artifact: &ArtifactView,
+    now: i64,
+    viewed: &std::collections::HashMap<String, u32>,
+) -> ArtifactRow {
     ArtifactRow {
         id: artifact.id.clone(),
         icon: kind_icon(artifact.kind),
@@ -182,6 +188,7 @@ pub(crate) fn row(artifact: &ArtifactView, now: i64) -> ArtifactRow {
         revision: format!("r{}", artifact.current_revision),
         age: age_label(now, artifact.updated_at),
         pinned: artifact.pinned_as_plan,
+        changed: super::questions_ui::list_marker(&artifact.id, artifact.current_revision, viewed),
     }
 }
 

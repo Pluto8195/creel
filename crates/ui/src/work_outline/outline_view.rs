@@ -2617,11 +2617,19 @@ impl OutlineView {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        let count = self
-            .state
-            .read(cx)
-            .artifacts()
-            .count_for_work_item(&item.space_id, &item.item_id);
+        let (count, changed) = {
+            let state = self.state.read(cx);
+            let viewed = crate::settings::current(cx).artifact_last_viewed;
+            let artifacts = state.artifacts().for_work_item(&item.space_id, &item.item_id);
+            let changed = artifacts.iter().find_map(|artifact| {
+                crate::artifacts::questions_ui::list_marker(
+                    &artifact.id,
+                    artifact.current_revision,
+                    &viewed,
+                )
+            });
+            (artifacts.len(), changed)
+        };
         if count == 0 {
             return None;
         }
@@ -2643,6 +2651,14 @@ impl OutlineView {
                 .text_color(theme.text_faint)
                 .child(crate::icons::icon(crate::icons::DOCUMENT).size(px(10.0)))
                 .child(SharedString::from(count.to_string()))
+                .children(changed.map(|(from, to)| {
+                    crate::artifacts::questions_ui::changed_dot(
+                        format!("outline-artifacts-changed-{key}"),
+                        from,
+                        to,
+                        theme,
+                    )
+                }))
                 .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
                 .into_any_element(),
         )

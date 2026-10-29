@@ -886,13 +886,29 @@ impl Shell {
         // Plan.
         if let Some(plan) = facts.item.as_ref().and_then(|item| item.plan.as_ref()) {
             let id = plan.artifact_id.clone();
+            let changed = crate::artifacts::questions_ui::list_marker(
+                &plan.artifact_id,
+                plan.revision,
+                &crate::settings::current(cx).artifact_last_viewed,
+            );
             col = col.child(
                 section("plan", "Plan").child(
                     link(format!("{prefix}-plan-open"), "")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
                         .child(SharedString::from(format!(
                             "{} \u{b7} rev {}",
                             plan.title, plan.revision
                         )))
+                        .children(changed.map(|(from, to)| {
+                            crate::artifacts::questions_ui::changed_dot(
+                                format!("{prefix}-plan-changed"),
+                                from,
+                                to,
+                                theme,
+                            )
+                        }))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_artifact(id.clone(), window, cx)
                         })),
