@@ -135,6 +135,44 @@ pub(crate) fn changed_since_label(from: u32, to: u32) -> String {
     format!("Updated since you last viewed \u{b7} rev {from} \u{2192} {to}")
 }
 
+/// The marker for list surfaces: reads the same last-viewed record the open
+/// artifact uses, so opening the artifact clears it everywhere.
+pub(crate) fn list_marker(
+    artifact_id: &str,
+    current: u32,
+    viewed: &HashMap<String, u32>,
+) -> Option<(u32, u32)> {
+    changed_since(viewed.get(artifact_id).copied(), current)
+}
+
+/// The tooltip of the list marker: "Updated since you last viewed: rev 2 → 4".
+pub(crate) fn changed_since_tooltip(from: u32, to: u32) -> String {
+    format!("Updated since you last viewed: rev {from} \u{2192} {to}")
+}
+
+/// The small accent dot list surfaces show next to a changed artifact.
+pub(crate) fn changed_dot(
+    selector: String,
+    from: u32,
+    to: u32,
+    theme: &crate::theme::Theme,
+) -> gpui::AnyElement {
+    use gpui::{SharedString, div, prelude::*, px};
+    let tip: SharedString = changed_since_tooltip(from, to).into();
+    div()
+        .id(SharedString::from(selector.clone()))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .size(px(6.0))
+        .rounded_full()
+        .bg(theme.accent)
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::work_outline::chips::TextTooltip(tip.clone()))
+                .into()
+        })
+        .into_any_element()
+}
+
 /// The chat an answer is delivered to: the newest revision's publisher, else
 /// the chat that first published the artifact.
 pub(crate) fn answer_target_chat(view: &ArtifactView) -> Option<String> {

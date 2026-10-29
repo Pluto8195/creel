@@ -290,11 +290,12 @@ impl WorkItemDetails {
         let load = state.artifacts().load(&self.space_id);
         let rows: Vec<model::ArtifactRow> = {
             let now = model::now_ms();
+            let viewed = crate::settings::current(cx).artifact_last_viewed;
             state
                 .artifacts()
                 .for_work_item(&self.space_id, &item.id)
                 .into_iter()
-                .map(|artifact| model::row(artifact, now))
+                .map(|artifact| model::row(artifact, now, &viewed))
                 .collect()
         };
         let local_device = state.local_device_id.clone();
@@ -403,6 +404,14 @@ impl WorkItemDetails {
                         .text_color(theme.text)
                         .child(SharedString::from(row.title.clone())),
                 )
+                .children(row.changed.map(|(from, to)| {
+                    crate::artifacts::questions_ui::changed_dot(
+                        format!("work-item-artifact-changed-{id}"),
+                        from,
+                        to,
+                        theme,
+                    )
+                }))
                 .when(row.pinned, |el| {
                     el.child(
                         div()

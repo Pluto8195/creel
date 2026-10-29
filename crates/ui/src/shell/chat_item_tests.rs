@@ -840,3 +840,34 @@ fn child_rows_are_tight_single_lines(cx: &mut TestAppContext) {
         .expect("the child row");
     assert!(row.size.height < px(24.0), "{:?}", row.size);
 }
+
+#[gpui::test]
+fn the_plan_row_shows_the_changed_marker_until_the_plan_is_viewed(cx: &mut TestAppContext) {
+    use crate::artifacts::tests::{artifact, id, snapshot as artifacts_snapshot};
+    let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+    let mut plan = artifact(&id(1), "Plan", mast_proto::ArtifactKind::Markdown);
+    plan.pinned_as_plan = true;
+    let state = shell.read_with(vcx, |shell, _| shell.state.clone());
+    state.update(vcx, |state, _| {
+        state.set_test_artifacts(artifacts_snapshot(vec![plan.clone()]));
+    });
+    let viewed = |vcx: &mut VisualTestContext, rev: u32| {
+        vcx.update(|_, cx| {
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings.artifact_last_viewed.insert(id(1), rev);
+            });
+            cx.refresh_windows();
+        });
+        draw(vcx);
+    };
+    // Seen at the current revision: the plan row, no marker.
+    viewed(vcx, 2);
+    assert!(has(vcx, "chat-item-plan-open"));
+    assert!(!has(vcx, "chat-item-plan-changed"));
+    // Seen at r1, current r2: marked.
+    viewed(vcx, 1);
+    assert!(has(vcx, "chat-item-plan-changed"));
+    // Opening the plan records r2: cleared.
+    viewed(vcx, 2);
+    assert!(!has(vcx, "chat-item-plan-changed"));
+}

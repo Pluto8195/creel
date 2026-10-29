@@ -99,9 +99,14 @@ impl ArtifactTab {
         self.questions.visit_recorded = current;
         let id = artifact.id.clone();
         cx.defer(move |cx| {
+            let mut moved = false;
             crate::settings::update(crate::settings::SavePolicy::Debounced, cx, |settings| {
-                settings.artifact_last_viewed.insert(id, current);
+                moved = settings.artifact_last_viewed.insert(id, current) != Some(current);
             });
+            // The list markers read this record; repaint them only when it moved.
+            if moved {
+                cx.refresh_windows();
+            }
         });
     }
 
