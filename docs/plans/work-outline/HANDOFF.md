@@ -489,6 +489,22 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   the bottom of the Item tab (chat id, session id, workspace, each with Copy); `open_web_reference`
   tests rewritten in `chat_item_tests.rs::web_references`; visual polish to the mockup (semibold title
   under the breadcrumb, icons and tones on chips, tighter Item tab sections, condensed hover card).
+- **Perf baseline** (2026-10-29, `perf-baseline`; report mast-artifact:65d48729c91ee81b655f90b6adda143b,
+  commands in `docs/perf-baseline.md`): `#[ignore]` benches for transcript/markdown/diff/overview
+  render, engine startup, SWR cache, journal scans and git spawn (run with `--profile installed`; some
+  use a read-only copy of the real profile with a throwaway HOME). Fixes: transcript rail ticks cached
+  (frame 7.8 → 0.5 ms, streaming tick 17.7 → 3.2 ms at 2000 messages); registry rows read in place and
+  only changed kinds published (heartbeat 2.14 → 0.13 ms); journal backwards tail scans
+  (`stale_sessions` 440–635 → 5–7 ms); boot recovery reads journal tails (`EngineCore::assemble`
+  ~940 → ~350 ms). Running app under load: ~61% of a core mean (engine, not UI thread), RSS swings
+  1.6–6 GB. Open findings (ranked): Overview List mode not virtualized (44–55 ms/frame, 335 MB alloc at
+  250 chats); Work Outline recompute on every chat/session write (33–36 ms); diff-sync runs 7 git
+  processes per kick, every 120 s for 22 repos; transcript sync O(entries) per tick; artifact question
+  sync re-sends an op id with a changed payload (`operationConflict`, write never lands — correctness
+  bug); RSS swings unexplained.
+- **Changed-since marker on artifact lists** (2026-10-29): accent dot + "Updated since you last viewed:
+  rev N → M" tooltip on Details panel artifact rows, the Item tab Plan row and the outline row's
+  artifact chip, from `settings.artifact_last_viewed` (`questions_ui::list_marker`).
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
