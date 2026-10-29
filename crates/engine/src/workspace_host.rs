@@ -163,6 +163,13 @@ pub struct WorkspaceHostConfig {
     pub edge: Option<EdgeConfig>,
 }
 
+#[derive(Default)]
+struct PublishedGenerations {
+    chats: Option<u64>,
+    sessions: Option<u64>,
+    spaces: Option<u64>,
+}
+
 struct WorkspaceHostInner {
     store: Arc<DocsStore>,
     config: WorkspaceHostConfig,
@@ -171,6 +178,9 @@ struct WorkspaceHostInner {
     devices_tx: watch::Sender<Vec<Device>>,
     sessions_tx: watch::Sender<Vec<Session>>,
     spaces_tx: watch::Sender<Vec<Space>>,
+    /// Registry generations of the chat/session/space rows last published,
+    /// so `publish_lists` re-reads only the kinds that changed.
+    published_generations: Mutex<PublishedGenerations>,
     sidebar_preferences_tx: watch::Sender<SidebarPreferencesState>,
     room: Mutex<Option<Arc<RegistryClient>>>,
     /// Bumped on every registry change (local mutation or applied server
@@ -336,6 +346,7 @@ impl WorkspaceHost {
                 devices_tx,
                 sessions_tx,
                 spaces_tx,
+                published_generations: Mutex::new(PublishedGenerations::default()),
                 sidebar_preferences_tx,
                 room: Mutex::new(None),
                 changed_tx,
@@ -1981,23 +1992,52 @@ impl WorkspaceHostInner {
                 Err(error) => tracing::warn!(%error, "sidebar pin cleanup failed"),
             }
             self.publish_sidebar_preferences(&doc, registry_synced);
-            doc.read_all()
+            // Only re-read (and re-parse) the row kinds that changed since
+            // the last publish: a session heartbeat must not re-materialize
+            // every chat, under the registry lock.
+            let mut published = lock(&self.published_generations);
+            let chats_gen = doc.kinds_generation(&[mast_doc::KIND_CHATS]);
+            let sessions_gen = doc.kinds_generation(&[mast_doc::KIND_SESSIONS]);
+            let spaces_gen = doc.kinds_generation(&[mast_doc::KIND_SPACES]);
+            (|| -> Result<_, mast_doc::DocError> {
+                let devices = doc.read_devices()?;
+                let chats = (published.chats != Some(chats_gen))
+                    .then(|| doc.read_chats())
+                    .transpose()?;
+                let sessions = (published.sessions != Some(sessions_gen))
+                    .then(|| doc.read_sessions())
+                    .transpose()?;
+                let spaces = (published.spaces != Some(spaces_gen))
+                    .then(|| doc.read_spaces())
+                    .transpose()?;
+                // Record the generations only once every read succeeded.
+                published.chats = Some(chats_gen);
+                published.sessions = Some(sessions_gen);
+                published.spaces = Some(spaces_gen);
+                Ok((devices, chats, sessions, spaces))
+            })()
         };
         match snapshot {
-            Ok(mut state) => {
-                self.overlay_presence(&mut state.devices);
+            Ok((mut devices, chats, sessions, spaces)) => {
+                self.overlay_presence(&mut devices);
                 // Retain the latest value even with no subscribers, but don't
                 // wake every list for unrelated registry/presence changes.
-                publish_if_changed(&self.chats_tx, state.chats);
+                if let Some(chats) = chats {
+                    publish_if_changed(&self.chats_tx, chats);
+                }
                 // The periodic presence tick also drives time-based expiry.
                 // Unrelated registry writes need no synthetic device event.
                 if clock_tick {
-                    self.devices_tx.send_replace(state.devices);
+                    self.devices_tx.send_replace(devices);
                 } else {
-                    publish_if_changed(&self.devices_tx, state.devices);
+                    publish_if_changed(&self.devices_tx, devices);
                 }
-                publish_if_changed(&self.sessions_tx, state.sessions);
-                publish_if_changed(&self.spaces_tx, state.spaces);
+                if let Some(sessions) = sessions {
+                    publish_if_changed(&self.sessions_tx, sessions);
+                }
+                if let Some(spaces) = spaces {
+                    publish_if_changed(&self.spaces_tx, spaces);
+                }
             }
             Err(err) => {
                 tracing::warn!(error = %err, "registry read failed");

@@ -203,6 +203,14 @@ async fn bench_engine_startup_real_profile_copy() {
         });
         let chats = bench("read_chats", || core.workspace.read_chats().unwrap());
         eprintln!("BENCH engine | real chats={}", chats.len());
+        let t = Instant::now();
+        for _ in 0..50 {
+            std::hint::black_box(core.workspace.read_chats().unwrap());
+        }
+        eprintln!(
+            "BENCH engine | read_chats steady state x50 | mean_ms={:.2}",
+            t.elapsed().as_secs_f64() * 1000.0 / 50.0
+        );
         let spaces = core.workspace.read_spaces().unwrap_or_default();
         bench("work_outline_inputs for every space", || {
             for space in &spaces {
@@ -211,4 +219,49 @@ async fn bench_engine_startup_real_profile_copy() {
         });
         drop(core);
     }
+}
+
+/// Registry publish cost: a live session heartbeat (the commonest registry
+/// write while agents run) round trip, from `record_session` to the sessions
+/// watch firing, on a copy of a real profile (see above for `MAST_PERF_REAL_COPY`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "benchmark: needs MAST_PERF_REAL_COPY"]
+async fn bench_registry_session_heartbeat_publish() {
+    let Some(dir) = std::env::var_os("MAST_PERF_REAL_COPY") else {
+        eprintln!("BENCH engine | MAST_PERF_REAL_COPY not set, skipped");
+        return;
+    };
+    let profile = mast_engine::EngineProfile::local(std::path::Path::new(&dir)).unwrap();
+    let core = EngineCore::assemble_with_profile(
+        profile,
+        Arc::new(default_registry()),
+        HarnessId::Mock,
+        None,
+    )
+    .unwrap();
+    let chat = core.workspace.read_chats().unwrap().remove(0);
+    let mut rx = core.workspace.watch_session_rows();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await; // let boot settle
+    rx.borrow_and_update();
+    let base = chrono::Utc::now();
+    let n = 100;
+    let t = Instant::now();
+    for i in 0..n {
+        core.workspace.record_session(&mast_proto::Session {
+            last_completed_turn: None,
+            chat_id: chat.id.clone(),
+            device_id: chat.device_id.clone(),
+            status: mast_proto::SessionStatus::Working,
+            started_at: None,
+            updated_at: base + chrono::TimeDelta::milliseconds(i),
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx.changed())
+            .await
+            .expect("sessions publish")
+            .unwrap();
+    }
+    eprintln!(
+        "BENCH engine | session heartbeat -> sessions watch (331 real chats) x{n} | mean_ms={:.2}",
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    );
 }
