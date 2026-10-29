@@ -35,6 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
@@ -150,6 +151,28 @@ struct CheckoutEntry {
     /// block for seconds, so [`add_entry`] does it off the runtime and attaches
     /// the result here once ready.
     watchers: Mutex<Vec<notify::RecommendedWatcher>>,
+    /// Fingerprint of the last cheap repair probe (see [`repair_probe`]).
+    probe: Mutex<Option<u64>>,
+    /// Set by the repair tick: the next sync may be skipped when the probe
+    /// shows nothing changed. Watcher and new-chat kicks leave it clear.
+    repair_kick: AtomicBool,
+}
+
+impl CheckoutEntry {
+    /// Kick from the repair tick. Entries whose chats are all archived have
+    /// nothing watching them (no sidecar consumer, no visible diff), so they
+    /// are left alone; member/target entries carry no chats and still count.
+    fn kick_for_repair(&self) {
+        let idle = {
+            let chats = lock(&self.chats);
+            !chats.is_empty() && chats.iter().all(|chat| chat.archived)
+        };
+        if idle {
+            return;
+        }
+        self.repair_kick.store(true, Ordering::Relaxed);
+        let _ = self.kick_tx.send(());
+    }
 }
 
 /// Working-tree snapshot recorded when a chat's turn dispatches — the diff
@@ -364,7 +387,9 @@ impl CheckoutDiffSync {
     pub async fn repair_now(&self) {
         let chats = self.inner.workspace.watch_chats().borrow().clone();
         reconcile(&self.inner, chats, true).await;
-        self.sync_all();
+        for entry in lock(&self.inner.entries).values() {
+            entry.kick_for_repair();
+        }
     }
 
     /// Kick an immediate sync of every tracked checkout (repair-tick path).
@@ -1052,6 +1077,8 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
         orphaned_since: Mutex::new(None),
         kick_tx: kick_tx.clone(),
         watchers: Mutex::new(Vec::new()),
+        probe: Mutex::new(None),
+        repair_kick: AtomicBool::new(false),
     });
     lock(&inner.entries).insert(entry.identity.id.clone(), entry.clone());
     tokio::spawn(entry_task(
@@ -1146,7 +1173,87 @@ async fn entry_task(
 // Snapshot + publish
 // ---------------------------------------------------------------------------
 
+/// Cheap "did anything change" fingerprint for repair-tick kicks: one
+/// `git status --porcelain=v2 --branch` (HEAD id, branch, every changed and
+/// untracked path) plus the HEAD/index file stamps and the size+mtime of each
+/// listed path, which catches an edit to a file that was already modified.
+/// `None` (cannot decide: git failed, too many paths, or a submodule is
+/// involved) means "run the full capture".
+async fn repair_probe(identity: &CheckoutIdentity) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    const MAX_PROBED_PATHS: usize = 2_000;
+    let status = capture_git(
+        &identity.root,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
+        2 * 1024 * 1024,
+    )
+    .await
+    .ok()?;
+    if status.truncated {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    status.stdout.hash(&mut hasher);
+    let stamp = |path: &Path, hasher: &mut std::collections::hash_map::DefaultHasher| {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) => {
+                meta.len().hash(hasher);
+                meta.modified().ok().hash(hasher);
+            }
+            Err(_) => 0u8.hash(hasher),
+        }
+    };
+    stamp(&identity.git_dir.join("HEAD"), &mut hasher);
+    stamp(&identity.git_dir.join("index"), &mut hasher);
+    let mut probed = 0usize;
+    for record in status.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let record = String::from_utf8_lossy(record);
+        let path = match record.chars().next()? {
+            '#' => continue,
+            '?' => record.get(2..)?,
+            '1' | 'u' => {
+                // `1 XY sub mH mI mW hH hI path` / `u XY sub m1 m2 m3 mW h1 h2 h3 path`
+                let fields = if record.starts_with('1') { 9 } else { 11 };
+                let sub = record.split(' ').nth(2)?;
+                if sub.starts_with('S') {
+                    return None; // submodule state lives outside this stat view
+                }
+                record.splitn(fields, ' ').last()?
+            }
+            '2' => {
+                if record.split(' ').nth(2)?.starts_with('S') {
+                    return None;
+                }
+                record.splitn(10, ' ').last()?
+            }
+            _ => &record, // a rename's origin path
+        };
+        probed += 1;
+        if probed > MAX_PROBED_PATHS {
+            return None;
+        }
+        stamp(&identity.root.join(path), &mut hasher);
+    }
+    Some(hasher.finish())
+}
+
 async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
+    if entry.repair_kick.swap(false, Ordering::Relaxed)
+        && lock(&entry.checksum).is_some()
+        && let Some(probe) = repair_probe(&entry.identity).await
+    {
+        let unchanged = lock(&entry.probe).replace(probe) == Some(probe);
+        if unchanged {
+            return; // one `git status` said nothing moved: skip the full capture
+        }
+    }
     let snapshot = match capture_diff(&inner.repos, &entry.identity.root).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
@@ -1334,7 +1441,7 @@ async fn diff_sync_task(
                 // Fresh: revalidate every memoized identity against git.
                 reconcile(&inner, chats, true).await;
                 for entry in lock(&inner.entries).values() {
-                    let _ = entry.kick_tx.send(());
+                    entry.kick_for_repair();
                 }
             }
         }
@@ -1421,6 +1528,57 @@ fn split_z(value: &[u8]) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(|part| String::from_utf8_lossy(part).to_string())
         .collect()
+}
+
+/// Number of NUL-separated path fields that follow a raw record's header
+/// for status letter `status` (renames and copies carry two).
+fn raw_path_fields(status: &str) -> usize {
+    if status.starts_with('R') || status.starts_with('C') {
+        2
+    } else {
+        1
+    }
+}
+
+/// Split the output of `git diff --raw --numstat -z` into its raw block and
+/// its numstat block (raw records start with `:`; a record's path fields are
+/// consumed by count, so a path that begins with `:` cannot end the block).
+fn split_raw_numstat(value: &[u8]) -> (&[u8], &[u8]) {
+    let mut offset = 0usize;
+    while value.get(offset) == Some(&b':') {
+        let Some(end) = value[offset..].iter().position(|b| *b == 0) else {
+            return (value, &[]);
+        };
+        let header = String::from_utf8_lossy(&value[offset..offset + end]);
+        let status = header.rsplit(' ').next().unwrap_or_default().to_owned();
+        offset += end + 1;
+        for _ in 0..raw_path_fields(&status) {
+            match value[offset.min(value.len())..].iter().position(|b| *b == 0) {
+                Some(end) => offset += end + 1,
+                None => return (value, &[]),
+            }
+        }
+    }
+    (&value[..offset], &value[offset..])
+}
+
+/// `--name-status -z` bytes rebuilt from a `--raw -z` block.
+fn raw_to_name_status(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() / 4);
+    let mut fields = raw.split(|b| *b == 0).filter(|f| !f.is_empty());
+    while let Some(header) = fields.next() {
+        let header = String::from_utf8_lossy(header);
+        let status = header.rsplit(' ').next().unwrap_or_default();
+        out.extend_from_slice(status.as_bytes());
+        out.push(0);
+        for _ in 0..raw_path_fields(status) {
+            if let Some(path) = fields.next() {
+                out.extend_from_slice(path);
+                out.push(0);
+            }
+        }
+    }
+    out
 }
 
 fn parse_name_status(value: &[u8]) -> Vec<DiffFileSummary> {
@@ -2240,23 +2398,15 @@ pub async fn capture_diff_against(
         .await
         .unwrap_or_else(|_| "HEAD".into());
 
-    let names = capture_git(
-        root,
-        &["diff", "--name-status", "-z", "--find-renames", base, "--"],
-        2 * 1024 * 1024,
-    )
-    .await?;
-    let nums = capture_git(
-        root,
-        &["diff", "--numstat", "-z", "--find-renames", base, "--"],
-        2 * 1024 * 1024,
-    )
-    .await?;
-    let raw = capture_git(
+    // One process answers three questions: `--raw` (modes, ids, status), its
+    // name-status view and `--numstat`. Git prints the raw block first, then
+    // the numstat block.
+    let combined = capture_git(
         root,
         &[
             "diff",
             "--raw",
+            "--numstat",
             "-z",
             "--no-abbrev",
             "--find-renames",
@@ -2266,6 +2416,19 @@ pub async fn capture_diff_against(
         2 * 1024 * 1024,
     )
     .await?;
+    let (raw_bytes, num_bytes) = split_raw_numstat(&combined.stdout);
+    let names = Capture {
+        stdout: raw_to_name_status(raw_bytes),
+        truncated: combined.truncated,
+    };
+    let nums = Capture {
+        stdout: num_bytes.to_vec(),
+        truncated: combined.truncated,
+    };
+    let raw = Capture {
+        stdout: raw_bytes.to_vec(),
+        truncated: combined.truncated,
+    };
     let tracked = capture_git(
         root,
         &[

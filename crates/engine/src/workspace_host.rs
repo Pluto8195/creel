@@ -821,12 +821,20 @@ impl WorkspaceHost {
         self.read(|doc| doc.work_outline_inputs(space_id, synced))
     }
 
-    /// Cheap change marker of the Work Outline inputs: `(generation of the
-    /// row kinds they read, registry synced)`. Equal markers ⇒ equal inputs.
-    pub fn work_outline_inputs_marker(&self) -> (u64, bool) {
+    /// Cheap change marker of the Work Outline inputs of one Space:
+    /// `(generation of the outline row kinds, fingerprint of the Chat and
+    /// session fields the outline reads, registry synced)`. Equal markers ⇒
+    /// equal inputs; chat/session writes the outline cannot see (heartbeats,
+    /// transcript appends, titles) leave it unchanged.
+    pub fn work_outline_inputs_marker(&self, space_id: &str) -> (u64, u64, bool) {
         let synced = self.registry_synced();
+        self.read(|doc| Self::outline_marker(doc, space_id, synced))
+    }
+
+    fn outline_marker(doc: &mast_doc::RegistryDoc, space_id: &str, synced: bool) -> (u64, u64, bool) {
         (
-            self.read(|doc| doc.work_outline_inputs_generation()),
+            doc.work_outline_structure_generation(),
+            doc.work_outline_chat_session_fingerprint(space_id),
             synced,
         )
     }
@@ -837,11 +845,11 @@ impl WorkspaceHost {
     pub fn work_outline_inputs_marked(
         &self,
         space_id: &str,
-    ) -> ((u64, bool), mast_doc::WorkOutlineInputs) {
+    ) -> ((u64, u64, bool), mast_doc::WorkOutlineInputs) {
         let synced = self.registry_synced();
         self.read(|doc| {
             (
-                (doc.work_outline_inputs_generation(), synced),
+                Self::outline_marker(doc, space_id, synced),
                 doc.work_outline_inputs(space_id, synced),
             )
         })

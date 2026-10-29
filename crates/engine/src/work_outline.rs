@@ -495,7 +495,7 @@ impl WorkOutlineService {
             space_id: String,
             last: Option<WorkOutlineSnapshot>,
             /// Inputs marker of the last recompute.
-            marker: Option<(u64, bool)>,
+            marker: Option<(u64, u64, bool)>,
             revision: u64,
         }
         let state = State {
@@ -514,7 +514,8 @@ impl WorkOutlineService {
                     state.changes.borrow_and_update();
                     // Nothing the outline reads changed (devices, pins,
                     // seen markers, …): no recompute.
-                    if state.marker == Some(state.workspace.work_outline_inputs_marker()) {
+                    if state.marker
+                        == Some(state.workspace.work_outline_inputs_marker(&state.space_id)) {
                         continue;
                     }
                 }

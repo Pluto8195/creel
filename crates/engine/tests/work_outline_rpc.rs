@@ -377,7 +377,7 @@ async fn unrelated_registry_changes_never_hide_an_outline_change() {
     frame_until(&mut stream, |s| s.available).await;
 
     // A device row is not an outline input: the marker stays put.
-    let marker = core.workspace.work_outline_inputs_marker();
+    let marker = core.workspace.work_outline_inputs_marker("space-1");
     let device = core.device_id.clone();
     let renamed = |n: usize| {
         core.workspace
@@ -385,7 +385,7 @@ async fn unrelated_registry_changes_never_hide_an_outline_change() {
             .unwrap()
     };
     assert!(renamed(0), "the engine's own device row exists");
-    assert_eq!(core.workspace.work_outline_inputs_marker(), marker);
+    assert_eq!(core.workspace.work_outline_inputs_marker("space-1"), marker);
 
     // Outline writes buried among unrelated ones all arrive.
     for i in 0..5 {
@@ -405,7 +405,7 @@ async fn unrelated_registry_changes_never_hide_an_outline_change() {
     }
     let last = frame_until(&mut stream, |s| s.items.len() == 5).await;
     assert!(last.items.iter().any(|item| item.title == "Item 4"));
-    assert_ne!(core.workspace.work_outline_inputs_marker(), marker);
+    assert_ne!(core.workspace.work_outline_inputs_marker("space-1"), marker);
 
     // And a change after a long run of unrelated ones still lands.
     for n in 30..40 {

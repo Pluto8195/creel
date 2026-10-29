@@ -266,6 +266,70 @@ async fn bench_registry_session_heartbeat_publish() {
     );
 }
 
+/// Work Outline watch cost per session heartbeat, all Spaces, on a real-profile copy:
+/// the full recompute every heartbeat used to cost, against the marker check that now
+/// decides whether to recompute (it must be unchanged by a heartbeat).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "benchmark: needs MAST_PERF_REAL_COPY"]
+async fn bench_work_outline_recompute_per_heartbeat() {
+    let Some(dir) = std::env::var_os("MAST_PERF_REAL_COPY") else {
+        eprintln!("BENCH outline | MAST_PERF_REAL_COPY not set, skipped");
+        return;
+    };
+    let profile = mast_engine::EngineProfile::local(std::path::Path::new(&dir)).unwrap();
+    let core = EngineCore::assemble_with_profile(
+        profile,
+        Arc::new(default_registry()),
+        HarnessId::Mock,
+        None,
+    )
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let spaces: Vec<String> = core
+        .workspace
+        .read_spaces()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let chat = core.workspace.read_chats().unwrap().remove(0);
+    let n = 30;
+    let (mut recompute, mut marker, mut changed) = (0.0, 0.0, 0);
+    for i in 0..n {
+        let before: Vec<_> = spaces
+            .iter()
+            .map(|s| core.workspace.work_outline_inputs_marker(s))
+            .collect();
+        core.workspace.record_session(&mast_proto::Session {
+            last_completed_turn: None,
+            chat_id: chat.id.clone(),
+            device_id: chat.device_id.clone(),
+            status: mast_proto::SessionStatus::Working,
+            started_at: None,
+            updated_at: chrono::Utc::now() + chrono::TimeDelta::milliseconds(i),
+        });
+        let t = Instant::now();
+        let after: Vec<_> = spaces
+            .iter()
+            .map(|s| core.workspace.work_outline_inputs_marker(s))
+            .collect();
+        marker += t.elapsed().as_secs_f64() * 1000.0;
+        changed += before.iter().zip(&after).filter(|(a, b)| a != b).count();
+        let t = Instant::now();
+        for s in &spaces {
+            let inputs = core.workspace.work_outline_inputs(s);
+            std::hint::black_box(mast_doc::materialize_work_outline(s, &inputs));
+        }
+        recompute += t.elapsed().as_secs_f64() * 1000.0;
+    }
+    eprintln!(
+        "BENCH outline | per heartbeat, {} spaces | recompute_all_ms={:.2} marker_check_all_ms={:.2} markers_changed={changed}",
+        spaces.len(),
+        recompute / n as f64,
+        marker / n as f64
+    );
+}
+
 /// Journal scans on a copy of the real journals directory
 /// (`$MAST_PERF_REAL_COPY/profiles/local/journals`; copy it with
 /// `cp -c -R ~/.zeron/profiles/local/journals ...`, read-only on the source).

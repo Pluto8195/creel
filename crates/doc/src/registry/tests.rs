@@ -1631,6 +1631,37 @@ fn kind_generations_track_exactly_the_kinds_that_changed() {
     assert!(outline(&b) > b_mark);
 }
 
+#[test]
+fn outline_fingerprint_ignores_chat_and_session_writes_the_outline_cannot_see() {
+    let mut doc = RegistryDoc::new("dev-a");
+    doc.upsert_space(&space("space-1", "dev-a", "/tmp/repo")).unwrap();
+    let mut c = chat("chat-1", "dev-a");
+    c.space_id = Some("space-1".into());
+    doc.upsert_chat(&c).unwrap();
+    let mark = |doc: &RegistryDoc| {
+        (
+            doc.work_outline_structure_generation(),
+            doc.work_outline_chat_session_fingerprint("space-1"),
+        )
+    };
+    let start = mark(&doc);
+    // Heartbeats and renames bump the chat/session generations only.
+    let before = doc.work_outline_inputs_generation();
+    doc.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working)).unwrap();
+    doc.rename_chat("chat-1", "Renamed").unwrap();
+    assert!(doc.work_outline_inputs_generation() > before);
+    assert_eq!(mark(&doc), start, "invisible writes keep the marker");
+    // Archiving a chat is visible.
+    doc.set_chat_archived("chat-1", true).unwrap();
+    assert_ne!(mark(&doc), start);
+    // A chat in another Space does not move this Space's marker.
+    let after = mark(&doc);
+    let mut other = chat("chat-2", "dev-a");
+    other.space_id = Some("space-2".into());
+    doc.upsert_chat(&other).unwrap();
+    assert_eq!(mark(&doc), after);
+}
+
 /// A local profile's queued writes settle into the table: every overlay
 /// read (live rows, tombstones, per-field clocks) is unchanged, the queue
 /// is empty, and the settled state survives a persist round trip.
