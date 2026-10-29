@@ -688,3 +688,10 @@ instruction editor, ⌘Z undoes typing and never touches the Outline.
 - **Recent changes:** **Recent Changes…** in a work item's or project's right-click menu lists the last actions, newest
   first. Choose one to undo everything back to it; rows already undone can be redone the
   same way.
+
+### Projects and worker destinations
+
+In Work Item Details, **Project → Mark as project** makes an item a project. Chats inside a project
+(on the project or any item below it) can create, read and start chats for anything in that project,
+but never outside it. On a project, choose a **worker destination** (e.g. its "Tickets" child):
+workers an agent creates without naming a parent land there. Project settings are not undo steps.

@@ -10850,6 +10850,9 @@ mod logic_tests {
     mod group_tests {
         include!("work_outline/group_tests.rs");
     }
+    mod project_ui_tests {
+        include!("work_outline/project_ui_tests.rs");
+    }
 
     /// First-use empty state of the Outline; shares this module's fixtures.
     mod guidance_tests {

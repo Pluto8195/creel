@@ -778,6 +778,8 @@ pub(crate) fn update_entry(
     if changes.resolve_open_requests
         || changes.inherit_parent_instructions.is_some()
         || changes.external_sync_state.is_some()
+        || changes.is_project.is_some()
+        || !changes.worker_destination.is_unchanged()
     {
         return None;
     }
