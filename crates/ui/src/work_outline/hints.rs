@@ -334,8 +334,28 @@ pub(crate) fn shortcut_reference_on(mac: bool, keymap: &KeymapConfig) -> Vec<Sho
         },
         linear_group(mac),
         github_group(mac, keymap),
+        chat_item_group(mac),
         plan_group(mac),
     ]
+}
+
+/// The chat header's keys: the side panel's Item tab and the pinned context
+/// card (fixed combos, defined in the Shell).
+fn chat_item_group(mac: bool) -> ShortcutGroup {
+    use crate::shell::{OPEN_ITEM_TAB_COMBO, TOGGLE_ITEM_CARD_COMBO};
+    ShortcutGroup {
+        title: "Chat header",
+        rows: vec![
+            ShortcutRow {
+                label: "Open the Item tab",
+                keys: Some(key_label_on(mac, OPEN_ITEM_TAB_COMBO)),
+            },
+            ShortcutRow {
+                label: "Pin or release the context card",
+                keys: Some(key_label_on(mac, TOGGLE_ITEM_CARD_COMBO)),
+            },
+        ],
+    }
 }
 
 /// The plan-reading rows of the shortcut reference (an Artifact tab): the
@@ -646,6 +666,7 @@ mod tests {
                 "Commands",
                 "Linear",
                 "GitHub",
+                "Chat header",
                 "Plan"
             ]
         );

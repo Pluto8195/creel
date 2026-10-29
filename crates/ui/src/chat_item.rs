@@ -409,3 +409,150 @@ impl CardState {
         before
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::work_outline::required_actions::fixture::request;
+    use crate::work_outline::store::{fixture_ids::*, fixture_snapshot};
+
+    fn chat(id: &str) -> Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "deviceId": "device",
+            "title": "A title",
+            "archived": false,
+            "cwd": "/work/app",
+            "branch": "feature/x",
+            "checkoutId": null,
+            "config": {"harness": "claude-code", "model": "fable-5-1", "reasoning": null,
+                       "modelOptions": {}, "sandbox": "workspace-write", "autoApprove": false},
+            "lastMessagePreview": null,
+            "lastMessageAt": null,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "actualModel": "opus-5-5"
+        }))
+        .unwrap()
+    }
+
+    fn sheet(chat: &Chat, snapshot: &WorkOutlineSnapshot) -> ChatItemFacts {
+        facts(&FactsInput {
+            chat,
+            space_path: Some("/project"),
+            account: Some("Work".into()),
+            links: None,
+            snapshot: Some(snapshot),
+            artifacts: None,
+        })
+    }
+
+    #[test]
+    fn model_shows_what_ran_and_what_was_configured() {
+        let chat = chat(CHAT_API);
+        let sheet = sheet(&chat, &fixture_snapshot("s1"));
+        assert_eq!(sheet.model.label.as_deref(), Some("opus-5-5"));
+        assert_eq!(sheet.model.configured.as_deref(), Some("fable-5-1"));
+        assert_eq!(sheet.model.chip(), "Model opus-5-5");
+        assert_eq!(sheet.model.detail(), "ran \u{b7} configured fable-5-1");
+        assert_eq!(sheet.account.as_deref(), Some("Work"));
+        assert_eq!(sheet.runs_in.as_deref(), Some("/work/app"));
+        assert_eq!(sheet.branch.as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn an_item_chat_has_a_path_and_a_plain_chat_has_no_item_section() {
+        let snapshot = fixture_snapshot("s1");
+        let with_item = sheet(&chat(CHAT_API), &snapshot);
+        let item = with_item.item.expect("CHAT_API is on an item");
+        assert_eq!(item.item_id, API);
+        assert!(item.path.len() >= 2);
+        assert_eq!(item.path.last().unwrap().id, API);
+        let (trimmed, last_two) = item.trimmed_path(2);
+        assert_eq!((trimmed, last_two.len()), (item.path.len() > 2, 2));
+        assert!(sheet(&chat(CHAT_LOOSE_A), &snapshot).item.is_none());
+    }
+
+    #[test]
+    fn attention_counts_asks_and_drift_and_questions_count_plan_questions() {
+        let mut snapshot = fixture_snapshot("s1");
+        snapshot
+            .user_action_requests
+            .push(request("r1", "s1", API, CHAT_API, "Pick one"));
+        let mut question = request("r2", "s1", API, CHAT_API, "Q-1");
+        question.dedupe_key = Some("artq:a:Q-1".into());
+        snapshot.user_action_requests.push(question);
+        // Another item's ask is not this chat's.
+        snapshot
+            .user_action_requests
+            .push(request("r3", "s1", UI, CHAT_UI, "Elsewhere"));
+        let item = sheet(&chat(CHAT_API), &snapshot).item.unwrap();
+        assert_eq!((item.attention_count(), item.question_count()), (1, 1));
+        assert_eq!(item.actions.len(), 2);
+    }
+
+    #[test]
+    fn an_unrelated_change_leaves_the_sheet_equal() {
+        let before = fixture_snapshot("s1");
+        let mut after = before.clone();
+        after
+            .user_action_requests
+            .push(request("r9", "s1", UI, CHAT_UI, "Another chat's ask"));
+        let chat = chat(CHAT_API);
+        assert_eq!(sheet(&chat, &before), sheet(&chat, &after));
+        // Its own item's ask does change it.
+        after
+            .user_action_requests
+            .push(request("r10", "s1", API, CHAT_API, "Its own"));
+        assert_ne!(sheet(&chat, &before), sheet(&chat, &after));
+    }
+
+    #[test]
+    fn the_card_waits_to_show_and_to_hide_and_stale_timers_do_nothing() {
+        let mut card = CardState::default();
+        let show = card.header_hover(true).expect("hover starts a show timer");
+        assert_eq!(show.delay_ms(), HOVER_DELAY_MS);
+        assert!(!card.visible());
+        assert!(card.fire(show));
+        assert!(card.visible());
+        // Leaving and re-entering before the grace ends cancels the hide.
+        let hide = card.header_hover(false).unwrap();
+        assert_eq!(hide.delay_ms(), HIDE_GRACE_MS);
+        card.header_hover(true);
+        assert!(!card.fire(hide));
+        assert!(card.visible());
+        // Moving from the header onto the card keeps it open.
+        let hide = card.header_hover(false).unwrap();
+        card.card_hover(true);
+        assert!(!card.fire(hide));
+        let hide = card.card_hover(false).unwrap();
+        assert!(card.fire(hide));
+        assert!(!card.visible());
+        // A pass shorter than the delay never shows it.
+        let show = card.header_hover(true).unwrap();
+        card.header_hover(false);
+        assert!(!card.fire(show));
+    }
+
+    #[test]
+    fn pinning_keeps_the_card_until_released() {
+        let mut card = CardState::default();
+        card.toggle_pin();
+        assert!(card.visible() && card.pinned());
+        assert!(card.header_hover(true).is_none());
+        assert!(card.header_hover(false).is_none());
+        assert!(card.visible());
+        card.toggle_pin();
+        assert!(!card.visible(), "released with the pointer away");
+        // Released while hovering: it stays until the pointer leaves.
+        card.toggle_pin();
+        card.header_hover(true);
+        card.toggle_pin();
+        assert!(card.visible());
+        let hide = card.header_hover(false).unwrap();
+        assert!(card.fire(hide));
+        // A different chat drops everything.
+        card.toggle_pin();
+        assert!(card.dismiss());
+        assert!(!card.visible() && !card.pinned());
+    }
+}

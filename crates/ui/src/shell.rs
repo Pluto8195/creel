@@ -79,6 +79,8 @@ pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
 mod chat_item_ui;
+#[cfg(test)]
+mod chat_item_tests;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -124,7 +126,7 @@ actions!(
 pub(crate) const FOCUS_OVERVIEW_SEARCH_COMBO: &str = "mod-f";
 pub(crate) const OPEN_PR_REVIEW_CHATS_COMBO: &str = "mod-shift-p";
 /// Open the side panel's Item tab (fixed, listed in the `?` reference).
-pub(crate) const OPEN_ITEM_TAB_COMBO: &str = "mod-;";
+pub(crate) const OPEN_ITEM_TAB_COMBO: &str = "mod-alt-;";
 /// Pin the header's context card open / release it.
 pub(crate) const TOGGLE_ITEM_CARD_COMBO: &str = "mod-alt-i";
 
