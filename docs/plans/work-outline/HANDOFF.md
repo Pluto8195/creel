@@ -500,8 +500,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   1.6–6 GB. Open findings (ranked): Overview List mode not virtualized (44–55 ms/frame, 335 MB alloc at
   250 chats); Work Outline recompute on every chat/session write (33–36 ms); diff-sync runs 7 git
   processes per kick, every 120 s for 22 repos; transcript sync O(entries) per tick; artifact question
-  sync re-sends an op id with a changed payload (`operationConflict`, write never lands — correctness
-  bug); RSS swings unexplained.
+  sync re-sent an op id with a changed payload (fixed in round 2); RSS swings unexplained.
+  Round 2 (2026-10-29, `perf-round-2`): question-sync op ids derive from the full payload (origin, text,
+  info, key), fixing the `operationConflict` writes; Work Outline recompute gated by a watch marker
+  (outline-kind generation + per-Space chat/session fingerprint): ~46 ms per heartbeat → 0.7 ms check
+  (`bench_work_outline_recompute_per_heartbeat`); diff-sync full capture 7 → 5 git processes, repair
+  tick runs one `git status --porcelain=v2 --branch` probe and skips unchanged checkouts, archived-only
+  checkouts aren't kicked. Still open: Overview List mode virtualization, transcript sync O(entries).
 - **Changed-since marker on artifact lists** (2026-10-29): accent dot + "Updated since you last viewed:
   rev N → M" tooltip on Details panel artifact rows, the Item tab Plan row and the outline row's
   artifact chip, from `settings.artifact_last_viewed` (`questions_ui::list_marker`).
