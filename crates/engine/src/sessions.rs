@@ -359,8 +359,7 @@ impl SessionsEngine {
         part_id: &str,
         is_diff: bool,
     ) -> Result<Option<String>, EngineError> {
-        let events = self.inner.journal.replay(chat_id, 0)?;
-        for (_, mut event) in events.into_iter().rev() {
+        let found = self.inner.journal.find_rev(chat_id, |_, mut event| {
             // Subagent traffic is journaled on the parent chat wrapped in one
             // or more routing envelopes. Its thin child doc uses the leaf
             // tool id for the same sidecar contract, so unwrap all envelopes.
@@ -371,20 +370,20 @@ impl SessionsEngine {
                 id, output, diff, ..
             } = event
             else {
-                continue;
+                return None;
             };
             if id != part_id {
-                continue;
+                return None;
             }
-            if is_diff {
-                return diff
-                    .map(|diff| serde_json::to_string(&diff))
+            Some(if is_diff {
+                diff.map(|diff| serde_json::to_string(&diff))
                     .transpose()
-                    .map_err(|err| EngineError::Other(format!("tool diff serialize: {err}")));
-            }
-            return Ok(output.filter(|text| !text.trim().is_empty()));
-        }
-        Ok(None)
+                    .map_err(|err| EngineError::Other(format!("tool diff serialize: {err}")))
+            } else {
+                Ok(output.filter(|text| !text.trim().is_empty()))
+            })
+        })?;
+        found.unwrap_or(Ok(None))
     }
 
     /// Bind generated-image intake to the same profile store used by attachment RPCs.
@@ -1340,7 +1339,8 @@ impl SessionsEngine {
             if chat.device_id != self.inner.device_id {
                 continue;
             }
-            let events = self.inner.journal.replay(&chat.id, 0)?;
+            // Only the final turn matters; don't parse the whole journal.
+            let events = self.inner.journal.replay_last_turn(&chat.id)?;
             let Some(tail) = completed_journal_tail(&events) else {
                 continue;
             };
@@ -1687,13 +1687,15 @@ impl Inner {
     /// The model of the newest `SessionStarted` in the chat's journal that
     /// reported one.
     fn journal_actual_model(&self, chat_id: &str) -> Option<String> {
-        let events = self.journal.replay(chat_id, 0).ok()?;
-        events.into_iter().rev().find_map(|(_, event)| match event {
-            AgentEvent::SessionStarted { harness, model, .. } => {
-                reported_model(harness, &model).map(str::to_owned)
-            }
-            _ => None,
-        })
+        self.journal
+            .find_rev(chat_id, |_, event| match event {
+                AgentEvent::SessionStarted { harness, model, .. } => {
+                    reported_model(harness, &model).map(str::to_owned)
+                }
+                _ => None,
+            })
+            .ok()
+            .flatten()
     }
 
     // NB: there is deliberately no `forget_harness_session` anymore. The old

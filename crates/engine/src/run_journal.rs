@@ -465,6 +465,35 @@ impl RunJournal {
         last_valid_line(&path)
     }
 
+    /// The first `Some` of `f` over a chat's events, newest first, reading
+    /// only as much of the file as the search needs.
+    pub fn find_rev<R>(
+        &self,
+        chat_id: &str,
+        f: impl FnMut(u64, AgentEvent) -> Option<R>,
+    ) -> Result<Option<R>, JournalError> {
+        find_rev_in(&self.path_for(chat_id), f)
+    }
+
+    /// The events of the journal's final turn, in order: everything after the
+    /// last `Done` that is not the journal's final event (exclusive), through
+    /// the end. A journal with no such `Done` yields every event, like
+    /// [`Self::replay`] from 0.
+    pub fn replay_last_turn(&self, chat_id: &str) -> Result<Vec<(u64, AgentEvent)>, JournalError> {
+        let mut turn: Vec<(u64, AgentEvent)> = Vec::new();
+        self.find_rev(chat_id, |seq, event| {
+            // The final event may itself be the turn's `Done`; any other
+            // `Done` ends the previous turn.
+            if !turn.is_empty() && matches!(event, AgentEvent::Done { .. }) {
+                return Some(());
+            }
+            turn.push((seq, event));
+            None
+        })?;
+        turn.reverse();
+        Ok(turn)
+    }
+
     /// Last filesystem modification time for a chat journal, in epoch millis.
     /// Recovery uses this to distinguish a response lost before persistence
     /// from a newer user message that was intentionally queued after the last
@@ -537,24 +566,15 @@ fn read_lines(path: &Path) -> Result<Vec<(u64, AgentEvent)>, JournalError> {
     Ok(out)
 }
 
-/// The last parseable line, found by scanning backwards from the end of the
-/// file in chunks: a torn tail line is skipped exactly as [`read_lines`] skips
-/// it, but the cost no longer grows with the journal (they reach tens of MB).
-fn last_valid_line(path: &Path) -> Result<Option<(u64, AgentEvent)>, JournalError> {
+/// Visit the file's lines from the last to the first, reading backwards in
+/// chunks; `visit` returns `true` to stop. Cost is proportional to what is
+/// visited, not to the file (journals reach tens of MB).
+fn rev_lines(path: &Path, mut visit: impl FnMut(&[u8]) -> bool) -> Result<(), JournalError> {
     use std::io::{Read, Seek, SeekFrom};
     const CHUNK: u64 = 64 * 1024;
-    fn parse(line: &[u8]) -> Option<(u64, AgentEvent)> {
-        let line = line.trim_ascii();
-        if line.is_empty() {
-            return None;
-        }
-        serde_json::from_slice::<JournalLine>(line)
-            .ok()
-            .map(|parsed| (parsed.seq, parsed.event))
-    }
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.into()),
     };
     let mut end = file.metadata()?.len();
@@ -569,17 +589,49 @@ fn last_valid_line(path: &Path) -> Result<Option<(u64, AgentEvent)>, JournalErro
         buf.extend_from_slice(&carried);
         let mut region_end = buf.len();
         while let Some(newline) = buf[..region_end].iter().rposition(|b| *b == b'\n') {
-            if let Some(found) = parse(&buf[newline + 1..region_end]) {
-                return Ok(Some(found));
+            if visit(&buf[newline + 1..region_end]) {
+                return Ok(());
             }
             region_end = newline;
         }
         if start == 0 {
-            return Ok(parse(&buf[..region_end]));
+            visit(&buf[..region_end]);
+            return Ok(());
         }
         carried = buf[..region_end].to_vec();
         end = start;
     }
+}
+
+fn parse_journal_line(line: &[u8]) -> Option<(u64, AgentEvent)> {
+    let line = line.trim_ascii();
+    if line.is_empty() {
+        return None;
+    }
+    serde_json::from_slice::<JournalLine>(line)
+        .ok()
+        .map(|parsed| (parsed.seq, parsed.event))
+}
+
+/// The first `Some` of `f` over the parseable events, newest first. A torn
+/// tail line is skipped exactly as [`read_lines`] skips it.
+fn find_rev_in<R>(
+    path: &Path,
+    mut f: impl FnMut(u64, AgentEvent) -> Option<R>,
+) -> Result<Option<R>, JournalError> {
+    let mut found = None;
+    rev_lines(path, |line| {
+        let Some((seq, event)) = parse_journal_line(line) else {
+            return false;
+        };
+        found = f(seq, event);
+        found.is_some()
+    })?;
+    Ok(found)
+}
+
+fn last_valid_line(path: &Path) -> Result<Option<(u64, AgentEvent)>, JournalError> {
+    find_rev_in(path, |seq, event| Some((seq, event)))
 }
 
 /// Next seq (last valid seq + 1, starting at 1) and whether the file ends mid-line.
@@ -641,6 +693,55 @@ mod tests {
             event: AgentEvent::TextDelta { text: text.into() },
         })
         .unwrap()
+    }
+
+    #[test]
+    fn replay_last_turn_and_find_rev_read_from_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        let done = || AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        };
+        let text = |t: &str| AgentEvent::TextDelta { text: t.into() };
+        // Two completed turns and a third still running.
+        for event in [
+            text("a1"),
+            text("a2"),
+            done(),
+            text("b1"),
+            done(),
+            text("c1"),
+            text("c2"),
+        ] {
+            journal.append("chat", &event).unwrap();
+        }
+        let seqs =
+            |events: Vec<(u64, AgentEvent)>| events.into_iter().map(|(s, _)| s).collect::<Vec<_>>();
+        // The third turn is still open.
+        assert_eq!(seqs(journal.replay_last_turn("chat").unwrap()), vec![6, 7]);
+        journal.append("chat", &done()).unwrap();
+        assert_eq!(
+            seqs(journal.replay_last_turn("chat").unwrap()),
+            vec![6, 7, 8]
+        );
+        // A journal with a single turn yields everything.
+        journal.append("solo", &text("x")).unwrap();
+        journal.append("solo", &done()).unwrap();
+        assert_eq!(seqs(journal.replay_last_turn("solo").unwrap()), vec![1, 2]);
+        assert!(journal.replay_last_turn("missing").unwrap().is_empty());
+        // find_rev walks newest first and stops at the first hit.
+        let mut visited = 0;
+        let hit = journal
+            .find_rev("chat", |seq, event| {
+                visited += 1;
+                matches!(event, AgentEvent::TextDelta { ref text } if text == "b1").then_some(seq)
+            })
+            .unwrap();
+        assert_eq!(hit, Some(4));
+        assert_eq!(visited, 5);
     }
 
     /// The backwards tail scan must agree with a full parse for every shape of
