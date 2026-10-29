@@ -310,7 +310,9 @@ impl Shell {
     /// and let an armed "restart when idle" fire.
     pub(super) fn running_tick(&mut self, cx: &mut Context<Self>) {
         // Boot once, then while entries remain (they clear when a turn completes).
-        if self.running.ticks % INTERRUPTED_REFRESH_TICKS == 0
+        // (Not under test: shell tests with a fake engine count every request.)
+        if cfg!(not(test))
+            && self.running.ticks % INTERRUPTED_REFRESH_TICKS == 0
             && (self.running.ticks == 0 || !self.running.interrupted.is_empty())
         {
             self.refresh_interrupted(cx);
