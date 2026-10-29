@@ -58,6 +58,9 @@ mod linear_section;
 #[path = "details_pr_sync.rs"]
 mod pr_sync_section;
 
+#[path = "details_templates.rs"]
+mod templates_section;
+
 #[path = "details_artifacts.rs"]
 pub(crate) mod artifacts_section;
 pub(crate) use user_actions_section::ProposalReview;
@@ -99,6 +102,15 @@ pub(crate) enum DetailsEvent {
         chat_id: String,
         work_item_id: Option<String>,
     },
+    /// Project templates: "New from template…" for this Space (the Outline
+    /// asks for the title and creates the project).
+    NewFromTemplate {
+        space_id: String,
+        template_id: Option<String>,
+    },
+    /// A short result for the Outline's notice line (an error card when
+    /// `error`; its first line is the title).
+    Notice { text: String, error: bool },
 }
 
 /// A parsed external-reference URL.
@@ -227,6 +239,9 @@ pub(crate) struct WorkItemDetails {
     pub(crate) pr_sync: pr_sync_section::PrSyncDetailsState,
     /// Planning artifacts (`details_artifacts.rs`).
     pub(crate) artifacts: artifacts_section::ArtifactsDetailsState,
+    /// Project templates (`details_templates.rs`).
+    pub(crate) templates: templates_section::TemplatesDetailsState,
+    template_name_input: Entity<ComposerInput>,
     _subscriptions: Vec<Subscription>,
     /// Tests run without a Shell: the artifact a row click opened.
     #[cfg(test)]
@@ -323,6 +338,15 @@ impl WorkItemDetails {
             .with_single_line()
             .with_text_metrics(12.0, 18.0)
         });
+        let template_name_input = cx.new(|cx| {
+            ComposerInput::with_context(
+                "Template name",
+                crate::composer::PALETTE_SEARCH_CONTEXT,
+                cx,
+            )
+            .with_single_line()
+            .with_text_metrics(12.0, 18.0)
+        });
         let (required_actions, required_actions_events) =
             Self::new_required_actions(&state, &space_id, &item_id, cx);
         required_actions.update(cx, |list, _| list.shell = Some(shell.clone()));
@@ -351,6 +375,11 @@ impl WorkItemDetails {
             cx.subscribe(&description_input, |this: &mut Self, _, event, cx| {
                 if matches!(event, ComposerInputEvent::Submitted) {
                     this.save_description(cx);
+                }
+            }),
+            cx.subscribe(&template_name_input, |this: &mut Self, _, event, cx| {
+                if matches!(event, ComposerInputEvent::Submitted) {
+                    this.submit_save_template(cx);
                 }
             }),
             cx.subscribe(&reference_input, |this: &mut Self, _, event, cx| {
@@ -405,6 +434,8 @@ impl WorkItemDetails {
             linear: Default::default(),
             pr_sync: Default::default(),
             artifacts: Default::default(),
+            templates: Default::default(),
+            template_name_input,
             _subscriptions: subscriptions,
             #[cfg(test)]
             captured_artifact_open: None,
@@ -720,7 +751,20 @@ impl WorkItemDetails {
                     )
                     .debug_selector(|| "work-item-project-toggle".into())
                     .on_click(cx.listener(move |this, _, _, cx| this.set_project(!is_project, cx))),
-                ),
+                )
+                .when(is_project, |row| {
+                    row.child(
+                        Self::small_button(
+                            "work-item-save-template",
+                            "Save as template\u{2026}",
+                            theme,
+                        )
+                        .debug_selector(|| "work-item-save-template".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.begin_save_template(window, cx)
+                        })),
+                    )
+                }),
         );
         if !is_project {
             return section.child(
@@ -731,6 +775,9 @@ impl WorkItemDetails {
                         "Chats inside a project can create and read items anywhere in it.",
                     ),
             );
+        }
+        for element in self.render_save_template(item, theme, cx) {
+            section = section.child(element);
         }
         let current = item.worker_destination_id.clone();
         let mut buttons = div().flex().flex_wrap().gap(px(4.0));

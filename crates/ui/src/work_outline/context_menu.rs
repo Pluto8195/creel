@@ -102,6 +102,8 @@ pub(crate) enum MenuAction {
     Linear(crate::linear::menu::LinearMenuAction),
     /// PR review sync entries (`crate::github::menu`).
     Github(crate::github::menu::GithubMenuAction),
+    /// Project templates (`work_outline::templates`).
+    Template(crate::work_outline::templates::TemplateMenuAction),
 }
 
 impl MenuAction {
@@ -128,6 +130,7 @@ impl MenuAction {
             Self::Linear(action) => action.hint(),
             // Entries set their own (⌘↩ on a PR review item's Review).
             Self::Github(_) => HintKey::None,
+            Self::Template(action) => action.hint(),
             Self::RecentChanges
             | Self::StatusPage
             | Self::Back
@@ -442,6 +445,12 @@ impl OutlineView {
         match &row.kind {
             OutlineRowKind::Item(item) => {
                 let mut menu = self.item_context_menu(key, item);
+                crate::work_outline::templates::insert_item_entries(
+                    &mut menu,
+                    self.snapshot(&item.space_id),
+                    &item.space_id,
+                    &item.item_id,
+                );
                 crate::linear::menu::insert_item_entries(
                     &mut menu,
                     self.snapshot(&item.space_id),
@@ -485,6 +494,11 @@ impl OutlineView {
                             .collect()
                         },
                     }),
+                );
+                crate::work_outline::templates::insert_space_entries(
+                    &mut menu,
+                    space_id,
+                    self.space_unavailable(space_id),
                 );
                 crate::linear::menu::insert_space_entries(
                     &mut menu,
@@ -1010,7 +1024,12 @@ pub(crate) fn space_root_listener(
         }
         cx.stop_propagation();
         window.focus(&this.focus, cx);
-        let menu = space_root_menu(None, &space_id, this.space_unavailable(&space_id), None);
+        let mut menu = space_root_menu(None, &space_id, this.space_unavailable(&space_id), None);
+        crate::work_outline::templates::insert_space_entries(
+            &mut menu,
+            &space_id,
+            this.space_unavailable(&space_id),
+        );
         this.show_context_menu(menu, event.position, cx);
     })
 }

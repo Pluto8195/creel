@@ -744,6 +744,41 @@ pub(crate) fn group_entry(
     ))
 }
 
+/// "New from template…": the project root `work_item_id` plus its whole
+/// instantiated subtree as ONE entry. Undo archives the root with its
+/// descendants (the normal archive-descendants op); redo restores it, which
+/// restores the cascade-archived subtree. `operation_id` is the first
+/// request's id while the plan is still being sent.
+pub(crate) fn instantiate_entry(
+    work_item_id: &str,
+    title: &str,
+    template_name: &str,
+    operation_id: Option<String>,
+) -> Draft {
+    draft(
+        format!(
+            "created project {} from template {}",
+            quoted(title),
+            quoted(template_name)
+        ),
+        Step::Restore {
+            work_item_id: work_item_id.to_owned(),
+        },
+        Step::Archive {
+            work_item_id: work_item_id.to_owned(),
+        },
+        Probe::Archived {
+            work_item_id: work_item_id.to_owned(),
+            archived: true,
+        },
+        Probe::Archived {
+            work_item_id: work_item_id.to_owned(),
+            archived: false,
+        },
+        operation_id,
+    )
+}
+
 /// A new item. `work_item_id` is `derive_id(operationId, "item")`.
 pub(crate) fn create_entry(work_item_id: &str, title: &str, operation_id: Option<String>) -> Draft {
     draft(

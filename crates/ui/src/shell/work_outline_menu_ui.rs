@@ -16,6 +16,7 @@ use super::*;
 use gpui::WeakEntity;
 
 use crate::work_outline::hints::{self, HintKey, WithHint as _};
+use crate::work_outline::templates::TemplateMenuAction;
 use crate::work_outline::outline_view::OutlineView;
 use crate::work_outline::outline_view::context_menu::{
     MenuAction, MenuEntry, MenuKind, OutlineContextMenu,
@@ -445,6 +446,25 @@ impl Shell {
             }
             MenuAction::Linear(action) => self.run_linear_menu_action(action, window, cx),
             MenuAction::Github(action) => self.run_github_menu_action(action, window, cx),
+            MenuAction::Template(action) => match action {
+                TemplateMenuAction::SaveAsTemplate { .. } => {
+                    self.with_menu_details(target, window, cx, |details, window, cx| {
+                        details.begin_save_template(window, cx)
+                    })
+                }
+                TemplateMenuAction::NewFromTemplate { space_id, parent } => {
+                    if let Some(outline) = outline.upgrade() {
+                        outline.update(cx, |outline, cx| {
+                            outline.request_new_from_template(
+                                crate::work_outline::outline_view::templates::TemplateFlow::new(
+                                    space_id, parent,
+                                ),
+                                cx,
+                            )
+                        });
+                    }
+                }
+            },
             MenuAction::Outline(_)
             | MenuAction::Command(_)
             | MenuAction::StatusPage

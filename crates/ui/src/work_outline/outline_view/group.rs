@@ -290,6 +290,7 @@ impl OutlineView {
                 },
                 anchor: CreateAnchor::After(row_key::item(space_id, &first)),
                 group: Some(top),
+                template: None,
             },
             operation_id: new_operation_id(),
             submitting: false,

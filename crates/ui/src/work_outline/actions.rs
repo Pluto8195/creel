@@ -374,7 +374,7 @@ impl WorkOutlineActions {
 
     /// Send one mutation and decode the reply. The mutation is serialized
     /// once, so every transport retry carries the same `operationId`.
-    fn mutate(&self, mutation: WorkOutlineMutation) -> ActionTask {
+    pub(crate) fn mutate(&self, mutation: WorkOutlineMutation) -> ActionTask {
         let params = match serde_json::to_value(&mutation) {
             Ok(params) => params,
             Err(error) => {
@@ -400,6 +400,23 @@ impl WorkOutlineActions {
             }
         };
         self.call(methods::WORK_OUTLINE_QUERY, params, decode_query)
+    }
+
+    /// Project templates: freeze a project's subtree as a template (reply
+    /// `template_id`). Not an undo step.
+    pub(crate) fn save_work_item_template(
+        &self,
+        params: mast_proto::SaveWorkItemTemplateParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::SaveWorkItemTemplate(params))
+    }
+
+    /// Project templates: tombstone a template (projects keep their link).
+    pub(crate) fn delete_work_item_template(
+        &self,
+        params: mast_proto::DeleteWorkItemTemplateParams,
+    ) -> ActionTask {
+        self.mutate(WorkOutlineMutation::DeleteWorkItemTemplate(params))
     }
 
     /// Reply carries `work_item_id` (`derive_id(operationId, "item")`);
