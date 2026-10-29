@@ -66,6 +66,8 @@ pub(crate) enum Step {
         instruction_id: String,
         placement: InstructionPlacement,
     },
+    /// Several steps that undo / redo as one, sent in order ("Group into…").
+    Batch(Vec<Step>),
 }
 
 /// What `createWorkItemExternalReference` needs.
@@ -91,10 +93,22 @@ impl ReferenceData {
 }
 
 impl Step {
+    /// The single-request steps to send, in order (a [`Step::Batch`] expands).
+    pub(crate) fn leaves(&self) -> Vec<Step> {
+        match self {
+            Step::Batch(steps) => steps.iter().flat_map(Step::leaves).collect(),
+            other => vec![other.clone()],
+        }
+    }
+
     /// Send the step under a fresh operation id (≤ 64 chars: a UUID).
     pub(crate) fn run(&self, actions: &WorkOutlineActions) -> ActionTask {
         let operation_id = new_operation_id();
         match self.clone() {
+            Step::Batch(_) => gpui::Task::ready(Err(mast_proto::WorkOutlineError::new(
+                mast_proto::WorkOutlineErrorCode::Invalid,
+                "a batch is sent step by step",
+            ))),
             Step::Move {
                 work_item_id,
                 parent,
@@ -214,6 +228,14 @@ pub(crate) enum Probe {
     },
     /// The instruction is live.
     InstructionLive { instruction_id: String },
+    /// Every probe holds.
+    All(Vec<Probe>),
+    /// The live children of `parent` are exactly `children` (any order) and
+    /// it has no chats.
+    OnlyChildren {
+        parent: String,
+        children: Vec<String>,
+    },
 }
 
 impl Probe {
@@ -328,6 +350,27 @@ impl Probe {
                 Some(_) => Err("The instruction was edited again".into()),
                 None => gone("The instruction"),
             },
+            Probe::All(probes) => probes.iter().try_for_each(|probe| probe.check(snapshot)),
+            Probe::OnlyChildren { parent, children } => {
+                let Some(item) = snapshot.item(parent) else {
+                    return gone("The group");
+                };
+                if item.archived_at.is_some() {
+                    return Err("The group is archived".into());
+                }
+                let mut live: Vec<&str> =
+                    super::restructure::live_children(snapshot, Some(parent))
+                        .iter()
+                        .map(|child| child.id.as_str())
+                        .collect();
+                let mut want: Vec<&str> = children.iter().map(String::as_str).collect();
+                live.sort_unstable();
+                want.sort_unstable();
+                if live != want || !item.chat_ids.is_empty() {
+                    return Err("The group has since changed".into());
+                }
+                Ok(())
+            }
             Probe::InstructionLive { instruction_id } => match snapshot
                 .instructions
                 .iter()
@@ -614,6 +657,89 @@ pub(crate) fn move_entry(
             work_item_id: work_item_id.to_owned(),
             parent: new_parent,
         },
+        operation_id,
+    ))
+}
+
+/// Where "Group into…" puts the items.
+pub(crate) enum GroupTarget<'a> {
+    /// A container created by the same action.
+    New { work_item_id: &'a str, title: &'a str },
+    /// An existing work item; items are appended.
+    Existing { work_item_id: &'a str },
+}
+
+/// "Group into…": `items` (top-most, in visible order) reparented under the
+/// target as ONE entry. Undo moves each back (siblings restored in order) and
+/// archives a container the action created; redo restores it and moves again.
+pub(crate) fn group_entry(
+    snapshot: &WorkOutlineSnapshot,
+    target: &GroupTarget<'_>,
+    items: &[String],
+    operation_id: Option<String>,
+) -> Option<Draft> {
+    let (container, created) = match target {
+        GroupTarget::New { work_item_id, .. } => (*work_item_id, true),
+        GroupTarget::Existing { work_item_id } => (*work_item_id, false),
+    };
+    let mut forward = Vec::new();
+    let mut inverse = Vec::new();
+    let mut after = Vec::new();
+    let mut before = Vec::new();
+    if created {
+        forward.push(Step::Restore {
+            work_item_id: container.to_owned(),
+        });
+        after.push(Probe::OnlyChildren {
+            parent: container.to_owned(),
+            children: items.to_vec(),
+        });
+        before.push(Probe::Archived {
+            work_item_id: container.to_owned(),
+            archived: true,
+        });
+    }
+    for id in items {
+        let item = snapshot.item(id)?;
+        let back = placement_back(snapshot, id)?;
+        forward.push(Step::Move {
+            work_item_id: id.clone(),
+            parent: Some(container.to_owned()),
+            placement: WorkOutlinePlacement::Last,
+        });
+        inverse.push(Step::Move {
+            work_item_id: id.clone(),
+            parent: item.parent_work_item_id.clone(),
+            placement: back,
+        });
+        after.push(Probe::Parent {
+            work_item_id: id.clone(),
+            parent: Some(container.to_owned()),
+        });
+        before.push(Probe::Parent {
+            work_item_id: id.clone(),
+            parent: item.parent_work_item_id.clone(),
+        });
+    }
+    if created {
+        inverse.push(Step::Archive {
+            work_item_id: container.to_owned(),
+        });
+    }
+    let name = match target {
+        GroupTarget::New { title, .. } => quoted(title),
+        GroupTarget::Existing { work_item_id } => item_title(snapshot, work_item_id),
+    };
+    let what = match items {
+        [only] => item_title(snapshot, only),
+        many => format!("{} items", many.len()),
+    };
+    Some(draft(
+        format!("grouped {what} into {name}"),
+        Step::Batch(forward),
+        Step::Batch(inverse),
+        Probe::All(before),
+        Probe::All(after),
         operation_id,
     ))
 }

@@ -159,7 +159,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         Collapse, CreateChild, CreateSibling, Expand, IndentItem, MoveItemDown, MoveItemUp,
         OpenDetailsSelected, OpenSelected, OutdentItem, RedoChange, RenameSelected, SelectFirst,
         SelectLast, SelectNext, SelectNextSibling, SelectPrevious, SelectPreviousSibling,
-        StartChatSelected, UndoChange,
+        GroupSelected, StartChatSelected, UndoChange,
     };
     match key {
         OutlineNavKey::SelectNext => Box::new(SelectNext),
@@ -180,6 +180,7 @@ pub(crate) fn outline_action(key: OutlineNavKey) -> Box<dyn Action> {
         OutlineNavKey::MoveItemDown => Box::new(MoveItemDown),
         OutlineNavKey::IndentItem => Box::new(IndentItem),
         OutlineNavKey::OutdentItem => Box::new(OutdentItem),
+        OutlineNavKey::GroupInto => Box::new(GroupSelected),
         OutlineNavKey::Undo => Box::new(UndoChange),
         OutlineNavKey::Redo => Box::new(RedoChange),
         OutlineNavKey::ShowShortcuts => Box::new(RunWorkOutlineCommand(
@@ -615,6 +616,13 @@ impl OutlineView {
                 MenuAction::Command(WorkOutlineCommand::MoveWorkItem),
             )
             .disabled(restore_first("Restore this work item before moving it")),
+            MenuEntry::new(
+                "group-into",
+                "Group into\u{2026}",
+                icons::SORT_VERTICAL,
+                MenuAction::Outline(OutlineNavKey::GroupInto),
+            )
+            .disabled(restore_first("Restore this work item before grouping it")),
             MenuEntry::new(
                 "set-status",
                 "Set Status",

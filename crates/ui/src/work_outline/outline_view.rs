@@ -84,6 +84,7 @@ actions!(
         OutdentItem,
         UndoChange,
         RedoChange,
+        GroupSelected,
     ]
 );
 
@@ -125,6 +126,11 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", IndentItem, ctx),
         KeyBinding::new("shift-tab", OutdentItem, ctx),
         KeyBinding::new(&crate::settings::platform_combo("mod-z"), UndoChange, ctx),
+        KeyBinding::new(
+            &crate::settings::platform_combo("mod-shift-g"),
+            GroupSelected,
+            ctx,
+        ),
         KeyBinding::new("ctrl-z", UndoChange, ctx),
         KeyBinding::new(
             &crate::settings::platform_combo("mod-shift-z"),

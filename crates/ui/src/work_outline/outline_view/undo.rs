@@ -9,7 +9,7 @@
 //! instead of overwriting somebody else's change.
 
 use super::super::action_log::{self, Draft, Recent};
-use super::super::actions::ActionTask;
+use super::super::actions::WorkOutlineActions;
 use super::*;
 
 /// How long to wait for the snapshot to show an applied step before the next
@@ -283,11 +283,19 @@ impl OutlineView {
                     .update(cx, |this, cx| this.start_log_step(&space, direction, cx))
                     .ok()
                     .flatten();
-                let Some((task, entry)) = started else {
+                let Some((steps, actions, entry)) = started else {
                     break;
                 };
-                match task.await {
-                    Ok(_) => {
+                // A batch (Group into…) is several requests, sent in order.
+                let mut outcome = Ok(());
+                for step in steps {
+                    if let Err(error) = step.run(&actions).await {
+                        outcome = Err(error);
+                        break;
+                    }
+                }
+                match outcome {
+                    Ok(()) => {
                         done.push(entry.label.clone());
                         // Say so now; only the next step waits for the frame.
                         if let Some(summary) = summarize(direction, &done) {
@@ -348,7 +356,7 @@ impl OutlineView {
         space: &str,
         direction: Direction,
         cx: &mut Context<Self>,
-    ) -> Option<(ActionTask, action_log::Entry)> {
+    ) -> Option<(Vec<action_log::Step>, WorkOutlineActions, action_log::Entry)> {
         let entry = {
             let log = &self.state.read(cx).action_log;
             match direction {
@@ -382,12 +390,12 @@ impl OutlineView {
             return None;
         }
         let actions = self.state.read(cx).work_outline_actions();
-        let task = step.run(&actions);
+        let steps = step.leaves();
         self.state.update(cx, |state, _| match direction {
             Direction::Undo => state.action_log.mark_undone(space, entry.id),
             Direction::Redo => state.action_log.mark_redone(space, entry.id),
         });
-        Some((task, entry))
+        Some((steps, actions, entry))
     }
 }
 
