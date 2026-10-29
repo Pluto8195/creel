@@ -243,6 +243,8 @@ fn apply_create(
         external_reference_ids: Vec::new(),
         rollup: WorkItemRollup::default(),
         external_sync_state: None,
+        is_project: false,
+        worker_destination_id: None,
         external_sync_modified_fields: Vec::new(),
     });
     Some(out)

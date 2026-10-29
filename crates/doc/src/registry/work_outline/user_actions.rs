@@ -1007,6 +1007,41 @@ impl RegistryDoc {
                 ))
             }
         };
+        // Project scope (contract amendment "project scope"): the nearest
+        // project at or above the assigned item and everything inside it, so
+        // a Chat on a project's Planning item can create into its Tickets
+        // sibling. Without a project it is exactly `in_scope`.
+        let in_project_scope = |work_item_id: &str| -> Outcome<()> {
+            let root = require_assigned()?;
+            let tree = self.outline_tree(&space);
+            let mut project = None;
+            let mut cursor = Some(root.clone());
+            let mut steps = 0usize;
+            while let Some(id) = cursor {
+                if tree.items.get(&id).is_some_and(|item| item.is_project) {
+                    project = Some(id);
+                    break;
+                }
+                steps += 1;
+                if steps > tree.items.len() {
+                    break;
+                }
+                cursor = tree.parent.get(&id).cloned().flatten();
+            }
+            let Some(project) = project else {
+                return in_scope(work_item_id);
+            };
+            if in_scope(work_item_id).is_ok()
+                || work_item_id == project
+                || tree.descendants(&project).iter().any(|id| id == work_item_id)
+            {
+                Ok(())
+            } else {
+                Err(unauthorized(
+                    "Agents may only create items inside their own project",
+                ))
+            }
+        };
         match mutation {
             WorkOutlineMutation::CreateWorkItem(p) => {
                 if p.space_id != space {
@@ -1017,7 +1052,7 @@ impl RegistryDoc {
                 let parent = p.parent_work_item_id.as_deref().ok_or_else(|| {
                     unauthorized("Agents may only create children of their own work item")
                 })?;
-                in_scope(parent)
+                in_project_scope(parent)
             }
             WorkOutlineMutation::AssignChatToWorkItem(p) => {
                 if p.chat_id != chat_id {

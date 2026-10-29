@@ -543,6 +543,15 @@ fn in_subtree(snapshot: &mast_proto::WorkOutlineSnapshot, root: &str, target: &s
     false
 }
 
+/// The agent scope of a Chat on `root`: its item's subtree, widened to the
+/// nearest project at or above it ("project scope", contract amendment).
+fn in_agent_scope(snapshot: &mast_proto::WorkOutlineSnapshot, root: &str, target: &str) -> bool {
+    in_subtree(snapshot, root, target)
+        || snapshot
+            .project_root(root)
+            .is_some_and(|project| snapshot.is_within(&project.id, target))
+}
+
 /// Most attachments a child's first Turn may carry.
 const MAX_CHILD_ATTACHMENTS: usize = 16;
 /// Longest `read_current` waits for a Linear issue that is not cached.
@@ -1046,9 +1055,21 @@ impl AgentToolsService {
                 )));
             }
         };
+        // No explicit parent: workers of a project go to its worker
+        // destination, anything else under the Chat's own item.
+        let mut to_destination = false;
         let parent = match non_empty(args.parent_work_item_id) {
             Some(id) => Some(id),
-            None => context.current_item_id(),
+            None => context.current_item_id().map(|current| {
+                let snapshot = self.work_outline.snapshot(&context.grant.space_id);
+                match snapshot.worker_destination_for(&current) {
+                    Some(destination) => {
+                        to_destination = true;
+                        destination.to_owned()
+                    }
+                    None => current,
+                }
+            }),
         };
         let mutation = WorkOutlineMutation::CreateWorkItem(CreateWorkItemParams {
             space_id: context.grant.space_id.clone(),
@@ -1063,6 +1084,7 @@ impl AgentToolsService {
         Ok(json!({
             "workItemId": reply.work_item_id,
             "parentWorkItemId": parent,
+            "resolvedToWorkerDestination": to_destination,
             "createdByChatId": context.grant.chat_id,
         }))
     }
@@ -1430,9 +1452,9 @@ impl AgentToolsService {
             .unwrap_or(DEFAULT_SUBTREE_DEPTH)
             .min(MAX_SUBTREE_DEPTH);
         let snapshot = self.work_outline.snapshot(&context.grant.space_id);
-        if snapshot.item(&target).is_none() || !in_subtree(&snapshot, &root, &target) {
+        if snapshot.item(&target).is_none() || !in_agent_scope(&snapshot, &root, &target) {
             return Err(WorkOutlineError::unauthorized(
-                "Agents may only read their own work item and its descendants",
+                "Agents may only read their own work item, its descendants, and their project",
             )
             .into());
         }
@@ -1497,12 +1519,22 @@ impl AgentToolsService {
         let root = context.require_item("starting a chat for a work item")?;
         let snapshot = self.work_outline.snapshot(&context.grant.space_id);
         if snapshot.item(&args.work_item_id).is_none()
-            || !in_subtree(&snapshot, &root, &args.work_item_id)
+            || !in_agent_scope(&snapshot, &root, &args.work_item_id)
         {
             return Err(WorkOutlineError::unauthorized(
-                "Agents may only start chats for their own work item and its descendants",
+                "Agents may only start chats for their own work item, its descendants, and \
+                 their project",
             )
             .into());
+        }
+        // The project itself stands for its worker destination.
+        let mut args = args;
+        if let Some(item) = snapshot.item(&args.work_item_id)
+            && item.is_project
+            && let Some(destination) = snapshot.worker_destination_for(&args.work_item_id)
+            && !snapshot.is_within(destination, &root)
+        {
+            args.work_item_id = destination.to_owned();
         }
         let caller = self
             .workspace
