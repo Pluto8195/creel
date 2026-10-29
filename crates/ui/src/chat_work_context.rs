@@ -206,7 +206,10 @@ pub(crate) fn assigned_item<'a>(
 }
 
 /// `item_id`, then its ancestors up to the root (cycle-guarded).
-pub(crate) fn lineage<'a>(snapshot: &'a WorkOutlineSnapshot, item_id: &str) -> Vec<&'a WorkItemView> {
+pub(crate) fn lineage<'a>(
+    snapshot: &'a WorkOutlineSnapshot,
+    item_id: &str,
+) -> Vec<&'a WorkItemView> {
     let mut out: Vec<&WorkItemView> = Vec::new();
     let mut cursor = snapshot.item(item_id);
     while let Some(item) = cursor {

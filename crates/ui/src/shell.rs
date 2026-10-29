@@ -61,6 +61,9 @@ use crate::workspace_links::resolve_workspace_file_link;
 
 mod actions_ui;
 pub(crate) mod artifacts_ui;
+#[cfg(test)]
+mod chat_item_tests;
+mod chat_item_ui;
 mod closeout_ui;
 mod command_palette;
 mod files_panel;
@@ -78,9 +81,6 @@ mod sidebar_sections;
 pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
-mod chat_item_ui;
-#[cfg(test)]
-mod chat_item_tests;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -454,7 +454,11 @@ pub fn apply_keymap(
             None,
         ),
         KeyBinding::new(&platform_combo(OPEN_ITEM_TAB_COMBO), OpenItemTab, None),
-        KeyBinding::new(&platform_combo(TOGGLE_ITEM_CARD_COMBO), ToggleItemCard, None),
+        KeyBinding::new(
+            &platform_combo(TOGGLE_ITEM_CARD_COMBO),
+            ToggleItemCard,
+            None,
+        ),
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
@@ -12108,9 +12112,9 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenItemTab, _, cx| this.open_item_tab(cx)))
-            .on_action(cx.listener(|this, _: &ToggleItemCard, _, cx| {
-                this.toggle_chat_item_card_pin(cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleItemCard, _, cx| this.toggle_chat_item_card_pin(cx)),
+            )
             .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
                 // Inside Start Chat the shortcut opens the dialog's picker.
                 if let Some(pickers) = this.start_chat_pickers() {

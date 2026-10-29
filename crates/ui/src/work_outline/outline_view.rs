@@ -2620,7 +2620,9 @@ impl OutlineView {
         let (count, changed) = {
             let state = self.state.read(cx);
             let viewed = crate::settings::current(cx).artifact_last_viewed;
-            let artifacts = state.artifacts().for_work_item(&item.space_id, &item.item_id);
+            let artifacts = state
+                .artifacts()
+                .for_work_item(&item.space_id, &item.item_id);
             let changed = artifacts.iter().find_map(|artifact| {
                 crate::artifacts::questions_ui::list_marker(
                     &artifact.id,

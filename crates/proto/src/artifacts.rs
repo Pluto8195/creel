@@ -1221,6 +1221,10 @@ pub struct OptionsManifest {
     pub question: Option<String>,
     #[serde(default)]
     pub options: Vec<OptionsManifestEntry>,
+    /// Design width in px for every option without its own (side by side
+    /// renders each option at this width, then scales it to the column).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_width: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1231,6 +1235,9 @@ pub struct OptionsManifestEntry {
     pub label: String,
     /// Relative to the manifest.
     pub path: String,
+    /// The width in px this option was designed for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_width: Option<u32>,
 }
 
 impl OptionsManifest {

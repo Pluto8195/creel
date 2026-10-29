@@ -18,6 +18,11 @@ const OPTIONS: &str = r#"{"title":"Layouts","question":"Which layout?","options"
   {"id":"B","label":"List","path":"b.fragment.html"},
   {"id":"C","label":"Cards","path":"c.fragment.html"}]}"#;
 
+const WIDE: &str = r#"{"title":"Layouts","designWidth":1280,"options":[
+  {"id":"A","label":"Grid","path":"a.fragment.html","designWidth":900},
+  {"id":"B","label":"List","path":"b.fragment.html"},
+  {"id":"C","label":"Cards","path":"c.fragment.html"}]}"#;
+
 const FIVE: &str = r#"{"title":"Layouts","options":[
   {"id":"A","label":"One","path":"a.html"},{"id":"B","label":"Two","path":"b.html"},
   {"id":"C","label":"Three","path":"c.html"},{"id":"D","label":"Four","path":"d.html"},
@@ -378,4 +383,48 @@ fn a_failed_linear_read_says_so_instead_of_hiding_the_plan(cx: &mut TestAppConte
     assert!(has(vcx, "artifact-plan-linear-error"));
     assert!(!has(vcx, "artifact-plan-linear-panel"));
     assert!(has(vcx, "artifact-plan-badge"));
+}
+
+#[gpui::test]
+fn columns_render_at_design_width_and_scale_to_fit(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (_tab, _calls, shown, vcx) = open(cx, WIDE, None);
+    click(vcx, "artifact-side-by-side");
+    let doc = shown.borrow().last().unwrap().1.clone();
+    // Entry width, manifest width, manifest width.
+    assert!(doc.contains("data-w=\"900\""));
+    assert_eq!(doc.matches("data-w=\"1280\"").count(), 2);
+    assert!(doc.contains("<body data-fit=\"1\">"));
+    assert!(doc.contains("scale(\" + scale"));
+    // Fit: the frame is laid out at design width, then scaled.
+    assert!(doc.contains("frame.style.width = design"));
+}
+
+#[gpui::test]
+fn layout_controls_change_columns_focus_and_fit_and_are_remembered(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _calls, shown, vcx) = open(cx, OPTIONS, None);
+    click(vcx, "artifact-side-by-side");
+    click(vcx, "artifact-side-up-2");
+    tab.read_with(vcx, |tab, _| assert_eq!(tab.side_chosen(), vec![0, 1]));
+    assert_eq!(
+        shown.borrow().last().unwrap().1.matches("<iframe").count(),
+        2
+    );
+    click(vcx, "artifact-side-up-3");
+    tab.read_with(vcx, |tab, _| assert_eq!(tab.side_chosen(), vec![0, 1, 2]));
+    click(vcx, "artifact-side-focus-B");
+    assert!(shown.borrow().last().unwrap().1.contains("flex:2.2 1 0"));
+    click(vcx, "artifact-side-real");
+    let doc = shown.borrow().last().unwrap().1.clone();
+    assert!(doc.contains("<body data-fit=\"0\">"));
+    assert!(doc.contains("overflow-x:auto"));
+    // Remembered per artifact: close and reopen.
+    click(vcx, "artifact-side-close");
+    click(vcx, "artifact-side-by-side");
+    tab.read_with(vcx, |tab, _| {
+        assert_eq!(tab.side_layout().focus.as_deref(), Some("B"));
+        assert!(!tab.side_layout().fit);
+    });
+    assert!(shown.borrow().last().unwrap().1.contains("flex:2.2 1 0"));
 }

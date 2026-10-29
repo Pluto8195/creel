@@ -1928,7 +1928,13 @@ mod tests {
         let accounts = script_accounts(&shell, cx);
         let state = shell.read_with(cx, |shell, _| shell.state.clone());
         let flow = cx.new(|cx| {
-            AccountFlow::new(state, mast_proto::HarnessId::ClaudeCode, None, Some("d".into()), cx)
+            AccountFlow::new(
+                state,
+                mast_proto::HarnessId::ClaudeCode,
+                None,
+                Some("d".into()),
+                cx,
+            )
         });
         let poll = mast_proto::AgentLoginPoll {
             status: mast_proto::AgentLoginStatus::Pending,
@@ -1984,14 +1990,23 @@ mod tests {
         let accounts = script_accounts(&shell, cx);
         right_click(cx, &row_key::space("s2"));
         click(cx, "claude-account");
-        assert!(cx.debug_bounds("account-pick-saved-slotsaved0000001").is_some());
-        assert!(cx.debug_bounds("account-pick-saved-slotlive00000001").is_some());
         assert!(
-            cx.debug_bounds("account-pick-saved-slotcodex0000001").is_none(),
+            cx.debug_bounds("account-pick-saved-slotsaved0000001")
+                .is_some()
+        );
+        assert!(
+            cx.debug_bounds("account-pick-saved-slotlive00000001")
+                .is_some()
+        );
+        assert!(
+            cx.debug_bounds("account-pick-saved-slotcodex0000001")
+                .is_none(),
             "Codex saved logins are not offered for Claude"
         );
 
-        let live = cx.debug_bounds("account-pick-saved-slotlive00000001").unwrap();
+        let live = cx
+            .debug_bounds("account-pick-saved-slotlive00000001")
+            .unwrap();
         cx.simulate_click(live.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         assert!(
@@ -2003,7 +2018,9 @@ mod tests {
             "the live Default login is not selectable"
         );
 
-        let saved = cx.debug_bounds("account-pick-saved-slotsaved0000001").unwrap();
+        let saved = cx
+            .debug_bounds("account-pick-saved-slotsaved0000001")
+            .unwrap();
         cx.simulate_click(saved.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         redraw(cx);

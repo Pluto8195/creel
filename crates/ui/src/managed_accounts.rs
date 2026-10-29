@@ -199,7 +199,9 @@ pub fn start_chat_chip(
     }
     let default_id = project_account(snapshot, space_id, harness).map(|a| a.id.clone());
     let effective = match choice {
-        Some(pick) => pick.clone().filter(|id| accounts.iter().any(|a| &a.id == id)),
+        Some(pick) => pick
+            .clone()
+            .filter(|id| accounts.iter().any(|a| &a.id == id)),
         None => default_id.clone(),
     };
     let label = effective
@@ -246,10 +248,7 @@ pub fn start_chat_choice(
 
 /// `CreateChatForWorkItem.accountId` for the dialog's override: absent when
 /// there is none, empty for Default.
-pub fn launch_account_id(
-    harness: HarnessId,
-    choice: Option<&Option<String>>,
-) -> Option<String> {
+pub fn launch_account_id(harness: HarnessId, choice: Option<&Option<String>>) -> Option<String> {
     if !supports_accounts(harness) {
         return None;
     }
@@ -640,7 +639,8 @@ impl AccountFlow {
                 flow.phase = Phase::Waiting {
                     login_id: start.login_id.clone(),
                 };
-                flow.code_input.update(cx, |input, cx| input.set_text("", cx));
+                flow.code_input
+                    .update(cx, |input, cx| input.set_text("", cx));
                 flow.focus_pending = true;
                 cx.notify();
             });
@@ -762,7 +762,8 @@ impl AccountFlow {
 
     #[cfg(test)]
     pub(crate) fn set_code_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.code_input.update(cx, |input, cx| input.set_text(text, cx));
+        self.code_input
+            .update(cx, |input, cx| input.set_text(text, cx));
     }
 
     #[cfg(test)]
@@ -787,7 +788,8 @@ impl AccountFlow {
         let login_id = login_id.clone();
         self.login.submitting = true;
         self.login.code_error = None;
-        self.code_input.update(cx, |input, cx| input.set_text("", cx));
+        self.code_input
+            .update(cx, |input, cx| input.set_text("", cx));
         let rpc = self.rpc(cx);
         cx.spawn(async move |this, cx| {
             let result = rpc
@@ -929,7 +931,10 @@ impl AccountFlow {
                 if self.login.awaiting_code && std::mem::take(&mut self.focus_pending) {
                     window.focus(&self.code_input.focus_handle(cx), cx);
                 }
-                (format!("Add {name} account"), self.render_waiting(theme, cx))
+                (
+                    format!("Add {name} account"),
+                    self.render_waiting(theme, cx),
+                )
             }
             Phase::Promoting => (
                 format!("Add {name} account"),
@@ -1042,16 +1047,11 @@ impl AccountFlow {
                     self.code_input.clone().into_any_element(),
                 )))
                 .child(
-                    div()
-                        .mt(px(10.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .child(
-                            popover::btn_primary(theme, "Submit")
-                                .id("account-flow-submit-code")
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_code(cx))),
-                        ),
+                    div().mt(px(10.0)).flex().flex_row().justify_end().child(
+                        popover::btn_primary(theme, "Submit")
+                            .id("account-flow-submit-code")
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_code(cx))),
+                    ),
                 )
             })
             .when_some(login.code_error.clone(), |el, err| {
@@ -1398,7 +1398,10 @@ mod tests {
     #[test]
     fn list_params_carry_the_force_usage_flag() {
         assert_eq!(list_params(true), serde_json::json!({ "forceUsage": true }));
-        assert_eq!(list_params(false), serde_json::json!({ "forceUsage": false }));
+        assert_eq!(
+            list_params(false),
+            serde_json::json!({ "forceUsage": false })
+        );
     }
 
     #[test]
@@ -1411,8 +1414,7 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].account_id.as_deref(), Some("a1"));
         // Default login picked for this one chat.
-        let chip =
-            start_chat_chip(Some(&snap), "s1", HarnessId::ClaudeCode, Some(&None)).unwrap();
+        let chip = start_chat_chip(Some(&snap), "s1", HarnessId::ClaudeCode, Some(&None)).unwrap();
         assert_eq!(chip.label, "Default");
         assert!(chip.overridden);
         assert!(chip.entries[0].selected);
@@ -1435,7 +1437,12 @@ mod tests {
     fn picking_the_projects_own_default_clears_the_override() {
         let snap = snapshot();
         let pick = |id: Option<&str>| {
-            start_chat_choice(Some(&snap), "s1", HarnessId::ClaudeCode, id.map(str::to_string))
+            start_chat_choice(
+                Some(&snap),
+                "s1",
+                HarnessId::ClaudeCode,
+                id.map(str::to_string),
+            )
         };
         assert_eq!(pick(Some("a1")), None);
         assert_eq!(pick(None), Some(None));
