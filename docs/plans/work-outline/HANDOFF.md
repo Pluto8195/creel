@@ -510,6 +510,11 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
 - **Changed-since marker on artifact lists** (2026-10-29): accent dot + "Updated since you last viewed:
   rev N → M" tooltip on Details panel artifact rows, the Item tab Plan row and the outline row's
   artifact chip, from `settings.artifact_last_viewed` (`questions_ui::list_marker`).
+- **Docs for coworkers** (2026-10-29, `docs-onboarding`, docs only): README rewritten (what/why, install,
+  first run, keys, docs links, credits), README.zh-CN.md removed, guides in `docs/guide/`
+  (getting-started, work-outline, orchestrating, plans-and-artifacts, github-and-linear, accounts,
+  keyboard) with "Try it" walkthroughs. Image/recording TODOs for Mikey are listed in the guides. The
+  repo-cleanup proposal (Part B) awaits Mikey's approval: mast-artifact:bacfa5c96fe27d73a2821e8f4e2aa446.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
