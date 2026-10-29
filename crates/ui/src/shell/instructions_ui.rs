@@ -405,6 +405,8 @@ impl Shell {
                             ),
                     )
                     .child(
+                        div().flex().flex_none().items_center().gap(px(6.0))
+                    .child(
                         link("chat-header-instructions-compare", "Compare")
                             .hint(
                                 "Compare the applied and current instructions",
@@ -436,7 +438,7 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.apply_chat_instructions(&apply_chat, cx)
                         }))
-                    })
+                    }))
                 })
                 .when_some(blocker, |el, blocker| {
                     el.child(
