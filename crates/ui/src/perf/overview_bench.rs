@@ -17,7 +17,9 @@ fn chat_row(index: usize) -> mast_proto::Chat {
     mast_proto::Chat {
         id: format!("c{index}"),
         device_id: "local".into(),
-        title: Some(format!("Chat {index}: investigate the failing registry sync")),
+        title: Some(format!(
+            "Chat {index}: investigate the failing registry sync"
+        )),
         archived: false,
         cwd: Some(format!("/work/repo{}", index % 25)),
         branch: Some(format!("feature/thing-{}", index % 40)),
@@ -25,7 +27,10 @@ fn chat_row(index: usize) -> mast_proto::Chat {
         source_context: None,
         config: None,
         last_message_preview: Some(format!("Last message preview text for chat {index}")),
-        last_message_at: Some(Utc.timestamp_opt(1_700_000_000 + index as i64 * 600, 0).unwrap()),
+        last_message_at: Some(
+            Utc.timestamp_opt(1_700_000_000 + index as i64 * 600, 0)
+                .unwrap(),
+        ),
         created_at: Utc.timestamp_opt(1_600_000_000, 0).unwrap(),
         harness_session_id: None,
         harness_session_cwd: None,
@@ -48,9 +53,36 @@ fn snapshot() -> WorkOutlineSnapshot {
         let pr = format!("w-bench-{i}-pr");
         let lin = format!("w-bench-{i}-lin");
         let mut items = vec![
-            fixture_item(&root, SPACE, None, &format!("b{i:03}"), &format!("Ticket {i}: ship the thing"), WorkItemStatus::Active, &[&pr, &lin], &[&format!("c{}", i * 5)]),
-            fixture_item(&pr, SPACE, Some(&root), "a0", &format!("PR review: acme/repo#{i}"), WorkItemStatus::Active, &[], &[&format!("c{}", i * 5 + 1)]),
-            fixture_item(&lin, SPACE, Some(&root), "a1", &format!("ENG-{i}: linked issue"), WorkItemStatus::Pending, &[], &[&format!("c{}", i * 5 + 2)]),
+            fixture_item(
+                &root,
+                SPACE,
+                None,
+                &format!("b{i:03}"),
+                &format!("Ticket {i}: ship the thing"),
+                WorkItemStatus::Active,
+                &[&pr, &lin],
+                &[&format!("c{}", i * 5)],
+            ),
+            fixture_item(
+                &pr,
+                SPACE,
+                Some(&root),
+                "a0",
+                &format!("PR review: acme/repo#{i}"),
+                WorkItemStatus::Active,
+                &[],
+                &[&format!("c{}", i * 5 + 1)],
+            ),
+            fixture_item(
+                &lin,
+                SPACE,
+                Some(&root),
+                "a1",
+                &format!("ENG-{i}: linked issue"),
+                WorkItemStatus::Pending,
+                &[],
+                &[&format!("c{}", i * 5 + 2)],
+            ),
         ];
         items[1].depth = 1;
         items[2].depth = 1;
@@ -58,18 +90,19 @@ fn snapshot() -> WorkOutlineSnapshot {
             (&pr, "github", "pullRequest", format!("acme/repo#{i}")),
             (&lin, "linear", "issue", format!("ENG-{i}")),
         ] {
-            snap.external_references.push(WorkItemExternalReferenceView {
-                id: format!("ref-{item}"),
-                space_id: SPACE.into(),
-                work_item_id: item.clone(),
-                provider: provider.into(),
-                reference_type: kind.into(),
-                external_id: ext.clone(),
-                url: format!("https://example.com/{ext}"),
-                cached_title: Some(format!("Title of {ext}")),
-                created_by: Some(fixture_actor()),
-                created_at: FIXTURE_NOW,
-            });
+            snap.external_references
+                .push(WorkItemExternalReferenceView {
+                    id: format!("ref-{item}"),
+                    space_id: SPACE.into(),
+                    work_item_id: item.clone(),
+                    provider: provider.into(),
+                    reference_type: kind.into(),
+                    external_id: ext.clone(),
+                    url: format!("https://example.com/{ext}"),
+                    cached_title: Some(format!("Title of {ext}")),
+                    created_by: Some(fixture_actor()),
+                    created_at: FIXTURE_NOW,
+                });
         }
         for (n, work_item) in [&root, &pr, &lin].into_iter().enumerate() {
             snap.assignments.push(fixture_assignment(
@@ -113,7 +146,13 @@ fn bench_overview_250_chats_40_items(cx: &mut gpui::TestAppContext) {
     let composer = cx.new(|cx| crate::composer::Composer::new(state.clone(), cx));
     let st = state.clone();
     let (overview, vcx) = cx.add_window_view(move |_, cx| {
-        Overview::new(st, gpui::WeakEntity::new_invalid(), transcript, composer, cx)
+        Overview::new(
+            st,
+            gpui::WeakEntity::new_invalid(),
+            transcript,
+            composer,
+            cx,
+        )
     });
     vcx.run_until_parked();
     let draw = |vcx: &mut gpui::VisualTestContext| {
@@ -124,7 +163,10 @@ fn bench_overview_250_chats_40_items(cx: &mut gpui::TestAppContext) {
     };
     overview.update(vcx, |o, _| {
         let mut map = HashMap::new();
-        map.insert(SPACE.to_string(), WorkOutlineLoad::Ready(std::sync::Arc::new(snapshot())));
+        map.insert(
+            SPACE.to_string(),
+            WorkOutlineLoad::Ready(std::sync::Arc::new(snapshot())),
+        );
         o.outline_fixture = Some(map);
         o.view_mode = OverviewMode::List;
         o.rows_dirty = true;

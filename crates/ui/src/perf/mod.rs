@@ -64,7 +64,10 @@ pub fn measure<R>(bench: &str, label: &str, f: impl FnOnce() -> R) -> R {
 /// per iteration.
 pub fn measure_n(bench: &str, label: &str, n: usize, mut f: impl FnMut(usize)) {
     // BENCH_SCALE=20 repeats every loop 20x (long enough to attach `sample`).
-    let n = n * std::env::var("BENCH_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1usize);
+    let n = n * std::env::var("BENCH_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1usize);
     let (a0, b0) = alloc_totals();
     let mut times = Vec::with_capacity(n);
     for i in 0..n {

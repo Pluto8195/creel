@@ -29,21 +29,24 @@ fn bench_markdown_preview_300kb(cx: &mut TestAppContext) {
         crate::settings::init(Default::default(), dir.path(), cx);
     });
     let source = data::markdown_plan(300 * 1024);
-    let (view, vcx) = cx.add_window_view(|_, cx| {
-        MarkdownPreview::new("plan.md".into(), Rc::new(|_, _| {}), cx)
-    });
+    let (view, vcx) =
+        cx.add_window_view(|_, cx| MarkdownPreview::new("plan.md".into(), Rc::new(|_, _| {}), cx));
     let draw = |vcx: &mut gpui::VisualTestContext| {
         vcx.update(|window, cx| {
             window.refresh();
             window.draw(cx).clear();
         });
     };
-    measure("markdown", "set_source + settle (parse, background)", || {
-        view.update(vcx, |v, cx| v.set_source(source, false, cx));
-        vcx.run_until_parked();
-        vcx.executor().advance_clock(Duration::from_secs(1));
-        vcx.run_until_parked();
-    });
+    measure(
+        "markdown",
+        "set_source + settle (parse, background)",
+        || {
+            view.update(vcx, |v, cx| v.set_source(source, false, cx));
+            vcx.run_until_parked();
+            vcx.executor().advance_clock(Duration::from_secs(1));
+            vcx.run_until_parked();
+        },
+    );
     let blocks = view.read_with(vcx, |v, _| v.tree.blocks.len());
     eprintln!("BENCH markdown | blocks={blocks}");
     measure("markdown", "first draw", || draw(vcx));

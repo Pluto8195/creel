@@ -16,7 +16,10 @@ use mast_proto::{
 fn bench<R>(label: &str, f: impl FnOnce() -> R) -> R {
     let t = Instant::now();
     let out = f();
-    eprintln!("BENCH engine | {label} | ms={:.2}", t.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "BENCH engine | {label} | ms={:.2}",
+        t.elapsed().as_secs_f64() * 1000.0
+    );
     out
 }
 
@@ -27,10 +30,17 @@ fn assemble(dir: &std::path::Path) -> EngineCore {
 fn seed(core: &EngineCore) {
     let ws = &core.workspace;
     let device = "bench-device";
-    ws.create_space("space-1", device, "/work", Some("Bench".into()), true).unwrap();
+    ws.create_space("space-1", device, "/work", Some("Bench".into()), true)
+        .unwrap();
     for i in 0..250 {
-        ws.create_chat(&format!("c{i}"), Some("space-1"), None, None, Some(format!("/work/repo{}", i % 25)))
-            .unwrap();
+        ws.create_chat(
+            &format!("c{i}"),
+            Some("space-1"),
+            None,
+            None,
+            Some(format!("/work/repo{}", i % 25)),
+        )
+        .unwrap();
     }
     let actor = WorkOutlineActor {
         kind: WorkOutlineActorKind::User,
@@ -73,11 +83,13 @@ fn seed(core: &EngineCore) {
             ));
         }
         for (n, item) in [&root, &pr, &lin].into_iter().enumerate() {
-            mutate(WorkOutlineMutation::AssignChatToWorkItem(AssignChatToWorkItemParams {
-                chat_id: format!("c{}", i * 5 + n),
-                work_item_id: item.clone(),
-                operation_id: format!("op-assign-{i}-{n}"),
-            }));
+            mutate(WorkOutlineMutation::AssignChatToWorkItem(
+                AssignChatToWorkItemParams {
+                    chat_id: format!("c{}", i * 5 + n),
+                    work_item_id: item.clone(),
+                    operation_id: format!("op-assign-{i}-{n}"),
+                },
+            ));
         }
     }
 }
@@ -88,7 +100,9 @@ async fn bench_engine_startup() {
     let empty = tempfile::tempdir().unwrap();
     let core = bench("assemble, empty data dir", || assemble(empty.path()));
     drop(core);
-    bench("assemble, empty data dir (2nd)", || drop(assemble(empty.path())));
+    bench("assemble, empty data dir (2nd)", || {
+        drop(assemble(empty.path()))
+    });
 
     let busy = tempfile::tempdir().unwrap();
     let core = assemble(busy.path());
@@ -97,8 +111,12 @@ async fn bench_engine_startup() {
     // Registry snapshots are flushed on a timer; let the writer settle.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     for n in 1..=3 {
-        let core = bench(&format!("assemble, busy data dir (cold {n})"), || assemble(busy.path()));
-        let chats = bench("read chats + spaces", || core.workspace.read_chats().unwrap().len());
+        let core = bench(&format!("assemble, busy data dir (cold {n})"), || {
+            assemble(busy.path())
+        });
+        let chats = bench("read chats + spaces", || {
+            core.workspace.read_chats().unwrap().len()
+        });
         eprintln!("BENCH engine | chats loaded={chats}");
         drop(core);
     }
@@ -126,7 +144,10 @@ fn bench_swr_cache() {
         .map(|k| {
             (
                 format!("key{k}"),
-                Entry { fetched_at: chrono::Utc::now(), value: (0..300).map(|i| issue(k * 1000 + i)).collect() },
+                Entry {
+                    fetched_at: chrono::Utc::now(),
+                    value: (0..300).map(|i| issue(k * 1000 + i)).collect(),
+                },
             )
         })
         .collect();
@@ -134,13 +155,19 @@ fn bench_swr_cache() {
     std::fs::write(&path, &bytes).unwrap();
     eprintln!("BENCH swr | cache file bytes={}", bytes.len());
     for n in 1..=3 {
-        let store: SwrStore<Vec<LinearIssueSummary>, String> = SwrStore::new(std::time::Duration::from_secs(60));
-        bench(&format!("attach_file cold load ({n})"), || store.attach_file(path.clone()));
+        let store: SwrStore<Vec<LinearIssueSummary>, String> =
+            SwrStore::new(std::time::Duration::from_secs(60));
+        bench(&format!("attach_file cold load ({n})"), || {
+            store.attach_file(path.clone())
+        });
     }
     // Cost of one `get` that fetches: persists the WHOLE map each time.
-    let store: SwrStore<Vec<LinearIssueSummary>, String> = SwrStore::new(std::time::Duration::from_secs(60));
+    let store: SwrStore<Vec<LinearIssueSummary>, String> =
+        SwrStore::new(std::time::Duration::from_secs(60));
     store.attach_file(path.clone());
-    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     for n in 1..=3 {
         bench(&format!("get(force) + persist whole cache ({n})"), || {
             rt.block_on(store.get("key0", true, || {
@@ -148,5 +175,40 @@ fn bench_swr_cache() {
             }))
             .unwrap()
         });
+    }
+}
+
+/// Cold start on a copy of a real profile (never the live one). Make the copy
+/// with `sqlite3 -readonly ~/.zeron/profiles/local/docs.sqlite3 ".backup
+/// $DIR/profiles/local/docs.sqlite3"` plus `cp ~/.zeron/local-profile.json
+/// $DIR/`, then run with `MAST_PERF_REAL_COPY=$DIR`. Skipped when unset.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "benchmark: needs MAST_PERF_REAL_COPY"]
+async fn bench_engine_startup_real_profile_copy() {
+    let Some(dir) = std::env::var_os("MAST_PERF_REAL_COPY") else {
+        eprintln!("BENCH engine | MAST_PERF_REAL_COPY not set, skipped");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    for n in 1..=3 {
+        let profile = mast_engine::EngineProfile::local(&dir).unwrap();
+        let core = bench(&format!("assemble real profile copy (run {n})"), || {
+            EngineCore::assemble_with_profile(
+                profile,
+                Arc::new(default_registry()),
+                HarnessId::Mock,
+                None,
+            )
+            .unwrap()
+        });
+        let chats = bench("read_chats", || core.workspace.read_chats().unwrap());
+        eprintln!("BENCH engine | real chats={}", chats.len());
+        let spaces = core.workspace.read_spaces().unwrap_or_default();
+        bench("work_outline_inputs for every space", || {
+            for space in &spaces {
+                std::hint::black_box(core.workspace.work_outline_inputs(&space.id));
+            }
+        });
+        drop(core);
     }
 }

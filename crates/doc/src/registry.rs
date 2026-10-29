@@ -141,6 +141,22 @@ impl HlcClock {
 
 // ── rows and ops (wire-compatible with edge/src/registry-core.ts) ───────────
 
+/// Deserialize a row's fields as a JSON object without copying them.
+fn parse_row_fields<T: serde::de::DeserializeOwned>(
+    row: &RegistryRow,
+) -> Result<T, serde_json::Error> {
+    struct Borrowed<'a>(&'a Value);
+    impl<'a> serde::de::IntoDeserializer<'a, serde_json::Error> for Borrowed<'a> {
+        type Deserializer = &'a Value;
+        fn into_deserializer(self) -> &'a Value {
+            self.0
+        }
+    }
+    T::deserialize(serde::de::value::MapDeserializer::new(
+        row.fields.iter().map(|(k, v)| (k.as_str(), Borrowed(v))),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegistryRow {
@@ -959,6 +975,27 @@ impl RegistryDoc {
 
     fn read_kind<T: serde::de::DeserializeOwned>(&self, kind: &str) -> Vec<T> {
         let mut out = Vec::new();
+        // Nothing queued touches this kind (the local profile settles its
+        // writes at once): parse the stored rows in place, without the two
+        // per-row copies the overlay path makes.
+        if !self
+            .pending
+            .iter()
+            .any(|batch| batch.ops.iter().any(|op| op.kind == kind))
+        {
+            if let Some(by_id) = self.authoritative.get(kind) {
+                out.reserve(by_id.len());
+                for row in by_id.values().filter(|row| !row.deleted) {
+                    match parse_row_fields::<T>(row) {
+                        Ok(parsed) => out.push(parsed),
+                        Err(err) => {
+                            tracing::warn!(kind, row = %row.id, error = %err, "skipping malformed registry row");
+                        }
+                    }
+                }
+            }
+            return out;
+        }
         for row in self.overlay_rows(kind) {
             let value = Value::Object(row.fields.clone().into_iter().collect());
             match serde_json::from_value::<T>(value) {

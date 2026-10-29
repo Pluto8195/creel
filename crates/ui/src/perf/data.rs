@@ -49,7 +49,9 @@ pub fn unified_diff(lines: usize) -> String {
                     3 => format!("-    let old_{i} = compute(a, {i});\n"),
                     4 => format!("+    let new_{i} = compute_v2(a, b, {i});\n"),
                     5 => format!("+    log::debug!(\"step {{}} of {file}\", {i});\n"),
-                    _ => format!("     let value_{i} = other_function(arg_{i}, {line}); // context\n"),
+                    _ => format!(
+                        "     let value_{i} = other_function(arg_{i}, {line}); // context\n"
+                    ),
                 });
             }
             emitted += 42;

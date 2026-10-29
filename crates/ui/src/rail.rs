@@ -424,7 +424,12 @@ impl Transcript {
             let state = self.state_entity().read(cx);
             (state.transcript_revision, state.pending_echoes().len())
         };
-        let key = (self.rows_generation(), self.rows().len(), revision, echo_count);
+        let key = (
+            self.rows_generation(),
+            self.rows().len(),
+            revision,
+            echo_count,
+        );
         let pairs = match &self.rail_cache {
             Some(cache) if cache.key == key => cache.pairs.clone(),
             _ => {

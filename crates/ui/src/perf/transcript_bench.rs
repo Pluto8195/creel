@@ -6,13 +6,18 @@ use crate::perf::{data, measure, measure_n};
 use mast_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 
 fn text(id: &str, t: String) -> MessagePart {
-    MessagePart::Text { id: id.into(), text: t }
+    MessagePart::Text {
+        id: id.into(),
+        text: t,
+    }
 }
 
 fn tool(i: usize) -> MessagePart {
     MessagePart::Tool {
         id: format!("tool{i}"),
-        call: ToolCall::Exec { command: format!("cargo test -p crate-{i} -- --nocapture") },
+        call: ToolCall::Exec {
+            command: format!("cargo test -p crate-{i} -- --nocapture"),
+        },
         is_error: false,
         resolved: true,
         // Pre-strip entries carry up to 4 KB inline; newer ones a ref + size.
@@ -60,7 +65,9 @@ struct Cached(Entity<Transcript>);
 
 impl Render for Cached {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.0.clone().cached(gpui::StyleRefinement::default().size_full())
+        self.0
+            .clone()
+            .cached(gpui::StyleRefinement::default().size_full())
     }
 }
 
@@ -86,7 +93,9 @@ fn bench_transcript_long_chat(cx: &mut gpui::TestAppContext) {
         Cached(transcript)
     });
     let transcript = view.read_with(vcx, |v, _| v.0.clone());
-    let entries = measure("transcript", "build 2000 synthetic entries", || long_chat(2000));
+    let entries = measure("transcript", "build 2000 synthetic entries", || {
+        long_chat(2000)
+    });
     let payload: usize = entries
         .iter()
         .flat_map(|e| &e.parts)
@@ -111,26 +120,36 @@ fn bench_transcript_long_chat(cx: &mut gpui::TestAppContext) {
     let rows = transcript.read_with(vcx, |t, _| t.rows.len());
     eprintln!("BENCH transcript | rows={rows}");
     measure("transcript", "first draw", || draw(vcx));
-    measure_n("transcript", "idle redraw", 30, |_| draw(vcx));
-    measure_n("transcript", "scroll 700px + draw", 100, |_| {
-        transcript.update(vcx, |t, _| t.list.scroll_by(px(700.0)));
-        draw(vcx);
-    });
-    measure_n("transcript", "scroll back -700px + draw", 100, |_| {
-        transcript.update(vcx, |t, _| t.list.scroll_by(px(-700.0)));
-        draw(vcx);
-    });
-    // A streaming tick: the last message grows, the whole list is re-synced.
-    measure_n("transcript", "stream tick (revision bump + sync + draw)", 30, |i| {
-        transcript.update(vcx, |this, cx| {
-            this.state.update(cx, |state, _| {
-                if let Some(last) = state.transcript.last_mut() {
-                    last.parts.push(text(&format!("s{i}"), format!("token {i}")));
-                }
-                state.transcript_revision += 1;
-            });
-            this.sync(cx);
+    // BENCH_ONLY=stream skips the redraw/scroll loops (to profile the tick).
+    let only_stream = std::env::var("BENCH_ONLY").as_deref() == Ok("stream");
+    if !only_stream {
+        measure_n("transcript", "idle redraw", 30, |_| draw(vcx));
+        measure_n("transcript", "scroll 700px + draw", 100, |_| {
+            transcript.update(vcx, |t, _| t.list.scroll_by(px(700.0)));
+            draw(vcx);
         });
-        draw(vcx);
-    });
+        measure_n("transcript", "scroll back -700px + draw", 100, |_| {
+            transcript.update(vcx, |t, _| t.list.scroll_by(px(-700.0)));
+            draw(vcx);
+        });
+    }
+    // A streaming tick: the last message grows, the whole list is re-synced.
+    measure_n(
+        "transcript",
+        "stream tick (revision bump + sync + draw)",
+        30,
+        |i| {
+            transcript.update(vcx, |this, cx| {
+                this.state.update(cx, |state, _| {
+                    if let Some(last) = state.transcript.last_mut() {
+                        last.parts
+                            .push(text(&format!("s{i}"), format!("token {i}")));
+                    }
+                    state.transcript_revision += 1;
+                });
+                this.sync(cx);
+            });
+            draw(vcx);
+        },
+    );
 }

@@ -42,30 +42,35 @@ fn bench_diff_pane_5000_lines(cx: &mut gpui::TestAppContext) {
             window.draw(cx).clear();
         });
     };
-    measure("diff", "load patch (sync + background parse + flatten)", || {
-        changes.update(vcx, |c, cx| {
-            c.scoped = Some(CheckoutDiff {
-                checkout_id: "co".into(),
-                device_id: "local".into(),
-                cwd: "/work/repo".into(),
-                patch: patch.clone(),
-                files: Vec::new(),
-                submodules: Vec::new(),
-                additions: 3000,
-                deletions: 1000,
-                truncated: false,
-                checksum: "bench".into(),
-                updated_at: chrono::Utc::now(),
+    measure(
+        "diff",
+        "load patch (sync + background parse + flatten)",
+        || {
+            changes.update(vcx, |c, cx| {
+                c.scoped = Some(CheckoutDiff {
+                    checkout_id: "co".into(),
+                    device_id: "local".into(),
+                    cwd: "/work/repo".into(),
+                    patch: patch.clone(),
+                    files: Vec::new(),
+                    submodules: Vec::new(),
+                    additions: 3000,
+                    deletions: 1000,
+                    truncated: false,
+                    checksum: "bench".into(),
+                    updated_at: chrono::Utc::now(),
+                });
+                // `ensure_scoped` keeps a scoped diff only when it was fetched for
+                // the current key; there is no engine here to fetch it.
+                c.scoped_for = Some(format!("local|||/work/repo|{}||", c.scope.mode()) + "|");
+                c.sync(cx);
             });
-            // `ensure_scoped` keeps a scoped diff only when it was fetched for
-            // the current key; there is no engine here to fetch it.
-            c.scoped_for = Some(format!("local|||/work/repo|{}||", c.scope.mode()) + "|");
-            c.sync(cx);
-        });
-        vcx.run_until_parked();
+            vcx.run_until_parked();
+        },
+    );
+    let (rows, parsed, scoped) = changes.read_with(vcx, |c, _| {
+        (c.rows.len(), c.parsed.is_some(), c.scoped.is_some())
     });
-    let (rows, parsed, scoped) =
-        changes.read_with(vcx, |c, _| (c.rows.len(), c.parsed.is_some(), c.scoped.is_some()));
     eprintln!("BENCH diff | rows={rows} parsed={parsed} scoped={scoped}");
     measure("diff", "first draw", || draw(vcx));
     measure_n("diff", "idle redraw", 30, |_| draw(vcx));
