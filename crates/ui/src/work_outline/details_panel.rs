@@ -59,10 +59,12 @@ mod linear_section;
 mod pr_sync_section;
 
 #[path = "details_templates.rs"]
-mod templates_section;
+pub(crate) mod templates_section;
 
 #[path = "details_template_review.rs"]
-mod template_review_section;
+pub(crate) mod template_review_section;
+#[path = "details_convert.rs"]
+pub(crate) mod convert_section;
 
 #[path = "details_artifacts.rs"]
 pub(crate) mod artifacts_section;
@@ -755,20 +757,36 @@ impl WorkItemDetails {
                     .debug_selector(|| "work-item-project-toggle".into())
                     .on_click(cx.listener(move |this, _, _, cx| this.set_project(!is_project, cx))),
                 )
-                .when(is_project, |row| {
+                .when(!is_project, |row| {
                     row.child(
                         Self::small_button(
-                            "work-item-save-template",
-                            "Save as template\u{2026}",
+                            "work-item-convert-project",
+                            "Convert to project\u{2026}",
                             theme,
                         )
-                        .debug_selector(|| "work-item-save-template".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.begin_save_template(window, cx)
-                        })),
+                        .debug_selector(|| "work-item-convert-project".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.begin_convert(cx))),
                     )
-                }),
+                })
+                .child(
+                    Self::small_button(
+                        "work-item-save-template",
+                        "Save as template\u{2026}",
+                        theme,
+                    )
+                    .debug_selector(|| "work-item-save-template".into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.begin_save_template(window, cx)
+                    })),
+                ),
         );
+        for element in self.render_convert(item, theme, cx) {
+            section = section.child(element);
+        }
+        // Any item can be saved as a template; the prompt shows here.
+        for element in self.render_save_template(item, theme, cx) {
+            section = section.child(element);
+        }
         if !is_project {
             return section.child(
                 div()
@@ -780,9 +798,6 @@ impl WorkItemDetails {
             );
         }
         for element in self.render_template_review(item, theme, cx) {
-            section = section.child(element);
-        }
-        for element in self.render_save_template(item, theme, cx) {
             section = section.child(element);
         }
         let current = item.worker_destination_id.clone();

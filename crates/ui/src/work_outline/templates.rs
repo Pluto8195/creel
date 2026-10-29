@@ -169,6 +169,8 @@ pub(crate) fn summary_line(template: &WorkItemTemplateView) -> String {
 pub(crate) enum TemplateMenuAction {
     /// Open the save-as-template prompt in the item's details.
     SaveAsTemplate { space_id: String, item_id: String },
+    /// Open the "Convert to project…" wizard in the item's details.
+    ConvertToProject { space_id: String, item_id: String },
     /// "New from template…": under `parent` (`None` = the Space's top level).
     NewFromTemplate {
         space_id: String,
@@ -187,7 +189,26 @@ pub(crate) fn save_blocked(
     if item.archived_at.is_some() {
         return Some("Restore this work item first");
     }
-    (!item.is_project).then_some("Mark it as a project first")
+    // Any item can be saved: Mast never decides what a project looks like.
+    None
+}
+
+/// Why "Convert to Project…" is unavailable for `item_id`, if it is.
+pub(crate) fn convert_blocked(
+    snapshot: Option<&WorkOutlineSnapshot>,
+    item_id: &str,
+) -> Option<&'static str> {
+    let snapshot = snapshot?;
+    let item = snapshot.item(item_id)?;
+    if item.archived_at.is_some() {
+        Some("Restore this work item first")
+    } else if item.is_project {
+        Some("This item is already a project")
+    } else if snapshot.templates.is_empty() {
+        Some("Save a template first (Save as Template\u{2026} on any item)")
+    } else {
+        None
+    }
 }
 
 /// Put "Save as Template…" and "New from Template…" after "Group into…".
@@ -222,6 +243,16 @@ pub(crate) fn insert_item_entries(
             }),
         )
         .disabled(archived.then_some("Restore this work item to add a project under it")),
+        MenuEntry::new(
+            "convert-to-project",
+            "Convert to Project\u{2026}",
+            icons::ADD_CIRCLE,
+            MenuAction::Template(TemplateMenuAction::ConvertToProject {
+                space_id: space_id.to_owned(),
+                item_id: item_id.to_owned(),
+            }),
+        )
+        .disabled(convert_blocked(snapshot, item_id)),
     ];
     let at = menu
         .entries

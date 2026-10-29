@@ -355,7 +355,7 @@ fn skip_sends_nothing_and_a_skipped_change_keeps_the_link_back(cx: &mut gpui::Te
     assert!(!shown(vcx, "work-item-review-accept-0"), "a skipped row has no buttons");
     details.read_with(vcx, |d, _| {
         let rows = &d.templates.review.as_ref().unwrap().rows;
-        assert_eq!(rows[0].state, crate::work_outline::details_panel::RowStateForTests::skipped());
+        assert_eq!(rows[0].state, crate::work_outline::details_panel::template_review_section::RowState::Skipped);
     });
 
     press(vcx, "work-item-review-accept-all");

@@ -110,7 +110,7 @@ impl OutlineView {
         }
         if snapshot.templates.is_empty() {
             return Err(
-                "No templates in this project yet. Mark a project, then Save as Template\u{2026}"
+                "No templates in this project yet. Pick any item and Save as Template\u{2026}"
                     .into(),
             );
         }

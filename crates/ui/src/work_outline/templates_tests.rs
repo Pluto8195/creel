@@ -333,10 +333,8 @@ fn save_as_template_is_disabled_with_a_reason_until_the_item_is_a_project(
                 .expect("save entry")
         })
     };
-    assert_eq!(
-        entry(UI, vcx).disabled.as_deref(),
-        Some("Mark it as a project first")
-    );
+    // Any item can be saved as a template, project or not.
+    assert_eq!(entry(UI, vcx).disabled, None);
     assert_eq!(entry(HOUSEKEEPING, vcx).disabled, None);
 }
 
@@ -478,7 +476,7 @@ fn one_undo_archives_the_new_project_and_redo_restores_it(cx: &mut gpui::TestApp
     assert_eq!(sent_after.len(), 8, "a single ⌘Z is one request");
     assert_eq!(sent_after[7]["op"], "archiveWorkItem");
     assert_eq!(sent_after[7]["workItemId"], root);
-    assert_eq!(sent_after[7]["descendantArchivePolicy"], "archiveDescendants");
+    assert_eq!(sent_after[7]["descendantArchivePolicy"]["type"], "archiveDescendants");
     assert!(
         outline.read_with(vcx, |o, cx| o.next_undo_label(cx)).is_none(),
         "the whole instantiation was one step"
@@ -600,5 +598,34 @@ fn a_linear_project_row_creates_a_project_item_from_a_template_and_links_it(
             .read_with(vcx, |o, cx| o.recent_changes(cx))
             .len(),
         1
+    );
+}
+
+#[test]
+fn template_preview_lists_nodes_instructions_and_badges() {
+    let node = |title: &str, project, dest, instructions: &[&str], children| mast_proto::TemplateNode {
+        title: title.into(),
+        description: None,
+        is_project: project,
+        is_worker_destination: dest,
+        instructions: instructions.iter().map(|s| s.to_string()).collect(),
+        children,
+    };
+    let long = "word ".repeat(60);
+    let tree = node(
+        "Project",
+        true,
+        false,
+        &["Be   careful", &long],
+        vec![node("Tickets", false, true, &[], vec![])],
+    );
+    let mut lines = Vec::new();
+    crate::work_outline::details_panel::templates_section::preview_lines(&tree, 0, &mut lines);
+    assert_eq!(lines[0], (0, "Project  [project]".to_owned(), false));
+    assert_eq!(lines[1], (1, "\u{2022} Be careful".to_owned(), true));
+    assert!(lines[2].1.ends_with('\u{2026}') && lines[2].1.chars().count() <= 125);
+    assert_eq!(
+        lines[3],
+        (1, "Tickets  [worker destination]".to_owned(), false)
     );
 }

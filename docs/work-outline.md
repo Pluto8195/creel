@@ -647,24 +647,46 @@ duplicate items.
 
 ## Project templates
 
-A template is a frozen **copy** of a project's subtree (titles, descriptions, instructions, which
-item is a project and which is its worker destination). It is not live: editing the template does
+A template is a frozen **copy** of ANY item's subtree (titles, descriptions, instructions on every
+node, which node is a project and which is a worker destination). Mast never decides what a project
+looks like: the structure is whatever tree you saved. Chats, Required Actions, external links and
+the tickets under a worker destination are not copied. It is not live: editing the template does
 not touch projects made from it, and editing a project does not touch its template.
 
-- **Save as template…**: right-click a project (or use the button in its Project section of Work
-  Item Details). The item must be a project, otherwise the entry is greyed out ("Mark it as a
-  project first"). The prompt is prefilled with the project's title; a project that already links a
+- **Save as template…**: right-click any item (or use the button in the Project section of Work
+  Item Details). The prompt is prefilled with the item's title; a project that already links a
   template offers **Update template** (replaces it, revision + 1) or **Save as new**. Saving is
   not an undo step. Duplicate names and the size limits come back as an error card.
 - **Templates list**: the Space-root details panel lists the Space's templates (name, revision,
-  item count) with **New from template…** and **Delete** (confirms first) per row.
+  item count) with **New from template…** and **Delete** (confirms first) per row. Click a name
+  to preview its tree: nodes, their instructions, and project / worker destination badges. To edit
+  a template, edit the tree it came from and **Update template**.
 - **New from template…**: in the item menu (creates the project under that item) and the Space
   root menu (top level), or from the Templates list. Pick a template, then name the project
-  (prefilled with the template's root title). The whole project is created in order and is ONE undo
+  (prefilled with the template's root title). Nothing else is invented: the new item is that exact
+  tree. The whole project is created in order and is ONE undo
   step: undo archives it with its items, redo restores it. A toast offers Undo.
 - **From Linear**: on a project row in the Linear panel, **New project item…** picks a template and
   a parent, names the item after the Linear project, and links it to that project. Use "Add Issues
   from <project>…" on the new item to pull in issues. Nothing is written to Linear.
+
+- **Template changed**: a project that links an older template revision shows a "Template changed
+  (rev N → M)" chip (outline row and details) and **Review changes…**. Each difference (added or
+  changed instructions, items the template gained, a changed worker destination) has **Accept** or
+  **Skip**; **Accept all** and **Mark reviewed** clear the chip. Items the project has but the
+  template doesn't are listed for information only and are never removed. Nothing applies by
+  itself, and none of it is an undo step.
+- **Convert to project…**: right-click an item that is not a project yet (or the button in its
+  Project section). Pick the template it should become; a preview lists exactly what will happen
+  and **nothing is written until Apply**. Template nodes that already exist as children (matched by
+  title) are reused, the others are created with their instructions; existing children can be moved
+  under a template node (by default, children with an external link move under the template's worker
+  destination; click a row to cycle where it goes, or leave it where it is); the item is marked as a
+  project, gets the worker destination and links the template. Instructions the template has for
+  nodes that already exist are not written; the link then records "not reviewed" so **Review
+  changes…** can apply them. Chats stay where they are. The whole conversion is ONE undo step.
+  Basedash and Kit Line in Cofactr are meant to be migrated this way when you are ready; nothing
+  runs automatically.
 
 ## Limitations
 

@@ -27,6 +27,7 @@ pub(crate) mod action_log;
 pub(crate) mod actions;
 pub(crate) mod chips;
 pub(crate) mod command;
+pub(crate) mod convert;
 pub(crate) mod details_panel;
 pub(crate) mod execution;
 pub(crate) mod filter;

@@ -452,6 +452,11 @@ impl Shell {
                         details.begin_save_template(window, cx)
                     })
                 }
+                TemplateMenuAction::ConvertToProject { .. } => {
+                    self.with_menu_details(target, window, cx, |details, _window, cx| {
+                        details.begin_convert(cx)
+                    })
+                }
                 TemplateMenuAction::NewFromTemplate { space_id, parent } => {
                     if let Some(outline) = outline.upgrade() {
                         outline.update(cx, |outline, cx| {

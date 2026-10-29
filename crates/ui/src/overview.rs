@@ -10879,6 +10879,9 @@ mod logic_tests {
         include!("work_outline/templates_tests.rs");
     }
     /// "Template changed" chip and per-project review.
+    mod convert_tests {
+        include!("work_outline/convert_tests.rs");
+    }
     mod template_review_tests {
         include!("work_outline/template_review_tests.rs");
     }

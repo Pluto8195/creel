@@ -779,6 +779,102 @@ pub(crate) fn instantiate_entry(
     )
 }
 
+/// "Convert to project…": the whole conversion as ONE entry. `snapshot` is the
+/// state BEFORE it was applied. Undo moves every moved child back, clears the
+/// project flag, destination and template link, and archives the items the
+/// conversion created (with their subtrees); redo restores them, moves again
+/// and sets the fields again.
+pub(crate) fn convert_entry(
+    snapshot: &WorkOutlineSnapshot,
+    plan: &super::convert::ConvertPlan,
+    operation_id: Option<String>,
+) -> Option<Draft> {
+    let mut forward = Vec::new();
+    let mut inverse = Vec::new();
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for id in &plan.created_roots {
+        forward.push(Step::Restore {
+            work_item_id: id.clone(),
+        });
+        before.push(Probe::Archived {
+            work_item_id: id.clone(),
+            archived: true,
+        });
+        after.push(Probe::Archived {
+            work_item_id: id.clone(),
+            archived: false,
+        });
+    }
+    for mv in &plan.moves {
+        let item = snapshot.item(&mv.child_id)?;
+        let back = placement_back(snapshot, &mv.child_id)?;
+        forward.push(Step::Move {
+            work_item_id: mv.child_id.clone(),
+            parent: Some(mv.to_id.clone()),
+            placement: WorkOutlinePlacement::Last,
+        });
+        inverse.push(Step::Move {
+            work_item_id: mv.child_id.clone(),
+            parent: item.parent_work_item_id.clone(),
+            placement: back,
+        });
+        before.push(Probe::Parent {
+            work_item_id: mv.child_id.clone(),
+            parent: item.parent_work_item_id.clone(),
+        });
+        after.push(Probe::Parent {
+            work_item_id: mv.child_id.clone(),
+            parent: Some(mv.to_id.clone()),
+        });
+    }
+    forward.push(Step::Update {
+        work_item_id: plan.item_id.clone(),
+        changes: WorkItemChanges {
+            is_project: Some(true),
+            worker_destination: match &plan.destination {
+                Some((id, _)) => FieldPatch::Set(id.clone()),
+                None => FieldPatch::Unchanged,
+            },
+            template: FieldPatch::Set(mast_proto::WorkItemTemplateLink {
+                template_id: plan.template_id.clone(),
+                revision: plan.link_revision,
+            }),
+            ..Default::default()
+        },
+    });
+    inverse.push(Step::Update {
+        work_item_id: plan.item_id.clone(),
+        changes: WorkItemChanges {
+            is_project: Some(false),
+            worker_destination: if plan.destination.is_some() {
+                FieldPatch::Clear
+            } else {
+                FieldPatch::Unchanged
+            },
+            template: FieldPatch::Clear,
+            ..Default::default()
+        },
+    });
+    for id in &plan.created_roots {
+        inverse.push(Step::Archive {
+            work_item_id: id.clone(),
+        });
+    }
+    let item = quoted(&snapshot.item(&plan.item_id)?.title);
+    Some(draft(
+        format!(
+            "converted {item} to a project from template {}",
+            quoted(&plan.template_name)
+        ),
+        Step::Batch(forward),
+        Step::Batch(inverse),
+        Probe::All(before),
+        Probe::All(after),
+        operation_id,
+    ))
+}
+
 /// A new item. `work_item_id` is `derive_id(operationId, "item")`.
 pub(crate) fn create_entry(work_item_id: &str, title: &str, operation_id: Option<String>) -> Draft {
     draft(

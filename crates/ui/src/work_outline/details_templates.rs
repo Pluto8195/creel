@@ -35,6 +35,10 @@ pub(crate) struct TemplatesDetailsState {
     pub error: Option<String>,
     /// The open "Review changes…" list (`details_template_review.rs`).
     pub review: Option<super::template_review_section::ReviewState>,
+    /// Templates whose tree preview is open in the Space-root list.
+    pub expanded: std::collections::HashSet<String>,
+    /// The open "Convert to project…" wizard (`details_convert.rs`).
+    pub convert: Option<super::convert_section::ConvertState>,
 }
 
 impl WorkItemDetails {
@@ -325,7 +329,7 @@ impl WorkItemDetails {
                 div()
                     .text_size(crate::typography::ui_rems(10.5))
                     .text_color(theme.text_muted)
-                    .child("No templates yet. Mark a project, then Save as template\u{2026} on it."),
+                    .child("No templates yet. Pick any item and Save as template\u{2026} to copy its tree."),
             );
         }
         for (ix, template) in snapshot.templates.iter().enumerate() {
@@ -333,6 +337,8 @@ impl WorkItemDetails {
             let space_id = self.space_id.clone();
             let delete = template.clone();
             let row_selector = format!("space-template-{}", template.id);
+            let open = self.templates.expanded.contains(&template.id);
+            let toggle_id = template.id.clone();
             let new_selector = format!("space-template-new-{}", template.id);
             let delete_selector = format!("space-template-delete-{}", template.id);
             section = section.child(
@@ -343,16 +349,27 @@ impl WorkItemDetails {
                     .gap(px(6.0))
                     .child(
                         div()
+                            .id(("space-template-toggle", ix))
                             .flex_1()
                             .min_w_0()
                             .truncate()
+                            .cursor_pointer()
                             .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text)
+                            .hover(|el| el.text_color(theme.text_muted))
                             .child(SharedString::from(format!(
-                                "{} \u{b7} {}",
+                                "{} {} \u{b7} {}",
+                                if open { "\u{25be}" } else { "\u{25b8}" },
                                 template.name,
                                 super::super::templates::summary_line(template)
-                            ))),
+                            )))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let expanded = &mut this.templates.expanded;
+                                if !expanded.remove(&toggle_id) {
+                                    expanded.insert(toggle_id.clone());
+                                }
+                                cx.notify();
+                            })),
                     )
                     .child(
                         Self::small_button(("space-template-new", ix), "New from template\u{2026}", theme)
@@ -372,7 +389,62 @@ impl WorkItemDetails {
                             })),
                     ),
             );
+            if open {
+                section = section.child(Self::render_template_preview(template, theme));
+            }
         }
         section
+    }
+
+    /// The template's tree: one line per node (indented by depth, with
+    /// project / worker-destination badges) and its instructions beneath.
+    fn render_template_preview(template: &mast_proto::WorkItemTemplateView, theme: &Theme) -> gpui::Div {
+        let mut lines = Vec::new();
+        preview_lines(&template.body, 0, &mut lines);
+        let selector = format!("space-template-preview-{}", template.id);
+        div()
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .pl(px(12.0))
+            .children(lines.into_iter().map(|(depth, text, dim)| {
+                div()
+                    .pl(px(12.0 * depth as f32))
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(if dim { theme.text_muted } else { theme.text })
+                    .child(SharedString::from(text))
+            }))
+    }
+}
+
+/// `(depth, text, dim)` preview lines of a template node and its subtree.
+pub(crate) fn preview_lines(
+    node: &mast_proto::TemplateNode,
+    depth: usize,
+    out: &mut Vec<(usize, String, bool)>,
+) {
+    let mut badges = Vec::new();
+    if node.is_project {
+        badges.push("project");
+    }
+    if node.is_worker_destination {
+        badges.push("worker destination");
+    }
+    let badge = if badges.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", badges.join(", "))
+    };
+    out.push((depth, format!("{}{badge}", node.title), false));
+    for text in &node.instructions {
+        let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let shown: String = one_line.chars().take(120).collect();
+        let more = if one_line.chars().count() > 120 { "\u{2026}" } else { "" };
+        out.push((depth + 1, format!("\u{2022} {shown}{more}"), true));
+    }
+    for child in &node.children {
+        preview_lines(child, depth + 1, out);
     }
 }
