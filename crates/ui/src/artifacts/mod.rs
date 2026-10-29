@@ -34,6 +34,7 @@ pub(crate) mod plan_linear;
 pub(crate) mod question_html;
 pub(crate) mod questions_ui;
 pub(crate) mod render_check;
+pub(crate) mod side_layout;
 pub(crate) mod store;
 pub(crate) mod tab;
 pub(crate) mod zoom;

@@ -120,7 +120,8 @@ pub(crate) struct ItemSection {
 impl ItemSection {
     /// Open asks that are not plan questions (the ⚠ badge, with drift).
     pub(crate) fn attention_count(&self) -> usize {
-        self.actions.iter().filter(|a| !a.plan_question).count() + usize::from(self.instructions.drift)
+        self.actions.iter().filter(|a| !a.plan_question).count()
+            + usize::from(self.instructions.drift)
     }
 
     /// Open plan questions (the ● badge).
@@ -384,9 +385,7 @@ impl CardState {
         let before = self.visible();
         match timer {
             CardTimer::Show(epoch) if epoch == self.epoch && self.hovered() => self.shown = true,
-            CardTimer::Hide(epoch) if epoch == self.epoch && !self.hovered() => {
-                self.shown = false
-            }
+            CardTimer::Hide(epoch) if epoch == self.epoch && !self.hovered() => self.shown = false,
             _ => {}
         }
         before != self.visible()

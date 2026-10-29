@@ -8,10 +8,8 @@
 //! already read, so the Shell's observer gating stays as it was.
 use super::*;
 
+use crate::chat_item::{CardTimer, ChatItemFacts, FactsInput, ItemSection, PathSegment, facts};
 use crate::work_outline::hints::{HintKey, WithHint};
-use crate::chat_item::{
-    CardTimer, ChatItemFacts, FactsInput, ItemSection, PathSegment, facts,
-};
 
 /// Height of the breadcrumb/title row the new header adds above the chips; the
 /// transcript's top fade clears it.
@@ -298,11 +296,13 @@ impl Shell {
             .gap(px(4.0))
             .text_size(crate::typography::ui_rems(12.0))
             .text_color(theme.text_muted)
-            .tooltip(move |_, cx| {
-                cx.new(|_| SurfaceTabTooltip { text: full.clone() }).into()
-            });
+            .tooltip(move |_, cx| cx.new(|_| SurfaceTabTooltip { text: full.clone() }).into());
         if trimmed {
-            row = row.child(div().text_color(theme.text_faint).child("\u{2026} \u{203a}"));
+            row = row.child(
+                div()
+                    .text_color(theme.text_faint)
+                    .child("\u{2026} \u{203a}"),
+            );
         }
         let last = segments.len().saturating_sub(1);
         for (ix, segment) in segments.iter().enumerate() {
@@ -321,7 +321,8 @@ impl Shell {
                     .px(px(2.0))
                     .cursor_pointer()
                     .when(ix == last, |el| {
-                        el.font_weight(gpui::FontWeight::MEDIUM).text_color(theme.text)
+                        el.font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
                     })
                     .hover(|el| el.bg(theme.element_hover).text_color(theme.text))
                     .child(SharedString::from(segment.title.clone()))
@@ -360,30 +361,42 @@ impl Shell {
                 .text_color(color)
                 .hover(|el| el.bg(theme.element_hover))
                 .child(glyph)
-                .when(count > 0, |el| el.child(SharedString::from(count.to_string())))
+                .when(count > 0, |el| {
+                    el.child(SharedString::from(count.to_string()))
+                })
                 .on_click(cx.listener(|this, _, _, cx| this.open_item_tab(cx)))
         };
         let mut out = Vec::new();
         let attention = item.attention_count();
         if attention > 0 {
             out.push(
-                badge("chat-header-badge-attention", "\u{26a0}", attention, theme.warning)
-                    .hint(
-                        "Open actions or changed instructions \u{2014} open the Item tab",
-                        HintKey::None,
-                    )
-                    .into_any_element(),
+                badge(
+                    "chat-header-badge-attention",
+                    "\u{26a0}",
+                    attention,
+                    theme.warning,
+                )
+                .hint(
+                    "Open actions or changed instructions \u{2014} open the Item tab",
+                    HintKey::None,
+                )
+                .into_any_element(),
             );
         }
         let questions = item.question_count();
         if questions > 0 {
             out.push(
-                badge("chat-header-badge-questions", "\u{25cf}", questions, theme.accent)
-                    .hint(
-                        "Unanswered plan questions \u{2014} open the Item tab",
-                        HintKey::None,
-                    )
-                    .into_any_element(),
+                badge(
+                    "chat-header-badge-questions",
+                    "\u{25cf}",
+                    questions,
+                    theme.accent,
+                )
+                .hint(
+                    "Unanswered plan questions \u{2014} open the Item tab",
+                    HintKey::None,
+                )
+                .into_any_element(),
             );
         }
         out
@@ -423,17 +436,20 @@ impl Shell {
                 .text_size(crate::typography::ui_rems(11.0))
                 .text_color(text)
                 .when(clickable, |chip| {
-                    chip.cursor_pointer().hover(|chip| chip.bg(theme.element_hover))
+                    chip.cursor_pointer()
+                        .hover(|chip| chip.bg(theme.element_hover))
                 })
                 .child(
                     div()
                         .debug_selector(move || icon_selector.clone())
                         .flex_none()
-                        .child(
-                            crate::icons::icon(icon_path)
-                                .size(px(11.0))
-                                .text_color(if tone == ChipTone::Link { theme.accent } else { text }),
-                        ),
+                        .child(crate::icons::icon(icon_path).size(px(11.0)).text_color(
+                            if tone == ChipTone::Link {
+                                theme.accent
+                            } else {
+                                text
+                            },
+                        )),
                 )
                 .child(div().min_w_0().truncate().child(SharedString::from(label)))
                 .tooltip(move |_, cx| {
@@ -463,7 +479,11 @@ impl Shell {
         row = row.child(chip(
             "model".into(),
             crate::icons::BOT,
-            if model_drift { ChipTone::Warn } else { ChipTone::Plain },
+            if model_drift {
+                ChipTone::Warn
+            } else {
+                ChipTone::Plain
+            },
             facts.model.chip(),
             facts.model.tooltip.clone(),
             None,
@@ -552,9 +572,9 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                this.chat_item_card_hover(*hovered, cx)
-            }))
+            .on_hover(
+                cx.listener(|this, hovered: &bool, _, cx| this.chat_item_card_hover(*hovered, cx)),
+            )
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.prevent_default()
             })
@@ -701,7 +721,8 @@ impl Shell {
                 .when(!label.is_empty(), |el| el.child(label))
         };
         let link = |id: String, label: &'static str| link_with(id, label, theme.text, true);
-        let action_link = |id: String, label: &'static str| link_with(id, label, theme.success, false);
+        let action_link =
+            |id: String, label: &'static str| link_with(id, label, theme.success, false);
         let mut col = div().flex().flex_col().gap(px(12.0));
 
         // Path (the tab prints it in full; the card's header already shows it).
@@ -735,15 +756,16 @@ impl Shell {
                             } else {
                                 muted(format!("{summary} \u{b7} up to date"))
                             })
-                            .child(action_link(format!("{prefix}-instructions-edit"), "Edit").on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.open_work_item_in_overview(
-                                        space_id.clone(),
-                                        item_id.clone(),
-                                        cx,
-                                    )
-                                }),
-                            )),
+                            .child(
+                                action_link(format!("{prefix}-instructions-edit"), "Edit")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_work_item_in_overview(
+                                            space_id.clone(),
+                                            item_id.clone(),
+                                            cx,
+                                        )
+                                    })),
+                            ),
                     )
                     .children(status)
                     .children(proposals),
@@ -752,62 +774,68 @@ impl Shell {
 
         // Runs in, model and account: the card leaves them to the header chips.
         if tab {
-        let runs_in = {
-            let mut block = section("runs-in", "Runs in");
-            if let Some(path) = &facts.runs_in {
-                block = block.child(text(path.clone()));
-            }
-            if let Some(branch) = &facts.branch {
-                block = block.child(muted(format!("\u{2387} {branch}")));
-            }
-            if facts.runs_in.is_none() && facts.branch.is_none() {
-                block = block.child(muted("Not started yet".into()));
-            }
-            block
-        };
-        col = col.child(runs_in);
+            let runs_in = {
+                let mut block = section("runs-in", "Runs in");
+                if let Some(path) = &facts.runs_in {
+                    block = block.child(text(path.clone()));
+                }
+                if let Some(branch) = &facts.branch {
+                    block = block.child(muted(format!("\u{2387} {branch}")));
+                }
+                if facts.runs_in.is_none() && facts.branch.is_none() {
+                    block = block.child(muted("Not started yet".into()));
+                }
+                block
+            };
+            col = col.child(runs_in);
 
-        // Model and account.
-        let model_differs = facts.model.ran && facts.model.configured.is_some();
-        col = col.child(
-            section("model", "Model").child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap(px(6.0))
-                    .child(text(
-                        facts.model.label.clone().unwrap_or_else(|| "default".into()),
-                    ))
-                    .child(
-                        muted(format!("\u{b7} {}", facts.model.detail()))
-                            .when(model_differs, |el| el.text_color(theme.warning)),
-                    ),
-            ),
-        );
-        col = col.child(section("account", "Account").child(match &facts.account {
-            Some(account) => div()
-                .debug_selector(|| "chat-item-account-badge".into())
-                .flex_none()
-                .h(px(20.0))
-                .px(px(7.0))
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(theme.border_strong)
-                .bg(theme.element_hover.opacity(0.55))
-                .text_size(crate::typography::ui_rems(11.0))
-                .text_color(theme.text)
-                .child(
-                    crate::icons::icon(crate::icons::KEY_MINIMALISTIC)
-                        .size(px(11.0))
-                        .text_color(theme.text),
-                )
-                .child(SharedString::from(account.clone())),
-            None => muted("Default login".into()),
-        }));
+            // Model and account.
+            let model_differs = facts.model.ran && facts.model.configured.is_some();
+            col = col.child(
+                section("model", "Model").child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_baseline()
+                        .gap(px(6.0))
+                        .child(text(
+                            facts
+                                .model
+                                .label
+                                .clone()
+                                .unwrap_or_else(|| "default".into()),
+                        ))
+                        .child(
+                            muted(format!("\u{b7} {}", facts.model.detail()))
+                                .when(model_differs, |el| el.text_color(theme.warning)),
+                        ),
+                ),
+            );
+            col = col.child(
+                section("account", "Account").child(match &facts.account {
+                    Some(account) => div()
+                        .debug_selector(|| "chat-item-account-badge".into())
+                        .flex_none()
+                        .h(px(20.0))
+                        .px(px(7.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(theme.border_strong)
+                        .bg(theme.element_hover.opacity(0.55))
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text)
+                        .child(
+                            crate::icons::icon(crate::icons::KEY_MINIMALISTIC)
+                                .size(px(11.0))
+                                .text_color(theme.text),
+                        )
+                        .child(SharedString::from(account.clone())),
+                    None => muted("Default login".into()),
+                }),
+            );
         }
 
         // Links.
@@ -824,12 +852,12 @@ impl Shell {
                     "Pull request".into()
                 };
                 block = block.child(
-                    link(format!("{prefix}-pr-{ix}"), "").child(SharedString::from(label)).on_click(
-                        cx.listener(move |this, _, window, cx| {
+                    link(format!("{prefix}-pr-{ix}"), "")
+                        .child(SharedString::from(label))
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             let external = window.modifiers().secondary();
                             this.open_web_reference(&url, external, window, cx)
-                        }),
-                    ),
+                        })),
                 );
             }
             if let Some(ticket) = &facts.ticket {
@@ -862,22 +890,37 @@ impl Shell {
                         .items_center()
                         .gap(px(6.0))
                         .child(
-                            div().flex_none().text_color(if action.plan_question {
-                                theme.accent
-                            } else {
-                                theme.warning
-                            }).child(if action.plan_question { "\u{25cf}" } else { "\u{26a0}" }),
+                            div()
+                                .flex_none()
+                                .text_color(if action.plan_question {
+                                    theme.accent
+                                } else {
+                                    theme.warning
+                                })
+                                .child(if action.plan_question {
+                                    "\u{25cf}"
+                                } else {
+                                    "\u{26a0}"
+                                }),
                         )
-                        .child(div().flex_1().min_w_0().truncate().child(text(action.text.clone())))
-                        .child(action_link(format!("{prefix}-answer-{ix}"), "Answer").on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.open_work_item_in_overview(
-                                    space_id.clone(),
-                                    item_id.clone(),
-                                    cx,
-                                )
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(text(action.text.clone())),
+                        )
+                        .child(
+                            action_link(format!("{prefix}-answer-{ix}"), "Answer").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_work_item_in_overview(
+                                        space_id.clone(),
+                                        item_id.clone(),
+                                        cx,
+                                    )
+                                }),
+                            ),
+                        ),
                 );
             }
             col = col.child(block);

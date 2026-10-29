@@ -320,8 +320,9 @@ impl Shell {
         self.begin_work_outline_modal(WorkOutlineModal::StartChat(dialog), cx);
         // The chip reads the owning device's managed accounts.
         let account_device = Some(device_id_for_accounts).filter(|id| !id.is_empty());
-        self.state
-            .update(cx, |state, cx| state.load_managed_accounts(account_device, cx));
+        self.state.update(cx, |state, cx| {
+            state.load_managed_accounts(account_device, cx)
+        });
         self.validate_start_chat(cx);
         if let Some(path) = describe {
             self.describe_start_chat_target(path, cx);
@@ -1002,29 +1003,34 @@ fn start_chat_account_chip(
             let selector = id.to_string();
             let account_id = entry.account_id.clone();
             let selected = entry.selected;
-            col = col.child(
-                popover::menu_row(theme, selected, id.clone())
-                    .id(id)
-                    .debug_selector(move || selector.clone())
-                    .role(gpui::Role::RadioButton)
-                    .aria_label(entry.label.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_start_chat_account(account_id.clone(), cx)
-                    }))
-                    .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(
-                        if selected {
-                            theme.text
-                        } else {
-                            gpui::transparent_black()
-                        },
-                    ))
-                    .child(div().flex_1().min_w_0().truncate().child(SharedString::from(
-                        match &entry.detail {
-                            Some(detail) => format!("{} \u{b7} {detail}", entry.label),
-                            None => entry.label.clone(),
-                        },
-                    ))),
-            );
+            col =
+                col.child(
+                    popover::menu_row(theme, selected, id.clone())
+                        .id(id)
+                        .debug_selector(move || selector.clone())
+                        .role(gpui::Role::RadioButton)
+                        .aria_label(entry.label.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_start_chat_account(account_id.clone(), cx)
+                        }))
+                        .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(
+                            if selected {
+                                theme.text
+                            } else {
+                                gpui::transparent_black()
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(match &entry.detail {
+                                    Some(detail) => format!("{} \u{b7} {detail}", entry.label),
+                                    None => entry.label.clone(),
+                                })),
+                        ),
+                );
         }
     }
     Some(col)
@@ -2606,11 +2612,7 @@ mod tests {
         });
     }
 
-    fn start_with_prompt(
-        shell: &Entity<Shell>,
-        cx: &mut gpui::VisualTestContext,
-        text: &str,
-    ) {
+    fn start_with_prompt(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, text: &str) {
         let prompt = shell.read_with(cx, |shell, cx| {
             let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
                 panic!("dialog");

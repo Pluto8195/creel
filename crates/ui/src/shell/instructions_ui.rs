@@ -405,40 +405,49 @@ impl Shell {
                             ),
                     )
                     .child(
-                        div().flex().flex_none().items_center().gap(px(6.0))
-                    .child(
-                        link("chat-header-instructions-compare", "Compare")
-                            .hint(
-                                "Compare the applied and current instructions",
-                                HintKey::None,
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_instruction_compare(&compare_chat, cx)
-                            })),
-                    )
-                    .child(if blocker.is_some() {
-                        // The host can't deliver instructions: visibly inert.
                         div()
-                            .id("chat-header-instructions-apply-disabled")
-                            .debug_selector(|| "chat-header-instructions-apply-disabled".into())
+                            .flex()
                             .flex_none()
-                            .px(px(4.0))
-                            .text_color(theme.text_faint)
-                            .child("Apply")
-                    } else {
-                        link(
-                            "chat-header-instructions-apply",
-                            if in_flight {
-                                "Applying\u{2026}"
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                link("chat-header-instructions-compare", "Compare")
+                                    .hint(
+                                        "Compare the applied and current instructions",
+                                        HintKey::None,
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_instruction_compare(&compare_chat, cx)
+                                    })),
+                            )
+                            .child(if blocker.is_some() {
+                                // The host can't deliver instructions: visibly inert.
+                                div()
+                                    .id("chat-header-instructions-apply-disabled")
+                                    .debug_selector(|| {
+                                        "chat-header-instructions-apply-disabled".into()
+                                    })
+                                    .flex_none()
+                                    .px(px(4.0))
+                                    .text_color(theme.text_faint)
+                                    .child("Apply")
                             } else {
-                                "Apply"
-                            },
-                        )
-                        .hint(APPLY_HINT, HintKey::None)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.apply_chat_instructions(&apply_chat, cx)
-                        }))
-                    }))
+                                link(
+                                    "chat-header-instructions-apply",
+                                    if in_flight {
+                                        "Applying\u{2026}"
+                                    } else {
+                                        "Apply"
+                                    },
+                                )
+                                .hint(APPLY_HINT, HintKey::None)
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.apply_chat_instructions(&apply_chat, cx)
+                                    },
+                                ))
+                            }),
+                    )
                 })
                 .when_some(blocker, |el, blocker| {
                     el.child(

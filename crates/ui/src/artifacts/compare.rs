@@ -381,7 +381,7 @@ pub(crate) fn compare_document(
 ) -> String {
     host_document(
         &[(left, labels.0), (right, labels.1)],
-        false,
+        None,
         "Compare revisions",
         theme,
     )
@@ -390,13 +390,48 @@ pub(crate) fn compare_document(
 /// The host document for 2-4 options side by side: equal-width columns (so
 /// the native pick buttons above line up), frames at the same viewport
 /// width, scroll and zoom synchronized across all of them.
-pub(crate) fn options_document(panes: &[(&CompareFrame, &str)], theme: &FragmentTheme) -> String {
-    host_document(panes, true, "Compare options", theme)
+pub(crate) fn options_document(
+    panes: &[(&CompareFrame, &str)],
+    layout: &OptionsLayout,
+    theme: &FragmentTheme,
+) -> String {
+    host_document(panes, Some(layout), "Compare options", theme)
 }
+
+/// How the options columns are drawn: the design width each frame is laid
+/// out at, each column's flex share, and fit-to-column versus real size.
+pub(crate) struct OptionsLayout {
+    pub(crate) widths: Vec<u32>,
+    pub(crate) weights: Vec<f32>,
+    pub(crate) fit: bool,
+}
+
+/// Lay each `.view`'s frame out at its design width (`data-w`), then scale
+/// it to the column with a transform (sharp: WebKit rasterises after the
+/// transform). In 100% mode no scale applies and the view scrolls sideways.
+pub(crate) const OPTIONS_FIT_SCRIPT: &str = r##"(() => {
+  const apply = () => {
+    const fit = document.body.dataset.fit === "1";
+    document.querySelectorAll(".view").forEach((view) => {
+      const frame = view.querySelector("iframe");
+      const design = Number(view.dataset.w) || 1100;
+      const scale = fit ? Math.min(1, Math.max(0.1, view.clientWidth / design)) : 1;
+      frame.style.width = design + "px";
+      frame.style.height = (view.clientHeight / scale) + "px";
+      frame.style.transformOrigin = "0 0";
+      frame.style.transform = scale < 1 ? "scale(" + scale + ")" : "";
+      view.dataset.scale = String(Math.round(scale * 1000) / 1000);
+    });
+  };
+  addEventListener("resize", apply);
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(document.body);
+  addEventListener("DOMContentLoaded", apply);
+  apply();
+})();"##;
 
 fn host_document(
     panes: &[(&CompareFrame, &str)],
-    equal: bool,
+    options: Option<&OptionsLayout>,
     title: &str,
     theme: &FragmentTheme,
 ) -> String {
@@ -405,15 +440,20 @@ fn host_document(
         .iter()
         .find(|(name, _)| *name == "--background")
         .map_or("transparent", |(_, value)| value.as_str());
-    let pane = |frame: &CompareFrame, label: &str| {
-        let size = if equal {
-            "flex:1 1 0".to_owned()
-        } else {
-            format!("flex:none;width:{}px", frame.width)
+    let pane = |ix: usize, frame: &CompareFrame, label: &str| {
+        let size = match options {
+            Some(layout) => format!(
+                "flex:{} 1 0",
+                layout.weights.get(ix).copied().unwrap_or(1.0)
+            ),
+            None => format!("flex:none;width:{}px", frame.width),
         };
+        let design = options
+            .and_then(|layout| layout.widths.get(ix))
+            .map_or(String::new(), |w| format!(" data-w=\"{w}\""));
         format!(
             "<div class=\"pane\" style=\"{size}\"><div class=\"label\">{label}</div>\
-<iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" title=\"{title}\" srcdoc=\"{srcdoc}\"></iframe></div>",
+<div class=\"view\"{design}><iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" title=\"{title}\" srcdoc=\"{srcdoc}\"></iframe></div></div>",
             label = escape_text(label),
             title = escape_attr(label),
             srcdoc = escape_attr(&frame.html),
@@ -421,9 +461,22 @@ fn host_document(
     };
     let panes_html: String = panes
         .iter()
-        .map(|(frame, label)| pane(frame, label))
+        .enumerate()
+        .map(|(ix, (frame, label))| pane(ix, frame, label))
         .collect::<Vec<_>>()
         .join("\n");
+    let (body_attr, fit_script, view_css) = match options {
+        Some(layout) => (
+            format!(" data-fit=\"{}\"", u8::from(layout.fit)),
+            format!("<script>{OPTIONS_FIT_SCRIPT}</script>\n"),
+            if layout.fit {
+                ".view{overflow:hidden}iframe{flex:none}"
+            } else {
+                ".view{overflow-x:auto;overflow-y:hidden}iframe{flex:none}"
+            },
+        ),
+        None => (String::new(), String::new(), "iframe{width:100%}"),
+    };
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"referrer\" content=\"no-referrer\">\n\
@@ -433,8 +486,10 @@ html,body{{margin:0;height:100%}}\
 body{{box-sizing:border-box;padding:8px 12px 12px;display:flex;gap:12px;justify-content:center;overflow-x:auto;font:600 11px/20px system-ui,sans-serif}}\
 .pane{{display:flex;flex-direction:column;height:100%;min-width:0}}\
 .label{{flex:none;height:20px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}\
-iframe{{flex:1;min-height:0;width:100%;border:0;background:transparent;box-shadow:0 0 0 1px rgba(128,128,128,.35)}}\
-</style>\n<script>{SYNC_HOST_SCRIPT}</script>\n</head>\n<body>\n{panes_html}\n</body>\n</html>\n",
+.view{{flex:1;min-height:0;display:flex;position:relative}}\
+iframe{{border:0;background:transparent;box-shadow:0 0 0 1px rgba(128,128,128,.35)}}\
+{view_css}\
+</style>\n<script>{SYNC_HOST_SCRIPT}</script>\n</head>\n<body{body_attr}>\n{panes_html}\n{fit_script}</body>\n</html>\n",
         csp = escape_attr(&fragment::host_csp()),
         scheme = if theme.dark { "dark" } else { "light" },
         title = escape_text(title),

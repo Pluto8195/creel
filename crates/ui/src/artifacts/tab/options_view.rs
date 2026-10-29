@@ -17,6 +17,7 @@ use mast_proto::{
 };
 
 use super::*;
+use crate::artifacts::side_layout::{self, SideLayout};
 use crate::artifacts::{compare, model, questions_ui};
 use crate::composer::ComposerInput;
 
@@ -37,6 +38,7 @@ pub(crate) struct SideBySide {
     /// A pick made from this tab, shown until the snapshot differs from
     /// what it was when we recorded it: `(value, snapshot's value then)`.
     local: Option<(Option<ArtifactOptionPick>, Option<ArtifactOptionPick>)>,
+    pub(crate) layout: SideLayout,
     tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -63,6 +65,10 @@ impl ArtifactTab {
             Some((value, base)) if artifact.picked == *base => value.clone(),
             _ => artifact.picked.clone(),
         }
+    }
+
+    pub(crate) fn side_layout(&self) -> SideLayout {
+        self.side.layout.clone()
     }
 
     pub(crate) fn side_chosen(&self) -> Vec<usize> {
@@ -95,8 +101,10 @@ impl ArtifactTab {
         }
         self.mode = Mode::SideBySide;
         self.note_input(cx);
+        self.side.layout = SideLayout::recall(cx, &self.artifact_id);
         if self.side.chosen.len() < 2 || self.side.chosen.iter().any(|ix| *ix >= count) {
-            self.side.chosen = (0..count.min(MAX_COLUMNS)).collect();
+            let shown = self.side.layout.columns.unwrap_or(MAX_COLUMNS);
+            self.side.chosen = (0..count.min(shown.clamp(2, MAX_COLUMNS))).collect();
         }
         self.reload_side(window, cx);
     }
@@ -133,6 +141,56 @@ impl ArtifactTab {
             return;
         }
         self.reload_side(window, cx);
+    }
+
+    fn save_side_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.side.layout.remember(cx, &self.artifact_id);
+        self.reload_side(window, cx);
+    }
+
+    /// "N up": show N options (keeping the chosen ones first).
+    pub(crate) fn set_side_columns(
+        &mut self,
+        n: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.manifest_options().len();
+        let n = n.clamp(2, MAX_COLUMNS).min(count);
+        let chosen = &mut self.side.chosen;
+        chosen.truncate(n);
+        for ix in 0..count {
+            if chosen.len() >= n {
+                break;
+            }
+            if !chosen.contains(&ix) {
+                chosen.push(ix);
+            }
+        }
+        chosen.sort_unstable();
+        self.side.layout.columns = Some(n);
+        self.save_side_layout(window, cx);
+    }
+
+    /// Make one column wider (the others shrink); again to undo.
+    pub(crate) fn toggle_side_focus(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.manifest_options().get(index).map(|o| o.id.clone()) else {
+            return;
+        };
+        let layout = &mut self.side.layout;
+        layout.focus = (layout.focus.as_deref() != Some(id.as_str())).then_some(id);
+        self.save_side_layout(window, cx);
+    }
+
+    /// Fit each option to its column, or show it at real size.
+    pub(crate) fn set_side_fit(&mut self, fit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.side.layout.fit = fit;
+        self.save_side_layout(window, cx);
     }
 
     /// Fetch the fragments not loaded yet, then build the document.
@@ -203,6 +261,13 @@ impl ArtifactTab {
         let options = self.manifest_options();
         let key = render_key(cx);
         let title = self.document_title(cx);
+        let manifest_width = match &self.body {
+            Some(ArtifactBody::Options(manifest)) => manifest.design_width,
+            _ => None,
+        };
+        let mut widths = Vec::new();
+        let mut weights = Vec::new();
+        let focus = self.side.layout.focus.clone();
         let frames: Vec<(crate::artifacts::document::CompareFrame, String)> = self
             .side
             .chosen
@@ -215,6 +280,16 @@ impl ArtifactTab {
                     .get(&option.path)
                     .cloned()
                     .unwrap_or_default();
+                widths.push(side_layout::design_width(
+                    option.design_width,
+                    manifest_width,
+                    &source,
+                ));
+                weights.push(if focus.as_deref() == Some(option.id.as_str()) {
+                    side_layout::FOCUS_WEIGHT
+                } else {
+                    1.0
+                });
                 let frame = document::compare_frame(
                     WebKind::Fragment,
                     &source,
@@ -235,7 +310,12 @@ impl ArtifactTab {
             .iter()
             .map(|(frame, label)| (frame, label.as_str()))
             .collect();
-        let html = compare::options_document(&panes, &key.0);
+        let layout = compare::OptionsLayout {
+            widths,
+            weights,
+            fit: self.side.layout.fit,
+        };
+        let html = compare::options_document(&panes, &layout, &key.0);
         self.rendered_key = Some(key);
         self.zoom_synced = false;
         if self.web.is_none() {
@@ -452,8 +532,18 @@ impl ArtifactTab {
                 .when(busy, |el| el.opacity(0.5))
                 .child(label)
         };
+        let focus = self.side.layout.focus.clone();
         let columns = self.side.chosen.iter().copied().filter_map(|ix| {
             let option = options.get(ix)?.clone();
+            let focused = focus.as_deref() == Some(option.id.as_str());
+            let widen = text_button(
+                format!("artifact-side-focus-{}", option.id),
+                if focused { "Narrow" } else { "Widen" }.into(),
+                false,
+            )
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.toggle_side_focus(ix, window, cx)),
+            );
             let is_picked = picked
                 .as_ref()
                 .is_some_and(|pick| pick.option_id == option.id);
@@ -465,10 +555,69 @@ impl ArtifactTab {
             } else {
                 text_button(selector, "Pick this".into(), true)
             };
-            Some(div().flex_1().min_w_0().flex().justify_center().child(
-                button.on_click(cx.listener(move |this, _, _, cx| this.pick_option(ix, cx))),
-            ))
+            let share = if focused {
+                side_layout::FOCUS_WEIGHT
+            } else {
+                1.0
+            };
+            Some(
+                div()
+                    .flex_basis(px(0.0))
+                    .flex_grow(share)
+                    .flex_shrink(1.0)
+                    .min_w_0()
+                    .flex()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .child(
+                        button
+                            .on_click(cx.listener(move |this, _, _, cx| this.pick_option(ix, cx))),
+                    )
+                    .child(widen),
+            )
         });
+        let layout = self.side.layout.clone();
+        let shown = self.side.chosen.len();
+        let count_options = options.len();
+        let toggle = |id: String, label: String, on: bool| {
+            let selector = id.clone();
+            div()
+                .id(SharedString::from(id))
+                .debug_selector(move || selector.clone())
+                .px(px(6.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(11.0))
+                .border_1()
+                .border_color(if on { theme.accent } else { theme.border })
+                .text_color(if on { theme.text } else { theme.text_muted })
+                .child(SharedString::from(label))
+        };
+        let layout_controls = div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .children((2..=MAX_COLUMNS.min(count_options)).map(|n| {
+                toggle(
+                    format!("artifact-side-up-{n}"),
+                    format!("{n} up"),
+                    shown == n,
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_side_columns(n, window, cx)),
+                )
+            }))
+            .child(div().w(px(6.0)))
+            .child(
+                toggle("artifact-side-fit".into(), "Fit".into(), layout.fit).on_click(
+                    cx.listener(|this, _, window, cx| this.set_side_fit(true, window, cx)),
+                ),
+            )
+            .child(
+                toggle("artifact-side-real".into(), "100%".into(), !layout.fit).on_click(
+                    cx.listener(|this, _, window, cx| this.set_side_fit(false, window, cx)),
+                ),
+            );
         // More than four options: chips choose which ones are shown.
         let chooser = (options.len() > MAX_COLUMNS).then(|| {
             div()
@@ -554,6 +703,7 @@ impl ArtifactTab {
                                     .child(SharedString::from(Self::pick_label(&pick)))
                             }))
                             .child(div().flex_1())
+                            .child(layout_controls)
                             .children(chooser)
                             .child(
                                 text_button(

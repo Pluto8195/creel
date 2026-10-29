@@ -287,3 +287,24 @@ Code: `crates/proto/src/artifacts/picks.rs`, `ArtifactsService::pick_option`,
   is unverified against the real API, like the rest of the Linear projects/attachments queries.
 - **Not done.** Option picking from inside an HTML frame (needs phase 4's frame ↔ host bridge);
   multi-device picks are last-writer-wins.
+
+## Amendment: side by side renders at design width (2026-10-29)
+
+Code: `crates/ui/src/artifacts/{side_layout.rs, compare.rs (OptionsLayout, OPTIONS_FIT_SCRIPT),
+tab/options_view.rs}`; manifest fields in `crates/proto/src/artifacts.rs`.
+
+- **Design width.** `OptionsManifestEntry.designWidth?` and `OptionsManifest.designWidth?` (px, both
+  optional, additive: old manifests parse unchanged). A fragment can also carry
+  `data-mast-design-width="N"` (first one wins). Precedence: entry, attribute, manifest-wide,
+  default 1100; clamped to 320–4000. Agents are told in `docs/planning-artifact-conventions.md`
+  section 6 and the `artifact_publish` tool description.
+- **Rendering.** Each option's frame is laid out at its design width and scaled to its column with a
+  CSS transform (origin top-left, never above 1×), so text stays sharp and layout does not reflow.
+  The existing in-frame zoom and scroll sync work on top of that.
+- **Layout controls** (toolbar, remembered per artifact in the UI settings file as
+  `artifactSideLayouts`, never on the artifact): "2 / 3 / 4 up", "Widen" on a column (that column
+  gets 2.2× the share of the others; same weights in the native pick row), "Fit" (scale to column)
+  versus "100%" (real size, horizontal scroll per column). Changing any of them rebuilds the
+  document, so the in-frame zoom resets.
+- **Unverified.** The transform scale, ResizeObserver refit and per-column horizontal scroll are
+  only checked as generated HTML in headless tests, not in a real WKWebView.

@@ -229,15 +229,15 @@ fn a_chat_with_nothing_to_flag_has_no_badges_and_a_chat_without_an_item_no_bread
 fn the_old_strip_drift_and_proposal_lines_are_gone_from_the_header(cx: &mut TestAppContext) {
     let (shell, vcx) = mount(cx, CHAT_API, false, |snapshot| {
         needs_attention(snapshot);
-        snapshot
-            .instruction_proposals
-            .push(crate::work_outline::required_actions::fixture::proposal(
+        snapshot.instruction_proposals.push(
+            crate::work_outline::required_actions::fixture::proposal(
                 "p1",
                 "s1",
                 Some(API),
                 CHAT_API,
                 "Prefer small PRs",
-            ));
+            ),
+        );
     });
     for selector in [
         "work-context-strip",
@@ -260,15 +260,15 @@ fn the_old_strip_drift_and_proposal_lines_are_gone_from_the_header(cx: &mut Test
 fn the_item_tab_shows_the_item_sheet(cx: &mut TestAppContext) {
     let (_, vcx) = mount(cx, CHAT_API, true, |snapshot| {
         needs_attention(snapshot);
-        snapshot
-            .instruction_proposals
-            .push(crate::work_outline::required_actions::fixture::proposal(
+        snapshot.instruction_proposals.push(
+            crate::work_outline::required_actions::fixture::proposal(
                 "p1",
                 "s1",
                 Some(API),
                 CHAT_API,
                 "Prefer small PRs",
-            ));
+            ),
+        );
     });
     for selector in [
         "chat-item-tab",
@@ -344,16 +344,17 @@ fn the_item_tab_stays_selected_over_other_tabs_until_one_is_picked(cx: &mut Test
     let (shell, vcx) = mount(cx, CHAT_API, false, |_| {});
     shell.update(vcx, |shell, cx| {
         shell.open_item_tab(cx);
-        shell.right_tabs.insert(
-            shell.panel_key(cx),
-            vec![RightSurface::Subagent(7)],
-        );
+        shell
+            .right_tabs
+            .insert(shell.panel_key(cx), vec![RightSurface::Subagent(7)]);
         cx.notify();
     });
     shell.read_with(vcx, |shell, cx| {
         assert_eq!(shell.resolved_right_active(cx), RightSurface::Item)
     });
-    shell.update(vcx, |shell, cx| shell.set_right_active(RightSurface::Picker, cx));
+    shell.update(vcx, |shell, cx| {
+        shell.set_right_active(RightSurface::Picker, cx)
+    });
     shell.read_with(vcx, |shell, cx| {
         assert_ne!(shell.resolved_right_active(cx), RightSurface::Item)
     });
@@ -370,7 +371,11 @@ fn hover_header(vcx: &mut VisualTestContext) {
 }
 
 fn leave(vcx: &mut VisualTestContext) {
-    vcx.simulate_mouse_move(gpui::point(px(890.0), px(590.0)), None, gpui::Modifiers::default());
+    vcx.simulate_mouse_move(
+        gpui::point(px(890.0), px(590.0)),
+        None,
+        gpui::Modifiers::default(),
+    );
     draw(vcx);
 }
 
@@ -448,7 +453,10 @@ fn the_card_never_takes_the_keyboard_from_the_composer(cx: &mut TestAppContext) 
     wait(vcx, 500);
     assert!(has(vcx, "chat-item-card"));
     assert!(focused(vcx), "showing the card keeps focus");
-    let at = vcx.debug_bounds("chat-item-card-instructions").unwrap().center();
+    let at = vcx
+        .debug_bounds("chat-item-card-instructions")
+        .unwrap()
+        .center();
     vcx.simulate_click(at, gpui::Modifiers::default());
     draw(vcx);
     assert!(focused(vcx), "clicking inside the card keeps focus");
@@ -499,7 +507,10 @@ fn the_keys_are_registered_and_listed_in_the_reference(_cx: &mut TestAppContext)
         .iter()
         .map(|row| (row.label, row.keys.clone().unwrap_or_default()))
         .collect();
-    assert!(keys.contains(&("Open the Item tab", "\u{2325}\u{2318};".to_owned())), "{keys:?}");
+    assert!(
+        keys.contains(&("Open the Item tab", "\u{2325}\u{2318};".to_owned())),
+        "{keys:?}"
+    );
     assert!(
         keys.contains(&(
             "Pin or release the context card",
@@ -543,14 +554,18 @@ fn the_item_tab_lists_identifiers_with_copy_for_chats_with_and_without_an_item(
         vcx.simulate_click(at, gpui::Modifiers::default());
         draw(vcx);
         assert_eq!(
-            vcx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+            vcx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
             Some(chat_id)
         );
         let at = vcx.debug_bounds("chat-item-id-session").unwrap().center();
         vcx.simulate_click(at, gpui::Modifiers::default());
         draw(vcx);
         assert_eq!(
-            vcx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+            vcx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
             Some("sess-123")
         );
         shell.read_with(vcx, |shell, _| {
@@ -625,9 +640,7 @@ mod web_references {
     }
 
     #[gpui::test]
-    fn the_header_pr_chip_opens_a_side_tab_and_focuses_it_the_second_time(
-        cx: &mut TestAppContext,
-    ) {
+    fn the_header_pr_chip_opens_a_side_tab_and_focuses_it_the_second_time(cx: &mut TestAppContext) {
         let (shell, vcx) = mount(cx, CHAT_API, false, |_| {});
         select(&shell, vcx, CHAT_API, Route::Chat);
         click(vcx, "chat-header-chip-pr-0", Modifiers::default());
@@ -705,7 +718,10 @@ mod web_references {
         shell.read_with(vcx, |shell, cx| {
             assert!(matches!(shell.route, Route::Chat));
             assert_eq!(shell.active_chat, CHAT_API);
-            assert!(shell.right_pane_open(cx), "the browser sits beside the chat");
+            assert!(
+                shell.right_pane_open(cx),
+                "the browser sits beside the chat"
+            );
         });
         assert_eq!(tabs(&shell, vcx), [PR_7]);
         assert!(vcx.opened_url().is_none());
@@ -719,13 +735,18 @@ mod web_references {
         // Nothing to host a tab: the external browser.
         shell.update(vcx, |shell, cx| {
             shell.route = Route::Overview;
-            shell.state.update(cx, |state, cx| state.select_chat(None, cx));
+            shell
+                .state
+                .update(cx, |state, cx| state.select_chat(None, cx));
         });
         vcx.run_until_parked();
         open(&shell, vcx, PR_99, false);
         assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
         assert!(tabs(&shell, vcx).is_empty());
-        assert!(matches!(shell.read_with(vcx, |s, _| s.route), Route::Overview));
+        assert!(matches!(
+            shell.read_with(vcx, |s, _| s.route),
+            Route::Overview
+        ));
         // The Overview previews CHAT_UI: the tab opens beside it.
         select(&shell, vcx, CHAT_UI, Route::Overview);
         open(&shell, vcx, PR_99, false);
@@ -785,7 +806,10 @@ fn header_chips_carry_icons_and_the_title_stacks_under_the_breadcrumb(cx: &mut T
     }
     let crumb = vcx.debug_bounds("chat-header-breadcrumb").unwrap();
     let title = vcx.debug_bounds("chat-header-title").unwrap();
-    assert!(title.top() >= crumb.bottom(), "title sits under the breadcrumb");
+    assert!(
+        title.top() >= crumb.bottom(),
+        "title sits under the breadcrumb"
+    );
 }
 
 #[gpui::test]
@@ -810,8 +834,14 @@ fn item_tab_sections_lead_with_icons(cx: &mut TestAppContext) {
 fn chip_tones_use_theme_tokens(_cx: &mut TestAppContext) {
     use super::chat_item_ui::{ChipTone, chip_palette};
     let theme = Theme::default();
-    assert_eq!(chip_palette(&theme, ChipTone::Warn), (theme.warning, theme.warning));
-    assert_eq!(chip_palette(&theme, ChipTone::Link), (theme.accent, theme.text));
+    assert_eq!(
+        chip_palette(&theme, ChipTone::Warn),
+        (theme.warning, theme.warning)
+    );
+    assert_eq!(
+        chip_palette(&theme, ChipTone::Link),
+        (theme.accent, theme.text)
+    );
     assert_eq!(chip_palette(&theme, ChipTone::Dim).1, theme.text_muted);
 }
 
@@ -822,7 +852,9 @@ fn the_item_tab_keeps_rows_tight_and_actions_together(cx: &mut TestAppContext) {
     let pr = vcx.debug_bounds("chat-item-pr-0").unwrap();
     assert!(pr.size.height < px(24.0), "{:?}", pr.size);
     // Compare and Apply sit side by side.
-    let compare = vcx.debug_bounds("chat-header-instructions-compare").unwrap();
+    let compare = vcx
+        .debug_bounds("chat-header-instructions-compare")
+        .unwrap();
     let apply = vcx.debug_bounds("chat-header-instructions-apply");
     if let Some(apply) = apply {
         assert_eq!(compare.top(), apply.top());
@@ -836,7 +868,9 @@ fn child_rows_are_tight_single_lines(cx: &mut TestAppContext) {
     let (_, vcx) = mount(cx, CHAT_API, true, |_| {});
     assert!(has(vcx, "chat-item-children"));
     let row = vcx
-        .debug_bounds(Box::leak(format!("chat-item-child-{API_AUTH}").into_boxed_str()))
+        .debug_bounds(Box::leak(
+            format!("chat-item-child-{API_AUTH}").into_boxed_str(),
+        ))
         .expect("the child row");
     assert!(row.size.height < px(24.0), "{:?}", row.size);
 }

@@ -8,7 +8,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindowOrderingMode,
+    NSApplication, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView,
+    NSWindowOrderingMode,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
@@ -1205,7 +1206,10 @@ mod forwarded_key_tests {
         // Cmd combos, fixed browser keys and app shortcuts are always the app's.
         assert_eq!(route("cmd-=", &[], &extra), KeyRoute::App);
         assert_eq!(route("cmd-f", &[], &extra), KeyRoute::App);
-        assert_eq!(route("cmd-shift-p", &["cmd-shift-p"], &extra), KeyRoute::App);
+        assert_eq!(
+            route("cmd-shift-p", &["cmd-shift-p"], &extra),
+            KeyRoute::App
+        );
         // Anything unlisted stays with the page.
         assert_eq!(route("escape", &[], &[]), KeyRoute::Page);
         assert_eq!(route("up", &[], &extra), KeyRoute::Page);
