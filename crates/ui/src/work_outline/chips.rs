@@ -214,3 +214,19 @@ mod tests {
         assert_ne!(color, critical);
     }
 }
+
+/// The "Template changed (rev N → M)" chip of a project whose template moved
+/// on, on its Outline row and in its Details Project section.
+pub(crate) fn template_chip(selector: String, from: u32, to: u32, theme: &Theme) -> gpui::Div {
+    div()
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.border)
+        .text_size(crate::typography::ui_rems(9.5))
+        .text_color(theme.accent)
+        .child(SharedString::from(super::template_review::chip_text(from, to)))
+}

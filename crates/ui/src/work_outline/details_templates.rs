@@ -33,6 +33,8 @@ pub(crate) struct TemplatesDetailsState {
     pub prompt: Option<SavePrompt>,
     /// The failure the prompt shows (it stays open to retry).
     pub error: Option<String>,
+    /// The open "Review changes…" list (`details_template_review.rs`).
+    pub review: Option<super::template_review_section::ReviewState>,
 }
 
 impl WorkItemDetails {

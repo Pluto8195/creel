@@ -61,6 +61,9 @@ mod pr_sync_section;
 #[path = "details_templates.rs"]
 mod templates_section;
 
+#[path = "details_template_review.rs"]
+mod template_review_section;
+
 #[path = "details_artifacts.rs"]
 pub(crate) mod artifacts_section;
 pub(crate) use user_actions_section::ProposalReview;
@@ -775,6 +778,9 @@ impl WorkItemDetails {
                         "Chats inside a project can create and read items anywhere in it.",
                     ),
             );
+        }
+        for element in self.render_template_review(item, theme, cx) {
+            section = section.child(element);
         }
         for element in self.render_save_template(item, theme, cx) {
             section = section.child(element);

@@ -3627,6 +3627,15 @@ fn item_body(
             ))
         })
         .children(proposals)
+        .when_some(item.template_changed.filter(|_| !item.archived), |el, (from, to)| {
+            let tip: SharedString =
+                "The template this project came from changed. Open details to review".into();
+            el.child(
+                chips::template_chip(format!("outline-template-changed-{key}"), from, to, theme)
+                    .id(SharedString::from(format!("outline-template-changed-{key}")))
+                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
+            )
+        })
         .when(
             item.chat_count > 0 && !compact_pr && item.compact_chat.is_none(),
             |el| {
