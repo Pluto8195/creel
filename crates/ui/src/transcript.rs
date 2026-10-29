@@ -14018,3 +14018,7 @@ impl Transcript {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+#[path = "perf/transcript_bench.rs"]
+mod perf_bench;

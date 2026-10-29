@@ -9558,3 +9558,7 @@ index 1111111..2222222 160000
         });
     }
 }
+
+#[cfg(test)]
+#[path = "perf/diff_bench.rs"]
+mod perf_bench;

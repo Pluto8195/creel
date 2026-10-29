@@ -191,9 +191,9 @@ pub(crate) mod fixture_ids {
     pub(crate) const CHAT_ORPHAN: &str = "chat-orphan";
 }
 
-const FIXTURE_NOW: i64 = 1_760_000_000_000;
+pub(crate) const FIXTURE_NOW: i64 = 1_760_000_000_000;
 
-fn fixture_actor() -> WorkOutlineActor {
+pub(crate) fn fixture_actor() -> WorkOutlineActor {
     WorkOutlineActor {
         kind: WorkOutlineActorKind::User,
         device_id: "device-fixture".into(),
@@ -202,7 +202,7 @@ fn fixture_actor() -> WorkOutlineActor {
     }
 }
 
-fn fixture_item(
+pub(crate) fn fixture_item(
     id: &str,
     space_id: &str,
     parent: Option<&str>,
@@ -284,7 +284,7 @@ fn finish_fixture(items: &mut [WorkItemView]) {
     }
 }
 
-fn fixture_assignment(
+pub(crate) fn fixture_assignment(
     chat_id: &str,
     space_id: &str,
     work_item_id: Option<&str>,

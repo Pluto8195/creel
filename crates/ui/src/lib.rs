@@ -67,6 +67,11 @@ pub mod rail;
 mod review_chats;
 pub mod settings;
 pub mod shell;
+#[cfg(test)]
+mod perf;
+#[cfg(test)]
+#[global_allocator]
+static COUNTING_ALLOC: perf::CountingAlloc = perf::CountingAlloc;
 pub mod sound;
 pub mod state;
 pub mod status_light;
