@@ -453,6 +453,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   per managed account, context-usage reader for managed homes, MCP/plugin sharing, Start Chat
   account chip, promoting old slots, API-key accounts. Needs Mikey's hand check: real sign-in and
   two accounts running at once.
+  Sign-in and saved accounts (2026-10-29, `accounts-signin-and-saved`): `claude auth login` /
+  `codex login` run on a PTY; the Add account sheet shows the URL (Open/Copy), any device code, and a
+  "Paste the code" field (`SubmitManagedAccountLoginCode`; code goes to stdin only, never stored or
+  logged), progress and Cancel. Saved Settings logins appear in the project picker and are promoted
+  (`PromoteSavedAccount`) into a new managed home from Mast's own slot file: the live Default login is
+  refused (use Add account); a promoted slot is moved (leaves the global switcher, Mast stops
+  refreshing it) so two homes never share a rotating refresh token.
 - **Internal rename zeron → mast** (2026-10-28, `rename-zeron-to-mast`): crates are `mast-*` (`mast-ui`,
   `mast-engine`, `mast-harness`, `mast-mcp`, `mast-proto`, …), the app package is `mast` (`apps/mast`)
   but the binary is still `zeron`, so the install command is `cargo build --profile installed -p mast`
@@ -490,6 +497,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
     (timing on the 2s question reconcile), `m5c_accounts_uploads_titles::cursor_login_flow_spawns_shim_and_auto_activates`.
   - Engine integration, flaky under full load (pass alone): `codex_login_resolver::codex_login_resolves_override_and_adds_its_directory_to_child_path`.
   - Engine integration, flaky under full load (pass alone): `instruction_delivery` revision-wait tests.
+  - Flaky under full load with several child chats building (pass alone): `external_import_links_repair::repair_*`,
+    `workspace_files::workspace_file_rpcs_list_search_read_write_and_watch`, harness `executable::tests::version_probe_bounds_hangs_and_rejects_nonzero`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
