@@ -460,6 +460,13 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   (`PromoteSavedAccount`) into a new managed home from Mast's own slot file: the live Default login is
   refused (use Add account); a promoted slot is moved (leaves the global switcher, Mast stops
   refreshing it) so two homes never share a rotating refresh token.
+  Round 2 (2026-10-29, `accounts-round-2`): usage windows per managed account (same usage endpoints
+  with the home's own token; never refreshes; 60 s shared cache) shown in Settings → Project
+  accounts; context usage reads the pinned home (`CLAUDE_CONFIG_DIR/projects`, `CODEX_HOME/sessions`);
+  Start Chat account chip with a one-chat override (hidden when the device has no managed account).
+  Web-view ⌥↑/⌥↓ and Esc-with-find-bar no longer forwarded from page text fields. Open decision for
+  Mikey: MCP server sharing needs reading the MCP section of `~/.claude.json` (holds identity data,
+  never read today); plugins would need a copy-based share (symlink writes through to ~/.claude).
 - **Internal rename zeron → mast** (2026-10-28, `rename-zeron-to-mast`): crates are `mast-*` (`mast-ui`,
   `mast-engine`, `mast-harness`, `mast-mcp`, `mast-proto`, …), the app package is `mast` (`apps/mast`)
   but the binary is still `zeron`, so the install command is `cargo build --profile installed -p mast`
