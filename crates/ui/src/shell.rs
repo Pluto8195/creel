@@ -310,6 +310,10 @@ pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + TITLEBAR_GROUP_GAP + TITLEBA
 /// Extra width consumed when the collapsed-sidebar New Session action joins
 /// the left controls as its own group.
 pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = TITLEBAR_GROUP_GAP + 24.0;
+/// The `+` and running-chats lamp slots that follow the cluster buttons. Both
+/// are always reserved (the `+` slot stays empty off the chat route) so the
+/// lamp never moves and no title sits under either.
+pub const TITLEBAR_TRAILING_SLOTS_WIDTH: f32 = TITLEBAR_ACTION_SLOT_WIDTH * 2.0;
 /// Horizontal inset owned by the titlebar control row itself. Keep this value
 /// paired with [`Self::titlebar_spacer`]: using a different number for the
 /// spacer shifts every control while leaving the declared cluster geometry
@@ -347,7 +351,10 @@ pub fn cluster_clearance(
     linux_left_captions: usize,
     container_pad: f32,
 ) -> f32 {
-    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions) + CLUSTER_BUTTONS_WIDTH + 8.0
+    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions)
+        + CLUSTER_BUTTONS_WIDTH
+        + TITLEBAR_TRAILING_SLOTS_WIDTH
+        + 8.0
         - container_pad)
         .max(0.0)
 }
@@ -6258,7 +6265,7 @@ impl Shell {
             self.titlebar_tween,
             cluster_buttons_start(is_macos, fullscreen, self.linux_left_caption_count()),
         );
-        cluster + CLUSTER_BUTTONS_WIDTH + TITLEBAR_IDENTITY_GAP
+        cluster + CLUSTER_BUTTONS_WIDTH + TITLEBAR_TRAILING_SLOTS_WIDTH + TITLEBAR_IDENTITY_GAP
     }
 
     /// The unified window titlebar: chat → the session tab strip; settings →
@@ -6290,6 +6297,7 @@ impl Shell {
                     .pr(px(self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET)))
                     .child(
                         div()
+                            .debug_selector(|| "titlebar-title".into())
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from("Overview")),
@@ -6309,6 +6317,7 @@ impl Shell {
                     .pr(px(self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET)))
                     .child(
                         div()
+                            .debug_selector(|| "titlebar-title".into())
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from("Pull requests")),
@@ -6482,18 +6491,20 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
                     )),
             )
-            .children(show_plus.then(|| {
+            .child(
                 div()
                     .flex_none()
                     .ml(px(TITLEBAR_GROUP_GAP))
-                    .opacity(plus_alpha)
-                    .child(window_control_button(
-                        "titlebar-new-session",
-                        icons::PLUS,
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
-                    ))
-            }))
+                    .w(px(24.0))
+                    .children(show_plus.then(|| {
+                        div().opacity(plus_alpha).child(window_control_button(
+                            "titlebar-new-session",
+                            icons::PLUS,
+                            &theme,
+                            cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                        ))
+                    })),
+            )
             .child(self.render_running_lamp(&theme, cx))
             .into_any_element()
     }
@@ -13322,19 +13333,19 @@ mod tests {
     fn cluster_clearance_clears_the_overlay_buttons() {
         // Linux: buttons at 10..92; a 16px-padded header needs 84 more px to
         // put content at 92 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 84.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 90.0);
+        assert_eq!(cluster_clearance(false, false, 0, 16.0), 84.0 + 64.0);
+        assert_eq!(cluster_clearance(false, false, 0, 10.0), 90.0 + 64.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 84.0 + 26.0);
+        assert_eq!(cluster_clearance(false, false, 1, 16.0), 84.0 + 64.0 + 26.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
             cluster_clearance(true, false, 0, 16.0),
-            88.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
+            88.0 + CLUSTER_BUTTONS_WIDTH + TITLEBAR_TRAILING_SLOTS_WIDTH + 8.0 - 16.0
         );
         // macOS fullscreen: cluster reclaims the inset (starts at 12).
         assert_eq!(
             cluster_clearance(true, true, 0, 16.0),
-            12.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
+            12.0 + CLUSTER_BUTTONS_WIDTH + TITLEBAR_TRAILING_SLOTS_WIDTH + 8.0 - 16.0
         );
     }
 
@@ -15529,5 +15540,139 @@ impl Shell {
     pub fn fixture_appshots_transcript_start(&self, cx: &mut Context<Self>) {
         self.transcript
             .update(cx, |t, cx| t.fixture_appshots_start(cx));
+    }
+}
+
+#[cfg(test)]
+mod titlebar_lamp_layout {
+    use super::*;
+    use gpui::{AppContext, TestAppContext, VisualTestContext};
+
+    struct BarHost {
+        shell: Entity<Shell>,
+        width: f32,
+        _data_dir: tempfile::TempDir,
+    }
+
+    impl Render for BarHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let width = self.width;
+            self.shell.update(cx, |shell, cx| {
+                div()
+                    .relative()
+                    .w(px(width))
+                    .h(px(Theme::TITLEBAR_HEIGHT))
+                    .child(shell.render_title_bar(px(800.0), cx))
+                    .child(shell.render_titlebar_cluster(cx))
+            })
+        }
+    }
+
+    fn setup(
+        cx: &mut TestAppContext,
+        route: Route,
+        width: f32,
+        sidebar_collapsed: bool,
+    ) -> &mut VisualTestContext {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let (_host, cx) = cx.add_window_view(|_, cx| {
+            let shell = cx.new(|cx| {
+                let state = cx.new(|_| AppState::new());
+                let mut shell = Shell::new(
+                    state,
+                    EngineBootConfig {
+                        data_dir: dir.path().into(),
+                        ipc_port: 0,
+                        edge_url: "http://127.0.0.1:1".into(),
+                        edge_token: None,
+                        org_id: None,
+                        workos_client_id: None,
+                        default_harness: mast_proto::HarnessId::Mock,
+                    },
+                    cx,
+                );
+                shell.viewport_width = width;
+                shell.settings.sidebar_collapsed = sidebar_collapsed;
+                if matches!(route, Route::Chat) {
+                    shell.active_chat = "long".into();
+                    shell.state.update(cx, |state, _| {
+                        state.local_device_id = Some("here".into());
+                        state.selected_chat = Some("long".into());
+                        state.chats.push(mast_proto::Chat {
+                            id: "long".into(),
+                            device_id: "here".into(),
+                            title: Some("A very long chat title ".repeat(8)),
+                            archived: false,
+                            cwd: None,
+                            branch: None,
+                            checkout_id: None,
+                            source_context: None,
+                            config: None,
+                            last_message_preview: None,
+                            last_message_at: None,
+                            created_at: Utc::now(),
+                            harness_session_id: None,
+                            harness_session_cwd: None,
+                            actual_model: None,
+                            parent_chat_id: None,
+                            space_id: None,
+                            last_seen_at: None,
+                            room_gen: None,
+                            linked_pr_url: None,
+                            linked_pr_source: None,
+                            linked_ticket_id: None,
+                            linked_ticket_source: None,
+                        });
+                    });
+                }
+                shell.route = route;
+                shell
+            });
+            BarHost {
+                shell,
+                width,
+                _data_dir: dir,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx
+    }
+
+    #[gpui::test]
+    fn lamp_never_overlaps_the_title(cx: &mut TestAppContext) {
+        // Default window width and the window minimum (900, `window_min_size`), sidebar collapsed (cluster over the title) and open.
+        for (name, route) in [
+            ("overview", Route::Overview),
+            ("chat", Route::Chat),
+            ("pull requests", Route::PrReviewChats),
+        ] {
+            for width in [1280.0_f32, 900.0] {
+                for collapsed in [true, false] {
+                    let cx = setup(cx, route, width, collapsed);
+                    let lamp = cx.debug_bounds("running-lamp").expect("lamp rendered");
+                    let title = cx.debug_bounds("titlebar-title").expect("title rendered");
+                    assert!(
+                        !lamp.intersects(&title) && title.left() >= lamp.right(),
+                        "{name} @ {width}px collapsed={collapsed}: lamp {lamp:?} vs title {title:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn lamp_position_is_stable_across_routes(cx: &mut TestAppContext) {
+        let overview = setup(cx, Route::Overview, 1280.0, true)
+            .debug_bounds("running-lamp")
+            .unwrap();
+        let chat = setup(cx, Route::Chat, 1280.0, true)
+            .debug_bounds("running-lamp")
+            .unwrap();
+        assert_eq!(overview.origin, chat.origin);
     }
 }
