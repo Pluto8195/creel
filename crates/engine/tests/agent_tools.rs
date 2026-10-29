@@ -2286,3 +2286,88 @@ async fn create_chat_for_a_project_starts_in_its_destination() {
         assert!(error.contains("unauthorized"), "{key}: {error}");
     }
 }
+
+// ---- project templates ---------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_project_template_freezes_the_subtree_and_agents_cannot() {
+    let rig = rig().await;
+    let p = project_rig(&rig).await;
+    add_instruction(&rig, "tpl-i1", json!({"type":"workItem","workItemId": p.project}), "Be careful").await;
+    add_instruction(&rig, "tpl-i2", json!({"type":"workItem","workItemId": p.planning}), "Write a plan").await;
+    add_instruction(&rig, "tpl-i3", json!({"type":"workItem","workItemId": p.ticket}), "ticket only").await;
+    let reply = rig
+        .client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "saveWorkItemTemplate", "spaceId": SPACE,
+                    "projectWorkItemId": p.project, "name": "Standard", "operationId": "tpl-save" }),
+        )
+        .await
+        .unwrap();
+    let template_id = derive_id("tpl-save", roles::TEMPLATE);
+    assert_eq!(reply["templateId"], json!(template_id));
+
+    let snap = snapshot(&rig);
+    assert_eq!(snap.templates.len(), 1);
+    let template = &snap.templates[0];
+    assert_eq!((template.name.as_str(), template.revision), ("Standard", 1));
+    let body = &template.body;
+    assert!(body.is_project);
+    assert_eq!(body.instructions, vec!["Be careful"]);
+    let titles: Vec<&str> = body.children.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["Planning", "Tickets"]);
+    assert_eq!(body.children[0].instructions, vec!["Write a plan"]);
+    assert!(body.children[1].is_worker_destination);
+    assert!(body.children[1].children.is_empty(), "tickets are dropped");
+    let item = snap.item(&p.project).unwrap();
+    assert_eq!(item.template_id.as_deref(), Some(template_id.as_str()));
+    assert_eq!(item.template_revision, Some(1));
+
+    // A retry with the same key replays; a re-save bumps the revision.
+    let replay = rig
+        .client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "saveWorkItemTemplate", "spaceId": SPACE,
+                    "projectWorkItemId": p.project, "name": "Standard", "operationId": "tpl-save" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay["templateId"], json!(template_id));
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "saveWorkItemTemplate", "spaceId": SPACE, "projectWorkItemId": p.project,
+                    "name": "Standard", "templateId": template_id, "operationId": "tpl-resave" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&rig).templates[0].revision, 2);
+
+    // The WORK_OUTLINE_MUTATE path reports a duplicate name as invalid.
+    let duplicate = rig
+        .client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "saveWorkItemTemplate", "spaceId": SPACE, "projectWorkItemId": p.other,
+                    "name": "standard", "operationId": "tpl-dup" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(duplicate.contains("invalid"), "{duplicate}");
+
+    // Deleting tombstones it; the project keeps its link.
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "deleteWorkItemTemplate", "templateId": template_id,
+                    "operationId": "tpl-del" }),
+        )
+        .await
+        .unwrap();
+    let snap = snapshot(&rig);
+    assert!(snap.templates.is_empty());
+    assert_eq!(snap.item(&p.project).unwrap().template_id.as_deref(), Some(template_id.as_str()));
+}
