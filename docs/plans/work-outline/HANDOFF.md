@@ -538,6 +538,17 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   create into its sibling Tickets container but nothing outside the project. Gap: a bare `create_chat`
   without `workItemId` still inherits the caller's item and nests under the caller. Increment 2
   (templates, change review, Convert to project wizard) in progress on `project-templates-2`.
+- **Running-chats popover** (2026-10-29, `running-chats-popover`; design A revised
+  mast-artifact:f5bdd9f1c79754065ba039d4e8b0d62f): titlebar lamp button (next to +) or ⌥⌘R opens a
+  popover: Needs you first, then by Space, children under coordinators; rows show title, last message
+  preview, elapsed, item path, account, model. Keys ↑↓, ↩ open, ⌘↩ open in Overview side pane, I
+  interrupt, →/← fold, Esc. Pending build: the launch executable's inode/mtime/length is re-checked
+  against the installed bundle every 5 s; a newer one rings the lamp and shows "New build installed ·
+  N changes" (sha embedded by `apps/mast/build.rs`, so the list starts from the next install) with
+  Restart when idle / Restart now… / Restart. No restart UI without a newer build. Interrupted ledger
+  in the engine (list/dismiss/resume RPCs): "Restarted HH:MM · N interrupted" with Resume, Dismiss,
+  Resume all. "Idle + background process" is rendered but the engine doesn't track background
+  processes yet.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
