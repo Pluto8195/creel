@@ -284,6 +284,8 @@ struct Inner {
     flows: Mutex<HashMap<String, LoginFlow>>,
     /// `"{harness}:{accountKey}"` → cached usage windows.
     usage_cache: Mutex<HashMap<String, CachedUsage>>,
+    /// Usage endpoints; tests point these at a local fake.
+    usage_urls: Mutex<(String, String)>,
     /// Slots with a token refresh in flight — a second refresh of the same
     /// (commonly single-use) refresh token would revoke the family.
     inflight_refreshes: Mutex<std::collections::HashSet<String>>,
@@ -325,10 +327,16 @@ impl AgentAccounts {
                 http,
                 flows: Mutex::new(HashMap::new()),
                 usage_cache: Mutex::new(HashMap::new()),
+                usage_urls: Mutex::new((CLAUDE_USAGE_URL.to_string(), CODEX_USAGE_URL.to_string())),
                 inflight_refreshes: Mutex::new(std::collections::HashSet::new()),
                 last_active: Mutex::new(None),
             }),
         }
+    }
+
+    /// Point the Claude and Codex usage probes at other endpoints (fakes).
+    pub fn set_usage_urls(&self, claude: &str, codex: &str) {
+        *lock(&self.inner.usage_urls) = (claude.to_string(), codex.to_string());
     }
 
     // ── list ────────────────────────────────────────────────────────────────
@@ -1449,12 +1457,49 @@ impl AgentAccounts {
         }
         let usage = match harness {
             HarnessId::ClaudeCode => self.claude_usage(slot, is_active).await,
-            HarnessId::Codex => self.codex_usage(slot).await,
+            HarnessId::Codex => self.codex_usage(&slot.credentials).await,
             HarnessId::Cursor => self.cursor_usage(slot).await,
             _ => None,
         };
         lock(&self.inner.usage_cache).insert(key, (usage.clone(), Instant::now()));
         usage
+    }
+
+    /// Usage windows for a managed (project) account, probed with the token
+    /// in its own home. Same endpoints and cache as the global slots, but the
+    /// token is never refreshed: the CLI is the only writer of a managed home,
+    /// and a second refresh would burn its single-use refresh token. A
+    /// rejected token just means "unavailable" until the CLI refreshes it.
+    /// Non-forced calls answer from the cache only (no network).
+    pub async fn managed_usage(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+        credentials: &serde_json::Value,
+        force: bool,
+    ) -> Option<(Vec<AgentUsageWindow>, Option<String>)> {
+        let key = format!("managed:{}:{account_id}", harness_slug(harness));
+        if let Some((usage, at)) = lock(&self.inner.usage_cache).get(&key)
+            && (at.elapsed() < USAGE_TTL || !force)
+        {
+            return usage.clone().map(|u| (u.windows, u.plan_label));
+        }
+        if !force {
+            return None;
+        }
+        let usage = match harness {
+            HarnessId::ClaudeCode => {
+                let oauth = credentials.get("claudeAiOauth");
+                match oauth.and_then(|o| str_field(o, "accessToken")) {
+                    Some(token) => self.claude_usage_request(&token).await.ok().flatten(),
+                    None => None,
+                }
+            }
+            HarnessId::Codex => self.codex_usage(credentials).await,
+            _ => None,
+        };
+        lock(&self.inner.usage_cache).insert(key, (usage.clone(), Instant::now()));
+        usage.map(|u| (u.windows, u.plan_label))
     }
 
     async fn claude_usage(&self, slot: &Slot, is_active: bool) -> Option<UsageSnapshot> {
@@ -1478,10 +1523,11 @@ impl AgentAccounts {
     /// One usage probe: GET the endpoint and parse windows. `Err` means the
     /// token was rejected (401/403) — the only case worth a refresh.
     async fn claude_usage_request(&self, access_token: &str) -> Result<Option<UsageSnapshot>, ()> {
+        let url = lock(&self.inner.usage_urls).0.clone();
         let response = self
             .inner
             .http
-            .get(CLAUDE_USAGE_URL)
+            .get(url)
             .bearer_auth(access_token)
             .header("anthropic-beta", "oauth-2025-04-20")
             .send()
@@ -1501,14 +1547,15 @@ impl AgentAccounts {
         Ok(claude_usage_windows(&body))
     }
 
-    async fn codex_usage(&self, slot: &Slot) -> Option<UsageSnapshot> {
-        let tokens = slot.credentials.get("tokens")?;
+    async fn codex_usage(&self, credentials: &serde_json::Value) -> Option<UsageSnapshot> {
+        let tokens = credentials.get("tokens")?;
         // api-key mode has no ChatGPT rate windows.
         let access_token = str_field(tokens, "access_token")?;
+        let url = lock(&self.inner.usage_urls).1.clone();
         let body: serde_json::Value = self
             .inner
             .http
-            .get(CODEX_USAGE_URL)
+            .get(url)
             .bearer_auth(&access_token)
             .header(
                 "chatgpt-account-id",

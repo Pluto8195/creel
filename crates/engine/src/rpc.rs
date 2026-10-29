@@ -996,9 +996,28 @@ impl EngineRpc {
     }
 
     /// The managed snapshot plus the saved logins the picker may promote.
-    fn managed_snapshot(&self) -> Result<mast_proto::ManagedAccountsSnapshot, RpcError> {
-        let mut snapshot = self.managed()?.snapshot();
+    async fn managed_snapshot(
+        &self,
+        force_usage: bool,
+    ) -> Result<mast_proto::ManagedAccountsSnapshot, RpcError> {
+        let managed = self.managed()?;
+        let mut snapshot = managed.snapshot();
         snapshot.saved = self.agent_accounts.saved_options();
+        // Usage per managed account: probed with the account's own token
+        // (never refreshed); cache-only unless the caller forces it.
+        for account in snapshot.accounts.iter_mut().filter(|a| a.signed_in) {
+            let Some((harness, credentials)) = managed.credentials_of(&account.id) else {
+                continue;
+            };
+            if let Some((windows, plan)) = self
+                .agent_accounts
+                .managed_usage(harness, &account.id, &credentials, force_usage)
+                .await
+            {
+                account.usage_windows = windows;
+                account.plan_label = plan;
+            }
+        }
         Ok(snapshot)
     }
 
@@ -4784,7 +4803,10 @@ impl RpcService for EngineRpc {
                 self.agent_accounts.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
-            methods::LIST_MANAGED_ACCOUNTS => RpcReply::value(&self.managed_snapshot()?),
+            methods::LIST_MANAGED_ACCOUNTS => {
+                let p: ListAgentAccountsParams = parse_params(params)?;
+                RpcReply::value(&self.managed_snapshot(p.force_usage.unwrap_or(false)).await?)
+            }
             methods::CREATE_MANAGED_ACCOUNT => {
                 let p: CreateManagedAccountParams = parse_params(params)?;
                 let account = self
@@ -4799,7 +4821,7 @@ impl RpcService for EngineRpc {
                 accounts
                     .remove(&p.account_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&self.managed_snapshot()?)
+                RpcReply::value(&self.managed_snapshot(false).await?)
             }
             methods::START_MANAGED_ACCOUNT_LOGIN => {
                 let p: ManagedAccountIdParams = parse_params(params)?;
@@ -4853,7 +4875,7 @@ impl RpcService for EngineRpc {
                         .set_project_account(space_id, p.harness, Some(&account.id))
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
-                RpcReply::value(&self.managed_snapshot()?)
+                RpcReply::value(&self.managed_snapshot(false).await?)
             }
             methods::SET_PROJECT_ACCOUNT => {
                 let p: SetProjectAccountParams = parse_params(params)?;
@@ -4861,7 +4883,7 @@ impl RpcService for EngineRpc {
                 accounts
                     .set_project_account(&p.space_id, p.harness, p.account_id.as_deref())
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&self.managed_snapshot()?)
+                RpcReply::value(&self.managed_snapshot(false).await?)
             }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;

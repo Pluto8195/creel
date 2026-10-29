@@ -1539,6 +1539,7 @@ impl AgentToolsService {
             operation_id,
             parent_chat_id: Some(context.grant.chat_id.clone()),
             target_device_id: None,
+            account_id: None,
         })
     }
 }

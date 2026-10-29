@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindowOrderingMode,
+    NSApplication, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindowOrderingMode,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
@@ -396,6 +396,10 @@ impl NativePage {
         let monitor_extra_keys = extra_keys.clone();
         let monitor_parent = parent.clone();
         let monitor_clip = clip.clone();
+        // Timestamp of a key re-posted to the page after the probe found a
+        // text field, so the monitor lets it through untouched.
+        let replayed = Rc::new(Cell::new(f64::NAN));
+        let monitor_replayed = replayed.clone();
         let callback = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| {
             let e = unsafe { event.as_ref() };
             if monitor_view.isHidden()
@@ -439,12 +443,52 @@ impl NativePage {
             let Ok(keystroke) = gpui::Keystroke::parse(&combo) else {
                 return event.as_ptr();
             };
-            let forwarded = is_forwarded_key(
+            if monitor_replayed.get() == e.timestamp() {
+                monitor_replayed.set(f64::NAN);
+                return event.as_ptr();
+            }
+            let route = key_route(
                 &combo,
                 &keystroke,
                 &monitor_shortcuts.borrow(),
                 &monitor_extra_keys.borrow(),
             );
+            if route == KeyRoute::AppUnlessPageField {
+                // Decided asynchronously: take the key now, probe the page,
+                // then either forward it to GPUI or hand it back to the page
+                // (Esc also returns focus to the app, as a bare Esc does).
+                let kept = unsafe { Retained::retain(event.as_ptr()) };
+                let Some(kept) = kept else {
+                    return event.as_ptr();
+                };
+                let tx = monitor_tx.clone();
+                let parent = monitor_parent.clone();
+                let replayed = monitor_replayed.clone();
+                let is_escape = combo == "escape";
+                let completion =
+                    block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+                        let editable = error.is_null()
+                            && unsafe { value.as_ref() }
+                                .and_then(|value| value.downcast_ref::<NSString>())
+                                .is_some_and(|value| value.to_string() == "1");
+                        if !editable && tx.try_send(NativeEvent::Key(keystroke.clone())).is_ok() {
+                            return;
+                        }
+                        if editable && is_escape {
+                            focus_view(&parent);
+                        }
+                        replayed.set(kept.timestamp());
+                        NSApplication::sharedApplication(mtm).postEvent_atStart(&kept, true);
+                    });
+                unsafe {
+                    monitor_view.evaluateJavaScript_completionHandler(
+                        &NSString::from_str(EDITABLE_FOCUS_SCRIPT),
+                        Some(&completion),
+                    );
+                }
+                return std::ptr::null_mut();
+            }
+            let forwarded = route == KeyRoute::App;
             if forwarded {
                 if monitor_tx.try_send(NativeEvent::Key(keystroke)).is_ok() {
                     std::ptr::null_mut()
@@ -677,19 +721,48 @@ fn key_name(chars: &str) -> String {
     .to_owned()
 }
 
-/// Whether a keystroke typed into the web view is forwarded to GPUI: a fixed
-/// browser combo, an app shortcut, or an owner-requested extra key.
+/// Where a keystroke typed into the web view goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyRoute {
+    /// The page keeps it.
+    Page,
+    /// Forwarded to GPUI: a fixed browser combo, an app shortcut, or an
+    /// owner-requested extra key with a Cmd/Ctrl modifier.
+    App,
+    /// An owner-requested extra key without Cmd/Ctrl (⌥↑/⌥↓, Esc with the
+    /// find bar open): GPUI gets it unless a text field in the page has
+    /// focus, where those keys belong to the field.
+    AppUnlessPageField,
+}
+
+fn key_route(
+    combo: &str,
+    keystroke: &gpui::Keystroke,
+    shortcuts: &[String],
+    extra: &[String],
+) -> KeyRoute {
+    let matches = |s: &String| gpui::Keystroke::parse(s).is_ok_and(|s| s == *keystroke);
+    if BROWSER_KEYS.contains(&combo) || shortcuts.iter().any(matches) {
+        KeyRoute::App
+    } else if extra.iter().any(matches) {
+        if combo.starts_with("cmd-") || combo.contains("-cmd-") || combo.starts_with("ctrl-") {
+            KeyRoute::App
+        } else {
+            KeyRoute::AppUnlessPageField
+        }
+    } else {
+        KeyRoute::Page
+    }
+}
+
+/// Whether a keystroke typed into the web view may be forwarded to GPUI.
 fn is_forwarded_key(
     combo: &str,
     keystroke: &gpui::Keystroke,
     shortcuts: &[String],
     extra: &[String],
 ) -> bool {
-    BROWSER_KEYS.contains(&combo)
-        || shortcuts
-            .iter()
-            .chain(extra)
-            .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == *keystroke))
+    key_route(combo, keystroke, shortcuts, extra) != KeyRoute::Page
 }
 
 /// Whether the focused element of the page (looking through same-origin
@@ -1050,7 +1123,7 @@ mod document_policy_tests {
 
 #[cfg(test)]
 mod forwarded_key_tests {
-    use super::{click_leaves_page, is_forwarded_key, key_name};
+    use super::{KeyRoute, click_leaves_page, is_forwarded_key, key_name, key_route};
 
     fn forwarded(combo: &str, shortcuts: &[&str], extra: &[&str]) -> bool {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -1112,6 +1185,30 @@ mod forwarded_key_tests {
             assert!(!forwarded(key, &shortcuts, &extra), "{key}");
         }
         assert!(forwarded("cmd-f", &shortcuts, &extra));
+    }
+
+    #[test]
+    fn plain_extra_keys_defer_to_a_focused_page_field() {
+        let route = |combo: &str, shortcuts: &[&str], extra: &[&str]| {
+            let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let keystroke = gpui::Keystroke::parse(combo).unwrap();
+            key_route(combo, &keystroke, &owned(shortcuts), &owned(extra))
+        };
+        let extra = ["alt-up", "alt-down", "escape", "cmd-=", "cmd-0"];
+        for combo in ["alt-up", "alt-down", "escape"] {
+            assert_eq!(
+                route(combo, &[], &extra),
+                KeyRoute::AppUnlessPageField,
+                "{combo}"
+            );
+        }
+        // Cmd combos, fixed browser keys and app shortcuts are always the app's.
+        assert_eq!(route("cmd-=", &[], &extra), KeyRoute::App);
+        assert_eq!(route("cmd-f", &[], &extra), KeyRoute::App);
+        assert_eq!(route("cmd-shift-p", &["cmd-shift-p"], &extra), KeyRoute::App);
+        // Anything unlisted stays with the page.
+        assert_eq!(route("escape", &[], &[]), KeyRoute::Page);
+        assert_eq!(route("up", &[], &extra), KeyRoute::Page);
     }
 
     #[test]

@@ -404,6 +404,12 @@ impl WorkItemLaunchService {
             p.config.clone(),
             p.parent_chat_id.as_deref(),
         )?;
+        // The account chip's pick binds before the first run resolves one.
+        if let (Some(account_id), Some(config)) = (p.account_id.as_deref(), p.config.as_ref()) {
+            self.sessions
+                .pin_chat_account(&chat_id, config.harness, account_id)
+                .map_err(engine_error)?;
+        }
         self.checkpoint(LaunchStep::ChatCreated)?;
 
         // ── 4. assignment ──
@@ -1192,6 +1198,7 @@ mod default_model_tests {
             operation_id: "op".into(),
             parent_chat_id: None,
             target_device_id: None,
+            account_id: None,
         }
     }
 

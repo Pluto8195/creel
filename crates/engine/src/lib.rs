@@ -557,6 +557,7 @@ impl EngineCore {
             agent_accounts_config.codex_home.clone(),
         ));
         sessions.set_managed_accounts(managed_accounts.clone());
+        context_usage.set_managed_accounts(managed_accounts.clone());
         let agent_accounts = AgentAccounts::new(agent_accounts_config);
         let titles = TitleGenerator::new(workspace.clone(), registry.clone(), repos.clone());
         titles.set_managed_accounts(managed_accounts.clone());

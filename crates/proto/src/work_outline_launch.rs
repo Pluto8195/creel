@@ -96,6 +96,12 @@ pub struct CreateChatForWorkItemParams {
     /// forwards to the owner on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_device_id: Option<String>,
+    /// Start Chat's account chip: pin the new Chat to this managed account
+    /// (on `config`'s harness) instead of the Space's default; an empty
+    /// string pins the Default login. Absent = the project default,
+    /// resolved at the first run as usual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 /// Params of `ContinueChatForWorkItem`.
@@ -188,6 +194,7 @@ mod tests {
             operation_id: "op".into(),
             parent_chat_id: None,
             target_device_id: None,
+            account_id: None,
         };
         let value = serde_json::to_value(&params).unwrap();
         assert_eq!(

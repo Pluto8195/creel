@@ -60,6 +60,11 @@ pub trait HomeCredentialStore: Send + Sync + std::fmt::Debug {
     fn available(&self) -> bool;
     fn put(&self, service: &str, secret: &str) -> Result<(), EngineError>;
     fn delete(&self, service: &str);
+    /// Read back a managed home's own item (never the default one). The
+    /// default says "nothing" so test fakes need not implement it.
+    fn get(&self, _service: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The macOS login Keychain via `security -i` (the secret goes over stdin as
@@ -78,6 +83,25 @@ impl HomeCredentialStore for SystemCredentialStore {
         run_security(&format!(
             "add-generic-password -U -a \"{user}\" -s \"{service}\" -X {hex}\n"
         ))
+    }
+
+    fn get(&self, service: &str) -> Option<String> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        let out = std::process::Command::new("security")
+            .args(["find-generic-password", "-a", &user, "-s", service, "-w"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8(out.stdout).ok())
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     fn delete(&self, service: &str) {
@@ -443,6 +467,31 @@ impl ManagedAccounts {
         Ok(self.view_by_id(&account.id).unwrap_or(account))
     }
 
+    /// The sign-in blob of a managed account, read only from the account's
+    /// own home (file) or its own Keychain item. Used to probe usage; never
+    /// logged or returned over RPC.
+    pub fn credentials_of(&self, account_id: &str) -> Option<(HarnessId, serde_json::Value)> {
+        let harness = lock(&self.store)
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)?
+            .harness;
+        let home = self.home_of(harness, account_id);
+        let value = match harness {
+            HarnessId::ClaudeCode => {
+                let store = &self.config.credential_store;
+                let keychain = (mast_harness::account_home::CLAUDE_KEYCHAIN_ISOLATED && store.available())
+                    .then(|| store.get(&claude_keychain_service(&home)))
+                    .flatten()
+                    .and_then(|text| serde_json::from_str(&text).ok());
+                keychain.or_else(|| read_json(&home.join(".credentials.json")))?
+            }
+            HarnessId::Codex => read_json(&home.join("auth.json"))?,
+            _ => return None,
+        };
+        Some((harness, value))
+    }
+
     fn view_by_id(&self, id: &str) -> Option<ManagedAccount> {
         let store = lock(&self.store);
         store
@@ -527,6 +576,8 @@ impl ManagedAccounts {
             label: account.label.clone(),
             signed_in: email.is_some() || has_credentials_file(account.harness, &home),
             email,
+            plan_label: None,
+            usage_windows: Vec::new(),
         }
     }
 
@@ -642,6 +693,32 @@ impl ManagedAccounts {
         // Refresh shared config (cheap mtime checks) before every spawn.
         self.prepare_home(harness, &home)?;
         Ok(Some(ResolvedAccount { id: pinned, home }))
+    }
+
+    /// Pin a chat to `account_id` before its first run (Start Chat's account
+    /// chip). An empty `account_id` pins Default. Never repins: a chat that
+    /// already has a pin keeps it, so a retried launch is a no-op.
+    pub fn pin_chat(
+        &self,
+        chat_id: &str,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<(), EngineError> {
+        let mut store = lock(&self.store);
+        let pin_key = key(chat_id, harness);
+        if store.chat_pins.contains_key(&pin_key) {
+            return Ok(());
+        }
+        if !account_id.is_empty()
+            && !store
+                .accounts
+                .iter()
+                .any(|a| a.id == account_id && a.harness == harness)
+        {
+            return Err(EngineError::Other("Unknown account for this agent.".into()));
+        }
+        store.chat_pins.insert(pin_key, account_id.to_string());
+        self.save(&store)
     }
 
     /// The home a chat is already pinned to (no side effects): for work that
