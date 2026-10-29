@@ -111,6 +111,11 @@ pub struct PickEntry {
     pub label: String,
     pub detail: Option<String>,
     pub selected: bool,
+    /// A saved Settings login (its slot id): choosing it promotes it into a
+    /// project account. `account_id` is `None` for these.
+    pub saved_slot: Option<String>,
+    /// Shown but not choosable (the live Default login).
+    pub disabled: bool,
 }
 
 /// Default plus only this harness's managed accounts.
@@ -127,6 +132,8 @@ pub fn pick_entries(
         label: "Default".into(),
         detail: None,
         selected: current.is_none(),
+        saved_slot: None,
+        disabled: false,
     }];
     entries.extend(
         accounts_for(snapshot, harness)
@@ -136,10 +143,45 @@ pub fn pick_entries(
                 label: a.label.clone(),
                 detail: Some(account_detail(a)),
                 selected: current == Some(a.id.as_str()),
+                saved_slot: None,
+                disabled: false,
+            }),
+    );
+    entries.extend(
+        snapshot
+            .saved
+            .iter()
+            .filter(|s| s.harness == harness)
+            .map(|s| PickEntry {
+                account_id: None,
+                label: s.email.clone().unwrap_or_else(|| "Saved login".into()),
+                detail: Some(if s.active {
+                    "Your Default login".into()
+                } else {
+                    s.plan_label.clone().unwrap_or_else(|| "Saved login".into())
+                }),
+                selected: false,
+                saved_slot: Some(s.id.clone()),
+                disabled: s.active,
             }),
     );
     entries
 }
+
+/// True when the snapshot offers any saved login for `harness`.
+pub fn has_saved(snapshot: Option<&ManagedAccountsSnapshot>, harness: HarnessId) -> bool {
+    snapshot.is_some_and(|s| s.saved.iter().any(|a| a.harness == harness))
+}
+
+pub fn promote_saved_params(
+    space_id: &str,
+    harness: HarnessId,
+    slot_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({ "spaceId": space_id, "harness": harness, "slotId": slot_id })
+}
+
+pub const SAVED_NOTE: &str = "Choosing a saved login moves it into this project's accounts, so it stops being offered for switching in Settings \u{2014} one sign-in can't safely live in two places. Your Default login can't be moved: use Add account to sign in separately.";
 
 /// Email, or "Not signed in".
 pub fn account_detail(account: &ManagedAccount) -> String {
@@ -306,7 +348,20 @@ enum Phase {
     Waiting {
         login_id: String,
     },
+    /// PromoteSavedAccount in flight.
+    Promoting,
     Failed(SharedString),
+}
+
+/// The sign-in sheet's view of the running CLI. Never holds the pasted code.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LoginView {
+    pub url: Option<String>,
+    pub opened: bool,
+    pub awaiting_code: bool,
+    pub device_code: Option<String>,
+    pub submitting: bool,
+    pub code_error: Option<String>,
 }
 
 pub struct AccountFlow {
@@ -318,10 +373,14 @@ pub struct AccountFlow {
     device_id: Option<String>,
     phase: Phase,
     name_input: Entity<ComposerInput>,
+    code_input: Entity<ComposerInput>,
+    /// What the running sign-in has printed so far (URL, code prompt).
+    login: LoginView,
     focus_pending: bool,
     busy: bool,
     task: Option<Task<()>>,
     _events: Subscription,
+    _code_events: Subscription,
 }
 
 impl EventEmitter<AccountFlowEvent> for AccountFlow {}
@@ -340,6 +399,12 @@ impl AccountFlow {
                 this.submit_name(cx);
             }
         });
+        let code_input = cx.new(|cx| ComposerInput::new("Paste the code from your browser", cx));
+        let code_events = cx.subscribe(&code_input, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.submit_code(cx);
+            }
+        });
         let picking = space_id.is_some();
         let load_device = device_id.clone();
         state.update(cx, |state, cx| state.load_managed_accounts(load_device, cx));
@@ -350,10 +415,13 @@ impl AccountFlow {
             device_id,
             phase: if picking { Phase::Pick } else { Phase::Name },
             name_input,
+            code_input,
+            login: LoginView::default(),
             focus_pending: !picking,
             busy: false,
             task: None,
             _events: events,
+            _code_events: code_events,
         }
     }
 
@@ -465,10 +533,17 @@ impl AccountFlow {
             };
             let login_id = start.login_id.clone();
             let opened = this.update(cx, |flow, cx| {
-                cx.open_url(&start.url);
+                flow.login = LoginView::default();
+                if !start.url.is_empty() {
+                    cx.open_url(&start.url);
+                    flow.login.url = Some(start.url.clone());
+                    flow.login.opened = true;
+                }
                 flow.phase = Phase::Waiting {
                     login_id: start.login_id.clone(),
                 };
+                flow.code_input.update(cx, |input, cx| input.set_text("", cx));
+                flow.focus_pending = true;
                 cx.notify();
             });
             if opened.is_err() {
@@ -490,7 +565,14 @@ impl AccountFlow {
                     });
                 match polled {
                     Ok(poll) => match poll.status {
-                        AgentLoginStatus::Pending => {}
+                        AgentLoginStatus::Pending => {
+                            let alive = this.update(cx, |flow, cx| {
+                                flow.apply_poll(&poll, cx);
+                            });
+                            if alive.is_err() {
+                                return;
+                            }
+                        }
                         AgentLoginStatus::Error => {
                             let message = poll.message.unwrap_or_else(|| "Sign-in failed".into());
                             this.update(cx, |flow, cx| {
@@ -551,6 +633,121 @@ impl AccountFlow {
                     }
                 }
             }
+        }));
+        cx.notify();
+    }
+
+    /// Fold a pending poll into the sheet; the URL opens once, when it first appears.
+    pub(crate) fn apply_poll(&mut self, poll: &AgentLoginPoll, cx: &mut Context<Self>) {
+        let mut next = self.login.clone();
+        if let Some(url) = &poll.url {
+            if !next.opened {
+                cx.open_url(url);
+                next.opened = true;
+            }
+            next.url = Some(url.clone());
+        }
+        next.awaiting_code = poll.awaiting_code;
+        next.device_code = poll.device_code.clone();
+        if next != self.login {
+            self.login = next;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiting_for_test(&mut self, login_id: &str) {
+        self.phase = Phase::Waiting {
+            login_id: login_id.into(),
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_code_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.code_input.update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn code_text_for_test(&self, cx: &gpui::App) -> String {
+        self.code_input.read(cx).text().to_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn login_view(&self) -> &LoginView {
+        &self.login
+    }
+
+    /// Write the pasted code to the sign-in process (never stored or logged).
+    pub fn submit_code(&mut self, cx: &mut Context<Self>) {
+        let Phase::Waiting { login_id } = &self.phase else {
+            return;
+        };
+        let code = self.code_input.read(cx).text().trim().to_string();
+        if code.is_empty() || self.login.submitting {
+            return;
+        }
+        let login_id = login_id.clone();
+        self.login.submitting = true;
+        self.login.code_error = None;
+        self.code_input.update(cx, |input, cx| input.set_text("", cx));
+        let rpc = self.rpc(cx);
+        cx.spawn(async move |this, cx| {
+            let result = rpc
+                .call(
+                    methods::SUBMIT_MANAGED_ACCOUNT_LOGIN_CODE,
+                    serde_json::json!({ "loginId": login_id, "code": code }),
+                )
+                .await;
+            this.update(cx, |flow, cx| {
+                flow.login.submitting = false;
+                if let Err(err) = result {
+                    flow.login.code_error = Some(err);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn copy_url(&self, cx: &mut Context<Self>) {
+        if let Some(url) = &self.login.url {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+        }
+    }
+
+    /// Promote a saved Settings login into a project account and use it.
+    pub fn promote(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(space_id) = self.space_id.clone() else {
+            return;
+        };
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.phase = Phase::Promoting;
+        let rpc = self.rpc(cx);
+        let params = promote_saved_params(&space_id, self.harness, &slot_id);
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = rpc.call(methods::PROMOTE_SAVED_ACCOUNT, params).await;
+            this.update(cx, |flow, cx| {
+                flow.busy = false;
+                match result.and_then(|v| {
+                    serde_json::from_value::<ManagedAccountsSnapshot>(v).map_err(|e| e.to_string())
+                }) {
+                    Ok(snapshot) => {
+                        flow.store(snapshot, cx);
+                        cx.emit(AccountFlowEvent::Closed);
+                    }
+                    Err(err) => {
+                        flow.phase = Phase::Failed(err.into());
+                        flow.refresh(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
         }));
         cx.notify();
     }
@@ -630,14 +827,15 @@ impl AccountFlow {
                 format!("Add {name} account"),
                 self.status_body(theme, "Setting up the account\u{2026}", "Cancel", cx),
             ),
-            Phase::Waiting { .. } => (
+            Phase::Waiting { .. } => {
+                if self.login.awaiting_code && std::mem::take(&mut self.focus_pending) {
+                    window.focus(&self.code_input.focus_handle(cx), cx);
+                }
+                (format!("Add {name} account"), self.render_waiting(theme, cx))
+            }
+            Phase::Promoting => (
                 format!("Add {name} account"),
-                self.status_body(
-                    theme,
-                    "Waiting for sign-in in your browser\u{2026}",
-                    "Cancel",
-                    cx,
-                ),
+                self.status_body(theme, "Moving the saved login\u{2026}", "Cancel", cx),
             ),
             Phase::Failed(message) => (
                 format!("Add {name} account"),
@@ -658,6 +856,117 @@ impl AccountFlow {
         popover::dialog_card(theme)
             .child(popover::dialog_title(theme, &title))
             .child(body)
+            .into_any_element()
+    }
+
+    /// The sign-in sheet: status, the authorize URL (open / copy), a device
+    /// code if the CLI printed one, and the paste-code field once it asks.
+    fn render_waiting(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let login = self.login.clone();
+        let status = if login.submitting {
+            "Checking the code\u{2026}"
+        } else if login.url.is_none() {
+            "Starting sign-in\u{2026}"
+        } else if login.awaiting_code {
+            "Finish in your browser, then paste the code it shows."
+        } else {
+            "Waiting for sign-in in your browser\u{2026}"
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(crate::loaders::gradient_spinner(
+                        "account-flow-wait",
+                        theme,
+                        3.0,
+                        cx.entity_id(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id("account-flow-status")
+                            .text_size(crate::typography::ui_rems(12.5))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(status)),
+                    ),
+            )
+            .when_some(login.url.clone(), |el, url| {
+                el.child(
+                    div()
+                        .mt(px(12.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("account-flow-url")
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(url.clone())),
+                        )
+                        .child(
+                            popover::btn_ghost(theme, "Open", "account-flow-open")
+                                .id("account-flow-open")
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                        )
+                        .child(
+                            popover::btn_ghost(theme, "Copy", "account-flow-copy")
+                                .id("account-flow-copy")
+                                .on_click(cx.listener(|this, _, _, cx| this.copy_url(cx))),
+                        ),
+                )
+            })
+            .when_some(login.device_code.clone(), |el, code| {
+                el.child(
+                    div()
+                        .id("account-flow-device-code")
+                        .mt(px(10.0))
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(format!(
+                            "Enter this code in the browser: {code}"
+                        ))),
+                )
+            })
+            .when(login.awaiting_code, |el| {
+                el.child(div().mt(px(12.0)).child(popover::dialog_field(
+                    self.code_input.clone().into_any_element(),
+                )))
+                .child(
+                    div()
+                        .mt(px(10.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .child(
+                            popover::btn_primary(theme, "Submit")
+                                .id("account-flow-submit-code")
+                                .on_click(cx.listener(|this, _, _, cx| this.submit_code(cx))),
+                        ),
+                )
+            })
+            .when_some(login.code_error.clone(), |el, err| {
+                el.child(
+                    div()
+                        .id("account-flow-code-error")
+                        .mt(px(8.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.danger_muted.opacity(0.9))
+                        .child(SharedString::from(err)),
+                )
+            })
+            .child(self.close_row(theme, "Cancel", cx))
             .into_any_element()
     }
 
@@ -713,6 +1022,12 @@ impl AccountFlow {
 
     fn render_pick(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let space_id = self.space_id.clone().unwrap_or_default();
+        let saved_present = has_saved(
+            self.state
+                .read(cx)
+                .managed_accounts_for(self.device_id.as_deref()),
+            self.harness,
+        );
         let entries = {
             let state = self.state.read(cx);
             pick_entries(
@@ -727,11 +1042,23 @@ impl AccountFlow {
                 Some(id) => format!("account-pick-{id}"),
             };
             let select = entry.account_id.clone();
+            let saved = entry.saved_slot.clone();
+            let disabled = entry.disabled;
+            let key = match &saved {
+                Some(slot) => format!("account-pick-saved-{slot}"),
+                None => key,
+            };
             let debug_key = key.clone();
             popover::menu_row(theme, entry.selected, key.clone())
                 .id(SharedString::from(key))
                 .debug_selector(move || debug_key.clone())
-                .on_click(cx.listener(move |this, _, _, cx| this.select(select.clone(), cx)))
+                .when(disabled, |el| el.opacity(0.5))
+                .when(!disabled, |el| {
+                    el.on_click(cx.listener(move |this, _, _, cx| match &saved {
+                        Some(slot) => this.promote(slot.clone(), cx),
+                        None => this.select(select.clone(), cx),
+                    }))
+                })
                 .child(
                     div()
                         .flex_1()
@@ -767,6 +1094,16 @@ impl AccountFlow {
                     .child(popover::dialog_body(theme, PICKER_NOTE)),
             )
             .child(div().mt(px(10.0)).flex().flex_col().children(rows))
+            .when(saved_present, |el| {
+                el.child(
+                    div()
+                        .id("account-pick-saved-note")
+                        .mt(px(8.0))
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(SAVED_NOTE)),
+                )
+            })
             .child(popover::menu_separator())
             .child(
                 popover::menu_row(theme, false, "account-pick-add")
@@ -808,6 +1145,7 @@ pub fn account_pill(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mast_proto::SavedAccountOption;
     use mast_proto::{ChatAccountPin, ProjectAccountDefault};
 
     fn account(id: &str, harness: HarnessId, label: &str) -> ManagedAccount {
@@ -843,7 +1181,49 @@ mod tests {
                     account_id: None,
                 },
             ],
+            saved: vec![
+                SavedAccountOption {
+                    id: "slot1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    email: Some("saved@example.com".into()),
+                    plan_label: Some("Max".into()),
+                    active: false,
+                },
+                SavedAccountOption {
+                    id: "slot2".into(),
+                    harness: HarnessId::ClaudeCode,
+                    email: Some("live@example.com".into()),
+                    plan_label: None,
+                    active: true,
+                },
+            ],
         }
+    }
+
+    #[test]
+    fn saved_logins_follow_managed_accounts_and_the_live_one_is_disabled() {
+        let snap = snapshot();
+        let entries = pick_entries(Some(&snap), "s1", HarnessId::ClaudeCode);
+        let saved: Vec<_> = entries.iter().filter(|e| e.saved_slot.is_some()).collect();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[0].label, "saved@example.com");
+        assert_eq!(saved[0].detail.as_deref(), Some("Max"));
+        assert!(!saved[0].disabled && saved[0].account_id.is_none());
+        assert!(saved[1].disabled);
+        assert_eq!(saved[1].detail.as_deref(), Some("Your Default login"));
+        // Saved rows come after the managed ones.
+        assert_eq!(entries[1].account_id.as_deref(), Some("a1"));
+        assert!(
+            pick_entries(Some(&snap), "s1", HarnessId::Codex)
+                .iter()
+                .all(|e| e.saved_slot.is_none())
+        );
+        assert!(has_saved(Some(&snap), HarnessId::ClaudeCode));
+        assert!(!has_saved(Some(&snap), HarnessId::Codex));
+        assert_eq!(
+            promote_saved_params("s1", HarnessId::ClaudeCode, "slot1"),
+            serde_json::json!({ "spaceId": "s1", "harness": "claude-code", "slotId": "slot1" })
+        );
     }
 
     #[test]
@@ -869,7 +1249,11 @@ mod tests {
     fn pick_entries_list_default_and_only_that_harness() {
         let snap = snapshot();
         let claude = pick_entries(Some(&snap), "s1", HarnessId::ClaudeCode);
-        let labels: Vec<_> = claude.iter().map(|e| e.label.as_str()).collect();
+        let labels: Vec<_> = claude
+            .iter()
+            .filter(|e| e.saved_slot.is_none())
+            .map(|e| e.label.as_str())
+            .collect();
         assert_eq!(labels, ["Default", "Work"]);
         assert!(!claude[0].selected && claude[1].selected);
         let codex = pick_entries(Some(&snap), "s1", HarnessId::Codex);
