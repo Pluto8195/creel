@@ -11,11 +11,11 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mast_engine::pr_review_launch::PrReviewTools;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{ChatDiffTargetSource, ChatLinkSource, RefDiffKind};
+use mast_rpc::methods;
 use serde_json::{Value, json};
-use zeron_engine::pr_review_launch::PrReviewTools;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{ChatDiffTargetSource, ChatLinkSource, RefDiffKind};
-use zeron_rpc::methods;
 
 const CHAT: &str = "chat-1";
 const FEATURE: &str = "michael/eng-3012-kit-line";
@@ -129,7 +129,7 @@ fn assemble(data: &Path) -> EngineCore {
     EngineCore::assemble(
         data,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine core assembles")
@@ -270,14 +270,14 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn targets(&self) -> zeron_engine::diff_targets::DiffTargets {
+    fn targets(&self) -> mast_engine::diff_targets::DiffTargets {
         self.core
             .diff_targets
             .clone()
             .with_pr_tools(self.tools.clone())
     }
 
-    fn no_gh(&self) -> zeron_engine::diff_targets::DiffTargets {
+    fn no_gh(&self) -> mast_engine::diff_targets::DiffTargets {
         self.core.diff_targets.clone().with_pr_tools(PrReviewTools {
             gh: Some(self._tmp.path().join("no-such-gh")),
             ..Default::default()
@@ -318,7 +318,7 @@ async fn next_frame(stream: &mut Stream, predicate: impl Fn(&Value) -> bool) -> 
     }
 }
 
-async fn range_diff(f: &Fixture, client: &zeron_rpc::RpcClient, view: &Value) -> Value {
+async fn range_diff(f: &Fixture, client: &mast_rpc::RpcClient, view: &Value) -> Value {
     client
         .call(
             methods::GET_CHECKOUT_DIFF,
@@ -337,7 +337,7 @@ async fn range_diff(f: &Fixture, client: &zeron_rpc::RpcClient, view: &Value) ->
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pr_url_diffs_merge_base_to_head_from_a_remote_only_branch() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     let remote_before = refs_of(&f.bare_flagship);
 
     let outcome = f
@@ -640,7 +640,7 @@ async fn suggestions_put_linked_prs_first_then_ticket_branches() {
         .workspace
         .set_chat_link(
             CHAT,
-            zeron_engine::workspace_host::ChatLinkKind::Ticket,
+            mast_engine::workspace_host::ChatLinkKind::Ticket,
             Some("ENG-3012"),
             ChatLinkSource::Mentioned,
         )
@@ -805,7 +805,7 @@ async fn ref_targets_persist_across_a_restart_and_follow_selection_rules() {
     assert_eq!(rows[0].ref_targets[0].head_ref, pr.head_ref);
 
     // The restarted engine resolves them again and still diffs.
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     core.diff_sync.reconcile_now().await;
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
@@ -866,7 +866,7 @@ async fn ref_targets_persist_across_a_restart_and_follow_selection_rules() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_rpc_binds_selects_and_unbinds_and_unbound_chats_are_unchanged() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
 
     // A chat that never bound anything: no ref fields on the wire.
     let mut stream = client

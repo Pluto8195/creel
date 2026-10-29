@@ -6,7 +6,7 @@ use super::*;
 use crate::work_outline::model::OutlineRowKind;
 use crate::work_outline::outline_view::OutlineView;
 
-fn space_json(id: &str, path: &str) -> zeron_proto::Space {
+fn space_json(id: &str, path: &str) -> mast_proto::Space {
     serde_json::from_value(serde_json::json!({
         "id": id, "deviceId": "d", "path": path,
         "createdAt": "2026-01-01T00:00:00Z"
@@ -14,7 +14,7 @@ fn space_json(id: &str, path: &str) -> zeron_proto::Space {
     .unwrap()
 }
 
-fn space_chat(id: &str, space: &str, path: &str) -> zeron_proto::Chat {
+fn space_chat(id: &str, space: &str, path: &str) -> mast_proto::Chat {
     let mut chat = row(id, path, None).chat;
     chat.space_id = Some(space.into());
     chat.title = Some(format!("Chat {id}"));

@@ -3,17 +3,17 @@
 
 use super::*;
 use crate::registry::tests::space;
-use zeron_proto::pr_review_sync::{PrReviewRequestState, WorkItemExternalSyncState};
-use zeron_proto::work_outline::{
+use mast_proto::WorkOutlineError;
+use mast_proto::pr_review_sync::{PrReviewRequestState, WorkItemExternalSyncState};
+use mast_proto::work_outline::{
     ArchiveWorkItemParams, CreateWorkItemParams, DescendantArchivePolicy, UpdateWorkItemParams,
     WorkItemChanges, WorkItemStatus, WorkOutlineActor, WorkOutlineActorKind,
     WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
 };
-use zeron_proto::work_outline_user_actions::{
+use mast_proto::work_outline_user_actions::{
     CreateUserActionRequestParams, ResolveUserActionRequestParams, UserActionOriginKind,
     UserActionRequestOrigin,
 };
-use zeron_proto::WorkOutlineError;
 
 const SPACE: &str = "sp-1";
 const OTHER: &str = "sp-2";
@@ -30,8 +30,10 @@ fn actor(kind: WorkOutlineActorKind) -> WorkOutlineActor {
 
 fn doc() -> RegistryDoc {
     let mut doc = RegistryDoc::new("dev-a");
-    doc.upsert_space(&space(SPACE, "dev-a", "/tmp/one")).unwrap();
-    doc.upsert_space(&space(OTHER, "dev-a", "/tmp/two")).unwrap();
+    doc.upsert_space(&space(SPACE, "dev-a", "/tmp/one"))
+        .unwrap();
+    doc.upsert_space(&space(OTHER, "dev-a", "/tmp/two"))
+        .unwrap();
     doc
 }
 
@@ -181,9 +183,20 @@ fn only_the_system_writes_the_sync_record() {
             .unwrap_err();
         assert_eq!(error.code, WorkOutlineErrorCode::Unauthorized, "{kind:?}");
     }
-    assert_eq!(snapshot(&doc, SPACE).item(&item).unwrap().external_sync_state, None);
+    assert_eq!(
+        snapshot(&doc, SPACE)
+            .item(&item)
+            .unwrap()
+            .external_sync_state,
+        None
+    );
 
-    apply_as(&mut doc, WorkOutlineActorKind::System, record(state(1), &item, "s1")).unwrap();
+    apply_as(
+        &mut doc,
+        WorkOutlineActorKind::System,
+        record(state(1), &item, "s1"),
+    )
+    .unwrap();
     let snap = snapshot(&doc, SPACE);
     let view = snap.item(&item).unwrap();
     assert_eq!(view.external_sync_state, Some(state(1)));
@@ -191,9 +204,17 @@ fn only_the_system_writes_the_sync_record() {
     let value = serde_json::to_value(view).unwrap();
     assert_eq!(value["externalSyncState"]["round"], serde_json::json!(1));
 
-    apply_as(&mut doc, WorkOutlineActorKind::System, record(state(2), &item, "s2")).unwrap();
+    apply_as(
+        &mut doc,
+        WorkOutlineActorKind::System,
+        record(state(2), &item, "s2"),
+    )
+    .unwrap();
     assert_eq!(
-        snapshot(&doc, SPACE).item(&item).unwrap().external_sync_state,
+        snapshot(&doc, SPACE)
+            .item(&item)
+            .unwrap()
+            .external_sync_state,
         Some(state(2))
     );
 }
@@ -250,7 +271,7 @@ fn system_origin_requests_need_the_system_actor_and_have_no_chat() {
     assert!(request.is_unresolved());
     assert_eq!(
         snap.item(&item).unwrap().effective_status,
-        zeron_proto::WorkItemEffectiveStatus::UserActionRequired
+        mast_proto::WorkItemEffectiveStatus::UserActionRequired
     );
     // Replays are idempotent.
     apply_as(
@@ -291,7 +312,7 @@ fn set_linear_item(
         doc,
         kind,
         WorkOutlineMutation::SetLinearAssignedDestination(
-            zeron_proto::work_outline::SetLinearAssignedDestinationParams {
+            mast_proto::work_outline::SetLinearAssignedDestinationParams {
                 space_id: space_id.into(),
                 work_item_id: item.map(str::to_owned),
                 operation_id: op.into(),
@@ -312,7 +333,7 @@ fn linked_linear_item_needs_linear_on_and_is_independent_of_the_pr_destination()
         &mut doc,
         user,
         WorkOutlineMutation::SetSpaceLinearEnabled(
-            zeron_proto::work_outline::SetSpaceLinearEnabledParams {
+            mast_proto::work_outline::SetSpaceLinearEnabledParams {
                 space_id: SPACE.into(),
                 enabled: true,
                 operation_id: "on".into(),
@@ -347,7 +368,7 @@ fn agents_cannot_set_the_linked_linear_item() {
     let error = doc
         .apply_work_outline_mutation(
             &WorkOutlineMutation::SetLinearAssignedDestination(
-                zeron_proto::work_outline::SetLinearAssignedDestinationParams {
+                mast_proto::work_outline::SetLinearAssignedDestinationParams {
                     space_id: SPACE.into(),
                     work_item_id: Some(item),
                     operation_id: "op".into(),

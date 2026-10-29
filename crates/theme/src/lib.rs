@@ -1,4 +1,4 @@
-//! Zeron's source-neutral theme domain model.
+//! Mast's source-neutral theme domain model.
 //!
 //! Runtime code consumes complete [`ThemeVariant`] values. Import formats such
 //! as VS Code are deliberately isolated in [`vscode`], so a component never
@@ -268,6 +268,17 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
+/// The built-in theme variants were called `zeron-dark` / `zeron-light` before
+/// the rename. Settings, saved selections and custom-theme files may still
+/// name them that way; lookups and selections map the old ids to the new ones.
+pub fn canonical_variant_id(id: &str) -> &str {
+    match id {
+        "zeron-dark" => "mast-dark",
+        "zeron-light" => "mast-light",
+        other => other,
+    }
+}
+
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("expected a CSS hex color (#rgb, #rgba, #rrggbb, or #rrggbbaa)")]
 pub struct ColorParseError;
@@ -275,8 +286,10 @@ pub struct ColorParseError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccentPreset {
+    /// Saved as `"zeron"` before the rename; both spellings load.
     #[default]
-    Zeron,
+    #[serde(alias = "zeron")]
+    Mast,
     Orange,
     Amber,
     Green,
@@ -287,7 +300,7 @@ pub enum AccentPreset {
 
 impl AccentPreset {
     pub const ALL: [Self; 7] = [
-        Self::Zeron,
+        Self::Mast,
         Self::Orange,
         Self::Amber,
         Self::Green,
@@ -298,7 +311,7 @@ impl AccentPreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Zeron => "Mast",
+            Self::Mast => "Mast",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",
@@ -310,7 +323,7 @@ impl AccentPreset {
 
     pub fn color(self, appearance: Appearance) -> Color {
         let (dark, light) = match self {
-            Self::Zeron => ("#8b7cf6", "#5b43e8"),
+            Self::Mast => ("#8b7cf6", "#5b43e8"),
             Self::Orange => ("#fb923c", "#c2410c"),
             Self::Amber => ("#fbbf24", "#a16207"),
             Self::Green => ("#4ade80", "#15803d"),
@@ -400,19 +413,18 @@ pub struct ThemeSelection {
 impl Default for ThemeSelection {
     fn default() -> Self {
         Self {
-            light: "zeron-light".into(),
-            dark: "zeron-dark".into(),
+            light: "mast-light".into(),
+            dark: "mast-dark".into(),
         }
     }
 }
 
 impl ThemeSelection {
     pub fn variant_id(&self, appearance: Appearance) -> &str {
-        if appearance.is_dark() {
-            &self.dark
-        } else {
-            &self.light
-        }
+        canonical_variant_id(match appearance {
+            Appearance::Dark => &self.dark,
+            Appearance::Light => &self.light,
+        })
     }
 
     pub fn set_variant(&mut self, appearance: Appearance, id: impl Into<String>) {
@@ -537,6 +549,7 @@ impl ThemeRegistry {
     }
 
     pub fn variant(&self, id: &str) -> Option<&ThemeVariant> {
+        let id = canonical_variant_id(id);
         self.families
             .iter()
             .flat_map(|family| &family.variants)
@@ -554,12 +567,12 @@ impl ThemeRegistry {
         self.variant(selection.variant_id(appearance))
             .or_else(|| {
                 self.variant(if appearance.is_dark() {
-                    "zeron-dark"
+                    "mast-dark"
                 } else {
-                    "zeron-light"
+                    "mast-light"
                 })
             })
-            .expect("the built-in registry always contains both Zeron variants")
+            .expect("the built-in registry always contains both Mast variants")
     }
 
     pub fn validate(&self) -> Vec<ValidationIssue> {
@@ -812,8 +825,19 @@ mod tests {
     fn builtins_have_complete_provenance_and_no_validation_errors() {
         let registry = ThemeRegistry::builtin();
         assert_eq!(registry.families.len(), 19);
-        assert!(registry.variant("zeron-light").is_some());
-        assert!(registry.variant("zeron-dark").is_some());
+        assert!(registry.variant("mast-light").is_some());
+        assert!(registry.variant("mast-dark").is_some());
+        // Saved selections from before the rename still resolve.
+        assert_eq!(
+            registry.variant("zeron-dark").map(|v| v.id.as_str()),
+            Some("mast-dark")
+        );
+        let old = ThemeSelection {
+            light: "zeron-light".into(),
+            dark: "zeron-dark".into(),
+        };
+        assert_eq!(old.variant_id(Appearance::Dark), "mast-dark");
+        assert_eq!(old.variant_id(Appearance::Light), "mast-light");
         let errors: Vec<_> = registry
             .validate()
             .into_iter()

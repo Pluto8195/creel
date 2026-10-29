@@ -22,13 +22,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use serde_json::Value;
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     WorkItemArchiveCause, WorkItemChatAssignmentState, WorkItemChatAssignmentView,
     WorkItemEffectiveStatus, WorkItemExternalReferenceView, WorkItemRollup, WorkItemStatus,
     WorkItemView, WorkOutlineActor, WorkOutlineRepair, WorkOutlineSnapshot,
 };
-use zeron_proto::work_outline_instructions::{
+use mast_proto::work_outline_instructions::{
     ChatInstructionState, ExecutionSessionReport, INSTRUCTION_ENVELOPE_VERSION,
     InstructionApplicationReason, InstructionApplicationResult, InstructionRevisionApplicationView,
     InstructionRevisionBody, InstructionRevisionIntegrity, InstructionRevisionView,
@@ -36,7 +35,8 @@ use zeron_proto::work_outline_instructions::{
     canonical_revision_hash, instruction_content_key, resolve_effective_instructions,
     verify_revision_body,
 };
-use zeron_proto::work_outline_order::valid_order_key;
+use mast_proto::work_outline_order::valid_order_key;
+use serde_json::Value;
 
 use super::{
     KIND_WORK_ITEM_CHAT_ASSIGNMENTS, KIND_WORK_ITEM_EXTERNAL_REFERENCES,
@@ -85,7 +85,7 @@ pub struct WorkOutlineInputs {
     /// Live `chatExecutionBindings` rows of this Space (Milestone 3).
     pub chat_execution_bindings: Vec<RegistryRow>,
     /// The Space's path and owning device (implicit execution root).
-    pub execution_space: Option<zeron_proto::work_outline_execution::ExecutionSpace>,
+    pub execution_space: Option<mast_proto::work_outline_execution::ExecutionSpace>,
     /// Live `userActionRequests` rows of this Space (Milestone 4).
     pub user_action_requests: Vec<RegistryRow>,
     /// Live `workItemInstructionProposals` rows of this Space (Milestone 4).
@@ -155,7 +155,7 @@ pub(crate) struct DecodedItem {
     /// `externalSyncModifiedFields`, sorted and deduplicated (Linear).
     pub external_sync_modified_fields: Vec<String>,
     /// `externalSyncState` (PR review sync).
-    pub external_sync_state: Option<zeron_proto::pr_review_sync::WorkItemExternalSyncState>,
+    pub external_sync_state: Option<mast_proto::pr_review_sync::WorkItemExternalSyncState>,
 }
 
 impl DecodedItem {
@@ -1118,8 +1118,9 @@ fn materialize_instructions(
         // selection whose revision is missing or corrupt keeps the hash
         // comparison (fail toward showing drift).
         let selected_content_key = match (&selected_revision_id, selected_revision_integrity) {
-            (Some(id), Some(SelectedRevisionIntegrity::Ok)) => revision(id, repairs)
-                .map(|view| instruction_content_key(&view.body.entries)),
+            (Some(id), Some(SelectedRevisionIntegrity::Ok)) => {
+                revision(id, repairs).map(|view| instruction_content_key(&view.body.entries))
+            }
             _ => None,
         };
         let drift = match (&selected_revision_hash, &current) {

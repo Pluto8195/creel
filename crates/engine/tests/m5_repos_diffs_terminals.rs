@@ -8,16 +8,16 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
-use zeron_engine::{
+use mast_engine::{
     EngineCore, HarnessRegistry, Repos, Terminals, capture_commit_diff, capture_diff,
     capture_diff_against, capture_turn_diff, merge_base, read_diff_file_text, snapshot_tree,
     working_diff_base,
 };
-use zeron_proto::{
+use mast_proto::{
     CreateWorktreeOutcome, GitHistoryRefKind, ProjectActionDraft, ProjectActionIcon,
     ProjectActionRun, TerminalEvent,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -76,7 +76,7 @@ fn assemble(dir: &Path) -> EngineCore {
     EngineCore::assemble(
         dir,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine assembles")
@@ -157,7 +157,7 @@ async fn repos_round_trip_add_branches_worktrees() {
         .await
         .expect("worktree");
     assert!(
-        worktree.branch.starts_with("zeron/"),
+        worktree.branch.starts_with("mast/"),
         "branch: {}",
         worktree.branch
     );
@@ -628,7 +628,7 @@ async fn committed_submodule_move_expands_and_nested_file_rpc_reads_blobs() {
         .checkout_identity(&checkout)
         .await
         .expect("checkout identity");
-    let response = zeron_rpc::memory_client(core.rpc_service())
+    let response = mast_rpc::memory_client(core.rpc_service())
         .call(
             methods::GET_CHECKOUT_FILE_DIFF_TEXT,
             serde_json::json!({
@@ -642,7 +642,7 @@ async fn committed_submodule_move_expands_and_nested_file_rpc_reads_blobs() {
         )
         .await
         .expect("nested file diff text");
-    let response: zeron_proto::CheckoutFileDiffText =
+    let response: mast_proto::CheckoutFileDiffText =
         serde_json::from_value(response).expect("typed nested response");
     assert_eq!(response.old_text.as_deref(), Some("one\ntwo\n"));
     assert_eq!(response.new_text.as_deref(), Some("one\ntwo changed\n"));
@@ -671,7 +671,7 @@ async fn committed_submodule_move_expands_and_nested_file_rpc_reads_blobs() {
 
 #[tokio::test]
 async fn git_status_preserves_index_changes_even_when_head_diff_is_empty() {
-    use zeron_proto::GitFileState::*;
+    use mast_proto::GitFileState::*;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
     init_repo(&root).await;
@@ -761,7 +761,7 @@ async fn git_status_enumerates_untracked_symlinks_without_reading_their_targets(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_status_stream_is_scoped_deduplicated_and_resets_after_commit() {
-    use zeron_proto::CheckoutGitStatus;
+    use mast_proto::CheckoutGitStatus;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
     let other = tmp.path().join("other");
@@ -782,19 +782,19 @@ async fn git_status_stream_is_scoped_deduplicated_and_resets_after_commit() {
             .unwrap();
     }
     core.diff_sync.reconcile_now().await;
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let params = serde_json::json!({"chatId": "chat"});
     let mut stream = client
         .subscribe_checked(methods::WATCH_WORKSPACE_GIT_STATUS, params.clone())
         .await
         .unwrap();
-    async fn next(stream: &mut zeron_rpc::RpcSubscription) -> CheckoutGitStatus {
+    async fn next(stream: &mut mast_rpc::RpcSubscription) -> CheckoutGitStatus {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let value = stream.recv().await.expect("stream alive");
                 assert!(value.get("patch").is_none());
                 if let Some(status) =
-                    serde_json::from_value::<zeron_proto::WorkspaceGitStatusFrame>(value)
+                    serde_json::from_value::<mast_proto::WorkspaceGitStatusFrame>(value)
                         .unwrap()
                         .status
                 {
@@ -852,10 +852,10 @@ async fn git_status_stream_is_scoped_deduplicated_and_resets_after_commit() {
 
     git(&root, &["add", "a.txt"]).await;
     let staged = next(&mut stream).await;
-    assert_eq!(staged.files[0].index, zeron_proto::GitFileState::Modified);
+    assert_eq!(staged.files[0].index, mast_proto::GitFileState::Modified);
     assert_eq!(
         staged.files[0].worktree,
-        zeron_proto::GitFileState::Unchanged
+        mast_proto::GitFileState::Unchanged
     );
     git(&root, &["commit", "-m", "done"]).await;
     let clean = next(&mut stream).await;
@@ -971,7 +971,7 @@ async fn diff_file_text_returns_both_checked_sources() {
     assert!(!pair.binary);
     assert!(!pair.truncated);
 
-    let escape = zeron_proto::DiffFileSummary {
+    let escape = mast_proto::DiffFileSummary {
         path: "../outside.txt".into(),
         old_path: None,
         status: "modified".into(),
@@ -1286,7 +1286,7 @@ async fn checkout_file_diff_text_rpc_fits_the_default_worker_stack() {
     let snapshot = capture_diff(&core.repos, &repo_dir)
         .await
         .expect("diff snapshot");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     let response = client
         .call(
@@ -1301,7 +1301,7 @@ async fn checkout_file_diff_text_rpc_fits_the_default_worker_stack() {
         )
         .await
         .expect("GetCheckoutFileDiffText");
-    let response: zeron_proto::CheckoutFileDiffText =
+    let response: mast_proto::CheckoutFileDiffText =
         serde_json::from_value(response).expect("typed response");
     assert_eq!(response.old_text.as_deref(), Some("one\ntwo\n"));
     assert_eq!(response.new_text.as_deref(), Some("one\ntwo edited\n"));
@@ -1333,7 +1333,7 @@ async fn checkout_file_diff_text_rpc_reads_pinned_commit_sources() {
     let snapshot = capture_commit_diff(&core.repos, &repo_dir, &sha)
         .await
         .expect("commit snapshot");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     let response = client
         .call(
@@ -1349,7 +1349,7 @@ async fn checkout_file_diff_text_rpc_reads_pinned_commit_sources() {
         )
         .await
         .expect("GetCheckoutFileDiffText");
-    let response: zeron_proto::CheckoutFileDiffText =
+    let response: mast_proto::CheckoutFileDiffText =
         serde_json::from_value(response).expect("typed response");
     assert_eq!(response.old_text.as_deref(), Some("one\ntwo\n"));
     assert_eq!(
@@ -1500,7 +1500,7 @@ async fn project_actions_crud_preserves_saved_actions_with_invalid_imports() {
             true,
         )
         .unwrap();
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let path = project.join("zeron.json");
     // Directories must be reported as an import issue without preventing CRUD.
     std::fs::create_dir(&path).unwrap();
@@ -1625,7 +1625,7 @@ async fn project_actions_run_in_fresh_host_resolved_terminals() {
         )
         .expect("save Action");
     let action_id = snapshot.actions[0].id.clone();
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     let run = client
         .call_as::<ProjectActionRun>(
@@ -1826,7 +1826,7 @@ async fn retarget_is_atomic_and_checkout_diff_subscription_is_cwd_scoped() {
         .await
         .expect("second identity");
     let nested_alias = alias.join("nested");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     client
         .call(
@@ -1928,9 +1928,9 @@ async fn rpc_dispatch_for_m5_methods() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // EngineCore's Repos resolves the worktree root from the env; keep test
     // worktrees out of $HOME. (Process-global — this is the only test that sets it.)
-    unsafe { std::env::set_var("ZERON_WORKTREES_DIR", tmp.path().join("worktrees")) };
+    unsafe { std::env::set_var("MAST_WORKTREES_DIR", tmp.path().join("worktrees")) };
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     // CreateRepo → ListRepos.
     let created = client
@@ -2080,7 +2080,7 @@ async fn rpc_dispatch_for_m5_methods() {
         worktree["branch"]
             .as_str()
             .expect("branch")
-            .starts_with("zeron/")
+            .starts_with("mast/")
     );
     assert!(worktree["checkoutId"].is_string());
     assert!(worktree.get("setupAction").is_none());

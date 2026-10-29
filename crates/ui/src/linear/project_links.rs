@@ -12,11 +12,11 @@
 //!   id) then `removeWorkItemExternalReference` (old), with operation ids
 //!   derived from the old reference so a retry replays.
 use gpui::{App, Entity, Task};
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER, LinearIssueSummary, LinearProjectRef,
     LinearProjectSummary,
 };
-use zeron_proto::{
+use mast_proto::{
     LinkLinearProjectParams, RemoveWorkItemExternalReferenceParams, WorkItemExternalReferenceView,
     WorkItemView, WorkOutlineSnapshot,
 };
@@ -120,11 +120,11 @@ pub(crate) fn fix_project_link(
     let link = LinkLinearProjectParams {
         work_item_id: reference.work_item_id.clone(),
         project: project.to_ref(),
-        operation_id: zeron_proto::work_outline::derive_id(&reference.id, "fix-link:create"),
+        operation_id: mast_proto::work_outline::derive_id(&reference.id, "fix-link:create"),
     };
     let remove = RemoveWorkItemExternalReferenceParams {
         reference_id: reference.id.clone(),
-        operation_id: zeron_proto::work_outline::derive_id(&reference.id, "fix-link:remove"),
+        operation_id: mast_proto::work_outline::derive_id(&reference.id, "fix-link:remove"),
     };
     cx.spawn(async move |_| {
         actions.link_linear_project(link).await?;

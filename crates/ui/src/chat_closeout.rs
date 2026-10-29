@@ -8,21 +8,21 @@
 //!   second, explicit permanent-discard confirmation before `force` is sent.
 //!
 //! The action is offered when a chat cwd cheaply looks like an agent worktree:
-//! either it has Zeron's `.workspace-root` marker or its `.git` metadata is a
+//! either it has Mast's `.workspace-root` marker or its `.git` metadata is a
 //! file, as Git uses for linked worktrees. The engine remains authoritative
 //! about whether the candidate is actually safe and eligible to remove.
 //! Everything here is pure so the decode/format/state logic is unit-testable
 //! without a gpui context; the dialog itself lives in `shell/closeout_ui.rs`.
 
+use mast_proto::GitHistoryCommit;
 use serde_json::Value;
-use zeron_proto::GitHistoryCommit;
 
 /// `{chatId, cwd, force}` → `{removed, branchDeleted, archived}`; errors carry
 /// human-readable refusal reasons.
-pub use zeron_rpc::methods::CLOSE_CHAT_WORKTREE;
+pub use mast_rpc::methods::CLOSE_CHAT_WORKTREE;
 /// `{chatId, cwd}` → `{isWorktree, worktreePath, branch, chatLive, dirty,
 /// dirtyFiles, unmergedCommits, defaultBranch}`.
-pub use zeron_rpc::methods::PLAN_CHAT_CLOSEOUT;
+pub use mast_rpc::methods::PLAN_CHAT_CLOSEOUT;
 
 /// The plan runs a handful of `git` commands plus a process scan.
 pub const PLAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -36,7 +36,7 @@ pub const DIRTY_FILES_SHOWN: usize = 5;
 
 /// Cheap visibility predicate for the "Close out worktree…" action.
 ///
-/// Zeron-created worktrees may carry a `.workspace-root` marker. Imported or
+/// Mast-created worktrees may carry a `.workspace-root` marker. Imported or
 /// otherwise ordinary linked worktrees instead have a `.git` *file* at their
 /// root (main checkouts have a `.git` directory). This intentionally only
 /// decides whether to expose the action; the engine plan validates that the
@@ -46,7 +46,7 @@ pub fn is_closeout_candidate(cwd: Option<&str>) -> bool {
         return false;
     };
     let cwd = std::path::Path::new(cwd);
-    if zeron_engine::repos::is_automatic_access_blocked(cwd) {
+    if mast_engine::repos::is_automatic_access_blocked(cwd) {
         return false;
     }
     cwd.join(".workspace-root").is_file() || cwd.join(".git").is_file()

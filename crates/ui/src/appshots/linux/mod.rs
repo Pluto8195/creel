@@ -118,7 +118,7 @@ fn start_activation_socket(data_dir: PathBuf, tx: mpsc::UnboundedSender<()>) {
             }
             let path = activation_socket_path(&data_dir);
             // The socket belongs exclusively to this feature. Removing a stale
-            // inode here is safe and lets a restarted Zeron become reachable.
+            // inode here is safe and lets a restarted Mast become reachable.
             let _ = fs::remove_file(&path);
             let Ok(socket) = UnixDatagram::bind(&path) else {
                 return;

@@ -4,7 +4,7 @@
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
 };
-use zeron_proto::ArtifactView;
+use mast_proto::ArtifactView;
 
 use super::ArtifactTab;
 use crate::artifacts::{model, plan_linear};

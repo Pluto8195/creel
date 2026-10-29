@@ -152,22 +152,22 @@ pub(crate) enum FrameCommand<'a> {
 /// The script that sends `command` to the frame through the outer document.
 pub(crate) fn command_script(command: &FrameCommand) -> String {
     let message = match command {
-        FrameCommand::Find(query) => serde_json::json!({ "zeronFind": query }),
-        FrameCommand::Goto(n) => serde_json::json!({ "zeronGoto": n }),
-        FrameCommand::Clear => serde_json::json!({ "zeronClear": true }),
-        FrameCommand::Scroll(n) => serde_json::json!({ "zeronScroll": n }),
-        FrameCommand::Zoom(level) => serde_json::json!({ "zeronZoom": level }),
+        FrameCommand::Find(query) => serde_json::json!({ "mastFind": query }),
+        FrameCommand::Goto(n) => serde_json::json!({ "mastGoto": n }),
+        FrameCommand::Clear => serde_json::json!({ "mastClear": true }),
+        FrameCommand::Scroll(n) => serde_json::json!({ "mastScroll": n }),
+        FrameCommand::Zoom(level) => serde_json::json!({ "mastZoom": level }),
     };
     // JSON is valid JS except U+2028 / U+2029 in old engines; escape them.
     let json = message
         .to_string()
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    format!("window.__zeronFrameCmd&&window.__zeronFrameCmd({json});")
+    format!("window.__mastFrameCmd&&window.__mastFrameCmd({json});")
 }
 
 /// The script that reads the frame's last report as a JSON string.
-pub(crate) const READ_STATE_SCRIPT: &str = "JSON.stringify(window.__zeronFrame||null)";
+pub(crate) const READ_STATE_SCRIPT: &str = "JSON.stringify(window.__mastFrame||null)";
 
 /// What the frame last reported (see [`READ_STATE_SCRIPT`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -215,16 +215,16 @@ impl FrameState {
 /// changes), `::highlight` styles come from a constructed stylesheet (CSP
 /// does not block those).
 pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
-  if (window.__zeronFindInstalled) return;
-  window.__zeronFindInstalled = true;
+  if (window.__mastFindInstalled) return;
+  window.__mastFindInstalled = true;
   const H = window.CSS && CSS.highlights;
   let ranges = [];
   const sheet = new CSSStyleSheet();
-  sheet.replaceSync("::highlight(zeron-find){background:#ffe58a;color:#000}::highlight(zeron-find-cur){background:#ff9632;color:#000}");
+  sheet.replaceSync("::highlight(mast-find){background:#ffe58a;color:#000}::highlight(mast-find-cur){background:#ff9632;color:#000}");
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   const heads = () => Array.from(document.querySelectorAll("h1,h2,h3"));
-  const send = (o) => { try { parent.postMessage({ zeronReport: o }, "*"); } catch (_) {} };
-  const clear = () => { ranges = []; if (H) { H.delete("zeron-find"); H.delete("zeron-find-cur"); } };
+  const send = (o) => { try { parent.postMessage({ mastReport: o }, "*"); } catch (_) {} };
+  const clear = () => { ranges = []; if (H) { H.delete("mast-find"); H.delete("mast-find-cur"); } };
   const find = (q) => {
     clear();
     if (!H || !q) return send({ q, count: H ? 0 : -1 });
@@ -237,12 +237,12 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
         const r = new Range(); r.setStart(n, i); r.setEnd(n, i + needle.length); ranges.push(r);
       }
     }
-    H.set("zeron-find", new Highlight(...ranges));
+    H.set("mast-find", new Highlight(...ranges));
     send({ q, count: ranges.length });
   };
   const goto = (i) => {
     const r = ranges[i]; if (!r || !H) return;
-    H.set("zeron-find-cur", new Highlight(r));
+    H.set("mast-find-cur", new Highlight(r));
     const el = r.startContainer.parentElement; if (el) el.scrollIntoView({ block: "center" });
   };
   const report = () => {
@@ -278,11 +278,11 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
   window.addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if ("zeronZoom" in d) setZoom(Number(d.zeronZoom));
-    else if ("zeronFind" in d) find(String(d.zeronFind));
-    else if ("zeronGoto" in d) goto(d.zeronGoto);
-    else if ("zeronClear" in d) clear();
-    else if ("zeronScroll" in d) { const h = heads()[d.zeronScroll]; if (h) h.scrollIntoView({ block: "start" }); }
+    if ("mastZoom" in d) setZoom(Number(d.mastZoom));
+    else if ("mastFind" in d) find(String(d.mastFind));
+    else if ("mastGoto" in d) goto(d.mastGoto);
+    else if ("mastClear" in d) clear();
+    else if ("mastScroll" in d) { const h = heads()[d.mastScroll]; if (h) h.scrollIntoView({ block: "start" }); }
   });
   let t = 0;
   window.addEventListener("scroll", () => { clearTimeout(t); t = setTimeout(report, 80); }, { passive: true, capture: true });
@@ -291,17 +291,17 @@ pub(crate) const FRAME_SCRIPT: &str = r##"(() => {
 "##;
 
 /// In the outer document: forwards host commands to the frame and keeps the
-/// frame's reports where the host can read them (`window.__zeronFrame`).
-pub(crate) const HOST_SCRIPT: &str = r##"window.__zeronFrame = {};
-window.__zeronFrameCmd = (o) => {
+/// frame's reports where the host can read them (`window.__mastFrame`).
+pub(crate) const HOST_SCRIPT: &str = r##"window.__mastFrame = {};
+window.__mastFrameCmd = (o) => {
   const f = document.querySelector("iframe");
   if (f && f.contentWindow) f.contentWindow.postMessage(o, "*");
 };
 window.addEventListener("message", (e) => {
   const f = document.querySelector("iframe");
   if (!f || e.source !== f.contentWindow) return;
-  const r = e.data && e.data.zeronReport;
-  if (r && typeof r === "object") window.__zeronFrame = Object.assign({}, window.__zeronFrame, r);
+  const r = e.data && e.data.mastReport;
+  if (r && typeof r === "object") window.__mastFrame = Object.assign({}, window.__mastFrame, r);
 });"##;
 
 #[cfg(test)]
@@ -422,7 +422,7 @@ mod tests {
         let script = command_script(&FrameCommand::Find("a\"b</script>\u{2028}\\"));
         assert_eq!(
             script,
-            "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronFind\":\"a\\\"b</script>\\u2028\\\\\"});"
+            "window.__mastFrameCmd&&window.__mastFrameCmd({\"mastFind\":\"a\\\"b</script>\\u2028\\\\\"});"
         );
         // One statement: no raw newline or line separator can end it early.
         assert!(!script.contains('\n') && !script.contains('\u{2028}'));
@@ -432,15 +432,15 @@ mod tests {
     fn command_scripts_carry_indexes() {
         assert_eq!(
             command_script(&FrameCommand::Goto(7)),
-            "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronGoto\":7});"
+            "window.__mastFrameCmd&&window.__mastFrameCmd({\"mastGoto\":7});"
         );
         assert_eq!(
             command_script(&FrameCommand::Scroll(2)),
-            "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronScroll\":2});"
+            "window.__mastFrameCmd&&window.__mastFrameCmd({\"mastScroll\":2});"
         );
         assert_eq!(
             command_script(&FrameCommand::Clear),
-            "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronClear\":true});"
+            "window.__mastFrameCmd&&window.__mastFrameCmd({\"mastClear\":true});"
         );
     }
 

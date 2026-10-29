@@ -7,7 +7,7 @@
 //! CLI can under-report supported modes. The shared initialize probe also supplies
 //! slash commands and is cached by credential and binary context.
 
-use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
+use mast_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
 
 /// The ultrathink directive rides every user message as a prompt prefix — that
 /// is how the mode actually works in Claude Code (a prompt convention, not an
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn the_curated_catalog_offers_the_mast_default() {
-        let id = zeron_proto::HarnessId::ClaudeCode.default_model().unwrap();
+        let id = mast_proto::HarnessId::ClaudeCode.default_model().unwrap();
         assert_eq!(id, "claude-opus-5-5");
         assert!(static_models().iter().any(|m| m.id == id));
     }

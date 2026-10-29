@@ -62,7 +62,7 @@ impl InstanceLock {
                         let holder = holder.trim();
                         return Err(EngineError::Other(format!(
                             "another zeron engine is already running on {} (pid {}); \
-                             stop it or use a different data dir (ZERON_DATA_DIR)",
+                             stop it or use a different data dir (MAST_DATA_DIR)",
                             data_dir.display(),
                             if holder.is_empty() { "unknown" } else { holder },
                         )));
@@ -167,7 +167,7 @@ impl InstanceLock {
 fn already_running_error(data_dir: &Path, holder: &str) -> EngineError {
     EngineError::Other(format!(
         "another zeron engine is already running on {} (pid {}); \
-         stop it or use a different data dir (ZERON_DATA_DIR)",
+         stop it or use a different data dir (MAST_DATA_DIR)",
         data_dir.display(),
         if holder.is_empty() { "unknown" } else { holder },
     ))
@@ -223,7 +223,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn subprocess_lock_holder() {
-        let Some(dir) = std::env::var_os("ZERON_INSTANCE_LOCK_TEST_DIR") else {
+        let Some(dir) = mast_proto::env::var_os("MAST_INSTANCE_LOCK_TEST_DIR") else {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
@@ -249,7 +249,7 @@ mod tests {
         let mut child = Command::new(std::env::current_exe().expect("current test executable"))
             .arg("subprocess_lock_holder")
             .arg("--nocapture")
-            .env("ZERON_INSTANCE_LOCK_TEST_DIR", dir.path())
+            .env("MAST_INSTANCE_LOCK_TEST_DIR", dir.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

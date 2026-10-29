@@ -1,5 +1,5 @@
 //! Work Outline agent tools (Milestone 4) against a real offline engine:
-//! - a Run of a Chat in a Space gets the Zeron MCP injection with a token
+//! - a Run of a Chat in a Space gets the Mast MCP injection with a token
 //!   bound to that Chat and Run, revoked when the Run ends; a projectless
 //!   Chat's Run gets plain `run()` and no token;
 //! - `AgentToolCall` authenticates by token only (forged / absent / revoked
@@ -18,16 +18,16 @@ use futures::stream::BoxStream;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
-use zeron_doc::SessionCommandPayload;
-use zeron_engine::agent_tools::AgentToolsLaunch;
-use zeron_engine::diff_targets::DiffTargets;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{AgentToolsInjection, Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::SessionCommandPayload;
+use mast_engine::agent_tools::AgentToolsLaunch;
+use mast_engine::diff_targets::DiffTargets;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{AgentToolsInjection, Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode, WorkOutlineActorKind, WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::{RpcClient, methods};
+use mast_rpc::{RpcClient, methods};
 
 const SPACE: &str = "space-1";
 const CHAT: &str = "chat-agent";
@@ -102,10 +102,10 @@ impl Harness for GatedHarness {
     fn supports_agent_tools(&self) -> bool {
         true
     }
-    fn instruction_support(&self) -> zeron_harness::InstructionSupport {
-        zeron_harness::InstructionSupport::Supported {
-            channel: zeron_harness::InstructionChannel::Test,
-            replace_strategy: zeron_harness::InstructionReplaceStrategy::RespawnResume,
+    fn instruction_support(&self) -> mast_harness::InstructionSupport {
+        mast_harness::InstructionSupport::Supported {
+            channel: mast_harness::InstructionChannel::Test,
+            replace_strategy: mast_harness::InstructionReplaceStrategy::RespawnResume,
             max_bytes: 64 * 1024,
         }
     }
@@ -165,7 +165,7 @@ async fn rig() -> Rig {
         args: vec!["mcp".into()],
         ipc_port: Some(27999),
     }));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let space_path = space_path.to_string_lossy().into_owned();
     client
         .call(
@@ -248,7 +248,7 @@ async fn create_item(rig: &Rig, op: &str, title: &str, parent: Option<&str>) -> 
 async fn tool(rig: &Rig, token: &str, name: &str, arguments: Value) -> Result<Value, String> {
     rig.client
         .call(
-            zeron_proto::agent_tools::TOOL_CALL_METHOD,
+            mast_proto::agent_tools::TOOL_CALL_METHOD,
             json!({ "token": token, "tool": name, "arguments": arguments }),
         )
         .await
@@ -257,7 +257,7 @@ async fn tool(rig: &Rig, token: &str, name: &str, arguments: Value) -> Result<Va
 
 fn snapshot(rig: &Rig) -> WorkOutlineSnapshot {
     let inputs = rig.core.workspace.work_outline_inputs(SPACE);
-    zeron_doc::materialize_work_outline(SPACE, &inputs)
+    mast_doc::materialize_work_outline(SPACE, &inputs)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -279,16 +279,16 @@ async fn space_chat_runs_get_a_run_scoped_token_and_projectless_runs_get_none() 
         panic!("a Chat in a Space must get agent tools: {spawn:?}");
     };
     assert_eq!(prompt, "hello");
-    assert_eq!(tools.server_name, "zeron-agent");
+    assert_eq!(tools.server_name, "mast-agent");
     assert_eq!(tools.args, vec!["mcp".to_owned()]);
-    let token = tools.env["ZERON_AGENT_TOKEN"].clone();
-    assert_eq!(tools.env["ZERON_IPC_PORT"], "27999");
+    let token = tools.env["MAST_AGENT_TOKEN"].clone();
+    assert_eq!(tools.env["MAST_IPC_PORT"], "27999");
     assert_eq!(tokens.live_count(), 1);
 
     let origin = rig
         .client
         .call(
-            zeron_proto::agent_tools::AUTHENTICATE_METHOD,
+            mast_proto::agent_tools::AUTHENTICATE_METHOD,
             json!({ "token": token }),
         )
         .await
@@ -304,7 +304,7 @@ async fn space_chat_runs_get_a_run_scoped_token_and_projectless_runs_get_none() 
     let err = rig
         .client
         .call(
-            zeron_proto::agent_tools::AUTHENTICATE_METHOD,
+            mast_proto::agent_tools::AUTHENTICATE_METHOD,
             json!({ "token": token }),
         )
         .await
@@ -356,7 +356,7 @@ async fn forged_or_absent_tokens_reach_no_tool() {
     assert!(
         rig.client
             .call(
-                zeron_proto::agent_tools::TOOL_CALL_METHOD,
+                mast_proto::agent_tools::TOOL_CALL_METHOD,
                 json!({ "tool": "work_outline_read_current" }),
             )
             .await
@@ -424,7 +424,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
         .unwrap_err();
     assert_eq!(
         err.code,
-        zeron_proto::WorkOutlineErrorCode::Unauthorized,
+        mast_proto::WorkOutlineErrorCode::Unauthorized,
         "{err:?}"
     );
 
@@ -481,7 +481,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
         .unwrap_err();
     assert_eq!(
         err.code,
-        zeron_proto::WorkOutlineErrorCode::Unauthorized,
+        mast_proto::WorkOutlineErrorCode::Unauthorized,
         "{err:?}"
     );
     let err = tool(
@@ -514,11 +514,11 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     let snap = snapshot(&rig);
     assert_eq!(
         snap.item(&root_a).unwrap().status,
-        zeron_proto::WorkItemStatus::Active
+        mast_proto::WorkItemStatus::Active
     );
     assert_eq!(
         snap.item(&child).unwrap().status,
-        zeron_proto::WorkItemStatus::Completed
+        mast_proto::WorkItemStatus::Completed
     );
     let err = tool(
         &rig,
@@ -559,7 +559,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
             .unwrap_err();
         assert_eq!(
             err.code,
-            zeron_proto::WorkOutlineErrorCode::Unauthorized,
+            mast_proto::WorkOutlineErrorCode::Unauthorized,
             "{forbidden}"
         );
     }
@@ -594,7 +594,7 @@ async fn each_tool_is_allowed_or_denied_per_the_agent_policy() {
     let snap = snapshot(&rig);
     assert_eq!(
         snap.item(&root_a).unwrap().status,
-        zeron_proto::WorkItemStatus::Active
+        mast_proto::WorkItemStatus::Active
     );
     let other =
         rig.core
@@ -761,7 +761,7 @@ async fn a_child_first_turn_runs_with_the_child_chat_config_not_the_callers() {
         .mint(CHAT, "run-1", SPACE, &rig.core.device_id);
     let key = "spawn-reviewer";
     let child = derive_id(
-        &zeron_proto::agent_tools::operation_id(CHAT, key),
+        &mast_proto::agent_tools::operation_id(CHAT, key),
         roles::CHAT,
     );
     rig.client
@@ -905,7 +905,7 @@ async fn a_child_started_for_a_descendant_item_gets_that_items_instructions() {
     .await
     .unwrap();
     let child = derive_id(
-        &zeron_proto::agent_tools::operation_id(CHAT, key),
+        &mast_proto::agent_tools::operation_id(CHAT, key),
         roles::CHAT,
     );
     assert_eq!(reply["chatId"], child);
@@ -1068,7 +1068,7 @@ async fn a_child_started_for_a_descendant_item_gets_that_items_instructions() {
             .user_action_requests
             .iter()
             .find(|r| r.id == ready_id)
-            .is_some_and(|r| r.state == zeron_proto::UserActionRequestState::Resolved),
+            .is_some_and(|r| r.state == mast_proto::UserActionRequestState::Resolved),
         "the coordinator resolved its child's request"
     );
 
@@ -1311,11 +1311,11 @@ struct BindRig {
     root_wt: PathBuf,
     other: PathBuf,
     core: EngineCore,
-    rpc: Arc<zeron_engine::rpc::EngineRpc>,
+    rpc: Arc<mast_engine::rpc::EngineRpc>,
     targets: DiffTargets,
     token: String,
     /// Keeps the token's Run alive.
-    _lease: zeron_engine::agent_tools::AgentTokenLease,
+    _lease: mast_engine::agent_tools::AgentTokenLease,
 }
 
 fn text(path: &Path) -> String {
@@ -1405,12 +1405,12 @@ fn bind_call(
     rig: &BindRig,
     token: &str,
     arguments: Value,
-) -> Result<Value, zeron_engine::agent_tools::AgentToolError> {
+) -> Result<Value, mast_engine::agent_tools::AgentToolError> {
     rig.rpc
         .agent_tools()
-        .call(&zeron_proto::agent_tools::AgentToolCallParams {
+        .call(&mast_proto::agent_tools::AgentToolCallParams {
             token: token.to_owned(),
-            tool: zeron_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
+            tool: mast_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
             arguments,
         })
 }
@@ -1450,10 +1450,7 @@ async fn bind_chat_worktree_records_and_selects_a_submodule_worktree() {
     assert_eq!(row.chat_id, CHAT);
     assert_eq!(
         row.ops,
-        vec![zeron_proto::agent_tools::operation_id(
-            CHAT,
-            "bind-flagship"
-        )]
+        vec![mast_proto::agent_tools::operation_id(CHAT, "bind-flagship")]
     );
     assert!(row.ops[0].len() <= 64);
 }
@@ -1631,7 +1628,7 @@ async fn bind_chat_worktree_without_a_key_binds_and_rebinding_reselects() {
     let row = rig.targets.rows().into_iter().next().unwrap();
     assert_eq!(
         row.ops,
-        vec![zeron_proto::agent_tools::operation_id(CHAT, "snake")]
+        vec![mast_proto::agent_tools::operation_id(CHAT, "snake")]
     );
 
     // A missing path lists the parameters and an example.
@@ -1691,7 +1688,7 @@ fn request_is_resolved(snapshot: &WorkOutlineSnapshot, id: &str) -> bool {
         .user_action_requests
         .iter()
         .find(|r| r.id == id)
-        .is_some_and(|r| r.state == zeron_proto::UserActionRequestState::Resolved)
+        .is_some_and(|r| r.state == mast_proto::UserActionRequestState::Resolved)
 }
 
 fn open_request_ids(read: &Value) -> Vec<String> {
@@ -1811,7 +1808,7 @@ async fn a_coordinator_resolving_its_childs_deduped_request_persists_across_read
     )
     .expect("engine core re-assembles from the same profile");
     let inputs = again.workspace.work_outline_inputs(SPACE);
-    let after = zeron_doc::materialize_work_outline(SPACE, &inputs);
+    let after = mast_doc::materialize_work_outline(SPACE, &inputs);
     assert!(
         request_is_resolved(&after, &request_id),
         "the resolution did not survive a restart"
@@ -1867,10 +1864,10 @@ async fn first_guess_calls_succeed_or_say_exactly_what_to_pass() {
     // again each take effect (a derived key must not replay a stale result).
     let status = |rig: &Rig| snapshot(rig).item(&root).unwrap().status;
     for (wanted, expected) in [
-        ("completed", zeron_proto::WorkItemStatus::Completed),
-        ("active", zeron_proto::WorkItemStatus::Active),
-        ("completed", zeron_proto::WorkItemStatus::Completed),
-        ("completed", zeron_proto::WorkItemStatus::Completed),
+        ("completed", mast_proto::WorkItemStatus::Completed),
+        ("active", mast_proto::WorkItemStatus::Active),
+        ("completed", mast_proto::WorkItemStatus::Completed),
+        ("completed", mast_proto::WorkItemStatus::Completed),
     ] {
         // Updates are stamped with the clock; keep the stamps apart.
         tokio::time::sleep(Duration::from_millis(3)).await;
@@ -1886,7 +1883,7 @@ async fn first_guess_calls_succeed_or_say_exactly_what_to_pass() {
     )
     .await
     .unwrap();
-    assert_eq!(status(&rig), zeron_proto::WorkItemStatus::Active);
+    assert_eq!(status(&rig), mast_proto::WorkItemStatus::Active);
 
     // create_user_action_request: `text` for `request`, a dedupeKey as the key.
     let created = call(

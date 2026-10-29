@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gpui::{AnyElement, Context, Focusable as _, SharedString, Window, div, prelude::*, px};
-use zeron_proto::{PrReviewAction, PullRequestRef, PullRequestStatusSummary};
+use mast_proto::{PrReviewAction, PullRequestRef, PullRequestStatusSummary};
 
 use super::{GithubPanel, GithubPanelEvent, row_key};
 use crate::github::PrIndex;
@@ -94,8 +94,8 @@ impl GithubPanel {
         }
         if let Some(snapshot) = self.snapshot() {
             for reference in &snapshot.external_references {
-                if reference.provider != zeron_proto::GITHUB_PROVIDER
-                    || reference.reference_type != zeron_proto::GITHUB_PULL_REQUEST_REFERENCE
+                if reference.provider != mast_proto::GITHUB_PROVIDER
+                    || reference.reference_type != mast_proto::GITHUB_PULL_REQUEST_REFERENCE
                 {
                     continue;
                 }

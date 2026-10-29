@@ -6,16 +6,16 @@
 //! the rig recipe uses a mock OpenAI-compatible provider in the workspace's
 //! opencode.json, so no real login is required:
 //!
-//!     cargo run -p zeron-harness --example opencode_subagent_probe -- /tmp/oc-probe/workspace
+//!     cargo run -p mast-harness --example opencode_subagent_probe -- /tmp/oc-probe/workspace
 //!
 //! Prompt content is irrelevant with the mock provider (it scripts a task
 //! spawn on the first parent round); against a real provider, ask for one
 //! `task` explicitly.
 
 use futures::StreamExt;
+use mast_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
+use mast_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
 use tokio::sync::{mpsc, oneshot};
-use zeron_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
-use zeron_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
 
 #[tokio::main]
 async fn main() {

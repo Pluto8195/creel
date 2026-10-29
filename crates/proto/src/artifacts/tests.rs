@@ -16,9 +16,7 @@ fn view() -> ArtifactView {
         folder: "receiving-flow-item-1".into(),
         stored_path: "/repo/.zeron/artifacts/receiving-flow-item-1/flow.fragment.html".into(),
         origin_path: Some("/tmp/flow.fragment.html".into()),
-        preview_path: Some(
-            "/repo/.zeron/artifacts/receiving-flow-item-1/flow.preview.html".into(),
-        ),
+        preview_path: Some("/repo/.zeron/artifacts/receiving-flow-item-1/flow.preview.html".into()),
         companions: vec!["a.fragment.html".into()],
         current_revision: 2,
         revisions: vec![ArtifactRevision {
@@ -109,7 +107,10 @@ fn kinds_are_lenient_and_accept_kebab_spellings() {
         let parsed: ArtifactKind = serde_json::from_value(json!(raw)).unwrap();
         assert_eq!(parsed, kind, "{raw}");
     }
-    assert_eq!(ArtifactKind::parse("html-fragment"), Some(ArtifactKind::HtmlFragment));
+    assert_eq!(
+        ArtifactKind::parse("html-fragment"),
+        Some(ArtifactKind::HtmlFragment)
+    );
     assert_eq!(ArtifactKind::parse("bogus"), None);
     assert_eq!(
         serde_json::to_value(ArtifactKind::HtmlPage).unwrap(),
@@ -192,13 +193,13 @@ fn rpc_params_and_replies_use_camel_case() {
     let publish = ArtifactPublishReply {
         artifact_id: "a".into(),
         revision: 1,
-        url: "zeron-artifact:a".into(),
+        url: "mast-artifact:a".into(),
         stored_path: "/p".into(),
         changed: true,
     };
     assert_eq!(
         serde_json::to_value(&publish).unwrap(),
-        json!({ "artifactId": "a", "revision": 1, "url": "zeron-artifact:a",
+        json!({ "artifactId": "a", "revision": 1, "url": "mast-artifact:a",
                 "storedPath": "/p", "changed": true })
     );
     assert_eq!(
@@ -292,10 +293,7 @@ fn render_plans_are_viewport_major_and_capped_at_four_images() {
     request.themes = vec![ArtifactRenderTheme::Light, ArtifactRenderTheme::Dark];
     let (plan, warning) = request.renders();
     assert!(warning.is_none());
-    let order: Vec<_> = plan
-        .iter()
-        .map(|(v, t)| (v.display_label(), *t))
-        .collect();
+    let order: Vec<_> = plan.iter().map(|(v, t)| (v.display_label(), *t)).collect();
     assert_eq!(
         order,
         [
@@ -331,7 +329,8 @@ fn errors_round_trip_through_the_wire_string() {
     let wire = error.to_wire_message();
     assert_eq!(wire, "artifact/renderUnavailable: no window");
     assert_eq!(ArtifactError::from_wire_message(&wire), Some(error));
-    let nested = ArtifactError::from_wire_message("AgentToolCall: artifact/notFound: gone").unwrap();
+    let nested =
+        ArtifactError::from_wire_message("AgentToolCall: artifact/notFound: gone").unwrap();
     assert_eq!(nested.code, ArtifactErrorCode::NotFound);
     assert_eq!(nested.message, "gone");
     assert_eq!(
@@ -345,17 +344,35 @@ fn errors_round_trip_through_the_wire_string() {
 
 #[test]
 fn identity_is_scope_title_and_role() {
-    let a = artifact_id("s", Some("item"), Some("chat-1"), "Receiving  Plan", Some("plan"));
+    let a = artifact_id(
+        "s",
+        Some("item"),
+        Some("chat-1"),
+        "Receiving  Plan",
+        Some("plan"),
+    );
     assert_eq!(a.len(), 32);
     assert!(is_artifact_id(&a));
     // The chat does not matter once there is a work item; title is
     // normalized.
     assert_eq!(
         a,
-        artifact_id("s", Some("item"), Some("chat-2"), " receiving plan ", Some("Plan"))
+        artifact_id(
+            "s",
+            Some("item"),
+            Some("chat-2"),
+            " receiving plan ",
+            Some("Plan")
+        )
     );
-    assert_ne!(a, artifact_id("s", Some("item"), None, "Receiving plan", Some("doc")));
-    assert_ne!(a, artifact_id("s", Some("other"), None, "Receiving plan", Some("plan")));
+    assert_ne!(
+        a,
+        artifact_id("s", Some("item"), None, "Receiving plan", Some("doc"))
+    );
+    assert_ne!(
+        a,
+        artifact_id("s", Some("other"), None, "Receiving plan", Some("plan"))
+    );
     assert_ne!(
         artifact_id("s", None, Some("c1"), "x", None),
         artifact_id("s", None, Some("c2"), "x", None)
@@ -402,6 +419,23 @@ fn artifact_links_find_ids_and_paths() {
 }
 
 #[test]
+fn artifact_links_accept_the_legacy_scheme_in_order() {
+    let id = "0123456789abcdef0123456789abcdef";
+    let text = format!(
+        "old [A](zeron-artifact:{id}) new [B](mast-artifact:work/b.md) old [C](zeron-artifact:c.md)\n\
+         dup [D](mast-artifact:{id})"
+    );
+    let links = artifact_links(&text);
+    let targets: Vec<&str> = links.iter().map(|l| l.target.as_str()).collect();
+    assert_eq!(targets, [id, "work/b.md", "c.md"], "{links:?}");
+    assert_eq!(strip_artifact_scheme("zeron-artifact:x"), Some("x"));
+    assert_eq!(strip_artifact_scheme("mast-artifact:x"), Some("x"));
+    assert_eq!(strip_artifact_scheme("other:x"), None);
+    assert_eq!(ARTIFACT_URL_SCHEME, "mast-artifact:");
+    assert_eq!(ARTIFACTS_DIR, ".mast/artifacts");
+}
+
+#[test]
 fn options_manifests_are_validated() {
     let manifest = OptionsManifest::parse(
         r#"{"title":"Layouts","question":"Q-2","options":[
@@ -438,11 +472,13 @@ fn counts_open_questions_and_unverified_claims() {
 
 <div data-zeron-question=\"Q-4\" data-status=\"open\">x</div>
 <div data-zeron-question=\"Q-5\" data-status=\"resolved\">y</div>
+<div data-mast-question=\"Q-6\" data-status=\"open\">z</div>
+<div data-mast-question=\"Q-7\" data-status=\"resolved\">w</div>
 
 Latency is fine {unverified}. See [doc](https://x \"unverified\") and
 <span data-claim=\"unverified\">z</span> but [m](a.rs:1 \"measured\").
 ";
-    assert_eq!(count_open_questions(text), 3);
+    assert_eq!(count_open_questions(text), 4);
     assert_eq!(count_unverified_claims(text), 3);
 }
 
@@ -462,6 +498,6 @@ fn snapshot_helpers_pick_the_plan_first() {
     assert_eq!(listed[0].id, plan.id);
     assert_eq!(snapshot.plan_of("item-1").unwrap().id, plan.id);
     assert_eq!(snapshot.for_chat("chat-1").len(), 2);
-    assert_eq!(plan.url(), format!("zeron-artifact:{}", plan.id));
+    assert_eq!(plan.url(), format!("mast-artifact:{}", plan.id));
     assert_eq!(plan.current().unwrap().id, 2);
 }

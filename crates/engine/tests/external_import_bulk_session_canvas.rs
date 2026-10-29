@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use zeron_engine::external_import::BulkImportEvent;
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::external_import::BulkImportEvent;
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -40,7 +40,7 @@ fn synthetic_transcript(session_id: &str, cwd: &str, first_message: &str) -> Str
 #[tokio::test]
 async fn bulk_imports_every_session_and_carries_over_session_canvas_archive_state() {
     // A fake $HOME holding the on-disk transcripts and session_canvas's
-    // archive store — entirely separate from Zeron's own data dir below.
+    // archive store — entirely separate from Mast's own data dir below.
     let fake_home = tempfile::tempdir().expect("fake home tempdir");
     // SAFETY (test-only, single-threaded-relative-to-this-var use): scoped to
     // this one test function, restored at the end; no other test in this
@@ -78,7 +78,7 @@ async fn bulk_imports_every_session_and_carries_over_session_canvas_archive_stat
     )
     .expect("write archive store");
 
-    // Zeron's own data dir — unrelated to $HOME, must not collide with it.
+    // Mast's own data dir — unrelated to $HOME, must not collide with it.
     let data_dir = tempfile::tempdir().expect("data dir");
     let core = assemble(EngineProfile::development(
         data_dir.path(),

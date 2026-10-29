@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity};
-use zeron_proto::{PrReviewSyncNowReply, PullRequestRef, PullRequestStatusSummary};
+use mast_proto::{PrReviewSyncNowReply, PullRequestRef, PullRequestStatusSummary};
 
 use super::client::GithubUiError;
 use crate::state::AppState;

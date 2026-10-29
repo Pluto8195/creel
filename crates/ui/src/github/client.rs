@@ -7,14 +7,14 @@
 //! [`GithubFailure::NotAvailable`], which every surface shows as a calm "not
 //! available on this host" state.
 use gpui::Task;
-use zeron_proto::{
+use mast_proto::{
     CreateWorkItemExternalReferenceParams, CreateWorkItemParams, GithubError, GithubErrorCode,
     PrMyOpenParams, PrReviewRequestedParams, PrReviewSyncNowParams, PrReviewSyncNowReply,
     PrStatusParams, PrViewerReply, PullRequestRef, PullRequestStatusSummary,
     SetPrReviewSyncDestinationParams, WorkOutlineError, WorkOutlineErrorCode,
     WorkOutlineMutateReply, WorkOutlineMutation,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::work_outline::WorkOutlineActions;
 use crate::work_outline::actions::is_transport_failure;

@@ -6,14 +6,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use zeron_engine::instruction_registry::InstructionRegistry;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{
+use mast_engine::instruction_registry::InstructionRegistry;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{
     ExecutionSessionReport, HarnessId, InstructionRevisionIntegrity, WorkOutlineError,
     WorkOutlineErrorCode, WorkOutlineQueryResponse, WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
+use serde_json::{Value, json};
 
 fn assemble(dir: &std::path::Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
@@ -28,7 +28,7 @@ fn outline_error(text: String) -> WorkOutlineError {
         .unwrap_or_else(|| panic!("not a work outline error: {text}"))
 }
 
-async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
+async fn mutate(client: &mast_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
     client
         .call(methods::WORK_OUTLINE_MUTATE, params)
         .await
@@ -36,7 +36,7 @@ async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, W
 }
 
 async fn query(
-    client: &zeron_rpc::RpcClient,
+    client: &mast_rpc::RpcClient,
     params: Value,
 ) -> Result<WorkOutlineQueryResponse, WorkOutlineError> {
     let value: Value = client
@@ -64,7 +64,7 @@ async fn frame_until(
 }
 
 /// Space `space-1` with items A > B and `chat-1` assigned to B.
-async fn seed(client: &zeron_rpc::RpcClient) -> (String, String) {
+async fn seed(client: &mast_rpc::RpcClient) -> (String, String) {
     client
         .call(
             methods::MUTATE,
@@ -118,7 +118,7 @@ fn effective_texts(response: WorkOutlineQueryResponse) -> Vec<String> {
 async fn instruction_mutations_queries_and_snapshot_state_over_rpc() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let (a, b) = seed(&client).await;
     let mut stream = client
         .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))
@@ -217,7 +217,7 @@ async fn instruction_mutations_queries_and_snapshot_state_over_rpc() {
     assert!(!chat.drift);
     assert_eq!(
         chat.selected_revision_integrity,
-        Some(zeron_proto::SelectedRevisionIntegrity::Ok)
+        Some(mast_proto::SelectedRevisionIntegrity::Ok)
     );
     assert_eq!(selected.instructions.len(), 3);
     assert_eq!(
@@ -338,7 +338,7 @@ async fn instruction_replays_after_restart_do_not_rewrite() {
     let (create, revise, apply);
     {
         let core = assemble(&data);
-        let client = zeron_rpc::memory_client(core.rpc_service());
+        let client = mast_rpc::memory_client(core.rpc_service());
         let (_a, b) = seed(&client).await;
         create = json!({
             "op": "createWorkItemInstruction", "spaceId": "space-1",
@@ -360,7 +360,7 @@ async fn instruction_replays_after_restart_do_not_rewrite() {
         core.shutdown().await;
     }
     let core = assemble(&data);
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let pending = core.workspace.registry_batches_written();
     assert_eq!(
         mutate(&client, create.clone()).await.unwrap(),
@@ -398,7 +398,7 @@ async fn instruction_replays_after_restart_do_not_rewrite() {
 async fn workspace_host_implements_the_instruction_registry_seam() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let (_a, b) = seed(&client).await;
     let registry: &dyn InstructionRegistry = &core.workspace;
     assert!(registry.selected_instruction_revision("chat-1").is_none());
@@ -477,7 +477,7 @@ async fn workspace_host_implements_the_instruction_registry_seam() {
 async fn keep_instruction_session_reverts_the_selection_to_the_session() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let (_a, b) = seed(&client).await;
     let registry: &dyn InstructionRegistry = &core.workspace;
     mutate(

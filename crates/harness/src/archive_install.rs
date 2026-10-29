@@ -81,7 +81,7 @@ pub async fn ensure_installed(
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
     tracing::info!(
-        target: "zeron_harness::adapter_install",
+        target: "mast_harness::adapter_install",
         url = pin.url,
         dir = %tmp_dir.display(),
         "installing {display_name} ACP server"
@@ -366,7 +366,9 @@ mod tests {
             sha512: "test-digest",
         };
         assert!(installed_entry(&pin).is_none());
-        if std::env::var_os("HOME").is_some() || std::env::var_os("ZERON_ADAPTERS_DIR").is_some() {
+        if std::env::var_os("HOME").is_some()
+            || mast_proto::env::var_os("MAST_ADAPTERS_DIR").is_some()
+        {
             let expected = entry_path(&pin).unwrap();
             assert!(expected.ends_with("never-installed-acp/0.0.0-test/server"));
         }

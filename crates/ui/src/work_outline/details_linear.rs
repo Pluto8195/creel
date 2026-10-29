@@ -17,8 +17,8 @@
 use std::collections::BTreeSet;
 
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use zeron_proto::linear::{LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER, LinearProjectRef};
-use zeron_proto::{
+use mast_proto::linear::{LINEAR_PROJECT_REFERENCE, LINEAR_PROVIDER, LinearProjectRef};
+use mast_proto::{
     CreateWorkItemExternalReferenceParams, LinkLinearProjectParams,
     RemoveWorkItemExternalReferenceParams, SetSpaceLinearEnabledParams,
 };
@@ -272,8 +272,8 @@ impl WorkItemDetails {
     /// Fix link: relink a slug-keyed project link by the real project id.
     fn fix_linear_project_link(
         &mut self,
-        reference: zeron_proto::WorkItemExternalReferenceView,
-        project: zeron_proto::linear::LinearProjectSummary,
+        reference: mast_proto::WorkItemExternalReferenceView,
+        project: mast_proto::linear::LinearProjectSummary,
         cx: &mut Context<Self>,
     ) {
         let key = format!("linear:fix:{}", reference.id);

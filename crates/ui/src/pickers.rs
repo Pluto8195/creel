@@ -20,12 +20,12 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 
-use zeron_engine::external_import::{ExternalSessionCandidate, ImportedSession};
-use zeron_engine::registry::HarnessDescriptor;
-use zeron_proto::{
+use mast_engine::external_import::{ExternalSessionCandidate, ImportedSession};
+use mast_engine::registry::HarnessDescriptor;
+use mast_proto::{
     ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel, Space,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 /// Display cap for the ref list (t3code shows pages of 100 with a status
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
@@ -58,12 +58,12 @@ use crate::workspace_chip::{WorkspaceChipTooltip, WorkspaceChoice, WorkspaceOutc
 pub mod approval;
 use approval::ApprovalMode;
 
-/// Dev/testing knob: `ZERON_SLOW_CATALOG_MS=<ms>` delays every harness and
+/// Dev/testing knob: `MAST_SLOW_CATALOG_MS=<ms>` delays every harness and
 /// model catalog result app-side — the chip/tab/list loading states are
 /// sub-second against a warm local daemon and unstageable otherwise
-/// (headless-rig captures; same family as `ZERON_OPEN_PICKER`).
+/// (headless-rig captures; same family as `MAST_OPEN_PICKER`).
 fn slow_catalog_delay() -> Option<std::time::Duration> {
-    std::env::var("ZERON_SLOW_CATALOG_MS")
+    mast_proto::env::var("MAST_SLOW_CATALOG_MS")
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
@@ -468,7 +468,7 @@ pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
 }
 
 /// Directory rows of a listing (files never render in the browser).
-pub fn browser_rows(listing: &FolderListing) -> Vec<&zeron_proto::FolderEntry> {
+pub fn browser_rows(listing: &FolderListing) -> Vec<&mast_proto::FolderEntry> {
     listing.entries.iter().filter(|e| e.is_dir).collect()
 }
 
@@ -535,7 +535,7 @@ pub enum PickerKind {
     /// project pick implies its own host and overrides this).
     Device,
     /// New-session canvas only: browse Claude Code sessions found on disk
-    /// (started outside Zeron) and import one into a brand-new chat.
+    /// (started outside Mast) and import one into a brand-new chat.
     Import,
 }
 
@@ -583,18 +583,18 @@ pub(crate) struct NewChatLauncher {
 #[derive(Debug, Clone, PartialEq)]
 struct PickersSlice {
     selected_chat: Option<String>,
-    chat: Option<zeron_proto::Chat>,
+    chat: Option<mast_proto::Chat>,
     selected_space: Option<String>,
     no_project: bool,
     selected_device: Option<String>,
     local_device_id: Option<String>,
     spaces: Vec<Space>,
-    devices: Vec<(zeron_proto::Device, bool)>,
+    devices: Vec<(mast_proto::Device, bool)>,
     execution: Option<(
         Vec<crate::work_outline::execution::ExecutionMember>,
         Option<crate::work_outline::execution::ExecutionMember>,
     )>,
-    change_request: Option<zeron_proto::ChangeRequestSummary>,
+    change_request: Option<mast_proto::ChangeRequestSummary>,
 }
 
 impl PickersSlice {
@@ -693,7 +693,7 @@ pub struct Pickers {
     /// [`Self::toggle`]'s programmatic clear (see the subscription).
     search_reset_muted: bool,
     focus: FocusHandle,
-    /// `ZERON_OPEN_PICKER` boot: keep claiming focus until it sticks, so
+    /// `MAST_OPEN_PICKER` boot: keep claiming focus until it sticks, so
     /// keyboard nav drives the data-side-opened popover (headless rigs have
     /// no synthetic pointer, but synthetic keys do arrive).
     boot_focus_pending: bool,
@@ -710,7 +710,7 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
-    /// External-session candidates (`~/.claude/projects` sessions Zeron
+    /// External-session candidates (`~/.claude/projects` sessions Mast
     /// didn't launch itself), newest first.
     import_candidates: Loadable<Vec<ExternalSessionCandidate>>,
     import_candidates_task: Option<Task<()>>,
@@ -943,10 +943,10 @@ impl Pickers {
             this.ensure_harnesses(true, cx);
             cx.notify();
         });
-        // Dev/testing knob: `ZERON_OPEN_PICKER=model|traits|repo|branch` boots
+        // Dev/testing knob: `MAST_OPEN_PICKER=model|traits|repo|branch` boots
         // with that popover open — synthetic input can't reach the app on
         // headless compositors, so captures need a data-side path.
-        let boot_open = match std::env::var("ZERON_OPEN_PICKER").ok().as_deref() {
+        let boot_open = match mast_proto::env::var("MAST_OPEN_PICKER").ok().as_deref() {
             _ if launcher.is_some() => None,
             Some("model") => Some(PickerKind::HarnessModel),
             Some("traits") => Some(PickerKind::HarnessModel),
@@ -1054,7 +1054,7 @@ impl Pickers {
     }
 
     /// The selected chat's row (see [`Self::chat_id`]).
-    fn chat_row<'a>(&self, cx: &'a App) -> Option<&'a zeron_proto::Chat> {
+    fn chat_row<'a>(&self, cx: &'a App) -> Option<&'a mast_proto::Chat> {
         if self.launcher.is_some() {
             return None;
         }
@@ -1162,7 +1162,7 @@ impl Pickers {
         // Fall back to the first OFFERED harness: the registry lists the mock
         // harness first, and resolving chips against it would boot the
         // new-chat canvas onto "Mock" instead of Claude Code + its default
-        // model (it stays available under `ZERON_HARNESS=mock`).
+        // model (it stays available under `MAST_HARNESS=mock`).
         self.harnesses
             .ready()
             .and_then(|list| offered_harnesses(list).first().map(|d| d.id))
@@ -1319,7 +1319,7 @@ impl Pickers {
                 // the CLI decide".
                 .or_else(|| {
                     self.effective_harness(cx)
-                        .and_then(|h| zeron_proto::resolve_model(h, None))
+                        .and_then(|h| mast_proto::resolve_model(h, None))
                 }),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
@@ -1500,7 +1500,7 @@ impl Pickers {
         cx.notify();
     }
 
-    /// Capture knob (`ZERON_OPEN_DIALOG=model`): open the combined
+    /// Capture knob (`MAST_OPEN_DIALOG=model`): open the combined
     /// harness/model menu programmatically.
     /// A jump-slot press while the model menu is open. The shell's session
     /// bindings (Mod+1…9) win the dispatch race — gpui runs a matched
@@ -3079,10 +3079,10 @@ impl Pickers {
     }
 
     /// Devices in picker order: this device first, then by name.
-    fn device_rows(&self, cx: &App) -> Vec<zeron_proto::Device> {
+    fn device_rows(&self, cx: &App) -> Vec<mast_proto::Device> {
         let state = self.state.read(cx);
         let local = state.local_device_id.clone();
-        let mut devices: Vec<zeron_proto::Device> = state.devices.clone();
+        let mut devices: Vec<mast_proto::Device> = state.devices.clone();
         devices.sort_by_key(|d| {
             (
                 local.as_deref() != Some(d.id.as_str()),
@@ -3095,7 +3095,7 @@ impl Pickers {
 
     /// [`Self::device_rows`] filtered by the search box (same ranked
     /// substring match as the project rows).
-    fn filtered_device_rows(&self, cx: &App) -> Vec<zeron_proto::Device> {
+    fn filtered_device_rows(&self, cx: &App) -> Vec<mast_proto::Device> {
         let query = self.search.read(cx).text().to_string();
         let rows = self.device_rows(cx);
         let names: Vec<String> = rows.iter().map(|d| d.name.clone()).collect();
@@ -5948,7 +5948,7 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
             .to_ascii_lowercase()
     }
     let catalog = match harness {
-        HarnessId::ClaudeCode => zeron_harness::claude::catalog::static_models(),
+        HarnessId::ClaudeCode => mast_harness::claude::catalog::static_models(),
         _ => Vec::new(),
     };
     // Curated label for an id: exact normalized match, else — for bare
@@ -5989,15 +5989,15 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
                     }
                 }
                 if !model.options.iter().any(|o| o.id == "contextWindow") {
-                    model.options.push(zeron_proto::ModelOption {
+                    model.options.push(mast_proto::ModelOption {
                         id: "contextWindow".into(),
                         label: "Context Window".into(),
                         choices: vec![
-                            zeron_proto::ModelOptionChoice {
+                            mast_proto::ModelOptionChoice {
                                 id: "200k".into(),
                                 label: "200K".into(),
                             },
-                            zeron_proto::ModelOptionChoice {
+                            mast_proto::ModelOptionChoice {
                                 id: "1m".into(),
                                 label: "1M".into(),
                             },
@@ -6035,10 +6035,10 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
     }
 }
 
-/// `ZERON_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
+/// `MAST_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
 /// production launches never set it, so the mock never surfaces there.
 fn mock_harness_enabled() -> bool {
-    std::env::var("ZERON_HARNESS")
+    mast_proto::env::var("MAST_HARNESS")
         .ok()
         .as_deref()
         .map(str::trim)
@@ -6048,7 +6048,7 @@ fn mock_harness_enabled() -> bool {
 /// Production pickers AND chip resolution hide the mock harness — the
 /// registry always lists it, but it must never surface in real UI (neither in
 /// the picker rail nor as the eager default the chips resolve against).
-/// `ZERON_HARNESS=mock` shows it; otherwise it only remains when it's
+/// `MAST_HARNESS=mock` shows it; otherwise it only remains when it's
 /// literally all there is (a dev build with no real harness registered).
 pub fn visible_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
     visible_harnesses_impl(list, mock_harness_enabled())
@@ -6084,7 +6084,7 @@ fn offered_harnesses_impl(list: &[HarnessDescriptor], allow_mock: bool) -> Vec<H
         .into_iter()
         .filter(|d| {
             d.installed
-                && (zeron_engine::registry::descriptor_enabled(d)
+                && (mast_engine::registry::descriptor_enabled(d)
                     || (allow_mock && d.id == HarnessId::Mock))
         })
         .collect()
@@ -6144,7 +6144,7 @@ fn attach_overlay_end(
 impl Render for Pickers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        // A ZERON_OPEN_PICKER popover never went through `toggle`, so claim
+        // A MAST_OPEN_PICKER popover never went through `toggle`, so claim
         // its keyboard focus here (re-claim until it sticks — the shell's
         // first-paint fallback focuses the composer after our first render).
         if self.boot_focus_pending {
@@ -6199,7 +6199,7 @@ impl Render for Pickers {
         // opens, and rail switches inside the picker are instant.
         self.ensure_harnesses(false, cx);
         self.prefetch_models(false, cx);
-        // A popover opened data-side (ZERON_OPEN_PICKER) never went through
+        // A popover opened data-side (MAST_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).
         if matches!(
             self.open_kind(),
@@ -6387,7 +6387,7 @@ impl Render for Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
+    use mast_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
 
     struct ModelShortcutHost {
         focus_sub: Option<gpui::Subscription>,
@@ -7576,8 +7576,8 @@ mod tests {
         });
     }
 
-    fn chip_test_chat(model: Option<&str>, actual: Option<&str>) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    fn chip_test_chat(model: Option<&str>, actual: Option<&str>) -> mast_proto::Chat {
+        mast_proto::Chat {
             id: "chat-chip".into(),
             device_id: "d".into(),
             title: None,
@@ -7586,12 +7586,12 @@ mod tests {
             branch: None,
             checkout_id: None,
             source_context: None,
-            config: Some(zeron_proto::ChatConfig {
+            config: Some(mast_proto::ChatConfig {
                 harness: HarnessId::ClaudeCode,
                 model: model.map(str::to_owned),
                 reasoning: None,
                 model_options: Default::default(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                 auto_approve: false,
             }),
             last_message_preview: None,
@@ -7730,7 +7730,7 @@ mod tests {
             can_install: false,
             enabled: Some(true),
             reasoning_levels: Vec::new(),
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             supports_steering: false,
         }
     }
@@ -8191,7 +8191,7 @@ mod tests {
             default_model(&models).map(|m| &*m.id),
             Some("claude-opus-5-5")
         );
-        assert_eq!(zeron_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
+        assert_eq!(mast_proto::DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
     }
 
     #[test]
@@ -8230,7 +8230,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
             can_install: false,
@@ -8246,7 +8246,7 @@ mod tests {
         assert_eq!(visible[0].id, HarnessId::ClaudeCode);
         let only_mock = vec![descriptor(HarnessId::Mock, "Mock")];
         assert_eq!(visible_harnesses_impl(&only_mock, false).len(), 1);
-        // …and opted back in by ZERON_HARNESS=mock (the e2e rig).
+        // …and opted back in by MAST_HARNESS=mock (the e2e rig).
         assert_eq!(visible_harnesses_impl(&mixed, true).len(), 2);
         assert_eq!(visible_harnesses_impl(&mixed, true)[0].id, HarnessId::Mock);
     }
@@ -8257,7 +8257,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
+            steering_mode: mast_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
             can_install: false,
@@ -8310,7 +8310,7 @@ mod tests {
                 id,
                 name: name.into(),
                 supports_steering: true,
-                steering_mode: zeron_proto::SteeringMode::StepBoundary,
+                steering_mode: mast_proto::SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed,
                 can_install: false,

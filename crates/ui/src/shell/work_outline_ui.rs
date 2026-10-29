@@ -19,7 +19,7 @@ use crate::work_outline::{
     WorkOutlineArchiveRequest, WorkOutlineCommand, WorkOutlineConfirmRequest,
     WorkOutlineDriftRequest, WorkOutlineParentChoice,
 };
-use zeron_proto::DescendantArchivePolicy;
+use mast_proto::DescendantArchivePolicy;
 
 /// Fire one Work Outline command from a keymap binding. One action carrying
 /// the command, like `JumpSession`, rather than nine action types.
@@ -122,7 +122,7 @@ pub(super) enum ReferenceOpen {
     Rejected,
 }
 
-/// Where a reference could open in Zeron.
+/// Where a reference could open in Mast.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SurfaceHost {
     /// The route on screen hosts the side pane (the Chat route with a chat).
@@ -140,14 +140,14 @@ pub(super) enum SurfaceHost {
 pub(super) fn reference_open(
     url: &str,
     host: &SurfaceHost,
-    open_web_links_in_zeron: bool,
+    open_web_links_in_mast: bool,
     embedded_platform: bool,
     force_external: bool,
 ) -> ReferenceOpen {
     match LinkTarget::new(url, url).navigation {
         Err(_) => ReferenceOpen::Rejected,
         Ok(navigation) => {
-            if force_external || !open_web_links_in_zeron || !embedded_platform {
+            if force_external || !open_web_links_in_mast || !embedded_platform {
                 return ReferenceOpen::External(navigation);
             }
             match host {
@@ -661,14 +661,14 @@ impl Shell {
     /// Claude Code: Start Chat's fallback before its own picker resolves.
     /// Instruction editors never use it (their lists are harness-agnostic,
     /// see `SkillSource::for_outline_scope`).
-    pub(crate) fn skill_harness(&self, cx: &App) -> zeron_proto::HarnessId {
+    pub(crate) fn skill_harness(&self, cx: &App) -> mast_proto::HarnessId {
         self.composer
             .read(cx)
             .pickers()
             .read(cx)
             .resolved(cx)
             .harness
-            .unwrap_or(zeron_proto::HarnessId::ClaudeCode)
+            .unwrap_or(mast_proto::HarnessId::ClaudeCode)
     }
 
     /// The one entry point for web and PR links: [`Self::open_web_reference`]
@@ -700,7 +700,7 @@ impl Shell {
             return;
         }
         let host = self.reference_host(url, cx);
-        let in_app = crate::settings::current(cx).open_web_links_in_zeron;
+        let in_app = crate::settings::current(cx).open_web_links_in_mast;
         match reference_open(
             url,
             &host,
@@ -732,7 +732,7 @@ impl Shell {
         }
     }
 
-    /// Where `url` can open in Zeron. The side pane exists only on the Chat
+    /// Where `url` can open in Mast. The side pane exists only on the Chat
     /// route, so from the PR page, the Outline or the Overview it goes to a
     /// chat: the PR's review chat, else the chat the shell has selected.
     /// With neither there is no session to hold a tab, so it opens
@@ -1572,7 +1572,7 @@ mod tests {
                 // The overlays render only behind the Ready gate.
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -1583,7 +1583,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )

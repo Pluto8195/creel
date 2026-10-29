@@ -5,8 +5,8 @@ use super::{BrowserEvent, BrowserSurface};
 use crate::files::client::WorkspaceFilesClient;
 use crate::{icons, surface_chrome, theme::Theme};
 use gpui::{AnyElement, Context, IntoElement, SharedString, Task, Window, div, prelude::*, px};
+use mast_proto::WorkspaceTarget;
 use std::path::PathBuf;
-use zeron_proto::WorkspaceTarget;
 
 /// What to render. `path` is checkout-relative and already jailed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl FragmentSource {
 
     /// The standalone export beside the fragment, if it exists locally.
     pub fn local_preview(&self) -> Option<PathBuf> {
-        let preview = zeron_proto::visualize::preview_sibling(&self.path)?;
+        let preview = mast_proto::visualize::preview_sibling(&self.path)?;
         let path = self.local_root.as_ref()?.join(preview);
         path.is_file().then_some(path)
     }
@@ -133,7 +133,7 @@ impl BrowserSurface {
         let path = view.source.path.clone();
         view._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = client
-                .read_file(zeron_proto::ReadWorkspaceFileRequest {
+                .read_file(mast_proto::ReadWorkspaceFileRequest {
                     target,
                     path: path.clone(),
                 })

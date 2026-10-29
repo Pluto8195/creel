@@ -16,11 +16,11 @@ DELAY=""
 [[ "${1:-}" == "--slow" ]] && DELAY=350
 
 echo "▸ building (first run takes a few minutes)…"
-cargo build -p zeron -q
+cargo build -p mast -q
 
 echo "▸ starting engine daemon on :$IPC"
-env ZERON_DATA_DIR="$DAEMON_DIR" ZERON_IPC_PORT=$IPC ZERON_HARNESS=mock \
-  ${DELAY:+ZERON_MOCK_DELAY_MS=$DELAY} RUST_LOG=warn \
+env MAST_DATA_DIR="$DAEMON_DIR" MAST_IPC_PORT=$IPC MAST_HARNESS=mock \
+  ${DELAY:+MAST_MOCK_DELAY_MS=$DELAY} RUST_LOG=warn \
   ./target/debug/zeron headless &
 DAEMON_PID=$!
 trap 'kill $DAEMON_PID 2>/dev/null || true' EXIT
@@ -29,7 +29,7 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 
-probe() { cargo run -q -p zeron-rpc --example rpc_probe -- "ws://127.0.0.1:$IPC" "$@"; }
+probe() { cargo run -q -p mast-rpc --example rpc_probe -- "ws://127.0.0.1:$IPC" "$@"; }
 
 if [[ ! -f "$DAEMON_DIR/.demo-seeded" ]]; then
   echo "▸ seeding demo chats"
@@ -62,4 +62,4 @@ if [[ ! -f "$DAEMON_DIR/.demo-seeded" ]]; then
 fi
 
 echo "▸ opening zeron (composer is live — type into it; --slow shows streaming)"
-ZERON_DATA_DIR="$UI_DIR" ZERON_IPC_PORT=$IPC RUST_LOG=warn ./target/debug/zeron
+MAST_DATA_DIR="$UI_DIR" MAST_IPC_PORT=$IPC RUST_LOG=warn ./target/debug/zeron

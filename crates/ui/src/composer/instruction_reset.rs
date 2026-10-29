@@ -27,12 +27,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use gpui::{Context, SharedString, div, prelude::*, px};
-use zeron_doc::{MessagePart, SessionCommandPayload, SessionMessageEntry};
-use zeron_proto::{
+use mast_doc::{MessagePart, SessionCommandPayload, SessionMessageEntry};
+use mast_proto::{
     InstructionDeliveryOutcome, InstructionDeliveryRejection, InstructionRejectedSend,
     InstructionRevisionPin,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use super::Composer;
 use crate::theme::Theme;
@@ -243,7 +243,7 @@ impl Composer {
             .state
             .read(cx)
             .work_outline_actions()
-            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+            .keep_instruction_session(mast_proto::KeepInstructionSessionParams {
                 chat_id: chat_id.clone(),
                 operation_id: self.instruction_reset.keep_operation_id(&id),
             });
@@ -293,10 +293,8 @@ impl Composer {
         let supported = {
             let state = self.state.read(cx);
             state.selected_chat.as_deref().is_some_and(|chat_id| {
-                state.chat_host_supports(
-                    chat_id,
-                    zeron_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1,
-                )
+                state
+                    .chat_host_supports(chat_id, mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1)
             })
         };
         if supported && text != crate::attachments::ATTACHMENT_ONLY_TEXT {
@@ -463,7 +461,7 @@ impl Composer {
                 &chat_id,
                 SessionMessageEntry {
                     id: message_id.clone(),
-                    role: zeron_doc::MessageRole::User,
+                    role: mast_doc::MessageRole::User,
                     parts: vec![MessagePart::Text {
                         id: "t0".into(),
                         text: rejected.request.prompt.clone(),
@@ -544,7 +542,7 @@ impl Composer {
             .state
             .read(cx)
             .work_outline_actions()
-            .keep_instruction_session(zeron_proto::KeepInstructionSessionParams {
+            .keep_instruction_session(mast_proto::KeepInstructionSessionParams {
                 chat_id: chat_id.clone(),
                 operation_id: self.instruction_reset.keep_operation_id(command_id),
             });
@@ -554,7 +552,7 @@ impl Composer {
                 &chat_id,
                 SessionMessageEntry {
                     id: message_id.clone(),
-                    role: zeron_doc::MessageRole::User,
+                    role: mast_doc::MessageRole::User,
                     parts: vec![MessagePart::Text {
                         id: "t0".into(),
                         text: rejected.request.prompt.clone(),
@@ -737,7 +735,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::state::AppState;
     use gpui::{Entity, TestAppContext, VisualTestContext};
-    use zeron_proto::{HarnessId, InstructionHostUnsupportedReason, RunRequest, SandboxLevel};
+    use mast_proto::{HarnessId, InstructionHostUnsupportedReason, RunRequest, SandboxLevel};
 
     pub(crate) fn rejected(command_id: &str, message_id: &str) -> InstructionRejectedSend {
         InstructionRejectedSend {
@@ -807,7 +805,7 @@ pub(crate) mod tests {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
+                mast_rpc::RpcClient::new(out, inbound),
             ));
             state.selected_chat = Some("c".into());
         });
@@ -877,7 +875,7 @@ pub(crate) mod tests {
                 "c",
                 SessionMessageEntry {
                     id: "m1".into(),
-                    role: zeron_doc::MessageRole::User,
+                    role: mast_doc::MessageRole::User,
                     parts: Vec::new(),
                     created_at: 1,
                     device_id: "local".into(),
@@ -956,7 +954,7 @@ pub(crate) mod tests {
     fn gated_queued_rows_confirm_or_cancel_the_context_reset(cx: &mut TestAppContext) {
         let (mut h, vcx) = harness(cx);
         let _guard = h._runtime.enter();
-        let gate = zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+        let gate = mast_doc::QueueDeliveryGate::InstructionContextResetRequired {
             harness: HarnessId::Codex,
             revision_id: "rev-b".into(),
             revision_hash: "hash-b".into(),
@@ -974,15 +972,15 @@ pub(crate) mod tests {
             state.devices = vec![
                 serde_json::from_value(serde_json::json!({
                     "id": "d", "name": "Studio", "platform": "macos", "lastSeenAt": null,
-                    "capabilities": [zeron_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1],
+                    "capabilities": [mast_proto::capabilities::MESSAGE_QUEUE_ACTIONS_V1],
                 }))
                 .unwrap(),
             ];
-            let mut first = zeron_doc::QueuedMessage::new("q1", "first message", "d");
+            let mut first = mast_doc::QueuedMessage::new("q1", "first message", "d");
             first.delivery_gate = Some(gate.clone());
-            let mut second = zeron_doc::QueuedMessage::new("q2", "second message", "d");
+            let mut second = mast_doc::QueuedMessage::new("q2", "second message", "d");
             second.delivery_gate = Some(gate);
-            let plain = zeron_doc::QueuedMessage::new("q3", "plain", "d");
+            let plain = mast_doc::QueuedMessage::new("q3", "plain", "d");
             state.queue = vec![first, second, plain];
         });
         draw(vcx);
@@ -1032,7 +1030,7 @@ pub(crate) mod tests {
             move |method, params| {
                 assert_eq!(method, methods::WORK_OUTLINE_MUTATE);
                 recorded.lock().unwrap().push(params);
-                reply.clone().map_err(zeron_rpc::RpcError::Failed)
+                reply.clone().map_err(mast_rpc::RpcError::Failed)
             },
         ));
         h.state.update(vcx, |state, _| {
@@ -1129,7 +1127,7 @@ pub(crate) mod tests {
             vcx,
             Ok(serde_json::json!({ "applicationId": "a-keep" })),
         );
-        let gate = zeron_doc::QueueDeliveryGate::InstructionContextResetRequired {
+        let gate = mast_doc::QueueDeliveryGate::InstructionContextResetRequired {
             harness: HarnessId::Codex,
             revision_id: "rev-b".into(),
             revision_hash: "hash-b".into(),
@@ -1137,7 +1135,7 @@ pub(crate) mod tests {
             since_ms: 1,
         };
         h.state.update(vcx, |state, _| {
-            let mut row = zeron_doc::QueuedMessage::new("q1", "first message", "d");
+            let mut row = mast_doc::QueuedMessage::new("q1", "first message", "d");
             row.delivery_gate = Some(gate);
             state.queue = vec![row];
         });

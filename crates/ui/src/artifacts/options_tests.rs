@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+use mast_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactOptionPick, ArtifactView};
+use mast_rpc::methods;
 use serde_json::json;
-use zeron_proto::{ArtifactContentEncoding, ArtifactKind, ArtifactOptionPick, ArtifactView};
-use zeron_rpc::methods;
 
 use super::tab::{ArtifactTab, FakeWebHost};
 use super::tests::{
@@ -23,7 +23,7 @@ const FIVE: &str = r#"{"title":"Layouts","options":[
   {"id":"C","label":"Three","path":"c.html"},{"id":"D","label":"Four","path":"d.html"},
   {"id":"E","label":"Five","path":"e.html"}]}"#;
 
-fn chat(id: &str) -> zeron_proto::Chat {
+fn chat(id: &str) -> mast_proto::Chat {
     serde_json::from_value(json!({
         "id": id, "deviceId": "dev", "archived": false, "createdAt": "2026-07-19T12:00:00Z",
     }))
@@ -284,7 +284,7 @@ fn plan_tab<'a>(
     cx: &'a mut TestAppContext,
     linear_enabled: bool,
     pinned: bool,
-    detail: Result<serde_json::Value, zeron_rpc::RpcError>,
+    detail: Result<serde_json::Value, mast_rpc::RpcError>,
 ) -> (Entity<ArtifactTab>, Calls, &'a mut VisualTestContext) {
     let reply: Reply = Arc::new(move |method, params| match method {
         methods::ARTIFACT_DRIFT => Ok(json!({ "artifactId": params["artifactId"] })),
@@ -296,7 +296,7 @@ fn plan_tab<'a>(
         )),
         "LinearProjectDetail" => match &detail {
             Ok(value) => Ok(value.clone()),
-            Err(error) => Err(zeron_rpc::RpcError::Failed(error.to_string())),
+            Err(error) => Err(mast_rpc::RpcError::Failed(error.to_string())),
         },
         other => panic!("unexpected {other}"),
     });
@@ -373,7 +373,7 @@ fn the_panel_needs_the_pinned_plan_and_linear_on(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_failed_linear_read_says_so_instead_of_hiding_the_plan(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
-    let err = zeron_rpc::RpcError::Failed("linear/missingKey: no key".into());
+    let err = mast_rpc::RpcError::Failed("linear/missingKey: no key".into());
     let (_tab, _calls, vcx) = plan_tab(cx, true, true, Err(err));
     assert!(has(vcx, "artifact-plan-linear-error"));
     assert!(!has(vcx, "artifact-plan-linear-panel"));

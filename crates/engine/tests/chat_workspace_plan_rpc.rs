@@ -8,8 +8,8 @@
 
 use std::path::Path;
 
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::HarnessId;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::HarnessId;
 
 const CHAT: &str = "chat-smart-worktree";
 
@@ -50,11 +50,11 @@ async fn plan_chat_workspace_falls_back_to_heuristic_without_a_typesafe_key() {
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     let reply = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_WORKSPACE,
+            mast_rpc::methods::PLAN_CHAT_WORKSPACE,
             serde_json::json!({"message": "please implement retry logic", "cwd": "/tmp"}),
         )
         .await
@@ -65,7 +65,7 @@ async fn plan_chat_workspace_falls_back_to_heuristic_without_a_typesafe_key() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_WORKSPACE,
+            mast_rpc::methods::PLAN_CHAT_WORKSPACE,
             serde_json::json!({"message": "why is this endpoint slow?", "cwd": "/tmp"}),
         )
         .await
@@ -90,14 +90,14 @@ async fn create_chat_worktree_stamps_the_chat_rows_cwd() {
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     // The chat row must already exist for the cwd stamp to land — same
     // precondition the composer's ordinary `createChat` flow satisfies
     // before a chat's first send.
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({
                 "op": "createChat",
                 "chatId": CHAT,
@@ -109,7 +109,7 @@ async fn create_chat_worktree_stamps_the_chat_rows_cwd() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::CREATE_CHAT_WORKTREE,
+            mast_rpc::methods::CREATE_CHAT_WORKTREE,
             serde_json::json!({
                 "chatId": CHAT,
                 "repoPath": repo_dir.to_string_lossy(),
@@ -155,13 +155,13 @@ async fn create_chat_worktree_without_an_existing_chat_row_still_creates_the_wor
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
 
     // No createChat call first — the RPC must not fail just because the
     // stamp is a no-op (`Ok(false)`); the worktree itself is still real.
     let reply = client
         .call(
-            zeron_rpc::methods::CREATE_CHAT_WORKTREE,
+            mast_rpc::methods::CREATE_CHAT_WORKTREE,
             serde_json::json!({
                 "chatId": "chat-with-no-row-yet",
                 "repoPath": repo_dir.to_string_lossy(),
@@ -181,7 +181,7 @@ async fn create_chat_worktree_without_an_existing_chat_row_still_creates_the_wor
 
 // ── PLAN_CHAT_CLOSEOUT / CLOSE_CHAT_WORKTREE ─────────────────────────────────
 
-async fn assemble(tmp_path: &Path) -> (EngineCore, zeron_rpc::RpcClient) {
+async fn assemble(tmp_path: &Path) -> (EngineCore, mast_rpc::RpcClient) {
     let core = EngineCore::assemble(
         &tmp_path.join("data"),
         std::sync::Arc::new(HarnessRegistry::new()),
@@ -189,7 +189,7 @@ async fn assemble(tmp_path: &Path) -> (EngineCore, zeron_rpc::RpcClient) {
         None,
     )
     .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     (core, client)
 }
 
@@ -198,21 +198,21 @@ async fn assemble(tmp_path: &Path) -> (EngineCore, zeron_rpc::RpcClient) {
 async fn repo_chat_and_worktree(
     tmp_path: &Path,
     core: &EngineCore,
-    client: &zeron_rpc::RpcClient,
+    client: &mast_rpc::RpcClient,
     name: &str,
 ) -> (std::path::PathBuf, String) {
     let repo_dir = tmp_path.join("repo");
     init_repo(&repo_dir);
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({"op": "createChat", "chatId": CHAT, "deviceId": core.device_id}),
         )
         .await
         .expect("createChat");
     let reply = client
         .call(
-            zeron_rpc::methods::CREATE_CHAT_WORKTREE,
+            mast_rpc::methods::CREATE_CHAT_WORKTREE,
             serde_json::json!({"chatId": CHAT, "repoPath": repo_dir.to_string_lossy(), "name": name}),
         )
         .await
@@ -233,7 +233,7 @@ async fn plan_chat_closeout_reply_has_exactly_the_pinned_wire_fields() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"chatId": CHAT, "cwd": wt}),
         )
         .await
@@ -279,7 +279,7 @@ async fn plan_chat_closeout_reply_has_exactly_the_pinned_wire_fields() {
     // for a chat whose stored cwd points at a different worktree.
     let error = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"chatId": CHAT, "cwd": tmp_path.to_string_lossy()}),
         )
         .await
@@ -299,7 +299,7 @@ async fn close_chat_worktree_refuses_dirty_then_force_removes_and_archives() {
 
     let err = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"chatId": CHAT, "cwd": wt, "force": false}),
         )
         .await
@@ -310,7 +310,7 @@ async fn close_chat_worktree_refuses_dirty_then_force_removes_and_archives() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"chatId": CHAT, "cwd": wt, "force": true}),
         )
         .await
@@ -340,7 +340,7 @@ async fn close_chat_worktree_clean_merged_happy_path_archives_the_chat() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"chatId": CHAT, "cwd": wt, "force": false}),
         )
         .await
@@ -377,7 +377,7 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
     let (core, client) = assemble(&tmp_path).await;
     let plan = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"cwd": wt.to_string_lossy()}),
         )
         .await
@@ -389,7 +389,7 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
     // open local chat, even when that chat is idle.
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({
                 "op": "createChat",
                 "chatId": CHAT,
@@ -401,14 +401,14 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
         .expect("create owner chat");
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({"op": "renameChat", "chatId": CHAT, "title": "Owner chat"}),
         )
         .await
         .expect("rename owner chat");
     let plan = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"cwd": wt.to_string_lossy()}),
         )
         .await
@@ -420,7 +420,7 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
 
     let error = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"cwd": wt.to_string_lossy(), "force": true}),
         )
         .await
@@ -429,14 +429,14 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
 
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            mast_rpc::methods::MUTATE,
             serde_json::json!({"op": "setChatArchived", "chatId": CHAT, "archived": true}),
         )
         .await
         .expect("archive owner chat");
     let plan = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"cwd": wt.to_string_lossy()}),
         )
         .await
@@ -444,7 +444,7 @@ async fn repo_map_can_close_an_unmatched_registered_worktree_without_a_marker() 
     assert_eq!(plan["sharedChats"], serde_json::json!([]));
     let reply = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"cwd": wt.to_string_lossy(), "force": false}),
         )
         .await
@@ -483,14 +483,14 @@ async fn close_chat_worktree_refuses_while_a_claude_process_sits_in_the_worktree
 
     let plan = client
         .call(
-            zeron_rpc::methods::PLAN_CHAT_CLOSEOUT,
+            mast_rpc::methods::PLAN_CHAT_CLOSEOUT,
             serde_json::json!({"chatId": CHAT, "cwd": wt}),
         )
         .await
         .expect("plan");
     let err = client
         .call(
-            zeron_rpc::methods::CLOSE_CHAT_WORKTREE,
+            mast_rpc::methods::CLOSE_CHAT_WORKTREE,
             serde_json::json!({"chatId": CHAT, "cwd": wt, "force": true}),
         )
         .await;

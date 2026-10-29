@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// Open a Zeron conversation URL.
+    /// Open a Mast conversation URL.
     #[arg(value_name = "URL")]
     open_url: Option<String>,
     #[cfg(windows)]
@@ -44,7 +44,7 @@ enum Command {
     #[cfg(target_os = "linux")]
     /// Trigger an Appshot in the running headed instance (desktop shortcut fallback).
     Appshot,
-    /// Serve the Zeron MCP (Model Context Protocol) server on stdin/stdout,
+    /// Serve the Mast MCP (Model Context Protocol) server on stdin/stdout,
     /// proxying to the running engine's IPC. Agents use it to create, read,
     /// and message chats. Logs go to stderr; stdout is the protocol.
     Mcp,
@@ -63,7 +63,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DaemonCommand {
-    /// Install, enable, and start the service (captures ZERON_* env).
+    /// Install, enable, and start the service (captures MAST_* env).
     Install,
     /// Stop and remove the service.
     Uninstall,
@@ -78,28 +78,28 @@ enum DaemonCommand {
 }
 
 /// Production edge (Cloudflare Worker + Durable Objects on the zeron.sh zone).
-/// `ZERON_EDGE_URL` overrides (local dev / self-hosting).
+/// `MAST_EDGE_URL` overrides (local dev / self-hosting).
 const DEFAULT_EDGE_URL: &str = "https://edge.zeron.sh";
 
 /// Production WorkOS AuthKit client id — public knowledge (it appears in every
-/// authorize URL), so baking it in is safe. Overridden by `ZERON_WORKOS_CLIENT_ID`;
-/// set it to the empty string — or set a dev bearer via `ZERON_EDGE_TOKEN` — to
+/// authorize URL), so baking it in is safe. Overridden by `MAST_WORKOS_CLIENT_ID`;
+/// set it to the empty string — or set a dev bearer via `MAST_EDGE_TOKEN` — to
 /// force dev-mode auth instead.
 const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
 
 fn edge_url_from_env() -> String {
-    std::env::var("ZERON_EDGE_URL")
+    mast_proto::env::var("MAST_EDGE_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
 }
 
 /// WorkOS client id resolution: explicit env wins (empty string = dev mode);
-/// otherwise a `ZERON_EDGE_TOKEN` dev bearer keeps dev mode (smoke tests,
+/// otherwise a `MAST_EDGE_TOKEN` dev bearer keeps dev mode (smoke tests,
 /// local wrangler); otherwise the baked production client id makes optional
 /// sync available while a bare start remains local-only.
 fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
-    match std::env::var("ZERON_WORKOS_CLIENT_ID") {
+    match mast_proto::env::var("MAST_WORKOS_CLIENT_ID") {
         Ok(v) if v.trim().is_empty() => None,
         Ok(v) => Some(v),
         Err(_) if edge_token.is_some() => None,
@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     #[cfg(windows)]
     if let Some(pid) = cli.wait_for_exit {
-        zeron_update::windows::wait_for_exit(pid)?;
+        mast_update::windows::wait_for_exit(pid)?;
     }
     // Long-running modes log at info, one-shot CLI commands at warn (RUST_LOG
     // overrides either).
@@ -201,7 +201,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Headless) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
-                let engine = zeron_engine::Engine::new(engine_config_from_env());
+                let engine = mast_engine::Engine::new(engine_config_from_env());
                 engine.run().await
             })
         }
@@ -223,11 +223,11 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Mcp) => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(zeron_mcp::run(zeron_mcp::McpConfig::from_env()))
+            runtime.block_on(mast_mcp::run(mast_mcp::McpConfig::from_env()))
         }
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => {
-            zeron_ui::appshots::request_running_appshot(&engine_config_from_env().data_dir)
+            mast_ui::appshots::request_running_appshot(&engine_config_from_env().data_dir)
                 .map_err(anyhow::Error::msg)
         }
         Some(Command::Update { check }) => {
@@ -243,20 +243,20 @@ fn main() -> anyhow::Result<()> {
             DaemonCommand::Status => daemon::status(),
         },
         None => {
-            let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
-            // Headed: the UI probes ZERON_IPC_PORT and connects to a running
+            let edge_token = mast_proto::env::var("MAST_EDGE_TOKEN").ok();
+            // Headed: the UI probes MAST_IPC_PORT and connects to a running
             // daemon, or embeds the engine in-process (ARCHITECTURE §1).
-            zeron_ui::run_app(zeron_ui::UiConfig {
+            mast_ui::run_app(mast_ui::UiConfig {
                 data_dir: paths::data_dir(),
-                ipc_port: std::env::var("ZERON_IPC_PORT")
+                ipc_port: mast_proto::env::var("MAST_IPC_PORT")
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(27654),
                 edge_url: edge_url_from_env(),
                 workos_client_id: workos_client_id_from_env(&edge_token),
                 edge_token,
-                org_id: std::env::var("ZERON_ORG_ID").ok(),
-                default_harness: zeron_ui::HarnessId::ClaudeCode,
+                org_id: mast_proto::env::var("MAST_ORG_ID").ok(),
+                default_harness: mast_ui::HarnessId::ClaudeCode,
                 initial_url: cli.open_url,
             });
             Ok(())
@@ -292,20 +292,20 @@ fn attach_parent_console() {
 /// The env-resolved engine configuration shared by `headless`, `login`,
 /// `logout`, and `status` — one resolution so the CLI auth commands always
 /// operate on the exact session the daemon will load.
-fn engine_config_from_env() -> zeron_engine::EngineConfig {
+fn engine_config_from_env() -> mast_engine::EngineConfig {
     // Dev-mode bearer (no WorkOS): an explicit token enables sync.
-    let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
-    zeron_engine::EngineConfig {
+    let edge_token = mast_proto::env::var("MAST_EDGE_TOKEN").ok();
+    mast_engine::EngineConfig {
         data_dir: paths::data_dir(),
         edge_url: edge_url_from_env(),
-        ipc_port: std::env::var("ZERON_IPC_PORT")
+        ipc_port: mast_proto::env::var("MAST_IPC_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(27654),
         default_harness: harness_from_env(),
-        // WorkOS mode: the signed-in session's org wins; ZERON_ORG_ID (dev
+        // WorkOS mode: the signed-in session's org wins; MAST_ORG_ID (dev
         // default "dev-org") scopes the workspace room otherwise.
-        org_id: std::env::var("ZERON_ORG_ID").ok(),
+        org_id: mast_proto::env::var("MAST_ORG_ID").ok(),
         // Real auth against production by default; see
         // `workos_client_id_from_env` for the dev-mode escape hatches.
         workos_client_id: workos_client_id_from_env(&edge_token),
@@ -313,19 +313,22 @@ fn engine_config_from_env() -> zeron_engine::EngineConfig {
     }
 }
 
-/// `ZERON_HARNESS` (kebab-case id) picks the default harness for chats without a
+/// `MAST_HARNESS` (kebab-case id) picks the default harness for chats without a
 /// config row — `mock` powers the e2e smoke; default `claude-code`.
-fn harness_from_env() -> zeron_engine::HarnessId {
-    match std::env::var("ZERON_HARNESS").as_deref().map(str::trim) {
-        Ok("mock") => zeron_engine::HarnessId::Mock,
-        Ok("codex") => zeron_engine::HarnessId::Codex,
-        Ok("cursor") => zeron_engine::HarnessId::Cursor,
-        Ok("devin") => zeron_engine::HarnessId::Devin,
-        Ok("grok") => zeron_engine::HarnessId::Grok,
-        Ok("hermes") => zeron_engine::HarnessId::Hermes,
-        Ok("pi") => zeron_engine::HarnessId::Pi,
-        Ok("antigravity") => zeron_engine::HarnessId::Antigravity,
-        _ => zeron_engine::HarnessId::ClaudeCode,
+fn harness_from_env() -> mast_engine::HarnessId {
+    match mast_proto::env::var("MAST_HARNESS")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("mock") => mast_engine::HarnessId::Mock,
+        Ok("codex") => mast_engine::HarnessId::Codex,
+        Ok("cursor") => mast_engine::HarnessId::Cursor,
+        Ok("devin") => mast_engine::HarnessId::Devin,
+        Ok("grok") => mast_engine::HarnessId::Grok,
+        Ok("hermes") => mast_engine::HarnessId::Hermes,
+        Ok("pi") => mast_engine::HarnessId::Pi,
+        Ok("antigravity") => mast_engine::HarnessId::Antigravity,
+        _ => mast_engine::HarnessId::ClaudeCode,
     }
 }
 
@@ -333,13 +336,13 @@ fn harness_from_env() -> zeron_engine::HarnessId {
 /// The introspection surface every 2026-08 incident was missing — "is this
 /// device's workspace room actually receiving?" as a one-liner.
 async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
-    let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
+    let client = mast_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
         .await
         .map_err(|e| {
             anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is zeron running?")
         })?;
     let status = client
-        .call(zeron_rpc::methods::SYNC_STATUS, serde_json::json!({}))
+        .call(mast_rpc::methods::SYNC_STATUS, serde_json::json!({}))
         .await
         .map_err(|e| anyhow::anyhow!("SyncStatus failed: {e}"))?;
     let now = status.get("nowMs").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -452,7 +455,7 @@ async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `{data_dir}/logs/zeron-{mode}.log`, previous launch preserved as `.old`.
+/// `{data_dir}/logs/mast-{mode}.log`, previous launch preserved as `.old`.
 /// Headed and headless are separate files so an embedded-engine app and a
 /// daemon on the same machine never interleave writes.
 ///
@@ -463,7 +466,7 @@ async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
 /// second unlinked it entirely, and the daemon spent the rest of the incident
 /// logging to an orphaned inode (an entire day of sync diagnostics gone at
 /// the exact moment they were needed). A launch that finds the canonical file
-/// locked logs to `zeron-{mode}.{pid}.log` instead; the next lock-holding
+/// locked logs to `mast-{mode}.{pid}.log` instead; the next lock-holding
 /// launch sweeps pid-suffixed files older than a week.
 fn open_log_file(mode: &str) -> Option<std::fs::File> {
     let dir = paths::data_dir().join("logs");
@@ -473,7 +476,7 @@ fn open_log_file(mode: &str) -> Option<std::fs::File> {
 /// Dir-parameterized body of [`open_log_file`] (unit-testable without env).
 fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> {
     std::fs::create_dir_all(dir).ok()?;
-    let path = dir.join(format!("zeron-{mode}.log"));
+    let path = dir.join(format!("mast-{mode}.log"));
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
@@ -490,7 +493,7 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
         if rc != 0 {
             // A live process owns the canonical log — leave it alone.
             return std::fs::File::create(
-                dir.join(format!("zeron-{mode}.{}.log", std::process::id())),
+                dir.join(format!("mast-{mode}.{}.log", std::process::id())),
             )
             .ok();
         }
@@ -499,7 +502,7 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
         // to rotate — the probe itself created the empty file.)
         drop(existing);
         if preexisting {
-            let _ = std::fs::rename(&path, dir.join(format!("zeron-{mode}.log.old")));
+            let _ = std::fs::rename(&path, dir.join(format!("mast-{mode}.log.old")));
         }
         let file = std::fs::File::create(&path).ok()?;
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -508,7 +511,7 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
     }
     #[cfg(not(unix))]
     {
-        let _ = std::fs::rename(&path, dir.join(format!("zeron-{mode}.log.old")));
+        let _ = std::fs::rename(&path, dir.join(format!("mast-{mode}.log.old")));
         std::fs::File::create(&path).ok()
     }
 }
@@ -523,14 +526,14 @@ mod log_file_tests {
         let dir = dir.path();
         // First launch owns the canonical file and keeps writing.
         let first = open_log_file_in(dir, "headed").expect("first log");
-        assert!(dir.join("zeron-headed.log").is_file());
+        assert!(dir.join("mast-headed.log").is_file());
         // Second launch while the first is alive: canonical file untouched,
         // pid-suffixed overflow file instead (the 2026-08-04 clobber).
         let second = open_log_file_in(dir, "headed").expect("second log");
-        let pid_path = dir.join(format!("zeron-headed.{}.log", std::process::id()));
+        let pid_path = dir.join(format!("mast-headed.{}.log", std::process::id()));
         assert!(pid_path.is_file(), "expected pid-suffixed overflow log");
         assert!(
-            !dir.join("zeron-headed.log.old").exists(),
+            !dir.join("mast-headed.log.old").exists(),
             "live canonical log must not be rotated away"
         );
         drop(second);
@@ -538,27 +541,29 @@ mod log_file_tests {
         drop(first);
         let third = open_log_file_in(dir, "headed").expect("third log");
         assert!(
-            dir.join("zeron-headed.log.old").is_file(),
+            dir.join("mast-headed.log.old").is_file(),
             "rotation resumes"
         );
         drop(third);
     }
 }
 
-/// Delete `zeron-{mode}.{pid}.log` overflow files older than a week — they
+/// Delete `mast-{mode}.{pid}.log` overflow files older than a week — they
 /// only exist when a second instance raced a live one for the canonical log.
 #[cfg(unix)]
 fn sweep_stale_pid_logs(dir: &std::path::Path, mode: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let prefix = format!("zeron-{mode}.");
+    // Overflow logs from before the rename carry the old `zeron-` prefix.
+    let prefixes = [format!("mast-{mode}."), format!("zeron-{mode}.")];
     let week = std::time::Duration::from_secs(7 * 24 * 60 * 60);
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Some(middle) = name
-            .strip_prefix(&prefix)
+        let Some(middle) = prefixes
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix.as_str()))
             .and_then(|rest| rest.strip_suffix(".log"))
         else {
             continue;

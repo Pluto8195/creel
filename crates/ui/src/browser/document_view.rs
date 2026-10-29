@@ -9,20 +9,24 @@ use gpui::{Context, Window};
 
 /// Scheme of the bridge the artifact wrapper uses to hand a clicked link to
 /// the host: the frame posts the link's raw `href` to the outer document,
-/// which activates a hidden `<a href="zeron-link:<encoded href>">`. The
+/// which activates a hidden `<a href="mast-link:<encoded href>">`. The
 /// navigation delegate cancels it and forwards the decoded `href`
 /// ([`DocumentAction::Link`]). Raw `href`s matter: a relative `ui/foo.tsx:120`
 /// never resolves to a URL inside an `about:srcdoc` frame.
-pub(crate) const LINK_BRIDGE_SCHEME: &str = "zeron-link:";
+pub(crate) const LINK_BRIDGE_SCHEME: &str = "mast-link:";
+/// Pre-rename spelling, still honoured on receive.
+pub(crate) const LEGACY_LINK_BRIDGE_SCHEME: &str = "zeron-link:";
 
 /// Scheme of the general frame → host message bridge (Artifacts phase 4):
-/// the frame posts `{zeronMsg: {...}}` to the outer document, which
-/// activates a hidden `<a href="zeron-msg:<encoded JSON>">`. The delegate
+/// the frame posts `{mastMsg: {...}}` to the outer document, which
+/// activates a hidden `<a href="mast-msg:<encoded JSON>">`. The delegate
 /// cancels it and forwards the decoded JSON ([`DocumentAction::Message`]);
 /// the Artifact tab parses and validates it (`artifacts::bridge`). Same
 /// channel and guarantees as the link bridge: only user-activated
 /// navigations count, and the payload is capped.
-pub(crate) const MESSAGE_BRIDGE_SCHEME: &str = "zeron-msg:";
+pub(crate) const MESSAGE_BRIDGE_SCHEME: &str = "mast-msg:";
+/// Pre-rename spelling, still honoured on receive.
+pub(crate) const LEGACY_MESSAGE_BRIDGE_SCHEME: &str = "zeron-msg:";
 
 /// Largest accepted bridge message, in bytes of decoded JSON.
 pub(crate) const MAX_BRIDGE_MESSAGE_BYTES: usize = 16 * 1024;
@@ -70,14 +74,20 @@ pub(super) fn document_decision(url: &str, link_activated: bool) -> DocumentDeci
     if !link_activated {
         return cancel(DocumentAction::None);
     }
-    if let Some(encoded) = url.strip_prefix(MESSAGE_BRIDGE_SCHEME) {
+    if let Some(encoded) = url
+        .strip_prefix(MESSAGE_BRIDGE_SCHEME)
+        .or_else(|| url.strip_prefix(LEGACY_MESSAGE_BRIDGE_SCHEME))
+    {
         return cancel(
             crate::workspace_links::percent_decode_path(encoded)
                 .filter(|json| json.len() <= MAX_BRIDGE_MESSAGE_BYTES)
                 .map_or(DocumentAction::None, DocumentAction::Message),
         );
     }
-    if let Some(encoded) = url.strip_prefix(LINK_BRIDGE_SCHEME) {
+    if let Some(encoded) = url
+        .strip_prefix(LINK_BRIDGE_SCHEME)
+        .or_else(|| url.strip_prefix(LEGACY_LINK_BRIDGE_SCHEME))
+    {
         return cancel(
             crate::workspace_links::percent_decode_path(encoded)
                 .map_or(DocumentAction::None, DocumentAction::Link),
@@ -181,7 +191,7 @@ mod tests {
     use super::*;
     use crate::artifacts::links::{ArtifactLink, BlockedReason, classify};
 
-    /// What the Zeron side does for a fake navigation action: `None` for an
+    /// What the Mast side does for a fake navigation action: `None` for an
     /// allowed (in-page) navigation, else the classification of the link the
     /// delegate reports.
     fn route(url: &str, link_activated: bool) -> (bool, Option<ArtifactLink>) {
@@ -236,10 +246,10 @@ mod tests {
                 bridged("flagship/orders.py"),
                 file("flagship/orders.py", None),
             ),
-            (bridged("zeron-file:src/a%20b.rs"), file("src/a b.rs", None)),
+            (bridged("mast-file:src/a%20b.rs"), file("src/a b.rs", None)),
             (
-                bridged("zeron-artifact:art_1"),
-                ArtifactLink::Artifact("zeron-artifact:art_1".into()),
+                bridged("mast-artifact:art_1"),
+                ArtifactLink::Artifact("mast-artifact:art_1".into()),
             ),
             (
                 bridged("https://example.com/x?y=1"),
@@ -286,13 +296,36 @@ mod tests {
             "https://example.com/",
             "file:///etc/passwd",
             "javascript:alert(1)",
-            "zeron-link:ui%2Ffoo.tsx",
+            "mast-link:ui%2Ffoo.tsx",
             "data:text/html,x",
         ] {
             assert_eq!(route(url, false), (false, None), "{url}");
         }
         // A malformed bridge payload is dropped rather than guessed at.
-        assert_eq!(route("zeron-link:%FF%FE", true), (false, None));
+        assert_eq!(route("mast-link:%FF%FE", true), (false, None));
+    }
+
+    #[test]
+    fn legacy_bridge_schemes_are_still_accepted() {
+        let (allow, link) = route("zeron-link:ui%2Ffoo.tsx", true);
+        assert!(!allow);
+        assert_eq!(link, route("mast-link:ui%2Ffoo.tsx", true).1);
+        assert!(link.is_some());
+        let json = r#"{"t":"x"}"#;
+        let enc = "%7B%22t%22%3A%22x%22%7D";
+        for scheme in ["mast-msg:", "zeron-msg:"] {
+            let decision = document_decision(&format!("{scheme}{enc}"), true);
+            assert!(!decision.allow);
+            assert_eq!(
+                decision.action,
+                DocumentAction::Message(json.into()),
+                "{scheme}"
+            );
+        }
+        assert_eq!(
+            document_decision("zeron-msg:%7B%22t%22%3A%22x%22%7D", false).action,
+            DocumentAction::None
+        );
     }
 
     #[test]
@@ -318,7 +351,7 @@ mod tests {
         // Not a click: dropped. Malformed or oversized: dropped.
         assert_eq!(document_decision(&url, false).action, DocumentAction::None);
         assert_eq!(
-            document_decision("zeron-msg:%FF", true).action,
+            document_decision("mast-msg:%FF", true).action,
             DocumentAction::None
         );
         let big = encode(&"x".repeat(MAX_BRIDGE_MESSAGE_BYTES + 1));

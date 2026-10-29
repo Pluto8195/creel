@@ -4,7 +4,7 @@
 //! Finder, View source, Pin as plan / Unpin, Promote to docs/plans/), and the
 //! body rendered by kind:
 //!
-//! - markdown: the native Markdown preview (`zeron-file:` and `path:line`
+//! - markdown: the native Markdown preview (`mast-file:` and `path:line`
 //!   links open files);
 //! - htmlFragment / htmlPage / mermaid: the sandboxed web document
 //!   ([`super::document`]) in an embedded Browser surface;
@@ -22,7 +22,7 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Task,
     WeakEntity, Window, div, prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArtifactContentParams, ArtifactContentReply, ArtifactKind, ArtifactPinParams,
     ArtifactPromoteParams, ArtifactView, TextDiffLine,
 };
@@ -445,7 +445,7 @@ impl ArtifactTab {
             .cloned()
     }
 
-    /// The artifact's canonical checkout (the parent of `.zeron/`), the root
+    /// The artifact's canonical checkout (the parent of `.mast/` or the legacy `.zeron/`), the root
     /// its links resolve against first.
     pub(crate) fn canonical_root(&self, cx: &App) -> Option<String> {
         let artifact = self.artifact(cx)?;

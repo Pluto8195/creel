@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use zeron_proto::{
+use mast_proto::{
     DescendantArchivePolicy, FieldPatch, InstructionPlacement, WorkItemChanges, WorkItemStatus,
     WorkOutlinePlacement, WorkOutlineSnapshot,
 };
@@ -81,7 +81,7 @@ pub(crate) struct ReferenceData {
 
 impl ReferenceData {
     pub(crate) fn reference_id(&self) -> String {
-        zeron_proto::external_reference_id(
+        mast_proto::external_reference_id(
             &self.work_item_id,
             &self.provider,
             &self.reference_type,
@@ -99,7 +99,7 @@ impl Step {
                 work_item_id,
                 parent,
                 placement,
-            } => actions.move_work_item(zeron_proto::MoveWorkItemParams {
+            } => actions.move_work_item(mast_proto::MoveWorkItemParams {
                 work_item_id,
                 destination_parent_work_item_id: parent,
                 placement,
@@ -108,20 +108,20 @@ impl Step {
             Step::Update {
                 work_item_id,
                 changes,
-            } => actions.update_work_item(zeron_proto::UpdateWorkItemParams {
+            } => actions.update_work_item(mast_proto::UpdateWorkItemParams {
                 work_item_id,
                 changes,
                 operation_id,
             }),
             Step::Archive { work_item_id } => {
-                actions.archive_work_item(zeron_proto::ArchiveWorkItemParams {
+                actions.archive_work_item(mast_proto::ArchiveWorkItemParams {
                     work_item_id,
                     descendant_archive_policy: DescendantArchivePolicy::ArchiveDescendants,
                     operation_id,
                 })
             }
             Step::Restore { work_item_id } => {
-                actions.restore_work_item(zeron_proto::RestoreWorkItemParams {
+                actions.restore_work_item(mast_proto::RestoreWorkItemParams {
                     work_item_id,
                     operation_id,
                 })
@@ -129,19 +129,19 @@ impl Step {
             Step::Assign {
                 chat_id,
                 work_item_id,
-            } => actions.assign_chat(zeron_proto::AssignChatToWorkItemParams {
+            } => actions.assign_chat(mast_proto::AssignChatToWorkItemParams {
                 chat_id,
                 work_item_id,
                 operation_id,
             }),
             Step::RemoveChat { chat_id } => {
-                actions.remove_chat(zeron_proto::RemoveChatFromWorkItemParams {
+                actions.remove_chat(mast_proto::RemoveChatFromWorkItemParams {
                     chat_id,
                     operation_id,
                 })
             }
             Step::LinkReference(data) => actions.create_external_reference(
-                zeron_proto::CreateWorkItemExternalReferenceParams {
+                mast_proto::CreateWorkItemExternalReferenceParams {
                     work_item_id: data.work_item_id,
                     provider: data.provider,
                     reference_type: data.reference_type,
@@ -152,7 +152,7 @@ impl Step {
                 },
             ),
             Step::UnlinkReference { reference_id } => actions.remove_external_reference(
-                zeron_proto::RemoveWorkItemExternalReferenceParams {
+                mast_proto::RemoveWorkItemExternalReferenceParams {
                     reference_id,
                     operation_id,
                 },
@@ -160,7 +160,7 @@ impl Step {
             Step::UpdateInstruction {
                 instruction_id,
                 text,
-            } => actions.update_instruction(zeron_proto::UpdateWorkItemInstructionParams {
+            } => actions.update_instruction(mast_proto::UpdateWorkItemInstructionParams {
                 instruction_id,
                 text,
                 operation_id,
@@ -168,7 +168,7 @@ impl Step {
             Step::MoveInstruction {
                 instruction_id,
                 placement,
-            } => actions.move_instruction(zeron_proto::MoveWorkItemInstructionParams {
+            } => actions.move_instruction(mast_proto::MoveWorkItemInstructionParams {
                 instruction_id,
                 placement,
                 operation_id,

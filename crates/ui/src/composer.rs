@@ -24,12 +24,12 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use zeron_proto::{
+use mast_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
+use mast_proto::{
     FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
     UserInputQuestion, capabilities,
 };
-use zeron_rpc::{RpcError, methods};
+use mast_rpc::{RpcError, methods};
 
 use crate::appshots::{self, CapturedAppshot};
 
@@ -891,7 +891,7 @@ const MENTION_TOOLTIP_HEIGHT: f32 = 24.0;
 const MENTION_SIDE_PAD: &str = "\u{00A0}";
 /// A private URI scheme keeps file mentions distinguishable from ordinary
 /// Markdown links pasted into the composer.
-const FILE_MENTION_SCHEME: &str = "zeron-file:";
+use crate::workspace_links::{FILE_MENTION_SCHEME, LEGACY_FILE_MENTION_SCHEME, strip_file_scheme};
 
 /// A restorable point in the input's history: text plus where the caret and
 /// selection sat when the edit landed.
@@ -1045,7 +1045,7 @@ fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
         };
         let end = target_start + relative_end + 1;
         let label = &text[start + 1..label_end];
-        let Some(encoded) = text[target_start..end - 1].strip_prefix(FILE_MENTION_SCHEME) else {
+        let Some(encoded) = strip_file_scheme(&text[target_start..end - 1]) else {
             search = end;
             continue;
         };
@@ -1338,7 +1338,7 @@ pub struct SentMentionSpan {
 /// substring probe keeps ordinary prompts on the zero-allocation path, so this
 /// is safe to call for every user row.
 pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)> {
-    if !raw.contains(FILE_MENTION_SCHEME) {
+    if !raw.contains(FILE_MENTION_SCHEME) && !raw.contains(LEGACY_FILE_MENTION_SCHEME) {
         return None;
     }
     let projection = TextProjection::new(raw);
@@ -3978,7 +3978,7 @@ pub enum ComposerEvent {
     /// chat, even when the user has selected another chat in the meantime.
     WorktreeSetup {
         chat_id: String,
-        setup_action: Option<zeron_proto::ProjectActionRun>,
+        setup_action: Option<mast_proto::ProjectActionRun>,
         setup_error: Option<String>,
         target_device_id: Option<String>,
     },
@@ -4172,7 +4172,7 @@ struct SlashCacheEntry {
 /// without restarting zeron, but a picker reopen (or a quick tab-switch
 /// between a couple of chats) shouldn't re-fetch every time either — this is
 /// the same order of magnitude as the engine's own per-cwd discovery cache
-/// (see `zeron_harness::claude::discovery::CommandsCache`).
+/// (see `mast_harness::claude::discovery::CommandsCache`).
 const SLASH_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Whether a cached entry for `cached_key` can still answer a lookup for
@@ -4233,9 +4233,9 @@ fn mention_error_message(err: &RpcError) -> SharedString {
 ///   selected Space folder. Empty only with no project at all — that list
 ///   holds user-scoped skills only.
 fn slash_discovery_cwd(
-    chat: Option<&zeron_proto::Chat>,
-    chat_space: Option<&zeron_proto::Space>,
-    selected_space: Option<&zeron_proto::Space>,
+    chat: Option<&mast_proto::Chat>,
+    chat_space: Option<&mast_proto::Space>,
+    selected_space: Option<&mast_proto::Space>,
     reuse_worktree: Option<String>,
 ) -> String {
     let non_empty = |path: &str| (!path.trim().is_empty()).then(|| path.to_owned());
@@ -4341,17 +4341,17 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 #[derive(Debug, Clone, PartialEq)]
 struct ComposerSlice {
     selected_chat: Option<String>,
-    chat: Option<zeron_proto::Chat>,
-    space: Option<zeron_proto::Space>,
+    chat: Option<mast_proto::Chat>,
+    space: Option<mast_proto::Space>,
     effective_device: Option<String>,
     local_device_id: Option<String>,
-    devices: Vec<(zeron_proto::Device, bool)>,
-    queue: Vec<zeron_doc::QueuedMessage>,
+    devices: Vec<(mast_proto::Device, bool)>,
+    queue: Vec<mast_doc::QueuedMessage>,
     comments: Vec<crate::comments::ReviewComment>,
     comment_flush_pending: bool,
     delivery_degraded: bool,
-    connectivity: zeron_proto::Connectivity,
-    context_usage: Option<zeron_proto::ContextUsage>,
+    connectivity: mast_proto::Connectivity,
+    context_usage: Option<mast_proto::ContextUsage>,
     live: bool,
 }
 
@@ -4416,7 +4416,7 @@ pub struct Composer {
     /// gets focus back on close.
     preview_focus: FocusHandle,
     /// Focus grab deferred to the next render (open sites don't all have a
-    /// `Window` — the `ZERON_ATTACH_PREVIEW` boot knob opens in `new`).
+    /// `Window` — the `MAST_ATTACH_PREVIEW` boot knob opens in `new`).
     preview_focus_pending: bool,
     /// In-flight file-picker prompt (paperclip).
     picker_task: Option<Task<()>>,
@@ -4757,9 +4757,9 @@ impl Composer {
             _input_events: input_events,
         };
         // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
-        // a rig) — `ZERON_ATTACH=/path/a.png[,/path/b.png]`, and
-        // `ZERON_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
-        if let Ok(spec) = std::env::var("ZERON_ATTACH") {
+        // a rig) — `MAST_ATTACH=/path/a.png[,/path/b.png]`, and
+        // `MAST_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
+        if let Ok(spec) = mast_proto::env::var("MAST_ATTACH") {
             let staged: Vec<StagedAttachment> = spec
                 .split(',')
                 .filter(|s| !s.trim().is_empty())
@@ -4767,13 +4767,13 @@ impl Composer {
                     match attachments::stage_file(std::path::Path::new(path.trim())) {
                         Ok(att) => Some(att),
                         Err(err) => {
-                            tracing::warn!(%path, error = %err, "ZERON_ATTACH stage failed");
+                            tracing::warn!(%path, error = %err, "MAST_ATTACH stage failed");
                             None
                         }
                     }
                 })
                 .collect();
-            if std::env::var("ZERON_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
+            if mast_proto::env::var("MAST_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
                 && let Some(first) = staged.first()
             {
                 composer.preview = Some(attachments::PreviewImage::new(
@@ -4793,7 +4793,7 @@ impl Composer {
         composer
     }
 
-    /// Capture-knob passthrough (`ZERON_OPEN_DIALOG=model`): open the
+    /// Capture-knob passthrough (`MAST_OPEN_DIALOG=model`): open the
     /// combined harness/model menu.
     pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pickers
@@ -6856,7 +6856,7 @@ impl Composer {
         // so the doc frame dedups it away).
         let echo = SessionMessageEntry {
             id: message_id.clone(),
-            role: zeron_doc::MessageRole::User,
+            role: mast_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
                 id: "t0".into(),
                 text: echo_text.clone(),
@@ -7046,7 +7046,7 @@ impl Composer {
                     if should_publish_optimistic_echo(queue) {
                         let refreshed = SessionMessageEntry {
                             id: message_id.clone(),
-                            role: zeron_doc::MessageRole::User,
+                            role: mast_doc::MessageRole::User,
                             parts: vec![MessagePart::Text {
                                 id: "t0".into(),
                                 text: content.clone(),
@@ -7089,7 +7089,7 @@ impl Composer {
                 // a blocking CreateWorktree relay RPC here: the RPC had no
                 // timeout, so a lost relay frame wedged the send on "Sending…"
                 // forever while the session ran remotely anyway (2026-08-18).
-                let mut run_worktree: Option<zeron_proto::WorktreeSpec> = None;
+                let mut run_worktree: Option<mast_proto::WorktreeSpec> = None;
                 // The picked ref rides createChat so the session footer names
                 // it from the first frame (it read "Select ref" until the
                 // host's diff reconciler got around to stamping the branch).
@@ -7122,7 +7122,7 @@ impl Composer {
                                 // current checkout state.
                                 let base =
                                     base.clone().unwrap_or_else(|| "HEAD".to_string());
-                                run_worktree = Some(zeron_proto::WorktreeSpec {
+                                run_worktree = Some(mast_proto::WorktreeSpec {
                                     repo_path: repo_path.clone(),
                                     base,
                                     space_id: space_id.clone(),
@@ -8136,7 +8136,7 @@ impl Render for Composer {
         // UP FRONT that a send will queue (a durable local write delivered on
         // reconnect) instead of letting the button imply instant delivery.
         let queue_notice: Option<(SharedString, bool)> = {
-            use zeron_proto::ConnectivityState as S;
+            use mast_proto::ConnectivityState as S;
             let state = self.state.read(cx);
             let degraded = match state.selected_chat.as_deref() {
                 Some(id) => state.chat_delivery_degraded(id),
@@ -9256,7 +9256,7 @@ mod tests {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, _| {
             state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
+                mast_rpc::RpcClient::new(out, inbound),
             ));
             state.selected_chat = Some("c".into());
             // A send in flight reads as Working — the double-Enter window.
@@ -9673,12 +9673,12 @@ mod tests {
     /// (which lists user skills only).
     #[test]
     fn slash_discovery_cwd_follows_the_agent_folder() {
-        let space: zeron_proto::Space = serde_json::from_value(serde_json::json!({
+        let space: mast_proto::Space = serde_json::from_value(serde_json::json!({
             "id": "s1", "deviceId": "d", "path": "/work/workspace",
             "createdAt": "2026-01-01T00:00:00Z"
         }))
         .unwrap();
-        let chat = |cwd: Option<&str>| -> zeron_proto::Chat {
+        let chat = |cwd: Option<&str>| -> mast_proto::Chat {
             serde_json::from_value(serde_json::json!({
                 "id": "c1", "deviceId": "d", "archived": false, "spaceId": "s1",
                 "cwd": cwd, "createdAt": "2026-01-01T00:00:00Z"
@@ -9730,7 +9730,7 @@ mod tests {
         let raw = local_file_link("src/a file#[x].rs", false);
         assert_eq!(
             raw,
-            "[a file#\\[x\\].rs](zeron-file:src/a%20file%23%5Bx%5D.rs)"
+            "[a file#\\[x\\].rs](mast-file:src/a%20file%23%5Bx%5D.rs)"
         );
         let links = file_mention_links(&raw);
         assert_eq!(links.len(), 1);
@@ -9739,7 +9739,7 @@ mod tests {
         assert!(!links[0].is_dir);
 
         let folder = local_file_link("src/components", true);
-        assert_eq!(folder, "[components](zeron-file:src/components/)");
+        assert_eq!(folder, "[components](mast-file:src/components/)");
         let links = file_mention_links(&folder);
         assert_eq!(links[0].path, "src/components");
         assert!(links[0].is_dir);
@@ -9749,12 +9749,12 @@ mod tests {
     fn dropped_mentions_are_separated_from_surrounding_text() {
         let (inserted, cursor_advance) =
             dropped_file_mention("fixnow", 3..3, "src/lib.rs", false).expect("valid drop");
-        assert_eq!(inserted, " [lib.rs](zeron-file:src/lib.rs) ");
+        assert_eq!(inserted, " [lib.rs](mast-file:src/lib.rs) ");
         assert_eq!(cursor_advance, inserted.len());
 
         let (inserted, cursor_advance) =
             dropped_file_mention("fix now", 3..3, "src/components", true).expect("valid drop");
-        assert_eq!(inserted, " [components](zeron-file:src/components/)");
+        assert_eq!(inserted, " [components](mast-file:src/components/)");
         assert_eq!(cursor_advance, inserted.len() + 1);
     }
 
@@ -9856,18 +9856,29 @@ mod tests {
         assert_eq!(spans[1].path.as_ref(), "src/components/");
     }
 
+    #[test]
+    fn legacy_file_mention_links_still_project_to_chips() {
+        let (display, spans) = sent_mention_display(
+            "see [lib.rs](zeron-file:src/lib.rs) and [a.rs](mast-file:src/a.rs)",
+        )
+        .expect("both schemes are mentions");
+        assert_eq!(spans.len(), 2, "{display}");
+        assert_eq!(spans[0].path.as_ref(), "src/lib.rs");
+        assert_eq!(spans[1].path.as_ref(), "src/a.rs");
+    }
+
     /// Ordinary prompts must stay on the zero-cost path, including ones that
     /// merely *talk about* the scheme without containing a valid mention.
     #[test]
     fn sent_mention_display_leaves_plain_prompts_untouched() {
         assert_eq!(sent_mention_display("fix the composer"), None);
         assert_eq!(
-            sent_mention_display("what is a zeron-file: link?"),
+            sent_mention_display("what is a mast-file: link?"),
             None,
             "scheme substring without a valid mention link"
         );
         assert_eq!(
-            sent_mention_display("[a.rs](zeron-file:../a.rs)"),
+            sent_mention_display("[a.rs](mast-file:../a.rs)"),
             None,
             "a hostile path never becomes a chip in the transcript either"
         );
@@ -10689,7 +10700,7 @@ mod tests {
 
     #[test]
     fn pending_input_detection() {
-        use zeron_doc::MessageStatus;
+        use mast_doc::MessageStatus;
         let input_part = MessagePart::Input {
             id: "in-r1".into(),
             request_id: "r1".into(),

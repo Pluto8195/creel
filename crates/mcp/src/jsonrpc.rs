@@ -43,7 +43,7 @@ item.\n\
 \n\
 Planning artifacts (plans, diagrams, option comparisons): publish every file \
 the user should see with `artifact_publish` and link the returned \
-`zeron-artifact:<id>` URL, never a bare path. Under a work item, call \
+`mast-artifact:<id>` URL, never a bare path. Under a work item, call \
 `artifact_get_plan` at chat start. After changing a visual artifact run \
 `artifact_render_check`, fix what it reports, and look at the screenshot \
 before calling it done.\n\
@@ -171,7 +171,7 @@ pub async fn handle_request(tools: &Tools, id: Value, method: &str, params: Valu
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false } },
                     "serverInfo": {
-                        "name": "zeron",
+                        "name": "mast",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "instructions": INSTRUCTIONS,

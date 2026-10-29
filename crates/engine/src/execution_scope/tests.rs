@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::Utc;
-use zeron_proto::{
+use mast_proto::{
     ExecutionConfiguration, ExecutionHostCapabilities, ExecutionSourceScope,
     ExecutionValidationError, RepositoryBinding, ResolvedExecutionConfiguration, Space,
 };

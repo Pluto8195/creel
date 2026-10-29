@@ -12,7 +12,7 @@
 //! - The engine on the Space's device keeps those items, their status, and
 //!   one system-created Required Action per review round in step with
 //!   GitHub (through the `gh` CLI). Nothing is written to GitHub.
-//! - The RPCs (method names in `zeron_rpc::methods`, `PR_*`) are local/IPC
+//! - The RPCs (method names in `mast_rpc::methods`, `PR_*`) are local/IPC
 //!   and never device-forwarded. Failures are strings
 //!   `github/<code>: <message>` ([`GithubError::from_wire_message`]).
 //!
@@ -300,7 +300,7 @@ pub struct WorkItemExternalSyncState {
 }
 
 // --------------------------------------------------------------------------
-// RPC params and replies (method names: `zeron_rpc::methods::PR_*`)
+// RPC params and replies (method names: `mast_rpc::methods::PR_*`)
 // --------------------------------------------------------------------------
 
 /// `PrStatus {owner, repo, number, forceRefresh?}` →

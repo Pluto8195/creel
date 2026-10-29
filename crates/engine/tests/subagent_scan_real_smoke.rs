@@ -7,7 +7,7 @@ fn scans_a_real_session_with_known_subagents() {
     let path = std::path::Path::new(
         "/Users/mikey/.claude/projects/-Users-mikey-Projects-cofactr-workspace/13371e6c-e8b4-4c61-a772-da80b5909352.jsonl",
     );
-    let result = zeron_engine::subagent_scan::scan_subagents(path).expect("scan");
+    let result = mast_engine::subagent_scan::scan_subagents(path).expect("scan");
     eprintln!("found {} subagents", result.len());
     for s in result.iter().take(5) {
         eprintln!("{s:?}");

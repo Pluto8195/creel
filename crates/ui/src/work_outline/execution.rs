@@ -4,12 +4,12 @@
 //!
 //! Binding references: `docs/plans/work-outline/m0-contract.md` section 6 and
 //! "Milestone 3 execution discoveries". Resolution, the shape check, and the
-//! error vocabulary (`message()` / `remediation()`) come from `zeron_proto`;
+//! error vocabulary (`message()` / `remediation()`) come from `mast_proto`;
 //! nothing here re-implements them.
 use std::collections::BTreeSet;
 
 use gpui::SharedString;
-use zeron_proto::{
+use mast_proto::{
     ChatExecutionBindingView, ExecutionConfiguration, ExecutionConfigurationView,
     ExecutionRepositoryIdentity, ExecutionScope, ExecutionSourceScope, ExecutionValidationError,
     ExecutionWorktreeIdentity, RepositoryBinding, ResolvedExecutionConfiguration,
@@ -292,7 +292,7 @@ impl ExecutionDraft {
                     binding
                 })
                 .collect(),
-            schema: zeron_proto::EXECUTION_CONFIGURATION_SCHEMA,
+            schema: mast_proto::EXECUTION_CONFIGURATION_SCHEMA,
         }
     }
 
@@ -308,10 +308,10 @@ impl ExecutionDraft {
                 path_name(&binding.binding.repo_path)
             ));
         }
-        if self.bindings.len() >= zeron_proto::execution_limits::MAX_BINDINGS {
+        if self.bindings.len() >= mast_proto::execution_limits::MAX_BINDINGS {
             return Err(format!(
                 "At most {} repositories can be bound",
-                zeron_proto::execution_limits::MAX_BINDINGS
+                mast_proto::execution_limits::MAX_BINDINGS
             ));
         }
         self.bindings.push(binding);
@@ -690,7 +690,7 @@ impl ExecutionMember {
 
     /// A resolvable chat diff target. The engine only reports targets whose
     /// checkout exists and has an identity, so these are always confirmed.
-    pub(crate) fn from_diff_target(target: &zeron_proto::ChatDiffTargetView) -> Self {
+    pub(crate) fn from_diff_target(target: &mast_proto::ChatDiffTargetView) -> Self {
         Self {
             kind: MemberKind::Target,
             repo_id: diff_target_member_id(&target.checkout_id),
@@ -711,7 +711,7 @@ impl ExecutionMember {
 
     /// A resolvable branch / PR range target, shown as one pill labelled
     /// "PR #n" / "branch <name>".
-    pub(crate) fn from_ref_target(target: &zeron_proto::ChatRefTargetView) -> Self {
+    pub(crate) fn from_ref_target(target: &mast_proto::ChatRefTargetView) -> Self {
         Self {
             kind: MemberKind::Ref,
             repo_id: ref_target_member_id(&target.id),
@@ -735,7 +735,7 @@ impl ExecutionMember {
 
     /// The chat's own checkout (`chat.cwd`, `chat.checkout_id`, `chat.branch`),
     /// shown only beside diff targets so the user can go back to it.
-    pub(crate) fn own_checkout(chat: &zeron_proto::Chat) -> Option<Self> {
+    pub(crate) fn own_checkout(chat: &mast_proto::Chat) -> Option<Self> {
         let cwd = chat.cwd.clone().filter(|cwd| !cwd.is_empty())?;
         Some(Self {
             kind: MemberKind::Own,
@@ -866,7 +866,7 @@ pub(crate) mod fixture {
     use super::super::store::fixture_ids::*;
     use super::super::store::fixture_snapshot;
     use super::*;
-    use zeron_proto::{ExecutionSpace, ValidatedExecution, WorkItemExecutionException};
+    use mast_proto::{ExecutionSpace, ValidatedExecution, WorkItemExecutionException};
 
     pub(crate) const DEVICE: &str = "d";
     pub(crate) const ROOT: &str = "/work/alpha";

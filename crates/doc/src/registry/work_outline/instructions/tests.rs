@@ -7,9 +7,9 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::registry::tests::{chat, server_round, space};
-use zeron_proto::HarnessId;
-use zeron_proto::work_outline::{AssignChatToWorkItemParams, CreateWorkItemParams};
-use zeron_proto::work_outline_instructions::{
+use mast_proto::HarnessId;
+use mast_proto::work_outline::{AssignChatToWorkItemParams, CreateWorkItemParams};
+use mast_proto::work_outline_instructions::{
     InstructionApplicationReason, InstructionSourceKind, InstructionTurnBoundary,
     SelectedRevisionIntegrity,
 };
@@ -173,7 +173,7 @@ fn apply_revision(
     .map(|reply| reply.application_id.unwrap())
 }
 
-fn space_chat(id: &str, space_id: Option<&str>) -> zeron_proto::Chat {
+fn space_chat(id: &str, space_id: Option<&str>) -> mast_proto::Chat {
     let mut chat = chat(id, "dev-a");
     chat.space_id = space_id.map(str::to_owned);
     chat.parent_chat_id = None;
@@ -217,9 +217,9 @@ fn scope_texts(doc: &RegistryDoc, work_item: Option<&str>) -> Vec<String> {
 fn set_inherit(doc: &mut RegistryDoc, op: &str, work_item: &str, inherit: bool) {
     apply(
         doc,
-        WorkOutlineMutation::UpdateWorkItem(zeron_proto::UpdateWorkItemParams {
+        WorkOutlineMutation::UpdateWorkItem(mast_proto::UpdateWorkItemParams {
             work_item_id: work_item.into(),
-            changes: zeron_proto::WorkItemChanges {
+            changes: mast_proto::WorkItemChanges {
                 inherit_parent_instructions: Some(inherit),
                 ..Default::default()
             },
@@ -244,7 +244,7 @@ fn three_levels() -> (RegistryDoc, String, String, String) {
     (doc, a, b, c)
 }
 
-use zeron_proto::work_outline_instructions::ChatInstructionState;
+use mast_proto::work_outline_instructions::ChatInstructionState;
 
 // ── mutators ────────────────────────────────────────────────────────────────
 
@@ -435,9 +435,9 @@ fn create_validates_scope_and_keeps_provenance_immutable() {
     // Archived work items take no new instructions.
     apply(
         &mut doc,
-        WorkOutlineMutation::ArchiveWorkItem(zeron_proto::ArchiveWorkItemParams {
+        WorkOutlineMutation::ArchiveWorkItem(mast_proto::ArchiveWorkItemParams {
             work_item_id: a.clone(),
-            descendant_archive_policy: zeron_proto::DescendantArchivePolicy::ArchiveDescendants,
+            descendant_archive_policy: mast_proto::DescendantArchivePolicy::ArchiveDescendants,
             operation_id: "arch".into(),
         }),
     )
@@ -744,7 +744,7 @@ fn edits_and_archives_never_change_an_existing_revision() {
 
     // The newer revision differs and can be applied explicitly.
     let newer = revise(&mut doc, "rev2", &c).unwrap();
-    let comparison = zeron_proto::compare_instruction_revisions(
+    let comparison = mast_proto::compare_instruction_revisions(
         &doc.instruction_revision(&revision).unwrap().body,
         &doc.instruction_revision(&newer).unwrap().body,
     )
@@ -792,9 +792,9 @@ fn drift_follows_selection_and_current_effective_hash() {
     // compares instruction content only.
     apply(
         &mut doc,
-        WorkOutlineMutation::UpdateWorkItem(zeron_proto::UpdateWorkItemParams {
+        WorkOutlineMutation::UpdateWorkItem(mast_proto::UpdateWorkItemParams {
             work_item_id: a.clone(),
-            changes: zeron_proto::WorkItemChanges {
+            changes: mast_proto::WorkItemChanges {
                 title: Some("A renamed".into()),
                 ..Default::default()
             },
@@ -805,7 +805,10 @@ fn drift_follows_selection_and_current_effective_hash() {
     let s = snap(&doc);
     let renamed = state(&s, "chat-1");
     assert!(!renamed.drift);
-    assert_ne!(renamed.selected_revision_hash, renamed.current_effective_hash);
+    assert_ne!(
+        renamed.selected_revision_hash,
+        renamed.current_effective_hash
+    );
     // Editing the inherited instruction's text is drift.
     edit(&mut doc, "edit-a", &from_a, "from A, edited").unwrap();
     assert!(state(&snap(&doc), "chat-1").drift);
@@ -816,7 +819,7 @@ fn drift_follows_selection_and_current_effective_hash() {
     // Unassigned Chats keep their selection but never drift.
     apply(
         &mut doc,
-        WorkOutlineMutation::RemoveChatFromWorkItem(zeron_proto::RemoveChatFromWorkItemParams {
+        WorkOutlineMutation::RemoveChatFromWorkItem(mast_proto::RemoveChatFromWorkItemParams {
             chat_id: "chat-1".into(),
             operation_id: "unassign".into(),
         }),
@@ -1243,7 +1246,7 @@ fn execution_session_reports_are_idempotent_and_surface_as_delivery() {
     );
     let sessions = doc.read_sessions().unwrap();
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].status, zeron_proto::SessionStatus::Idle);
+    assert_eq!(sessions[0].status, mast_proto::SessionStatus::Idle);
     let pending = doc.pending_len();
     assert!(
         !doc.report_execution_session("chat-1", &report(Some(&revision), &hash), NOW)
@@ -1266,7 +1269,7 @@ fn execution_session_reports_are_idempotent_and_surface_as_delivery() {
 
     // A status write keeps the report (different fields).
     let mut session = sessions[0].clone();
-    session.status = zeron_proto::SessionStatus::Working;
+    session.status = mast_proto::SessionStatus::Working;
     doc.upsert_session(&session).unwrap();
     let row = doc.row(KIND_SESSIONS, "chat-1").unwrap();
     assert_eq!(row.fields["status"], json!("working"));

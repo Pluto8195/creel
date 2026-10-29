@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use zeron_proto::{HarnessId, InstructionTransition, RunRequest};
+use mast_proto::{HarnessId, InstructionTransition, RunRequest};
 
 use crate::{HarnessError, InstructionChannel, InstructionReplaceStrategy, InstructionSupport};
 

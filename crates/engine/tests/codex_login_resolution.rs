@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use zeron_engine::{AgentAccounts, AgentAccountsConfig};
-use zeron_proto::{AgentLoginMode, HarnessId};
+use mast_engine::{AgentAccounts, AgentAccountsConfig};
+use mast_proto::{AgentLoginMode, HarnessId};
 
 fn test_accounts(root: &Path) -> AgentAccounts {
     let config = AgentAccountsConfig {
@@ -101,7 +101,7 @@ fn probe(path: &Path, override_path: Option<&Path>, expected: bool) {
     command
         .env("PATH", path)
         .env("CODEX_LOGIN_EXPECTED", expected.to_string())
-        .env("ZERON_NO_LOGIN_SHELL", "1");
+        .env("MAST_NO_LOGIN_SHELL", "1");
     if let Some(path) = override_path {
         command.env("CODEX_EXECUTABLE", path);
     }

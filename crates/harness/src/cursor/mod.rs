@@ -47,7 +47,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SteeringMode, TodoItem, ToolCall,
 };
@@ -91,7 +91,7 @@ fn cursor_cli_paths() -> Vec<PathBuf> {
 pub struct CursorHarness {
     /// Test seam: run this program AS the shim instead of node+managed SDK.
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     interrupt_grace: Duration,
     kill_grace: Duration,
@@ -130,7 +130,7 @@ impl CursorHarness {
         self
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
@@ -319,7 +319,7 @@ impl Harness for CursorHarness {
         let mut cmd = Command::new(&exe);
         cmd.args(&args);
         if lease.is_some() {
-            cmd.env("ZERON_CURSOR_STATE_DIR", state::state_root());
+            cmd.env("MAST_CURSOR_STATE_DIR", state::state_root());
         }
         crate::compose_child_path(&mut cmd, &exe);
         if !request.cwd.is_empty() {
@@ -351,7 +351,7 @@ impl Harness for CursorHarness {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::cursor", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::cursor", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -486,7 +486,7 @@ async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Str
             stdin.flush().await
         };
         if let Err(e) = write.await {
-            tracing::debug!(target: "zeron_harness::cursor", "stdin write failed (tolerated): {e}");
+            tracing::debug!(target: "mast_harness::cursor", "stdin write failed (tolerated): {e}");
             return;
         }
     }
@@ -573,7 +573,7 @@ async fn run_session(session: Session) {
                         continue;
                     }
                     let Ok(frame) = serde_json::from_str::<Value>(line) else {
-                        tracing::debug!(target: "zeron_harness::cursor", "unparseable shim frame (skipped)");
+                        tracing::debug!(target: "mast_harness::cursor", "unparseable shim frame (skipped)");
                         continue;
                     };
                     match frame.get("ev").and_then(Value::as_str).unwrap_or("") {
@@ -606,7 +606,7 @@ async fn run_session(session: Session) {
                             if frame.get("ev").and_then(Value::as_str) == Some("fatal")
                                 || frame.get("status").and_then(Value::as_str) == Some("error")
                             {
-                                tracing::warn!(target: "zeron_harness::cursor",
+                                tracing::warn!(target: "mast_harness::cursor",
                                     session_id = ?session_id,
                                     error = ?frame.get("error").or_else(|| frame.get("message")),
                                     "Cursor SDK run failed");
@@ -981,7 +981,7 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
             session_id: None,
         }],
         other => {
-            tracing::debug!(target: "zeron_harness::cursor", "unknown shim frame (skipped): {other}");
+            tracing::debug!(target: "mast_harness::cursor", "unknown shim frame (skipped): {other}");
             Vec::new()
         }
     }

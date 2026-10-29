@@ -5,8 +5,8 @@
 //!
 //! These are heuristics: they miss real problems and flag fine layouts. The
 //! agent is told to look at the screenshots regardless.
-use zeron_proto::ArtifactLayoutWarning;
-use zeron_proto::artifacts::artifact_limits;
+use mast_proto::ArtifactLayoutWarning;
+use mast_proto::artifacts::artifact_limits;
 
 pub(crate) const CLIPPED_TEXT: &str = "clippedText";
 pub(crate) const OVERLAPPING_SIBLINGS: &str = "overlappingSiblings";

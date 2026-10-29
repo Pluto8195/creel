@@ -1,6 +1,6 @@
 use super::*;
 use crate::work_outline::store::{fixture_ids::*, fixture_snapshot};
-use zeron_proto::WorkItemInstructionView;
+use mast_proto::WorkItemInstructionView;
 
 fn snap() -> WorkOutlineSnapshot {
     fixture_snapshot("s1")
@@ -331,7 +331,7 @@ fn chat_entry_restores_the_previous_item_or_unassociation() {
 fn link_and_unlink_are_inverses_through_the_content_derived_id() {
     let snapshot = snap();
     let reference_id =
-        zeron_proto::external_reference_id(API, "github", "pullRequest", "acme/launch#42");
+        mast_proto::external_reference_id(API, "github", "pullRequest", "acme/launch#42");
     let unlink = unlink_entry(&snapshot, &reference_id, None).unwrap();
     let Step::LinkReference(data) = &unlink.inverse else {
         panic!("{:?}", unlink.inverse)

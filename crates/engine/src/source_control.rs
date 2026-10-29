@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use zeron_proto::{ChangeRequestState, ChangeRequestSummary};
+use mast_proto::{ChangeRequestState, ChangeRequestSummary};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const GITHUB_TIMEOUT: Duration = Duration::from_secs(20);
@@ -786,13 +786,13 @@ struct SystemProcessRunner;
 impl ProcessRunner for SystemProcessRunner {
     async fn run(&self, request: ProcessRequest) -> Result<ProcessOutput, ProcessRunError> {
         let mut command = if request.program == "gh" {
-            let executable = zeron_harness::resolve_login_shell_executable("gh")
+            let executable = mast_harness::resolve_login_shell_executable("gh")
                 .ok_or(ProcessRunError::Spawn(io::ErrorKind::NotFound))?;
             let mut command = tokio::process::Command::new(executable);
-            zeron_harness::compose_login_shell_path(&mut command);
+            mast_harness::compose_login_shell_path(&mut command);
             command
         } else if request.program == "git" {
-            zeron_harness::git_command_async()
+            mast_harness::git_command_async()
         } else {
             tokio::process::Command::new(&request.program)
         };

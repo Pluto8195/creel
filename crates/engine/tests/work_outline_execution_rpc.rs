@@ -11,16 +11,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use zeron_engine::execution_scope::ExecutionScopeService;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{
+use mast_engine::execution_scope::ExecutionScopeService;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{
     ExecutionHostCapabilities, ExecutionRepositoryIdentity, ExecutionScope,
     ResolvedExecutionConfiguration, ValidateExecutionConfigurationReply, WorkOutlineActor,
     WorkOutlineActorKind, WorkOutlineError, WorkOutlineErrorCode, WorkOutlineQueryResponse,
     WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
+use serde_json::{Value, json};
 
 fn assemble(dir: &Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
@@ -28,7 +28,7 @@ fn assemble(dir: &Path) -> EngineCore {
     EngineCore::assemble(
         dir,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine core assembles")
@@ -110,7 +110,7 @@ fn outline_error(text: String) -> WorkOutlineError {
         .unwrap_or_else(|| panic!("not a work outline error: {text}"))
 }
 
-async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
+async fn mutate(client: &mast_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
     client
         .call(methods::WORK_OUTLINE_MUTATE, params)
         .await
@@ -118,7 +118,7 @@ async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, W
 }
 
 async fn validate(
-    client: &zeron_rpc::RpcClient,
+    client: &mast_rpc::RpcClient,
     params: Value,
 ) -> ValidateExecutionConfigurationReply {
     let value: Value = client
@@ -128,7 +128,7 @@ async fn validate(
     serde_json::from_value(value).expect("reply decodes")
 }
 
-async fn describe(client: &zeron_rpc::RpcClient, path: &Path) -> ExecutionRepositoryIdentity {
+async fn describe(client: &mast_rpc::RpcClient, path: &Path) -> ExecutionRepositoryIdentity {
     let value: Value = client
         .call(
             methods::DESCRIBE_EXECUTION_REPOSITORY,
@@ -140,7 +140,7 @@ async fn describe(client: &zeron_rpc::RpcClient, path: &Path) -> ExecutionReposi
 }
 
 async fn binding_json(
-    client: &zeron_rpc::RpcClient,
+    client: &mast_rpc::RpcClient,
     repo: &Path,
     worktree: &Path,
     primary: bool,
@@ -190,7 +190,7 @@ async fn configure_resolve_validate_capture_and_dispatch_over_rpc() {
     let root = std::fs::canonicalize(tmp.path()).unwrap();
     let ws = superproject(&root);
     let core = assemble(&root.join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,
@@ -386,7 +386,7 @@ async fn configure_resolve_validate_capture_and_dispatch_over_rpc() {
         .validate_for_dispatch("chat-1", caps)
         .await
         .unwrap_err();
-    let message = zeron_engine::execution_scope::rejection_message(&errors);
+    let message = mast_engine::execution_scope::rejection_message(&errors);
     assert!(message.starts_with("execution-scope:worktreePruned: "));
     // The Chat row was never retargeted.
     let chat = core.workspace.chat("chat-1").unwrap().unwrap();
@@ -426,7 +426,7 @@ async fn configure_resolve_validate_capture_and_dispatch_over_rpc() {
 async fn remote_owner_without_reachability_is_reported_not_validated_locally() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,
@@ -472,8 +472,8 @@ async fn remote_owner_without_reachability_is_reported_not_validated_locally() {
 #[test]
 fn engine_advertises_the_multi_repo_capability() {
     assert!(
-        zeron_proto::capabilities::current()
+        mast_proto::capabilities::current()
             .iter()
-            .any(|c| c == zeron_proto::capabilities::WORK_OUTLINE_MULTI_REPO_V1)
+            .any(|c| c == mast_proto::capabilities::WORK_OUTLINE_MULTI_REPO_V1)
     );
 }

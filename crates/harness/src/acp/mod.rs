@@ -47,7 +47,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
@@ -825,12 +825,12 @@ pub fn prewarm_managed_adapters() {
         handle.spawn(async move {
             match crate::adapter_install::ensure_installed(pin, bin_name, display_name).await {
                 Ok(entry) => tracing::info!(
-                    target: "zeron_harness::adapter_install",
+                    target: "mast_harness::adapter_install",
                     adapter = %entry.display(),
                     "prewarmed {display_name} ACP adapter"
                 ),
                 Err(e) => tracing::warn!(
-                    target: "zeron_harness::adapter_install",
+                    target: "mast_harness::adapter_install",
                     "prewarm of the {display_name} ACP adapter failed: {e}"
                 ),
             }
@@ -858,7 +858,7 @@ enum Launch {
 pub struct AcpHarness {
     spec: AcpAgentSpec,
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Override of the agent's on-disk sessions root (grok's
     /// `~/.grok/sessions`), where subagent transcripts are tailed from.
@@ -1020,7 +1020,7 @@ impl AcpHarness {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::acp", "sign-in stderr: {line}");
+                    tracing::debug!(target: "mast_harness::acp", "sign-in stderr: {line}");
                     if let Some(url) = sign_in_url(&line)
                         && !announced.swap(true, std::sync::atomic::Ordering::AcqRel)
                     {
@@ -1224,7 +1224,7 @@ impl AcpHarness {
                             .await
                             {
                                 tracing::warn!(
-                                    target: "zeron_harness::adapter_install",
+                                    target: "mast_harness::adapter_install",
                                     "background adapter install failed: {e}"
                                 );
                             }
@@ -1309,7 +1309,7 @@ impl AcpHarness {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::acp", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::acp", "stderr: {line}");
                     tail.push(&line);
                 }
                 tail.close();
@@ -1939,7 +1939,7 @@ fn initialize_params(harness: HarnessId) -> Value {
         // Devin otherwise exposes only the parent's run_subagent call. This
         // unlocks lifecycle tags plus every nested message, thought, and tool
         // update, all of which DevinTracker can route. Do not advertise the
-        // separate subagentControl extension: Zeron has no matching UI yet.
+        // separate subagentControl extension: Mast has no matching UI yet.
         capabilities["_meta"] = json!({ "cognition.ai/subagentSupport": true });
     }
     json!({
@@ -2437,7 +2437,7 @@ fn handle_server_request(
             Vec::new()
         }
         _ => {
-            tracing::debug!(target: "zeron_harness::acp", "unhandled server request: {method}");
+            tracing::debug!(target: "mast_harness::acp", "unhandled server request: {method}");
             client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
             Vec::new()
         }
@@ -2905,7 +2905,7 @@ async fn run_session(session: Session) {
                 // A missing/foreign session falls back to a fresh one.
                 Err(e) => {
                     tracing::debug!(
-                        target: "zeron_harness::acp",
+                        target: "mast_harness::acp",
                         "session/load failed (starting fresh): {e}"
                     );
                     let _ = send(&event_tx, AgentEvent::Error {
@@ -3044,7 +3044,7 @@ async fn run_session(session: Session) {
                     )));
                 }
                 tracing::debug!(
-                    target: "zeron_harness::acp",
+                    target: "mast_harness::acp",
                     "session/set_config_option {config_id}={payload} rejected (agent default runs): {e}"
                 );
             }
@@ -3093,7 +3093,7 @@ async fn run_session(session: Session) {
                             None => e.to_string(),
                         },
                     };
-                    tracing::warn!(target: "zeron_harness::acp", %error, "agent setup failed");
+                    tracing::warn!(target: "mast_harness::acp", %error, "agent setup failed");
                     let _ = event_tx
                         .send(Ok(AgentEvent::Done {
                             status: DoneStatus::Errored,
@@ -3172,8 +3172,8 @@ async fn run_session(session: Session) {
     let mut prompt_seq: u64 = 1;
     let mut current_prompt_id = prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
     let mut completed_prompts: VecDeque<String> = VecDeque::new();
-    // `ZERON_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
-    let prompt_stall: Option<Duration> = match std::env::var("ZERON_ACP_PROMPT_STALL_MS")
+    // `MAST_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
+    let prompt_stall: Option<Duration> = match mast_proto::env::var("MAST_ACP_PROMPT_STALL_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
@@ -3227,7 +3227,7 @@ async fn run_session(session: Session) {
     // Silence is not a turn boundary: completed tools, text, and usage may
     // all precede a slow model request. Keep the prompt future alive until
     // its response (or an authoritative completion extension) arrives.
-    // ZERON_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
+    // MAST_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
     let mut last_update_at = tokio::time::Instant::now();
     let mut open_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     // PREVENTION, ahead of all the recovery above: never send a
@@ -3584,7 +3584,7 @@ async fn run_session(session: Session) {
                         .to_owned(),
                     Err(e) => {
                         tracing::debug!(
-                            target: "zeron_harness::acp",
+                            target: "mast_harness::acp",
                             "_session/steering failed (redelivering): {e}"
                         );
                         // Failed calls redeliver like a lost turn-end race.
@@ -3679,7 +3679,7 @@ async fn run_session(session: Session) {
                         == Some("noRunningTurn")
                     {
                         tracing::warn!(
-                            target: "zeron_harness::acp",
+                            target: "mast_harness::acp",
                             "steering answered noRunningTurn with a prompt \
                              outstanding; arming starved-turn recovery"
                         );
@@ -3781,7 +3781,7 @@ async fn run_session(session: Session) {
             ), if starve_deadline.is_some() && turn.is_some() && !interrupted => {
                 starve_deadline = None;
                 tracing::warn!(
-                    target: "zeron_harness::acp",
+                    target: "mast_harness::acp",
                     "prompt response missing past turn-end evidence; settling \
                      the dead turn (and promoting any queued steer)"
                 );
@@ -3862,7 +3862,7 @@ async fn run_session(session: Session) {
                         // cancel it rather than prompt into the starve.
                         //
                         tracing::info!(
-                            target: "zeron_harness::acp",
+                            target: "mast_harness::acp",
                             "steer into a self-continuing session; cancelling \
                              the unowned turn before prompting"
                         );

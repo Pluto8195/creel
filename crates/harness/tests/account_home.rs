@@ -10,8 +10,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
-use zeron_harness::{CancellationToken, ClaudeHarness, CodexHarness, Harness, RunControls};
-use zeron_proto::{RunRequest, SandboxLevel};
+use mast_harness::{CancellationToken, ClaudeHarness, CodexHarness, Harness, RunControls};
+use mast_proto::{RunRequest, SandboxLevel};
 
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;

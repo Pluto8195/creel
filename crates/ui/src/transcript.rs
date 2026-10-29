@@ -39,8 +39,8 @@ use gpui::{
     TextAlign, TextRun, Window, canvas, div, img, list, point, prelude::*, px, quad, size,
 };
 
-use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
-use zeron_proto::ToolCall;
+use mast_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
+use mast_proto::ToolCall;
 
 use crate::markdown::parser::{
     Block, BlockTree, IncrementalParser, InlineRun, InlineStyle, parse_full,
@@ -52,7 +52,7 @@ use crate::notice::{NoticeChipIcon::Tile, notice_chip};
 use crate::state::AppState;
 use crate::syntax_cache::{DocumentHighlightKey, SyntaxHighlightCache};
 use crate::theme::Theme;
-use zeron_syntax::LanguageId as Lang;
+use mast_syntax::LanguageId as Lang;
 
 // ---------------------------------------------------------------------------
 // Constants (mugen ports)
@@ -779,7 +779,7 @@ pub enum ToolDetail {
     /// (chat2-sync A1). The full diff upgrades this to [`ToolDetail::Diff`]
     /// via the sidecar fetch.
     Stats {
-        stats: Arc<Vec<zeron_doc::ToolDiffStat>>,
+        stats: Arc<Vec<mast_doc::ToolDiffStat>>,
     },
 }
 
@@ -809,8 +809,8 @@ const DETAIL_SEPARATOR: f32 = 1.0;
 /// STATS instead of inline diff text, which win the same way.
 pub fn tool_detail(
     output: Option<&str>,
-    diff: Option<&zeron_proto::ToolDiff>,
-    diff_stats: Option<&[zeron_doc::ToolDiffStat]>,
+    diff: Option<&mast_proto::ToolDiff>,
+    diff_stats: Option<&[mast_doc::ToolDiffStat]>,
 ) -> Option<ToolDetail> {
     if let Some(diff) = diff {
         if let Some(mut files) = tool_patch_files(diff)
@@ -865,7 +865,7 @@ pub fn tool_detail(
 /// patch can contain several `diff --git` sections. Some providers instead
 /// send one headerless `@@` patch per file; wrap that form in a synthetic
 /// section, then restore the provider's exact path after parsing.
-fn tool_patch_files(diff: &zeron_proto::ToolDiff) -> Option<Vec<crate::changes::FileDiff>> {
+fn tool_patch_files(diff: &mast_proto::ToolDiff) -> Option<Vec<crate::changes::FileDiff>> {
     let patch = diff.unified_diff.as_deref()?.trim();
     if patch.is_empty() {
         return None;
@@ -877,7 +877,7 @@ fn tool_patch_files(diff: &zeron_proto::ToolDiff) -> Option<Vec<crate::changes::
     if diff.path.trim().is_empty() {
         return None;
     }
-    let wrapped = format!("diff --git a/__zeron_tool_diff__ b/__zeron_tool_diff__\n{patch}\n");
+    let wrapped = format!("diff --git a/__mast_tool_diff__ b/__mast_tool_diff__\n{patch}\n");
     let mut files = crate::changes::parse_patch(&wrapped);
     if let Some(file) = files.first_mut() {
         file.path = diff.path.clone();
@@ -994,10 +994,10 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
     })
 }
 
-/// Reduce an inline [`zeron_proto::ToolDiff`] to the changes pane's
+/// Reduce an inline [`mast_proto::ToolDiff`] to the changes pane's
 /// [`crate::changes::FileDiff`]: hunks grouped with 3 context lines, dual
 /// 1-based line numbers, unified-diff hunk headers, and add/del counts.
-pub fn diff_to_file(diff: &zeron_proto::ToolDiff) -> crate::changes::FileDiff {
+pub fn diff_to_file(diff: &mast_proto::ToolDiff) -> crate::changes::FileDiff {
     use crate::changes::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
     let old = diff.old_text.as_deref().unwrap_or("");
     let text_diff = similar::TextDiff::from_lines(old, &diff.new_text);
@@ -1069,7 +1069,7 @@ pub enum RowKind {
         name: String,
         mime_type: String,
     },
-    /// A Codex `visualize` control envelope. Zeron does not execute local
+    /// A Codex `visualize` control envelope. Mast does not execute local
     /// HTML in the embedded browser; the row instead opens a validated file
     /// inside the current workspace. `None` is a malformed envelope, kept as
     /// a quiet unavailable card so private-use control bytes never leak.
@@ -1123,7 +1123,7 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
-    /// A `[label](zeron-artifact:<id or path>)` link of a settled assistant
+    /// A `[label](mast-artifact:<id or path>)` link of a settled assistant
     /// message, shown as an artifact card (title, kind, role, revision,
     /// Open) resolved against the watched artifact snapshots at render time.
     ArtifactCard {
@@ -1133,13 +1133,13 @@ pub enum RowKind {
 }
 
 #[cfg(test)]
-use zeron_proto::visualize::{
+use mast_proto::visualize::{
     ENVELOPE_PREFIX as VISUALIZE_PREFIX, ENVELOPE_SUFFIX as VISUALIZE_SUFFIX,
     MAX_PATH_BYTES as MAX_VISUALIZE_PATH_BYTES,
 };
 
-/// A validated Codex content reference (`zeron_proto::visualize`).
-pub type VisualizationArtifact = zeron_proto::visualize::VisualizationRef;
+/// A validated Codex content reference (`mast_proto::visualize`).
+pub type VisualizationArtifact = mast_proto::visualize::VisualizationRef;
 
 enum AssistantTextFragment<'a> {
     Markdown(&'a str),
@@ -1148,7 +1148,7 @@ enum AssistantTextFragment<'a> {
 
 #[cfg(test)]
 fn visualization_artifact(payload: &str) -> Option<VisualizationArtifact> {
-    zeron_proto::visualize::parse_payload(payload)
+    mast_proto::visualize::parse_payload(payload)
 }
 
 /// Split Codex visualization references (private-use envelopes and whole
@@ -1159,8 +1159,8 @@ fn assistant_text_fragments(
     text: &str,
     suppress_streaming_prefix: bool,
 ) -> Vec<AssistantTextFragment<'_>> {
-    use zeron_proto::visualize::Segment;
-    zeron_proto::visualize::split_references(text, suppress_streaming_prefix)
+    use mast_proto::visualize::Segment;
+    mast_proto::visualize::split_references(text, suppress_streaming_prefix)
         .into_iter()
         .map(|segment| match segment {
             Segment::Text(text) => AssistantTextFragment::Markdown(text),
@@ -1176,7 +1176,7 @@ fn assistant_text_fragments(
 fn mentioned_fragments(entry_text: &[&str], referenced: &[String]) -> Vec<VisualizationArtifact> {
     let mut out: Vec<VisualizationArtifact> = Vec::new();
     for text in entry_text {
-        for path in zeron_proto::visualize::fragment_mentions(text) {
+        for path in mast_proto::visualize::fragment_mentions(text) {
             let duplicate = |candidate: &str| {
                 candidate == path
                     || candidate.ends_with(&format!("/{path}"))
@@ -1187,7 +1187,7 @@ fn mentioned_fragments(entry_text: &[&str], referenced: &[String]) -> Vec<Visual
             {
                 continue;
             }
-            let title = zeron_proto::visualize::default_title(&path)
+            let title = mast_proto::visualize::default_title(&path)
                 .unwrap_or_else(|| "Visualization".to_owned());
             out.push(VisualizationArtifact {
                 path,
@@ -1768,7 +1768,7 @@ pub fn rows_for_entry(
             match part {
                 MessagePart::Text { text, .. } => {
                     referenced.extend(
-                        zeron_proto::visualize::references(text)
+                        mast_proto::visualize::references(text)
                             .into_iter()
                             .map(|reference| reference.path),
                     );
@@ -1794,10 +1794,10 @@ pub fn rows_for_entry(
             }
         }
         // Planning artifact links get a card each (in order, deduplicated).
-        let mut linked: Vec<zeron_proto::artifacts::ArtifactLink> = Vec::new();
+        let mut linked: Vec<mast_proto::artifacts::ArtifactLink> = Vec::new();
         for part in &entry.parts {
             if let MessagePart::Text { text, .. } = part {
-                for link in zeron_proto::artifacts::artifact_links(text) {
+                for link in mast_proto::artifacts::artifact_links(text) {
                     if !linked.iter().any(|seen| seen.target == link.target) {
                         linked.push(link);
                     }
@@ -1851,13 +1851,14 @@ pub fn rows_for_entry(
     rows
 }
 
-/// `ZERON_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
+/// `MAST_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
 /// over rolling windows of [`FRAME_STATS_WINDOW`] samples) at `warn` level —
 /// the smoothness measurement knob. Off by default; zero cost when off.
 fn frame_stats_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED
-        .get_or_init(|| std::env::var("ZERON_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+    *ENABLED.get_or_init(|| {
+        mast_proto::env::var("MAST_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
 }
 
 const FRAME_STATS_WINDOW: usize = 240;
@@ -1890,12 +1891,12 @@ pub(crate) fn record_view_frame(view: &'static str) -> bool {
     })
 }
 
-/// `ZERON_NO_RENDER_CACHE=1` bypasses the cross-frame flatten cache — the
+/// `MAST_NO_RENDER_CACHE=1` bypasses the cross-frame flatten cache — the
 /// A/B knob for the frame-cost measurement above.
 fn render_cache_disabled() -> bool {
     static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DISABLED.get_or_init(|| {
-        std::env::var("ZERON_NO_RENDER_CACHE").is_ok_and(|v| !v.is_empty() && v != "0")
+        mast_proto::env::var("MAST_NO_RENDER_CACHE").is_ok_and(|v| !v.is_empty() && v != "0")
     })
 }
 
@@ -2045,7 +2046,7 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
 
 /// The ToolGroup summary line — "Ran 3 commands · edited 2 files".
 ///
-/// The rule lives in `zeron_proto::view` so the terminal viewport reports the
+/// The rule lives in `mast_proto::view` so the terminal viewport reports the
 /// same summary; this only adapts the row model's [`ToolItem`] to it.
 pub fn tool_group_summary(tools: &[ToolItem]) -> String {
     #[cfg(test)]
@@ -2062,7 +2063,7 @@ pub fn tool_group_summary(tools: &[ToolItem]) -> String {
     let base = if pairs.is_empty() {
         String::new()
     } else {
-        zeron_proto::view::tool_group_summary(&pairs)
+        mast_proto::view::tool_group_summary(&pairs)
     };
     // Thought chips ride the group (they are UI-synthesized, so the shared
     // view summary never sees them): name them on the collapsed line.
@@ -2169,11 +2170,11 @@ fn tool_group_title(text: SharedString, shimmer_phase: Option<f32>, theme: &Them
 }
 
 // `single_line` and the per-kind chip label/detail are shared with the terminal
-// viewport (`zeron_proto::view`): a tool must be named identically on every
+// viewport (`mast_proto::view`): a tool must be named identically on every
 // surface, and the one-line collapse is needed for the same reason in both (a
 // literal newline breaks gpui's ellipsis logic and would be a cursor move in a
 // cell grid).
-pub use zeron_proto::view::{single_line, tool_chip_content};
+pub use mast_proto::view::{single_line, tool_chip_content};
 
 /// Analytic expanded-chips height — no measurement needed for the fold tween.
 pub fn chips_height(count: usize) -> f32 {
@@ -2239,7 +2240,7 @@ const FULL_OUTPUT_MAX_LINES: usize = 400;
 /// blobs render (near-)uncapped — fetching past the summary was the point.
 fn blob_detail(text: &str, is_diff: bool) -> Option<ToolDetail> {
     if is_diff {
-        let diff: zeron_proto::ToolDiff = serde_json::from_str(text).ok()?;
+        let diff: mast_proto::ToolDiff = serde_json::from_str(text).ok()?;
         return tool_detail(None, Some(&diff), None);
     }
     let mut lines: Vec<SharedString> = text
@@ -2345,7 +2346,7 @@ pub fn format_elapsed(secs: i64) -> String {
 
 struct HighlightEntry {
     key: DocumentHighlightKey,
-    document: Option<Weak<zeron_syntax::HighlightedDocument>>,
+    document: Option<Weak<mast_syntax::HighlightedDocument>>,
     _task: Option<Task<()>>,
 }
 
@@ -2367,7 +2368,7 @@ impl HighlightStore {
         lang: Lang,
         code: &str,
         cx: &mut Context<Transcript>,
-    ) -> Option<Arc<zeron_syntax::HighlightedDocument>> {
+    ) -> Option<Arc<mast_syntax::HighlightedDocument>> {
         let slot_key = (row_id.clone(), block_ix);
         let document_key = DocumentHighlightKey::new(lang, code);
         if let Some(entry) = self.entries.get(&slot_key)
@@ -2396,7 +2397,7 @@ impl HighlightStore {
             let document = cx
                 .background_executor()
                 .spawn(async move {
-                    zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                    mast_syntax::highlight(mast_syntax::HighlightRequest {
                         source: &code,
                         path: None,
                         fence_tag: Some(match lang {
@@ -2481,29 +2482,29 @@ pub(crate) struct TranscriptPreparation {
     cache: HashMap<String, Arc<Vec<Row>>>,
     live_parsers: HashMap<String, IncrementalParser>,
     tree_cache: HashMap<String, (usize, Arc<BlockTree>)>,
-    baseline: Option<zeron_doc::TranscriptBaseline>,
+    baseline: Option<mast_doc::TranscriptBaseline>,
 }
 
 pub(crate) struct PreparedTranscript {
     pub(crate) rows: HashMap<String, Arc<Vec<Row>>>,
     pub(crate) historical: HashMap<String, Vec<Row>>,
     fully_historical: HashSet<String>,
-    pub(crate) navigation_baseline: Arc<zeron_doc::TranscriptBaseline>,
+    pub(crate) navigation_baseline: Arc<mast_doc::TranscriptBaseline>,
     pub(crate) bytes: usize,
 }
 
 impl TranscriptPreparation {
     pub(crate) fn prepare(
         &mut self,
-        update: &zeron_doc::TranscriptUpdate,
-    ) -> Result<Arc<PreparedTranscript>, zeron_doc::TranscriptDesync> {
+        update: &mast_doc::TranscriptUpdate,
+    ) -> Result<Arc<PreparedTranscript>, mast_doc::TranscriptDesync> {
         match &update.frame {
-            zeron_doc::TranscriptFrame::Reset { .. } => {
+            mast_doc::TranscriptFrame::Reset { .. } => {
                 self.cache.clear();
                 self.tree_cache.clear();
                 self.live_parsers.clear();
             }
-            zeron_doc::TranscriptFrame::Delta {
+            mast_doc::TranscriptFrame::Delta {
                 upsert,
                 append,
                 remove,
@@ -2522,7 +2523,7 @@ impl TranscriptPreparation {
                 }
             }
         }
-        zeron_doc::apply_transcript_frame(&mut self.entries, update.frame.clone())?;
+        mast_doc::apply_transcript_frame(&mut self.entries, update.frame.clone())?;
         if let Some(baseline) = &update.replay_baseline {
             self.baseline = Some(baseline.clone());
         }
@@ -2575,7 +2576,7 @@ impl TranscriptPreparation {
             historical,
             fully_historical,
             bytes,
-            navigation_baseline: Arc::new(zeron_doc::TranscriptBaseline::capture(&self.entries)),
+            navigation_baseline: Arc::new(mast_doc::TranscriptBaseline::capture(&self.entries)),
         }))
     }
 }
@@ -3081,7 +3082,7 @@ pub struct Transcript {
     /// Entrance state follows stable groups through completion so fast calls
     /// finish revealing. Replay rows have no entrance timestamps.
     tool_group_reveals: HashMap<SharedString, ToolGroupReveal>,
-    last_replay_baseline: Option<Arc<zeron_doc::TranscriptBaseline>>,
+    last_replay_baseline: Option<Arc<mast_doc::TranscriptBaseline>>,
     /// Parsed historical prefixes, used to seed text before a coalesced live
     /// suffix is painted. The wire watermark contains lengths, not text.
     historical_markdown: HashMap<SharedString, Row>,
@@ -5055,7 +5056,7 @@ impl Transcript {
             let reply = crate::attachments::call_with_timeout(
                 &engine,
                 cx.background_executor(),
-                zeron_rpc::methods::FETCH_TOOL_BLOB,
+                mast_rpc::methods::FETCH_TOOL_BLOB,
                 serde_json::json!({ "blobRef": ref_key.as_ref() }),
                 Duration::from_secs(20),
             )
@@ -5963,7 +5964,7 @@ impl Transcript {
                             // so the overlay stays live even once the trailer's
                             // 30s pending-send bridge has lapsed.
                             let pulse = motion::pulse_wave(motion::pulse_delta(
-                                &motion::ZERON_PULSE,
+                                &motion::MAST_PULSE,
                                 cx.entity_id(),
                                 cx,
                             ));
@@ -6007,7 +6008,7 @@ impl Transcript {
                     .opacity(
                         0.35 + 0.4
                             * motion::pulse_wave(motion::pulse_delta(
-                                &motion::ZERON_PULSE,
+                                &motion::MAST_PULSE,
                                 cx.entity_id(),
                                 cx,
                             )),
@@ -6044,7 +6045,7 @@ impl Transcript {
                 let params = serde_json::json!({ "chatId": chat_id });
                 if let Err(err) = engine
                     .client()
-                    .call(zeron_rpc::methods::RETRY_DELIVERY, params)
+                    .call(mast_rpc::methods::RETRY_DELIVERY, params)
                     .await
                 {
                     tracing::warn!(error = %err, "delivery retry RPC failed");
@@ -6675,7 +6676,7 @@ impl Transcript {
         tree: &Arc<BlockTree>,
         only: Option<usize>,
         cx: &mut Context<Self>,
-    ) -> HashMap<usize, Option<Arc<zeron_syntax::HighlightedDocument>>> {
+    ) -> HashMap<usize, Option<Arc<mast_syntax::HighlightedDocument>>> {
         let mut out = HashMap::new();
         for (ix, top) in tree.blocks.iter().enumerate() {
             if only.is_some_and(|o| o != ix) {
@@ -6684,7 +6685,7 @@ impl Transcript {
             if let Block::CodeBlock { language, code } = &top.block
                 && let Some(lang) = language
                     .as_deref()
-                    .and_then(zeron_syntax::language_for_alias)
+                    .and_then(mast_syntax::language_for_alias)
             {
                 out.insert(
                     ix,
@@ -6714,7 +6715,7 @@ impl Transcript {
         let old = match old_text {
             Some(source) => {
                 let path = file.old_path.as_deref().unwrap_or(&file.path);
-                let lang = zeron_syntax::language_for_path(path)?;
+                let lang = mast_syntax::language_for_path(path)?;
                 Some(
                     self.highlights
                         .request(cache_row.clone(), 0, lang, source, cx)?,
@@ -6724,7 +6725,7 @@ impl Transcript {
         };
         let new = match new_text {
             Some(source) => {
-                let lang = zeron_syntax::language_for_path(&file.path)?;
+                let lang = mast_syntax::language_for_path(&file.path)?;
                 Some(self.highlights.request(cache_row, 1, lang, source, cx)?)
             }
             None => None,
@@ -7537,7 +7538,7 @@ fn visualization_card(
                 )
         };
     let actions = activation.as_ref().map(|activation| {
-        let has_preview = zeron_proto::visualize::preview_sibling(&activation.0.path).is_some();
+        let has_preview = mast_proto::visualize::preview_sibling(&activation.0.path).is_some();
         div()
             .flex_none()
             .flex()
@@ -7633,7 +7634,7 @@ fn visualization_card(
                         Some(id) => render::activate_link(
                             render::LinkTarget::new(
                                 &artifact.title,
-                                &format!("{}{id}", zeron_proto::artifacts::ARTIFACT_URL_SCHEME),
+                                &format!("{}{id}", mast_proto::artifacts::ARTIFACT_URL_SCHEME),
                             ),
                             render::LinkAction::Primary,
                             ui.as_ref(),
@@ -8385,7 +8386,7 @@ fn reveal_tool_row(row: AnyElement, height: f32, progress: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// BoardUI-style task tree with Zeron's tool glyph restored at each branch tip.
+/// BoardUI-style task tree with Mast's tool glyph restored at each branch tip.
 /// The previous row draws the first leg of a new arrival to its lower boundary;
 /// this row then continues down, rounds the elbow, and finally reveals the icon.
 /// One paint owns every segment in a row, avoiding alpha-darkened joints.
@@ -8972,7 +8973,7 @@ mod tests {
             });
         });
     }
-    use zeron_doc::MessagePart;
+    use mast_doc::MessagePart;
 
     fn with_tool_group_navigation(
         cx: &mut gpui::TestAppContext,
@@ -9090,14 +9091,14 @@ mod tests {
     fn tool_group_revisit_skips_batched_history_but_animates_live_arrivals(
         cx: &mut gpui::TestAppContext,
     ) {
-        use zeron_doc::transcript_delta::{TranscriptFrame, diff_transcript};
+        use mast_doc::transcript_delta::{TranscriptFrame, diff_transcript};
 
         with_tool_group_navigation(cx, |state, transcript, cx| {
             let apply_frame = |frame, replay_baseline, cx: &mut gpui::App| {
                 state.update(cx, |state, cx| {
                     state
                         .receive_transcript_update(
-                            zeron_doc::TranscriptUpdate {
+                            mast_doc::TranscriptUpdate {
                                 frame,
                                 replay_baseline,
                                 context_usage: None,
@@ -9115,7 +9116,7 @@ mod tests {
             )];
             apply_frame(
                 TranscriptFrame::reset(&cached),
-                Some(zeron_doc::TranscriptBaseline::capture(&cached)),
+                Some(mast_doc::TranscriptBaseline::capture(&cached)),
                 cx,
             );
             state.update(cx, |state, cx| state.select_chat(Some("chat-b".into()), cx));
@@ -9144,7 +9145,7 @@ mod tests {
             );
             apply_frame(
                 TranscriptFrame::reset(&cached),
-                Some(zeron_doc::TranscriptBaseline::capture(&cached)),
+                Some(mast_doc::TranscriptBaseline::capture(&cached)),
                 cx,
             );
             let row_id: SharedString = "tools#g0".into();
@@ -9163,11 +9164,7 @@ mod tests {
             for (previous, next) in [(&cached, &first_batch), (&first_batch, &second_batch)] {
                 let frame = diff_transcript(previous, next);
                 assert!(matches!(&frame, TranscriptFrame::Delta { .. }));
-                apply_frame(
-                    frame,
-                    Some(zeron_doc::TranscriptBaseline::capture(next)),
-                    cx,
-                );
+                apply_frame(frame, Some(mast_doc::TranscriptBaseline::capture(next)), cx);
                 let reveal = &transcript.read(cx).tool_group_reveals[&row_id];
                 assert_eq!(reveal.starts.len(), next[0].parts.len());
                 assert!(reveal.header_started_at.is_none());
@@ -9210,10 +9207,10 @@ mod tests {
             assistant("b", MessageStatus::Complete, vec![tool_part("t", "pwd")]),
         ];
         let first = worker
-            .prepare(&zeron_doc::TranscriptUpdate {
-                frame: zeron_doc::TranscriptFrame::reset(&original),
+            .prepare(&mast_doc::TranscriptUpdate {
+                frame: mast_doc::TranscriptFrame::reset(&original),
                 context_usage: None,
-                replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&original)),
+                replay_baseline: Some(mast_doc::TranscriptBaseline::capture(&original)),
             })
             .unwrap();
         let mut changed = original.clone();
@@ -9222,8 +9219,8 @@ mod tests {
             text: "omega".into(),
         }];
         let next = worker
-            .prepare(&zeron_doc::TranscriptUpdate {
-                frame: zeron_doc::diff_transcript(&original, &changed),
+            .prepare(&mast_doc::TranscriptUpdate {
+                frame: mast_doc::diff_transcript(&original, &changed),
                 context_usage: None,
                 replay_baseline: None,
             })
@@ -9236,18 +9233,18 @@ mod tests {
     #[gpui::test]
     fn prepared_whale_open_and_revisit_do_not_build_rows_on_ui(cx: &mut gpui::TestAppContext) {
         let (update, prepared, preparation_ms) = std::thread::spawn(|| {
-            let entries = if let Ok(path) = std::env::var("ZERON_WHALE_SNAPSHOT") {
-                let doc = zeron_doc::SessionDoc::init("fixture").unwrap();
+            let entries = if let Ok(path) = mast_proto::env::var("MAST_WHALE_SNAPSHOT") {
+                let doc = mast_doc::SessionDoc::init("fixture").unwrap();
                 doc.doc().import(&std::fs::read(path).unwrap()).unwrap();
-                zeron_doc::join_continuation_entries(doc.read_entries().unwrap())
+                mast_doc::join_continuation_entries(doc.read_entries().unwrap())
             } else {
                 vec![assistant("whale-turn", MessageStatus::Complete, (0..5000).map(|i| {
                     MessagePart::Text { id: format!("part-{i}"), text: format!("## Result {i}\n\n**Markdown** with `code` and [links](https://example.com).\n") }
                 }).collect())]
             };
-            let update = zeron_doc::TranscriptUpdate {
-                replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&entries)),
-                frame: zeron_doc::TranscriptFrame::Reset { reset: entries },
+            let update = mast_doc::TranscriptUpdate {
+                replay_baseline: Some(mast_doc::TranscriptBaseline::capture(&entries)),
+                frame: mast_doc::TranscriptFrame::Reset { reset: entries },
                 context_usage: None,
             };
             let start = Instant::now();
@@ -9329,9 +9326,9 @@ mod tests {
                 state.update(cx, |state, cx| {
                     state
                         .receive_opening_transcript_update(
-                            zeron_doc::TranscriptUpdate {
-                                frame: zeron_doc::TranscriptFrame::reset(entries),
-                                replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(
+                            mast_doc::TranscriptUpdate {
+                                frame: mast_doc::TranscriptFrame::reset(entries),
+                                replay_baseline: Some(mast_doc::TranscriptBaseline::capture(
                                     entries,
                                 )),
                                 context_usage: None,
@@ -9385,8 +9382,8 @@ mod tests {
             state.update(cx, |state, cx| {
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
-                            frame: zeron_doc::diff_transcript(&full, &live),
+                        mast_doc::TranscriptUpdate {
+                            frame: mast_doc::diff_transcript(&full, &live),
                             replay_baseline: None,
                             context_usage: None,
                         },
@@ -9422,13 +9419,13 @@ mod tests {
                 vec![tool_part("new", "git status")],
             ));
             state.update(cx, |state, cx| {
-                let frame = zeron_doc::diff_transcript(&state.transcript, &history);
+                let frame = mast_doc::diff_transcript(&state.transcript, &history);
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
+                        mast_doc::TranscriptUpdate {
                             frame,
                             context_usage: None,
-                            replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&history)),
+                            replay_baseline: Some(mast_doc::TranscriptBaseline::capture(&history)),
                         },
                         cx,
                     )
@@ -9436,8 +9433,8 @@ mod tests {
                 // Both updates land before the transcript observes/render them.
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
-                            frame: zeron_doc::diff_transcript(&history, &live),
+                        mast_doc::TranscriptUpdate {
+                            frame: mast_doc::diff_transcript(&history, &live),
                             context_usage: None,
                             replay_baseline: None,
                         },
@@ -9468,10 +9465,10 @@ mod tests {
         with_tool_group_navigation(cx, |state, transcript, cx| {
             let apply = |entries: &[SessionMessageEntry], baseline, cx: &mut gpui::App| {
                 state.update(cx, |state, cx| {
-                    let frame = zeron_doc::diff_transcript(&state.transcript, entries);
+                    let frame = mast_doc::diff_transcript(&state.transcript, entries);
                     state
                         .receive_transcript_update(
-                            zeron_doc::TranscriptUpdate {
+                            mast_doc::TranscriptUpdate {
                                 frame,
                                 replay_baseline: baseline,
                                 context_usage: None,
@@ -9500,7 +9497,7 @@ mod tests {
             historical[0].parts.retain(|p| p.id().starts_with("old"));
             apply(
                 &entries,
-                Some(zeron_doc::TranscriptBaseline::capture(&historical)),
+                Some(mast_doc::TranscriptBaseline::capture(&historical)),
                 cx,
             );
             let reveal = &transcript.read(cx).tool_group_reveals[&row];
@@ -9512,7 +9509,7 @@ mod tests {
             entries[0].parts.push(tool_part("live-c", "pwd"));
             apply(
                 &entries,
-                Some(zeron_doc::TranscriptBaseline::capture(&historical)),
+                Some(mast_doc::TranscriptBaseline::capture(&historical)),
                 cx,
             );
             let reveal = &transcript.read(cx).tool_group_reveals[&row];
@@ -9528,8 +9525,8 @@ mod tests {
                 state.select_chat(Some("new-chat".into()), cx);
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
-                            frame: zeron_doc::TranscriptFrame::reset(&[]),
+                        mast_doc::TranscriptUpdate {
+                            frame: mast_doc::TranscriptFrame::reset(&[]),
                             context_usage: None,
                             replay_baseline: Some(Default::default()),
                         },
@@ -9546,8 +9543,8 @@ mod tests {
             state.update(cx, |state, cx| {
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
-                            frame: zeron_doc::diff_transcript(&[], &live),
+                        mast_doc::TranscriptUpdate {
+                            frame: mast_doc::diff_transcript(&[], &live),
                             context_usage: None,
                             replay_baseline: None,
                         },
@@ -9576,11 +9573,11 @@ mod tests {
                 ));
             }
             state.update(cx, |state, cx| {
-                let frame = zeron_doc::diff_transcript(&state.transcript, &live);
-                assert!(matches!(&frame, zeron_doc::TranscriptFrame::Reset { .. }));
+                let frame = mast_doc::diff_transcript(&state.transcript, &live);
+                assert!(matches!(&frame, mast_doc::TranscriptFrame::Reset { .. }));
                 state
                     .receive_transcript_update(
-                        zeron_doc::TranscriptUpdate {
+                        mast_doc::TranscriptUpdate {
                             frame,
                             context_usage: None,
                             replay_baseline: None,
@@ -9718,7 +9715,7 @@ mod tests {
             (Theme::dark(), crate::theme::grey(48)),
             (Theme::light(), crate::theme::grey(230)),
         ] {
-            theme.surface_treatment = zeron_theme::SurfaceTreatment::Opaque;
+            theme.surface_treatment = mast_theme::SurfaceTreatment::Opaque;
             let badge = crate::theme::flatten(theme.ink(0.06), base);
             let icon_well = crate::theme::flatten(crate::file_icons::well_bg(&theme), badge);
             let contrast = crate::theme::contrast_ratio(icon_well, badge);
@@ -9739,9 +9736,9 @@ mod tests {
     #[test]
     fn file_badge_icon_well_uses_more_coverage_on_frost() {
         for mut theme in [Theme::dark(), Theme::light()] {
-            theme.surface_treatment = zeron_theme::SurfaceTreatment::Opaque;
+            theme.surface_treatment = mast_theme::SurfaceTreatment::Opaque;
             let opaque_alpha = crate::file_icons::well_bg(&theme).a;
-            theme.surface_treatment = zeron_theme::SurfaceTreatment::Frosted;
+            theme.surface_treatment = mast_theme::SurfaceTreatment::Frosted;
             let frosted = crate::file_icons::well_bg(&theme);
             let badge = crate::theme::flatten(theme.ink(0.06), theme.bg);
             let icon_well = crate::theme::flatten(frosted, badge);
@@ -10786,8 +10783,8 @@ mod tests {
     fn artifact_links_become_cards_once_the_reply_settles() {
         let id = "0123456789abcdef0123456789abcdef";
         let raw = format!(
-            "Plan: [Receiving plan](zeron-artifact:{id}) and [notes](zeron-artifact:work/notes.md).\n\n\
-             Again [Receiving plan](zeron-artifact:{id})."
+            "Plan: [Receiving plan](mast-artifact:{id}) and [notes](mast-artifact:work/notes.md).\n\n\
+             Again [Receiving plan](mast-artifact:{id})."
         );
         let cards = |status| {
             let entry = assistant("a", status, vec![text_part("t", &raw)]);
@@ -10816,11 +10813,7 @@ mod tests {
     fn artifact_cards_resolve_registered_artifacts() {
         use crate::artifacts::cards::card_model;
         use crate::artifacts::tests::{artifact, id, ready_store};
-        let mut plan = artifact(
-            &id(1),
-            "Receiving plan",
-            zeron_proto::ArtifactKind::Markdown,
-        );
+        let mut plan = artifact(&id(1), "Receiving plan", mast_proto::ArtifactKind::Markdown);
         plan.pinned_as_plan = true;
         plan.role = Some("plan".into());
         plan.origin_path = Some("/repo/work/plan.md".into());
@@ -10833,11 +10826,11 @@ mod tests {
             "Markdown \u{b7} plan \u{b7} r2 \u{b7} the plan"
         );
         let by_path = card_model("x", "work/plan.md", &store, Some("/repo"));
-        assert_eq!(by_path.url, format!("zeron-artifact:{}", id(1)));
+        assert_eq!(by_path.url, format!("mast-artifact:{}", id(1)));
         let unknown = card_model("Flow", "work/flow.fragment.html", &store, Some("/repo"));
         assert!(!unknown.registered);
         assert_eq!(unknown.title, "Flow");
-        assert_eq!(unknown.url, "zeron-artifact:work/flow.fragment.html");
+        assert_eq!(unknown.url, "mast-artifact:work/flow.fragment.html");
         assert_eq!(unknown.icon, crate::icons::FILE_CODE);
     }
 
@@ -11594,10 +11587,10 @@ mod tests {
                         state.select_chat(Some("chat".into()), cx);
                         state
                             .receive_transcript_update(
-                                zeron_doc::TranscriptUpdate {
-                                    frame: zeron_doc::TranscriptFrame::reset(&history),
+                                mast_doc::TranscriptUpdate {
+                                    frame: mast_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
-                                    replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(
+                                    replay_baseline: Some(mast_doc::TranscriptBaseline::capture(
                                         &history,
                                     )),
                                 },
@@ -11622,12 +11615,12 @@ mod tests {
                     this.state.update(cx, |state, cx| {
                         state
                             .receive_transcript_update(
-                                zeron_doc::TranscriptUpdate {
-                                    frame: zeron_doc::diff_transcript(&history, &next),
+                                mast_doc::TranscriptUpdate {
+                                    frame: mast_doc::diff_transcript(&history, &next),
                                     context_usage: None,
                                     // The RPC must retain its opening cutoff when
                                     // publishing subsequent changed-part history.
-                                    replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(
+                                    replay_baseline: Some(mast_doc::TranscriptBaseline::capture(
                                         &cutoff,
                                     )),
                                 },
@@ -11677,10 +11670,10 @@ mod tests {
                         state.select_chat(Some("chat".into()), cx);
                         state
                             .receive_transcript_update(
-                                zeron_doc::TranscriptUpdate {
-                                    frame: zeron_doc::TranscriptFrame::reset(&history),
+                                mast_doc::TranscriptUpdate {
+                                    frame: mast_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
-                                    replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(
+                                    replay_baseline: Some(mast_doc::TranscriptBaseline::capture(
                                         &history,
                                     )),
                                 },
@@ -11689,8 +11682,8 @@ mod tests {
                             .unwrap();
                         state
                             .receive_transcript_update(
-                                zeron_doc::TranscriptUpdate {
-                                    frame: zeron_doc::diff_transcript(&history, &live),
+                                mast_doc::TranscriptUpdate {
+                                    frame: mast_doc::diff_transcript(&history, &live),
                                     context_usage: None,
                                     replay_baseline: None,
                                 },
@@ -11739,10 +11732,10 @@ mod tests {
                     this.state.update(cx, |state, cx| {
                         state
                             .receive_transcript_update(
-                                zeron_doc::TranscriptUpdate {
-                                    frame: zeron_doc::diff_transcript(&live, &next),
+                                mast_doc::TranscriptUpdate {
+                                    frame: mast_doc::diff_transcript(&live, &next),
                                     context_usage: None,
-                                    replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(
+                                    replay_baseline: Some(mast_doc::TranscriptBaseline::capture(
                                         &next_history,
                                     )),
                                 },
@@ -11776,14 +11769,14 @@ mod tests {
                         this.spring_kick = true;
                         updated.push(prompt(&format!("history-{}", updated.len())));
                         this.state.update(cx, |state, cx| {
-                            let frame = zeron_doc::diff_transcript(&state.transcript, &updated);
+                            let frame = mast_doc::diff_transcript(&state.transcript, &updated);
                             state
                                 .receive_transcript_update(
-                                    zeron_doc::TranscriptUpdate {
+                                    mast_doc::TranscriptUpdate {
                                         frame,
                                         context_usage: None,
                                         replay_baseline: Some(
-                                            zeron_doc::TranscriptBaseline::capture(&updated),
+                                            mast_doc::TranscriptBaseline::capture(&updated),
                                         ),
                                     },
                                     cx,
@@ -12020,11 +12013,11 @@ mod tests {
                     feed(this, vec![prompt("prompt")], cx);
                     this.rail_enabled = false;
                     this.state.update(cx, |state, _| {
-                        state.sessions.push(zeron_proto::Session {
+                        state.sessions.push(mast_proto::Session {
                             last_completed_turn: None,
                             chat_id: "chat".into(),
                             device_id: "test".into(),
-                            status: zeron_proto::SessionStatus::Working,
+                            status: mast_proto::SessionStatus::Working,
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
                         })
@@ -13180,7 +13173,7 @@ mod tests {
     /// the RAW text either way, so projection never perturbs the diff key.
     #[test]
     fn user_rows_project_file_mentions_into_chips() {
-        let raw = "look at [composer.rs](zeron-file:crates/ui/src/composer.rs) please";
+        let raw = "look at [composer.rs](mast-file:crates/ui/src/composer.rs) please";
         let mut entry = assistant("u3", MessageStatus::Complete, vec![]);
         entry.role = MessageRole::User;
         entry.status = None;
@@ -13190,7 +13183,7 @@ mod tests {
             panic!("expected a user row");
         };
         assert!(
-            !text.contains("zeron-file:"),
+            !text.contains("mast-file:"),
             "raw link left visible: {text}"
         );
         assert!(text.contains("composer.rs"));
@@ -13258,7 +13251,7 @@ mod tests {
         let old = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>();
         let mut new = old.clone();
         new[9] = "LINE 10".into();
-        let diff = zeron_proto::ToolDiff {
+        let diff = mast_proto::ToolDiff {
             path: "/w/a.rs".into(),
             old_text: Some(old.join("\n") + "\n"),
             new_text: new.join("\n") + "\n",
@@ -13296,7 +13289,7 @@ mod tests {
         assert_eq!(old_text.as_deref(), diff.old_text.as_deref());
         assert_eq!(new_text.as_deref(), Some(diff.new_text.as_str()));
         // New files carry Added status (and no old numbers).
-        let created = zeron_proto::ToolDiff {
+        let created = mast_proto::ToolDiff {
             path: "/w/new.txt".into(),
             old_text: None,
             new_text: "only\n".into(),
@@ -13351,7 +13344,7 @@ new file mode 100644\n\
 +++ b/src/b.rs\n\
 @@ -0,0 +1,1 @@\n\
 +created\n";
-        let diff = zeron_proto::ToolDiff {
+        let diff = mast_proto::ToolDiff {
             path: "workspace".into(),
             old_text: None,
             new_text: String::new(),
@@ -13375,7 +13368,7 @@ new file mode 100644\n\
 
     #[test]
     fn headerless_unified_tool_patch_uses_the_reported_path() {
-        let diff = zeron_proto::ToolDiff {
+        let diff = mast_proto::ToolDiff {
             path: "src/path with spaces.rs".into(),
             old_text: None,
             new_text: String::new(),
@@ -13401,7 +13394,7 @@ new file mode 100644\n\
                 patch.push_str(&format!("+line {line}\n"));
             }
         }
-        let diff = zeron_proto::ToolDiff {
+        let diff = mast_proto::ToolDiff {
             path: "workspace".into(),
             old_text: None,
             new_text: String::new(),
@@ -13657,11 +13650,11 @@ new file mode 100644\n\
         );
         let todo = ToolCall::Todo {
             items: vec![
-                zeron_proto::TodoItem {
+                mast_proto::TodoItem {
                     text: "a".into(),
                     done: true,
                 },
-                zeron_proto::TodoItem {
+                mast_proto::TodoItem {
                     text: "b".into(),
                     done: false,
                 },
@@ -13744,11 +13737,11 @@ new file mode 100644\n\
         // Todos list one item per line with checkbox state.
         let Some(ToolDetail::Output { lines, .. }) = call_block(&ToolCall::Todo {
             items: vec![
-                zeron_proto::TodoItem {
+                mast_proto::TodoItem {
                     text: "a".into(),
                     done: true,
                 },
-                zeron_proto::TodoItem {
+                mast_proto::TodoItem {
                     text: "b".into(),
                     done: false,
                 },

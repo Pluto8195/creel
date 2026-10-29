@@ -21,8 +21,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-use zeron_proto::pr_review_sync::{
+use mast_proto::pr_review_sync::{
     GITHUB_PROVIDER, GITHUB_PULL_REQUEST_REFERENCE, GithubError, GithubErrorCode,
     PR_RESOLUTION_CLOSED, PR_RESOLUTION_MERGED, PR_RESOLUTION_REVIEW_SUBMITTED,
     PR_RESOLUTION_WITHDRAWN, PrReviewRequestState, PrReviewSyncNowReply, PrStatusParams,
@@ -30,19 +29,20 @@ use zeron_proto::pr_review_sync::{
     PullRequestState, PullRequestStatusSummary, WorkItemExternalSyncState, pr_item_title,
     pr_review_dedupe_key,
 };
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     ArchiveWorkItemParams, CreateWorkItemExternalReferenceParams, CreateWorkItemParams,
     DescendantArchivePolicy, RestoreWorkItemParams, UpdateWorkItemParams, WorkItemArchiveCause,
     WorkItemChanges, WorkItemStatus, WorkOutlineActorKind, WorkOutlineErrorCode,
     WorkOutlinePlacement, derive_id, limits, roles,
 };
-use zeron_proto::work_outline_user_actions::{
+use mast_proto::work_outline_user_actions::{
     CreateUserActionRequestParams, ResolveUserActionRequestParams, UserActionOriginKind,
     UserActionRequestOrigin, user_action_limits,
 };
-use zeron_proto::{
+use mast_proto::{
     Space, WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlineSnapshot,
 };
+use serde_json::Value;
 
 use crate::pr_ticket_cache::{ChecksStatus, MyOpenPr};
 use crate::repos::Repos;
@@ -430,7 +430,7 @@ fn ci_label(status: PullRequestCiStatus) -> &'static str {
 /// PR (`work_outline_pr_links`) is not, so the sync never adopts it.
 fn is_review_item(
     snapshot: &WorkOutlineSnapshot,
-    item: &zeron_proto::WorkItemView,
+    item: &mast_proto::WorkItemView,
     pr: &PullRequestRef,
 ) -> bool {
     let synced = item
@@ -534,9 +534,9 @@ impl PrReviewSyncService {
             Some(path) => std::process::Command::new(path),
             None => {
                 let executable =
-                    zeron_harness::resolve_login_shell_executable("gh").ok_or_else(missing)?;
+                    mast_harness::resolve_login_shell_executable("gh").ok_or_else(missing)?;
                 let mut command = std::process::Command::new(executable);
-                zeron_harness::compose_login_shell_path_std(&mut command);
+                mast_harness::compose_login_shell_path_std(&mut command);
                 command
             }
         };
@@ -1584,7 +1584,7 @@ mod tests {
             archive_operation(space, key, 43, PrReviewRequestState::Closed)
         );
     }
-    use zeron_proto::pr_review_sync::pr_key;
+    use mast_proto::pr_review_sync::pr_key;
 
     #[test]
     fn gh_failures_map_to_codes() {

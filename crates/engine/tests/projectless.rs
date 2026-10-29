@@ -1,6 +1,6 @@
 //! "Don't work in a project" against a real engine: a chat minted through the
 //! UI's exact wire shape (`Mutate createChat` with a `deviceId` and no
-//! `spaceId`) stores cwd `~`, spawns its run from a stable Zeron-owned scratch
+//! `spaceId`) stores cwd `~`, spawns its run from a stable Mast-owned scratch
 //! directory, and never mints a space row. In particular, the agent must not
 //! run from HOME and trigger macOS protected-folder access prompts.
 
@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
@@ -136,11 +136,11 @@ async fn exercise_projectless(command_first: bool) {
 
     // The composer's exact wire shape for "Don't work in a project": a
     // deviceId, no spaceId, no cwd.
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     if !command_first {
         client
             .call(
-                zeron_rpc::methods::MUTATE,
+                mast_rpc::methods::MUTATE,
                 serde_json::json!({
                     "op": "createChat",
                     "chatId": CHAT,
@@ -201,7 +201,7 @@ async fn exercise_projectless(command_first: bool) {
     for _ in 0..2 {
         client
             .call(
-                zeron_rpc::methods::MUTATE,
+                mast_rpc::methods::MUTATE,
                 serde_json::json!({
                     "op": "createChat", "chatId": CHAT, "deviceId": core.device_id,
                 }),
@@ -210,7 +210,7 @@ async fn exercise_projectless(command_first: bool) {
             .unwrap();
     }
 
-    // The harness must see a stable per-chat Zeron-owned directory, never the
+    // The harness must see a stable per-chat Mast-owned directory, never the
     // host's real HOME (which contains TCC-protected folders on macOS).
     let cwds: Vec<String> = requests
         .lock()
@@ -230,7 +230,7 @@ async fn exercise_projectless(command_first: bool) {
     );
     let terminal = client
         .call(
-            zeron_rpc::methods::OPEN_TERMINAL,
+            mast_rpc::methods::OPEN_TERMINAL,
             serde_json::json!({ "chatId": CHAT, "cols": 80, "rows": 24 }),
         )
         .await
@@ -238,7 +238,7 @@ async fn exercise_projectless(command_first: bool) {
     assert_eq!(terminal["cwd"], cwds[0]);
     client
         .call(
-            zeron_rpc::methods::CLOSE_TERMINAL,
+            mast_rpc::methods::CLOSE_TERMINAL,
             serde_json::json!({ "terminalId": terminal["id"] }),
         )
         .await

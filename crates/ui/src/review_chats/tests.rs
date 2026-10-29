@@ -2,7 +2,7 @@
 //! the three surfaces share. Pure: snapshots and facts are filled by hand.
 
 use chrono::{DateTime, Utc};
-use zeron_proto::{ChatIndicator, ChatLinkSource, PullRequestRef};
+use mast_proto::{ChatIndicator, ChatLinkSource, PullRequestRef};
 
 use super::*;
 use crate::github::fixture as gf;

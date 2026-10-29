@@ -8,11 +8,11 @@
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use zeron_proto::{
+use mast_proto::{
     ChatLinkSource, PrDashBucket, PrDashChat, PrDashDiff, PrDashReply, PrDashRow, PrDashTab,
 };
 
-use zeron_proto::{needs_you_count, ordered_rows};
+use mast_proto::{needs_you_count, ordered_rows};
 
 /// How often the visible tab refetches while the page is rendered.
 pub(crate) const DASH_REFRESH: Duration = Duration::from_secs(60);
@@ -548,7 +548,7 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::row;
     use super::*;
-    use zeron_proto::{PrDashCheck, PrDashReviewer};
+    use mast_proto::{PrDashCheck, PrDashReviewer};
 
     const T1: &str = "2026-10-20T10:00:00Z";
     const T2: &str = "2026-10-21T10:00:00Z";

@@ -13,11 +13,11 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
-use zeron_proto::pr_review_sync::WorkItemExternalSyncState;
-use zeron_proto::work_outline::{
+use mast_proto::pr_review_sync::WorkItemExternalSyncState;
+use mast_proto::work_outline::{
     SetLinearAssignedDestinationParams, SetPrReviewSyncDestinationParams, WorkOutlineErrorCode,
 };
+use serde_json::{Value, json};
 
 use super::linear::{KIND_WORK_OUTLINE_SPACE_SETTINGS, decode_space_settings};
 use super::materialize::str_field;

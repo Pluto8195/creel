@@ -4,18 +4,18 @@
 //! revision comparison behind **Compare**.
 //!
 //! Everything here is GUI-free and works over a [`WorkOutlineSnapshot`]
-//! with the shared pure resolver (`zeron_proto::resolve_effective_instructions`),
+//! with the shared pure resolver (`mast_proto::resolve_effective_instructions`),
 //! so the drift confirmation needs no RPC and works while the engine still
 //! answers instruction operations with `unsupported`.
 use std::collections::{BTreeSet, HashMap};
 
-use sha2::{Digest, Sha256};
-use zeron_proto::{
+use mast_proto::{
     ChatInstructionState, INSTRUCTION_ENVELOPE_VERSION, InstructionRevisionBody,
     InstructionRevisionComparison, InstructionRevisionIntegrity, WorkItemChatAssignmentState,
     WorkItemInstructionView, WorkOutlineActorKind, WorkOutlineSnapshot, build_revision_body,
     canonical_revision_hash, compare_instruction_revisions,
 };
+use sha2::{Digest, Sha256};
 
 /// Live instructions of one scope in effective order `(orderKey, id)`:
 /// `item_id == None` is the Space root.
@@ -101,7 +101,7 @@ pub(crate) fn assigned_chats(snapshot: &WorkOutlineSnapshot) -> HashMap<String, 
 
 /// `item_id` and every descendant (child links of the materialized tree).
 pub(crate) fn subtree(snapshot: &WorkOutlineSnapshot, item_id: &str) -> Vec<String> {
-    let by_id: HashMap<&str, &zeron_proto::WorkItemView> = snapshot
+    let by_id: HashMap<&str, &mast_proto::WorkItemView> = snapshot
         .items
         .iter()
         .map(|item| (item.id.as_str(), item))
@@ -347,7 +347,7 @@ pub(crate) fn drift_impact(snapshot: &WorkOutlineSnapshot, change: &OutlineChang
                 .unwrap_or_default();
             after
                 .instructions
-                .push(zeron_proto::WorkItemInstructionView {
+                .push(mast_proto::WorkItemInstructionView {
                     id: "\u{0}proposed".to_owned(),
                     space_id: snapshot.space_id.clone(),
                     work_item_id: work_item_id.clone(),
@@ -449,7 +449,7 @@ pub(crate) fn current_body(
 pub(crate) fn compare_with_current(
     snapshot: &WorkOutlineSnapshot,
     item_id: &str,
-    source: &zeron_proto::InstructionRevisionView,
+    source: &mast_proto::InstructionRevisionView,
 ) -> Result<InstructionRevisionComparison, CompareUnavailable> {
     if source.integrity == InstructionRevisionIntegrity::Corrupt {
         return Err(CompareUnavailable::Failed(
@@ -501,7 +501,7 @@ pub(crate) mod fixture {
     use super::super::store::fixture_ids::*;
     use super::super::store::fixture_snapshot;
     use super::*;
-    use zeron_proto::{InstructionRevisionView, InstructionSource, WorkOutlineActor};
+    use mast_proto::{InstructionRevisionView, InstructionSource, WorkOutlineActor};
 
     pub(crate) const I_ROOT: &str = "i-root";
     pub(crate) const I_LAUNCH: &str = "i-launch";
@@ -624,7 +624,7 @@ mod tests {
     use super::fixture::*;
     use super::*;
     use crate::work_outline::store::fixture_ids::*;
-    use zeron_proto::TextDiffKind;
+    use mast_proto::TextDiffKind;
 
     #[test]
     fn effective_order_marks_inherited_entries_and_budget() {

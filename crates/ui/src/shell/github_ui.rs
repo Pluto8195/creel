@@ -18,7 +18,7 @@ impl Shell {
             .state
             .read(cx)
             .work_outline_actions()
-            .set_pr_review_sync_destination(zeron_proto::SetPrReviewSyncDestinationParams {
+            .set_pr_review_sync_destination(mast_proto::SetPrReviewSyncDestinationParams {
                 space_id,
                 work_item_id: item_id,
                 operation_id: crate::work_outline::actions::new_operation_id(),

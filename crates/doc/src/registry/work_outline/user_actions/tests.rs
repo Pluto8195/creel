@@ -6,8 +6,7 @@
 
 use std::collections::HashMap;
 
-use sha2::{Digest, Sha256};
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     ArchiveWorkItemInstructionParams, ArchiveWorkItemParams, AssignChatToWorkItemParams,
     CreateInstructionRevisionParams, CreateWorkItemExternalReferenceParams,
     CreateWorkItemInstructionParams, CreateWorkItemParams, InstructionPlacement,
@@ -15,10 +14,11 @@ use zeron_proto::work_outline::{
     RestoreWorkItemParams, UpdateWorkItemInstructionParams, UpdateWorkItemParams, WorkItemChanges,
     WorkItemEffectiveStatus,
 };
-use zeron_proto::work_outline_execution::{ConfigureExecutionParams, ExecutionScope};
-use zeron_proto::work_outline_user_actions::{
+use mast_proto::work_outline_execution::{ConfigureExecutionParams, ExecutionScope};
+use mast_proto::work_outline_user_actions::{
     InstructionProposalOrigin, UserActionRequestOrigin, user_action_limits,
 };
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::registry::tests::{chat, server_round, space};
@@ -45,7 +45,7 @@ fn agent(chat_id: &str) -> WorkOutlineActor {
     }
 }
 
-fn space_chat(id: &str, space_id: Option<&str>) -> zeron_proto::Chat {
+fn space_chat(id: &str, space_id: Option<&str>) -> mast_proto::Chat {
     let mut chat = chat(id, "dev-a");
     chat.space_id = space_id.map(str::to_owned);
     chat.parent_chat_id = None;

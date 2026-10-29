@@ -30,7 +30,7 @@ use tokio::sync::watch;
 
 use crate::EngineError;
 use crate::http_error::describe_http_error;
-use zeron_rpc::TokenError;
+use mast_rpc::TokenError;
 
 const SIGN_IN_TTL: Duration = Duration::from_secs(15 * 60);
 /// Refresh when the cached token has less than this much life left.
@@ -89,7 +89,7 @@ pub struct OrgMembership {
 }
 
 /// AuthStatus stream payload (`SignedOut | NeedsOrganization{user} |
-/// SignedIn{user, orgId?}`). Serializes as the canonical [`zeron_proto::AuthState`]
+/// SignedIn{user, orgId?}`). Serializes as the canonical [`mast_proto::AuthState`]
 /// wire shape (`{"state": "signedIn", …}`) so every client parses one form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthState {
@@ -123,18 +123,18 @@ impl AuthState {
     }
 
     /// The proto wire twin — the one shape the engine emits over AuthStatus.
-    pub fn to_proto(&self) -> zeron_proto::AuthState {
-        let profile = |user: &AuthUser| zeron_proto::UserProfile {
+    pub fn to_proto(&self) -> mast_proto::AuthState {
+        let profile = |user: &AuthUser| mast_proto::UserProfile {
             id: user.id.clone(),
             email: user.email.clone(),
             name: user.name.clone(),
         };
         match self {
-            AuthState::SignedOut => zeron_proto::AuthState::SignedOut,
-            AuthState::NeedsOrganization { user } => zeron_proto::AuthState::NeedsOrganization {
+            AuthState::SignedOut => mast_proto::AuthState::SignedOut,
+            AuthState::NeedsOrganization { user } => mast_proto::AuthState::NeedsOrganization {
                 user: profile(user),
             },
-            AuthState::SignedIn { user, org_id } => zeron_proto::AuthState::SignedIn {
+            AuthState::SignedIn { user, org_id } => mast_proto::AuthState::SignedIn {
                 user: profile(user),
                 org_id: org_id.clone(),
             },
@@ -162,7 +162,7 @@ pub struct AuthConfig {
     pub workos_client_id: Option<String>,
     /// WorkOS API base (authorize URL host).
     pub workos_api_base: String,
-    /// Dev-mode bearer/user id (mirrors the old `ZERON_EDGE_TOKEN` behavior).
+    /// Dev-mode bearer/user id (mirrors the old `MAST_EDGE_TOKEN` behavior).
     pub dev_user_id: String,
     /// Loopback callback port; `None` = ephemeral.
     pub callback_port: Option<u16>,
@@ -442,8 +442,8 @@ impl Auth {
                 return;
             }
             let mut state_rx = auth.watch_state();
-            let mut wake = zeron_sync::wake::subscribe();
-            let mut online = zeron_sync::wake::subscribe_online();
+            let mut wake = mast_sync::wake::subscribe();
+            let mut online = mast_sync::wake::subscribe_online();
             let mut retry_rx = auth.inner.retry_tx.subscribe();
             loop {
                 if !state_rx.borrow().is_signed_in() {
@@ -1054,10 +1054,10 @@ fn state_for(user: AuthUser, org_id: Option<String>) -> AuthState {
     }
 }
 
-/// The relay/room token seam: `Auth` IS a [`zeron_rpc::TokenSource`], so the host relay
+/// The relay/room token seam: `Auth` IS a [`mast_rpc::TokenSource`], so the host relay
 /// and link cache always dial with a fresh bearer after refreshes.
 #[async_trait::async_trait]
-impl zeron_rpc::TokenSource for Auth {
+impl mast_rpc::TokenSource for Auth {
     async fn token(&self) -> Result<String, TokenError> {
         if self.inner.workos.is_some() && !self.state().is_signed_in() {
             return Err(TokenError::SignedOut);
@@ -1329,7 +1329,7 @@ mod tests {
         let edge = crate::EdgeConfig::new("https://edge.invalid", Arc::new(auth.clone()));
         assert!(matches!(
             edge.room_url("/registry/org_1/ws").url().await,
-            Err(zeron_sync::SyncError::TemporarilyUnavailable(message)) if &message == reason
+            Err(mast_sync::SyncError::TemporarilyUnavailable(message)) if &message == reason
         ));
         assert!(matches!(
             auth.list_orgs().await,
@@ -1409,8 +1409,8 @@ mod tests {
             })
         );
         // The proto type itself round-trips the emitted value.
-        let parsed: zeron_proto::AuthState = serde_json::from_value(value).expect("proto parse");
-        assert!(matches!(parsed, zeron_proto::AuthState::SignedIn { .. }));
+        let parsed: mast_proto::AuthState = serde_json::from_value(value).expect("proto parse");
+        assert!(matches!(parsed, mast_proto::AuthState::SignedIn { .. }));
         assert_eq!(
             serde_json::to_value(AuthState::SignedOut).expect("json"),
             serde_json::json!({"state": "signedOut"})
@@ -1426,7 +1426,7 @@ mod tests {
 }
 
 #[async_trait::async_trait]
-impl zeron_preview::signaling::TokenSource for Auth {
+impl mast_preview::signaling::TokenSource for Auth {
     async fn token(&self) -> anyhow::Result<String> {
         Ok(self.access_token().await?)
     }

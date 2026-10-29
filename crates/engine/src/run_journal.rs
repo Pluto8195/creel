@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{AgentEvent, InstructionRevisionPin};
+use mast_proto::{AgentEvent, InstructionRevisionPin};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -278,7 +278,8 @@ impl RunJournal {
     }
 
     fn model_checked_path(&self, chat_id: &str) -> PathBuf {
-        self.dir.join(format!("{}.modelchecked", sanitize_id(chat_id)))
+        self.dir
+            .join(format!("{}.modelchecked", sanitize_id(chat_id)))
     }
 
     /// Journal size in bytes (append-only, so growth means new events).
@@ -306,7 +307,7 @@ impl RunJournal {
         self.dir.join(format!("{}.restart", sanitize_id(chat_id)))
     }
 
-    /// Stable Zeron-owned working directory for a project-less chat. Keeping
+    /// Stable Mast-owned working directory for a project-less chat. Keeping
     /// this beside (rather than inside) `journals/` lets journal scans remain
     /// file-only and gives every chat its own sandbox root.
     pub(crate) fn projectless_cwd(&self, chat_id: &str) -> Result<PathBuf, JournalError> {
@@ -580,7 +581,7 @@ fn sanitize_id(chat_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::DoneStatus;
+    use mast_proto::DoneStatus;
 
     fn pin(id: &str) -> InstructionRevisionPin {
         InstructionRevisionPin {

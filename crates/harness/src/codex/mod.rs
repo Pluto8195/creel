@@ -84,7 +84,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
@@ -138,7 +138,7 @@ pub fn login_command(codex_home: &std::path::Path) -> Result<Command, HarnessErr
 pub struct CodexHarness {
     models_cache: crate::catalog::Catalog,
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Grace between `turn/interrupt` and SIGTERM.
     interrupt_grace: Duration,
@@ -186,7 +186,7 @@ impl CodexHarness {
         crate::account_home::apply(cmd, HarnessId::Codex, self.account_home.as_deref());
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
@@ -392,7 +392,7 @@ fn reasoning_level(value: &str) -> Option<ReasoningLevel> {
     })
 }
 
-/// Codex accepts both names, but Zeron has historically persisted `fast`.
+/// Codex accepts both names, but Mast has historically persisted `fast`.
 /// Normalize the app server's `priority` id so live and fallback catalogs do
 /// not produce two different settings for the same tier.
 fn normalized_service_tier(value: &str) -> &str {
@@ -687,7 +687,7 @@ impl Harness for CodexHarness {
     /// Skills from a short-lived `skills/list` probe (see
     /// [`Self::discover_commands`]). The composer owns the five-minute cache;
     /// discovery must stay fresh so newly installed user skills appear after
-    /// that cache expires without restarting Zeron.
+    /// that cache expires without restarting Mast.
     // codex's `skills/list` probe boots without a chat cwd (see
     // `discover_commands`'s own doc comment) — that's this harness's own
     // existing, deliberate simplification, unchanged here.
@@ -770,13 +770,13 @@ impl CodexHarness {
         // "on-request" (see [`approval_policy_for`]).
         // A `read-only` request is never widened by auto-approve: yolo would
         // both select danger-full-access and auto-accept sandbox escalations.
-        if request.sandbox == zeron_proto::SandboxLevel::ReadOnly {
+        if request.sandbox == mast_proto::SandboxLevel::ReadOnly {
             request.auto_approve = false;
         }
         request.sandbox = if title_only {
-            zeron_proto::SandboxLevel::ReadOnly
+            mast_proto::SandboxLevel::ReadOnly
         } else if request.auto_approve {
-            zeron_proto::SandboxLevel::DangerFullAccess
+            mast_proto::SandboxLevel::DangerFullAccess
         } else {
             request.sandbox
         };
@@ -813,7 +813,7 @@ impl CodexHarness {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::codex", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::codex", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -854,7 +854,7 @@ struct Session {
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     request: RunRequest,
-    /// The Zeron MCP server for this thread (Chats in a Space only).
+    /// The Mast MCP server for this thread (Chats in a Space only).
     agent_tools: Option<crate::AgentToolsInjection>,
     interrupt_grace: Duration,
     kill_grace: Duration,
@@ -1016,8 +1016,8 @@ fn thread_start_params(request: &RunRequest, title_only: bool) -> serde_json::Ma
     p
 }
 
-/// Add the Zeron MCP server to one thread through the `config` override
-/// layer (dotted `mcp_servers.zeron-agent.*` keys), leaving the user's
+/// Add the Mast MCP server to one thread through the `config` override
+/// layer (dotted `mcp_servers.mast-agent.*` keys), leaving the user's
 /// `~/.codex/config.toml` servers untouched. A no-op without an injection.
 fn with_agent_tools(
     params: &mut serde_json::Map<String, Value>,
@@ -1127,7 +1127,7 @@ async fn run_session(session: Session) {
                 // A missing/foreign rollout falls back to a fresh thread.
                 Err(e) => {
                     tracing::debug!(
-                        target: "zeron_harness::codex",
+                        target: "mast_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
                     client
@@ -1580,7 +1580,7 @@ async fn run_session(session: Session) {
                             // fallback for older Codex without steering).
                             Err(e) => {
                                 tracing::debug!(
-                                    target: "zeron_harness::codex",
+                                    target: "mast_harness::codex",
                                     "turn/steer rejected (queued as next turn): {e}"
                                 );
                                 if router.active.as_deref() == Some(expected.as_str())
@@ -1637,7 +1637,7 @@ async fn run_session(session: Session) {
                             .await
                         {
                             tracing::debug!(
-                                target: "zeron_harness::codex",
+                                target: "mast_harness::codex",
                                 "turn/interrupt failed (escalation will reap): {e}"
                             );
                         }
@@ -1864,7 +1864,7 @@ fn handle_server_request(
     // never asks); keep the yolo branch's behavior exactly as it was.
     if !is_approval || (auto_approve && method == "item/permissions/requestApproval") {
         tracing::debug!(
-            target: "zeron_harness::codex",
+            target: "mast_harness::codex",
             "unhandled server request: {method}"
         );
         client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
@@ -2080,19 +2080,19 @@ mod tests {
 
     fn instruction_request(
         resume: Option<&str>,
-        transition: zeron_proto::InstructionTransition,
+        transition: mast_proto::InstructionTransition,
     ) -> RunRequest {
         let mut request: RunRequest = serde_json::from_value(json!({
             "prompt": "p", "model": "gpt-5.6-luna", "reasoning": null, "cwd": "/w",
             "sandbox": "workspace-write", "resume": resume
         }))
         .unwrap();
-        request.instructions = Some(zeron_proto::InstructionDelivery {
-            envelope: zeron_proto::InstructionEnvelope {
+        request.instructions = Some(mast_proto::InstructionDelivery {
+            envelope: mast_proto::InstructionEnvelope {
                 revision_id: "rev-1".into(),
                 revision_hash: "hash-1".into(),
                 envelope_version: 1,
-                envelope_sha256: zeron_proto::envelope_sha256("ENVELOPE-1\n"),
+                envelope_sha256: mast_proto::envelope_sha256("ENVELOPE-1\n"),
                 rendered: "ENVELOPE-1\n".into(),
             },
             transition,
@@ -2102,7 +2102,7 @@ mod tests {
 
     #[test]
     fn developer_instructions_ride_thread_start_and_every_resume() {
-        use zeron_proto::InstructionTransition::{Continue, Fresh};
+        use mast_proto::InstructionTransition::{Continue, Fresh};
         let fresh = thread_start_params(&instruction_request(None, Fresh), false);
         assert_eq!(fresh["developerInstructions"], json!("ENVELOPE-1\n"));
         assert!(fresh.get("baseInstructions").is_none());
@@ -2116,36 +2116,36 @@ mod tests {
         assert_eq!(resumed["developerInstructions"], json!("ENVELOPE-1\n"));
     }
 
-    /// The Zeron MCP server rides the thread `config` layer on thread/start
+    /// The Mast MCP server rides the thread `config` layer on thread/start
     /// AND on every thread/resume (the resume params clone the start params).
     #[test]
     fn agent_tools_ride_thread_start_and_resume_config() {
         let tools = crate::AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: std::path::PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
-            env: std::collections::BTreeMap::from([("ZERON_AGENT_TOKEN".into(), "tok".into())]),
+            env: std::collections::BTreeMap::from([("MAST_AGENT_TOKEN".into(), "tok".into())]),
         };
-        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let mut request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         request.instructions = None;
         let mut start = thread_start_params(&request, false);
         with_agent_tools(&mut start, None);
         assert!(start.get("config").is_none());
         with_agent_tools(&mut start, Some(&tools));
         assert_eq!(
-            start["config"]["mcp_servers.zeron-agent.command"],
+            start["config"]["mcp_servers.mast-agent.command"],
             json!("/opt/zeron/bin/zeron")
         );
         let resumed = thread_resume_params(&start, "th-1");
         assert_eq!(
-            resumed["config"]["mcp_servers.zeron-agent.env"]["ZERON_AGENT_TOKEN"],
+            resumed["config"]["mcp_servers.mast-agent.env"]["MAST_AGENT_TOKEN"],
             json!("tok")
         );
     }
 
     #[test]
     fn runs_without_instructions_send_no_developer_instructions() {
-        let mut request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let mut request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         request.instructions = None;
         assert!(
             thread_start_params(&request, false)
@@ -2156,7 +2156,7 @@ mod tests {
 
     #[test]
     fn title_runs_keep_title_instructions_only() {
-        let request = instruction_request(None, zeron_proto::InstructionTransition::Fresh);
+        let request = instruction_request(None, mast_proto::InstructionTransition::Fresh);
         let params = thread_start_params(&request, true);
         assert_eq!(
             params["developerInstructions"],
@@ -2166,7 +2166,7 @@ mod tests {
 
     #[test]
     fn a_revision_change_in_an_existing_thread_is_refused() {
-        let replace = zeron_proto::InstructionTransition::Replace {
+        let replace = mast_proto::InstructionTransition::Replace {
             previous_revision_id: "rev-0".into(),
         };
         assert!(matches!(
@@ -2178,7 +2178,7 @@ mod tests {
         assert!(
             instructions::check_transition(&instruction_request(
                 Some("th-1"),
-                zeron_proto::InstructionTransition::Continue
+                mast_proto::InstructionTransition::Continue
             ))
             .is_ok()
         );

@@ -13,7 +13,7 @@
 use super::*;
 
 use gpui::Task;
-use zeron_proto::{
+use mast_proto::{
     ConfigureExecutionParams, DescribeExecutionRepositoryParams, ExecutionConfiguration,
     ExecutionRepositoryIdentity, ExecutionScope, ResolvedExecutionConfiguration,
     ValidateExecutionConfigurationParams, WorkOutlineError, check_execution_configuration,
@@ -372,7 +372,7 @@ impl WorkItemDetails {
             return;
         };
         let start_path = Some(self.execution_root_input.read(cx).text().trim().to_owned())
-            .filter(|path| zeron_proto::is_absolute_device_path(path));
+            .filter(|path| mast_proto::is_absolute_device_path(path));
         let weak = cx.entity().downgrade();
         let (title, confirm_label) = match purpose {
             FolderPickPurpose::ExecutionRoot => ("Execution root", "Use this folder"),

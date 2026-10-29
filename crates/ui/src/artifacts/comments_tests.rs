@@ -5,21 +5,21 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use serde_json::json;
-use zeron_proto::{
+use mast_proto::{
     ArtifactComment, ArtifactContentEncoding, ArtifactKind, ArtifactView, CommentAnchor,
     CommentStatus,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
+use serde_json::json;
 
 use super::tab::{ArtifactTab, FakeWebHost, WebProbe};
 use super::tests::{Calls, Reply, artifact, content_reply, id, init_ui, scripted, snapshot};
 
 const PAGE: &str = "<h2 id=\"intake\">Receiving intake</h2>\
 <p>Parts arrive at the dock.</p>\
-<div data-zeron-question=\"Q-1\" data-status=\"open\">Merge by MPN?</div>";
+<div data-mast-question=\"Q-1\" data-status=\"open\">Merge by MPN?</div>";
 
-fn chat(id: &str) -> zeron_proto::Chat {
+fn chat(id: &str) -> mast_proto::Chat {
     serde_json::from_value(json!({
         "id": id, "deviceId": "dev", "archived": false,
         "createdAt": "2026-07-19T12:00:00Z",
@@ -155,7 +155,7 @@ fn marker_scripts(probe: &WebProbe) -> Vec<String> {
         .scripts
         .borrow()
         .iter()
-        .filter(|script| script.contains("zeronComments"))
+        .filter(|script| script.contains("mastComments"))
         .cloned()
         .collect()
 }
@@ -276,7 +276,7 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
             .scripts
             .borrow()
             .iter()
-            .any(|s| s.contains("\"zeronCommentMode\":true"))
+            .any(|s| s.contains("\"mastCommentMode\":true"))
     );
     frame(
         &tab,
@@ -290,7 +290,7 @@ fn picking_an_element_starts_a_draft_and_leaves_pick_mode(cx: &mut TestAppContex
             .scripts
             .borrow()
             .iter()
-            .any(|s| s.contains("\"zeronCommentMode\":false"))
+            .any(|s| s.contains("\"mastCommentMode\":false"))
     );
 }
 
@@ -339,7 +339,7 @@ fn html_question_cards_are_answered_through_the_bridge(cx: &mut TestAppContext) 
         .scripts
         .borrow()
         .iter()
-        .filter(|s| s.contains("zeronAnswers"))
+        .filter(|s| s.contains("mastAnswers"))
         .cloned()
         .collect();
     assert_eq!(updates.len(), 1, "{updates:?}");
@@ -394,14 +394,14 @@ fn app_documents_carry_the_bridge_and_render_checks_do_not() {
     };
     for kind in [WebKind::Fragment, WebKind::Page, WebKind::Mermaid] {
         let live = web_document(kind, PAGE, "Flow", "text/html", &theme, false, false);
-        assert!(live.contains("zeron-msg:"), "{kind:?} host bridge");
+        assert!(live.contains("mast-msg:"), "{kind:?} host bridge");
         assert!(
-            live.contains("__zeronCommentsInstalled"),
+            live.contains("__mastCommentsInstalled"),
             "{kind:?} frame script"
         );
         let probed = web_document(kind, PAGE, "Flow", "text/html", &theme, false, true);
         assert!(
-            !probed.contains("__zeronCommentsInstalled"),
+            !probed.contains("__mastCommentsInstalled"),
             "{kind:?} probe stays passive"
         );
     }

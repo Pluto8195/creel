@@ -81,7 +81,12 @@ pub fn pick_message(
                 None => "Picked option",
             };
             let mut text = format!("{verb} {} for \"{}\"{label}", pick.option_id, title.trim());
-            if let Some(note) = pick.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            if let Some(note) = pick
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            {
                 text.push_str(&format!("\n\nNote: {note}"));
             }
             text

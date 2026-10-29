@@ -96,7 +96,7 @@ const { Agent, Cursor, FileCredentialStore, JsonlLocalAgentStore } = sdk;
 // ---- per-run agent store --------------------------------------------------
 // The SDK's default local store is SQLite keyed by WORKSPACE
 // (`getDefaultSdkStateRoot(cwd)`), designed for one process per workspace.
-// Zeron runs concurrent shims on the same cwd as a matter of course — the
+// Mast runs concurrent shims on the same cwd as a matter of course — the
 // chat turn and its title generation start together, and two chats can share
 // a worktree — and the second `Agent.create` dies with "database is locked"
 // (reproduced live, 1.0.28). The shared-root JSONL backend is no better: its
@@ -108,7 +108,7 @@ const { Agent, Cursor, FileCredentialStore, JsonlLocalAgentStore } = sdk;
 // it. Agents created before this scheme have no marker and fall back to the
 // SDK default store, which is where they live.
 const STATE_BASE =
-  process.env.ZERON_CURSOR_STATE_DIR || path.join(os.homedir(), ".zeron", "cursor-state");
+  process.env.MAST_CURSOR_STATE_DIR || process.env.ZERON_CURSOR_STATE_DIR || path.join(os.homedir(), ".zeron", "cursor-state");
 
 function agentDirMarker(agentId) {
   return path.join(STATE_BASE, "by-agent", String(agentId));

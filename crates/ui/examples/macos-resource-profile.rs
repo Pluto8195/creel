@@ -2,12 +2,12 @@
 //! Input is frames.json from scripts/resource-profile.mjs. An offscreen target
 //! replaces the window compositor; this is not a whole-app CPU measurement.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use mast_ui::*;
 use std::{
     cell::RefCell,
     rc::Rc,
     time::{Duration, Instant},
 };
-use zeron_ui::*;
 
 #[cfg(target_os = "macos")]
 #[global_allocator]
@@ -16,7 +16,7 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(serde::Deserialize)]
 struct Frame {
     at: u64,
-    frame: zeron_doc::TranscriptFrame,
+    frame: mast_doc::TranscriptFrame,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -58,13 +58,13 @@ fn main() -> anyhow::Result<()> {
             theme_library::init(data.clone(), cx);
             appearance::init(appearance::AppearanceMode::Dark, settings.theme_selection,
                 settings.accent, settings.surface, cx);
-            composer::init(cx, zeron_ui::settings::ComposerSendBehavior::default());
+            composer::init(cx, mast_ui::settings::ComposerSendBehavior::default());
             terminal::panel::init(cx);
             app_menus::init(cx);
             let state = cx.new(|_| {
                 let mut state = state::AppState::new();
-                state.connection = zeron_proto::view::ConnectionStatus::Ready;
-                state.workspace_scope = Some(zeron_proto::WorkspaceScope::Local);
+                state.connection = mast_proto::view::ConnectionStatus::Ready;
+                state.workspace_scope = Some(mast_proto::WorkspaceScope::Local);
                 state.selected_chat = Some("profile".into());
                 state.selected_space = Some("project".into());
                 state.auto_selected = true;
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
                     "archived":false, "createdAt":"2026-09-05T00:00:00Z",
                     "config":{"harness":"claude-code", "model":"claude-haiku-4-5", "reasoning":null, "sandbox":"workspace-write"}
                 })).unwrap()];
-                let background_chats = std::env::var("ZERON_PROFILE_BACKGROUND_CHATS")
+                let background_chats = mast_proto::env::var("MAST_PROFILE_BACKGROUND_CHATS")
                     .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
                 for index in 0..background_chats {
                     let mut chat = state.chats[0].clone();
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
                     chat.title = Some(format!("Background conversation {}", index + 1));
                     state.chats.push(chat);
                 }
-                if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some() {
+                if mast_proto::env::var_os("MAST_VERIFY_SIDEBAR_ROWS").is_some() {
                     state.chats[0].title = Some("Short".into());
                     state.chats[0].branch = Some("main".into());
                     for (index, chat) in state.chats.iter_mut().skip(1).enumerate() {
@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
                         });
                     }
                     for chat in &mut state.chats {
-                        chat.source_context = Some(zeron_proto::ConversationSourceContext {
+                        chat.source_context = Some(mast_proto::ConversationSourceContext {
                             checkout_id: "layout-checkout".into(), repo_root: "/tmp/resource-profile".into(),
                             cwd: "/tmp/resource-profile".into(), branch: chat.branch.clone().unwrap(),
                             head_sha: None, observed_at: chrono::Utc::now(),
@@ -137,7 +137,7 @@ fn main() -> anyhow::Result<()> {
             let elapsed = start.elapsed().as_millis() as u64;
             while frames.peek().is_some_and(|f| f.at - first_at <= elapsed) {
                 let frame = frames.next().unwrap();
-                let text_only = matches!(&frame.frame, zeron_doc::TranscriptFrame::Delta {
+                let text_only = matches!(&frame.frame, mast_doc::TranscriptFrame::Delta {
                     upsert, append, remove, ..
                 } if upsert.is_empty() && remove.is_empty() && !append.is_empty());
                 let before = notifications.get();
@@ -147,15 +147,15 @@ fn main() -> anyhow::Result<()> {
                         let streaming = state
                             .transcript
                             .iter()
-                            .any(|entry| entry.status == Some(zeron_doc::MessageStatus::Streaming));
-                        state.apply_sessions(vec![zeron_proto::Session {
+                            .any(|entry| entry.status == Some(mast_doc::MessageStatus::Streaming));
+                        state.apply_sessions(vec![mast_proto::Session {
                             last_completed_turn: None,
                             chat_id: "profile".into(),
                             device_id: "local".into(),
                             status: if streaming {
-                                zeron_proto::SessionStatus::Working
+                                mast_proto::SessionStatus::Working
                             } else {
-                                zeron_proto::SessionStatus::Idle
+                                mast_proto::SessionStatus::Idle
                             },
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
@@ -207,14 +207,14 @@ fn main() -> anyhow::Result<()> {
     // Opt-in correctness check: a reused transcript scene must match a fresh
     // layout after idle, panel transitions and scrolling. Keep this outside
     // measured phases; screenshot readback and forced refreshes add work.
-    if std::env::var_os("ZERON_VERIFY_CACHE").is_some() {
+    if mast_proto::env::var_os("MAST_VERIFY_CACHE").is_some() {
         let mut scenarios = vec!["settled", "sidebar-hidden", "sidebar-restored", "scrolled"];
-        if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some() {
+        if mast_proto::env::var_os("MAST_VERIFY_SIDEBAR_ROWS").is_some() {
             scenarios.extend(["sidebar-hover-short", "sidebar-hover-long"]);
         }
         // These hit coordinates target the bundled 80-section fixture. General
         // frame replays can still use the cache checks above on their own.
-        if std::env::var_os("ZERON_VERIFY_INTERACTIONS").is_some() {
+        if mast_proto::env::var_os("MAST_VERIFY_INTERACTIONS").is_some() {
             scenarios.extend(["selected", "typed", "model-menu", "menu-dismissed"]);
         }
         for scenario in scenarios {
@@ -297,7 +297,7 @@ fn main() -> anyhow::Result<()> {
             });
             cached.save(output.join(format!("{scenario}-cached.png")))?;
             fresh.save(output.join(format!("{scenario}-fresh.png")))?;
-            if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some()
+            if mast_proto::env::var_os("MAST_VERIFY_SIDEBAR_ROWS").is_some()
                 && scenario != "sidebar-hidden"
             {
                 // This fixture uses a 256-point sidebar at 2x scale. Check

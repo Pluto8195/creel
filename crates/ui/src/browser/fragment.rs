@@ -5,7 +5,7 @@
 //!
 //! - an inner frame document with a strict CSP (scripts are part of the
 //!   protocol; network only for the skill's CDN allowlist, no `connect-src`
-//!   beyond `blob:`/`data:`), Zeron-themed base CSS, a local `window.openai`
+//!   beyond `blob:`/`data:`), Mast-themed base CSS, a local `window.openai`
 //!   stub and a small runtime for tabs, tooltips and icons;
 //! - an outer document whose only content is
 //!   `<iframe sandbox="allow-scripts" srcdoc=…>` — an opaque origin with no
@@ -13,13 +13,13 @@
 //!
 //! The browser loads the outer document as a string with no base URL, so
 //! neither level can address `file://`. No page-to-engine channel exists.
-//! The base stylesheet and scripts here are Zeron's own implementation of the
+//! The base stylesheet and scripts here are Mast's own implementation of the
 //! skill's documented contract; Codex's proprietary kit is not vendored.
 
 use crate::files::client::FilesClientError;
 use crate::theme::Theme;
-use zeron_proto::WorkspaceFileText;
-use zeron_proto::visualize::{MAX_FRAGMENT_BYTES, is_complete_document};
+use mast_proto::WorkspaceFileText;
+use mast_proto::visualize::{MAX_FRAGMENT_BYTES, is_complete_document};
 
 /// Static resource origins the visualize skill promises fragments.
 pub const RESOURCE_SOURCES: &str = "blob: data: https://cdnjs.cloudflare.com \
@@ -50,7 +50,7 @@ pub fn host_csp() -> String {
     frame_csp().replace("frame-src 'none'", "frame-src 'self' about:")
 }
 
-/// Theme tokens the fragment contract names, resolved from Zeron's theme.
+/// Theme tokens the fragment contract names, resolved from Mast's theme.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FragmentTheme {
     pub dark: bool,
@@ -373,7 +373,7 @@ const RUNTIME_SCRIPT: &str = r#"(() => {
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
   const icons = () => globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
   if (globalThis.lucide) icons();
-  else document.getElementById("zeron-visualization-lucide")?.addEventListener("load", icons, { once: true });
+  else document.getElementById("mast-visualization-lucide")?.addEventListener("load", icons, { once: true });
 })();"#;
 
 /// The sandboxed frame's document: policy, base styles, bridge, fragment,
@@ -391,7 +391,7 @@ pub fn frame_document(
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n\
 <title>{title}</title>\n<style>\n{style}</style>\n</head>\n<body>\n\
 <script>{bridge}</script>\n{fragment}\n\
-<script id=\"zeron-visualization-lucide\" async src=\"{LUCIDE_SRC}\"></script>\n\
+<script id=\"mast-visualization-lucide\" async src=\"{LUCIDE_SRC}\"></script>\n\
 <script>{RUNTIME_SCRIPT}</script>\n</body>\n</html>\n",
         scheme = if theme.dark { "dark" } else { "light" },
         csp = escape_attr(&frame_csp()),
@@ -539,7 +539,7 @@ mod tests {
             content_hash: None,
             size,
             modified_at: None,
-            encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+            encoding: mast_proto::WorkspaceTextEncoding::Utf8,
             line_ending: None,
             read_only_reason: None,
             truncated,

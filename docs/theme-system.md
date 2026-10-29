@@ -1,7 +1,7 @@
 # Theme system
 
 Mast themes are complete, source-neutral `ThemeVariant` values owned by the
-`zeron-theme` crate. Runtime components consume only Mast semantic roles. VS
+`mast-theme` crate. Runtime components consume only Mast semantic roles. VS
 Code workbench ids and TextMate selectors stop at the source compiler.
 
 ## Runtime model
@@ -119,13 +119,13 @@ activated only after the updated library is persisted successfully. The library 
 `{data_dir}/theme-library.json` and is loaded before the first palette is
 installed.
 
-The `zeron-theme-import` development tool exposes the same single-file adapter
+The `mast-theme-import` development tool exposes the same single-file adapter
 for built-in curation:
 
 Example:
 
 ```bash
-cargo run -p zeron-theme --bin zeron-theme-import -- \
+cargo run -p mast-theme --bin mast-theme-import -- \
   --input /path/to/theme.json \
   --output /tmp/theme.zeron.json \
   --report /tmp/theme.report.json \

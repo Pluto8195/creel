@@ -18,16 +18,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::json;
-use zeron_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
-use zeron_engine::pr_review_sync::PrReviewSyncConfig;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::mock::InstructionMockHarness;
-use zeron_proto::{
+use mast_engine::pr_review_launch::{PrReviewTools, WorktreesDirEnv};
+use mast_engine::pr_review_sync::PrReviewSyncConfig;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::mock::InstructionMockHarness;
+use mast_proto::{
     ChatConfig, HarnessId, PrCheckoutKind, PrReviewAction, PrReviewError, PrReviewErrorCode,
     SandboxLevel, StartPrReviewParams, StartPrReviewReply,
 };
-use zeron_rpc::{RpcClient, methods};
+use mast_rpc::{RpcClient, methods};
+use serde_json::json;
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-ws";
@@ -180,7 +180,7 @@ esac
             gh: Some(gh),
             worktrees_dir_env: env,
         });
-    let client = zeron_rpc::memory_client(Arc::new(rpc));
+    let client = mast_rpc::memory_client(Arc::new(rpc));
     client
         .call(
             methods::MUTATE,
@@ -642,14 +642,14 @@ async fn a_work_item_gets_the_review_chat() {
         )
         .await
         .unwrap();
-    let item = zeron_proto::derive_id("op-item", zeron_proto::roles::ITEM);
+    let item = mast_proto::derive_id("op-item", mast_proto::roles::ITEM);
     let mut p = params("op-assigned", 7, PrReviewAction::CodeReview);
     p.work_item_id = Some(item.clone());
     let reply = start(&rig, &p).await.expect("start");
     let row = rig
         .core
         .workspace
-        .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &reply.chat_id)
+        .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, &reply.chat_id)
         .expect("assignment row");
     assert_eq!(row.fields["workItemId"], item.as_str());
 
@@ -668,7 +668,7 @@ async fn a_second_start_for_the_same_pr_and_action_reuses_the_live_review_chat()
     assert!(!first.reused);
     let links = rig.core.workspace.chat_pr_links(&first.chat_id).unwrap();
     assert_eq!(links.len(), 1);
-    assert_eq!(links[0].source, zeron_proto::ChatLinkSource::ReviewLauncher);
+    assert_eq!(links[0].source, mast_proto::ChatLinkSource::ReviewLauncher);
     let calls = gh_calls(&rig);
 
     // Another window / after a restart: a different operation id.

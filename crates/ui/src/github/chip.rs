@@ -4,7 +4,7 @@
 //! the web-link preference. Pure label helpers first, so the wording is
 //! unit-tested.
 use gpui::{AnyElement, Hsla, SharedString, WeakEntity, div, prelude::*, px};
-use zeron_proto::{
+use mast_proto::{
     PullRequestCiStatus, PullRequestMyReviewState, PullRequestRef, PullRequestReviewDecision,
     PullRequestState, PullRequestStatusSummary,
 };

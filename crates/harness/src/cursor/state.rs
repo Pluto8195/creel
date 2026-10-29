@@ -14,7 +14,7 @@ pub(super) struct Lease {
 }
 
 pub(super) fn state_root() -> PathBuf {
-    let root = std::env::var_os("ZERON_CURSOR_STATE_DIR")
+    let root = mast_proto::env::var_os("MAST_CURSOR_STATE_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".zeron/cursor-state"));

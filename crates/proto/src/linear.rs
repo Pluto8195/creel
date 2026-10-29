@@ -7,7 +7,7 @@
 //!   Keychain, else `LINEAR_API_KEY`). The key is never sent to clients,
 //!   agents, MCP, or harness environments; [`LinearSetApiKeyParams`] is the
 //!   only wire type that carries it and its `Debug` redacts it.
-//! - Linear RPCs (method names in `zeron_rpc::methods`, `LINEAR_*`) are
+//! - Linear RPCs (method names in `mast_rpc::methods`, `LINEAR_*`) are
 //!   local/IPC and never device-forwarded. Failures are strings
 //!   `linear/<code>: <message>` ([`LinearError::from_wire_message`]).
 //! - Linear is OFF per Space until the user enables it
@@ -182,7 +182,7 @@ pub struct LinearProjectRef {
     pub url: String,
 }
 
-/// One Linear issue as Zeron shows it (chips, the Linear panel, agents).
+/// One Linear issue as Mast shows it (chips, the Linear panel, agents).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearIssueSummary {
@@ -291,7 +291,7 @@ pub struct LinearConnectionStatus {
 }
 
 // --------------------------------------------------------------------------
-// RPC params and replies (method names: `zeron_rpc::methods::LINEAR_*`)
+// RPC params and replies (method names: `mast_rpc::methods::LINEAR_*`)
 // --------------------------------------------------------------------------
 
 /// `LinearStatus {}` → [`LinearConnectionStatus`]. Verifies the key with a

@@ -97,7 +97,7 @@ impl Shell {
     /// the context's PRs).
     fn work_context_review_chats(
         &self,
-        prs: &[zeron_proto::PullRequestRef],
+        prs: &[mast_proto::PullRequestRef],
         cx: &Context<Self>,
     ) -> Vec<ReviewChat> {
         let state = self.state.read(cx);
@@ -214,8 +214,8 @@ mod tests {
 
     use chrono::TimeZone;
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, div, px};
-    use zeron_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus};
-    use zeron_proto::ChatLinkSource;
+    use mast_engine::pr_ticket_cache::{ChatLinkStatus, PrLinkStatus};
+    use mast_proto::ChatLinkSource;
 
     use super::*;
     use crate::github::fixture as gf;
@@ -238,8 +238,8 @@ mod tests {
         }
     }
 
-    fn chat(id: &str) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    fn chat(id: &str) -> mast_proto::Chat {
+        mast_proto::Chat {
             id: id.into(),
             device_id: "device".into(),
             title: None,
@@ -327,7 +327,7 @@ mod tests {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -489,7 +489,7 @@ mod tests {
         fn add_space(shell: &Entity<Shell>, vcx: &mut VisualTestContext) {
             shell.update(vcx, |shell, cx| {
                 shell.state.update(cx, |state, _| {
-                    state.spaces.push(zeron_proto::Space {
+                    state.spaces.push(mast_proto::Space {
                         id: "s1".into(),
                         device_id: "device".into(),
                         path: "/project".into(),
@@ -513,10 +513,10 @@ mod tests {
             })
         }
 
-        fn set_open_in_zeron(vcx: &mut VisualTestContext, on: bool) {
+        fn set_open_in_mast(vcx: &mut VisualTestContext, on: bool) {
             vcx.update(|_, cx| {
                 crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.open_web_links_in_zeron = on
+                    settings.open_web_links_in_mast = on
                 })
             });
         }
@@ -579,7 +579,7 @@ mod tests {
                 Some("https://example.com/menu")
             );
             // With the setting off nothing changes.
-            set_open_in_zeron(vcx, false);
+            set_open_in_mast(vcx, false);
             open(&shell, vcx, "https://example.com/off", false);
             assert_eq!(vcx.opened_url().as_deref(), Some("https://example.com/off"));
             assert!(tabs(&shell, vcx).is_empty());
@@ -709,7 +709,7 @@ mod tests {
                 shell.read_with(vcx, |s, _| s.route),
                 Route::PrReviewChats
             ));
-            set_open_in_zeron(vcx, false);
+            set_open_in_mast(vcx, false);
             open(&shell, vcx, PR_99, false);
             assert_eq!(vcx.opened_url().as_deref(), Some(PR_99));
             assert!(tabs(&shell, vcx).is_empty());

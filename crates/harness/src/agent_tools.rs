@@ -1,4 +1,4 @@
-//! Zeron agent tools injection (Work Outline Milestone 4).
+//! Mast agent tools injection (Work Outline Milestone 4).
 //!
 //! The engine hands a Run an [`AgentToolsInjection`] only for Chats in a
 //! Space whose harness reports [`crate::Harness::supports_agent_tools`]: the
@@ -8,7 +8,7 @@
 //!
 //! - Claude Code: `--mcp-config <file>` WITHOUT `--strict-mcp-config`, so the
 //!   user's own servers still load. The file is written in a fresh per-Run
-//!   `0700` directory under a verified owner-only Zeron directory, and both
+//!   `0700` directory under a verified owner-only Mast directory, and both
 //!   are removed when the Run ends; the token lives in the file's `env`
 //!   block, never in argv (visible to `ps`).
 //! - Codex: dotted `mcp_servers.<name>.*` overrides in the `thread/start` /
@@ -159,7 +159,7 @@ pub fn write_claude_mcp_config(
     Ok(guard)
 }
 
-/// Default Zeron-owned directory for Claude MCP config files: beside the
+/// Default Mast-owned directory for Claude MCP config files: beside the
 /// profile's model-discovery directory (`<store_root>/agent-tools`), else a
 /// per-process directory in the temp dir (created and verified owner-only by
 /// [`write_claude_mcp_config`]). Never the user's checkout or `~/.claude`.
@@ -176,12 +176,12 @@ mod tests {
 
     fn injection() -> AgentToolsInjection {
         AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
             env: BTreeMap::from([
-                ("ZERON_AGENT_TOKEN".into(), "secret-token".into()),
-                ("ZERON_IPC_PORT".into(), "27654".into()),
+                ("MAST_AGENT_TOKEN".into(), "secret-token".into()),
+                ("MAST_IPC_PORT".into(), "27654".into()),
             ]),
         }
     }
@@ -215,11 +215,11 @@ mod tests {
         drop(second);
         let body: Value =
             serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
-        let server = &body["mcpServers"]["zeron-agent"];
+        let server = &body["mcpServers"]["mast-agent"];
         assert_eq!(server["type"], "stdio");
         assert_eq!(server["command"], "/opt/zeron/bin/zeron");
         assert_eq!(server["args"], json!(["mcp"]));
-        assert_eq!(server["env"]["ZERON_AGENT_TOKEN"], "secret-token");
+        assert_eq!(server["env"]["MAST_AGENT_TOKEN"], "secret-token");
         let path = file.path().to_owned();
         drop(file);
         assert!(!path.exists());
@@ -275,19 +275,19 @@ mod tests {
     fn codex_overrides_name_one_server() {
         let overrides = injection().codex_config_overrides();
         assert_eq!(
-            overrides["mcp_servers.zeron-agent.command"],
+            overrides["mcp_servers.mast-agent.command"],
             "/opt/zeron/bin/zeron"
         );
-        assert_eq!(overrides["mcp_servers.zeron-agent.args"], json!(["mcp"]));
+        assert_eq!(overrides["mcp_servers.mast-agent.args"], json!(["mcp"]));
         assert_eq!(
-            overrides["mcp_servers.zeron-agent.env"]["ZERON_AGENT_TOKEN"],
+            overrides["mcp_servers.mast-agent.env"]["MAST_AGENT_TOKEN"],
             "secret-token"
         );
-        assert_eq!(overrides["mcp_servers.zeron-agent.enabled"], true);
+        assert_eq!(overrides["mcp_servers.mast-agent.enabled"], true);
         assert!(
             overrides
                 .keys()
-                .all(|k| k.starts_with("mcp_servers.zeron-agent."))
+                .all(|k| k.starts_with("mcp_servers.mast-agent."))
         );
     }
 }

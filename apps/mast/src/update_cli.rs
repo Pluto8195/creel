@@ -4,12 +4,12 @@
 //! are report-only.
 
 use anyhow::bail;
-use zeron_update::{InstallKind, current_version, version_newer};
+use mast_update::{InstallKind, current_version, version_newer};
 
 /// `--check` prints the verdict and exits (nonzero when an update is available,
 /// so scripts can gate on it).
 pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
-    let manifest = zeron_update::fetch_latest(edge_url).await?;
+    let manifest = mast_update::fetch_latest(edge_url).await?;
     let current = current_version();
     if !version_newer(&manifest.version, current) {
         println!(
@@ -23,20 +23,20 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    match zeron_update::detect_install() {
+    match mast_update::detect_install() {
         InstallKind::Managed { app_root } => {
             println!(
                 "downloading {}…",
-                zeron_update::headless_artifact(&manifest.version)
+                mast_update::headless_artifact(&manifest.version)
             );
-            zeron_update::stage_headless(edge_url, &manifest, &app_root).await?;
-            zeron_update::apply_headless(&app_root, &manifest.version)?;
+            mast_update::stage_headless(edge_url, &manifest, &app_root).await?;
+            mast_update::apply_headless(&app_root, &manifest.version)?;
             println!(
                 "installed {} (current → {})",
                 app_root.join(&manifest.version).display(),
                 manifest.version
             );
-            match zeron_update::restart_service() {
+            match mast_update::restart_service() {
                 Ok(()) => println!("engine service restarted."),
                 Err(err) => println!(
                     "note: service restart failed ({err:#}) — restart the engine manually to finish."
@@ -47,22 +47,19 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         InstallKind::MacApp { bundle } => {
             println!(
                 "downloading {}…",
-                zeron_update::mac_app_artifact(&manifest.version)
+                mast_update::mac_app_artifact(&manifest.version)
             );
             let data_dir = super::paths::data_dir();
-            let staged = zeron_update::stage_mac_app(edge_url, &manifest, &data_dir).await?;
-            zeron_update::apply_mac_app(&staged, &bundle)?;
+            let staged = mast_update::stage_mac_app(edge_url, &manifest, &data_dir).await?;
+            mast_update::apply_mac_app(&staged, &bundle)?;
             println!("updated {} — relaunch Mast to finish.", bundle.display());
             Ok(())
         }
         #[cfg(windows)]
         InstallKind::WindowsPortable { directory } => {
-            let staged = zeron_update::windows::stage(edge_url, &manifest, &directory).await?;
-            zeron_update::windows::apply(&staged, &directory, false)?;
-            println!(
-                "updated to {} — relaunch Mast to finish.",
-                manifest.version
-            );
+            let staged = mast_update::windows::stage(edge_url, &manifest, &directory).await?;
+            mast_update::windows::apply(&staged, &directory, false)?;
+            println!("updated to {} — relaunch Mast to finish.", manifest.version);
             Ok(())
         }
         InstallKind::Unmanaged => {

@@ -9,7 +9,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use zeron_engine::ChangeRequestResolver;
+use mast_engine::ChangeRequestResolver;
 
 fn write_executable(path: &Path, body: &str) {
     std::fs::write(path, body).unwrap();
@@ -91,7 +91,7 @@ printf '%s\n' '[{"number":90,"title":"Login shell pull request","url":"https://g
         std::env::set_var("SHELL", &fake_shell);
         std::env::set_var("HOME", dir.path());
         std::env::set_var("PATH", &direct_bin);
-        std::env::remove_var("ZERON_NO_LOGIN_SHELL");
+        std::env::remove_var("MAST_NO_LOGIN_SHELL");
     }
 
     let resolution = ChangeRequestResolver::new()

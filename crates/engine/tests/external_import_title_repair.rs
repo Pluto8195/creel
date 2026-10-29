@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -333,7 +333,7 @@ async fn repair_never_touches_a_native_chat_with_no_import_cursor() {
     core.shutdown().await;
 }
 
-// The cursor-less "chat Zeron itself launched" case (the actual reported
+// The cursor-less "chat Mast itself launched" case (the actual reported
 // miss) and the "harness session but no findable transcript at all" marker
 // case live in their own test files —
 // `external_import_title_repair_harness_session.rs` /

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use zeron_proto::{ArtifactContentEncoding, ArtifactKind};
+use mast_proto::{ArtifactContentEncoding, ArtifactKind};
 
 use super::find::{FrameCommand, command_script};
 use super::tab::{ArtifactTab, FakeWebHost, Presenter, WebProbe};

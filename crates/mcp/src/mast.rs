@@ -1,4 +1,4 @@
-//! The engine client: a thin, reconnecting wrapper over `zeron_rpc` with the
+//! The engine client: a thin, reconnecting wrapper over `mast_rpc` with the
 //! snapshot/resolve helpers the tools share.
 //!
 //! Watch streams are the engine's only read surface for chats, devices,
@@ -10,17 +10,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
+use mast_doc::{
+    SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
+};
+use mast_proto::agent_tools::{self, AgentOrigin};
+use mast_proto::{
+    Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
+};
+use mast_rpc::{RpcClient, RpcError, connect_ws, methods};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
-use zeron_doc::{
-    SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
-};
-use zeron_proto::agent_tools::{self, AgentOrigin};
-use zeron_proto::{
-    Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
-};
-use zeron_rpc::{RpcClient, RpcError, connect_ws, methods};
 
 /// First-item wait for a watch snapshot. Localhost; the engine answers
 /// watch attaches in milliseconds unless it is still assembling stores.
@@ -29,11 +29,11 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(15);
 /// boundary (chat2 cutover etc.) — the same contract the UI follows.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_millis(300);
 
-/// The per-Run capability token the engine injected (`ZERON_AGENT_TOKEN`),
-/// if any. A self-declared origin (the old `ZERON_CHAT_ID`) is never read:
+/// The per-Run capability token the engine injected (`MAST_AGENT_TOKEN`),
+/// if any. A self-declared origin (the old `MAST_CHAT_ID`) is never read:
 /// who this server speaks for is whatever the engine says the token is.
 pub fn token_from_env() -> Option<String> {
-    std::env::var(agent_tools::TOKEN_ENV)
+    mast_proto::env::var(agent_tools::TOKEN_ENV)
         .ok()
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
@@ -92,13 +92,13 @@ pub enum TurnOutcome {
     TimedOut,
 }
 
-pub struct Zeron {
+pub struct Mast {
     url: String,
     token: Option<String>,
     rpc: Mutex<Option<Arc<RpcClient>>>,
 }
 
-impl Zeron {
+impl Mast {
     /// Lazy dialer: nothing connects until the first tool call, so `zeron
     /// mcp` starts (and answers `initialize`) even before the engine is up.
     pub fn new(url: String, token: Option<String>) -> Self {

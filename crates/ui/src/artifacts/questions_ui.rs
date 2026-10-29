@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use zeron_proto::artifacts::{open_unanswered, unreflected_answers};
-use zeron_proto::{ArtifactDriftReply, ArtifactQuestionAnswer, ArtifactView, PlanQuestion};
+use mast_proto::artifacts::{open_unanswered, unreflected_answers};
+use mast_proto::{ArtifactDriftReply, ArtifactQuestionAnswer, ArtifactView, PlanQuestion};
 
 use crate::work_outline::required_actions::reply_message;
 
@@ -160,7 +160,7 @@ pub(crate) fn answer_texts(view: &ArtifactView) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{ArtifactKind, PlanQuestionStatus, WorkOutlineActor, extract_questions};
+    use mast_proto::{ArtifactKind, PlanQuestionStatus, WorkOutlineActor, extract_questions};
 
     const MD: &str = "> [!question] Q-1 · One?\n> status: open\n\n> [!question] Q-2 · Two?\n> status: open\n\n> [!question] Q-3 · Three?\n> status: resolved\n> decision: x\n";
 
@@ -270,7 +270,7 @@ mod tests {
         let mut view = ArtifactView {
             chat_id: Some("first".into()),
             current_revision: 2,
-            revisions: vec![zeron_proto::ArtifactRevision {
+            revisions: vec![mast_proto::ArtifactRevision {
                 id: 2,
                 by: WorkOutlineActor {
                     chat_id: Some("latest".into()),

@@ -60,7 +60,7 @@ impl BrowserData {
             return;
         };
         if url.scheme() != "http"
-            || url.port() != Some(zeron_proto::PREVIEW_PROXY_PORT)
+            || url.port() != Some(mast_proto::PREVIEW_PROXY_PORT)
             || !host.ends_with(".localhost")
         {
             return;
@@ -171,7 +171,7 @@ struct ObserverState {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ZeronBrowserObserver"]
+    #[name = "MastBrowserObserver"]
     #[ivars = ObserverState]
     struct Observer;
     unsafe impl NSObjectProtocol for Observer {}
@@ -282,7 +282,7 @@ struct ClipState {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ZeronBrowserClipView"]
+    #[name = "MastBrowserClipView"]
     #[ivars = ClipState]
     struct BrowserClipView;
     impl BrowserClipView {
@@ -457,8 +457,8 @@ impl NativePage {
                     // probe is queued ahead of the key, so it sees the field
                     // before the page's own Esc handling can remove it.
                     let parent = monitor_parent.clone();
-                    let completion = block2::RcBlock::new(
-                        move |value: *mut AnyObject, error: *mut NSError| {
+                    let completion =
+                        block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
                             let editable = error.is_null()
                                 && unsafe { value.as_ref() }
                                     .and_then(|value| value.downcast_ref::<NSString>())
@@ -466,8 +466,7 @@ impl NativePage {
                             if editable {
                                 focus_view(&parent);
                             }
-                        },
-                    );
+                        });
                     unsafe {
                         monitor_view.evaluateJavaScript_completionHandler(
                             &NSString::from_str(EDITABLE_FOCUS_SCRIPT),
@@ -1100,7 +1099,16 @@ mod forwarded_key_tests {
         // the page sees them while a text field has focus.
         let shortcuts = ["cmd-s", "cmd-shift-r", "ctrl-tab", "cmd-alt-space", "cmd-/"];
         let extra = ["alt-up", "alt-down", "cmd-=", "cmd-0"];
-        for key in ["space", "a", "z", "1", "enter", "backspace", "left", "shift-a"] {
+        for key in [
+            "space",
+            "a",
+            "z",
+            "1",
+            "enter",
+            "backspace",
+            "left",
+            "shift-a",
+        ] {
             assert!(!forwarded(key, &shortcuts, &extra), "{key}");
         }
         assert!(forwarded("cmd-f", &shortcuts, &extra));

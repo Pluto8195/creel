@@ -28,13 +28,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use zeron_doc::{KIND_WORK_ITEM_EXTERNAL_REFERENCES, MessagePart, RowState, SessionMessageEntry};
-use zeron_proto::pr_review_sync::{GITHUB_PROVIDER, GITHUB_PULL_REQUEST_REFERENCE, PullRequestRef};
-use zeron_proto::work_outline::{
+use mast_doc::{KIND_WORK_ITEM_EXTERNAL_REFERENCES, MessagePart, RowState, SessionMessageEntry};
+use mast_proto::pr_review_sync::{GITHUB_PROVIDER, GITHUB_PULL_REQUEST_REFERENCE, PullRequestRef};
+use mast_proto::work_outline::{
     CreateWorkItemExternalReferenceParams, WorkItemChatAssignmentState, WorkOutlineErrorCode,
     derive_id, external_reference_id, limits,
 };
-use zeron_proto::{ChatLinkSource, ChatPrLink, WorkOutlineMutation, WorkOutlineSnapshot};
+use mast_proto::{ChatLinkSource, ChatPrLink, WorkOutlineMutation, WorkOutlineSnapshot};
 
 use crate::pr_review_sync::PrReviewSyncService;
 
@@ -51,12 +51,12 @@ const LINKED_MARKER_PREFIX: &str = "work-outline-pr-links:chat:v1:";
 
 /// A transcript reader over the engine's doc store: a bare snapshot peek
 /// (no doc handle, no sync room), like `context_usage`'s live path.
-pub fn store_transcript_reader(store: Arc<zeron_sync::DocsStore>) -> TranscriptReader {
+pub fn store_transcript_reader(store: Arc<mast_sync::DocsStore>) -> TranscriptReader {
     Arc::new(move |chat_id: &str| {
         let bytes = store.load_snapshot(chat_id).ok().flatten()?;
         let loro = loro::LoroDoc::new();
         loro.import(&bytes).ok()?;
-        zeron_doc::SessionDoc::from_doc(loro).read_entries().ok()
+        mast_doc::SessionDoc::from_doc(loro).read_entries().ok()
     })
 }
 
@@ -324,7 +324,7 @@ pub struct ChatLinkPass {
 pub async fn link_chat_pull_requests(
     service: &PrReviewSyncService,
     space_id: &str,
-) -> Result<ChatLinkPass, zeron_proto::GithubError> {
+) -> Result<ChatLinkPass, mast_proto::GithubError> {
     let mut pass = ChatLinkPass::default();
     let snapshot = service.outline_snapshot(space_id).await?;
     if !snapshot.available {
@@ -378,7 +378,7 @@ pub async fn link_chat_pull_requests(
         })
         .await
         .map_err(|e| {
-            zeron_proto::GithubError::new(zeron_proto::GithubErrorCode::Network, e.to_string())
+            mast_proto::GithubError::new(mast_proto::GithubErrorCode::Network, e.to_string())
         })?
     };
     let (chat_links, scanned, recovered) = chat_links;
@@ -421,14 +421,14 @@ pub(crate) async fn link_issue_pull_requests<F, Fut>(
     space_id: &str,
     linked: &[(String, String)],
     mut fetch: F,
-) -> Result<u32, zeron_proto::LinearError>
+) -> Result<u32, mast_proto::LinearError>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<
-            Output = Result<Vec<crate::linear::queries::IssueAttachment>, zeron_proto::LinearError>,
+            Output = Result<Vec<crate::linear::queries::IssueAttachment>, mast_proto::LinearError>,
         >,
 {
-    use zeron_proto::LinearErrorCode;
+    use mast_proto::LinearErrorCode;
     if linked.is_empty() {
         return Ok(0);
     }
@@ -490,9 +490,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_doc::MessageRole;
-    use zeron_proto::ToolCall;
-    use zeron_proto::work_outline::limits::MAX_OPERATION_ID_CHARS;
+    use mast_doc::MessageRole;
+    use mast_proto::ToolCall;
+    use mast_proto::work_outline::limits::MAX_OPERATION_ID_CHARS;
 
     #[test]
     fn urls_parse_to_pull_requests_with_their_casing() {

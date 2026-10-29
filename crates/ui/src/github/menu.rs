@@ -3,7 +3,7 @@
 //! Reviews Here" on the destination), and on an item linking a PR: Review,
 //! Fix CI, Open on GitHub, Refresh PR Status. The Shell runs them
 //! (`shell/github_ui.rs`).
-use zeron_proto::{PrReviewAction, PullRequestRef, WorkOutlineSnapshot};
+use mast_proto::{PrReviewAction, PullRequestRef, WorkOutlineSnapshot};
 
 use crate::icons;
 use crate::shell::work_outline_ui::OutlineNavKey;

@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use zeron_proto::view::Indicator;
+use mast_proto::view::Indicator;
 
 use crate::theme::Appearance;
 

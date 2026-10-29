@@ -3,7 +3,7 @@
 //! and a drift count always agree on which questions exist.
 //!
 //! Markdown: `> [!question] Q-3 · text` quotes with `blocking:` / `status:` /
-//! `blocks:` / `decision:` lines. HTML: `data-zeron-question="Q-3"` elements
+//! `blocks:` / `decision:` lines. HTML: `data-mast-question="Q-3"` elements
 //! (`data-status`, `data-blocking`, `data-blocks`, `data-decision`). A
 //! question without an id is skipped: it cannot be deduplicated or answered.
 //! The UI's card parser (`markdown/question.rs`) stays the display reader.
@@ -115,7 +115,7 @@ pub struct ArtifactDriftReply {
 }
 
 /// The questions in `text`, in document order (Markdown block quotes and
-/// HTML `data-zeron-question` elements). Kinds without questions read empty.
+/// HTML `data-mast-question` (legacy `data-zeron-question`) elements). Kinds without questions read empty.
 pub fn extract_questions(kind: ArtifactKind, text: &str) -> Vec<PlanQuestion> {
     match kind {
         ArtifactKind::Markdown | ArtifactKind::Unknown => markdown_questions(text),
@@ -150,7 +150,11 @@ fn markdown_questions(text: &str) -> Vec<PlanQuestion> {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             // A new `[!question]` header starts a new block even without a
             // blank line between two quotes.
-            if rest.trim_start().to_ascii_lowercase().starts_with("[!question]") {
+            if rest
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("[!question]")
+            {
                 flush(&mut quote, &mut out);
             }
             quote.push(rest);
@@ -235,13 +239,19 @@ fn markdown_question(lines: &[&str]) -> Option<PlanQuestion> {
 fn html_questions(text: &str) -> Vec<PlanQuestion> {
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(rel) = text[from..].find("data-zeron-question") {
+    while let Some(rel) = super::find_first_of(
+        &text[from..],
+        &[super::QUESTION_ATTR, super::LEGACY_QUESTION_ATTR],
+    ) {
         let at = from + rel;
         let tag_start = text[..at].rfind('<').unwrap_or(at);
         let tag_end = text[at..].find('>').map_or(text.len(), |e| at + e);
         let tag = &text[tag_start..tag_end];
         from = tag_end.max(at + 1);
-        let Some(id) = attr(tag, "data-zeron-question").and_then(|v| id_of(v.trim())) else {
+        let Some(id) = attr(tag, super::QUESTION_ATTR)
+            .or_else(|| attr(tag, super::LEGACY_QUESTION_ATTR))
+            .and_then(|v| id_of(v.trim()))
+        else {
             continue;
         };
         let name: String = tag[1.min(tag.len())..]
@@ -261,7 +271,9 @@ fn html_questions(text: &str) -> Vec<PlanQuestion> {
             status: attr(tag, "data-status")
                 .map(PlanQuestionStatus::parse)
                 .unwrap_or_default(),
-            blocks: attr(tag, "data-blocks").filter(|v| !v.is_empty()).map(str::to_owned),
+            blocks: attr(tag, "data-blocks")
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
         });
     }
     out
@@ -375,6 +387,16 @@ mod tests {
     }
 
     #[test]
+    fn html_questions_accept_both_attribute_spellings() {
+        let html = r#"<div data-zeron-question="Q-1">old</div><div data-mast-question="Q-2">new</div><div data-zeron-question="Q-3">old2</div>"#;
+        let ids: Vec<String> = extract_questions(ArtifactKind::HtmlFragment, html)
+            .into_iter()
+            .map(|q| q.id)
+            .collect();
+        assert_eq!(ids, ["Q-1", "Q-2", "Q-3"]);
+    }
+
+    #[test]
     fn open_unanswered_skips_answered_and_resolved() {
         let qs = extract_questions(ArtifactKind::Markdown, MD);
         let answers = vec![ArtifactQuestionAnswer {
@@ -383,7 +405,10 @@ mod tests {
             at: 5,
             ..Default::default()
         }];
-        let open: Vec<_> = open_unanswered(&qs, &answers).iter().map(|q| q.id.clone()).collect();
+        let open: Vec<_> = open_unanswered(&qs, &answers)
+            .iter()
+            .map(|q| q.id.clone())
+            .collect();
         assert_eq!(open, ["Q-3"]);
     }
 
@@ -391,8 +416,16 @@ mod tests {
     fn unreflected_answers_need_no_newer_revision() {
         let qs = extract_questions(ArtifactKind::Markdown, MD);
         let answers = vec![
-            ArtifactQuestionAnswer { id: "Q-1".into(), at: 10, ..Default::default() },
-            ArtifactQuestionAnswer { id: "Q-2".into(), at: 10, ..Default::default() },
+            ArtifactQuestionAnswer {
+                id: "Q-1".into(),
+                at: 10,
+                ..Default::default()
+            },
+            ArtifactQuestionAnswer {
+                id: "Q-2".into(),
+                at: 10,
+                ..Default::default()
+            },
         ];
         // Q-2 is resolved in the doc; Q-1 answered after the latest revision.
         assert_eq!(unreflected_answers(&qs, &answers, 5).len(), 1);

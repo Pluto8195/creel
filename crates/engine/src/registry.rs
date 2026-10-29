@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_harness::{Harness, HarnessError, mock::MockHarness};
-use zeron_proto::{AgentEvent, DoneStatus, HarnessId, ReasoningLevel, SteeringMode};
+use mast_harness::{Harness, HarnessError, mock::MockHarness};
+use mast_proto::{AgentEvent, DoneStatus, HarnessId, ReasoningLevel, SteeringMode};
 
 /// What `ListHarnesses` reports per harness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,7 +312,7 @@ impl HarnessRegistry {
 
     pub fn set_title_settings(&self, mut settings: TitleSettings) -> Result<(), String> {
         if let Some(id) = settings.harness {
-            if !zeron_harness::supports_titles(id) || !self.enabled_set().contains(&id) {
+            if !mast_harness::supports_titles(id) || !self.enabled_set().contains(&id) {
                 return Err("Choose an enabled harness that supports title generation".into());
             }
         } else if settings.model.is_some() {
@@ -415,7 +415,7 @@ impl HarnessRegistry {
                     None => return None,
                 };
                 descriptor.enabled = Some(enabled.contains(id));
-                descriptor.can_install = zeron_harness::acp::can_install(*id);
+                descriptor.can_install = mast_harness::acp::can_install(*id);
                 Some(descriptor)
             })
             .collect()
@@ -423,7 +423,7 @@ impl HarnessRegistry {
 }
 
 /// The production registry: MockHarness (hidden from production pickers) plus a lazy
-/// `claude-code` slot resolved through `zeron_harness` on first use (subprocess
+/// `claude-code` slot resolved through `mast_harness` on first use (subprocess
 /// discovery only happens when a run/model call actually needs it).
 pub fn default_registry() -> HarnessRegistry {
     default_registry_with_model_discovery_cwd(None)
@@ -441,7 +441,7 @@ fn default_registry_with_model_discovery_cwd(
 ) -> HarnessRegistry {
     // Warm the login-shell PATH snapshot in the background so the first
     // claude/codex resolve doesn't pay the shell-startup latency inline.
-    zeron_harness::shell_env::prewarm();
+    mast_harness::shell_env::prewarm();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
         script: vec![
@@ -453,7 +453,7 @@ fn default_registry_with_model_discovery_cwd(
             },
             AgentEvent::ToolCall {
                 id: "mock-tool-1".into(),
-                call: zeron_proto::ToolCall::Exec {
+                call: mast_proto::ToolCall::Exec {
                     command: "cargo test --workspace".into(),
                 },
             },
@@ -465,7 +465,7 @@ fn default_registry_with_model_discovery_cwd(
             },
             AgentEvent::ToolCall {
                 id: "mock-tool-2".into(),
-                call: zeron_proto::ToolCall::Exec {
+                call: mast_proto::ToolCall::Exec {
                     command: "git log -5 --oneline --decorate && git merge-base HEAD origin/main"
                         .into(),
                 },
@@ -507,9 +507,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::ClaudeHarness::new().installed()),
+        Box::new(|| mast_harness::ClaudeHarness::new().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::ClaudeHarness::new();
+            let mut harness = mast_harness::ClaudeHarness::new();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -520,7 +520,7 @@ fn default_registry_with_model_discovery_cwd(
     // exactly (`describe()` after the first resolve must not change the
     // catalog entry) — "Codex" per the original HARNESS_LABEL, StepBoundary
     // steering via native `turn/steer`, and the unified reasoning ladder from
-    // zeron_harness::codex::catalog. CLI discovery only happens when a
+    // mast_harness::codex::catalog. CLI discovery only happens when a
     // run/model call actually resolves the slot.
     let discovery_cwd = model_discovery_cwd.clone();
     registry.register_lazy(
@@ -542,9 +542,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::CodexHarness::new().installed()),
+        Box::new(|| mast_harness::CodexHarness::new().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::CodexHarness::new();
+            let mut harness = mast_harness::CodexHarness::new();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -566,9 +566,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::CursorHarness::new().installed()),
+        Box::new(|| mast_harness::CursorHarness::new().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::CursorHarness::new();
+            let mut harness = mast_harness::CursorHarness::new();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -591,9 +591,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::devin().installed()),
+        Box::new(|| mast_harness::AcpHarness::devin().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::AcpHarness::devin();
+            let mut harness = mast_harness::AcpHarness::devin();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -620,9 +620,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::grok().installed()),
+        Box::new(|| mast_harness::AcpHarness::grok().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::AcpHarness::grok();
+            let mut harness = mast_harness::AcpHarness::grok();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -645,9 +645,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::hermes().installed()),
+        Box::new(|| mast_harness::AcpHarness::hermes().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::AcpHarness::hermes();
+            let mut harness = mast_harness::AcpHarness::hermes();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -676,9 +676,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::pi().installed()),
+        Box::new(|| mast_harness::AcpHarness::pi().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::AcpHarness::pi();
+            let mut harness = mast_harness::AcpHarness::pi();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -708,9 +708,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::OpencodeHarness::new().installed()),
+        Box::new(|| mast_harness::OpencodeHarness::new().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::OpencodeHarness::new();
+            let mut harness = mast_harness::OpencodeHarness::new();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -733,9 +733,9 @@ fn default_registry_with_model_discovery_cwd(
             can_install: false,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::antigravity().installed()),
+        Box::new(|| mast_harness::AcpHarness::antigravity().installed()),
         Box::new(move || {
-            let mut harness = zeron_harness::AcpHarness::antigravity();
+            let mut harness = mast_harness::AcpHarness::antigravity();
             if let Some(cwd) = &discovery_cwd {
                 harness = harness.with_model_discovery_cwd(cwd);
             }
@@ -1081,13 +1081,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn antigravity_detection_subprocess() {
-        let Ok(expected) = std::env::var("ZERON_TEST_AGY_INSTALLED") else {
+        let Ok(expected) = mast_proto::env::var("MAST_TEST_AGY_INSTALLED") else {
             return;
         };
         let registry = HarnessRegistry::new();
         let data = tempfile::tempdir().unwrap();
         registry.load_prefs(data.path());
-        registry.register(Arc::new(zeron_harness::AcpHarness::antigravity()));
+        registry.register(Arc::new(mast_harness::AcpHarness::antigravity()));
         let expected = expected == "true";
         assert_eq!(registry.descriptors()[0].installed, expected);
         assert_eq!(
@@ -1122,8 +1122,8 @@ mod tests {
                 .env("HOME", home.path())
                 .env("PATH", &bin)
                 .env_remove("ANTIGRAVITY_ACP_EXECUTABLE")
-                .env("ZERON_NO_LOGIN_SHELL", "1")
-                .env("ZERON_TEST_AGY_INSTALLED", installed.to_string())
+                .env("MAST_NO_LOGIN_SHELL", "1")
+                .env("MAST_TEST_AGY_INSTALLED", installed.to_string())
                 .output()
                 .unwrap();
             assert!(
@@ -1240,7 +1240,7 @@ mod title_tests {
         let registry = HarnessRegistry::new();
         registry.load_prefs(dir.path());
         registry.register(Arc::new(
-            zeron_harness::ClaudeHarness::new().with_executable(std::env::current_exe().unwrap()),
+            mast_harness::ClaudeHarness::new().with_executable(std::env::current_exe().unwrap()),
         ));
         let settings = TitleSettings {
             harness: Some(HarnessId::ClaudeCode),

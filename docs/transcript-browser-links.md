@@ -20,10 +20,10 @@ The fixture uses synthetic chat data, temporary app storage, and a local HTTP se
 - [Native scenario](../crates/ui/examples/browser-fixture/transcript_links.rs)
 
 ```sh
-cargo test -p zeron-ui
-cargo build -p zeron
-cargo build -p zeron-ui --example browser-fixture --features browser-fixture
-ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
+cargo test -p mast-ui
+cargo build -p mast
+cargo build -p mast-ui --example browser-fixture --features browser-fixture
+MAST_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
   BROWSER_FIXTURE_BINARY=target/debug/examples/browser-fixture \
   scripts/test-linux-browser.sh /tmp/zeron-transcript-links
 ```
@@ -35,18 +35,18 @@ The Linux runner exercises X11 and nested Wayland with native pointer input. It 
 On macOS, build the same example and run it with the release application's Info.plist:
 
 ```sh
-ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
+MAST_TRANSCRIPT_LINK_FIXTURE_ONLY=1 \
   scripts/run-macos-browser-fixture.sh target/debug/examples/browser-fixture \
   /tmp/zeron-transcript-links-macos
 ```
 
-Native runtime-failure validation can be run on Linux by placing an empty `libwebkit2gtk-4.1.so.0` in a temporary directory, setting `LD_LIBRARY_PATH` to that directory, and setting `ZERON_LINK_FIXTURE_MISSING_RUNTIME=1` for the fixture. This simulates the dynamic loader's failure without changing installed packages. The main application must remain usable and expose the error and external-browser control.
+Native runtime-failure validation can be run on Linux by placing an empty `libwebkit2gtk-4.1.so.0` in a temporary directory, setting `LD_LIBRARY_PATH` to that directory, and setting `MAST_LINK_FIXTURE_MISSING_RUNTIME=1` for the fixture. This simulates the dynamic loader's failure without changing installed packages. The main application must remain usable and expose the error and external-browser control.
 
 ## Validation recorded for this change
 
-- `cargo test -p zeron-ui`: 916 tests passed, plus doc tests.
-- `cargo build -p zeron`: passed.
-- `cargo check -p zeron`: passed.
+- `cargo test -p mast-ui`: 916 tests passed, plus doc tests.
+- `cargo build -p mast`: passed.
+- `cargo check -p mast`: passed.
 - Rustfmt checks passed for the modified library modules and the new native scenario; shell syntax and whitespace checks passed. The existing browser fixture's formatting was preserved.
 - Linux X11: native input, clipboard, navigation, tab ownership/close, and visual disclosure over WebKitGTK verified.
 - Linux Wayland: native pointer, clipboard, keyboard actions, navigation, and tab close assertions passed in nested Weston. Captures did not reliably reflect updated frames, including with software Vulkan and an explicit frame request; visual verification of Wayland overlays remains outstanding.

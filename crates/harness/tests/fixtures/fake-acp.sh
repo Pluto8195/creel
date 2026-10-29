@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fake ACP agent for zeron-harness tests.
+# Fake ACP agent for mast-harness tests.
 #
 # Speaks scripted JSON-RPC 2.0 over stdio: initialize handshake, session
 # new/load, then a scenario picked from the session/prompt text. Driven by
@@ -186,8 +186,8 @@ case "$promptline" in
   # Non-text content chunks map to nothing.
   update '{"sessionUpdate":"agent_message_chunk","content":{"type":"image","data":"x","mimeType":"image/png"}}'
   # Execute tool: pending call, then completed update with output content.
-  update '{"sessionUpdate":"tool_call","toolCallId":"t1","title":"cargo test -p zeron-harness","kind":"execute","status":"pending","rawInput":{"command":"cargo test -p zeron-harness"}}'
-  update '{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"   Compiling zeron-harness v0.1.21\n    Finished `dev` profile [unoptimized] in 2.41s\n     Running tests/acp.rs\n\nrunning 13 tests\ntest result: ok. 13 passed; 0 failed; 0 ignored"}}]}'
+  update '{"sessionUpdate":"tool_call","toolCallId":"t1","title":"cargo test -p mast-harness","kind":"execute","status":"pending","rawInput":{"command":"cargo test -p mast-harness"}}'
+  update '{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"   Compiling mast-harness v0.1.21\n    Finished `dev` profile [unoptimized] in 2.41s\n     Running tests/acp.rs\n\nrunning 13 tests\ntest result: ok. 13 passed; 0 failed; 0 ignored"}}]}'
   # Edit tool resolved in one shot with an inline diff (real hunk: context,
   # line numbers, rust syntax for the transcript's diff component).
   update '{"sessionUpdate":"tool_call","toolCallId":"t2","title":"edit resolve.rs","kind":"edit","status":"completed","content":[{"type":"diff","path":"/w/src/resolve.rs","oldText":"use std::path::PathBuf;\n\n/// Locate the agent binary.\nfn resolve(exe: &str) -> Option<PathBuf> {\n    std::env::var_os(\"PATH\")\n        .map(PathBuf::from)\n        .filter(|p| p.exists())\n}\n","newText":"use std::path::PathBuf;\n\n/// Locate the agent binary.\nfn resolve(exe: &str) -> Option<PathBuf> {\n    let dirs = std::env::split_paths(&std::env::var_os(\"PATH\")?);\n    dirs.map(|d| d.join(exe)).find(|p| p.exists())\n}\n"}]}'

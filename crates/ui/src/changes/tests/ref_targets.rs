@@ -3,10 +3,10 @@
 //! range scope (no Working tree or Latest turn) and the refs-only capture.
 
 use super::*;
-use std::sync::{Arc, Mutex};
-use zeron_proto::{
+use mast_proto::{
     ChatDiffTargetsView, ChatRefTargetView, DiffFileSummary, RefDiffCandidate, RefDiffKind,
 };
+use std::sync::{Arc, Mutex};
 
 const FLAGSHIP: &str = "/work/ws/flagship";
 const FLAGSHIP_CHECKOUT: &str = "checkout:flagship";
@@ -106,16 +106,16 @@ fn target_rpc(calls: RpcCalls, bind_error: Option<&'static str>) -> crate::diff_
     Arc::new(move |method, params| {
         calls.lock().unwrap().push((method.to_owned(), params));
         match method {
-            zeron_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES => Ok(serde_json::to_value(
-                zeron_proto::ListChatRefDiffCandidatesReply {
+            mast_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES => Ok(serde_json::to_value(
+                mast_proto::ListChatRefDiffCandidatesReply {
                     candidates: candidates(),
                 },
             )
             .unwrap()),
-            zeron_rpc::methods::SET_CHAT_DIFF_TARGET => match bind_error {
+            mast_rpc::methods::SET_CHAT_DIFF_TARGET => match bind_error {
                 Some(message) => Err(message.to_owned()),
                 None => {
-                    Ok(serde_json::to_value(zeron_proto::ChatDiffTargetsReply::default()).unwrap())
+                    Ok(serde_json::to_value(mast_proto::ChatDiffTargetsReply::default()).unwrap())
                 }
             },
             other => Err(format!("unexpected {other}")),
@@ -185,7 +185,7 @@ fn open<'a>(
     // fail the pane's pending calls from the reactor thread, which gpui's
     // test scheduler rejects. Leaking the sender keeps it open.
     std::mem::forget(server_out);
-    let client = zeron_rpc::RpcClient::new(out, inbound);
+    let client = mast_rpc::RpcClient::new(out, inbound);
     let state_slot: Arc<Mutex<Option<Entity<AppState>>>> = Default::default();
     let slot = state_slot.clone();
     let rpc = target_rpc(calls.clone(), bind_error);
@@ -250,7 +250,7 @@ fn open_ref_picker(changes: &Entity<Changes>, calls: &RpcCalls, vcx: &mut gpui::
         changes.update(cx, |changes, cx| changes.open_ref_target_menu(window, cx))
     });
     settle(vcx, |_| {
-        !rpc_calls(calls, zeron_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES).is_empty()
+        !rpc_calls(calls, mast_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES).is_empty()
     });
     vcx.run_until_parked();
 }
@@ -298,7 +298,7 @@ fn the_picker_sits_next_to_diff_checkout_and_lists_linked_prs_before_ticket_bran
 
     open_ref_picker(&changes, &calls, vcx);
     assert_eq!(
-        rpc_calls(&calls, zeron_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES),
+        rpc_calls(&calls, mast_rpc::methods::LIST_CHAT_REF_DIFF_CANDIDATES),
         vec![serde_json::json!({"chatId": "chat-wt"})]
     );
     assert_eq!(
@@ -341,10 +341,10 @@ fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
         .center();
     vcx.simulate_click(row, gpui::Modifiers::default());
     settle(vcx, |_| {
-        !rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
+        !rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
     });
     assert_eq!(
-        rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+        rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
         vec![serde_json::json!({
             "chatId": "chat-wt", "action": "bindRef", "input": PR_URL,
         })]
@@ -364,10 +364,10 @@ fn choosing_a_row_binds_it_through_the_engine(cx: &mut gpui::TestAppContext) {
         changes.ref_target_menu_key(&key("enter"), cx);
     });
     settle(vcx, |_| {
-        rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).len() == 2
+        rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).len() == 2
     });
     assert_eq!(
-        rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
+        rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET)[1],
         serde_json::json!({
             "chatId": "chat-wt", "action": "bindRef",
             "input": TICKET_BRANCH, "repoPath": FLAGSHIP,
@@ -415,10 +415,10 @@ fn free_text_accepts_a_pr_number_a_pr_url_and_a_branch_name(cx: &mut gpui::TestA
         changes.ref_target_menu_key(&key("enter"), cx)
     });
     settle(vcx, |_| {
-        !rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
+        !rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
     });
     assert_eq!(
-        rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+        rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
         vec![serde_json::json!({
             "chatId": "chat-wt", "action": "bindRef", "input": "origin/feature/x",
         })]
@@ -582,10 +582,10 @@ fn picking_a_ref_pill_persists_select_ref_and_a_vanished_ref_drops_the_pick(
         state.select_chat_execution_member("chat-wt", "ref:br-1", cx)
     });
     settle(vcx, |_| {
-        !rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
+        !rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty()
     });
     assert_eq!(
-        rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET),
+        rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET),
         vec![serde_json::json!({
             "chatId": "chat-wt", "action": "selectRef", "refId": "br-1",
         })]
@@ -623,7 +623,7 @@ fn the_range_capture_sends_both_refs_only_and_shows_the_files(cx: &mut gpui::Tes
     let requests = opened.engine_requests();
     let diffs: Vec<_> = requests
         .iter()
-        .filter(|(method, _)| method == zeron_rpc::methods::GET_CHECKOUT_DIFF)
+        .filter(|(method, _)| method == mast_rpc::methods::GET_CHECKOUT_DIFF)
         .collect();
     assert_eq!(diffs.len(), 1, "{requests:?}");
     // Exactly the ref pair of the target (the chat id rides along on every
@@ -644,7 +644,7 @@ fn the_range_capture_sends_both_refs_only_and_shows_the_files(cx: &mut gpui::Tes
     assert!(
         !requests
             .iter()
-            .any(|(method, _)| method == zeron_rpc::methods::LIST_BRANCHES),
+            .any(|(method, _)| method == mast_rpc::methods::LIST_BRANCHES),
         "{requests:?}"
     );
 
@@ -735,11 +735,11 @@ fn chats_without_ref_targets_are_unchanged(cx: &mut gpui::TestAppContext) {
     assert!(
         !requests
             .iter()
-            .any(|(method, _)| method == zeron_rpc::methods::GET_CHECKOUT_DIFF),
+            .any(|(method, _)| method == mast_rpc::methods::GET_CHECKOUT_DIFF),
         "{requests:?}"
     );
     // Opening and closing the picker writes nothing.
     open_ref_picker(&changes, &calls, vcx);
     changes.update(vcx, |changes, cx| changes.close_ref_target_menu(cx));
-    assert!(rpc_calls(&calls, zeron_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty());
+    assert!(rpc_calls(&calls, mast_rpc::methods::SET_CHAT_DIFF_TARGET).is_empty());
 }

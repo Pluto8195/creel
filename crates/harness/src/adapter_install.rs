@@ -62,13 +62,13 @@ impl NpmPin {
 pub(crate) const OK_MARKER: &str = ".zeron-install-ok";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Managed adapter storage. `$ZERON_ADAPTERS_DIR` wins, followed by
-/// `$ZERON_DATA_DIR/adapters`. Windows defaults to
+/// Managed adapter storage. `$MAST_ADAPTERS_DIR` wins, followed by
+/// `$MAST_DATA_DIR/adapters`. Windows defaults to
 /// `%LOCALAPPDATA%/Zeron/adapters` (or `%USERPROFILE%/AppData/Local/...`);
 /// Unix keeps `~/.zeron/adapters`.
 pub(crate) fn adapters_root() -> Option<PathBuf> {
     adapters_root_with(
-        &|key| std::env::var_os(key),
+        &|key| mast_proto::env::var_os(key),
         crate::executable::Platform::current(),
     )
 }
@@ -82,10 +82,10 @@ fn adapters_root_with(
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
-    if let Some(dir) = value("ZERON_ADAPTERS_DIR") {
+    if let Some(dir) = value("MAST_ADAPTERS_DIR") {
         return Some(dir);
     }
-    if let Some(dir) = value("ZERON_DATA_DIR") {
+    if let Some(dir) = value("MAST_DATA_DIR") {
         return Some(dir.join("adapters"));
     }
     if platform == crate::executable::Platform::Windows {
@@ -177,7 +177,7 @@ fn find_npm_with(
 
 pub(crate) fn find_npm() -> Option<PathBuf> {
     find_npm_with(
-        &|key| std::env::var_os(key),
+        &|key| mast_proto::env::var_os(key),
         crate::shell_env::login_shell_path().map(OsString::from),
         crate::executable::Platform::current(),
     )
@@ -384,7 +384,7 @@ pub(crate) fn installed_shim(pin: &NpmPin, shim_name: &str, contents: &str) -> O
     materialize_shim(&dir, shim_name, contents).ok()
 }
 
-/// Different running Zeron builds must never replace each other's shim.
+/// Different running Mast builds must never replace each other's shim.
 /// Publish complete, content-addressed files; a reader never sees a partial write.
 fn materialize_shim(dir: &Path, name: &str, contents: &str) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
@@ -523,7 +523,7 @@ async fn install_into(
     // A bare manifest keeps npm from walking up into a user project.
     std::fs::write(tmp_dir.join("package.json"), "{\"private\":true}\n")?;
     tracing::info!(
-        target: "zeron_harness::adapter_install",
+        target: "mast_harness::adapter_install",
         package = %pin.spec(),
         dir = %tmp_dir.display(),
         "installing ACP adapter"
@@ -700,8 +700,8 @@ mod tests {
         assert_eq!(
             adapters_root_with(
                 &env(&[
-                    ("ZERON_ADAPTERS_DIR", explicit.clone().into_os_string()),
-                    ("ZERON_DATA_DIR", data.clone().into_os_string()),
+                    ("MAST_ADAPTERS_DIR", explicit.clone().into_os_string()),
+                    ("MAST_DATA_DIR", data.clone().into_os_string()),
                     ("LOCALAPPDATA", local.clone().into_os_string()),
                 ]),
                 crate::executable::Platform::Windows,
@@ -710,7 +710,7 @@ mod tests {
         );
         assert_eq!(
             adapters_root_with(
-                &env(&[("ZERON_DATA_DIR", data.clone().into_os_string())]),
+                &env(&[("MAST_DATA_DIR", data.clone().into_os_string())]),
                 crate::executable::Platform::Windows,
             ),
             Some(data.join("adapters"))

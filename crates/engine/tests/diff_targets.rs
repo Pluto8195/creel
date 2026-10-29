@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use zeron_engine::diff_targets::{DiffTargetError, DiffTargets};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{ChatDiffTargetSource, DiffCheckoutKind, MAX_CHAT_DIFF_TARGETS};
+use mast_engine::diff_targets::{DiffTargetError, DiffTargets};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{ChatDiffTargetSource, DiffCheckoutKind, MAX_CHAT_DIFF_TARGETS};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -118,7 +118,7 @@ fn fixture() -> Fixture {
     let core = EngineCore::assemble(
         &data,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine core assembles");
@@ -152,7 +152,7 @@ fn code<T: std::fmt::Debug>(result: Result<T, DiffTargetError>) -> &'static str 
     result.expect_err("expected a refusal").code()
 }
 
-fn bind(f: &Fixture, path: &Path, op: &str) -> zeron_engine::diff_targets::BindOutcome {
+fn bind(f: &Fixture, path: &Path, op: &str) -> mast_engine::diff_targets::BindOutcome {
     f.targets
         .bind("chat-1", &text(path), ChatDiffTargetSource::Agent, Some(op))
         .unwrap_or_else(|e| panic!("bind {}: {e}", path.display()))

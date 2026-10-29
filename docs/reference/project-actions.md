@@ -42,9 +42,11 @@ Every invocation opens a fresh managed terminal. On Unix, Mast stores the exact 
 The owning engine validates that the Space, Chat, and checkout belong to the same local project before opening the PTY. A manual run uses the chat checkout as its working directory and injects:
 
 ```text
-ZERON_PROJECT_ROOT=<canonical project root>
-ZERON_WORKTREE_PATH=<canonical chat worktree, only outside the main checkout>
+MAST_PROJECT_ROOT=<canonical project root>
+MAST_WORKTREE_PATH=<canonical chat worktree, only outside the main checkout>
 ```
+
+The old names `ZERON_PROJECT_ROOT` and `ZERON_WORKTREE_PATH` are still exported with the same values, so existing scripts keep working.
 
 The terminal output is replayable, so output produced before the desktop subscribes is still displayed. Subscribe, resize, write, and close requests retain the terminal's owning `targetDeviceId`.
 

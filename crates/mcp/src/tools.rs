@@ -1,7 +1,7 @@
 //! The tool catalog and its dispatch.
 //!
 //! Every tool is a thin composition of engine reads/writes from
-//! [`Zeron`]; the only logic that lives here is argument resolution (chat
+//! [`Mast`]; the only logic that lives here is argument resolution (chat
 //! by prefix, project by path), sender attribution, and the "how do I
 //! deliver a message to a chat in this state" choice the composer makes
 //! for humans.
@@ -27,17 +27,17 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use zeron_doc::SessionCommandPayload;
-use zeron_proto::agent_tools::{self, AgentOrigin, tools as agent_tool_names};
-use zeron_proto::{
+use mast_doc::SessionCommandPayload;
+use mast_proto::agent_tools::{self, AgentOrigin, tools as agent_tool_names};
+use mast_proto::{
     Chat, ChatConfig, ChatModelDisplay, HarnessId, ReasoningLevel, RunRequest, SandboxLevel,
     Session, SessionStatus, Space, UserInputAnswer,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
+use crate::mast::{HarnessInfo, Mast, TurnOutcome, resolve_chat_in, session_for, short};
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
-use crate::zeron::{HarnessInfo, TurnOutcome, Zeron, resolve_chat_in, session_for, short};
 
 /// Default and ceiling for the blocking waits.
 const DEFAULT_WAIT: Duration = Duration::from_secs(600);
@@ -55,7 +55,7 @@ pub struct ToolDef {
 }
 
 pub struct Tools {
-    zeron: Arc<Zeron>,
+    zeron: Arc<Mast>,
 }
 
 fn chat_key_schema(extra: Value) -> Value {
@@ -341,7 +341,7 @@ fn artifact_catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: agent_tool_names::ARTIFACT_PUBLISH,
-            description: "Publish every file you wrote that the user should see (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Mast copies it into the work item's artifact folder (<canonical checkout>/.zeron/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](zeron-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
+            description: "Publish every file you wrote that the user should see (plan, diagram, state machine, option comparison) as a planning artifact of your chat's work item. Mast copies it into the work item's artifact folder (<canonical checkout>/.mast/artifacts/<work item>/), records a revision when the content changed, and returns {artifactId, revision, url, storedPath}. Later publishes with the same title and role add revisions to the same artifact. Link it in your message as [title](mast-artifact:<artifactId>), never as a bare path. HTML: write <name>.fragment.html (body content only) and publish it; a sibling <name>.preview.html is copied too. Options: publish the JSON manifest with kind options; its fragments are copied with it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -667,7 +667,7 @@ fn last_pending_input(messages: &[RenderedMessage]) -> Option<Value> {
 // ---- dispatch ----------------------------------------------------------------
 
 impl Tools {
-    pub fn new(zeron: Arc<Zeron>) -> Self {
+    pub fn new(zeron: Arc<Mast>) -> Self {
         Self { zeron }
     }
 
@@ -1027,7 +1027,7 @@ impl Tools {
         };
         // Never leave the model empty: the harness CLI would fall back to its
         // own default (e.g. `~/.claude/settings.json`), not the composer's.
-        let model = zeron_proto::resolve_model(harness, args.model.as_deref());
+        let model = mast_proto::resolve_model(harness, args.model.as_deref());
         if args.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
             tracing::debug!(?harness, model = ?model, "create_chat had no model; filled in the Mast default");
         }
@@ -1157,7 +1157,7 @@ impl Tools {
                     inputs["workItemId"] = json!(item);
                 }
                 let inputs_hash =
-                    zeron_proto::derive_id(&inputs.to_string(), "mcp-create-chat-inputs");
+                    mast_proto::derive_id(&inputs.to_string(), "mcp-create-chat-inputs");
                 self.zeron
                     .agent_tool(
                         agent_tool_names::CLAIM_CHILD_CHAT,
@@ -1165,7 +1165,7 @@ impl Tools {
                     )
                     .await?;
                 let operation_id = agent_tools::operation_id(&origin.chat_id, key);
-                let chat_id = zeron_proto::derive_id(&operation_id, zeron_proto::roles::CHAT);
+                let chat_id = mast_proto::derive_id(&operation_id, mast_proto::roles::CHAT);
                 let existing = self
                     .zeron
                     .chats()
@@ -1681,14 +1681,14 @@ impl Tools {
         let rendered = render_entries(&entries, RenderOptions::default());
         let replies: Vec<&RenderedMessage> = rendered
             .iter()
-            .filter(|m| m.role == zeron_doc::MessageRole::Assistant)
+            .filter(|m| m.role == mast_doc::MessageRole::Assistant)
             .filter(|m| m.created_at >= since_millis.saturating_sub(2_000))
             .collect();
         let replies: Vec<&RenderedMessage> = if replies.is_empty() {
             rendered
                 .iter()
                 .rev()
-                .find(|m| m.role == zeron_doc::MessageRole::Assistant)
+                .find(|m| m.role == mast_doc::MessageRole::Assistant)
                 .into_iter()
                 .collect()
         } else {
@@ -1714,7 +1714,7 @@ enum Reach {
     SelfOrChild,
 }
 
-/// Whether the token's Chat may reach `chat`: one it created (Zeron-created
+/// Whether the token's Chat may reach `chat`: one it created (Mast-created
 /// children carry the creating Chat as `parentChatId`), or itself.
 fn reachable(origin: &AgentOrigin, chat: &Chat, allow_self: bool) -> bool {
     chat.parent_chat_id.as_deref() == Some(origin.chat_id.as_str())
@@ -1812,8 +1812,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
+    use mast_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
     use std::sync::Mutex;
-    use zeron_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
 
     const BETA_TOKEN: &str = "tok-beta";
 
@@ -1968,7 +1968,7 @@ mod tests {
                         // MCP server and starts it parented to the caller.
                         let key = params["arguments"]["idempotencyKey"].as_str().unwrap();
                         let operation = agent_tools::operation_id("chat-beta-2", key);
-                        let chat_id = zeron_proto::derive_id(&operation, zeron_proto::roles::CHAT);
+                        let chat_id = mast_proto::derive_id(&operation, mast_proto::roles::CHAT);
                         let mut created = self.created.lock().unwrap();
                         if !created.iter().any(|c| c["id"] == chat_id) {
                             created.push(json!({
@@ -2016,7 +2016,7 @@ mod tests {
 
     fn tools(world: Arc<World>, token: Option<&str>) -> Tools {
         let client = memory_client(world);
-        Tools::new(Arc::new(Zeron::with_client(
+        Tools::new(Arc::new(Mast::with_client(
             client,
             token.map(str::to_owned),
         )))
@@ -2469,7 +2469,10 @@ mod tests {
             ..Default::default()
         });
         let tools = tools(world.clone(), Some(BETA_TOKEN));
-        for (i, wider) in ["workspace-write", "danger-full-access"].into_iter().enumerate() {
+        for (i, wider) in ["workspace-write", "danger-full-access"]
+            .into_iter()
+            .enumerate()
+        {
             let err = tools
                 .call(
                     "create_chat",
@@ -2479,7 +2482,10 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("more permissive"), "{wider}: {err}");
         }
-        assert!(world.writes_of(methods::MUTATE).is_empty(), "nothing created");
+        assert!(
+            world.writes_of(methods::MUTATE).is_empty(),
+            "nothing created"
+        );
         // Omitted: capped at the parent's read-only, not the workspace-write default.
         tools
             .call("create_chat", json!({ "idempotency_key": "default" }))
@@ -2580,10 +2586,7 @@ mod tests {
         let first = tools.call("create_chat", args.clone()).await.unwrap();
         let chat_id = first["chatId"].as_str().unwrap().to_owned();
         let op = agent_tools::operation_id("chat-beta-2", "spawn-reviewer");
-        assert_eq!(
-            chat_id,
-            zeron_proto::derive_id(&op, zeron_proto::roles::CHAT)
-        );
+        assert_eq!(chat_id, mast_proto::derive_id(&op, mast_proto::roles::CHAT));
         assert_eq!(first["parentChatId"], "chat-beta-2");
         assert_eq!(first["replayed"], false);
         assert_eq!(first["sent"]["id"], "cmd-agent");
@@ -2959,7 +2962,7 @@ mod tests {
         )
         .await;
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
-        assert_eq!(init["result"]["serverInfo"]["name"], "zeron");
+        assert_eq!(init["result"]["serverInfo"]["name"], "mast");
         let list =
             crate::jsonrpc::handle_request(&tools, json!(2), "tools/list", Value::Null).await;
         assert!(list["result"]["tools"].as_array().unwrap().len() >= 10);

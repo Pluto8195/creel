@@ -19,7 +19,7 @@ use gpui::{
     StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, quad,
     size,
 };
-use zeron_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
+use mast_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
 use crate::theme::Theme;
 
@@ -114,7 +114,7 @@ pub struct RenderOptions {
 pub struct QuestionUi {
     pub expanded: Rc<std::collections::HashSet<String>>,
     pub toggle: Rc<dyn Fn(String, &mut Window, &mut gpui::App)>,
-    /// Answers given in Zeron and the inline Answer affordance (artifact
+    /// Answers given in Mast and the inline Answer affordance (artifact
     /// tabs only). `None` renders cards from the document alone.
     pub answers: Option<AnswerUi>,
 }
@@ -3341,7 +3341,7 @@ mod tests {
         let theme = Theme::dark();
         let mono = font(theme.font_mono.clone());
         let line = r#"let x = "hi"; // done"#;
-        let document = zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+        let document = mast_syntax::highlight(mast_syntax::HighlightRequest {
             source: line,
             path: None,
             fence_tag: Some("rust"),
@@ -3363,7 +3363,7 @@ mod tests {
         let theme = Theme::dark();
         let mono = font(theme.font_mono.clone());
         let line = "let widget = build!(42);";
-        let document = zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+        let document = mast_syntax::highlight(mast_syntax::HighlightRequest {
             source: line,
             path: None,
             fence_tag: Some("rust"),
@@ -3421,7 +3421,7 @@ mod tests {
             ),
         ];
         for &(fence_tag, line, required) in cases {
-            let document = zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+            let document = mast_syntax::highlight(mast_syntax::HighlightRequest {
                 source: line,
                 path: None,
                 fence_tag: Some(fence_tag),

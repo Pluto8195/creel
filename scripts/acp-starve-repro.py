@@ -5,7 +5,7 @@ Evidence script for the upstream report: a session/prompt sent while the
 Claude CLI runs a SELF-CONTINUED turn (background-task re-invocation) never
 gets its response from @agentclientprotocol/claude-agent-acp@0.66.0, because
 the adapter does not track turns it did not start (steering answers
-`promptRequired`/`noRunningTurn` while the CLI is visibly busy). Zeron-side
+`promptRequired`/`noRunningTurn` while the CLI is visibly busy). Mast-side
 mitigations: engine turn-quiesce watchdog + harness starved-turn recovery.
 
 Needs an authenticated claude CLI; costs a few small prompts.

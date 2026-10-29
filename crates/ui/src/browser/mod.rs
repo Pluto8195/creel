@@ -97,7 +97,7 @@ pub struct BrowserSurface {
     address_edited: bool,
     validation: Option<String>,
     remote: bool,
-    previews: zeron_proto::PreviewSnapshot,
+    previews: mast_proto::PreviewSnapshot,
     previews_loading: bool,
     previews_task: Option<gpui::Task<()>>,
     #[cfg(feature = "browser-fixture")]
@@ -192,7 +192,7 @@ impl BrowserSurface {
             address_edited: false,
             validation: None,
             remote,
-            previews: zeron_proto::PreviewSnapshot::default(),
+            previews: mast_proto::PreviewSnapshot::default(),
             previews_loading: true,
             previews_task: None,
             #[cfg(feature = "browser-fixture")]
@@ -344,7 +344,7 @@ impl BrowserSurface {
     }
 
     #[cfg(feature = "browser-fixture")]
-    pub fn fixture_previews(&self) -> zeron_proto::PreviewSnapshot {
+    pub fn fixture_previews(&self) -> mast_proto::PreviewSnapshot {
         self.previews.clone()
     }
     #[cfg(feature = "browser-fixture")]
@@ -365,14 +365,14 @@ impl BrowserSurface {
                 let subscription = handle
                     .client()
                     .subscribe(
-                        zeron_rpc::methods::WATCH_PREVIEWS,
+                        mast_rpc::methods::WATCH_PREVIEWS,
                         serde_json::json!({"chatId": chat_id}),
                     )
                     .await;
                 if let Ok(mut updates) = subscription {
                     while let Some(value) = updates.recv().await {
                         if let Ok(snapshot) =
-                            serde_json::from_value::<zeron_proto::PreviewSnapshot>(value)
+                            serde_json::from_value::<mast_proto::PreviewSnapshot>(value)
                         {
                             if this
                                 .update(cx, |this, cx| {
@@ -415,9 +415,9 @@ impl BrowserSurface {
     /// browser (its address bar or page) or nowhere; a link opened from the
     /// transcript must not pull focus out of the composer.
     fn may_take_focus(&self, window: &Window, cx: &App) -> bool {
-        window.focused(cx).is_none_or(|focused| {
-            focused == self.focus || focused == self.address.focus_handle(cx)
-        })
+        window
+            .focused(cx)
+            .is_none_or(|focused| focused == self.focus || focused == self.address.focus_handle(cx))
     }
 
     pub fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {

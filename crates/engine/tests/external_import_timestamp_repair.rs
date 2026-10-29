@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use zeron_doc::{MessagePart, MessageRole, SessionDoc, SessionMessageEntry};
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_doc::{MessagePart, MessageRole, SessionDoc, SessionMessageEntry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -39,7 +39,7 @@ async fn repairs_a_chat_left_over_by_the_old_pre_fix_import_path() {
     })
     .expect("push message");
     let bytes = doc.export_snapshot().expect("snapshot");
-    let store = zeron_sync::DocsStore::open(&store_root).expect("open store");
+    let store = mast_sync::DocsStore::open(&store_root).expect("open store");
     store
         .save_snapshot_with_cursor(chat_id, &bytes, 0, 2)
         .expect("save doc");
@@ -109,7 +109,7 @@ async fn a_chat_with_no_harness_session_is_never_touched() {
         "dev-user",
     ));
 
-    // An ordinary Zeron-native chat (no harness_session_id at all) must be
+    // An ordinary Mast-native chat (no harness_session_id at all) must be
     // left alone by this repair — it's scoped to external-session imports only.
     core.workspace
         .create_chat("native-chat", None, Some(&core.device_id), None, None)

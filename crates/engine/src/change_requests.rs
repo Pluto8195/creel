@@ -12,7 +12,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use zeron_proto::CheckoutChangeRequestStatus;
+use mast_proto::CheckoutChangeRequestStatus;
 
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::source_control::{
@@ -368,7 +368,7 @@ struct SemanticStatus {
     device_id: String,
     cwd: String,
     branch: String,
-    change_request: Option<zeron_proto::ChangeRequestSummary>,
+    change_request: Option<mast_proto::ChangeRequestSummary>,
 }
 
 impl From<&CheckoutChangeRequestStatus> for SemanticStatus {
@@ -418,7 +418,7 @@ mod tests {
 
     use async_trait::async_trait;
     use futures::StreamExt;
-    use zeron_proto::{ChangeRequestState, ChangeRequestSummary};
+    use mast_proto::{ChangeRequestState, ChangeRequestSummary};
 
     use super::*;
     use crate::source_control::BranchHeadContext;

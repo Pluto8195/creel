@@ -183,22 +183,22 @@ integration target ran, or that native Metal performance was measured.
 Requires Node 22+, Rust, Python 3 and Xvfb/xdotool for Linux desktop profiling.
 The [sanitized fixture](../scripts/fixtures/README.md) reproduces the measured
 replay without an API call. Use a dedicated display and fresh output directories;
-the driver requires exactly one Zeron window.
+the driver requires exactly one Mast window.
 
 ```sh
-cargo build --release -p zeron
+cargo build --release -p mast
 Xvfb :98 -screen 0 1440x900x24 -nolisten tcp
 # In another terminal:
-DISPLAY=:98 WAYLAND_DISPLAY= LP_NUM_THREADS=4 ZERON_FRAME_STATS=0 \
-  ZERON_PROFILE_PSS=1 ZERON_PROFILE_IDLE_MS=45000 \
+DISPLAY=:98 WAYLAND_DISPLAY= LP_NUM_THREADS=4 MAST_FRAME_STATS=0 \
+  MAST_PROFILE_PSS=1 MAST_PROFILE_IDLE_MS=45000 \
   CLAUDE_CODE_EXECUTABLE="$PWD/scripts/replay-claude.py" \
-  ZERON_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
+  MAST_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
   node scripts/resource-profile.mjs target/release/zeron /tmp/zeron-short claude-code
 
 # Use LP_NUM_THREADS=1 for the one-worker check.
-# Add ZERON_REPLAY_REPEAT=10 ZERON_REPLAY_DELAY_MS=8 for the long workload.
+# Add MAST_REPLAY_REPEAT=10 MAST_REPLAY_DELAY_MS=8 for the long workload.
 # For a live turn, omit replay variables and point CLAUDE_CODE_EXECUTABLE to
-# the authenticated CLI; ZERON_PROFILE_SUBMIT_UI=1 submits through the composer.
+# the authenticated CLI; MAST_PROFILE_SUBMIT_UI=1 submits through the composer.
 
 # In the zui checkout, on a host with Vulkan (software Vulkan works):
 LP_NUM_THREADS=4 cargo test --release -p gpui_wgpu --lib -- --include-ignored

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use zeron_proto::{Chat, PrReviewAction, PullRequestRef, WorkItemView, WorkOutlineSnapshot};
+use mast_proto::{Chat, PrReviewAction, PullRequestRef, WorkItemView, WorkOutlineSnapshot};
 
 use super::{ChatTypeView, ReviewStatus, review_button, status_label, status_line};
 use crate::state::format_time_ago;

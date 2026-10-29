@@ -4,7 +4,7 @@
 //! the chat.
 
 use super::*;
-use zeron_proto::{
+use mast_proto::{
     ChatDiffTargetsRow, MAX_CHAT_DIFF_TARGET_OPS, MAX_CHAT_DIFF_TARGETS, MAX_CHAT_REF_TARGETS,
     StoredChatDiffTarget, StoredRefDiffTarget,
 };
@@ -115,7 +115,10 @@ impl RegistryDoc {
                 ("chatId", json!(row.chat_id)),
                 ("targets", json!(serde_json::to_string(&row.targets)?)),
                 ("selected", opt_str(row.selected.as_deref())),
-                ("refTargets", json!(serde_json::to_string(&row.ref_targets)?)),
+                (
+                    "refTargets",
+                    json!(serde_json::to_string(&row.ref_targets)?),
+                ),
                 ("selectedRef", opt_str(row.selected_ref.as_deref())),
                 ("ops", json!(serde_json::to_string(&row.ops)?)),
                 ("updatedAt", json!(row.updated_at)),
@@ -157,7 +160,7 @@ impl RegistryDoc {
 mod tests {
     use super::super::tests::chat;
     use super::*;
-    use zeron_proto::ChatDiffTargetSource;
+    use mast_proto::ChatDiffTargetSource;
 
     fn target(path: &str) -> StoredChatDiffTarget {
         StoredChatDiffTarget {
@@ -183,7 +186,7 @@ mod tests {
     fn ref_target(id: &str) -> StoredRefDiffTarget {
         StoredRefDiffTarget {
             id: id.into(),
-            kind: zeron_proto::RefDiffKind::Pr,
+            kind: mast_proto::RefDiffKind::Pr,
             path: "/w/flagship".into(),
             repo_id: "repo:abc".into(),
             head_branch: "eng-3012-x".into(),

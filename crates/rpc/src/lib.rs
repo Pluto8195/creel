@@ -1,4 +1,4 @@
-//! zeron-rpc — the typed control plane (UiRpc / ControlRpc) over WebSocket + in-memory
+//! mast-rpc — the typed control plane (UiRpc / ControlRpc) over WebSocket + in-memory
 //! transports, plus the device-room relay transport ({s,k,to,from} frames — [`device_room`]).
 //!
 //! Framing: ndjson envelopes, one JSON object per WebSocket text message (or per line on
@@ -88,24 +88,24 @@ pub mod methods {
     /// counters for the workspace room and every open chat doc. No params;
     /// IPC-only.
     pub const SYNC_STATUS: &str = "SyncStatus";
-    /// Pushed edge-connectivity posture (`zeron_proto::Connectivity`):
+    /// Pushed edge-connectivity posture (`mast_proto::Connectivity`):
     /// current value first, then every change — the connection pill /
     /// composer-honesty / queued-badge feed. No params; IPC-only.
     pub const WATCH_CONNECTIVITY: &str = "WatchConnectivity";
-    /// In-flight queued-attachment transfers (`zeron_proto::TransferProgress`
+    /// In-flight queued-attachment transfers (`mast_proto::TransferProgress`
     /// list): current set first, then a fresh snapshot per landed chunk —
     /// the sending thumbnail's percent-ring feed. No params; IPC-only.
     pub const WATCH_TRANSFERS: &str = "WatchTransfers";
     pub const WATCH_CHATS: &str = "WatchChats";
     pub const WATCH_SIDEBAR_PREFERENCES: &str = "WatchSidebarPreferences";
-    /// The composed Work Outline of one Space (`zeron_proto::WorkOutlineSnapshot`):
+    /// The composed Work Outline of one Space (`mast_proto::WorkOutlineSnapshot`):
     /// current value first, then a fresh snapshot per change. `{spaceId}`.
     /// Served from the local registry replica like `WatchChats` — NOT
     /// forwardable; hosts that predate the feature answer `unknown method`,
     /// which clients treat as "unsupported host".
     pub const WATCH_WORK_OUTLINE: &str = "WatchWorkOutline";
     /// Every Work Outline mutation, one tagged call:
-    /// `zeron_proto::WorkOutlineMutation` (`{op: createWorkItem|updateWorkItem|
+    /// `mast_proto::WorkOutlineMutation` (`{op: createWorkItem|updateWorkItem|
     /// moveWorkItem|archiveWorkItem|restoreWorkItem|assignChatToWorkItem|
     /// removeChatFromWorkItem|createWorkItemExternalReference|
     /// removeWorkItemExternalReference|repairWorkOutline|
@@ -115,7 +115,7 @@ pub mod methods {
     /// createUserActionRequest|resolveUserActionRequest|
     /// proposeWorkItemInstruction|approveWorkItemInstructionProposal|
     /// rejectWorkItemInstructionProposal, operationId, …}`) →
-    /// `zeron_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
+    /// `mast_proto::WorkOutlineMutateReply`. Pure registry writes (LWW rows,
     /// any device may write), so — like `Mutate` — handled locally and NOT
     /// forwardable. Failures are strings `work-outline/<code>: <message>`
     /// (`WorkOutlineError::from_wire_message`). Every RPC call is the local
@@ -126,53 +126,53 @@ pub mod methods {
     /// methods instead of new `op`s here.
     pub const WORK_OUTLINE_MUTATE: &str = "WorkOutlineMutate";
     /// Read-only Work Outline questions, one tagged call:
-    /// `zeron_proto::WorkOutlineQueryRequest` (`{query:
+    /// `mast_proto::WorkOutlineQueryRequest` (`{query:
     /// resolveEffectiveInstructions|compareInstructionRevisions|
     /// getInstructionRevision|resolveExecutionConfiguration, …}`) →
-    /// `zeron_proto::WorkOutlineQueryResponse`
+    /// `mast_proto::WorkOutlineQueryResponse`
     /// (tagged by the same `query`). Answered from the local registry replica,
     /// so — like `WorkOutlineMutate` — handled locally and NOT forwardable.
     /// Failures use the same `work-outline/<code>: <message>` strings.
     pub const WORK_OUTLINE_QUERY: &str = "WorkOutlineQuery";
     /// Validate a Work Outline execution configuration on the Space's owning
-    /// device: `zeron_proto::ValidateExecutionConfigurationParams` (`{scope}`
+    /// device: `mast_proto::ValidateExecutionConfigurationParams` (`{scope}`
     /// | `{chatId}` | `{resolved}`, `hostCapabilities`) →
-    /// `zeron_proto::ValidateExecutionConfigurationReply`. Forwardable; an
+    /// `mast_proto::ValidateExecutionConfigurationReply`. Forwardable; an
     /// engine that receives it for another device's Space forwards the
     /// resolved snapshot to the owner when the owner advertises
     /// `work-outline-multi-repo-v1`, else replies `hostUnsupported` /
     /// `deviceOffline`. Read-only: never creates or switches anything.
     pub const VALIDATE_EXECUTION_CONFIGURATION: &str = "ValidateExecutionConfiguration";
-    /// Checkouts a chat's Changes pane can diff: `zeron_proto::
-    /// ListChatDiffCheckoutsParams` → `zeron_proto::ListChatDiffCheckoutsReply`
+    /// Checkouts a chat's Changes pane can diff: `mast_proto::
+    /// ListChatDiffCheckoutsParams` → `mast_proto::ListChatDiffCheckoutsReply`
     /// (the chat's own checkout, its submodules, and every linked worktree of
     /// the root repository and of each submodule). Read-only, local device.
     pub const LIST_CHAT_DIFF_CHECKOUTS: &str = "ListChatDiffCheckouts";
-    /// Candidates of the "Diff branch / PR…" picker: `zeron_proto::
-    /// ListChatDiffCheckoutsParams` (`{chatId}`) → `zeron_proto::
+    /// Candidates of the "Diff branch / PR…" picker: `mast_proto::
+    /// ListChatDiffCheckoutsParams` (`{chatId}`) → `mast_proto::
     /// ListChatRefDiffCandidatesReply`: the chat's linked PRs first, then
     /// branches whose name contains the chat's ticket id. Read-only (local
     /// refs only, never fetches), local device.
     pub const LIST_CHAT_REF_DIFF_CANDIDATES: &str = "ListChatRefDiffCandidates";
     /// Write a chat's diff target (the manual "Diff checkout…" picker):
-    /// `zeron_proto::SetChatDiffTargetParams` → `zeron_proto::
+    /// `mast_proto::SetChatDiffTargetParams` → `mast_proto::
     /// ChatDiffTargetsReply`. Validates the path like the `bind_chat_worktree`
     /// agent tool and writes the same `chatDiffTargets` row. Local device.
     pub const SET_CHAT_DIFF_TARGET: &str = "SetChatDiffTarget";
     /// Stream of every chat's resolved diff targets on this device:
-    /// `Vec<zeron_proto::ChatDiffTargetsView>`, current value first, then each
+    /// `Vec<mast_proto::ChatDiffTargetsView>`, current value first, then each
     /// change (a bind, a selection, a worktree appearing or vanishing, a
     /// branch switch). Chats without a resolvable target are omitted.
     pub const WATCH_CHAT_DIFF_TARGETS: &str = "WatchChatDiffTargets";
     /// The identity a repository binding records for the checkout at
-    /// `{path}` on the target device (`zeron_proto::
-    /// DescribeExecutionRepositoryParams` → `zeron_proto::
+    /// `{path}` on the target device (`mast_proto::
+    /// DescribeExecutionRepositoryParams` → `mast_proto::
     /// ExecutionRepositoryIdentity`: topology repo id, root-commit
     /// fingerprint, main path, checkouts). Forwardable.
     pub const DESCRIBE_EXECUTION_REPOSITORY: &str = "DescribeExecutionRepository";
     /// Start a Chat from a work item as ONE recoverable, idempotent workflow
-    /// (`zeron_proto::CreateChatForWorkItemParams` →
-    /// `zeron_proto::CreateChatForWorkItemReply`): validate the execution
+    /// (`mast_proto::CreateChatForWorkItemParams` →
+    /// `mast_proto::CreateChatForWorkItemReply`): validate the execution
     /// configuration and harness capability on the Space's owning device,
     /// create the Chat at the validated execution root, assign it, capture
     /// its execution binding, create and apply the launch instruction
@@ -183,16 +183,16 @@ pub mod methods {
     /// `work-outline/<code>: …` (`execution-scope:<code>: …` inside the message
     /// for validation failures).
     pub const CREATE_CHAT_FOR_WORK_ITEM: &str = "CreateChatForWorkItem";
-    /// Queue the next Turn of a work-item Chat (`zeron_proto::
-    /// ContinueChatForWorkItemParams` → `zeron_proto::
+    /// Queue the next Turn of a work-item Chat (`mast_proto::
+    /// ContinueChatForWorkItemParams` → `mast_proto::
     /// ContinueChatForWorkItemReply`): message and command ids derive from
     /// `operationId` (retry-safe); the engine pins the Chat's selected
     /// revision. The binding is validated now when this device hosts the
     /// Chat; otherwise the Turn queues durably and the host revalidates at
     /// drain. Local (not forwardable).
     pub const CONTINUE_CHAT_FOR_WORK_ITEM: &str = "ContinueChatForWorkItem";
-    /// "Review PR" launcher (`zeron_proto::StartPrReviewParams` →
-    /// `zeron_proto::StartPrReviewReply`; docs/pr-review.md): resolve the
+    /// "Review PR" launcher (`mast_proto::StartPrReviewParams` →
+    /// `mast_proto::StartPrReviewReply`; docs/pr-review.md): resolve the
     /// Space holding a checkout of `github.com/<repoOwner>/<repoName>`,
     /// refuse forks, fetch, put the PR's branch in a checkout exactly like
     /// the Cofactr `launch.sh` (reuse → clean `main` + `gh pr checkout` → new
@@ -202,10 +202,10 @@ pub mod methods {
     /// to the Space's owning device (`pr-review-launch-v1`). Errors are
     /// `pr-review/<code>: <message>`.
     pub const START_PR_REVIEW: &str = "StartPrReview";
-    // ── Linear integration v1 (`zeron_proto::linear`, docs/plans/work-outline/
+    // ── Linear integration v1 (`mast_proto::linear`, docs/plans/work-outline/
     // linear-contract.md). All local/IPC (the key is this device's), never
     // forwardable. Failures are `linear/<code>: <message>`
-    // (`zeron_proto::LinearError::from_wire_message`).
+    // (`mast_proto::LinearError::from_wire_message`).
     /// `LinearStatusParams` → `LinearConnectionStatus`.
     pub const LINEAR_STATUS: &str = "LinearStatus";
     /// `LinearSetApiKeyParams {apiKey}` → `LinearConnectionStatus` (validates
@@ -227,10 +227,10 @@ pub mod methods {
     /// `LinearRefreshLinkedItemsParams {spaceId}` →
     /// `LinearRefreshLinkedItemsReply {updated}`.
     pub const LINEAR_REFRESH_LINKED_ITEMS: &str = "LinearRefreshLinkedItems";
-    // ── PR review sync v1 (`zeron_proto::pr_review_sync`, docs/plans/
+    // ── PR review sync v1 (`mast_proto::pr_review_sync`, docs/plans/
     // work-outline/pr-sync-contract.md). All local/IPC (this device's `gh`
     // login and checkouts), never forwardable. Failures are
-    // `github/<code>: <message>` (`zeron_proto::GithubError::from_wire_message`).
+    // `github/<code>: <message>` (`mast_proto::GithubError::from_wire_message`).
     /// `PrStatusParams {owner, repo, number, forceRefresh?}` →
     /// `PullRequestStatusSummary` (~2 minute per-PR cache).
     pub const PR_STATUS: &str = "PrStatus";
@@ -247,9 +247,9 @@ pub mod methods {
     /// `PrReviewRequestedParams {spaceId}` → `[PullRequestStatusSummary]`
     /// (open PRs in the Space's repositories requesting the user's review).
     pub const PR_REVIEW_REQUESTED: &str = "PrReviewRequested";
-    // ── Planning artifacts v1 (`zeron_proto::artifacts`,
+    // ── Planning artifacts v1 (`mast_proto::artifacts`,
     // docs/plans/artifacts-contract.md). Failures are
-    // `artifact/<code>: <message>` (`zeron_proto::ArtifactError::from_wire_message`).
+    // `artifact/<code>: <message>` (`mast_proto::ArtifactError::from_wire_message`).
     /// `WatchArtifactsParams {spaceId}` → stream of `ArtifactsSnapshot`
     /// (current value first, then one frame per change). Served from the
     /// local registry replica like `WatchWorkOutline`: NOT forwardable.
@@ -377,7 +377,7 @@ pub mod methods {
     /// (empty for a chat with no resolvable transcript or no subagents).
     /// Resolves the chat's transcript path server-side — via its
     /// external-import cursor if it has one, else its recorded harness
-    /// session id (covers a chat Zeron itself launched/resumed, never
+    /// session id (covers a chat Mast itself launched/resumed, never
     /// imported; same two-source resolution `CHAT_CONTEXT_USAGE` uses,
     /// `ContextUsageProvider::transcript_path_for_chat`) — and delegates to
     /// `crate::subagent_scan::scan_subagents`: a `chatId`-keyed convenience
@@ -409,7 +409,7 @@ pub mod methods {
     /// IPC-only (not forwardable), same reason as `MY_OPEN_PRS`.
     pub const REVIEW_REQUESTED_PRS: &str = "ReviewRequestedPrs";
     /// The PR page (pr-dash port): `PrDashParams` → `PrDashReply`. One tab per
-    /// call; rows are classified and carry the Zeron chats linked to each PR.
+    /// call; rows are classified and carry the Mast chats linked to each PR.
     /// IPC-only (it shells out to the local `gh`).
     pub const PR_DASHBOARD: &str = "PrDashboard";
     /// One-time migration: import every remaining Claude Code session on disk

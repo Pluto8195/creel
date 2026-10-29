@@ -11,8 +11,8 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::{FocusHandle, Window};
+use mast_proto::{ChatIndicator, Device, DriveEntry, DriveListing, FolderListing, Space};
 use std::collections::HashSet;
-use zeron_proto::{ChatIndicator, Device, DriveEntry, DriveListing, FolderListing, Space};
 
 /// Promote the user's ordered pins above the untouched activity projection.
 /// Every unpinned id keeps exactly the relative order supplied by recency.
@@ -192,8 +192,8 @@ pub(super) fn pinned_drag_scroll_delta(
 
 #[cfg(test)]
 mod pinned_session_tests {
-    fn pin_change(id: &str) -> zeron_proto::SidebarPinChange {
-        zeron_proto::SidebarPinChange::Pin {
+    fn pin_change(id: &str) -> mast_proto::SidebarPinChange {
+        mast_proto::SidebarPinChange::Pin {
             session_id: id.into(),
             after: None,
             before: None,
@@ -238,7 +238,7 @@ mod pinned_session_tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -246,9 +246,9 @@ mod pinned_session_tests {
     }
 
     fn remote_pin_state(state: &mut super::AppState, synced: bool, initialized: bool) {
-        state.workspace_scope = Some(zeron_proto::WorkspaceScope::Synced);
-        state.auth = Some(zeron_proto::AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+        state.workspace_scope = Some(mast_proto::WorkspaceScope::Synced);
+        state.auth = Some(mast_proto::AuthState::SignedIn {
+            user: mast_proto::UserProfile {
                 id: "user".into(),
                 email: "test@example.com".into(),
                 name: None,
@@ -259,7 +259,7 @@ mod pinned_session_tests {
         state.sidebar_preferences.initialized = initialized;
     }
 
-    fn pin_test_chat(id: &str) -> zeron_proto::Chat {
+    fn pin_test_chat(id: &str) -> mast_proto::Chat {
         serde_json::from_value(serde_json::json!({
             "id": id, "title": id, "deviceId": "local", "archived": false,
             "createdAt": chrono::Utc::now(),
@@ -275,14 +275,14 @@ mod pinned_session_tests {
         let (out, requests) = tokio::sync::mpsc::channel(16);
         let (replies, inbound) = tokio::sync::mpsc::channel(16);
         (
-            crate::state::EngineHandle::from_test_client(zeron_rpc::RpcClient::new(out, inbound)),
+            crate::state::EngineHandle::from_test_client(mast_rpc::RpcClient::new(out, inbound)),
             requests,
             replies,
         )
     }
 
-    fn pin_snapshot(revision: u64, pins: &[&str]) -> zeron_proto::SidebarPreferencesState {
-        zeron_proto::SidebarPreferencesState {
+    fn pin_snapshot(revision: u64, pins: &[&str]) -> mast_proto::SidebarPreferencesState {
+        mast_proto::SidebarPreferencesState {
             sections: vec![],
             revision,
             synced: true,
@@ -640,7 +640,7 @@ mod pinned_session_tests {
                     let id = shell.sidebar_pin_write.as_ref().unwrap().id;
                     shell.state.update(cx, |state, _| {
                         if change_profile {
-                            state.workspace_scope = Some(zeron_proto::WorkspaceScope::Local);
+                            state.workspace_scope = Some(mast_proto::WorkspaceScope::Local);
                         } else {
                             state.set_test_engine(replacement);
                         }
@@ -745,7 +745,7 @@ mod pinned_session_tests {
         let window = pin_test_shell(cx, dir.path());
         window
             .update(cx, |shell, window, cx| {
-                let saved: Vec<String> = (0..zeron_proto::MAX_SIDEBAR_PINS)
+                let saved: Vec<String> = (0..mast_proto::MAX_SIDEBAR_PINS)
                     .map(|n| format!("hidden-{n}"))
                     .collect();
                 for remote in [false, true] {
@@ -818,7 +818,7 @@ mod pinned_session_tests {
                     cx
                 ));
                 assert!(!shell.validate_sidebar_pin_change(&key, &ids(&[""]), cx));
-                let saved: Vec<_> = (0..zeron_proto::MAX_SIDEBAR_PINS)
+                let saved: Vec<_> = (0..mast_proto::MAX_SIDEBAR_PINS)
                     .map(|n| format!("pin-{n}"))
                     .collect();
                 let reordered = super::sidebar_session_drop_pins(
@@ -1021,7 +1021,7 @@ mod pinned_session_tests {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -1132,7 +1132,7 @@ mod pinned_session_tests {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -1226,7 +1226,7 @@ mod pinned_session_tests {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -1630,7 +1630,7 @@ mod pinned_session_tests {
             for id in shell.active_sidebar_pins(cx) {
                 shell.apply_sidebar_pin_change(
                     key.clone(),
-                    zeron_proto::SidebarPinChange::Unpin { session_id: id },
+                    mast_proto::SidebarPinChange::Unpin { session_id: id },
                     cx,
                 );
             }
@@ -1892,17 +1892,17 @@ pub(super) fn pinned_drag_snapshot_is_valid(
 
 struct ActiveChatRow {
     status: ChatIndicator,
-    chat: zeron_proto::Chat,
+    chat: mast_proto::Chat,
     folder: String,
     branch: Option<String>,
-    change_request: Option<zeron_proto::ChangeRequestSummary>,
+    change_request: Option<mast_proto::ChangeRequestSummary>,
     group: Option<(String, String)>,
 }
 
 pub(super) fn compare_sidebar_chats(
     sort: SidebarSort,
-    left: &zeron_proto::Chat,
-    right: &zeron_proto::Chat,
+    left: &mast_proto::Chat,
+    right: &mast_proto::Chat,
 ) -> std::cmp::Ordering {
     let primary = match sort {
         SidebarSort::Created => right.created_at.cmp(&left.created_at),
@@ -2758,20 +2758,20 @@ impl Shell {
             let after = index.checked_sub(1).and_then(|i| next.get(i)).cloned();
             let before = next.get(index + 1).cloned();
             if saved.contains(&payload.chat_id) {
-                zeron_proto::SidebarPinChange::Move {
+                mast_proto::SidebarPinChange::Move {
                     session_id: payload.chat_id.clone(),
                     after,
                     before,
                 }
             } else {
-                zeron_proto::SidebarPinChange::Pin {
+                mast_proto::SidebarPinChange::Pin {
                     session_id: payload.chat_id.clone(),
                     after,
                     before,
                 }
             }
         } else {
-            zeron_proto::SidebarPinChange::Unpin {
+            mast_proto::SidebarPinChange::Unpin {
                 session_id: payload.chat_id.clone(),
             }
         };
@@ -2779,7 +2779,7 @@ impl Shell {
             && !matches!(target, SidebarSessionDrop::Pinned(_))
         {
             if !self.change_sidebar_section(
-                zeron_proto::SidebarSectionChange::Assign {
+                mast_proto::SidebarSectionChange::Assign {
                     session_id: payload.chat_id.clone(),
                     section_id: target_section.map(str::to_owned),
                 },
@@ -4201,7 +4201,7 @@ impl Shell {
             .as_ref()
             .map_or(saved_pins.as_slice(), |ids| ids.as_slice());
         let state = self.state.read(cx);
-        let mut chats: Vec<zeron_proto::Chat> = state
+        let mut chats: Vec<mast_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
             .into_iter()
             .map(|(_, chat)| chat.clone())
@@ -4231,7 +4231,7 @@ impl Shell {
             })
             .collect();
         let ordered = if self.settings.sidebar_organization != SidebarOrganization::InOneList {
-            let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
+            let mut groups: Vec<(Option<(String, String)>, Vec<mast_proto::Chat>)> = Vec::new();
             for chat in chats {
                 let key = Some((
                     if self.settings.sidebar_organization == SidebarOrganization::ByProject {
@@ -4283,7 +4283,7 @@ impl Shell {
     fn sidebar_chat_data(
         &self,
         status: ChatIndicator,
-        chat: zeron_proto::Chat,
+        chat: mast_proto::Chat,
         state: &AppState,
     ) -> ActiveChatRow {
         // Line 1 is "project @ device" (t3code's project row);
@@ -5001,7 +5001,7 @@ impl Shell {
         const PAGE: usize = 25;
         let now = Utc::now();
         let filter = self.settings.space_filter.clone();
-        let mut rows: Vec<zeron_proto::Chat> = {
+        let mut rows: Vec<mast_proto::Chat> = {
             let state = self.state.read(cx);
             state
                 .chats
@@ -5447,7 +5447,7 @@ impl Shell {
 
     /// The current listing's folder rows filtered by the search query
     /// (prefix matches first — `popover::filter_indices`).
-    fn add_space_filtered(&self, cx: &App) -> Vec<zeron_proto::FolderEntry> {
+    fn add_space_filtered(&self, cx: &App) -> Vec<mast_proto::FolderEntry> {
         let Some(flow) = self.add_space.as_ref() else {
             return Vec::new();
         };
@@ -6410,7 +6410,7 @@ impl Shell {
     pub(super) fn open_project_account_picker(
         &mut self,
         space_id: String,
-        harness: zeron_proto::HarnessId,
+        harness: mast_proto::HarnessId,
         cx: &mut Context<Self>,
     ) {
         self.close_space_menu(cx);
@@ -6479,14 +6479,14 @@ impl Shell {
             let closing = self.space_menu.closing_since();
             let rename_id = space_id.clone();
             let delete_id = space_id.clone();
-            let account_labels: Vec<(zeron_proto::HarnessId, String)> = {
+            let account_labels: Vec<(mast_proto::HarnessId, String)> = {
                 let state = self.state.read(cx);
                 let snapshot = state
                     .space_row(&space_id)
                     .and_then(|space| state.managed_accounts_for(Some(&space.device_id)));
                 [
-                    zeron_proto::HarnessId::ClaudeCode,
-                    zeron_proto::HarnessId::Codex,
+                    mast_proto::HarnessId::ClaudeCode,
+                    mast_proto::HarnessId::Codex,
                 ]
                 .into_iter()
                 .map(|h| {
@@ -6705,8 +6705,8 @@ mod tests {
         (Some((device.into(), device.into())), vec![value])
     }
 
-    fn chat(id: &str) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    fn chat(id: &str) -> mast_proto::Chat {
+        mast_proto::Chat {
             id: id.into(),
             device_id: "device".into(),
             title: None,
@@ -6773,7 +6773,7 @@ mod tests {
 #[cfg(feature = "project-palette-fixture")]
 impl Shell {
     pub fn fixture_project_responses(&mut self, cx: &mut Context<Self>) {
-        if std::env::var_os("ZERON_FIXTURE_BACKGROUND").is_some() {
+        if mast_proto::env::var_os("MAST_FIXTURE_BACKGROUND").is_some() {
             self.composer
                 .read(cx)
                 .pickers()
@@ -6851,7 +6851,7 @@ mod project_flow_tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -6929,7 +6929,7 @@ mod project_flow_tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -7001,7 +7001,7 @@ mod project_flow_tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )

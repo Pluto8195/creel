@@ -5,8 +5,8 @@
 //! the app anything except "a link was clicked". This is the general channel:
 //!
 //! ```text
-//! frame ─postMessage({zeronMsg})→ outer doc (HOST_SCRIPT)
-//!       ─click on hidden <a href="zeron-msg:<JSON>">→ native delegate
+//! frame ─postMessage({mastMsg})→ outer doc (HOST_SCRIPT)
+//!       ─click on hidden <a href="mast-msg:<JSON>">→ native delegate
 //!       (browser::document_view) ─BrowserEvent::DocumentMessage→ ArtifactTab
 //! ```
 //!
@@ -15,26 +15,26 @@
 //! `sandbox="allow-scripts"` + CSP. Every message is untrusted page input:
 //! [`FrameMessage::parse`] accepts a closed set of shapes, with size limits,
 //! and ignores everything else. Host → frame commands use
-//! [`frame_command_script`] (the `__zeronFrameCmd` entry point of
+//! [`frame_command_script`] (the `__mastFrameCmd` entry point of
 //! `find::HOST_SCRIPT`).
 
+use mast_proto::CommentAnchor;
+use mast_proto::artifacts::{MAX_COMMENT_CHARS, MAX_QUOTE_CHARS};
 use serde_json::Value;
-use zeron_proto::CommentAnchor;
-use zeron_proto::artifacts::{MAX_COMMENT_CHARS, MAX_QUOTE_CHARS};
 
-/// In the outer document: relays the frame's `{zeronMsg}` to the native
-/// delegate as a `zeron-msg:` navigation. Messages from any other window,
+/// In the outer document: relays the frame's `{mastMsg}` to the native
+/// delegate as a `mast-msg:` navigation. Messages from any other window,
 /// non-objects and anything over 16 KiB of JSON are dropped.
 pub(crate) const HOST_SCRIPT: &str = r##"window.addEventListener("message", (event) => {
   const frame = document.querySelector("iframe");
   if (!frame || event.source !== frame.contentWindow) return;
-  const msg = event.data && event.data.zeronMsg;
+  const msg = event.data && event.data.mastMsg;
   if (!msg || typeof msg !== "object") return;
   let json;
   try { json = JSON.stringify(msg); } catch (_) { return; }
   if (!json || json.length > 12000) return;
   const a = document.createElement("a");
-  a.href = "zeron-msg:" + encodeURIComponent(json);
+  a.href = "mast-msg:" + encodeURIComponent(json);
   a.rel = "noreferrer";
   a.style.display = "none";
   document.body.appendChild(a);
@@ -89,7 +89,7 @@ impl FrameMessage {
                 })
             }
             "focus" => {
-                let id = zeron_proto::artifacts::normalize_comment_id(&text("id", 16)?)?;
+                let id = mast_proto::artifacts::normalize_comment_id(&text("id", 16)?)?;
                 Some(FrameMessage::FocusComment(id))
             }
             "answer" => {
@@ -137,7 +137,7 @@ pub(crate) fn frame_command_script(message: &Value) -> String {
         .to_string()
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    format!("window.__zeronFrameCmd&&window.__zeronFrameCmd({json});")
+    format!("window.__mastFrameCmd&&window.__mastFrameCmd({json});")
 }
 
 #[cfg(test)]
@@ -220,8 +220,8 @@ mod tests {
 
     #[test]
     fn command_scripts_escape_line_separators() {
-        let script = frame_command_script(&json!({ "zeronCommentMode": true, "x": "a\u{2028}b" }));
-        assert!(script.starts_with("window.__zeronFrameCmd&&"));
+        let script = frame_command_script(&json!({ "mastCommentMode": true, "x": "a\u{2028}b" }));
+        assert!(script.starts_with("window.__mastFrameCmd&&"));
         assert!(!script.contains('\u{2028}'));
         assert!(script.contains("\\u2028"));
     }
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn host_script_checks_the_source_and_the_size() {
         assert!(HOST_SCRIPT.contains("event.source !== frame.contentWindow"));
-        assert!(HOST_SCRIPT.contains("zeron-msg:"));
+        assert!(HOST_SCRIPT.contains("mast-msg:"));
         assert!(HOST_SCRIPT.contains("12000"));
     }
 }

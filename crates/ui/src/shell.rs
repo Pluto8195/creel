@@ -23,9 +23,9 @@ use gpui::{
 };
 
 use gpui_tokio::Tokio;
-use zeron_engine::{InstanceLock, pr_ticket_cache::ChatLinkStatus};
-use zeron_proto::{AuthState, WorkspaceScope};
-use zeron_rpc::methods;
+use mast_engine::{InstanceLock, pr_ticket_cache::ChatLinkStatus};
+use mast_proto::{AuthState, WorkspaceScope};
+use mast_rpc::methods;
 
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
@@ -358,7 +358,7 @@ pub fn apply_keymap(
     cx.clear_key_bindings();
     // `clear_key_bindings` also removes the contextual editing actions that
     // gpui-base installed at startup. Reinitialize the component layer before
-    // rebuilding Zeron's bindings so the file editor keymap remains active.
+    // rebuilding Mast's bindings so the file editor keymap remains active.
     gpui_base::init(cx);
     crate::composer::init(cx, composer_send_behavior);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
@@ -566,7 +566,7 @@ pub enum RightSurface {
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
     /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
-    /// A planning artifact (`zeron-artifact:` links) — keys
+    /// A planning artifact (`mast-artifact:` links) — keys
     /// `Shell::artifact_tabs`.
     Artifact(u64),
 }
@@ -1770,7 +1770,7 @@ pub struct Shell {
     update_dismissed: Option<String>,
     /// How this binary was installed — decides the strip's click behavior.
     /// Cached: `detect_install` stats `current_exe` and this renders per frame.
-    install: zeron_update::InstallKind,
+    install: mast_update::InstallKind,
     org: Option<OrgGateUi>,
     sync_flow: SyncFlow,
     mutate_task: Option<Task<()>>,
@@ -1809,8 +1809,8 @@ pub struct Shell {
     /// Last observed `window.is_window_active()` — rising edge fires a
     /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
-    /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`,
-    /// `ZERON_DEMO_UPLOAD`) — see [`Shell::new`].
+    /// Dev/testing knobs (`MAST_OPEN_DIALOG`, `MAST_FORCE_GATE`,
+    /// `MAST_DEMO_UPLOAD`) — see [`Shell::new`].
     debug_dialog: Option<String>,
     debug_gate: Option<GatePhase>,
     debug_upload: Option<String>,
@@ -1984,8 +1984,8 @@ impl Shell {
                             // same per-second refresh while degraded.
                             || matches!(
                                 s.connectivity.state,
-                                zeron_proto::ConnectivityState::Offline
-                                    | zeron_proto::ConnectivityState::Reconnecting
+                                mast_proto::ConnectivityState::Offline
+                                    | mast_proto::ConnectivityState::Reconnecting
                             )
                     };
                     // Relative sidebar times still advance when unchanged
@@ -2011,10 +2011,10 @@ impl Shell {
         crate::appshots::set_capture_sound_enabled(settings.appshot_sound_enabled);
         // Bind the customizable shortcuts from the persisted keymap.
         apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
-        // Dev/testing knob: `ZERON_OPEN_ROUTE=settings[/<section>]` boots
+        // Dev/testing knob: `MAST_OPEN_ROUTE=settings[/<section>]` boots
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
-        let route = match std::env::var("ZERON_OPEN_ROUTE").ok().as_deref() {
+        let route = match mast_proto::env::var("MAST_OPEN_ROUTE").ok().as_deref() {
             Some("settings") | Some("settings/devices") => {
                 Route::Settings(SettingsSection::Devices)
             }
@@ -2034,17 +2034,17 @@ impl Shell {
             }
             _ => Route::Chat,
         };
-        // More capture knobs of the same kind: `ZERON_OPEN_DIALOG=rename|delete`
+        // More capture knobs of the same kind: `MAST_OPEN_DIALOG=rename|delete`
         // opens that dialog for the first chat once chats land; `=model` pops
         // the combined harness/model menu once the shell is Ready;
-        // `ZERON_FORCE_GATE=signin|org|failed` renders that gate regardless of
+        // `MAST_FORCE_GATE=signin|org|failed` renders that gate regardless of
         // real auth state (display-only — for styling passes).
-        let debug_dialog = std::env::var("ZERON_OPEN_DIALOG").ok();
-        // `ZERON_DEMO_UPLOAD=<pct>:<image path>` fabricates an in-flight image
+        let debug_dialog = mast_proto::env::var("MAST_OPEN_DIALOG").ok();
+        // `MAST_DEMO_UPLOAD=<pct>:<image path>` fabricates an in-flight image
         // send on the selected chat (echo bubble + frozen thumbnail progress
         // ring) — display-only; a real upload can't be paused for a capture.
-        let debug_upload = std::env::var("ZERON_DEMO_UPLOAD").ok();
-        let debug_gate = match std::env::var("ZERON_FORCE_GATE").ok().as_deref() {
+        let debug_upload = mast_proto::env::var("MAST_DEMO_UPLOAD").ok();
+        let debug_gate = match mast_proto::env::var("MAST_FORCE_GATE").ok().as_deref() {
             Some("signin") => Some(GatePhase::SignIn),
             Some("org") => Some(GatePhase::OrgGate),
             Some("failed") => Some(GatePhase::Failed(
@@ -2197,7 +2197,7 @@ impl Shell {
             update_flow: UpdateFlow::Idle,
             update_task: None,
             update_dismissed: None,
-            install: zeron_update::detect_install(),
+            install: mast_update::detect_install(),
             org: None,
             sync_flow: SyncFlow::Idle,
             mutate_task: None,
@@ -2393,7 +2393,7 @@ impl Shell {
                 _ => {}
             }
         }
-        // Capture knob: `ZERON_DEMO_UPLOAD=<pct>:<image path>` — once a chat
+        // Capture knob: `MAST_DEMO_UPLOAD=<pct>:<image path>` — once a chat
         // is selected, push a fake sending echo carrying that image as a
         // pending attachment and freeze upload progress at <pct>, so the
         // thumbnail progress ring can be styled/screenshotted (a real upload
@@ -2428,10 +2428,10 @@ impl Shell {
                     "Here is the screenshot of the bug.",
                     std::slice::from_ref(&pending_path),
                 );
-                let echo = zeron_doc::SessionMessageEntry {
+                let echo = mast_doc::SessionMessageEntry {
                     id: "demo-upload-echo".into(),
-                    role: zeron_doc::MessageRole::User,
-                    parts: vec![zeron_doc::MessagePart::Text {
+                    role: mast_doc::MessageRole::User,
+                    parts: vec![mast_doc::MessagePart::Text {
                         id: "t0".into(),
                         text,
                     }],
@@ -2486,9 +2486,9 @@ impl Shell {
                 )
             };
             // Background-only banners: `active_window()` is app-level (any
-            // Zeron window being key), so a ping for a *background chat* in a
+            // Mast window being key), so a ping for a *background chat* in a
             // focused app still stays a chime — you're already looking at
-            // Zeron; the sidebar dot carries the rest.
+            // Mast; the sidebar dot carries the rest.
             let app_focused = cx.active_window().is_some();
             for (chat_id, status, send_pending, title) in sessions {
                 let prev = self.sound_prev.insert(chat_id.clone(), status.clone());
@@ -2534,7 +2534,7 @@ impl Shell {
                     && !(self.settings.notifications_background_only && app_focused)
                 {
                     let body = match connectivity {
-                        zeron_proto::ConnectivityState::Offline => "Your device is offline",
+                        mast_proto::ConnectivityState::Offline => "Your device is offline",
                         _ => "Mast is trying to reconnect",
                     };
                     crate::notify::post("Connection unavailable", body, None);
@@ -3153,7 +3153,7 @@ impl Shell {
         }
         let mut resolved = activation.clone();
         if resolved.action == LinkAction::Primary {
-            resolved.action = if crate::settings::current(cx).open_web_links_in_zeron {
+            resolved.action = if crate::settings::current(cx).open_web_links_in_mast {
                 LinkAction::Internal
             } else {
                 LinkAction::External
@@ -3301,7 +3301,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<crate::markdown::render::LinkOutcome> {
         use crate::markdown::render::{LinkAction, LinkOutcome};
-        use zeron_proto::visualize::{
+        use mast_proto::visualize::{
             HtmlArtifactKind, default_title, fragment_sibling, html_artifact_kind, preview_sibling,
         };
         let (root, local) = self.active_checkout(cx)?;
@@ -3661,7 +3661,7 @@ impl Shell {
     /// (user request).
     fn add_commit_diff_surface(
         &mut self,
-        commit: zeron_proto::GitHistoryCommit,
+        commit: mast_proto::GitHistoryCommit,
         owner_chat_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
@@ -3824,17 +3824,17 @@ impl Shell {
                 .background_executor()
                 .spawn(async move {
                     let value = reply.ok()?;
-                    let entries: Vec<zeron_doc::SessionMessageEntry> =
+                    let entries: Vec<mast_doc::SessionMessageEntry> =
                         serde_json::from_str(value.get("text")?.as_str()?).ok()?;
-                    let update = zeron_doc::TranscriptUpdate {
-                        replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&entries)),
-                        frame: zeron_doc::TranscriptFrame::Reset { reset: entries },
+                    let update = mast_doc::TranscriptUpdate {
+                        replay_baseline: Some(mast_doc::TranscriptBaseline::capture(&entries)),
+                        frame: mast_doc::TranscriptFrame::Reset { reset: entries },
                         context_usage: None,
                     };
                     let prepared = crate::transcript::TranscriptPreparation::default()
                         .prepare(&update)
                         .ok()?;
-                    let zeron_doc::TranscriptFrame::Reset { reset } = update.frame else {
+                    let mast_doc::TranscriptFrame::Reset { reset } = update.frame else {
                         unreachable!()
                     };
                     Some((reset, prepared))
@@ -4298,7 +4298,7 @@ impl Shell {
         self.settings.window_geometry = current.window_geometry;
         self.settings.new_thread_composer_background = current.new_thread_composer_background;
         self.settings.new_thread_background_effect = current.new_thread_background_effect;
-        self.settings.open_web_links_in_zeron = current.open_web_links_in_zeron;
+        self.settings.open_web_links_in_mast = current.open_web_links_in_mast;
         self.settings.ui_font_family = current.ui_font_family;
         self.settings.ui_font_size = current.ui_font_size;
         self.settings.terminal_font_family = current.terminal_font_family;
@@ -4337,7 +4337,7 @@ impl Shell {
         }
     }
 
-    fn copy_zeron_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+    fn copy_mast_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let link = {
             let state = self.state.read(cx);
             crate::links::workspace_locator(
@@ -5333,7 +5333,7 @@ impl Shell {
             Err("Pins are still syncing")
         } else {
             let current = self.active_sidebar_pins(cx);
-            zeron_proto::validate_sidebar_pin_update(&current, pins)
+            mast_proto::validate_sidebar_pin_update(&current, pins)
         };
         if let Err(message) = result {
             self.sidebar_notice = Some(message.into());
@@ -5346,7 +5346,7 @@ impl Shell {
     fn apply_sidebar_pin_change(
         &mut self,
         profile_key: String,
-        change: zeron_proto::SidebarPinChange,
+        change: mast_proto::SidebarPinChange,
         cx: &mut Context<Self>,
     ) -> bool {
         let mut pinned_session_ids = self.raw_sidebar_pins(cx);
@@ -5402,13 +5402,13 @@ impl Shell {
             return;
         }
         let change = if pinned {
-            zeron_proto::SidebarPinChange::Pin {
+            mast_proto::SidebarPinChange::Pin {
                 session_id: chat_id.clone(),
                 after: pins.last().cloned(),
                 before: None,
             }
         } else {
-            zeron_proto::SidebarPinChange::Unpin {
+            mast_proto::SidebarPinChange::Unpin {
                 session_id: chat_id.clone(),
             }
         };
@@ -6115,7 +6115,7 @@ impl Shell {
     /// Evaluate a width tween at the frame time (see [`WidthTween`]).
     /// Mid-flight: eased 200ms lerp, and `motion_active` is flagged so render
     /// schedules the next animation frame. Finished, stale, absent, or under
-    /// reduced motion: exactly `target`. Honors `ZERON_MOTION_SCALE`.
+    /// reduced motion: exactly `target`. Honors `MAST_MOTION_SCALE`.
     fn eval_tween(&self, tween: Option<WidthTween>, target: f32) -> f32 {
         let Some(WidthTween { from, to, started }) = tween else {
             return target;
@@ -6532,7 +6532,7 @@ impl Shell {
         self.shortcut_badge(ShortcutId::NewSession)
     }
 
-    /// Native Windows caption controls integrated into Zeron's unified
+    /// Native Windows caption controls integrated into Mast's unified
     /// titlebar. `WindowControlArea` maps these hit targets to HTMINBUTTON,
     /// HTMAXBUTTON, and HTCLOSE, so Windows owns their behavior (including
     /// Snap Layouts) while GPUI renders the system Segoe caption glyphs.
@@ -6652,7 +6652,7 @@ impl Shell {
         )
     }
 
-    /// Zeron-drawn Linux caption controls, one overlay per populated side.
+    /// Mast-drawn Linux caption controls, one overlay per populated side.
     /// Shell-level chrome like the Windows cluster: mounted at the root so
     /// they stay above the splash and every auth/org/error gate.
     fn render_linux_caption_controls(&self, window: &Window, cx: &App) -> Vec<AnyElement> {
@@ -7020,9 +7020,9 @@ impl Shell {
         time_ago: SharedString,
         space_name: SharedString,
         branch: Option<SharedString>,
-        change_request: Option<zeron_proto::ChangeRequestSummary>,
-        harness: Option<zeron_proto::HarnessId>,
-        status: zeron_proto::ChatIndicator,
+        change_request: Option<mast_proto::ChangeRequestSummary>,
+        harness: Option<mast_proto::HarnessId>,
+        status: mast_proto::ChatIndicator,
         selected: bool,
         archived: bool,
         preview: bool,
@@ -7097,16 +7097,16 @@ impl Shell {
             Some("Queued")
         } else {
             match status {
-                zeron_proto::ChatIndicator::Working => Some("Working"),
-                zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
-                zeron_proto::ChatIndicator::Errored => Some("Failed"),
-                zeron_proto::ChatIndicator::Completed => Some("Done"),
-                zeron_proto::ChatIndicator::Idle => None,
+                mast_proto::ChatIndicator::Working => Some("Working"),
+                mast_proto::ChatIndicator::AwaitingInput => Some("Input"),
+                mast_proto::ChatIndicator::Errored => Some("Failed"),
+                mast_proto::ChatIndicator::Completed => Some("Done"),
+                mast_proto::ChatIndicator::Idle => None,
             }
         };
         let shows_metadata = branch.is_some() || change_request.is_some();
         let queued = queued && !undelivered;
-        let working = status == zeron_proto::ChatIndicator::Working && !queued && !undelivered;
+        let working = status == mast_proto::ChatIndicator::Working && !queued && !undelivered;
         let compact_status = compact.then(|| {
             let glyph = if working {
                 loaders::mini_glyph_spinner(
@@ -7117,7 +7117,7 @@ impl Shell {
                     cx,
                 )
                 .into_any_element()
-            } else if status == zeron_proto::ChatIndicator::Completed && !queued && !undelivered {
+            } else if status == mast_proto::ChatIndicator::Completed && !queued && !undelivered {
                 icon(icons::CHECK)
                     .size(px(11.0))
                     .text_color(status_color)
@@ -7226,7 +7226,7 @@ impl Shell {
                     // Glyph slot: Working wears the preset's animated pixel
                     // glyph beside its label, Done wears the check, and the
                     // remaining statuses use a compact dot.
-                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
+                    let glyph: AnyElement = if status == mast_proto::ChatIndicator::Completed {
                         icon(icons::CHECK)
                             .size(px(11.0))
                             .flex_none()
@@ -7711,7 +7711,7 @@ impl Shell {
     /// reconnecting; an amber dot only when the OS says offline. The
     /// transport error belongs in logs, not the sidebar.
     fn render_connection_pill(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use zeron_proto::ConnectivityState as S;
+        use mast_proto::ConnectivityState as S;
         let conn = self.state.read(cx).connectivity.clone();
         let (label, glyph): (SharedString, AnyElement) = match conn.state {
             S::Disabled | S::Connected => return None,
@@ -8325,7 +8325,7 @@ impl Shell {
         }
     }
 
-    /// Fetch the manifest and stage the new Zeron desktop bundle under the data dir
+    /// Fetch the manifest and stage the new Mast desktop bundle under the data dir
     /// (tokio — reqwest); the strip flips to "restart to apply" when done.
     fn begin_update_download(&mut self, cx: &mut Context<Self>) {
         let edge_url = self.boot.edge_url.clone();
@@ -8333,7 +8333,7 @@ impl Shell {
         let install = self.install.clone();
         self.update_flow = UpdateFlow::Downloading;
         let download = Tokio::spawn(cx, async move {
-            let manifest = zeron_update::fetch_latest(&edge_url).await?;
+            let manifest = mast_update::fetch_latest(&edge_url).await?;
             install.stage_desktop(&edge_url, &manifest, &data_dir).await
         });
         self.update_task = Some(cx.spawn(async move |this, cx| {
@@ -9284,7 +9284,7 @@ impl Shell {
                         popover::menu_row(&theme, false, format!("chat-copy-zeron-{chat_id}"))
                             .id("chat-copy-zeron")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_zeron_conversation_link(&zeron_id, cx)
+                                this.copy_mast_conversation_link(&zeron_id, cx)
                             }))
                             .child(
                                 icon(icons::COPY)
@@ -10687,7 +10687,7 @@ impl Shell {
                         .read(cx)
                         .sub_transcript(&tab.doc_id)
                         .last()
-                        .is_some_and(|e| e.status == Some(zeron_doc::MessageStatus::Streaming))
+                        .is_some_and(|e| e.status == Some(mast_doc::MessageStatus::Streaming))
                 }),
                 _ => false,
             };
@@ -11134,7 +11134,7 @@ impl Shell {
                 )
                 .into_any_element(),
             // Login card (zeron App.tsx Gate): centered card on the grid —
-            // logo, "Log in to Zeron", copy, full-width white Log in button.
+            // logo, "Log in to Mast", copy, full-width white Log in button.
             _ => div()
                 .w(px(360.0))
                 .px(px(32.0))
@@ -12194,7 +12194,7 @@ impl Render for Shell {
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
                 }
-                // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
+                // Capture knob: `MAST_OPEN_DIALOG=model` pops the combined
                 // harness/model menu (needs `window`, so it fires here rather
                 // than in `on_state_changed`).
                 if self.debug_dialog.as_deref() == Some("model") {
@@ -12928,7 +12928,7 @@ mod tests {
             edge_token: None,
             org_id: None,
             workos_client_id: Some("client_test".into()),
-            default_harness: zeron_proto::HarnessId::Mock,
+            default_harness: mast_proto::HarnessId::Mock,
         };
         let synced = crate::state::EngineHandle::bootstrap(boot.clone())
             .await
@@ -13008,7 +13008,7 @@ mod tests {
     #[test]
     fn local_sign_in_offers_the_in_place_switch() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: mast_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -13120,7 +13120,7 @@ mod tests {
     #[test]
     fn dismissed_import_failure_stays_reachable_on_a_synced_runtime() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: mast_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -13163,7 +13163,7 @@ mod tests {
     #[test]
     fn switch_lifecycle_survives_the_runtime_replacement_window() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: mast_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -13198,7 +13198,7 @@ mod tests {
     #[test]
     fn synced_sign_out_blocks_every_viewport_and_cannot_switch_accounts() {
         let signed_in_as_another_user = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: mast_proto::UserProfile {
                 id: "user-2".into(),
                 email: "other@example.com".into(),
                 name: None,
@@ -13626,7 +13626,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -13634,7 +13634,7 @@ mod exit_regressions {
         window
             .update(cx, |shell, _, cx| {
                 shell.state.update(cx, |state, _| {
-                    state.apply_spaces(vec![zeron_proto::Space {
+                    state.apply_spaces(vec![mast_proto::Space {
                         id: "repo".into(),
                         device_id: "local".into(),
                         path: "/repo".into(),
@@ -13713,7 +13713,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -13785,7 +13785,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -13889,7 +13889,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -13928,7 +13928,7 @@ mod exit_regressions {
                     settings::set_new_thread_background_effect(effect, cx);
                     settings::update(settings::SavePolicy::Immediate, cx, |settings| {
                         settings.window_geometry = geometry;
-                        settings.open_web_links_in_zeron = open_links_in_zeron;
+                        settings.open_web_links_in_mast = open_links_in_zeron;
                         settings.terminal_font_family = terminal_family.clone();
                         settings.terminal_font_size = terminal_size;
                         settings.code_font_family = code_family.clone();
@@ -13943,7 +13943,7 @@ mod exit_regressions {
                         let current = settings::current(cx);
                         assert_eq!(current.window_geometry, geometry);
                         assert_eq!(current.new_thread_background_effect, effect);
-                        assert_eq!(current.open_web_links_in_zeron, open_links_in_zeron);
+                        assert_eq!(current.open_web_links_in_mast, open_links_in_zeron);
                         assert_eq!(current.terminal_font_family, terminal_family);
                         assert_eq!(current.terminal_font_size, terminal_size);
                         assert_eq!(current.code_font_family, code_family);
@@ -13954,7 +13954,7 @@ mod exit_regressions {
                     let loaded = settings::UiSettings::load(dir.path());
                     assert_eq!(loaded.window_geometry, geometry);
                     assert_eq!(loaded.new_thread_background_effect, effect);
-                    assert_eq!(loaded.open_web_links_in_zeron, open_links_in_zeron);
+                    assert_eq!(loaded.open_web_links_in_mast, open_links_in_zeron);
                     assert_eq!(loaded.terminal_font_family, terminal_family);
                     assert_eq!(loaded.terminal_font_size, terminal_size);
                     assert_eq!(loaded.code_font_family, code_family);
@@ -13995,7 +13995,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14080,7 +14080,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14154,7 +14154,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14239,7 +14239,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14311,7 +14311,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14319,7 +14319,7 @@ mod exit_regressions {
         window
             .update(cx, |shell, _, cx| {
                 shell.state.update(cx, |state, _| {
-                    state.apply_spaces(vec![zeron_proto::Space {
+                    state.apply_spaces(vec![mast_proto::Space {
                         id: "repo".into(),
                         device_id: "local".into(),
                         path: "/repo".into(),
@@ -14376,7 +14376,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14417,7 +14417,7 @@ mod exit_regressions {
                 shell.add_browser_surface(Some("https://example.com/docs".into()), window, cx);
                 assert_eq!(shell.browsers.len(), 2);
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.open_web_links_in_zeron = false;
+                    settings.open_web_links_in_mast = false;
                 });
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
@@ -14512,7 +14512,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14525,7 +14525,7 @@ mod exit_regressions {
                 shell.state.update(cx, |state, _| {
                     state.local_device_id = Some("here".into());
                     state.selected_chat = Some("viz".into());
-                    state.chats.push(zeron_proto::Chat {
+                    state.chats.push(mast_proto::Chat {
                         id: "viz".into(),
                         device_id: "here".into(),
                         title: None,
@@ -14630,7 +14630,7 @@ mod exit_regressions {
                     ),
                     LinkOutcome::External(preview_url.clone())
                 );
-                // "Open in Zeron" on the export shows its fragment.
+                // "Open in Mast" on the export shows its fragment.
                 assert_eq!(
                     activate(
                         shell,
@@ -14788,7 +14788,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14884,7 +14884,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -14962,7 +14962,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -15026,7 +15026,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -15205,7 +15205,7 @@ mod right_tab_mouse_regressions {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );

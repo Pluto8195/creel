@@ -4,8 +4,8 @@ use gpui::{
     AppContext, Bounds, Context, IntoElement, ParentElement, Render, Styled, TitlebarOptions,
     Window, WindowBounds, WindowOptions, div, img, point, px, rgb, size,
 };
+use mast_ui::edge_fade::edge_faded;
 use std::path::PathBuf;
-use zeron_ui::edge_fade::edge_faded;
 
 struct Fixture {
     image: PathBuf,

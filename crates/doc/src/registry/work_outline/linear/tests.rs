@@ -4,13 +4,13 @@
 
 use super::*;
 use crate::registry::tests::space;
-use zeron_proto::linear::LinearIssueLink;
-use zeron_proto::work_outline::{
+use mast_proto::linear::LinearIssueLink;
+use mast_proto::work_outline::{
     CreateWorkItemParams, FieldPatch, RemoveWorkItemExternalReferenceParams, UpdateWorkItemParams,
     WorkItemChanges, WorkOutlineActorKind, WorkOutlineErrorCode, WorkOutlineMutateReply,
     WorkOutlineMutation, WorkOutlinePlacement, WorkOutlineSnapshot,
 };
-use zeron_proto::{LinearProjectRef, WorkOutlineError};
+use mast_proto::{LinearProjectRef, WorkOutlineError};
 
 const SPACE: &str = "sp-1";
 const OFF_SPACE: &str = "sp-2";
@@ -27,7 +27,8 @@ fn actor(kind: WorkOutlineActorKind) -> WorkOutlineActor {
 
 fn doc() -> RegistryDoc {
     let mut doc = RegistryDoc::new("dev-a");
-    doc.upsert_space(&space(SPACE, "dev-a", "/tmp/one")).unwrap();
+    doc.upsert_space(&space(SPACE, "dev-a", "/tmp/one"))
+        .unwrap();
     doc.upsert_space(&space(OFF_SPACE, "dev-a", "/tmp/two"))
         .unwrap();
     doc
@@ -238,20 +239,29 @@ fn create_from_linear_writes_item_and_reference_in_one_batch_and_replays() {
     let err = from_linear(&mut doc, SPACE, "op-1", None, issue("ENG-9", "x", None)).unwrap_err();
     assert_eq!(err.code, WorkOutlineErrorCode::OperationConflict);
     // Under a parent.
-    let child = from_linear(&mut doc, SPACE, "op-2", Some(&id), issue("ENG-7", "Sub", None))
-        .unwrap()
-        .work_item_id
-        .unwrap();
+    let child = from_linear(
+        &mut doc,
+        SPACE,
+        "op-2",
+        Some(&id),
+        issue("ENG-7", "Sub", None),
+    )
+    .unwrap()
+    .work_item_id
+    .unwrap();
     let s = snap(&doc);
-    assert_eq!(s.item(&child).unwrap().parent_work_item_id.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        s.item(&child).unwrap().parent_work_item_id.as_deref(),
+        Some(id.as_str())
+    );
     assert_eq!(s.item(&child).unwrap().description, None);
 }
 
 #[test]
 fn linear_operations_are_refused_in_a_space_with_linear_off() {
     let mut doc = doc();
-    let err = from_linear(&mut doc, OFF_SPACE, "op-1", None, issue("ENG-1", "x", None))
-        .unwrap_err();
+    let err =
+        from_linear(&mut doc, OFF_SPACE, "op-1", None, issue("ENG-1", "x", None)).unwrap_err();
     assert_eq!(err.code, WorkOutlineErrorCode::Invalid);
     assert_eq!(err.message, LINEAR_DISABLED_MESSAGE);
     let item = plain_item(&mut doc, "plain", "Plain", None);
@@ -327,10 +337,16 @@ fn link_linear_project_adds_a_project_reference() {
 fn user_edits_mark_fields_and_system_edits_do_not() {
     let mut doc = doc();
     enable(&mut doc, SPACE, "on", true);
-    let id = from_linear(&mut doc, SPACE, "op-1", None, issue("ENG-1", "One", Some("Body")))
-        .unwrap()
-        .work_item_id
-        .unwrap();
+    let id = from_linear(
+        &mut doc,
+        SPACE,
+        "op-1",
+        None,
+        issue("ENG-1", "One", Some("Body")),
+    )
+    .unwrap()
+    .work_item_id
+    .unwrap();
     // The sync writer (system actor) changes text without marking.
     update(
         &mut doc,
@@ -383,7 +399,10 @@ fn user_edits_mark_fields_and_system_edits_do_not() {
     assert_eq!(doc.batches_written(), before + 1);
     assert_eq!(modified(&doc, &id), vec!["title".to_owned()]);
     let row = doc.overlay_row(KIND_WORK_ITEMS, &id).unwrap();
-    assert_eq!(row.clocks.get("title"), row.clocks.get(MODIFIED_FIELDS_FIELD));
+    assert_eq!(
+        row.clocks.get("title"),
+        row.clocks.get(MODIFIED_FIELDS_FIELD)
+    );
     // Then the description (cleared counts as an edit).
     update(
         &mut doc,
@@ -403,10 +422,12 @@ fn user_edits_mark_fields_and_system_edits_do_not() {
     let reference = snap(&doc).linear_issue_reference(&id).unwrap().id.clone();
     apply(
         &mut doc,
-        WorkOutlineMutation::RemoveWorkItemExternalReference(RemoveWorkItemExternalReferenceParams {
-            reference_id: reference,
-            operation_id: "unlink".into(),
-        }),
+        WorkOutlineMutation::RemoveWorkItemExternalReference(
+            RemoveWorkItemExternalReferenceParams {
+                reference_id: reference,
+                operation_id: "unlink".into(),
+            },
+        ),
     )
     .unwrap();
     assert!(modified(&doc, &id).is_empty());
@@ -444,10 +465,12 @@ fn linking_an_issue_keeps_an_existing_description() {
     let second = link_issue(&mut doc, "link-a2", &with_text, "ENG-3");
     apply(
         &mut doc,
-        WorkOutlineMutation::RemoveWorkItemExternalReference(RemoveWorkItemExternalReferenceParams {
-            reference_id: second,
-            operation_id: "unlink-a2".into(),
-        }),
+        WorkOutlineMutation::RemoveWorkItemExternalReference(
+            RemoveWorkItemExternalReferenceParams {
+                reference_id: second,
+                operation_id: "unlink-a2".into(),
+            },
+        ),
     )
     .unwrap();
     assert_eq!(modified(&doc, &with_text), vec!["description".to_owned()]);
@@ -469,10 +492,16 @@ fn space_deletion_removes_the_settings_row() {
 fn system_writes_never_overwrite_a_field_the_user_took_over() {
     let mut doc = doc();
     enable(&mut doc, SPACE, "on", true);
-    let id = from_linear(&mut doc, SPACE, "op-1", None, issue("ENG-1", "One", Some("Body")))
-        .unwrap()
-        .work_item_id
-        .unwrap();
+    let id = from_linear(
+        &mut doc,
+        SPACE,
+        "op-1",
+        None,
+        issue("ENG-1", "One", Some("Body")),
+    )
+    .unwrap()
+    .work_item_id
+    .unwrap();
     update(
         &mut doc,
         WorkOutlineActorKind::User,

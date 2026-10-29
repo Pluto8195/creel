@@ -9,10 +9,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::ChatDiffTargetSource;
+use mast_rpc::methods;
 use serde_json::{Value, json};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::ChatDiffTargetSource;
-use zeron_rpc::methods;
 
 const CHAT: &str = "chat-1";
 
@@ -121,7 +121,7 @@ fn fixture() -> Fixture {
     let core = EngineCore::assemble(
         &data,
         Arc::new(HarnessRegistry::new()),
-        zeron_proto::HarnessId::Mock,
+        mast_proto::HarnessId::Mock,
         None,
     )
     .expect("engine core assembles");
@@ -195,7 +195,10 @@ async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
         if let Some(value) = probe() {
             return value;
         }
-        assert!(tokio::time::Instant::now() < deadline, "condition timed out");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "condition timed out"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -203,7 +206,7 @@ async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_and_branch_diffs_cover_only_the_bound_worktree() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     // The chat's own checkout is dirty with unrelated docs.
     std::fs::write(f.ws.join("README"), "dirty root\n").unwrap();
     // The worktree has one committed change and one uncommitted edit.
@@ -253,7 +256,7 @@ async fn scoped_and_branch_diffs_cover_only_the_bound_worktree() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn latest_turn_snapshots_cwd_and_targets_and_bases_mid_turn_binds() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     bind(&f, &f.sub_wt);
     f.core.diff_sync.reconcile_now().await;
 
@@ -341,7 +344,7 @@ async fn latest_turn_snapshots_cwd_and_targets_and_bases_mid_turn_binds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -354,7 +357,12 @@ async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
     let ws = f.ws.clone();
     wait_for(|| sync.turn_snapshot(CHAT, &ws)).await;
     assert!(f.core.diff_sync.turn_snapshot(CHAT, &f.sub_wt).is_none());
-    assert!(f.core.diff_sync.turn_snapshot("other-chat", &f.ws).is_none());
+    assert!(
+        f.core
+            .diff_sync
+            .turn_snapshot("other-chat", &f.ws)
+            .is_none()
+    );
     f.core.diff_sync.reconcile_now().await;
     assert_eq!(*f.core.diff_sync.watch_chat_diff_targets().borrow(), vec![]);
     f.core.shutdown().await;
@@ -363,7 +371,7 @@ async fn chats_without_targets_keep_the_single_checkout_turn_behavior() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -411,10 +419,7 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     .await;
     assert_eq!(frame[0]["targets"].as_array().unwrap().len(), 2);
 
-    f.core
-        .diff_targets
-        .unbind(CHAT, &text(&f.sub_wt))
-        .unwrap();
+    f.core.diff_targets.unbind(CHAT, &text(&f.sub_wt)).unwrap();
     let frame = next_frame(&mut stream, |frame| {
         frame[0]["targets"].as_array().is_some_and(|t| t.len() == 1)
     })
@@ -430,10 +435,7 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
     .await;
 
     // Removing the worktree drops its target after a repair pass.
-    git(
-        &f.ws,
-        &["worktree", "remove", "--force", &text(&f.root_wt)],
-    );
+    git(&f.ws, &["worktree", "remove", "--force", &text(&f.root_wt)]);
     f.core.diff_sync.repair_now().await;
     next_frame(&mut stream, |frame| frame == &json!([])).await;
     f.core.shutdown().await;
@@ -442,16 +444,10 @@ async fn watch_chat_diff_targets_follows_bind_select_unbind_and_removal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_chat_diff_target_rpc_round_trip_and_refusals() {
     let f = fixture();
-    let client = zeron_rpc::memory_client(f.core.rpc_service());
+    let client = mast_rpc::memory_client(f.core.rpc_service());
     f.core
         .workspace
-        .create_chat(
-            "remote-chat",
-            None,
-            Some("dev-b"),
-            None,
-            Some(text(&f.ws)),
-        )
+        .create_chat("remote-chat", None, Some("dev-b"), None, Some(text(&f.ws)))
         .unwrap();
 
     let listed = client
@@ -576,7 +572,7 @@ async fn agent_tool_bind_on_the_assembled_engine_reaches_the_watch_and_the_diff(
         .agent_tokens()
         .mint("chat-2", "run-1", "space-1", "dev-a");
     let rpc = f.core.rpc_service();
-    let client = zeron_rpc::memory_client(rpc.clone());
+    let client = mast_rpc::memory_client(rpc.clone());
     let mut stream = client
         .subscribe(methods::WATCH_CHAT_DIFF_TARGETS, Value::Null)
         .await
@@ -586,9 +582,9 @@ async fn agent_tool_bind_on_the_assembled_engine_reaches_the_watch_and_the_diff(
     std::fs::write(f.sub_wt.join("feature.txt"), "work\n").unwrap();
     let reply = rpc
         .agent_tools()
-        .call(&zeron_proto::agent_tools::AgentToolCallParams {
+        .call(&mast_proto::agent_tools::AgentToolCallParams {
             token: lease.token().to_owned(),
-            tool: zeron_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
+            tool: mast_proto::agent_tools::tools::BIND_CHAT_WORKTREE.to_owned(),
             arguments: json!({"path": text(&f.sub_wt), "idempotencyKey": "k-1"}),
         })
         .expect("bind through the assembled agent tool");

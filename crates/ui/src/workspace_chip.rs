@@ -17,9 +17,9 @@ use crate::theme::Theme;
 
 /// `{chatId, repoPath, name}` → `{worktreePath, branch}`; on success the
 /// engine has already stamped the chat's cwd (IPC-only).
-pub use zeron_rpc::methods::CREATE_CHAT_WORKTREE;
+pub use mast_rpc::methods::CREATE_CHAT_WORKTREE;
 /// `{message, cwd}` → `{needsWorktree, probability, source}` (IPC-only).
-pub use zeron_rpc::methods::PLAN_CHAT_WORKSPACE;
+pub use mast_rpc::methods::PLAN_CHAT_WORKSPACE;
 
 /// Classifier budget (the engine caps Jev at ~3s; headroom for IPC).
 pub const PLAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

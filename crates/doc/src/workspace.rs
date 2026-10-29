@@ -22,13 +22,13 @@
 //! zeron's 15s heartbeat writes so liveness never grows the oplog.
 //!
 //! Timestamps are stored as epoch millis (the session-doc convention) and surface as
-//! `chrono::DateTime<Utc>` through the `zeron_proto` entity types.
+//! `chrono::DateTime<Utc>` through the `mast_proto` entity types.
 
 use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroMap, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
+use mast_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
 
 use crate::schema::DocError;
 
@@ -371,7 +371,7 @@ impl WorkspaceDoc {
     pub fn set_chat_source_context(
         &self,
         chat_id: &str,
-        context: &zeron_proto::ConversationSourceContext,
+        context: &mast_proto::ConversationSourceContext,
     ) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {
             return Ok(false);
@@ -746,7 +746,7 @@ pub(crate) struct RawChat {
     #[serde(default)]
     checkout_id: Option<String>,
     #[serde(default)]
-    source_context: Option<zeron_proto::ConversationSourceContext>,
+    source_context: Option<mast_proto::ConversationSourceContext>,
     /// LENIENT: a config this build can't decode (a harness/reasoning/sandbox
     /// id from a NEWER peer — field incident: pre-v0.2.10 laptops dropped
     /// every `"opencode"` chat row wholesale, so new sessions silently never
@@ -778,11 +778,11 @@ pub(crate) struct RawChat {
     #[serde(default)]
     linked_pr_url: Option<String>,
     #[serde(default, deserialize_with = "lenient_chat_link_source")]
-    linked_pr_source: Option<zeron_proto::ChatLinkSource>,
+    linked_pr_source: Option<mast_proto::ChatLinkSource>,
     #[serde(default)]
     linked_ticket_id: Option<String>,
     #[serde(default, deserialize_with = "lenient_chat_link_source")]
-    linked_ticket_source: Option<zeron_proto::ChatLinkSource>,
+    linked_ticket_source: Option<mast_proto::ChatLinkSource>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -808,7 +808,7 @@ where
 /// the provenance tag, not the row — the link value itself still round-trips.
 fn lenient_chat_link_source<'de, D>(
     deserializer: D,
-) -> Result<Option<zeron_proto::ChatLinkSource>, D::Error>
+) -> Result<Option<mast_proto::ChatLinkSource>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -876,7 +876,7 @@ impl From<RawSession> for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{HarnessId, SandboxLevel};
+    use mast_proto::{HarnessId, SandboxLevel};
 
     fn ts(ms: i64) -> DateTime<Utc> {
         dt(ms)
@@ -1009,7 +1009,7 @@ mod tests {
         let config = ChatConfig {
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
+            reasoning: Some(mast_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
             auto_approve: false,
@@ -1026,7 +1026,7 @@ mod tests {
     fn conversation_source_context_round_trips_with_legacy_fields() {
         let ws = WorkspaceDoc::new();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
-        let context = zeron_proto::ConversationSourceContext {
+        let context = mast_proto::ConversationSourceContext {
             checkout_id: "checkout-a".into(),
             repo_root: "/repo".into(),
             cwd: "/repo/worktree".into(),
@@ -1063,7 +1063,7 @@ mod tests {
     fn rows_round_trip() {
         let ws = WorkspaceDoc::new();
         let mut device = device("dev-a", "laptop");
-        device.capabilities = vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()];
+        device.capabilities = vec![mast_proto::capabilities::MESSAGE_QUEUE_V1.into()];
         ws.upsert_device(&device).unwrap();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
         ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))

@@ -1,5 +1,5 @@
 [package]
-name = "zeron"
+name = "mast"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,11 +10,12 @@ name = "zeron"
 path = "src/main.rs"
 
 [dependencies]
-zeron-engine.workspace = true
-zeron-rpc.workspace = true
-zeron-ui.workspace = true
-zeron-update.workspace = true
-zeron-mcp.workspace = true
+mast-proto.workspace = true
+mast-engine.workspace = true
+mast-rpc.workspace = true
+mast-ui.workspace = true
+mast-update.workspace = true
+mast-mcp.workspace = true
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true

@@ -12,13 +12,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_mcp::{Mast, Tools};
+use mast_proto::{AgentEvent, DoneStatus, Model, ReasoningLevel, RunRequest, SteeringMode};
+use mast_proto::{HarnessId, WorkItemChatAssignmentState, derive_id, roles};
+use mast_rpc::methods;
 use serde_json::{Value, json};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_mcp::{Tools, Zeron};
-use zeron_proto::{AgentEvent, DoneStatus, Model, ReasoningLevel, RunRequest, SteeringMode};
-use zeron_proto::{HarnessId, WorkItemChatAssignmentState, derive_id, roles};
-use zeron_rpc::methods;
 
 const SPACE: &str = "space-1";
 const PARENT: &str = "chat-parent";
@@ -98,7 +98,7 @@ async fn agent_created_child_chats_are_idempotent_and_inherit_the_work_item() {
         None,
     )
     .expect("engine core assembles");
-    let admin = zeron_rpc::memory_client(core.rpc_service());
+    let admin = mast_rpc::memory_client(core.rpc_service());
     admin
         .call(
             methods::MUTATE,
@@ -139,8 +139,8 @@ async fn agent_created_child_chats_are_idempotent_and_inherit_the_work_item() {
         .sessions
         .agent_tokens()
         .mint(PARENT, "run-1", SPACE, &core.device_id);
-    let tools = Tools::new(Arc::new(Zeron::with_client(
-        zeron_rpc::memory_client(core.rpc_service()),
+    let tools = Tools::new(Arc::new(Mast::with_client(
+        mast_rpc::memory_client(core.rpc_service()),
         Some(lease.token().to_owned()),
     )));
 
@@ -185,7 +185,7 @@ async fn agent_created_child_chats_are_idempotent_and_inherit_the_work_item() {
         .collect();
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].id, child);
-    let operation = zeron_proto::agent_tools::operation_id(PARENT, "spawn-reviewer");
+    let operation = mast_proto::agent_tools::operation_id(PARENT, "spawn-reviewer");
     let command_id = derive_id(&operation, roles::COMMAND);
     let commands = core
         .doc_host
@@ -201,7 +201,7 @@ async fn agent_created_child_chats_are_idempotent_and_inherit_the_work_item() {
     wait_for(
         || {
             let inputs = core.workspace.work_outline_inputs(SPACE);
-            let snapshot = zeron_doc::materialize_work_outline(SPACE, &inputs);
+            let snapshot = mast_doc::materialize_work_outline(SPACE, &inputs);
             snapshot.assignments.iter().any(|a| {
                 a.chat_id == child
                     && a.work_item_id.as_deref() == Some(item.as_str())

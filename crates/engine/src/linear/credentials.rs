@@ -1,6 +1,6 @@
 //! Where this device's Linear API key lives: the macOS Keychain (via
 //! `security`, the same approach as `agent_accounts`), then the
-//! `LINEAR_API_KEY` environment variable. Tests (and `ZERON_LINEAR_KEY_STORE=
+//! `LINEAR_API_KEY` environment variable. Tests (and `MAST_LINEAR_KEY_STORE=
 //! memory`) inject an in-memory store so nothing touches the real Keychain.
 //!
 //! The key is never logged: errors carry `security`'s stderr only, and the
@@ -16,7 +16,7 @@ pub const KEYCHAIN_ACCOUNT: &str = "api-key";
 pub const ENV_KEY: &str = "LINEAR_API_KEY";
 /// `memory` forces the in-memory store (dev/test runs that must never
 /// touch the Keychain); anything else is the platform default.
-pub const STORE_OVERRIDE_ENV: &str = "ZERON_LINEAR_KEY_STORE";
+pub const STORE_OVERRIDE_ENV: &str = "MAST_LINEAR_KEY_STORE";
 
 /// A persistent home for the key.
 pub trait LinearKeyStore: Send + Sync {
@@ -31,7 +31,7 @@ pub trait LinearKeyStore: Send + Sync {
     }
 }
 
-/// An in-memory store (tests, `ZERON_LINEAR_KEY_STORE=memory`).
+/// An in-memory store (tests, `MAST_LINEAR_KEY_STORE=memory`).
 #[derive(Default)]
 pub struct MemoryKeyStore {
     key: Mutex<Option<String>>,
@@ -196,7 +196,7 @@ impl LinearKeyStore for KeychainKeyStore {
 }
 
 /// The store a new engine uses: in-memory when
-/// `ZERON_LINEAR_KEY_STORE=memory`, else the Keychain.
+/// `MAST_LINEAR_KEY_STORE=memory`, else the Keychain.
 pub fn default_store() -> Arc<dyn LinearKeyStore> {
     match std::env::var(STORE_OVERRIDE_ENV).as_deref() {
         Ok("memory") => MemoryKeyStore::new(),

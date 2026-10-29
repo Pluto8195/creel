@@ -7,7 +7,7 @@ use gpui::{
     AppContext as _, Entity, Modifiers, PinchEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
     TouchPhase, VisualTestContext, point, px,
 };
-use zeron_proto::{ArtifactContentEncoding, ArtifactKind};
+use mast_proto::{ArtifactContentEncoding, ArtifactKind};
 
 use super::find::{FrameCommand, command_script};
 use super::tab::{ArtifactTab, FakeWebHost, WebProbe};
@@ -310,7 +310,7 @@ fn a_reloaded_page_gets_the_remembered_zoom_once_it_reports(cx: &mut TestAppCont
             .scripts
             .borrow()
             .iter()
-            .any(|script| script.contains("zeronZoom"))
+            .any(|script| script.contains("mastZoom"))
     );
     *probe.state.borrow_mut() = Some(r#"{"zoom":1000}"#.into());
     vcx.executor().advance_clock(Duration::from_millis(500));
@@ -335,7 +335,7 @@ fn the_page_script_zooms_with_the_same_anchor_formula() {
     assert!(script.contains("e.ctrlKey || e.metaKey"));
     assert_eq!(
         command_script(&FrameCommand::Zoom(1.25)),
-        "window.__zeronFrameCmd&&window.__zeronFrameCmd({\"zeronZoom\":1.25});"
+        "window.__mastFrameCmd&&window.__mastFrameCmd({\"mastZoom\":1.25});"
     );
 }
 

@@ -742,10 +742,13 @@ pub enum InstructionHostUnsupportedReason {
     /// The host device is not in this workspace's registry yet (offline
     /// since before it registered, or not synced): nothing is known about it.
     UnknownDevice,
-    /// The host's Zeron predates instruction delivery
+    /// The host's Mast predates instruction delivery
     /// (`work-outline-instruction-envelope-v1` missing).
-    ZeronUpgradeRequired,
-    /// The host's Zeron delivers instructions but not for this harness
+    /// Wire name stays `zeronUpgradeRequired` (older devices read it);
+    /// `mastUpgradeRequired` is also accepted.
+    #[serde(rename = "zeronUpgradeRequired", alias = "mastUpgradeRequired")]
+    MastUpgradeRequired,
+    /// The host's Mast delivers instructions but not for this harness
     /// (`work-outline-instruction-envelope-v1/<harness>` missing: harness not
     /// installed, too old, or its probe failed).
     HarnessUnsupported,

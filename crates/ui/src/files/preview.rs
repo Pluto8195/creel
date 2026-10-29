@@ -11,7 +11,7 @@ use gpui::{
     font, list, prelude::*, px,
 };
 use gpui_base::input::{RopeExt as _, TextDecoration, TextDecorationCollection};
-use zeron_proto::{
+use mast_proto::{
     ReadWorkspaceFileRequest, WorkspaceReadOnlyReason, WriteWorkspaceFileOutcome,
     WriteWorkspaceFileRequest,
 };
@@ -75,7 +75,7 @@ const MAX_RETAINED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
 struct HighlightedFile {
     content_hash: String,
-    document: Arc<zeron_syntax::HighlightedDocument>,
+    document: Arc<mast_syntax::HighlightedDocument>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,12 +389,12 @@ fn estimated_highlighted_file_bytes(highlight: &HighlightedFile) -> usize {
             document
                 .lines
                 .capacity()
-                .saturating_mul(std::mem::size_of::<Vec<zeron_syntax::HighlightSpan>>()),
+                .saturating_mul(std::mem::size_of::<Vec<mast_syntax::HighlightSpan>>()),
         )
         .saturating_add(document.lines.iter().fold(0usize, |total, line| {
             total.saturating_add(
                 line.capacity()
-                    .saturating_mul(std::mem::size_of::<zeron_syntax::HighlightSpan>()),
+                    .saturating_mul(std::mem::size_of::<mast_syntax::HighlightSpan>()),
             )
         }))
 }
@@ -1144,7 +1144,7 @@ impl FilesSurface {
         content_hash: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(language) = zeron_syntax::language_for_path(&path) else {
+        let Some(language) = mast_syntax::language_for_path(&path) else {
             return;
         };
         let Some((document_key, generation, revision)) = self
@@ -1183,7 +1183,7 @@ impl FilesSurface {
             let highlighted = cx
                 .background_executor()
                 .spawn(async move {
-                    zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                    mast_syntax::highlight(mast_syntax::HighlightRequest {
                         source: &source,
                         path: Some(&request_path),
                         fence_tag: None,
@@ -1281,7 +1281,7 @@ impl FilesSurface {
         revision: u64,
         cx: &mut Context<Self>,
     ) {
-        let Some(language) = zeron_syntax::language_for_path(&path) else {
+        let Some(language) = mast_syntax::language_for_path(&path) else {
             return;
         };
         let Some((document_key, generation)) = self
@@ -1304,7 +1304,7 @@ impl FilesSurface {
             let highlighted = cx
                 .background_executor()
                 .spawn(async move {
-                    zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                    mast_syntax::highlight(mast_syntax::HighlightRequest {
                         source: &source_for_parse,
                         path: Some(&request_path),
                         fence_tag: None,
@@ -3303,7 +3303,7 @@ mod tests {
             .comment_anchors
             .insert("old.rs".into(), HashMap::new());
         let highlighted = Arc::new(
-            zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+            mast_syntax::highlight(mast_syntax::HighlightRequest {
                 source: "fn main() {}",
                 path: Some("old.rs"),
                 fence_tag: None,
@@ -3348,15 +3348,15 @@ mod tests {
             checkout_id: Some("checkout-1".into()),
             path: path.into(),
         });
-        document.set_loaded(zeron_proto::WorkspaceFileText {
+        document.set_loaded(mast_proto::WorkspaceFileText {
             checkout_id: "checkout-1".into(),
             path: path.into(),
             text: Some(stale_source.into()),
             content_hash: Some(disk_hash.into()),
             size: stale_source.len() as u64,
             modified_at: None,
-            encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-            line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+            encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+            line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
             read_only_reason: None,
             truncated: false,
         });
@@ -3364,7 +3364,7 @@ mod tests {
         let task_generation = document.generation;
         let task_revision = document.revision;
         let stale_highlight_key =
-            DocumentHighlightKey::new(zeron_syntax::LanguageId::Rust, stale_source);
+            DocumentHighlightKey::new(mast_syntax::LanguageId::Rust, stale_source);
 
         assert!(file_highlight_result_is_current(
             &document,
@@ -3376,7 +3376,7 @@ mod tests {
 
         document.mark_user_edit();
         let current_highlight_key =
-            DocumentHighlightKey::new(zeron_syntax::LanguageId::Rust, updated_source);
+            DocumentHighlightKey::new(mast_syntax::LanguageId::Rust, updated_source);
 
         assert_ne!(document.revision, task_revision);
         assert_ne!(current_highlight_key, stale_highlight_key);
@@ -3402,15 +3402,15 @@ mod tests {
             checkout_id: Some("checkout-1".into()),
             path: path.into(),
         });
-        document.set_loaded(zeron_proto::WorkspaceFileText {
+        document.set_loaded(mast_proto::WorkspaceFileText {
             checkout_id: "checkout-1".into(),
             path: path.into(),
             text: Some("fn main() {}".into()),
             content_hash: Some("hash-1".into()),
             size: 12,
             modified_at: None,
-            encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-            line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+            encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+            line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
             read_only_reason: None,
             truncated: false,
         });
@@ -3685,15 +3685,15 @@ mod markdown_buffer_tests {
                                 checkout_id: Some("checkout".into()),
                                 path: "README.md".into(),
                             });
-                            document.set_loaded(zeron_proto::WorkspaceFileText {
+                            document.set_loaded(mast_proto::WorkspaceFileText {
                                 checkout_id: "checkout".into(),
                                 path: "README.md".into(),
                                 text: Some(source.into()),
                                 content_hash: Some("hash".into()),
                                 size: source.len() as u64,
                                 modified_at: None,
-                                encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-                                line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                                encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+                                line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
                                 read_only_reason: None,
                                 truncated: false,
                             });
@@ -4034,7 +4034,7 @@ mod markdown_buffer_tests {
         window
             .update(cx, |surface, window, cx| {
                 surface.request_context = Some(FilesRequestContext {
-                    target: zeron_proto::WorkspaceTarget {
+                    target: mast_proto::WorkspaceTarget {
                         chat_id: Some("chat".into()),
                         space_id: None,
                         checkout_path: None,
@@ -4048,15 +4048,15 @@ mod markdown_buffer_tests {
                     checkout_id: Some("checkout".into()),
                     path: "drawing.txt".into(),
                 });
-                document.set_loaded(zeron_proto::WorkspaceFileText {
+                document.set_loaded(mast_proto::WorkspaceFileText {
                     checkout_id: "checkout".into(),
                     path: "drawing.txt".into(),
                     text: Some("disk text".into()),
                     content_hash: Some("disk-hash".into()),
                     size: 9,
                     modified_at: None,
-                    encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-                    line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                    encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+                    line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
                     read_only_reason: None,
                     truncated: false,
                 });
@@ -4121,15 +4121,15 @@ mod markdown_buffer_tests {
                     checkout_id: Some("checkout".into()),
                     path: "README.md".into(),
                 });
-                document.set_loaded(zeron_proto::WorkspaceFileText {
+                document.set_loaded(mast_proto::WorkspaceFileText {
                     checkout_id: "checkout".into(),
                     path: "README.md".into(),
                     text: Some("[Docs](https://example.com/docs)".into()),
                     content_hash: Some("hash".into()),
                     size: 32,
                     modified_at: None,
-                    encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-                    line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                    encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+                    line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
                     read_only_reason: None,
                     truncated: false,
                 });
@@ -4257,15 +4257,15 @@ mod markdown_buffer_tests {
                     checkout_id: Some("checkout".into()),
                     path: "README.md".into(),
                 });
-                document.set_loaded(zeron_proto::WorkspaceFileText {
+                document.set_loaded(mast_proto::WorkspaceFileText {
                     checkout_id: "checkout".into(),
                     path: "README.md".into(),
                     text: Some("# Disk".into()),
                     content_hash: Some("disk-hash".into()),
                     size: 6,
                     modified_at: None,
-                    encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
-                    line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                    encoding: mast_proto::WorkspaceTextEncoding::Utf8,
+                    line_ending: Some(mast_proto::WorkspaceLineEnding::Lf),
                     read_only_reason: None,
                     truncated: false,
                 });

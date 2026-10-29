@@ -19,22 +19,22 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use zeron_doc::{
+use mast_doc::{
     KIND_INSTRUCTION_REVISION_APPLICATIONS, KIND_INSTRUCTION_REVISIONS,
     KIND_WORK_ITEM_CHAT_ASSIGNMENTS, MessageRole, SessionCommandEntry, SessionCommandPayload,
     SessionCommandStatus,
 };
-use zeron_engine::execution_scope::ExecutionScopeService;
-use zeron_engine::work_outline_launch::{LaunchStep, WorkItemLaunchService};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::mock::InstructionMockHarness;
-use zeron_proto::{
+use mast_engine::execution_scope::ExecutionScopeService;
+use mast_engine::work_outline_launch::{LaunchStep, WorkItemLaunchService};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_harness::mock::InstructionMockHarness;
+use mast_proto::{
     CreateChatForWorkItemParams, CreateChatForWorkItemReply, ExecutionRepositoryIdentity,
     HarnessId, RunRequest, SandboxLevel, WorkItemLaunchState, WorkItemPrompt, WorkOutlineError,
     WorkOutlineErrorCode, WorktreeChoice, derive_id, roles,
 };
-use zeron_rpc::{RpcClient, methods};
+use mast_rpc::{RpcClient, methods};
+use serde_json::{Value, json};
 
 const DEVICE: &str = "dev-a";
 const SPACE: &str = "space-1";
@@ -111,7 +111,7 @@ async fn rig_with(mock: InstructionMockHarness, instructions: bool) -> Rig {
     harnesses.register(Arc::new(mock.clone()));
     let core = EngineCore::assemble(&data, Arc::new(harnesses), HarnessId::Mock, None)
         .expect("engine core assembles");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::MUTATE,
@@ -161,7 +161,7 @@ fn params(rig: &Rig, op: &str, prompt: &str) -> CreateChatForWorkItemParams {
             text: prompt.into(),
             attachments: Vec::new(),
         },
-        config: Some(zeron_proto::ChatConfig {
+        config: Some(mast_proto::ChatConfig {
             harness: HarnessId::Mock,
             model: None,
             reasoning: None,
@@ -235,7 +235,7 @@ async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
 
 /// Turns whose prompt starts with `prefix` (auto-titling runs use other
 /// prompts on the same mock).
-fn turns_with(rig: &Rig, prefix: &str) -> Vec<zeron_harness::mock::RecordedInstructionTurn> {
+fn turns_with(rig: &Rig, prefix: &str) -> Vec<mast_harness::mock::RecordedInstructionTurn> {
     rig.mock
         .turns()
         .into_iter()
@@ -243,7 +243,7 @@ fn turns_with(rig: &Rig, prefix: &str) -> Vec<zeron_harness::mock::RecordedInstr
         .collect()
 }
 
-fn run_cwd(rig: &Rig, turn: &zeron_harness::mock::RecordedInstructionTurn) -> String {
+fn run_cwd(rig: &Rig, turn: &mast_harness::mock::RecordedInstructionTurn) -> String {
     rig.mock.runs()[turn.run_index].cwd.clone()
 }
 
@@ -302,7 +302,7 @@ fn row_field(rig: &Rig, kind: &str, id: &str, field: &str) -> Option<Value> {
         .and_then(|row| row.fields.get(field).cloned())
 }
 
-fn applications_of(rig: &Rig, chat: &str) -> Vec<zeron_doc::RegistryRow> {
+fn applications_of(rig: &Rig, chat: &str) -> Vec<mast_doc::RegistryRow> {
     rig.core
         .workspace
         .work_outline_inputs(SPACE)
@@ -329,7 +329,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
     }
 }
 
-/// Queue a plain Run the way any device (or the Zeron MCP `send`) does.
+/// Queue a plain Run the way any device (or the Mast MCP `send`) does.
 fn queue_run(rig: &Rig, chat: &str, prompt: &str, cwd: &str) -> String {
     rig.core
         .doc_host
@@ -848,7 +848,7 @@ async fn bound_chats_cannot_be_retargeted() {
         )
         .await
         .unwrap();
-    // The Zeron MCP `send` shape: a Run built from another cwd still runs in
+    // The Mast MCP `send` shape: a Run built from another cwd still runs in
     // the bound root.
     let id = queue_run(&rig, &chat, "launch pin mcp", &elsewhere.to_string_lossy());
     let entry = wait_command(&rig, &chat, &id).await;
@@ -866,7 +866,7 @@ async fn bound_chats_cannot_be_retargeted() {
     assert_eq!(row.cwd.as_deref(), Some(&*rig.repo.to_string_lossy()));
     // A Run carrying a worktree directive is refused.
     let mut request = run_request("launch pin worktree", &rig.repo.to_string_lossy());
-    request.worktree = Some(zeron_proto::WorktreeSpec {
+    request.worktree = Some(mast_proto::WorktreeSpec {
         repo_path: rig.repo.to_string_lossy().into_owned(),
         base: "main".into(),
         space_id: None,
@@ -889,13 +889,13 @@ async fn bound_chats_cannot_be_retargeted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn branch_auto_rename_is_skipped_for_bound_chats() {
     let rig = rig().await;
-    let repos = zeron_engine::repos::Repos::with_worktrees_root(
+    let repos = mast_engine::repos::Repos::with_worktrees_root(
         &rig.root.join("data"),
         DEVICE,
         rig.repo.join(".worktrees"),
     );
     let worktree = repos.create_worktree(&rig.repo, "main").await.expect("wt");
-    assert!(worktree.branch.starts_with("zeron/"));
+    assert!(worktree.branch.starts_with("mast/"));
     let wt_path = std::fs::canonicalize(&worktree.path).unwrap();
     let identity = describe(&rig, &wt_path).await;
     let mut p = params(&rig, "op-title", "launch title [hold]");
@@ -1105,7 +1105,7 @@ async fn harness_native_subagents_are_not_promoted_to_chats() {
 // ---------------------------------------------------------------------------
 
 fn unsupported_mock() -> InstructionMockHarness {
-    InstructionMockHarness::new(zeron_harness::InstructionSupport::Unsupported {
+    InstructionMockHarness::new(mast_harness::InstructionSupport::Unsupported {
         reason: "no channel".into(),
         upgrade_hint: None,
     })
@@ -1212,7 +1212,7 @@ async fn per_chat_worktree_is_not_an_execution_exception_but_an_override_is() {
         .expect("launch")
         .chat_id;
     let snapshot =
-        zeron_doc::materialize_work_outline(SPACE, &rig.core.workspace.work_outline_inputs(SPACE));
+        mast_doc::materialize_work_outline(SPACE, &rig.core.workspace.work_outline_inputs(SPACE));
     let exception = |chat: &str| snapshot.chat_execution_binding(chat).unwrap().exception;
     assert!(
         !exception(&worktree),
@@ -1258,7 +1258,7 @@ async fn malformed_binding_rejects_every_gate_instead_of_reading_as_unbound() {
     rig.core.workspace.apply_registry_rows(1_000_000, vec![row]);
     assert!(matches!(
         rig.core.workspace.chat_execution_binding_state(&chat),
-        zeron_proto::ChatExecutionBindingState::Malformed { .. }
+        mast_proto::ChatExecutionBindingState::Malformed { .. }
     ));
 
     // Plain Run (any device, MCP send): rejected at drain, nothing written.
@@ -1372,7 +1372,7 @@ async fn home_directory_root_is_rejected_not_remapped_to_the_projectless_folder(
     let mut resolved = rig
         .core
         .workspace
-        .resolve_execution(&zeron_proto::ExecutionScope::Space {
+        .resolve_execution(&mast_proto::ExecutionScope::Space {
             space_id: SPACE.into(),
         })
         .unwrap();
@@ -1384,8 +1384,8 @@ async fn home_directory_root_is_rejected_not_remapped_to_the_projectless_folder(
             "home-chat",
             &resolved,
             "op-home-capture",
-            &zeron_proto::WorkOutlineActor {
-                kind: zeron_proto::WorkOutlineActorKind::User,
+            &mast_proto::WorkOutlineActor {
+                kind: mast_proto::WorkOutlineActorKind::User,
                 device_id: DEVICE.into(),
                 chat_id: None,
                 message_id: None,

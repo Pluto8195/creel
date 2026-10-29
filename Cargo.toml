@@ -13,7 +13,7 @@ members = [
     "crates/ui",
     "crates/syntax",
     "crates/mcp",
-    "apps/zeron",
+    "apps/mast",
 ]
 
 [workspace.package]
@@ -23,18 +23,18 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-zeron-proto = { path = "crates/proto" }
-zeron-preview = { path = "crates/preview" }
-zeron-doc = { path = "crates/doc" }
-zeron-sync = { path = "crates/sync" }
-zeron-harness = { path = "crates/harness" }
-zeron-engine = { path = "crates/engine" }
-zeron-rpc = { path = "crates/rpc" }
-zeron-update = { path = "crates/update" }
-zeron-ui = { path = "crates/ui" }
-zeron-syntax = { path = "crates/syntax" }
-zeron-theme = { path = "crates/theme" }
-zeron-mcp = { path = "crates/mcp" }
+mast-proto = { path = "crates/proto" }
+mast-preview = { path = "crates/preview" }
+mast-doc = { path = "crates/doc" }
+mast-sync = { path = "crates/sync" }
+mast-harness = { path = "crates/harness" }
+mast-engine = { path = "crates/engine" }
+mast-rpc = { path = "crates/rpc" }
+mast-update = { path = "crates/update" }
+mast-ui = { path = "crates/ui" }
+mast-syntax = { path = "crates/syntax" }
+mast-theme = { path = "crates/theme" }
+mast-mcp = { path = "crates/mcp" }
 
 # CRDT
 loro = "1.13"
@@ -55,7 +55,7 @@ loro-protocol = "0.3"
 # sidebar); a6c1ad5 adds BackdropBlur + horizontal EdgeFade + glass fixes;
 # 9b672fa bounds renderer GPU memory (region-sized backdrop blur scratch,
 # idle release of blur/path intermediates, instance pool shrink,
-# ZERON_GPU_STATS=1 diagnostics); b687328 adds ImageSource::evict (frees
+# MAST_GPU_STATS=1 diagnostics); b687328 adds ImageSource::evict (frees
 # sprite-atlas tiles — remove_asset alone leaked them, see
 # attachments::flush_evicted); ac135eb adds device memory to the stats line;
 # f596cde fixes destination alpha on transparent windows (Porter-Duff OVER,
@@ -140,7 +140,7 @@ lto = "thin"
 strip = "symbols"
 
 [profile.installed]
-# Locally installed Mast.app (cargo build --profile installed -p zeron): optimised
+# Locally installed Mast.app (cargo build --profile installed -p mast): optimised
 # like release but with incremental builds, many codegen units and no LTO/strip so
 # rebuilds stay fast and backtraces keep line numbers.
 inherits = "release"

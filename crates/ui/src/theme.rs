@@ -35,12 +35,12 @@
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use gpui::{App, Global, Hsla, SharedString, hsla};
-use serde::{Deserialize, Serialize};
-use zeron_syntax::HighlightKind;
-use zeron_theme::{
+use mast_syntax::HighlightKind;
+use mast_theme::{
     AccentPreset, AccentSelection, Color as ModelColor, SurfacePreference, SurfaceTreatment,
     ThemeRegistry, ThemeVariant,
 };
+use serde::{Deserialize, Serialize};
 
 /// User-selectable accent family. A choice is one color identity, not a
 /// miniature multi-hue theme: every interactive accent role stays on the same
@@ -50,8 +50,14 @@ use zeron_theme::{
 pub enum AccentColor {
     /// The exact upstream Zeron indigo.
     #[default]
-    #[serde(alias = "violet", alias = "indigo", alias = "red", alias = "purple")]
-    Zeron,
+    #[serde(
+        alias = "zeron",
+        alias = "violet",
+        alias = "indigo",
+        alias = "red",
+        alias = "purple"
+    )]
+    Mast,
     Orange,
     Amber,
     Green,
@@ -63,7 +69,7 @@ pub enum AccentColor {
 
 impl AccentColor {
     pub const ALL: [Self; 7] = [
-        Self::Zeron,
+        Self::Mast,
         Self::Orange,
         Self::Amber,
         Self::Green,
@@ -74,7 +80,7 @@ impl AccentColor {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Zeron => "Mast",
+            Self::Mast => "Mast",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",
@@ -89,10 +95,10 @@ impl AccentColor {
         // used to gamut-clip OKLCH into sRGB and then mutate HSL lightness,
         // producing different chroma and apparent hues across light/dark.
         let (primary, strong) = match (self, appearance) {
-            (Self::Zeron, Appearance::Dark) => {
+            (Self::Mast, Appearance::Dark) => {
                 (oklch(0.673, 0.182, 276.935), oklch(0.585, 0.233, 277.117))
             }
-            (Self::Zeron, Appearance::Light) => {
+            (Self::Mast, Appearance::Light) => {
                 (oklch(0.511, 0.262, 276.966), oklch(0.511, 0.262, 276.966))
             }
             (Self::Orange, Appearance::Dark) => (oklch(0.75, 0.18, 55.0), oklch(0.54, 0.19, 55.0)),
@@ -133,7 +139,7 @@ impl AccentColor {
 impl From<AccentColor> for AccentPreset {
     fn from(value: AccentColor) -> Self {
         match value {
-            AccentColor::Zeron => Self::Zeron,
+            AccentColor::Mast => Self::Mast,
             AccentColor::Orange => Self::Orange,
             AccentColor::Amber => Self::Amber,
             AccentColor::Green => Self::Green,
@@ -147,7 +153,7 @@ impl From<AccentColor> for AccentPreset {
 impl From<AccentPreset> for AccentColor {
     fn from(value: AccentPreset) -> Self {
         match value {
-            AccentPreset::Zeron => Self::Zeron,
+            AccentPreset::Mast => Self::Mast,
             AccentPreset::Orange => Self::Orange,
             AccentPreset::Amber => Self::Amber,
             AccentPreset::Green => Self::Green,
@@ -273,10 +279,10 @@ pub(crate) fn bump_style_generation() {
     STYLE_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
-fn model_appearance(appearance: zeron_theme::Appearance) -> Appearance {
+fn model_appearance(appearance: mast_theme::Appearance) -> Appearance {
     match appearance {
-        zeron_theme::Appearance::Dark => Appearance::Dark,
-        zeron_theme::Appearance::Light => Appearance::Light,
+        mast_theme::Appearance::Dark => Appearance::Dark,
+        mast_theme::Appearance::Light => Appearance::Light,
     }
 }
 
@@ -772,11 +778,11 @@ impl TerminalColors {
 
     fn zeron(appearance: Appearance) -> Self {
         let id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "mast-dark",
+            Appearance::Light => "mast-light",
         };
         let registry = ThemeRegistry::active();
-        Self::from_variant(registry.variant(id).expect("Zeron terminal palette exists"))
+        Self::from_variant(registry.variant(id).expect("Mast terminal palette exists"))
     }
 }
 
@@ -846,7 +852,7 @@ impl Theme {
     /// The selected theme's shell tint painted over the blurred window
     /// background (macOS glass). Keeping the hue theme-owned matters when a
     /// user forces frost onto a palette authored for an opaque workbench: a
-    /// fixed Zeron grey would erase that palette's identity.
+    /// fixed Mast grey would erase that palette's identity.
     pub fn glass(&self) -> Hsla {
         if self.surface_treatment == SurfaceTreatment::Opaque {
             return self.surface;
@@ -867,7 +873,7 @@ impl Theme {
         self.contrast_checked_tint_alpha(self.surface, base, self.adverse_backdrop())
     }
 
-    /// Increase tint coverage only as far as needed for Zeron's shared text
+    /// Increase tint coverage only as far as needed for Mast's shared text
     /// roles. This is used for both window glass and in-app frosted surfaces,
     /// whose blurred content can otherwise invalidate an imported palette's
     /// original solid-background assumptions.
@@ -927,7 +933,7 @@ impl Theme {
 
     /// Theme-owned hover wash for chrome that sits on glass (sidebar rows,
     /// tabs, titlebar buttons). The importer maps this role from the source
-    /// theme, so forcing frost does not reintroduce Zeron's neutral hover.
+    /// theme, so forcing frost does not reintroduce Mast's neutral hover.
     pub fn glass_hover(&self) -> Hsla {
         self.element_hover
     }
@@ -1065,8 +1071,8 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Dark);
         Self {
             appearance: Appearance::Dark,
-            variant_id: "zeron-dark".into(),
-            family_id: "zeron".into(),
+            variant_id: "mast-dark".into(),
+            family_id: "mast".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
@@ -1145,8 +1151,8 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Light);
         Self {
             appearance: Appearance::Light,
-            variant_id: "zeron-light".into(),
-            family_id: "zeron".into(),
+            variant_id: "mast-light".into(),
+            family_id: "mast".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
@@ -1276,14 +1282,14 @@ impl Theme {
     ) -> Self {
         let registry = ThemeRegistry::active();
         let fallback_id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "mast-dark",
+            Appearance::Light => "mast-light",
         };
         let variant = registry
             .variant(variant_id)
             .filter(|variant| model_appearance(variant.appearance) == appearance)
             .or_else(|| registry.variant(fallback_id))
-            .expect("the built-in registry contains both Zeron appearances");
+            .expect("the built-in registry contains both Mast appearances");
         Self::from_variant(variant, accent_selection, surface_preference)
     }
 
@@ -1294,7 +1300,7 @@ impl Theme {
     ) -> Self {
         let appearance = model_appearance(variant.appearance);
         let accent_color = match accent_selection {
-            AccentSelection::ThemeDefault => AccentColor::Zeron,
+            AccentSelection::ThemeDefault => AccentColor::Mast,
             AccentSelection::Preset(preset) => preset.into(),
         };
         let mut theme = Self::for_preferences(appearance, accent_color);
@@ -1954,7 +1960,7 @@ mod tests {
     fn zeron_accent_is_the_exact_upstream_default() {
         let dark = Theme::dark();
         let light = Theme::light();
-        assert_eq!(dark.accent_color, AccentColor::Zeron);
+        assert_eq!(dark.accent_color, AccentColor::Mast);
         assert_eq!(dark.accent, oklch(0.673, 0.182, 276.935));
         assert_eq!(dark.accent_strong, oklch(0.585, 0.233, 277.117));
         assert_eq!(dark.code_text, dark.accent);
@@ -1974,7 +1980,7 @@ mod tests {
         for old_default in ["violet", "indigo", "red", "purple"] {
             assert_eq!(
                 serde_json::from_str::<AccentColor>(&format!(r#""{old_default}""#)).unwrap(),
-                AccentColor::Zeron
+                AccentColor::Mast
             );
         }
         assert_eq!(
@@ -2020,14 +2026,14 @@ mod tests {
             assert!(frosted.is_frost());
         }
 
-        let opaque_zeron = Theme::for_selection(
+        let opaque_mast = Theme::for_selection(
             Appearance::Dark,
-            "zeron-dark",
+            "mast-dark",
             AccentSelection::ThemeDefault,
             SurfacePreference::Opaque,
         );
-        assert_eq!(opaque_zeron.surface_treatment, SurfaceTreatment::Opaque);
-        assert_eq!(opaque_zeron.glass(), opaque_zeron.surface);
+        assert_eq!(opaque_mast.surface_treatment, SurfaceTreatment::Opaque);
+        assert_eq!(opaque_mast.glass(), opaque_mast.surface);
     }
 
     #[test]
@@ -2080,7 +2086,7 @@ mod tests {
     #[test]
     fn runtime_hardening_protects_native_custom_theme_edits() {
         let mut variant = ThemeRegistry::builtin()
-            .variant("zeron-dark")
+            .variant("mast-dark")
             .unwrap()
             .clone();
         variant.colors.text = variant.colors.background;
@@ -2181,7 +2187,7 @@ mod tests {
                 assert_eq!(theme.success, baseline.success);
                 assert_eq!(theme.diff_add, baseline.diff_add);
                 assert_eq!(theme.diff_del, baseline.diff_del);
-                if accent != AccentColor::Zeron {
+                if accent != AccentColor::Mast {
                     assert_ne!(theme.code_text, baseline.code_text);
                     assert_ne!(theme.busy, baseline.busy);
                     assert_ne!(theme.selection, baseline.selection);

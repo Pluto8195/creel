@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -60,11 +60,11 @@ fn write_cursor(root: &Path, chat: &str, v: &serde_json::Value) {
 }
 
 fn message_count(root: &Path, chat: &str) -> usize {
-    let store = zeron_sync::DocsStore::open(root).unwrap();
+    let store = mast_sync::DocsStore::open(root).unwrap();
     let bytes = store.load_snapshot(chat).unwrap().unwrap();
     let loro = loro::LoroDoc::new();
     loro.import(&bytes).unwrap();
-    zeron_doc::SessionDoc::from_doc(loro)
+    mast_doc::SessionDoc::from_doc(loro)
         .read_entries()
         .unwrap()
         .len()

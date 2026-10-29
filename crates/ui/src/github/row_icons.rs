@@ -20,7 +20,7 @@
 //! The mapping from state to icon and color is pure so it is unit-tested;
 //! [`legend_rows`] feeds the `?` reference from the same tables.
 use gpui::{AnyElement, Hsla, SharedString, WeakEntity, div, prelude::*, px};
-use zeron_proto::{
+use mast_proto::{
     PullRequestCiStatus, PullRequestMyReviewState, PullRequestRef, PullRequestState,
     PullRequestStatusSummary,
 };
@@ -697,7 +697,7 @@ pub(crate) fn legend_rows() -> Vec<LegendRow> {
 mod tests {
     use super::*;
     use crate::github::fixture::summary;
-    use zeron_proto::PullRequestReviewDecision;
+    use mast_proto::PullRequestReviewDecision;
 
     #[test]
     fn pr_icon_and_color_for_every_state() {

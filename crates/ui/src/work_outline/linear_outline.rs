@@ -8,7 +8,7 @@
 //! A child module of `outline_view` so it reads the Outline's snapshots
 //! without widening that view's API.
 use gpui::{AnyElement, Context, SharedString, WeakEntity, div, prelude::*, px};
-use zeron_proto::linear::{LinearIssueSummary, LinearStateType};
+use mast_proto::linear::{LinearIssueSummary, LinearStateType};
 
 use super::super::chips::TextTooltip;
 use super::super::model::{ItemRow, row_key};
@@ -192,7 +192,7 @@ impl OutlineView {
         let left = snapshot
             .item(&item.item_id)
             .and_then(|i| i.external_sync_state.as_ref())
-            .filter(|state| state.provider == zeron_proto::linear::LINEAR_PROVIDER)
+            .filter(|state| state.provider == mast_proto::linear::LINEAR_PROVIDER)
             .and_then(|state| state.marker.clone());
         let marker_width = if destination.is_some() { 28.0 } else { 0.0 }
             + if left.is_some() { 120.0 } else { 0.0 };
@@ -213,8 +213,8 @@ impl OutlineView {
     /// then drop the old reference (`project_links::fix_project_link`).
     pub(super) fn fix_project_link(
         &mut self,
-        reference: zeron_proto::WorkItemExternalReferenceView,
-        project: zeron_proto::linear::LinearProjectSummary,
+        reference: mast_proto::WorkItemExternalReferenceView,
+        project: mast_proto::linear::LinearProjectSummary,
         cx: &mut Context<Self>,
     ) {
         let task = project_links::fix_project_link(&self.state, &reference, &project, cx);
@@ -277,7 +277,7 @@ fn open_link(
 }
 
 /// The issue chip's text: `In Progress · High · Ada`.
-pub(crate) fn issue_chip_text(issue: &zeron_proto::linear::LinearIssueSummary) -> String {
+pub(crate) fn issue_chip_text(issue: &mast_proto::linear::LinearIssueSummary) -> String {
     let mut parts = vec![issue.state.name.clone()];
     parts.extend(crate::linear::priority_text(
         issue.priority,

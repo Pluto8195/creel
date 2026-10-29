@@ -1,14 +1,14 @@
 //! Opt-in live test. Uses real Cursor quota in a disposable workspace.
-//! ZERON_CURSOR_STATE_DIR=$(mktemp -d) cargo run -p zeron-harness --example cursor_stability_probe -- sessions 20
-//! cargo run -p zeron-harness --example cursor_stability_probe -- models 1000
+//! MAST_CURSOR_STATE_DIR=$(mktemp -d) cargo run -p mast-harness --example cursor_stability_probe -- sessions 20
+//! cargo run -p mast-harness --example cursor_stability_probe -- models 1000
 use futures::StreamExt;
+use mast_harness::{CancellationToken, CursorHarness, Harness, RunControls};
+use mast_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
-use zeron_harness::{CancellationToken, CursorHarness, Harness, RunControls};
-use zeron_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 async fn turn(
     harness: &CursorHarness,
@@ -32,7 +32,8 @@ async fn turn(
         prompt,
         harness: None,
         model: Some(
-            std::env::var("ZERON_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -83,7 +84,7 @@ async fn turn(
                         "drop" => break,
                         "kill" => {
                             let root = PathBuf::from(
-                                std::env::var_os("ZERON_CURSOR_STATE_DIR")
+                                mast_proto::env::var_os("MAST_CURSOR_STATE_DIR")
                                     .expect("isolated state root required"),
                             );
                             let dir =
@@ -152,7 +153,8 @@ async fn parked(harness: &CursorHarness, count: usize) {
         ),
         harness: None,
         model: Some(
-            std::env::var("ZERON_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -181,7 +183,7 @@ async fn parked(harness: &CursorHarness, count: usize) {
                     println!("parked_turn={completed} checkpoint_recall=true");
                     if completed==2 {
                         if let Some(before)=auth_exchanges_before {
-                            let control=std::env::var("ZERON_CURSOR_AUTH_CLOCK").unwrap();
+                            let control=mast_proto::env::var("MAST_CURSOR_AUTH_CLOCK").unwrap();
                             let after=std::fs::read_to_string(format!("{control}.exchanges")).unwrap().lines().count();
                             assert!(after>before,"SDK reused its near-expiry auth token: exchanges remained {before}");
                             println!("auth_refresh_verified=true additional_exchanges={}",after-before);
@@ -189,7 +191,7 @@ async fn parked(harness: &CursorHarness, count: usize) {
                     }
                     if completed==count {break;}
                     if completed==1 {
-                        if let Ok(control)=std::env::var("ZERON_CURSOR_AUTH_CLOCK") {
+                        if let Ok(control)=mast_proto::env::var("MAST_CURSOR_AUTH_CLOCK") {
                             let exchanges=std::fs::read_to_string(format!("{control}.exchanges")).unwrap();
                             auth_exchanges_before=Some(exchanges.lines().count());
                             let last:serde_json::Value=serde_json::from_str(exchanges.lines().last().unwrap()).unwrap();
@@ -200,7 +202,7 @@ async fn parked(harness: &CursorHarness, count: usize) {
                             println!("auth_clock_advanced_ms={offset} exchanges_before={}",exchanges.lines().count());
                         }
                     }
-                    tx.send(zeron_harness::SteerMessage{prompt:"Repeat the exact PARKED-STABILITY token from earlier. Reply only the token. Do not use tools or files.".into(),message_id:None}).await.unwrap();
+                    tx.send(mast_harness::SteerMessage{prompt:"Repeat the exact PARKED-STABILITY token from earlier. Reply only the token. Do not use tools or files.".into(),message_id:None}).await.unwrap();
                 }
                 _=>{}
             }
@@ -266,7 +268,8 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
         },
         harness: None,
         model: Some(
-            std::env::var("ZERON_CURSOR_TEST_MODEL").unwrap_or_else(|_| "composer-2.5".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "composer-2.5".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -289,7 +292,7 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
                 )
             };
             if tx
-                .send(zeron_harness::SteerMessage {
+                .send(mast_harness::SteerMessage {
                     prompt,
                     message_id: None,
                 })
@@ -399,7 +402,8 @@ async fn history(harness: &CursorHarness, count: usize) {
         ),
         harness: None,
         model: Some(
-            std::env::var("ZERON_CURSOR_TEST_MODEL").unwrap_or_else(|_| "muse-spark-1.3".into()),
+            mast_proto::env::var("MAST_CURSOR_TEST_MODEL")
+                .unwrap_or_else(|_| "muse-spark-1.3".into()),
         ),
         reasoning: None,
         model_options: Default::default(),
@@ -418,7 +422,7 @@ async fn history(harness: &CursorHarness, count: usize) {
     let producer = tokio::spawn(async move {
         start_rx.await.unwrap();
         for token in sent.iter().skip(1) {
-            tx.send(zeron_harness::SteerMessage{prompt:format!("Add token {token} to your remembered conversation history. Reply with the token from the immediately previous user message, followed by this new token. Do not use tools."),message_id:Some(uuid::Uuid::new_v4().to_string())}).await.unwrap();
+            tx.send(mast_harness::SteerMessage{prompt:format!("Add token {token} to your remembered conversation history. Reply with the token from the immediately previous user message, followed by this new token. Do not use tools."),message_id:Some(uuid::Uuid::new_v4().to_string())}).await.unwrap();
         }
     });
     let mut id = String::new();
@@ -494,7 +498,7 @@ async fn main() {
         );
         let outage = if mode == "outage" {
             let flag = PathBuf::from(
-                std::env::var_os("ZERON_CURSOR_STRESS_OUTAGE_FLAG")
+                mast_proto::env::var_os("MAST_CURSOR_STRESS_OUTAGE_FLAG")
                     .expect("set a disposable fault-injection flag path"),
             );
             std::fs::write(&flag, "rate-limit").unwrap();
@@ -520,18 +524,18 @@ async fn main() {
             serde_json::json!({"requests": count+1+usize::from(mode == "outage"), "models":baseline.len(), "elapsedMs":start.elapsed().as_millis(), "failures":0})
         );
     } else if mode == "history" {
-        assert!(std::env::var_os("ZERON_CURSOR_STATE_DIR").is_some());
+        assert!(mast_proto::env::var_os("MAST_CURSOR_STATE_DIR").is_some());
         history(&harness, count).await;
     } else if mode == "burst" || mode == "cancel-burst" {
-        assert!(std::env::var_os("ZERON_CURSOR_STATE_DIR").is_some());
+        assert!(mast_proto::env::var_os("MAST_CURSOR_STATE_DIR").is_some());
         burst(&harness, count, mode == "cancel-burst").await;
     } else if mode == "parked" {
-        assert!(std::env::var_os("ZERON_CURSOR_STATE_DIR").is_some());
+        assert!(mast_proto::env::var_os("MAST_CURSOR_STATE_DIR").is_some());
         parked(&harness, count).await;
     } else if mode == "sessions" {
         assert!(
-            std::env::var_os("ZERON_CURSOR_STATE_DIR").is_some(),
-            "set an isolated ZERON_CURSOR_STATE_DIR"
+            mast_proto::env::var_os("MAST_CURSOR_STATE_DIR").is_some(),
+            "set an isolated MAST_CURSOR_STATE_DIR"
         );
         let workspace = tempfile::tempdir().unwrap();
         let cwd = workspace.path().to_str().unwrap();

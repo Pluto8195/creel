@@ -1,5 +1,5 @@
 //! CI-safe (synthetic, no real machine data) regression test for the
-//! `SCAN_CHAT_SUBAGENTS` bug: a chat Zeron itself launched or resumed (via
+//! `SCAN_CHAT_SUBAGENTS` bug: a chat Mast itself launched or resumed (via
 //! `WorkspaceHost::set_chat_harness_session`, never through
 //! `ExternalSessionImporter::import`) has no external-import cursor, so
 //! `ContextUsageProvider::transcript_path_for_chat` — the same two-source
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -88,7 +88,7 @@ async fn resolves_and_scans_subagents_for_a_harness_session_only_chat() {
         .expect("must resolve via the harness-session fallback");
     assert_eq!(resolved, transcript_path);
 
-    let subagents = zeron_engine::subagent_scan::scan_subagents(&resolved).expect("scan_subagents");
+    let subagents = mast_engine::subagent_scan::scan_subagents(&resolved).expect("scan_subagents");
     assert_eq!(subagents.len(), 1);
     assert_eq!(subagents[0].agent_id, "sub1");
     assert_eq!(subagents[0].description.as_deref(), Some("Do a subtask"));

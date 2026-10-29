@@ -18,7 +18,7 @@ pub struct Listener {
     pub args: Vec<String>,
     pub started_at: u64,
     pub address: SocketAddr,
-    pub zeron_owned: bool,
+    pub mast_owned: bool,
 }
 
 impl Listener {
@@ -119,7 +119,7 @@ fn mark_descendants(listeners: &mut [Listener], parents: &HashMap<u32, u32>, own
         let mut pid = listener.pid;
         for _ in 0..128 {
             if pid == owner {
-                listener.zeron_owned = true;
+                listener.mast_owned = true;
                 break;
             }
             let Some(&parent) = parents.get(&pid) else {
@@ -252,7 +252,7 @@ pub fn listeners() -> Vec<Listener> {
                     args: args.clone(),
                     started_at,
                     address,
-                    zeron_owned: false,
+                    mast_owned: false,
                 });
             }
         }
@@ -387,7 +387,7 @@ pub fn listeners() -> Vec<Listener> {
         // against its already-authorized project roots and only canonicalizes
         // a matching candidate. Canonicalizing every user's listener cwd here
         // can otherwise touch Music, Pictures, or another privacy-managed
-        // folder that has nothing to do with Zeron.
+        // folder that has nothing to do with Mast.
         let Some(cwd) = cwds.get(&pid).map(PathBuf::from) else {
             continue;
         };
@@ -418,7 +418,7 @@ pub fn listeners() -> Vec<Listener> {
                 args: args.clone(),
                 started_at: *started_at,
                 address,
-                zeron_owned: false,
+                mast_owned: false,
             });
         }
     }

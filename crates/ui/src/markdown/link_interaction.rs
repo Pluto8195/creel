@@ -367,7 +367,7 @@ impl Element for LinkRanges {
                         }),
                     );
                 }
-                let open_in_zeron = crate::settings::current(cx).open_web_links_in_zeron;
+                let open_in_mast = crate::settings::current(cx).open_web_links_in_mast;
                 let menu = state.menu.clone();
                 card = card.child(popover::menu_separator()).child(
                     popover::menu_row(
@@ -376,7 +376,7 @@ impl Element for LinkRanges {
                         format!("{}-link-{index}-default-destination", self.id),
                     )
                     .id("Open links in Mast")
-                    .child(div().w(px(16.)).flex_none().when(open_in_zeron, |el| {
+                    .child(div().w(px(16.)).flex_none().when(open_in_mast, |el| {
                         el.child(
                             icons::icon(icons::CHECK)
                                 .size(px(16.))
@@ -386,7 +386,7 @@ impl Element for LinkRanges {
                     .child("Open links in Mast")
                     .track_focus(&state.menu_focus[3])
                     .role(Role::Button)
-                    .aria_label(if open_in_zeron {
+                    .aria_label(if open_in_mast {
                         "Open links in Mast, checked"
                     } else {
                         "Open links in Mast, unchecked"
@@ -397,7 +397,7 @@ impl Element for LinkRanges {
                             crate::settings::SavePolicy::Immediate,
                             cx,
                             |settings| {
-                                settings.open_web_links_in_zeron = !open_in_zeron;
+                                settings.open_web_links_in_mast = !open_in_mast;
                             },
                         );
                         menu.borrow_mut().take();
@@ -894,13 +894,13 @@ mod rendered_tests {
                                 !draw_has_tooltip(window, cx),
                                 "pending hover must not appear over the menu"
                             );
-                            let before = crate::settings::current(cx).open_web_links_in_zeron;
+                            let before = crate::settings::current(cx).open_web_links_in_mast;
                             key(window, "down", cx);
                             key(window, "down", cx);
                             key(window, "down", cx);
                             key(window, "enter", cx);
                             assert_ne!(
-                                crate::settings::current(cx).open_web_links_in_zeron,
+                                crate::settings::current(cx).open_web_links_in_mast,
                                 before,
                                 "the fourth menu row toggles the default destination"
                             );
@@ -963,7 +963,7 @@ mod rendered_tests {
                 assert_eq!(log.borrow().len(), 2);
                 assert_eq!(log.borrow()[0].target.original, "https://example.com/one");
                 assert_eq!(log.borrow()[1].target.original, "https://example.org/two");
-                // Menu starts on Open in Zeron; choose the external action.
+                // Menu starts on Open in Mast; choose the external action.
                 for key in ["down", "enter"] {
                     window.dispatch_event(
                         gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {

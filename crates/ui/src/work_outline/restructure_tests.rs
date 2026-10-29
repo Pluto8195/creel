@@ -11,7 +11,7 @@ fn restructure_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -300,7 +300,7 @@ fn retrying_a_failed_move_reuses_its_operation_id(cx: &mut gpui::TestAppContext)
                 )
                 .is_ok()
             {
-                return Err(zeron_rpc::RpcError::Failed("host unreachable".into()));
+                return Err(mast_rpc::RpcError::Failed("host unreachable".into()));
             }
             reply_ok(params)
         },
@@ -1103,7 +1103,7 @@ fn gated_restructure_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -1219,7 +1219,7 @@ fn a_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestAppConte
         dir.path(),
         crate::work_outline::store::fixture_snapshot("s1"),
         |_| {
-            Err(zeron_rpc::RpcError::Failed(
+            Err(mast_rpc::RpcError::Failed(
                 "work-outline/conflict: stale".into(),
             ))
         },
@@ -1428,7 +1428,7 @@ fn a_picker_move_shows_at_once_and_rolls_back_when_it_fails(cx: &mut gpui::TestA
         dir.path(),
         crate::work_outline::store::fixture_snapshot("s1"),
         |_| {
-            Err(zeron_rpc::RpcError::Failed(
+            Err(mast_rpc::RpcError::Failed(
                 "work-outline/conflict: stale".into(),
             ))
         },
@@ -1649,7 +1649,7 @@ fn a_failed_chat_move_rolls_back_and_retries_with_its_operation_id(cx: &mut gpui
         dir.path(),
         crate::work_outline::store::fixture_snapshot("s1"),
         |_| {
-            Err(zeron_rpc::RpcError::Failed(
+            Err(mast_rpc::RpcError::Failed(
                 "work-outline/conflict: stale".into(),
             ))
         },
@@ -2045,7 +2045,7 @@ fn a_failed_move_dismisses_its_toast(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (_overview, outline, _calls, vcx) =
         restructure_overview(cx, dir.path(), instruction_fixture::snapshot("s1"), |_| {
-            Err(zeron_rpc::RpcError::Failed("host unreachable".into()))
+            Err(mast_rpc::RpcError::Failed("host unreachable".into()))
         });
     select_item(&outline, vcx, API);
     press(vcx, "shift-tab");

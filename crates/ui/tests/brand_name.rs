@@ -91,7 +91,7 @@ fn user_facing_strings_do_not_use_the_old_app_name() {
         "crates/update/src",
         "crates/theme/src",
         "crates/harness/src",
-        "apps/zeron/src",
+        "apps/mast/src",
     ] {
         rust_files(&root.join(dir), &mut files);
     }

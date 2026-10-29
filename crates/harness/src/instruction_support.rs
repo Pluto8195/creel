@@ -7,7 +7,7 @@
 //! [`HarnessError::Capability`] before spawning, never run without them
 //! ([`require_instruction_support`]).
 
-use zeron_proto::{HarnessId, RunRequest};
+use mast_proto::{HarnessId, RunRequest};
 
 use crate::HarnessError;
 
@@ -210,7 +210,7 @@ impl ProbeCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{InstructionDelivery, InstructionEnvelope, InstructionTransition};
+    use mast_proto::{InstructionDelivery, InstructionEnvelope, InstructionTransition};
 
     fn request(rendered: Option<&str>) -> RunRequest {
         let mut request: RunRequest = serde_json::from_value(serde_json::json!({
@@ -303,15 +303,15 @@ mod adapter_matrix_tests {
             "sandbox": "workspace-write", "resume": null
         }))
         .unwrap();
-        request.instructions = Some(zeron_proto::InstructionDelivery {
-            envelope: zeron_proto::InstructionEnvelope {
+        request.instructions = Some(mast_proto::InstructionDelivery {
+            envelope: mast_proto::InstructionEnvelope {
                 revision_id: "r".into(),
                 revision_hash: "h".into(),
                 envelope_version: 1,
                 envelope_sha256: "e".into(),
                 rendered: "x".into(),
             },
-            transition: zeron_proto::InstructionTransition::Fresh,
+            transition: mast_proto::InstructionTransition::Fresh,
         });
         request
     }
@@ -330,7 +330,7 @@ mod adapter_matrix_tests {
     /// `NotInstalled` instead.
     #[tokio::test]
     async fn adapters_without_a_channel_refuse_before_spawning() {
-        let missing = "/nonexistent/zeron-harness-binary";
+        let missing = "/nonexistent/mast-harness-binary";
         let harnesses: Vec<Box<dyn Harness>> = vec![
             Box::new(crate::CursorHarness::new().with_executable(missing)),
             Box::new(crate::OpencodeHarness::new().with_executable(missing)),

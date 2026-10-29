@@ -23,7 +23,7 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
     WeakEntity, Window, div, prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     ArchiveWorkItemParams, AssignChatToWorkItemParams, CreateWorkItemExternalReferenceParams,
     FieldPatch, RemoveChatFromWorkItemParams, RemoveWorkItemExternalReferenceParams,
     RestoreWorkItemParams, UpdateWorkItemParams, WorkItemChanges,
@@ -89,7 +89,7 @@ pub(crate) enum DetailsEvent {
     StartPrReview {
         space_id: String,
         item_id: String,
-        action: zeron_proto::PrReviewAction,
+        action: mast_proto::PrReviewAction,
     },
     /// Associate (`Some`) or disassociate (`None`) a Chat. The Outline sends
     /// it like its own Chat moves: applied at once, with its Undo toast when
@@ -117,7 +117,7 @@ pub(crate) fn parse_reference(raw: &str) -> Option<ParsedReference> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
-    if rest.is_empty() || url.chars().count() > zeron_proto::limits::MAX_REFERENCE_URL_CHARS {
+    if rest.is_empty() || url.chars().count() > mast_proto::limits::MAX_REFERENCE_URL_CHARS {
         return None;
     }
     let parts: Vec<&str> = rest
@@ -673,7 +673,7 @@ impl WorkItemDetails {
             .text()
             .trim()
             .chars()
-            .take(zeron_proto::limits::MAX_TITLE_CHARS)
+            .take(mast_proto::limits::MAX_TITLE_CHARS)
             .collect();
         if title.is_empty() || self.item().is_some_and(|item| item.title == title) {
             self.editing_title = false;
@@ -711,7 +711,7 @@ impl WorkItemDetails {
             .text()
             .trim()
             .chars()
-            .take(zeron_proto::limits::MAX_DESCRIPTION_CHARS)
+            .take(mast_proto::limits::MAX_DESCRIPTION_CHARS)
             .collect();
         let patch = if text.is_empty() {
             FieldPatch::Clear
@@ -1391,13 +1391,13 @@ impl Render for WorkItemDetails {
         let description = description.children(self.linear_sync_marker(
             &item,
             &snapshot,
-            zeron_proto::linear::SYNC_FIELD_DESCRIPTION,
+            mast_proto::linear::SYNC_FIELD_DESCRIPTION,
             &theme,
         ));
         let title_synced = self.linear_sync_marker(
             &item,
             &snapshot,
-            zeron_proto::linear::SYNC_FIELD_TITLE,
+            mast_proto::linear::SYNC_FIELD_TITLE,
             &theme,
         );
         let linear = self.render_linear_section(&item, &snapshot, &theme, cx);

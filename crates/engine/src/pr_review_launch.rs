@@ -1,5 +1,5 @@
 //! "Review PR" launcher (`StartPrReview`; docs/pr-review.md): a port of the
-//! Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` onto Zeron
+//! Cofactr workspace's `tools/cursor-claude-launcher/launch.sh` onto Mast
 //! Chats.
 //!
 //! Given `github.com/<owner>/<name>#<number>`:
@@ -34,14 +34,14 @@ use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-use zeron_doc::{RowState, SessionCommandPayload};
-use zeron_proto::work_outline::derive_id;
-use zeron_proto::{
+use mast_doc::{RowState, SessionCommandPayload};
+use mast_proto::work_outline::derive_id;
+use mast_proto::{
     AssignChatToWorkItemParams, ChatConfig, HarnessId, PrCheckoutKind, PrReviewAction,
     PrReviewError, PrReviewErrorCode, RunRequest, SandboxLevel, Space, StartPrReviewParams,
     StartPrReviewReply, WorkOutlineActor, WorkOutlineActorKind, WorkOutlineMutation,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::doc_host::DocHost;
 use crate::workspace_host::{ChatLinkKind, WorkspaceHost};
@@ -107,9 +107,9 @@ impl PrReviewTools {
             Some(path) => Command::new(path),
             None => {
                 let executable =
-                    zeron_harness::resolve_login_shell_executable("gh").ok_or_else(unavailable)?;
+                    mast_harness::resolve_login_shell_executable("gh").ok_or_else(unavailable)?;
                 let mut command = Command::new(executable);
-                zeron_harness::compose_login_shell_path_std(&mut command);
+                mast_harness::compose_login_shell_path_std(&mut command);
                 command
             }
         };
@@ -122,7 +122,7 @@ impl PrReviewTools {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -551,7 +551,7 @@ pub fn chat_title(action: PrReviewAction, repo_name: &str, number: u64, pr_title
 pub fn default_config() -> ChatConfig {
     ChatConfig {
         harness: HarnessId::ClaudeCode,
-        model: zeron_proto::resolve_model(HarnessId::ClaudeCode, None),
+        model: mast_proto::resolve_model(HarnessId::ClaudeCode, None),
         reasoning: None,
         model_options: Default::default(),
         sandbox: SandboxLevel::WorkspaceWrite,
@@ -781,7 +781,7 @@ impl PrReviewLauncher {
         }
         let _gate = self.gate.lock().await;
         let op = p.operation_id.as_str();
-        let inputs_hash = zeron_doc::registry::work_outline::inputs_hash(&LaunchInputs {
+        let inputs_hash = mast_doc::registry::work_outline::inputs_hash(&LaunchInputs {
             repo_owner: p.repo_owner.to_ascii_lowercase(),
             repo_name: p.repo_name.to_ascii_lowercase(),
             number: p.number,
@@ -835,7 +835,7 @@ impl PrReviewLauncher {
         }
         if self
             .workspace
-            .registry_row_state(zeron_doc::KIND_CHATS, &chat_id)
+            .registry_row_state(mast_doc::KIND_CHATS, &chat_id)
             == RowState::Tombstoned
         {
             return Err(invalid(
@@ -958,7 +958,7 @@ impl PrReviewLauncher {
                 &chat_id,
                 ChatLinkKind::Pr,
                 Some(&url),
-                zeron_proto::ChatLinkSource::ReviewLauncher,
+                mast_proto::ChatLinkSource::ReviewLauncher,
             )
             .map_err(engine)?;
         if let Some(item) = &p.work_item_id {
@@ -1057,7 +1057,7 @@ impl PrReviewLauncher {
             }
             let linked = self.workspace.chat_pr_links(&chat.id).is_ok_and(|links| {
                 links.iter().any(|link| {
-                    link.source == zeron_proto::ChatLinkSource::ReviewLauncher
+                    link.source == mast_proto::ChatLinkSource::ReviewLauncher
                         && crate::chat_links::canonicalize_pr_url(&link.url) == target
                 })
             });
@@ -1090,7 +1090,7 @@ impl PrReviewLauncher {
     ) -> Result<(), PrReviewError> {
         let row = self
             .workspace
-            .registry_row(zeron_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat_id)
+            .registry_row(mast_doc::KIND_WORK_ITEM_CHAT_ASSIGNMENTS, chat_id)
             .filter(|row| !row.deleted);
         if row.is_some() {
             // Assigned already (this start's earlier attempt, or the user

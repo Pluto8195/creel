@@ -2,7 +2,7 @@
 //! composer's agent, then open the new Chat (docs/pr-review.md).
 
 use super::*;
-use zeron_proto::{
+use mast_proto::{
     PrReference, PrReviewAction, PrReviewError, PrReviewErrorCode, StartPrReviewReply,
 };
 
@@ -39,7 +39,7 @@ impl Shell {
         reference: PrReference,
         action: PrReviewAction,
         item: Option<(String, String)>,
-        config: Option<zeron_proto::ChatConfig>,
+        config: Option<mast_proto::ChatConfig>,
         cx: &mut Context<Self>,
     ) -> Task<Result<StartPrReviewReply, PrReviewError>> {
         let mut params = self
@@ -106,8 +106,8 @@ mod tests {
     use crate::chat_type_view::ReviewStatus;
     use crate::pr_page::PageTab;
     use crate::pr_page::fixtures::row;
+    use mast_proto::{ChatLinkSource, PrDashBucket, PrDashChat, PrDashRow, PrDashTab};
     use std::sync::{Arc, Mutex};
-    use zeron_proto::{ChatLinkSource, PrDashBucket, PrDashChat, PrDashRow, PrDashTab};
 
     type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
 
@@ -126,7 +126,7 @@ mod tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -137,7 +137,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -526,7 +526,7 @@ mod tests {
             ];
             state.selected_space = Some("s1".into());
             state.no_project = false;
-            let mut chat: zeron_proto::Chat = serde_json::from_value(serde_json::json!({
+            let mut chat: mast_proto::Chat = serde_json::from_value(serde_json::json!({
                 "id": CHAT_API, "deviceId": "d", "title": "Review launch#42", "archived": false,
                 "createdAt": "2026-10-01T00:00:00Z"
             }))
@@ -586,7 +586,7 @@ mod tests {
         overview
             .update(cx, |overview, cx| {
                 overview.start_pr_review_filed(
-                    zeron_proto::PullRequestRef::new("acme", "flagship", 7),
+                    mast_proto::PullRequestRef::new("acme", "flagship", 7),
                     Some(("s1".into(), "w-pr".into())),
                     PrReviewAction::FixCi,
                     cx,
@@ -631,7 +631,7 @@ mod tests {
             .collect();
         });
         let (_calls, page) = open_page_on(&shell, cx, PageTab::Chats, |_| Ok(reply("chat", 0)));
-        let link_status = |source: &str| -> zeron_engine::pr_ticket_cache::ChatLinkStatus {
+        let link_status = |source: &str| -> mast_engine::pr_ticket_cache::ChatLinkStatus {
             serde_json::from_value(serde_json::json!({
                 "pr": null,
                 "prLinks": [{
@@ -1473,7 +1473,7 @@ mod tests {
         // Setting off: a plain click is external too.
         cx.update(|_, cx| {
             crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
-                settings.open_web_links_in_zeron = false
+                settings.open_web_links_in_mast = false
             })
         });
         click(cx, "pr-dash-number-1");

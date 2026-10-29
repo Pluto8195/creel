@@ -66,7 +66,7 @@ fn preview_link_outcome(activation: &render::LinkActivation) -> render::LinkOutc
 
 /// URL path resolution is independent of the UI host's filesystem.
 pub(super) fn relative_target(document: &str, target: &str) -> Option<(String, Option<String>)> {
-    if let Some(target) = target.strip_prefix("zeron-file:") {
+    if let Some(target) = crate::workspace_links::strip_file_scheme(target) {
         return relative_target("", target);
     }
     if target.starts_with('/') || target.contains(':') || target.contains('\\') {
@@ -131,7 +131,7 @@ pub(crate) struct MarkdownPreview {
     pub editor: Option<gpui::WeakEntity<super::editor::FileEditorState>>,
     list: ListState,
     cache: Rc<RefCell<RenderCache>>,
-    highlights: HashMap<usize, Arc<zeron_syntax::HighlightedDocument>>,
+    highlights: HashMap<usize, Arc<mast_syntax::HighlightedDocument>>,
     anchors: HashMap<String, usize>,
     parse_task: Option<Task<()>>,
     epoch: u64,
@@ -179,7 +179,7 @@ pub(crate) struct MarkdownPreview {
     preview_focus: FocusHandle,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
     open_web_link: Option<WebLinkHandler>,
-    /// Consulted first for non-web links (`path:line`, `zeron-file:`); a
+    /// Consulted first for non-web links (`path:line`, `mast-file:`); a
     /// `true` return means the owner handled it.
     open_file_link: Option<FileLinkHandler>,
 }
@@ -474,13 +474,11 @@ impl MarkdownPreview {
                     let mut anchors = HashMap::new();
                     for (ix, top) in tree.blocks.iter().enumerate() {
                         if let Block::CodeBlock { language, code } = &top.block {
-                            if let Ok(doc) =
-                                zeron_syntax::highlight(zeron_syntax::HighlightRequest {
-                                    source: code,
-                                    path: None,
-                                    fence_tag: language.as_deref(),
-                                })
-                            {
+                            if let Ok(doc) = mast_syntax::highlight(mast_syntax::HighlightRequest {
+                                source: code,
+                                path: None,
+                                fence_tag: language.as_deref(),
+                            }) {
                                 highlights.insert(ix, Arc::new(doc));
                             }
                         }
@@ -2510,7 +2508,7 @@ mod async_tests {
         let raster = image::RgbaImage::new(3000, 3000);
         let mut png = std::io::Cursor::new(Vec::new());
         raster.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        assert!(png.get_ref().len() < zeron_proto::MAX_WORKSPACE_IMAGE_BYTES);
+        assert!(png.get_ref().len() < mast_proto::MAX_WORKSPACE_IMAGE_BYTES);
         let media = crate::image_media::decode_image("image/png", png.into_inner()).unwrap();
         view.read_with(cx, |view, _| {
             assert!(view.admit_media(Ok(media)).is_err());

@@ -11,8 +11,8 @@ use gpui::{
     AnyElement, Context, Entity, Focusable, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
 };
-use zeron_proto::artifacts::comment_message;
-use zeron_proto::{
+use mast_proto::artifacts::comment_message;
+use mast_proto::{
     ArtifactAddCommentParams, ArtifactComment, ArtifactResolveCommentParams, ArtifactView,
     CommentAnchor,
 };

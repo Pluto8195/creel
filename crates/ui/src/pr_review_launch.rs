@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use zeron_proto::{
+use mast_proto::{
     ChatConfig, PrReference, PrReviewAction, PrReviewError, PrReviewErrorCode, StartPrReviewParams,
     StartPrReviewReply,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::state::EngineHandle;
 

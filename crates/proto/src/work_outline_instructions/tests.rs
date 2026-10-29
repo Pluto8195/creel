@@ -1318,7 +1318,7 @@ fn delivery_outcomes_have_stable_wire_shapes() {
         host_device_id: "d2".into(),
         harness: HarnessId::ClaudeCode,
         required_capability: "work-outline-instruction-envelope-v1/claude-code".into(),
-        reason: InstructionHostUnsupportedReason::ZeronUpgradeRequired,
+        reason: InstructionHostUnsupportedReason::MastUpgradeRequired,
         device_name: Some("Studio".into()),
         device_version: None,
     };
@@ -1332,5 +1332,22 @@ fn delivery_outcomes_have_stable_wire_shapes() {
             "reason": "zeronUpgradeRequired",
             "deviceName": "Studio"
         }),
+    );
+}
+
+/// The wire name stays `zeronUpgradeRequired` so devices on either side of the
+/// rename understand each other; the new spelling is also accepted on read.
+#[test]
+fn the_upgrade_reason_reads_both_spellings_and_writes_the_old_one() {
+    for name in ["zeronUpgradeRequired", "mastUpgradeRequired"] {
+        let reason: InstructionHostUnsupportedReason = serde_json::from_value(json!(name)).unwrap();
+        assert_eq!(
+            reason,
+            InstructionHostUnsupportedReason::MastUpgradeRequired
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(InstructionHostUnsupportedReason::MastUpgradeRequired).unwrap(),
+        json!("zeronUpgradeRequired")
     );
 }

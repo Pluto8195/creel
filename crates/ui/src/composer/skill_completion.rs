@@ -34,7 +34,7 @@ use gpui::{
     Context, Entity, Focusable, MouseButton, ScrollHandle, SharedString, Subscription, Task,
     Window, div, prelude::*, px,
 };
-use zeron_proto::{ExecutionScope, HarnessId, SlashCommand, WorkOutlineSnapshot};
+use mast_proto::{ExecutionScope, HarnessId, SlashCommand, WorkOutlineSnapshot};
 
 use super::{
     ComposerInput, ComposerInputEvent, MentionToken, SlashCacheEntry, list_commands_params,

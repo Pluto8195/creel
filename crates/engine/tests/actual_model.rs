@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::SessionCommandPayload;
-use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use mast_doc::SessionCommandPayload;
+use mast_engine::{EngineCore, HarnessRegistry, RunJournal};
+use mast_harness::{Harness, HarnessError, RunControls};
+use mast_proto::{
     AgentEvent, ChatModelDisplay, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest,
     SandboxLevel, SteeringMode,
 };
@@ -135,7 +135,11 @@ async fn a_chat_with_no_configured_model_records_and_displays_what_ran() {
             },
         )
         .expect("queue run");
-    wait_for(|| actual_model(&core).is_some(), "init model to be recorded").await;
+    wait_for(
+        || actual_model(&core).is_some(),
+        "init model to be recorded",
+    )
+    .await;
 
     let chat = core.workspace.chat(CHAT).unwrap().unwrap();
     assert_eq!(chat.actual_model.as_deref(), Some("claude-fable-5"));
@@ -240,7 +244,9 @@ async fn backfill_marks_checked_journals_and_rechecks_only_after_growth() {
         assistant_message_id: "a".into(),
     };
     let journal = RunJournal::open(&journals).unwrap();
-    journal.append(CHAT, &started(HarnessId::Codex, "echo")).unwrap();
+    journal
+        .append(CHAT, &started(HarnessId::Codex, "echo"))
+        .unwrap();
     let core = assemble(&dir);
     // Let the boot pass settle, then run ours: no model, so the journal is marked.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -251,13 +257,21 @@ async fn backfill_marks_checked_journals_and_rechecks_only_after_growth() {
 
     // Same length: skipped even though a model has appeared (planted via a
     // marker matching the grown length), proving the journal is not reread.
-    journal.append(CHAT, &started(HarnessId::ClaudeCode, "claude-fable-5")).unwrap();
+    journal
+        .append(CHAT, &started(HarnessId::ClaudeCode, "claude-fable-5"))
+        .unwrap();
     journal.mark_model_checked(CHAT, journal.byte_len(CHAT));
-    assert_eq!(core.sessions.backfill_actual_models(), 0, "marked chat skipped");
+    assert_eq!(
+        core.sessions.backfill_actual_models(),
+        0,
+        "marked chat skipped"
+    );
     assert_eq!(actual_model(&core), None);
 
     // Growth past the marker triggers a recheck, which finds the model.
-    journal.append(CHAT, &started(HarnessId::Codex, "echo")).unwrap();
+    journal
+        .append(CHAT, &started(HarnessId::Codex, "echo"))
+        .unwrap();
     assert_eq!(core.sessions.backfill_actual_models(), 1);
     assert_eq!(actual_model(&core).as_deref(), Some("claude-fable-5"));
     // Found: no longer rechecked, and the pass only ever read the journal.

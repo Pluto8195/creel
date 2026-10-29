@@ -44,7 +44,7 @@
 //! Attempt ≥ [`RETRY_REPORT_ATTEMPT`] surfaces an error chip; attempt ≥
 //! [`RETRY_ABORT_ATTEMPT`] aborts the turn instead of retrying forever.
 //! A prompt that produces NO session-scoped event within
-//! [`default_stall_bound`] (`ZERON_OPENCODE_STALL_MS`, 0 disables) errors
+//! [`default_stall_bound`] (`MAST_OPENCODE_STALL_MS`, 0 disables) errors
 //! out instead of spinning "Working" forever.
 
 use std::collections::{HashMap, VecDeque};
@@ -59,7 +59,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
     RunRequest, SlashCommand, SteeringMode, TodoItem, ToolCall, UserInputAnswer, UserInputQuestion,
 };
@@ -71,7 +71,7 @@ use crate::{Harness, HarnessError, RunControls, shutdown_child};
 /// plugin-heavy starts can take minutes. Shared by chat startup and model
 /// discovery (same boot either way).
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
-const STARTUP_TIMEOUT_ENV: &str = "ZERON_OPENCODE_STARTUP_TIMEOUT_SECS";
+const STARTUP_TIMEOUT_ENV: &str = "MAST_OPENCODE_STARTUP_TIMEOUT_SECS";
 
 /// Health-poll cadence while the server boots.
 const HEALTH_POLL: Duration = Duration::from_millis(150);
@@ -95,7 +95,7 @@ const RETRY_ABORT_ATTEMPT: u64 = 8;
 
 /// Default bound on prompt-send → first session-scoped bus event.
 const DEFAULT_STALL_BOUND: Duration = Duration::from_secs(60);
-const STALL_ENV: &str = "ZERON_OPENCODE_STALL_MS";
+const STALL_ENV: &str = "MAST_OPENCODE_STALL_MS";
 
 /// What a wedged/silent run usually means for opencode.
 const STALL_HINT: &str = "The model provider is likely unreachable or rejecting requests. \
@@ -218,7 +218,7 @@ fn free_localhost_port() -> Option<u16> {
 
 pub struct OpencodeHarness {
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Test seam: an already-running server (no spawn, no auth unless given).
     base_url: Option<String>,
@@ -259,7 +259,7 @@ impl OpencodeHarness {
         self
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
@@ -599,7 +599,7 @@ impl Server {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::opencode", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::opencode", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -1383,7 +1383,7 @@ async fn run_session(session: Session) {
                     }
                     Err(e) => {
                         tracing::debug!(
-                            target: "zeron_harness::opencode",
+                            target: "mast_harness::opencode",
                             "session resume failed (starting fresh): {e}"
                         );
                         create_session(&server, dir, agent).await?
@@ -1532,7 +1532,7 @@ async fn run_session(session: Session) {
     .await;
     if connect_wait.is_err() {
         tracing::debug!(
-            target: "zeron_harness::opencode",
+            target: "mast_harness::opencode",
             "event bus not connected within 15s; prompting anyway"
         );
     }
@@ -1911,7 +1911,7 @@ async fn run_session(session: Session) {
 
     if !done_sent {
         // Consumer went away (stream dropped): nothing to report to.
-        tracing::debug!(target: "zeron_harness::opencode", "run loop ended without settling");
+        tracing::debug!(target: "mast_harness::opencode", "run loop ended without settling");
     }
     bus_handle.abort();
     server.shutdown(kill_grace).await;
@@ -1966,7 +1966,7 @@ async fn create_session(
         }
         if attempt == 0 && status.is_server_error() {
             tracing::debug!(
-                target: "zeron_harness::opencode",
+                target: "mast_harness::opencode",
                 "POST /session answered {status}; retrying once (the lazy-migration crash self-heals)"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2804,7 +2804,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 };
                 if let Err(e) = reply {
                     tracing::debug!(
-                        target: "zeron_harness::opencode",
+                        target: "mast_harness::opencode",
                         "question reply failed: {e}"
                     );
                 }

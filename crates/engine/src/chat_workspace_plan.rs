@@ -3,7 +3,7 @@
 //! decides whether it gets an isolated git worktree (a code-modifying task)
 //! or runs in the base checkout (investigation), and a second RPC actually
 //! materializes that worktree using the `agent-mode-tools/agent-mode.sh`
-//! on-disk convention (not Zeron's own pre-existing `CreateWorktree`/`Repos`
+//! on-disk convention (not Mast's own pre-existing `CreateWorktree`/`Repos`
 //! worktree feature, which uses a different root and branch-naming scheme —
 //! see [`crate::repos::Repos::create_worktree`]). This lets a chat's worktree
 //! interoperate with a superproject/submodule monorepo the same way
@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use mast_proto::GitHistoryCommit;
 use serde::{Deserialize, Serialize};
-use zeron_proto::GitHistoryCommit;
 
 use crate::EngineError;
 use crate::pr_ticket_cache::{extract_ticket_id, workspace_submodule_paths};
@@ -454,7 +454,7 @@ const UNMERGED_COMMITS_CAP: usize = 100;
 /// result if that bound is reached.
 const NESTED_REPO_SCAN_MAX_DEPTH: usize = 12;
 const NESTED_REPO_SCAN_MAX_REPOS: usize = 128;
-/// The plain-text marker `create_chat_worktree` writes into Zeron-created
+/// The plain-text marker `create_chat_worktree` writes into Mast-created
 /// worktrees. It is not required for close-out: Repo Map also exposes linked
 /// worktrees created by other tools. Being untracked by construction, the
 /// marker is never counted as "dirty" and is deleted before a non-forced
@@ -1164,7 +1164,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .args(args)
         .current_dir(cwd)
         .output()
@@ -1632,7 +1632,7 @@ mod tests {
         // SAFETY: test-only env mutation, serialized by this test's own scope
         // (no other test in this module reads this var concurrently in a way
         // that would race observably — matches `worktree_on_run.rs`'s own
-        // `ZERON_WORKTREES_DIR` precedent).
+        // `MAST_WORKTREES_DIR` precedent).
         unsafe { std::env::set_var("WORKSPACE_WORKTREES_DIR", &override_dir) };
         let result = create_chat_worktree(&root, "eng-42-do-a-thing");
         unsafe { std::env::remove_var("WORKSPACE_WORKTREES_DIR") };

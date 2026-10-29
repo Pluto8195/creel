@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use mast_engine::linear::{LinearConfig, MemoryKeyStore};
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{HarnessId, WorkItemStatus, WorkOutlineSnapshot};
+use mast_rpc::{RpcClient, methods};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use zeron_engine::linear::{LinearConfig, MemoryKeyStore};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{HarnessId, WorkItemStatus, WorkOutlineSnapshot};
-use zeron_rpc::{RpcClient, methods};
 
 const KEY: &str = "lin_api_TESTSECRET0123456789abcdef";
 const SPACE: &str = "space-on";
@@ -114,11 +114,11 @@ fn reply(status: u16, body: Value) -> (u16, Value) {
 
 fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) {
     match operation {
-        "ZeronLinearViewer" => reply(
+        "MastLinearViewer" => reply(
             200,
             json!({ "data": { "viewer": { "id": ME, "name": "Ada", "displayName": "ada" } } }),
         ),
-        "ZeronLinearAssignedUnstarted" => {
+        "MastLinearAssignedUnstarted" => {
             if state.assigned_error {
                 return reply(
                     400,
@@ -134,7 +134,7 @@ fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) 
                 } } } }),
             )
         }
-        "ZeronLinearIssue" => {
+        "MastLinearIssue" => {
             let id = variables["id"].as_str().unwrap_or_default();
             match state.issues.get(id) {
                 Some(n) => reply(200, json!({ "data": { "issue": n } })),
@@ -145,7 +145,7 @@ fn route(state: &MockState, operation: &str, variables: &Value) -> (u16, Value) 
                 ),
             }
         }
-        "ZeronLinearIssueAttachments" => reply(
+        "MastLinearIssueAttachments" => reply(
             200,
             json!({ "data": { "issue": { "identifier": variables["id"],
                 "attachments": { "nodes": [] } } } }),
@@ -230,7 +230,7 @@ async fn rig() -> Rig {
         mock.url.clone(),
         MemoryKeyStore::with_key(KEY),
     ));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let rig = Rig {
         _tmp: tmp,
         core,
@@ -280,7 +280,7 @@ impl Rig {
 
     fn snapshot(&self) -> WorkOutlineSnapshot {
         let inputs = self.core.workspace.work_outline_inputs(SPACE);
-        zeron_doc::materialize_work_outline(SPACE, &inputs)
+        mast_doc::materialize_work_outline(SPACE, &inputs)
     }
 
     async fn item(&self, title: &str) -> String {
@@ -312,7 +312,7 @@ impl Rig {
     }
 
     /// The live and archived children of `parent`, by title.
-    fn children(&self, parent: &str) -> Vec<zeron_proto::WorkItemView> {
+    fn children(&self, parent: &str) -> Vec<mast_proto::WorkItemView> {
         self.snapshot()
             .items
             .into_iter()
@@ -320,7 +320,7 @@ impl Rig {
             .collect()
     }
 
-    fn child(&self, parent: &str, identifier: &str) -> zeron_proto::WorkItemView {
+    fn child(&self, parent: &str, identifier: &str) -> mast_proto::WorkItemView {
         self.children(parent)
             .into_iter()
             .find(|i| i.title.starts_with(&format!("{identifier} ")))
@@ -328,7 +328,7 @@ impl Rig {
     }
 }
 
-fn marker(item: &zeron_proto::WorkItemView) -> Option<String> {
+fn marker(item: &mast_proto::WorkItemView) -> Option<String> {
     item.external_sync_state
         .as_ref()
         .and_then(|s| s.marker.clone())
@@ -389,7 +389,7 @@ async fn only_assigned_unstarted_projectless_tickets_get_children() {
     let queries = rig.mock.queries();
     let list = queries
         .iter()
-        .find(|(op, _)| op == "ZeronLinearAssignedUnstarted")
+        .find(|(op, _)| op == "MastLinearAssignedUnstarted")
         .unwrap();
     assert!(
         list.1
@@ -641,8 +641,8 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
     rig.mock.set(all(), &["ENG-1"]);
     // Linear on, no linked item: the pass asks for nothing.
     rig.refresh(SPACE).await.unwrap();
-    assert_eq!(rig.mock.count("ZeronLinearAssignedUnstarted"), 0);
-    assert_eq!(rig.mock.count("ZeronLinearViewer"), 0);
+    assert_eq!(rig.mock.count("MastLinearAssignedUnstarted"), 0);
+    assert_eq!(rig.mock.count("MastLinearViewer"), 0);
 
     // Setting one needs Linear on.
     let other = rig
@@ -660,7 +660,7 @@ async fn spaces_without_the_item_or_with_linear_off_make_no_assigned_calls() {
     rig.mock.set(Vec::new(), &[]);
     rig.set_destination(SPACE, Some(&dest)).await.unwrap();
     // Setting it syncs the Space in the background; let that pass finish.
-    while rig.mock.count("ZeronLinearAssignedUnstarted") == 0 {
+    while rig.mock.count("MastLinearAssignedUnstarted") == 0 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

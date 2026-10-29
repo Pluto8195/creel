@@ -24,12 +24,12 @@ use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 
 use crate::swr::SwrStore;
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearConnectionStatus, LinearError, LinearErrorCode, LinearIssueSummary, LinearKeySource,
     LinearProjectDetail, LinearProjectSummary, MAX_LIST_ISSUES, MAX_PROJECT_UPDATES,
 };
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 pub use client::{LINEAR_GRAPHQL_URL, LinearClient, Sleeper, tokio_sleeper};
 pub use credentials::{
@@ -56,7 +56,7 @@ pub struct LinearConfig {
 }
 
 impl LinearConfig {
-    /// Linear's API, the Keychain (or `ZERON_LINEAR_KEY_STORE=memory`),
+    /// Linear's API, the Keychain (or `MAST_LINEAR_KEY_STORE=memory`),
     /// and `LINEAR_API_KEY`.
     pub fn production() -> Self {
         Self {

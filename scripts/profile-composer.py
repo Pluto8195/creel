@@ -20,7 +20,7 @@ binary = out / 'profiled-zeron'
 shutil.copy2(args.binary, binary)
 settings = json.loads(args.settings.read_text())
 (out / 'ui-settings.json').write_text(json.dumps(settings))
-env = os.environ | {'DISPLAY': args.display, 'WAYLAND_DISPLAY': '', 'ZERON_IPC_PORT': args.ipc_port, 'ZERON_HARNESS': 'mock', 'ZERON_WORKOS_CLIENT_ID': '', 'ZERON_EDGE_URL': 'http://127.0.0.1:1', 'ZERON_DATA_DIR': str(out), 'RUST_LOG': 'warn', 'LP_NUM_THREADS': '4'}
+env = os.environ | {'DISPLAY': args.display, 'WAYLAND_DISPLAY': '', 'MAST_IPC_PORT': args.ipc_port, 'MAST_HARNESS': 'mock', 'MAST_WORKOS_CLIENT_ID': '', 'MAST_EDGE_URL': 'http://127.0.0.1:1', 'MAST_DATA_DIR': str(out), 'RUST_LOG': 'warn', 'LP_NUM_THREADS': '4'}
 p = subprocess.Popen([str(binary)], env=env, stdout=open(out / 'ui.log', 'w'), stderr=subprocess.STDOUT, start_new_session=True)
 hz = os.sysconf('SC_CLK_TCK')
 

@@ -91,7 +91,7 @@ pub mod limits {
 /// Environment kill switch: when set (any non-empty value other than `0`),
 /// every mutation fails with [`WorkOutlineErrorCode::WritesDisabled`] while
 /// reads keep working (contract section 3.6).
-pub const DISABLE_WRITES_ENV: &str = "ZERON_DISABLE_WORK_OUTLINE_WRITES";
+pub const DISABLE_WRITES_ENV: &str = "MAST_DISABLE_WORK_OUTLINE_WRITES";
 
 /// Roles accepted by [`derive_id`] (contract section 4). Not an enum so a
 /// later milestone can add a role without a wire change.
@@ -411,7 +411,10 @@ impl WorkItemView {
     /// Whether Linear sync may still update `field`
     /// ([`crate::linear::SYNC_FIELD_TITLE`] / `SYNC_FIELD_DESCRIPTION`).
     pub fn follows_external_sync(&self, field: &str) -> bool {
-        !self.external_sync_modified_fields.iter().any(|f| f == field)
+        !self
+            .external_sync_modified_fields
+            .iter()
+            .any(|f| f == field)
     }
 }
 
@@ -755,7 +758,10 @@ impl WorkOutlineSnapshot {
 
     /// The Linear issue reference of an item (provider `linear`, type
     /// `issue`), the earliest-created one when there are several.
-    pub fn linear_issue_reference(&self, work_item_id: &str) -> Option<&WorkItemExternalReferenceView> {
+    pub fn linear_issue_reference(
+        &self,
+        work_item_id: &str,
+    ) -> Option<&WorkItemExternalReferenceView> {
         self.linear_reference(work_item_id, crate::linear::LINEAR_ISSUE_REFERENCE)
     }
 
@@ -2277,7 +2283,7 @@ mod tests {
                     status: Some(WorkItemStatus::Completed),
                     inherit_parent_instructions: Some(true),
                     resolve_open_requests: false,
-            external_sync_state: None,
+                    external_sync_state: None,
                 },
                 operation_id: "op".into(),
             }),

@@ -1,6 +1,6 @@
 //! Seam 2: the read side of the Work Outline in the UI.
 //!
-//! Wire view types are re-exported from `zeron_proto` so presentation code
+//! Wire view types are re-exported from `mast_proto` so presentation code
 //! has one import path. [`WorkOutlineStore`] holds the latest composed
 //! snapshot per Space plus its load state; `AppState` owns one instance and the
 //! data owner feeds it from `WatchWorkOutline` (`state.rs`
@@ -13,14 +13,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[allow(unused_imports)]
-pub(crate) use zeron_proto::{
+pub(crate) use mast_proto::{
     WorkItemArchiveCause, WorkItemChanges, WorkItemChatAssignmentState, WorkItemChatAssignmentView,
     WorkItemEffectiveStatus, WorkItemExternalReferenceView, WorkItemRollup, WorkItemStatus,
     WorkItemView, WorkOutlineActor, WorkOutlineActorKind, WorkOutlinePlacement, WorkOutlineRepair,
     WorkOutlineSnapshot,
 };
 
-use zeron_proto::WorkOutlineErrorCode;
+use mast_proto::WorkOutlineErrorCode;
 
 /// Per-Space load state. `Unsupported` is a host that answers `unknown
 /// method` to `WatchWorkOutline` (the UI shows an upgrade hint instead of a
@@ -56,7 +56,7 @@ impl WorkOutlineLoad {
     /// unsupported host, everything else is a (retryable) failure.
     pub(crate) fn from_watch_error(message: &str) -> Self {
         let lowered = message.to_ascii_lowercase();
-        let coded = zeron_proto::WorkOutlineError::from_wire_message(message)
+        let coded = mast_proto::WorkOutlineError::from_wire_message(message)
             .is_some_and(|error| error.code == WorkOutlineErrorCode::Unsupported);
         if coded || lowered.contains("unknown method") {
             Self::Unsupported
@@ -386,7 +386,7 @@ pub(crate) fn fixture_snapshot(space_id: &str) -> WorkOutlineSnapshot {
     items[5].archived_by = Some(fixture_actor());
     items[5].archive_cause = Some(WorkItemArchiveCause::SelfArchived);
     let reference_id =
-        zeron_proto::external_reference_id(API, "github", "pullRequest", "acme/launch#42");
+        mast_proto::external_reference_id(API, "github", "pullRequest", "acme/launch#42");
     items[1].external_reference_ids = vec![reference_id.clone()];
     finish_fixture(&mut items);
 

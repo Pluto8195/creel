@@ -10,7 +10,7 @@
 //! - a `Steered` event splits the assistant entry at the exact boundary;
 //! - recovery (interrupt or a stale journal at boot) stamps the streaming entry `aborted`.
 //!
-//! Scope notes: sessions are keyed by chat id (one live run per chat). Zeron's pulse
+//! Scope notes: sessions are keyed by chat id (one live run per chat). Mast's pulse
 //! loop is ported as the 15s liveness heartbeat in `drive_run`; its stall watchdog is
 //! deliberately NOT ported (rejected in review — agents may legitimately wait on
 //! something for far longer than any timeout, and a live child IS the working signal).
@@ -24,15 +24,15 @@ use chrono::Utc;
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use zeron_doc::{
+use mast_doc::{
     DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
-use zeron_harness::{
+use mast_harness::{
     AgentToolsInjection, CancellationToken, Harness, InstructionReplaceStrategy,
     InstructionSupport, RunControls, SteerMessage,
 };
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, ExecutionSessionReport, HarnessId, InstructionDelivery,
     InstructionRevisionPin, InstructionTransition, RunRequest, Session, SessionStatus,
     UserInputAnswer, UserInputQuestion,
@@ -80,12 +80,12 @@ struct HarnessSessionRef {
 struct RuntimeConfig {
     harness_id: HarnessId,
     model: Option<String>,
-    reasoning: Option<zeron_proto::ReasoningLevel>,
+    reasoning: Option<mast_proto::ReasoningLevel>,
     model_options: serde_json::Map<String, serde_json::Value>,
     cwd: String,
-    sandbox: zeron_proto::SandboxLevel,
+    sandbox: mast_proto::SandboxLevel,
     auto_approve: bool,
-    worktree: Option<zeron_proto::WorktreeSpec>,
+    worktree: Option<mast_proto::WorktreeSpec>,
     /// The Work Outline revision this Execution Session received. A prompt
     /// for a different revision is never routed into the live mailbox: the
     /// revision changes only by starting a new Execution Session at a Turn
@@ -295,7 +295,7 @@ impl SessionsEngine {
 
     /// Override how injected `zeron mcp` servers reach this engine (`None`
     /// turns agent tools off). Default: this executable's `mcp` subcommand
-    /// on `ZERON_IPC_PORT`.
+    /// on `MAST_IPC_PORT`.
     pub fn set_agent_tools_launch(&self, launch: Option<AgentToolsLaunch>) {
         *lock(&self.inner.agent_tools_launch) = launch;
     }
@@ -657,9 +657,9 @@ impl SessionsEngine {
         {
             if !context_reset_confirmed {
                 return Err(EngineError::InstructionDelivery(
-                    zeron_proto::InstructionDeliveryRejection {
+                    mast_proto::InstructionDeliveryRejection {
                         outcome:
-                            zeron_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
+                            mast_proto::InstructionDeliveryOutcome::InstructionContextResetRequired {
                                 harness: harness_id,
                                 message_id: message_id.map(str::to_string),
                                 revision_id: pin.revision_id.clone(),
@@ -769,8 +769,8 @@ impl SessionsEngine {
         // device cannot name a host-local path). Never expand that marker to
         // the person's real HOME: agent startup and broad file tools would
         // then probe Desktop/Documents/Music/Pictures and macOS attributes the
-        // privacy prompts to Zeron. Existing `~` chats migrate automatically
-        // to a stable per-chat Zeron-owned directory on their next dispatch.
+        // privacy prompts to Mast. Existing `~` chats migrate automatically
+        // to a stable per-chat Mast-owned directory on their next dispatch.
         // A bound Chat's cwd is its validated execution root (the dispatch
         // chokepoint overwrote it); it is never remapped.
         request.cwd = self.inner.resolve_dispatch_cwd(chat_id, &request.cwd)?;
@@ -1283,7 +1283,7 @@ impl SessionsEngine {
                             reasoning: None,
                             model_options: Default::default(),
                             cwd,
-                            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                            sandbox: mast_proto::SandboxLevel::WorkspaceWrite,
                             auto_approve: false,
                             attachments: Vec::new(),
                             resume: None,
@@ -1800,7 +1800,7 @@ impl Inner {
         }
         Err(EngineError::Other(
             crate::execution_scope::rejection_message(&[
-                zeron_proto::ExecutionValidationError::ResumeRootMismatch {
+                mast_proto::ExecutionValidationError::ResumeRootMismatch {
                     expected_path: cwd.to_owned(),
                     found_path: session_cwd,
                 },
@@ -2071,7 +2071,7 @@ impl SubagentSink {
         if let Err(err) = finished {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent sink finish failed");
         }
-        let entries = zeron_doc::join_continuation_entries(self.doc.read_entries().ok()?);
+        let entries = mast_doc::join_continuation_entries(self.doc.read_entries().ok()?);
         serde_json::to_string(&entries).ok()
     }
 }
@@ -2265,7 +2265,7 @@ fn finish_segment<'a>(
 }
 
 /// Resolve the portable project-less marker and legacy persisted HOME values
-/// to a Zeron-owned per-chat directory. Explicit `~/some/path` values retain
+/// to a Mast-owned per-chat directory. Explicit `~/some/path` values retain
 /// their conventional HOME expansion.
 fn resolve_run_cwd(journal: &RunJournal, chat_id: &str, cwd: &str) -> Result<String, EngineError> {
     if matches!(cwd, "~" | "~/") {
@@ -2420,7 +2420,7 @@ async fn drive_run(
             request.resume.is_some(),
         )
         .map(|prompt| request.prompt = prompt)
-        .map_err(|e| zeron_harness::HarnessError::Protocol(e.to_string()))
+        .map_err(|e| mast_harness::HarnessError::Protocol(e.to_string()))
     } else {
         Ok(())
     };
@@ -2527,7 +2527,7 @@ async fn drive_run(
     // segment finalized Complete, status Idle, child and mailbox warm. A
     // false trip (the agent was quietly waiting on something invisible)
     // costs a status dip: the parked-resume path below re-arms Working the
-    // moment output flows again, and nothing is lost. `ZERON_TURN_QUIESCE_MS`
+    // moment output flows again, and nothing is lost. `MAST_TURN_QUIESCE_MS`
     // overrides the window; 0 disables.
     // RETIRED for native drivers: a harness whose every turn shape ends with
     // a deterministic wire Done (claude/codex/cursor native) needs no
@@ -2537,15 +2537,16 @@ async fn drive_run(
     // ACP retains the watchdog only for unowned self-continued activity.
     let deterministic_turn_end = harness.deterministic_turn_end();
     let authoritative_prompt_end = harness.authoritative_prompt_end();
-    let quiesce_after: Option<std::time::Duration> = match std::env::var("ZERON_TURN_QUIESCE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        Some(0) => None,
-        Some(ms) => Some(std::time::Duration::from_millis(ms)),
-        None if deterministic_turn_end => None,
-        None => Some(std::time::Duration::from_secs(120)),
-    };
+    let quiesce_after: Option<std::time::Duration> =
+        match mast_proto::env::var("MAST_TURN_QUIESCE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(0) => None,
+            Some(ms) => Some(std::time::Duration::from_millis(ms)),
+            None if deterministic_turn_end => None,
+            None => Some(std::time::Duration::from_secs(120)),
+        };
     let mut last_stream_activity = tokio::time::Instant::now();
     // SELF-CONTINUED turns get a much SHORTER quiesce window. A turn the
     // agent starts on its own (background-task wake) can never receive a
@@ -2556,11 +2557,11 @@ async fn drive_run(
     // so the default 120s window read as 2min of stuck-Working after every
     // background notification (user report 2026-08-13). The in-flight
     // fold gate below still protects running tools; reasoning heartbeats
-    // push the window during real thinking. `ZERON_SELF_TURN_QUIESCE_MS`
+    // push the window during real thinking. `MAST_SELF_TURN_QUIESCE_MS`
     // overrides; 0 falls back to the normal window. An explicit
-    // `ZERON_TURN_QUIESCE_MS=0` still disables the watchdog entirely.
+    // `MAST_TURN_QUIESCE_MS=0` still disables the watchdog entirely.
     let self_quiesce_after: Option<std::time::Duration> =
-        match std::env::var("ZERON_SELF_TURN_QUIESCE_MS")
+        match mast_proto::env::var("MAST_SELF_TURN_QUIESCE_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
         {
@@ -2698,7 +2699,7 @@ async fn drive_run(
                     && steerable
                     && !folded.iter().any(|p| match p {
                         MessagePart::Tool { id, resolved: false, .. } => {
-                            id != zeron_proto::LIVE_PLAN_TOOL_ID
+                            id != mast_proto::LIVE_PLAN_TOOL_ID
                         }
                         MessagePart::Input { resolved: false, .. } => true,
                         _ => false,
@@ -2814,7 +2815,7 @@ async fn drive_run(
                         }
                     }
                 }
-                zeron_doc::fold_event_into_parts(&mut folded, &event);
+                mast_doc::fold_event_into_parts(&mut folded, &event);
                 if !dirty {
                     dirty = true;
                     flush_at = tokio::time::Instant::now()
@@ -2865,7 +2866,7 @@ async fn drive_run(
                     sink.push_user(&device_id, text);
                     continue;
                 }
-                zeron_doc::fold_event_into_parts(&mut sink.folded, sub_event);
+                mast_doc::fold_event_into_parts(&mut sink.folded, sub_event);
                 sink.dirty = true;
                 if !chip_streaming && done {
                     // In-place chip refresh on lifecycle transitions only —
@@ -2901,7 +2902,7 @@ async fn drive_run(
                     {
                         host.upload_tool_sidecar(
                             &chat_id,
-                            zeron_doc::SidecarPayload {
+                            mast_doc::SidecarPayload {
                                 part_id: doc_id,
                                 output: Some(json),
                                 diff: None,
@@ -2983,7 +2984,7 @@ async fn drive_run(
                 ) || matches!(
                     &event,
                     AgentEvent::ToolCall { id, .. }
-                        if id == zeron_proto::LIVE_PLAN_TOOL_ID || !seen_tools.contains(id)
+                        if id == mast_proto::LIVE_PLAN_TOOL_ID || !seen_tools.contains(id)
                 ));
             if self_continued {
                 tracing::info!(
@@ -3052,8 +3053,8 @@ async fn drive_run(
             // treating its reappearance after a park/steer reset as a stale
             // echo dropped the todo list for the rest of the run — from the
             // first boundary on, plans never rendered again.
-            AgentEvent::ToolCall { id, .. } if id == zeron_proto::LIVE_PLAN_TOOL_ID => {}
-            AgentEvent::ToolResult { id, .. } if id == zeron_proto::LIVE_PLAN_TOOL_ID => {}
+            AgentEvent::ToolCall { id, .. } if id == mast_proto::LIVE_PLAN_TOOL_ID => {}
+            AgentEvent::ToolResult { id, .. } if id == mast_proto::LIVE_PLAN_TOOL_ID => {}
             AgentEvent::ToolCall { id, .. } => {
                 if !in_segment(&folded, id) && seen_tools.contains(id) {
                     continue;
@@ -3256,10 +3257,10 @@ async fn drive_run(
         // background re-invocations) must not wipe the segment being written.
         let skip_fold = matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
         if !skip_fold {
-            let sidecar = zeron_doc::sidecar_payload(&event);
+            let sidecar = mast_doc::sidecar_payload(&event);
             fold_event_into_parts(&mut folded, &event);
             if let Some(sidecar) = sidecar {
-                zeron_doc::apply_sidecar_refs(&chat_id, &mut folded);
+                mast_doc::apply_sidecar_refs(&chat_id, &mut folded);
                 if let Some(host) = inner.doc_host() {
                     host.upload_tool_sidecar(&chat_id, sidecar);
                 }
@@ -3380,7 +3381,7 @@ async fn drive_run(
         {
             host.upload_tool_sidecar(
                 &chat_id,
-                zeron_doc::SidecarPayload {
+                mast_doc::SidecarPayload {
                     part_id: doc_id,
                     output: Some(json),
                     diff: None,
@@ -3465,7 +3466,7 @@ mod tests {
             diff: None,
         };
         journal.append("chat-1", &old).unwrap();
-        let diff = zeron_proto::ToolDiff {
+        let diff = mast_proto::ToolDiff {
             path: "src/lib.rs".into(),
             old_text: Some("old\n".into()),
             new_text: "new\n".into(),
@@ -3511,7 +3512,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<zeron_proto::ToolDiff>(&encoded).unwrap(),
+            serde_json::from_str::<mast_proto::ToolDiff>(&encoded).unwrap(),
             diff
         );
         assert_eq!(
@@ -3600,21 +3601,21 @@ mod tests {
 
     #[test]
     fn cursor_without_a_session_id_retains_only_preceding_user_messages() {
-        let doc = zeron_doc::SessionDoc::init("cursor-unstarted").unwrap();
+        let doc = mast_doc::SessionDoc::init("cursor-unstarted").unwrap();
         for (id, role, text) in [
             (
                 "u1",
-                zeron_doc::MessageRole::User,
+                mast_doc::MessageRole::User,
                 "first interrupted request",
             ),
-            ("a1", zeron_doc::MessageRole::Assistant, "partial output"),
-            ("u2", zeron_doc::MessageRole::User, "current request"),
-            ("u3", zeron_doc::MessageRole::User, "future pending request"),
+            ("a1", mast_doc::MessageRole::Assistant, "partial output"),
+            ("u2", mast_doc::MessageRole::User, "current request"),
+            ("u3", mast_doc::MessageRole::User, "future pending request"),
         ] {
-            doc.push_message(&zeron_doc::SessionMessageEntry {
+            doc.push_message(&mast_doc::SessionMessageEntry {
                 id: id.into(),
                 role,
-                parts: vec![zeron_doc::MessagePart::Text {
+                parts: vec![mast_doc::MessagePart::Text {
                     id: format!("{id}-text"),
                     text: text.into(),
                 }],
@@ -3651,7 +3652,7 @@ mod tests {
     }
 
     use super::{RuntimeConfig, subagent_doc_id};
-    use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
+    use mast_proto::{HarnessId, RunRequest, SandboxLevel};
 
     #[tokio::test]
     async fn generated_image_failure_is_sanitized_even_inside_subagents() {
@@ -3682,7 +3683,7 @@ mod tests {
             &mut parts,
             &AgentEvent::ToolCall {
                 id: "i".into(),
-                call: zeron_proto::ToolCall::Unknown {
+                call: mast_proto::ToolCall::Unknown {
                     name: "Generate image".into(),
                     input: None,
                 },
@@ -3720,7 +3721,7 @@ mod tests {
             prompt: "first".into(),
             harness: None,
             model: Some("grok-4.6".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::High),
+            reasoning: Some(mast_proto::ReasoningLevel::High),
             model_options: serde_json::Map::new(),
             cwd: "/tmp".into(),
             sandbox: SandboxLevel::WorkspaceWrite,
@@ -3746,7 +3747,7 @@ mod tests {
         assert!(!config.can_route(HarnessId::Grok, &follow_up));
         follow_up.model = initial.model.clone();
 
-        follow_up.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
+        follow_up.reasoning = Some(mast_proto::ReasoningLevel::Medium);
         assert!(!config.can_route(HarnessId::Grok, &follow_up));
         follow_up.reasoning = initial.reasoning;
 

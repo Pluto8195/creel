@@ -10,7 +10,7 @@
 //! - The destination archived or deleted: "Sync paused" with Change ▾ and
 //!   Stop.
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use zeron_proto::{
+use mast_proto::{
     CreateWorkItemParams, GITHUB_PROVIDER, SetPrReviewSyncDestinationParams, WorkOutlinePlacement,
     WorkOutlineSnapshot,
 };
@@ -123,13 +123,13 @@ impl GithubPanel {
             let result = match create.await {
                 Ok(reply) => {
                     let item_id = reply.work_item_id.unwrap_or_else(|| {
-                        zeron_proto::work_outline::derive_id(&operation_id, "item")
+                        mast_proto::work_outline::derive_id(&operation_id, "item")
                     });
                     let set =
                         actions.set_pr_review_sync_destination(SetPrReviewSyncDestinationParams {
                             space_id: space_id.clone(),
                             work_item_id: Some(item_id.clone()),
-                            operation_id: zeron_proto::work_outline::derive_id(
+                            operation_id: mast_proto::work_outline::derive_id(
                                 &operation_id,
                                 "pr-review-destination",
                             ),

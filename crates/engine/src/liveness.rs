@@ -1,5 +1,5 @@
 //! Liveness check for external-session import (ticket 001, piece 4):
-//! before importing a Claude Code session Zeron didn't launch itself, warn
+//! before importing a Claude Code session Mast didn't launch itself, warn
 //! (never hard-block — Mikey's call) if the source session looks like it
 //! might still be actively running elsewhere. Importing a session that's
 //! concurrently being written to by another `claude` process risks two

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity};
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LinearConnectionStatus, LinearIssueSummary, LinearProjectDetail, LinearProjectSummary,
 };
 
@@ -132,7 +132,7 @@ impl LinearStore {
     pub(crate) fn configured(&self) -> Option<bool> {
         match &self.status {
             Some(Ok(status)) => Some(status.configured),
-            Some(Err(error)) if error.is(zeron_proto::linear::LinearErrorCode::MissingKey) => {
+            Some(Err(error)) if error.is(mast_proto::linear::LinearErrorCode::MissingKey) => {
                 Some(false)
             }
             _ => None,

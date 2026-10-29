@@ -1,5 +1,5 @@
 [package]
-name = "zeron-theme"
+name = "mast-theme"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

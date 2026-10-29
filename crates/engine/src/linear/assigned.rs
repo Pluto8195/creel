@@ -33,17 +33,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use zeron_proto::linear::{
+use mast_proto::linear::{
     LINEAR_ISSUE_REFERENCE, LINEAR_PROVIDER, LinearError, LinearErrorCode, LinearIssueLink,
     LinearIssueSummary, LinearStateType,
 };
-use zeron_proto::pr_review_sync::WorkItemExternalSyncState;
-use zeron_proto::work_outline::{
+use mast_proto::pr_review_sync::WorkItemExternalSyncState;
+use mast_proto::work_outline::{
     ArchiveWorkItemParams, CreateWorkItemFromLinearParams, DescendantArchivePolicy,
     RestoreWorkItemParams, UpdateWorkItemParams, WorkItemArchiveCause, WorkItemChanges,
     WorkItemStatus, WorkOutlineActorKind, WorkOutlinePlacement, derive_id, roles,
 };
-use zeron_proto::{WorkItemView, WorkOutlineMutation, WorkOutlineSnapshot};
+use mast_proto::{WorkItemView, WorkOutlineMutation, WorkOutlineSnapshot};
 
 use super::LinearService;
 use crate::work_outline::WorkOutlineService;
@@ -409,7 +409,7 @@ async fn leave(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::linear::{LinearProjectRef, LinearState, LinearUser};
+    use mast_proto::linear::{LinearProjectRef, LinearState, LinearUser};
 
     fn issue(state: LinearStateType, assignee: &str, project: Option<&str>) -> LinearIssueSummary {
         LinearIssueSummary {

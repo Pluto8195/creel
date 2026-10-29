@@ -1,4 +1,4 @@
-//! zeron-update — release checking and self-update, shared by the engine (the
+//! mast-update — release checking and self-update, shared by the engine (the
 //! background checker + `ApplyUpdate`), the CLI (`zeron update`), and the UI
 //! (the sidebar update strip + macOS bundle swap).
 //!
@@ -222,7 +222,7 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
 }
 
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
-    if let Ok(url) = std::env::var("ZERON_RELEASES_URL")
+    if let Ok(url) = mast_proto::env::var("MAST_RELEASES_URL")
         && !url.trim().is_empty()
     {
         return validate_release_override(&url);
@@ -634,9 +634,9 @@ impl UpdateStatus {
     }
 }
 
-/// `ZERON_AUTO_UPDATE=1|true|yes` — headless daemons apply updates themselves.
+/// `MAST_AUTO_UPDATE=1|true|yes` — headless daemons apply updates themselves.
 fn auto_update_enabled() -> bool {
-    std::env::var("ZERON_AUTO_UPDATE")
+    mast_proto::env::var("MAST_AUTO_UPDATE")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
@@ -647,7 +647,7 @@ pub type QuiescentCheck = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Background release checker: polls `{edge}/releases` on a 6h cadence and
 /// publishes [`UpdateStatus`] over a watch channel (the `UpdateStatus` RPC
-/// stream). Managed installs with `ZERON_AUTO_UPDATE` set stage + apply + service
+/// stream). Managed installs with `MAST_AUTO_UPDATE` set stage + apply + service
 /// restart on their own — but only in a quiet window: while `quiescent` reports
 /// activity, the apply defers and re-probes every [`IDLE_RECHECK`].
 #[derive(Clone)]

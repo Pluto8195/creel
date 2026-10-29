@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::diff_targets::{FreeText, RefRow, ref_rows};
-use zeron_proto::{RefDiffCandidate, RefDiffKind};
+use mast_proto::{RefDiffCandidate, RefDiffKind};
 
 /// The open picker. Same keyboard shape as [`CheckoutMenu`].
 pub(super) struct RefTargetMenu {

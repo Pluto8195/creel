@@ -17,7 +17,7 @@ Everything the user should see is published; Mast never discovers artifacts by s
     locations (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`, `~/Library/Keychains`, `~/.netrc`,
     `~/.docker/config.json`), `.env` / `.env.*` files, and files over 10 MB: refused with
     `artifact/denied`.
-- **Publish it with the `zeron-agent` tool:**
+- **Publish it with the `mast-agent` tool:**
 
   ```
   artifact_publish {
@@ -29,19 +29,21 @@ Everything the user should see is published; Mast never discovers artifacts by s
     pinAsPlan?:    true,
     idempotencyKey:"<stable per change; reuse on retry>"
   }
-  → { artifactId, revision, url: "zeron-artifact:<artifactId>", storedPath }
+  → { artifactId, revision, url: "mast-artifact:<artifactId>", storedPath }
   ```
 
   - `kind` defaults from the file extension.
   - Mast copies the file into the work item's artifact folder
-    (`<canonical checkout>/.zeron/artifacts/<work item>/`) and records a revision. Later publishes of
+    (`<canonical checkout>/.mast/artifacts/<work item>/`) and records a revision. Later publishes of
     the same `title` and `role` on the same work item add revisions to the same artifact.
   - `storedPath` is where the canonical copy lives; read it there in later chats instead of
     rebuilding the artifact.
-- **Link it** in your message with the returned URL: `[Receiving flow — plan](zeron-artifact:<artifactId>)`.
-  Never link a bare file path.
+- **Link it** in your message with the returned URL: `[Receiving flow — plan](mast-artifact:<artifactId>)`.
+  Never link a bare file path. Mast still resolves the older `zeron-artifact:` links, the
+  `data-zeron-question` / `data-zeron-anchor` attributes and artifacts stored under
+  `<canonical checkout>/.zeron/artifacts/`, but write the `mast-` / `.mast/` forms.
 - **Without the tool** (harnesses that have no Mast tools), link the file with
-  `[title](zeron-artifact:<path you wrote>)`; Mast registers it on first sight.
+  `[title](mast-artifact:<path you wrote>)`; Mast registers it on first sight.
 - **Existing files** (`work/`, `.local/`, earlier artifacts): publish them the same way; the first
   publish imports them as revision 1.
 
@@ -127,7 +129,7 @@ One block per question:
 ### HTML
 
 ```html
-<div data-zeron-question="Q-3" data-status="open" data-blocking="true"
+<div data-mast-question="Q-3" data-status="open" data-blocking="true"
      data-example="two lines for LM358 from different suppliers"
      data-blocks="ENG-2690 data model">
   Should receiving lines merge by MPN or by internal part number?
@@ -205,14 +207,14 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 
 ## 8. Stable anchors
 
-Give diagram nodes and major HTML sections an `id` or `data-zeron-anchor="<name>"`. User comments
+Give diagram nodes and major HTML sections an `id` or `data-mast-anchor="<name>"`. User comments
 attach to these anchors and survive later revisions; elements without anchors attach by position
 and may be marked outdated after a revision.
 
 ## Comments on HTML and Mermaid artifacts
 
 Users can comment on parts of an HTML or Mermaid artifact in Mast. Give sections, headings, cards
-and diagram nodes a stable `id` (or `data-zeron-anchor="..."`) and keep it across revisions, so a
+and diagram nodes a stable `id` (or `data-mast-anchor="..."`) and keep it across revisions, so a
 comment stays attached when the text around it changes; without one it falls back to the quoted
 text and goes *outdated* once that text is gone. Call `artifact_get_plan` to read the open
 `comments` (each has its anchor and quoted text), address them in the next revision, and pass their

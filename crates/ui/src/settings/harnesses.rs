@@ -24,13 +24,13 @@ use gpui::{
     px,
 };
 
+use mast_engine::registry::TitleSettings;
+use mast_engine::registry::{HarnessDescriptor, descriptor_enabled};
 use std::time::Duration;
-use zeron_engine::registry::TitleSettings;
-use zeron_engine::registry::{HarnessDescriptor, descriptor_enabled};
 
-use zeron_proto::Model;
-use zeron_proto::{AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId};
-use zeron_rpc::methods;
+use mast_proto::Model;
+use mast_proto::{AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId};
+use mast_rpc::methods;
 
 use crate::pickers::visible_harnesses;
 use crate::popover::{self, Loadable};
@@ -429,7 +429,7 @@ impl HarnessesPage {
                             .filter(|h| {
                                 descriptor_enabled(h)
                                     && h.installed
-                                    && zeron_harness::supports_titles(h.id)
+                                    && mast_harness::supports_titles(h.id)
                                     && h.id != HarnessId::Mock
                             })
                             .map(|h| {
@@ -1164,7 +1164,7 @@ mod tests {
 
     #[test]
     fn explicit_sign_in_requires_installed_antigravity() {
-        use zeron_proto::HarnessId;
+        use mast_proto::HarnessId;
         assert!(super::offers_sign_in(HarnessId::Antigravity, true));
         assert!(!super::offers_sign_in(HarnessId::Antigravity, false));
         assert!(!super::offers_sign_in(HarnessId::Codex, true));

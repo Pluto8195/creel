@@ -292,11 +292,11 @@ mod tests {
             panic!("expected Groups");
         };
         assert_eq!(*dimension, GroupDimension::Repo);
-        let zeron_group = groups.iter().find(|g| g.key == "zeron").unwrap();
+        let mast_group = groups.iter().find(|g| g.key == "zeron").unwrap();
         let Partition::Groups {
             dimension: inner_dim,
             groups: inner_groups,
-        } = &zeron_group.items
+        } = &mast_group.items
         else {
             panic!("expected nested Groups");
         };

@@ -10,7 +10,7 @@ fn m4_overview<'a>(
     cx: &'a mut gpui::TestAppContext,
     dir: &std::path::Path,
     snapshot: WorkOutlineSnapshot,
-    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError>
+    reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError>
     + Send
     + Sync
     + 'static,
@@ -127,7 +127,7 @@ fn failed_resolve_retries_with_the_same_operation_id(cx: &mut gpui::TestAppConte
     let flag = fail.clone();
     let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), move |_| {
         if flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            Err(zeron_rpc::RpcError::Failed(
+            Err(mast_rpc::RpcError::Failed(
                 "work-outline/invalid: try again".into(),
             ))
         } else {
@@ -189,15 +189,15 @@ fn space_level_required_actions_in_details(cx: &mut gpui::TestAppContext) {
     });
 }
 
-fn completion_reply(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn completion_reply(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     // The host refuses to complete Housekeeping: a request arrived after the
     // click (the local snapshot still shows none).
     if params["op"] == "updateWorkItem"
         && params["workItemId"] == HOUSEKEEPING
         && params["changes"].get("resolveOpenRequests").is_none()
     {
-        return Err(zeron_rpc::RpcError::Failed(
-            zeron_proto::WorkOutlineError::open_user_action_requests(2).to_wire_message(),
+        return Err(mast_rpc::RpcError::Failed(
+            mast_proto::WorkOutlineError::open_user_action_requests(2).to_wire_message(),
         ));
     }
     Ok(serde_json::json!({}))
@@ -338,7 +338,7 @@ fn proposals_snapshot() -> WorkOutlineSnapshot {
     snapshot
 }
 
-fn proposal_reply(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn proposal_reply(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     Ok(match params["op"].as_str() {
         Some("approveWorkItemInstructionProposal") => serde_json::json!({"instructionId": "i-p"}),
         _ => serde_json::json!({}),
@@ -529,7 +529,7 @@ fn turn_reply(state: &str, detail: Option<&str>) -> serde_json::Value {
 }
 
 /// The host accepts the reply Turn and the resolve.
-fn reply_started(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn reply_started(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     if params.get("prompt").is_some() {
         Ok(turn_reply("started", None))
     } else if params.get("holdForTurnEnd").is_some() {
@@ -586,7 +586,7 @@ fn reply_and_resolve_sends_one_message_then_resolves(cx: &mut gpui::TestAppConte
     assert_eq!(resolve["note"], "Picked palette B");
     assert_eq!(
         resolve["operationId"],
-        zeron_proto::work_outline::derive_id(
+        mast_proto::work_outline::derive_id(
             &reply_op,
             crate::work_outline::required_actions::REPLY_RESOLVE_ROLE
         )
@@ -643,9 +643,9 @@ fn reply_send_rejections_keep_the_request_open(cx: &mut gpui::TestAppContext) {
             return reply_ok(params);
         }
         match counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-            0 => Err(zeron_rpc::RpcError::Failed(
-                zeron_proto::WorkOutlineError::new(
-                    zeron_proto::WorkOutlineErrorCode::Capability,
+            0 => Err(mast_rpc::RpcError::Failed(
+                mast_proto::WorkOutlineError::new(
+                    mast_proto::WorkOutlineErrorCode::Capability,
                     "Update Mast on the Chat's device to deliver Work Outline instructions",
                 )
                 .to_wire_message(),
@@ -705,7 +705,7 @@ fn reply_retry_after_a_failed_resolve_only_resolves(cx: &mut gpui::TestAppContex
     let flag = fail.clone();
     let (overview, calls, vcx) = m4_overview(cx, dir.path(), m4::snapshot("s1"), move |params| {
         if is_resolve(params) && flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            return Err(zeron_rpc::RpcError::Failed(
+            return Err(mast_rpc::RpcError::Failed(
                 "work-outline/invalid: try again".into(),
             ));
         }

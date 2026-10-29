@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use zeron_proto::{InstructionEnvelope, envelope_sha256};
+use mast_proto::{InstructionEnvelope, envelope_sha256};
 
 use crate::{HarnessError, InstructionChannel, InstructionReplaceStrategy, InstructionSupport};
 
@@ -72,7 +72,7 @@ fn help_text(exe: &Path) -> std::io::Result<String> {
     crate::instruction_support::bounded_output(exe, &["--help"], HELP_TIMEOUT)
 }
 
-/// Default Zeron-owned directory for envelope files: beside the profile's
+/// Default Mast-owned directory for envelope files: beside the profile's
 /// model-discovery directory (`<store_root>/instructions`), else a private
 /// temp directory. Never the user's checkout.
 pub(super) fn default_dir(model_discovery_cwd: Option<&Path>) -> PathBuf {
@@ -94,7 +94,7 @@ pub fn write_envelope_file(
     let digest = envelope_sha256(&envelope.rendered);
     if digest != envelope.envelope_sha256 {
         return Err(HarnessError::Capability {
-            harness: zeron_proto::HarnessId::ClaudeCode,
+            harness: mast_proto::HarnessId::ClaudeCode,
             detail: "the rendered instructions do not match their envelope hash".into(),
             upgrade_hint: None,
         });

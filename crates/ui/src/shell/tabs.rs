@@ -48,7 +48,7 @@ pub(super) fn chat_identity_string(
 
 /// [`chat_identity_string`] for a chat row (title collapsed to one line, the
 /// same fallback the titlebar uses).
-pub(crate) fn chat_identity_for(chat: &zeron_proto::Chat) -> String {
+pub(crate) fn chat_identity_for(chat: &mast_proto::Chat) -> String {
     let title = transcript::single_line(chat.title.as_deref().unwrap_or("New session"));
     chat_identity_string(&title, &chat.id, chat.harness_session_id.as_deref())
 }
@@ -237,7 +237,7 @@ impl Shell {
         let (title, target, harness, on_canvas, chat_id): (
             SharedString,
             Option<SharedString>,
-            Option<zeron_proto::HarnessId>,
+            Option<mast_proto::HarnessId>,
             bool,
             Option<String>,
         ) = {
@@ -633,7 +633,7 @@ mod chat_identity_tests {
 
     #[test]
     fn identity_for_uses_the_visible_title_fallback_and_collapses_lines() {
-        let titled: zeron_proto::Chat = serde_json::from_value(serde_json::json!({
+        let titled: mast_proto::Chat = serde_json::from_value(serde_json::json!({
             "id": "chat-1", "deviceId": "local", "archived": false,
             "title": "Fix\nlogin", "harnessSessionId": "session-2",
             "createdAt": chrono::Utc::now(),
@@ -644,7 +644,7 @@ mod chat_identity_tests {
             "Fix login \u{2014} chat chat-1 \u{2014} session session-2"
         );
 
-        let untitled: zeron_proto::Chat = serde_json::from_value(serde_json::json!({
+        let untitled: mast_proto::Chat = serde_json::from_value(serde_json::json!({
             "id": "chat-2", "deviceId": "local", "archived": false,
             "createdAt": chrono::Utc::now(),
         }))

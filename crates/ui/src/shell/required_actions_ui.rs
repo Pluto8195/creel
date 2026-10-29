@@ -26,7 +26,7 @@ impl Shell {
         let (space_ids, snapshots) = {
             let state = state.read(cx);
             let ids: Vec<String> = state.spaces.iter().map(|space| space.id.clone()).collect();
-            let snapshots: Vec<(String, std::sync::Arc<zeron_proto::WorkOutlineSnapshot>)> = ids
+            let snapshots: Vec<(String, std::sync::Arc<mast_proto::WorkOutlineSnapshot>)> = ids
                 .iter()
                 .filter_map(|id| {
                     let load = state.work_outline(id);
@@ -137,7 +137,7 @@ impl Shell {
 mod status_light_tests {
     use super::*;
     use crate::status_light::AppLight;
-    use zeron_proto::{SessionStatus, WorkspaceScope};
+    use mast_proto::{SessionStatus, WorkspaceScope};
 
     fn test_shell<'a>(
         cx: &'a mut gpui::TestAppContext,
@@ -154,7 +154,7 @@ mod status_light_tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -165,7 +165,7 @@ mod status_light_tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -186,7 +186,7 @@ mod status_light_tests {
         assert_eq!(light(cx), Some(AppLight::Idle), "on by default");
 
         state.update(cx, |state, _| {
-            state.sessions = vec![zeron_proto::Session {
+            state.sessions = vec![mast_proto::Session {
                 last_completed_turn: None,
                 chat_id: "c1".into(),
                 device_id: "d".into(),
@@ -194,7 +194,7 @@ mod status_light_tests {
                 started_at: None,
                 updated_at: chrono::Utc::now(),
             }];
-            state.chats = vec![zeron_proto::Chat {
+            state.chats = vec![mast_proto::Chat {
                 id: "c1".into(),
                 device_id: "d".into(),
                 title: None,

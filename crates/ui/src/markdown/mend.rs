@@ -43,7 +43,7 @@
 
 /// Sentinel destination for a link whose URL is still streaming. The renderer
 /// styles it like any link but must not register it as clickable.
-pub const PENDING_LINK_URL: &str = "zeron:pending-link";
+pub const PENDING_LINK_URL: &str = "mast:pending-link";
 
 /// One unclosed emphasis-family delimiter run (`*`, `_`, or `~~`).
 struct OpenDelim {
@@ -375,10 +375,10 @@ mod tests {
 
     #[test]
     fn links_mend_to_pending_sentinel() {
-        mends("[docs](https://x.dev/lo", "[docs](zeron:pending-link)");
-        mends("[docs](", "[docs](zeron:pending-link)");
-        mends("see [do", "see [do](zeron:pending-link)");
-        mends("![alt](https://x/i.p", "![alt](zeron:pending-link)");
+        mends("[docs](https://x.dev/lo", "[docs](mast:pending-link)");
+        mends("[docs](", "[docs](mast:pending-link)");
+        mends("see [do", "see [do](mast:pending-link)");
+        mends("![alt](https://x/i.p", "![alt](mast:pending-link)");
         stays("see [");
         stays("[x] task-like"); // completed bracket, no url
     }
@@ -386,13 +386,13 @@ mod tests {
     #[test]
     fn link_urls_allow_nested_parens() {
         stays("[a](https://x.dev/(y)) done");
-        mends("[a](https://x.dev/(y", "[a](zeron:pending-link)");
+        mends("[a](https://x.dev/(y", "[a](mast:pending-link)");
     }
 
     #[test]
     fn emphasis_inside_link_text_closes_inside() {
-        mends("[**a", "[**a**](zeron:pending-link)");
-        mends("**a [b", "**a [b](zeron:pending-link)**");
+        mends("[**a", "[**a**](mast:pending-link)");
+        mends("**a [b", "**a [b](mast:pending-link)**");
     }
 
     #[test]

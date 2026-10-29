@@ -17,11 +17,11 @@ use gpui::{
     SharedString, Subscription, Task, Window, canvas, container_query, div, img, list, point,
     prelude::*, px,
 };
-use zeron_engine::repos::git_history_matches;
-use zeron_proto::{
+use mast_engine::repos::git_history_matches;
+use mast_proto::{
     GitHistoryCommit, GitHistoryComparison, GitHistoryPage, GitHistoryRef, GitHistoryRefKind,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion::AnimationExt;
@@ -2530,7 +2530,7 @@ impl GitHistory {
                 history.search_loading = false;
                 match result.and_then(|value| {
                     serde_json::from_value::<GitHistoryPage>(value)
-                        .map_err(|error| zeron_rpc::RpcError::Failed(error.to_string()))
+                        .map_err(|error| mast_rpc::RpcError::Failed(error.to_string()))
                 }) {
                     Ok(page) => {
                         let anchor = history.current_scroll_anchor();
@@ -2640,7 +2640,7 @@ impl GitHistory {
                 }
                 if let Ok(avatars) = result.and_then(|value| {
                     serde_json::from_value::<HashMap<String, String>>(value)
-                        .map_err(|error| zeron_rpc::RpcError::Failed(error.to_string()))
+                        .map_err(|error| mast_rpc::RpcError::Failed(error.to_string()))
                 }) {
                     history.avatar_images.extend(avatars.into_iter().filter_map(
                         |(email, encoded)| {
@@ -2704,7 +2704,7 @@ impl GitHistory {
                 history.loading = false;
                 match result.and_then(|value| {
                     serde_json::from_value::<GitHistoryPage>(value)
-                        .map_err(|error| zeron_rpc::RpcError::Failed(error.to_string()))
+                        .map_err(|error| mast_rpc::RpcError::Failed(error.to_string()))
                 }) {
                     Ok(page) => {
                         let restart_search = (reset && history.search_active())
@@ -4534,8 +4534,8 @@ impl Render for GitHistory {
 mod tests {
     use super::*;
 
-    fn chat(id: &str, cwd: &str, checkout_id: &str) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    fn chat(id: &str, cwd: &str, checkout_id: &str) -> mast_proto::Chat {
+        mast_proto::Chat {
             id: id.into(),
             device_id: "device".into(),
             title: None,

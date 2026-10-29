@@ -1,10 +1,10 @@
-//! Transcript artifact cards: each `[label](zeron-artifact:…)` link of a
+//! Transcript artifact cards: each `[label](mast-artifact:…)` link of a
 //! settled assistant message gets a card (kind icon, title, role, revision,
 //! Open) resolved against the watched snapshots at render time. Activation
 //! goes through the chat's link handler, so it opens the Artifact tab (and
 //! registers an unknown path) exactly like clicking the inline link.
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
-use zeron_proto::artifacts::ARTIFACT_URL_SCHEME;
+use mast_proto::artifacts::ARTIFACT_URL_SCHEME;
 
 use super::model;
 use super::store::ArtifactStore;
@@ -18,7 +18,7 @@ pub(crate) struct CardModel {
     pub(crate) icon: &'static str,
     /// "Plan · plan · r3", or the path for a not-yet-registered file.
     pub(crate) detail: String,
-    /// The link the card activates (`zeron-artifact:<target>`).
+    /// The link the card activates (`mast-artifact:<target>`).
     pub(crate) url: String,
     pub(crate) registered: bool,
 }
@@ -30,7 +30,7 @@ pub(crate) fn card_model(
     cwd: Option<&str>,
 ) -> CardModel {
     let url = format!("{ARTIFACT_URL_SCHEME}{target}");
-    let artifact = if zeron_proto::artifacts::is_artifact_id(target) {
+    let artifact = if mast_proto::artifacts::is_artifact_id(target) {
         store.artifact(target)
     } else {
         store.artifact_by_path(target, cwd, None)
@@ -61,14 +61,14 @@ pub(crate) fn card_model(
             } else {
                 label.trim().to_owned()
             };
-            let detail = if zeron_proto::artifacts::is_artifact_id(target) {
+            let detail = if mast_proto::artifacts::is_artifact_id(target) {
                 "Artifact".to_owned()
             } else {
                 target.to_owned()
             };
             CardModel {
                 title,
-                icon: model::kind_icon(zeron_proto::ArtifactKind::from_path(target)),
+                icon: model::kind_icon(mast_proto::ArtifactKind::from_path(target)),
                 detail,
                 url,
                 registered: false,

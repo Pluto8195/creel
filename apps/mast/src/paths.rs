@@ -4,11 +4,11 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub fn data_dir() -> PathBuf {
-    resolve_data_dir(|name| std::env::var_os(name))
+    resolve_data_dir(|name| mast_proto::env::var_os(name))
 }
 
 fn resolve_data_dir(mut env: impl FnMut(&str) -> Option<OsString>) -> PathBuf {
-    if let Some(dir) = env("ZERON_DATA_DIR") {
+    if let Some(dir) = env("MAST_DATA_DIR").or_else(|| env("ZERON_DATA_DIR")) {
         return PathBuf::from(dir);
     }
     #[cfg(windows)]
@@ -24,7 +24,7 @@ fn resolve_data_dir(mut env: impl FnMut(&str) -> Option<OsString>) -> PathBuf {
                     .filter(|value| !value.is_empty())
                     .map(|home| PathBuf::from(home).join("AppData").join("Local"))
             })
-            .expect("LOCALAPPDATA and USERPROFILE not set; set ZERON_DATA_DIR");
+            .expect("LOCALAPPDATA and USERPROFILE not set; set MAST_DATA_DIR");
         local.join("Zeron")
     }
     #[cfg(not(windows))]
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn explicit_data_dir_needs_no_home() {
         assert_eq!(
-            resolve(&[("ZERON_DATA_DIR", "custom data")]),
+            resolve(&[("MAST_DATA_DIR", "custom data")]),
             PathBuf::from("custom data")
         );
     }

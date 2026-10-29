@@ -8,7 +8,7 @@
 //! A child module of `outline_view` (like `linear_outline`) so it reads the
 //! Outline's snapshots without widening that view's API.
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use zeron_proto::PullRequestStatusSummary;
+use mast_proto::PullRequestStatusSummary;
 
 use super::super::chips::{self, TextTooltip};
 use super::super::model::ItemRow;

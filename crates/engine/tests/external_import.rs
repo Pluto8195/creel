@@ -1,9 +1,9 @@
 //! External-session import: on-disk Claude Code transcript → a brand-new
-//! Zeron chat with the same content a live session would have produced.
+//! Mast chat with the same content a live session would have produced.
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -104,7 +104,7 @@ async fn imports_a_transcript_into_a_new_chat_with_full_history() {
 
 #[tokio::test]
 async fn transcript_content_lands_in_the_doc_with_live_equivalent_shape() {
-    use zeron_doc::{MessagePart, MessageRole};
+    use mast_doc::{MessagePart, MessageRole};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let profile = EngineProfile::development(dir.path(), "dev-org", "dev-user");
@@ -120,16 +120,16 @@ async fn transcript_content_lands_in_the_doc_with_live_equivalent_shape() {
         .expect("import");
     core.shutdown().await;
 
-    // Read the persisted doc back the same way `zeron-doc`'s own rebuild
+    // Read the persisted doc back the same way `mast-doc`'s own rebuild
     // path does: reopen the snapshot from the store into a fresh doc.
-    let store = zeron_sync::DocsStore::open(&store_root).expect("open store");
+    let store = mast_sync::DocsStore::open(&store_root).expect("open store");
     let bytes = store
         .load_snapshot(chat_id)
         .expect("load snapshot")
         .expect("snapshot exists");
     let loro = loro::LoroDoc::new();
     loro.import(&bytes).expect("import snapshot");
-    let doc = zeron_doc::SessionDoc::from_doc(loro);
+    let doc = mast_doc::SessionDoc::from_doc(loro);
     let entries = doc.read_entries().expect("read entries");
 
     assert_eq!(entries.len(), 4);
@@ -164,7 +164,7 @@ async fn transcript_content_lands_in_the_doc_with_live_equivalent_shape() {
     assert!(!is_error);
     assert_eq!(output.as_deref(), Some("ok"));
     match call {
-        zeron_proto::ToolCall::WriteFile { path, content } => {
+        mast_proto::ToolCall::WriteFile { path, content } => {
             assert_eq!(path, "/work/project/health.rs");
             assert_eq!(
                 content, None,

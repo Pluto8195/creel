@@ -5,16 +5,16 @@
 //! (exit code 254)" with nothing actionable. The managed install must instead
 //! fail the run with the decoded errno and a recovery hint.
 //!
-//! Single-test binary: it mutates PATH/SHELL/ZERON_* env process-wide.
+//! Single-test binary: it mutates PATH/SHELL/MAST_* env process-wide.
 
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
 
+use mast_harness::{AcpHarness, Harness, HarnessError, RunControls};
+use mast_proto::{RunRequest, SandboxLevel};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use zeron_harness::{AcpHarness, Harness, HarnessError, RunControls};
-use zeron_proto::{RunRequest, SandboxLevel};
 
 #[tokio::test]
 async fn silent_npm_enoent_death_surfaces_decoded_error() {
@@ -28,8 +28,8 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
 
     // SAFETY: single-test binary — nothing else reads env concurrently.
     unsafe {
-        std::env::set_var("ZERON_ADAPTERS_DIR", dir.path().join("adapters"));
-        std::env::set_var("ZERON_NO_LOGIN_SHELL", "1");
+        std::env::set_var("MAST_ADAPTERS_DIR", dir.path().join("adapters"));
+        std::env::set_var("MAST_NO_LOGIN_SHELL", "1");
         std::env::set_var("PATH", &bin);
         std::env::set_var("HOME", dir.path());
         std::env::remove_var("PI_ACP_EXECUTABLE");

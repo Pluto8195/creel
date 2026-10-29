@@ -5,14 +5,15 @@
 //! - **Location.** [`ArtifactsService::canonical_root`]: the main checkout of
 //!   the work item's resolved primary repository (never a worktree), else the
 //!   Space folder's repository main checkout, else the Space folder. Files
-//!   live in `<canonical>/.zeron/artifacts/<folder>/`; `.zeron/` is appended
+//!   live in `<canonical>/.mast/artifacts/<folder>/` (or the legacy
+//!   `.zeron/artifacts/<folder>/` when that folder already exists); both are appended
 //!   once to `git rev-parse --git-path info/exclude`.
 //! - **Registry.** One `artifacts` row per artifact (metadata only); every
 //!   revision's bytes go to `<profile store>/artifacts/<id>/<sha256>`.
 //! - **Writers.** `artifact_publish` (agents), `ArtifactRegister` (user
 //!   import), the marker fallback (assistant text), and the watcher
 //!   (external edits) all go through [`ArtifactsService::record`] under one
-//!   gate, so the watcher never mistakes Zeron's own write for an edit.
+//!   gate, so the watcher never mistakes Mast's own write for an edit.
 //! - **Render checks.** [`RenderBroker`]: the headed UI holds
 //!   `WatchArtifactRenderRequests` open; a request goes to the newest live
 //!   subscriber and waits up to 30 s for `ArtifactRenderResult`.
@@ -28,24 +29,24 @@ use base64::Engine as _;
 use chrono::Utc;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use mast_proto::artifacts::{
+    ARTIFACTS_DIR, ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
+    ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply, ArtifactError,
+    ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply, ArtifactPublishReply,
+    ArtifactRegisterParams, ArtifactRenderCheckResult, ArtifactRenderCompanion,
+    ArtifactRenderRequest, ArtifactRenderResultParams, ArtifactRenderTheme, ArtifactRenderViewport,
+    ArtifactResolveCommentParams, ArtifactResolveCommentReply, ArtifactRevision, ArtifactView,
+    ArtifactViewport, ArtifactsSnapshot, CommentStatus, EDITED_WITHOUT_NOTE, IMPORTED_NOTE,
+    LEGACY_ARTIFACT_URL_SCHEME, LEGACY_ARTIFACTS_DIR, LEGACY_ZERON_DIR, MAST_DIR,
+    MAX_COMMENT_CHARS, MAX_COMMENTS, MAX_QUOTE_CHARS, OptionsManifest, PROMOTE_DIR, PlanScope,
+    SPACE_FOLDER, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
+    clean_title, content_hash, count_open_questions, count_unverified_claims,
+    is_safe_relative_path, kind_supports_comments, mime_type_for, next_comment_id,
+    normalize_comment_id, publish_operation_id, resolve_anchor, tagged_file_name, work_item_folder,
+};
+use mast_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zeron_proto::artifacts::{
-    ArtifactAddCommentParams, ArtifactAddCommentReply, ArtifactComment,
-    ArtifactResolveCommentParams, ArtifactResolveCommentReply, CommentStatus, MAX_COMMENTS,
-    MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, kind_supports_comments, next_comment_id,
-    normalize_comment_id, resolve_anchor,
-    ARTIFACTS_DIR, ArtifactContentEncoding, ArtifactContentParams, ArtifactContentReply,
-    ArtifactError, ArtifactErrorCode, ArtifactKind, ArtifactPinReply, ArtifactPromoteReply,
-    ArtifactPublishReply, ArtifactRegisterParams, ArtifactRenderCheckResult,
-    ArtifactRenderCompanion, ArtifactRenderRequest, ArtifactRenderResultParams,
-    ArtifactRenderTheme, ArtifactRenderViewport, ArtifactRevision, ArtifactView, ArtifactViewport,
-    ArtifactsSnapshot, EDITED_WITHOUT_NOTE, IMPORTED_NOTE, OptionsManifest, PROMOTE_DIR, PlanScope,
-    SPACE_FOLDER, ZERON_DIR, artifact_id, artifact_limits, artifact_links, chat_folder, clean_note,
-    clean_title, content_hash, count_open_questions, count_unverified_claims,
-    is_safe_relative_path, mime_type_for, publish_operation_id, tagged_file_name, work_item_folder,
-};
-use zeron_proto::{ExecutionScope, Space, WorkOutlineActor, WorkOutlineActorKind};
 
 use crate::workspace_host::WorkspaceHost;
 
@@ -55,7 +56,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn clean_answer(answer: &str) -> String {
     let answer = answer.trim();
-    match answer.char_indices().nth(zeron_proto::artifacts::MAX_ANSWER_CHARS) {
+    match answer
+        .char_indices()
+        .nth(mast_proto::artifacts::MAX_ANSWER_CHARS)
+    {
         Some((cut, _)) => answer[..cut].to_owned(),
         None => answer.to_owned(),
     }
@@ -79,7 +83,7 @@ const MARKER_LEDGER_PREFIX: &str = "artifact-marker:";
 // ── git helpers (synchronous; callers run on blocking threads) ──────────────
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -126,9 +130,23 @@ pub fn main_checkout(path: &Path) -> Option<PathBuf> {
     git(path, &["rev-parse", "--show-toplevel"]).map(|top| canonical(Path::new(&top)))
 }
 
-/// Append `.zeron/` to the checkout's `info/exclude` (resolved with `git
+/// Whether an `info/exclude` line already lists `dir` (`.mast`, `.zeron`).
+fn exclude_lists(line: &str, dir: &str) -> bool {
+    [
+        dir.to_owned(),
+        format!("{dir}/"),
+        format!("/{dir}"),
+        format!("/{dir}/"),
+        format!("{dir}/*"),
+        format!("/{dir}/*"),
+    ]
+    .iter()
+    .any(|candidate| candidate == line)
+}
+
+/// Append `.mast/` and the legacy `.zeron/` to the checkout's `info/exclude` (resolved with `git
 /// rev-parse --git-path`, so submodules get their module's file) unless it
-/// is already listed. Never touches `.gitignore`. `Ok(false)` when nothing
+/// is already listed (each entry separately). Never touches `.gitignore`. `Ok(false)` when nothing
 /// was written (already listed, or not a git checkout).
 pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
     let Some(raw) = git(
@@ -147,13 +165,16 @@ pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
         exclude = checkout.join(exclude);
     }
     let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    let listed = existing.lines().map(str::trim).any(|line| {
-        matches!(
-            line,
-            ".zeron" | ".zeron/" | "/.zeron" | "/.zeron/" | ".zeron/*" | "/.zeron/*"
-        )
-    });
-    if listed {
+    let missing: Vec<&str> = [MAST_DIR, LEGACY_ZERON_DIR]
+        .into_iter()
+        .filter(|dir| {
+            !existing
+                .lines()
+                .map(str::trim)
+                .any(|line| exclude_lists(line, dir))
+        })
+        .collect();
+    if missing.is_empty() {
         return Ok(false);
     }
     if let Some(parent) = exclude.parent() {
@@ -163,7 +184,9 @@ pub fn ensure_excluded(checkout: &Path) -> Outcome<bool> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("{ZERON_DIR}/\n"));
+    for dir in missing {
+        text.push_str(&format!("{dir}/\n"));
+    }
     std::fs::write(&exclude, text).map_err(|e| io_error("write", &exclude, e))?;
     Ok(true)
 }
@@ -175,7 +198,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Outcome<()> {
         .ok_or_else(|| ArtifactError::invalid(format!("{} has no parent", path.display())))?;
     std::fs::create_dir_all(parent).map_err(|e| io_error("create", parent, e))?;
     let tmp = parent.join(format!(
-        ".{}.zeron-tmp-{}",
+        ".{}.mast-tmp-{}",
         path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("artifact"),
@@ -232,7 +255,7 @@ fn default_title_for(path: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("artifact");
     let html = name.to_ascii_lowercase().ends_with(".html");
-    html.then(|| zeron_proto::visualize::default_title(name))
+    html.then(|| mast_proto::visualize::default_title(name))
         .flatten()
         .or_else(|| {
             Path::new(name)
@@ -244,11 +267,11 @@ fn default_title_for(path: &Path) -> String {
 }
 
 /// The canonical checkout an artifact's stored file lives in (the ancestor
-/// that holds `.zeron/artifacts`).
+/// that holds `.mast/artifacts`, or the legacy `.zeron/artifacts`).
 fn canonical_of_stored(stored: &Path) -> Option<PathBuf> {
     stored
         .ancestors()
-        .find(|a| a.ends_with(ARTIFACTS_DIR))
+        .find(|a| a.ends_with(ARTIFACTS_DIR) || a.ends_with(LEGACY_ARTIFACTS_DIR))
         .and_then(|a| a.parent())
         .and_then(|a| a.parent())
         .map(Path::to_path_buf)
@@ -632,7 +655,7 @@ struct Inner {
     snapshots: PathBuf,
     /// Questions of each artifact's current revision, by artifact id and
     /// revision hash.
-    questions: Mutex<HashMap<String, (String, Vec<zeron_proto::PlanQuestion>)>>,
+    questions: Mutex<HashMap<String, (String, Vec<mast_proto::PlanQuestion>)>>,
     /// Serializes every artifact write and the watcher; holds the watcher
     /// cache keyed by stored path.
     gate: Mutex<HashMap<String, SeenFile>>,
@@ -809,7 +832,30 @@ impl ArtifactsService {
         main_checkout(&start).unwrap_or_else(|| canonical(&start))
     }
 
-    /// The folder (under `.zeron/artifacts/`) of a scope: reuses the folder
+    /// The directory a new artifact of `folder` is written to: `.mast/` by
+    /// default, but the legacy `.zeron/artifacts/<folder>` when that folder
+    /// already exists (on disk or through a registered sibling) so one work
+    /// item's artifacts never split across two roots.
+    fn artifact_dir(&self, space_id: &str, canonical: &Path, folder: &str) -> PathBuf {
+        let new = canonical.join(ARTIFACTS_DIR).join(folder);
+        if new.exists() {
+            return new;
+        }
+        let legacy = canonical.join(LEGACY_ARTIFACTS_DIR).join(folder);
+        let legacy_root = canonical.join(LEGACY_ARTIFACTS_DIR);
+        let sibling_in_legacy = self
+            .workspace()
+            .artifacts_of_space(space_id)
+            .into_iter()
+            .any(|a| a.folder == folder && Path::new(&a.stored_path).starts_with(&legacy_root));
+        if legacy.exists() || sibling_in_legacy {
+            legacy
+        } else {
+            new
+        }
+    }
+
+    /// The folder (under `.mast/artifacts/`) of a scope: reuses the folder
     /// earlier artifacts of the same work item recorded, so renames never
     /// move files.
     fn folder_for(
@@ -828,7 +874,7 @@ impl ArtifactsService {
                 return Ok(existing.folder);
             }
             let inputs = self.workspace().work_outline_inputs(&space.id);
-            let snapshot = zeron_doc::materialize_work_outline(&space.id, &inputs);
+            let snapshot = mast_doc::materialize_work_outline(&space.id, &inputs);
             let title = snapshot
                 .item(item)
                 .map(|i| i.title.clone())
@@ -875,10 +921,10 @@ impl ArtifactsService {
         let mut source = request.source.clone();
         let mut kind = request.kind;
         let source_text = source.to_string_lossy().into_owned();
-        if let Some(zeron_proto::visualize::HtmlArtifactKind::Preview) =
-            zeron_proto::visualize::html_artifact_kind(&source_text)
+        if let Some(mast_proto::visualize::HtmlArtifactKind::Preview) =
+            mast_proto::visualize::html_artifact_kind(&source_text)
         {
-            match zeron_proto::visualize::fragment_sibling(&source_text) {
+            match mast_proto::visualize::fragment_sibling(&source_text) {
                 Some(fragment) if Path::new(&fragment).is_file() => {
                     source = PathBuf::from(fragment);
                     kind = Some(ArtifactKind::HtmlFragment);
@@ -951,7 +997,7 @@ impl ArtifactsService {
                 ensure_excluded(&canonical)?;
                 let folder =
                     self.folder_for(&space, work_item_id.as_deref(), request.chat_id.as_deref())?;
-                let dir = canonical.join(ARTIFACTS_DIR).join(&folder);
+                let dir = self.artifact_dir(&space.id, &canonical, &folder);
                 let mut name = file_name_of(&source)?;
                 let taken = self
                     .workspace()
@@ -1000,12 +1046,11 @@ impl ArtifactsService {
         }
         // A fragment's standalone preview travels with it.
         if kind == ArtifactKind::HtmlFragment
-            && let Some(preview) =
-                zeron_proto::visualize::preview_sibling(&source.to_string_lossy())
+            && let Some(preview) = mast_proto::visualize::preview_sibling(&source.to_string_lossy())
             && Path::new(&preview).is_file()
         {
             let stored_preview =
-                zeron_proto::visualize::preview_sibling(&view.stored_path).map(PathBuf::from);
+                mast_proto::visualize::preview_sibling(&view.stored_path).map(PathBuf::from);
             if let Some(stored_preview) = stored_preview {
                 if Path::new(&preview) != stored_preview {
                     let preview_bytes = read_file(&self.authorize_source(Path::new(&preview))?)?;
@@ -1106,7 +1151,7 @@ impl ArtifactsService {
                 .set_artifact_pin(&id, true)
                 .map_err(|e| ArtifactError::io(e.to_string()))?;
         }
-        // Zeron's own write is not an external edit.
+        // Mast's own write is not an external edit.
         let meta = std::fs::metadata(&stored).ok();
         seen.insert(
             view.stored_path.clone(),
@@ -1128,7 +1173,7 @@ impl ArtifactsService {
     // ── watcher ─────────────────────────────────────────────────────────────
 
     /// One watcher pass over this device's stored files: a content change
-    /// Zeron did not make becomes a revision noted "edited without a note".
+    /// Mast did not make becomes a revision noted "edited without a note".
     /// Returns how many revisions it recorded.
     pub fn scan_external_edits(&self) -> usize {
         let mut seen = lock(&self.inner.gate);
@@ -1326,7 +1371,7 @@ impl ArtifactsService {
     /// The questions in the artifact's current revision, read from its
     /// stored snapshot (falling back to the file) and cached by revision
     /// hash. Empty for kinds without questions or unreadable content.
-    pub(crate) fn plan_questions(&self, artifact: &ArtifactView) -> Vec<zeron_proto::PlanQuestion> {
+    pub(crate) fn plan_questions(&self, artifact: &ArtifactView) -> Vec<mast_proto::PlanQuestion> {
         let Some(current) = artifact.current() else {
             return Vec::new();
         };
@@ -1339,8 +1384,12 @@ impl ArtifactsService {
             .ok()
             .or_else(|| self.current_bytes(artifact).ok())
             .unwrap_or_default();
-        let questions = zeron_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
-        lock(&self.inner.questions).insert(artifact.id.clone(), (current.hash.clone(), questions.clone()));
+        let questions =
+            mast_proto::extract_questions(artifact.kind, &String::from_utf8_lossy(&bytes));
+        lock(&self.inner.questions).insert(
+            artifact.id.clone(),
+            (current.hash.clone(), questions.clone()),
+        );
         questions
     }
 
@@ -1348,10 +1397,13 @@ impl ArtifactsService {
     /// the checkouts the work item's chats work in (their cwd and bound diff
     /// targets). Checkouts on the repository's main / master branch are
     /// skipped: their history is everyone's, not this work's.
-    pub fn drift(&self, artifact_id: &str) -> Outcome<zeron_proto::ArtifactDriftReply> {
+    pub fn drift(&self, artifact_id: &str) -> Outcome<mast_proto::ArtifactDriftReply> {
         let artifact = self.local_artifact(artifact_id)?;
-        let since = artifact.revisions.first().map_or(artifact.updated_at, |r| r.at);
-        let mut reply = zeron_proto::ArtifactDriftReply {
+        let since = artifact
+            .revisions
+            .first()
+            .map_or(artifact.updated_at, |r| r.at);
+        let mut reply = mast_proto::ArtifactDriftReply {
             artifact_id: artifact.id.clone(),
             since,
             ..Default::default()
@@ -1389,9 +1441,12 @@ impl ArtifactsService {
             if matches!(branch.as_str(), "" | "main" | "master" | "HEAD") {
                 continue;
             }
-            let count: u32 = git(&top, &["rev-list", "--count", &format!("--after={after}"), "HEAD"])
-                .and_then(|c| c.parse().ok())
-                .unwrap_or(0);
+            let count: u32 = git(
+                &top,
+                &["rev-list", "--count", &format!("--after={after}"), "HEAD"],
+            )
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
             if count > reply.commits_since {
                 reply.commits_since = count;
                 reply.branch = Some(branch);
@@ -1408,13 +1463,15 @@ impl ArtifactsService {
     /// the owning device's reconcile pass resolves the Required Action.
     pub fn answer_question(
         &self,
-        params: &zeron_proto::ArtifactAnswerQuestionParams,
+        params: &mast_proto::ArtifactAnswerQuestionParams,
         by: WorkOutlineActor,
-    ) -> Outcome<zeron_proto::ArtifactAnswerQuestionReply> {
+    ) -> Outcome<mast_proto::ArtifactAnswerQuestionReply> {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         let id = params.question_id.trim().to_ascii_uppercase();
         if !id.starts_with("Q-") || id.len() < 3 {
             return Err(ArtifactError::invalid("question id must look like Q-3"));
@@ -1424,7 +1481,7 @@ impl ArtifactsService {
             return Err(ArtifactError::invalid("answer must not be empty"));
         }
         self.record_answer(&artifact, &id, answer, by)?;
-        Ok(zeron_proto::ArtifactAnswerQuestionReply {
+        Ok(mast_proto::ArtifactAnswerQuestionReply {
             artifact_id: artifact.id,
             question_id: id,
         })
@@ -1440,9 +1497,13 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         if !kind_supports_comments(artifact.kind) {
-            return Err(ArtifactError::invalid("comments are for HTML and Mermaid artifacts"));
+            return Err(ArtifactError::invalid(
+                "comments are for HTML and Mermaid artifacts",
+            ));
         }
         let text = clip_chars(params.text.trim(), MAX_COMMENT_CHARS);
         if text.is_empty() {
@@ -1454,7 +1515,12 @@ impl ArtifactsService {
                 "comment anchor needs an id or quoted text",
             ));
         }
-        let quote = match params.quote.split_whitespace().collect::<Vec<_>>().join(" ") {
+        let quote = match params
+            .quote
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+        {
             q if q.is_empty() => anchor.exact.clone(),
             q => q,
         };
@@ -1494,7 +1560,9 @@ impl ArtifactsService {
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         let id = normalize_comment_id(&params.comment_id)
             .ok_or_else(|| ArtifactError::invalid("comment id must look like C-3"))?;
         let mut comments = artifact.comments.clone();
@@ -1530,14 +1598,22 @@ impl ArtifactsService {
 
     /// Mark the open comments in `ids` resolved by the agent, addressed in
     /// `revision`. Unknown ids are ignored.
-    fn mark_comments_addressed(&self, artifact_id: &str, ids: &[String], revision: u32) -> Outcome<()> {
+    fn mark_comments_addressed(
+        &self,
+        artifact_id: &str,
+        ids: &[String],
+        revision: u32,
+    ) -> Outcome<()> {
         let Some(artifact) = self.workspace().artifact(artifact_id) else {
             return Ok(());
         };
         let wanted: Vec<String> = ids.iter().filter_map(|i| normalize_comment_id(i)).collect();
         let mut comments = artifact.comments.clone();
         let mut any = false;
-        for c in comments.iter_mut().filter(|c| c.is_open() && wanted.contains(&c.id)) {
+        for c in comments
+            .iter_mut()
+            .filter(|c| c.is_open() && wanted.contains(&c.id))
+        {
             c.status = CommentStatus::Resolved;
             c.resolved_at = Some(now_ms());
             c.resolved_by = Some("agent".to_owned());
@@ -1590,19 +1666,23 @@ impl ArtifactsService {
     ) -> Outcome<()> {
         let mut answers = artifact.answers.clone();
         answers.retain(|a| !a.id.eq_ignore_ascii_case(question_id));
-        answers.push(zeron_proto::ArtifactQuestionAnswer {
+        answers.push(mast_proto::ArtifactQuestionAnswer {
             id: question_id.to_owned(),
             answer,
             at: now_ms(),
             by,
             revision: artifact.current_revision,
         });
-        let excess = answers.len().saturating_sub(zeron_proto::artifacts::MAX_ANSWERS);
+        let excess = answers
+            .len()
+            .saturating_sub(mast_proto::artifacts::MAX_ANSWERS);
         answers.drain(..excess);
         self.workspace()
             .set_artifact_answers(&artifact.id, &answers)
             .map_err(|e| ArtifactError::io(e.to_string()))?
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", artifact.id))
+            })?;
         Ok(())
     }
 
@@ -1613,16 +1693,20 @@ impl ArtifactsService {
     /// it again; the caller (RPC) then resolves any `artopt:` request.
     pub fn pick_option(
         &self,
-        params: &zeron_proto::ArtifactPickOptionParams,
+        params: &mast_proto::ArtifactPickOptionParams,
         by: WorkOutlineActor,
-    ) -> Outcome<zeron_proto::ArtifactPickOptionReply> {
-        use zeron_proto::artifacts::{ArtifactOptionPick, MAX_PICK_CHARS, MAX_PICK_ID_CHARS};
+    ) -> Outcome<mast_proto::ArtifactPickOptionReply> {
+        use mast_proto::artifacts::{ArtifactOptionPick, MAX_PICK_CHARS, MAX_PICK_ID_CHARS};
         let artifact = self
             .workspace()
             .artifact(&params.artifact_id)
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", params.artifact_id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", params.artifact_id))
+            })?;
         if artifact.kind != ArtifactKind::Options {
-            return Err(ArtifactError::invalid("only an options artifact can have a pick"));
+            return Err(ArtifactError::invalid(
+                "only an options artifact can have a pick",
+            ));
         }
         let cut = |text: &str, max: usize| -> String { text.trim().chars().take(max).collect() };
         let option_id = params
@@ -1645,9 +1729,11 @@ impl ArtifactsService {
         self.workspace()
             .set_artifact_pick(&artifact.id, pick.as_ref())
             .map_err(|e| ArtifactError::io(e.to_string()))?
-            .ok_or_else(|| ArtifactError::not_found(format!("artifact {} not found", artifact.id)))?;
+            .ok_or_else(|| {
+                ArtifactError::not_found(format!("artifact {} not found", artifact.id))
+            })?;
         self.sync_pick_answer(&artifact, pick.as_ref());
-        Ok(zeron_proto::ArtifactPickOptionReply {
+        Ok(mast_proto::ArtifactPickOptionReply {
             artifact_id: artifact.id,
             picked: pick,
         })
@@ -1655,7 +1741,11 @@ impl ArtifactsService {
 
     /// Mirror the pick into the plan question the manifest names, if any.
     /// Best effort: the pick itself is already stored.
-    fn sync_pick_answer(&self, artifact: &ArtifactView, pick: Option<&zeron_proto::ArtifactOptionPick>) {
+    fn sync_pick_answer(
+        &self,
+        artifact: &ArtifactView,
+        pick: Option<&mast_proto::ArtifactOptionPick>,
+    ) {
         let Some(question_id) = self
             .current_bytes(artifact)
             .ok()
@@ -1671,13 +1761,21 @@ impl ArtifactsService {
             .workspace()
             .artifacts_of_space(&artifact.space_id)
             .into_iter()
-            .find(|a| a.pinned_as_plan && a.archived_at.is_none() && a.work_item_id.as_deref() == Some(item))
+            .find(|a| {
+                a.pinned_as_plan
+                    && a.archived_at.is_none()
+                    && a.work_item_id.as_deref() == Some(item)
+            })
         else {
             return;
         };
         let result = match pick {
             Some(pick) => {
-                let label = if pick.label.is_empty() { String::new() } else { format!(": {}", pick.label) };
+                let label = if pick.label.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", pick.label)
+                };
                 let text = clean_answer(&format!("Picked option {}{label}", pick.option_id));
                 self.record_answer(&plan, &question_id, text, pick.by.clone())
             }
@@ -1905,7 +2003,7 @@ impl ArtifactsService {
     pub fn agent_publish(&self, caller: &AgentCaller, arguments: &Value) -> Outcome<Value> {
         let args: PublishArgs = parse_args(arguments)?;
         let key =
-            zeron_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
+            mast_proto::agent_tools::validate_idempotency_key(args.idempotency_key.as_deref())
                 .map_err(ArtifactError::invalid)?;
         let kind = match args
             .kind
@@ -1936,7 +2034,11 @@ impl ArtifactsService {
             by: caller.actor(),
         })?;
         if !args.addressed_comments.is_empty() {
-            self.mark_comments_addressed(&reply.artifact_id, &args.addressed_comments, reply.revision)?;
+            self.mark_comments_addressed(
+                &reply.artifact_id,
+                &args.addressed_comments,
+                reply.revision,
+            )?;
         }
         Ok(json!({
             "artifactId": reply.artifact_id,
@@ -1944,7 +2046,7 @@ impl ArtifactsService {
             "url": reply.url,
             "storedPath": reply.stored_path,
             "changed": reply.changed,
-            "note": "Link it in your message as [title](zeron-artifact:<artifactId>). For visual \
+            "note": "Link it in your message as [title](mast-artifact:<artifactId>). For visual \
                      kinds, run artifact_render_check before calling it done.",
         }))
     }
@@ -2141,13 +2243,14 @@ impl ArtifactsService {
 
     // ── marker fallback ─────────────────────────────────────────────────────
 
-    /// Register files an assistant message links with `zeron-artifact:<path>`
+    /// Register files an assistant message links with `mast-artifact:<path>` (or the legacy `zeron-artifact:`)
     /// (and Codex `visualize` references) once per (chat, path). Best effort:
     /// failures are logged. Runs on a blocking thread when a runtime exists.
     pub fn note_assistant_text(&self, chat_id: &str, text: &str) {
-        let has_marker = text.contains(zeron_proto::artifacts::ARTIFACT_URL_SCHEME);
-        let has_visualize = text.contains(zeron_proto::visualize::ENVELOPE_PREFIX)
-            || text.contains(zeron_proto::visualize::LINE_PREFIX);
+        let has_marker = text.contains(mast_proto::artifacts::ARTIFACT_URL_SCHEME)
+            || text.contains(LEGACY_ARTIFACT_URL_SCHEME);
+        let has_visualize = text.contains(mast_proto::visualize::ENVELOPE_PREFIX)
+            || text.contains(mast_proto::visualize::LINE_PREFIX);
         if !has_marker && !has_visualize {
             return;
         }
@@ -2192,7 +2295,7 @@ impl ArtifactsService {
             .filter(|link| !link.is_id())
             .map(|link| (link.target, link.label, None))
             .collect();
-        for reference in zeron_proto::visualize::references(text) {
+        for reference in mast_proto::visualize::references(text) {
             wanted.push((
                 reference.path,
                 reference.title,
@@ -2207,7 +2310,7 @@ impl ArtifactsService {
             };
             let key = format!(
                 "{MARKER_LEDGER_PREFIX}{}",
-                zeron_proto::derive_id(
+                mast_proto::derive_id(
                     &format!("{chat_id}\u{0}{}", path.display()),
                     "artifact-marker"
                 )
@@ -2345,16 +2448,48 @@ mod tests {
         assert!(ensure_excluded(&repo).unwrap());
         assert!(!ensure_excluded(&repo).unwrap());
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches(".mast/").count(), 1, "{exclude}");
         assert_eq!(exclude.matches(".zeron/").count(), 1, "{exclude}");
         assert_eq!(
             std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
             "target/\n"
         );
         // Ignored for real.
-        std::fs::create_dir_all(repo.join(".zeron/artifacts")).unwrap();
-        std::fs::write(repo.join(".zeron/artifacts/x.md"), "x").unwrap();
+        for dir in [".zeron", ".mast"] {
+            std::fs::create_dir_all(repo.join(dir).join("artifacts")).unwrap();
+            std::fs::write(repo.join(dir).join("artifacts/x.md"), "x").unwrap();
+        }
         let status = git(&repo, &["status", "--porcelain"]).unwrap();
-        assert!(!status.contains(".zeron"), "{status}");
+        assert!(
+            !status.contains(".zeron") && !status.contains(".mast"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn exclude_only_adds_the_missing_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = canonical(tmp.path()).join("repo");
+        git_init(&repo);
+        let path = repo.join(".git/info/exclude");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.push_str("/.zeron/\n");
+        std::fs::write(&path, text).unwrap();
+        assert!(ensure_excluded(&repo).unwrap());
+        let exclude = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(exclude.matches(".zeron").count(), 1, "{exclude}");
+        assert_eq!(exclude.matches(".mast/").count(), 1, "{exclude}");
+        assert!(!ensure_excluded(&repo).unwrap());
+    }
+
+    #[test]
+    fn canonical_of_stored_knows_both_roots() {
+        for root in [".mast", ".zeron"] {
+            let stored = Path::new("/repo")
+                .join(root)
+                .join("artifacts/item-1/plan.md");
+            assert_eq!(canonical_of_stored(&stored), Some(PathBuf::from("/repo")));
+        }
     }
 
     #[test]

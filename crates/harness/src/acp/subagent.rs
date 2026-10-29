@@ -20,9 +20,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use mast_proto::{AgentEvent, DoneStatus, ToolCall};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
-use zeron_proto::{AgentEvent, DoneStatus, ToolCall};
 
 use crate::HarnessError;
 

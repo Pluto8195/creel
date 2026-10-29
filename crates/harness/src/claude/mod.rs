@@ -50,7 +50,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use mast_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand,
     SteeringMode, UserInputAnswer, UserInputQuestion,
 };
@@ -107,7 +107,7 @@ pub fn login_command(config_dir: &std::path::Path) -> Result<Command, HarnessErr
 /// it at a fake CLI with [`ClaudeHarness::with_executable`].
 pub struct ClaudeHarness {
     executable: Option<PathBuf>,
-    /// Zeron-owned cwd for automatic catalog probes. Never a user project or HOME.
+    /// Mast-owned cwd for automatic catalog probes. Never a user project or HOME.
     model_discovery_cwd: Option<PathBuf>,
     /// Grace between the interrupt control request and SIGTERM.
     interrupt_grace: Duration,
@@ -119,12 +119,12 @@ pub struct ClaudeHarness {
     /// (project-scoped `.claude/commands` and skills) — kept separate from
     /// `initialize` for that reason; see [`discovery::CommandsCache`].
     commands_cache: discovery::CommandsCache,
-    /// Zeron-owned directory for Work Outline envelope files (see
+    /// Mast-owned directory for Work Outline envelope files (see
     /// [`instructions`]); defaults beside the model-discovery directory.
     instruction_dir: Option<PathBuf>,
     /// `claude --help` instruction-flag probe, cached per executable identity.
     instruction_probe: crate::instruction_support::ProbeCache,
-    /// Zeron-owned directory for per-Run `--mcp-config` files (see
+    /// Mast-owned directory for per-Run `--mcp-config` files (see
     /// [`crate::agent_tools`]); defaults beside the model-discovery directory.
     agent_tools_dir: Option<PathBuf>,
     /// Managed account home (`CLAUDE_CONFIG_DIR`); `None` = the Default login.
@@ -171,19 +171,19 @@ impl ClaudeHarness {
         crate::account_home::apply(cmd, HarnessId::ClaudeCode, self.account_home.as_deref());
     }
 
-    /// Run automatic model probes in this Zeron-owned directory.
+    /// Run automatic model probes in this Mast-owned directory.
     pub fn with_model_discovery_cwd(mut self, path: impl Into<PathBuf>) -> Self {
         self.model_discovery_cwd = Some(path.into());
         self
     }
 
-    /// Write Work Outline envelope files under this Zeron-owned directory.
+    /// Write Work Outline envelope files under this Mast-owned directory.
     pub fn with_instruction_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.instruction_dir = Some(path.into());
         self
     }
 
-    /// Write per-Run agent-tools MCP config files under this Zeron-owned
+    /// Write per-Run agent-tools MCP config files under this Mast-owned
     /// directory.
     pub fn with_agent_tools_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.agent_tools_dir = Some(path.into());
@@ -198,7 +198,7 @@ impl ClaudeHarness {
 
     /// `--mcp-config <file>` for a Run with agent tools, plus the file guard
     /// the Run holds until it ends. Never `--strict-mcp-config`: the user's
-    /// own MCP servers keep loading beside Zeron's.
+    /// own MCP servers keep loading beside Mast's.
     fn agent_tools_args(
         &self,
         tools: Option<&crate::AgentToolsInjection>,
@@ -301,7 +301,7 @@ impl ClaudeHarness {
         // always-on thinking are settings overrides.
         // Never leave the model to the CLI: an empty model resolves to
         // Mast's default so `~/.claude/settings.json` cannot pick it silently.
-        let model = zeron_proto::resolve_model(HarnessId::ClaudeCode, request.model.as_deref());
+        let model = mast_proto::resolve_model(HarnessId::ClaudeCode, request.model.as_deref());
         if request.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
             tracing::debug!(
                 model = model.as_deref().unwrap_or_default(),
@@ -329,7 +329,7 @@ impl ClaudeHarness {
         // auto-approve never selects bypass mode for it. `workspace-write` is
         // the CLI's default (file tools confined to the cwd by its own
         // prompts; Bash is not sandboxed); `danger-full-access` is unchanged.
-        let read_only = request.sandbox == zeron_proto::SandboxLevel::ReadOnly;
+        let read_only = request.sandbox == mast_proto::SandboxLevel::ReadOnly;
         if request.auto_approve && !read_only {
             cmd.args([
                 "--permission-mode",
@@ -371,7 +371,7 @@ impl ClaudeHarness {
     }
 
     /// Share the complete initialize response for the MODEL catalog, which is
-    /// cwd-independent — the probe runs in a Zeron-owned discovery directory.
+    /// cwd-independent — the probe runs in a Mast-owned discovery directory.
     /// No user message is written; the short-lived child is retired after
     /// initialize. Command discovery uses its own per-cwd probe/cache
     /// instead (see [`Self::discover_commands`]) since project-scoped
@@ -417,7 +417,7 @@ impl ClaudeHarness {
             .await
     }
 
-    /// `cwd`: `None` runs in a Zeron-owned discovery directory (the model
+    /// `cwd`: `None` runs in a Mast-owned discovery directory (the model
     /// catalog's use, which doesn't need a specific project); `Some` spawns
     /// the CLI there instead, so its `initialize` response reflects
     /// THAT directory's project-scoped commands/skills (command discovery's
@@ -749,7 +749,7 @@ impl ClaudeHarness {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "zeron_harness::claude", "stderr: {line}");
+                    tracing::debug!(target: "mast_harness::claude", "stderr: {line}");
                     tail.push(&line);
                 }
             });
@@ -857,16 +857,16 @@ async fn load_image_blocks(paths: &[String]) -> Vec<wire::ImageBlock> {
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
             Err(err) => {
-                tracing::warn!(target: "zeron_harness::claude", %path, error = %err, "attachment unreadable; path ref only");
+                tracing::warn!(target: "mast_harness::claude", %path, error = %err, "attachment unreadable; path ref only");
                 continue;
             }
         };
         if bytes.len() as u64 > MAX_INLINE_IMAGE_BYTES {
-            tracing::debug!(target: "zeron_harness::claude", %path, "attachment over inline cap; path ref only");
+            tracing::debug!(target: "mast_harness::claude", %path, "attachment over inline cap; path ref only");
             continue;
         }
         let Some(media_type) = image_media_type(std::path::Path::new(path), &bytes) else {
-            tracing::debug!(target: "zeron_harness::claude", %path, "attachment not an inline-supported image; path ref only");
+            tracing::debug!(target: "mast_harness::claude", %path, "attachment not an inline-supported image; path ref only");
             continue;
         };
         blocks.push(wire::ImageBlock {
@@ -889,7 +889,7 @@ async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Std
                     stdin.flush().await
                 };
                 if let Err(e) = write.await {
-                    tracing::debug!(target: "zeron_harness::claude", "stdin write failed (tolerated): {e}");
+                    tracing::debug!(target: "mast_harness::claude", "stdin write failed (tolerated): {e}");
                     return;
                 }
             }
@@ -956,7 +956,7 @@ async fn run_session(session: Session) {
                     let frame = match wire::parse_frame(line) {
                         Ok(frame) => frame,
                         Err(e) => {
-                            tracing::debug!(target: "zeron_harness::claude", "unparseable frame (skipped): {e}");
+                            tracing::debug!(target: "mast_harness::claude", "unparseable frame (skipped): {e}");
                             continue;
                         }
                     };
@@ -1088,7 +1088,7 @@ fn handle_control_request(
 ) {
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
-            target: "zeron_harness::claude",
+            target: "mast_harness::claude",
             "unhandled control_request subtype: {}", req.request.subtype
         );
         return;
@@ -1196,7 +1196,7 @@ mod tests {
 
     fn instruction_request(
         resume: Option<&str>,
-        transition: zeron_proto::InstructionTransition,
+        transition: mast_proto::InstructionTransition,
     ) -> RunRequest {
         let rendered = "<zeron_work_outline_instructions version=\"1\" hash=\"abc\">\n1. Be terse\n</zeron_work_outline_instructions>\n";
         let mut request: RunRequest = serde_json::from_value(json!({
@@ -1204,12 +1204,12 @@ mod tests {
             "sandbox": "workspace-write", "resume": resume
         }))
         .unwrap();
-        request.instructions = Some(zeron_proto::InstructionDelivery {
-            envelope: zeron_proto::InstructionEnvelope {
+        request.instructions = Some(mast_proto::InstructionDelivery {
+            envelope: mast_proto::InstructionEnvelope {
                 revision_id: "rev-1".into(),
                 revision_hash: "hash-1".into(),
                 envelope_version: 1,
-                envelope_sha256: zeron_proto::envelope_sha256(rendered),
+                envelope_sha256: mast_proto::envelope_sha256(rendered),
                 rendered: rendered.into(),
             },
             transition,
@@ -1315,17 +1315,17 @@ mod tests {
 
     fn tools_injection() -> crate::AgentToolsInjection {
         crate::AgentToolsInjection {
-            server_name: "zeron-agent".into(),
+            server_name: "mast-agent".into(),
             command: PathBuf::from("/opt/zeron/bin/zeron"),
             args: vec!["mcp".into()],
             env: std::collections::BTreeMap::from([(
-                "ZERON_AGENT_TOKEN".into(),
+                "MAST_AGENT_TOKEN".into(),
                 "secret-token".into(),
             )]),
         }
     }
 
-    /// Agent tools ride `--mcp-config <Zeron-owned file>` only when the
+    /// Agent tools ride `--mcp-config <Mast-owned file>` only when the
     /// engine injects them, never `--strict-mcp-config` (the user's own MCP
     /// servers keep loading), and the token never reaches argv.
     #[cfg(unix)]
@@ -1357,9 +1357,9 @@ mod tests {
         assert!(!args.iter().any(|a| a.contains("secret-token")), "{args:?}");
         let body: Value =
             serde_json::from_str(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
-        assert_eq!(body["mcpServers"]["zeron-agent"]["args"], json!(["mcp"]));
+        assert_eq!(body["mcpServers"]["mast-agent"]["args"], json!(["mcp"]));
         assert_eq!(
-            body["mcpServers"]["zeron-agent"]["env"]["ZERON_AGENT_TOKEN"],
+            body["mcpServers"]["mast-agent"]["env"]["MAST_AGENT_TOKEN"],
             "secret-token"
         );
         assert!(harness.supports_agent_tools());
@@ -1371,7 +1371,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn every_instruction_bearing_spawn_carries_the_file_and_snapshot_off() {
-        use zeron_proto::InstructionTransition::{Continue, Fresh, Replace};
+        use mast_proto::InstructionTransition::{Continue, Fresh, Replace};
         let dir = tempfile::tempdir().unwrap();
         let harness = ClaudeHarness::new().with_instruction_dir(dir.path());
         for (resume, transition) in [
@@ -1419,7 +1419,7 @@ mod tests {
     fn runs_without_instructions_keep_the_old_argv() {
         let harness = ClaudeHarness::new();
         let mut request =
-            instruction_request(Some("sess-1"), zeron_proto::InstructionTransition::Continue);
+            instruction_request(Some("sess-1"), mast_proto::InstructionTransition::Continue);
         request.instructions = None;
         let args = argv(&harness, &request);
         assert!(

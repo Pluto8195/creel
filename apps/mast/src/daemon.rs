@@ -1,8 +1,8 @@
 //! `zeron daemon …` — install/manage `zeron headless` as a background service:
 //! a systemd **user** unit on Linux (the VPS deployment target), a launchd
 //! LaunchAgent on macOS. The unit runs the current executable with the
-//! `ZERON_*` environment captured at install time, so
-//! `ZERON_EDGE_URL=… zeron daemon install` bakes that override in.
+//! `MAST_*` environment captured at install time, so
+//! `MAST_EDGE_URL=… zeron daemon install` bakes that override in.
 //!
 //! Auth is decoupled: without a saved session the service remains up on the
 //! local-only profile. `zeron login` and a service restart opt into sync.
@@ -19,19 +19,19 @@ const SYSTEMD_UNIT: &str = "zeron.service";
 
 /// Environment captured into the unit file. `PATH` is always included (the
 /// engine spawns harness CLIs like `claude`, which service managers' minimal
-/// default PATH won't find); the `ZERON_*`/logging vars only when set.
+/// default PATH won't find); the `MAST_*`/logging vars only when set.
 const CAPTURED_ENV: &[&str] = &[
     "PATH",
-    "ZERON_DATA_DIR",
-    "ZERON_EDGE_URL",
-    "ZERON_EDGE_TOKEN",
-    "ZERON_ORG_ID",
-    "ZERON_WORKOS_CLIENT_ID",
-    "ZERON_WORKOS_API_BASE",
-    "ZERON_IPC_PORT",
-    "ZERON_CALLBACK_PORT",
-    "ZERON_HARNESS",
-    "ZERON_DEVICE_NAME",
+    "MAST_DATA_DIR",
+    "MAST_EDGE_URL",
+    "MAST_EDGE_TOKEN",
+    "MAST_ORG_ID",
+    "MAST_WORKOS_CLIENT_ID",
+    "MAST_WORKOS_API_BASE",
+    "MAST_IPC_PORT",
+    "MAST_CALLBACK_PORT",
+    "MAST_HARNESS",
+    "MAST_DEVICE_NAME",
     "RUST_LOG",
 ];
 
@@ -220,7 +220,7 @@ pub fn status() -> anyhow::Result<()> {
 fn captured_env() -> Vec<(String, String)> {
     CAPTURED_ENV
         .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v)))
+        .filter_map(|key| mast_proto::env::var(key).ok().map(|v| (key.to_string(), v)))
         .collect()
 }
 
@@ -383,13 +383,13 @@ mod tests {
             Path::new("/usr/local/bin/zeron"),
             &[
                 ("PATH".into(), "/usr/bin:/bin".into()),
-                ("ZERON_EDGE_URL".into(), "https://edge.example".into()),
+                ("MAST_EDGE_URL".into(), "https://edge.example".into()),
                 ("RUST_LOG".into(), "info,zeron=\"debug\"".into()),
             ],
         );
         assert!(unit.contains("ExecStart=/usr/local/bin/zeron headless\n"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin:/bin\"\n"));
-        assert!(unit.contains("Environment=\"ZERON_EDGE_URL=https://edge.example\"\n"));
+        assert!(unit.contains("Environment=\"MAST_EDGE_URL=https://edge.example\"\n"));
         // Inner quotes escaped so systemd re-parses the value verbatim.
         assert!(unit.contains("Environment=\"RUST_LOG=info,zeron=\\\"debug\\\"\"\n"));
         assert!(unit.contains("StartLimitIntervalSec=60\n"));
@@ -438,7 +438,7 @@ mod tests {
     fn launchd_plist_shape() {
         let plist = render_launchd_plist(
             Path::new("/Users/x/zeron & co/zeron"),
-            &[("ZERON_EDGE_URL".into(), "https://e?a=1&b=2".into())],
+            &[("MAST_EDGE_URL".into(), "https://e?a=1&b=2".into())],
             Path::new("/Users/x/.zeron/daemon.log"),
         );
         assert!(plist.contains("<key>Label</key><string>sh.zeron.app</string>"));

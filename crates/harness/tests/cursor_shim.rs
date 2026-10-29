@@ -107,7 +107,7 @@ impl SessionFixture {
             include_str!("fixtures/fake-cursor-sdk.mjs"),
         )
         .unwrap();
-        let source = std::env::var_os("ZERON_CURSOR_TEST_SHIM")
+        let source = mast_proto::env::var_os("MAST_CURSOR_TEST_SHIM")
             .map(|path| std::fs::read_to_string(path).unwrap())
             .unwrap_or_else(|| include_str!("../src/cursor/shim.mjs").to_owned());
         std::fs::write(dir.path().join("shim.mjs"), source).unwrap();
@@ -125,7 +125,7 @@ impl SessionFixture {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let mut child = tokio::process::Command::new("node")
             .arg(self.dir.path().join("shim.mjs"))
-            .env("ZERON_CURSOR_STATE_DIR", self.dir.path().join("state"))
+            .env("MAST_CURSOR_STATE_DIR", self.dir.path().join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -276,7 +276,7 @@ async fn engine_death_does_not_leave_an_orphan_owning_the_conversation() {
     let mut engine = tokio::process::Command::new("node")
         .arg(parent)
         .arg(fixture.dir.path().join("shim.mjs"))
-        .env("ZERON_CURSOR_STATE_DIR", fixture.dir.path().join("state"))
+        .env("MAST_CURSOR_STATE_DIR", fixture.dir.path().join("state"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)

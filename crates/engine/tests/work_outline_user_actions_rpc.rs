@@ -7,13 +7,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::{
+use mast_engine::{EngineCore, HarnessRegistry};
+use mast_proto::{
     HarnessId, InstructionProposalStatus, WorkItemEffectiveStatus, WorkOutlineError,
     WorkOutlineErrorCode, WorkOutlineMutation, WorkOutlineSnapshot, derive_id, roles,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
+use serde_json::{Value, json};
 
 fn assemble(dir: &std::path::Path) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
@@ -28,7 +28,7 @@ fn outline_error(text: String) -> WorkOutlineError {
         .unwrap_or_else(|| panic!("not a work outline error: {text}"))
 }
 
-async fn mutate(client: &zeron_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
+async fn mutate(client: &mast_rpc::RpcClient, params: Value) -> Result<Value, WorkOutlineError> {
     client
         .call(methods::WORK_OUTLINE_MUTATE, params)
         .await
@@ -54,7 +54,7 @@ async fn frame_until(
 
 /// Space `space-1` with items A > B, `chat-1` assigned to B, `chat-2`
 /// unassigned.
-async fn seed(client: &zeron_rpc::RpcClient) -> (String, String) {
+async fn seed(client: &mast_rpc::RpcClient) -> (String, String) {
     client
         .call(
             methods::MUTATE,
@@ -110,7 +110,7 @@ fn request_params(op: &str, work_item: &str, chat: &str) -> Value {
 async fn requests_and_proposals_round_trip_over_rpc() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let (a, b) = seed(&client).await;
     let mut stream = client
         .subscribe(methods::WATCH_WORK_OUTLINE, json!({ "spaceId": "space-1" }))
@@ -219,7 +219,7 @@ async fn request_and_approval_replays_after_restart_do_not_rewrite() {
     let (request, propose, approve);
     {
         let core = assemble(&data);
-        let client = zeron_rpc::memory_client(core.rpc_service());
+        let client = mast_rpc::memory_client(core.rpc_service());
         let (_a, b) = seed(&client).await;
         request = request_params("op-r", &b, "chat-1");
         propose = json!({
@@ -238,7 +238,7 @@ async fn request_and_approval_replays_after_restart_do_not_rewrite() {
         core.shutdown().await;
     }
     let core = assemble(&data);
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let pending = core.workspace.registry_batches_written();
     assert_eq!(
         mutate(&client, request.clone()).await.unwrap(),
@@ -270,7 +270,7 @@ async fn request_and_approval_replays_after_restart_do_not_rewrite() {
 async fn agent_surface_authorizes_reads_and_writes_as_the_chat() {
     let tmp = tempfile::tempdir().unwrap();
     let core = assemble(&tmp.path().join("data"));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = mast_rpc::memory_client(core.rpc_service());
     let (a, b) = seed(&client).await;
     let service = core.rpc_service().work_outline();
     let parse = |value: Value| -> WorkOutlineMutation { serde_json::from_value(value).unwrap() };

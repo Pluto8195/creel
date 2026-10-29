@@ -392,7 +392,7 @@ mod tests {
                         space_id: None,
                         parent_chat_id: None,
                         title: key.to_string(),
-                        status: zeron_proto::ChatIndicator::Idle,
+                        status: mast_proto::ChatIndicator::Idle,
                         archived: false,
                         stale: false,
                         branch: None,

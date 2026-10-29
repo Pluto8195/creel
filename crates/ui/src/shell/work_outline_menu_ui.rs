@@ -651,7 +651,7 @@ mod tests {
 
     type Calls = Arc<Mutex<Vec<serde_json::Value>>>;
 
-    fn reply_ok(_: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+    fn reply_ok(_: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
         Ok(serde_json::json!({}))
     }
 
@@ -688,7 +688,7 @@ mod tests {
             state.update(cx, |state, _| {
                 state.connection = crate::state::ConnectionStatus::Ready;
                 state.workspace_scope = Some(WorkspaceScope::Local);
-                state.auth = Some(zeron_proto::AuthState::SignedOut);
+                state.auth = Some(mast_proto::AuthState::SignedOut);
             });
             Shell::new(
                 state,
@@ -699,7 +699,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: mast_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -1826,7 +1826,7 @@ mod tests {
     }
     type AccountCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 
-    fn accounts_snapshot() -> zeron_proto::ManagedAccountsSnapshot {
+    fn accounts_snapshot() -> mast_proto::ManagedAccountsSnapshot {
         serde_json::from_value(serde_json::json!({
             "accounts": [
                 { "id": "a1", "harness": "claude-code", "label": "Work", "signedIn": true,
@@ -1893,7 +1893,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(m, _)| m == zeron_rpc::methods::SET_PROJECT_ACCOUNT)
+            .filter(|(m, _)| m == mast_rpc::methods::SET_PROJECT_ACCOUNT)
             .cloned()
             .collect();
         assert_eq!(set.len(), 1, "{set:?}");

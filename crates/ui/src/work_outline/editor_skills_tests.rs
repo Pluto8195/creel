@@ -10,7 +10,7 @@ use crate::work_outline::required_actions::fixture as m4;
 
 /// Skill discovery (`ListCommands` params carry `harness`) answers two
 /// skills and three built-in commands; every Work Outline call answers like [`reply_ok`].
-fn reply_with_skills(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn reply_with_skills(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     if params.get("harness").is_some() {
         return Ok(serde_json::json!([
             {"name": "code-review", "description": "Review a diff"},
@@ -174,7 +174,7 @@ fn instruction_editors_insert_skills_as_plain_text(cx: &mut gpui::TestAppContext
 /// Skill discovery answers per folder, like Claude Code does: the Space
 /// folder has its own skills (and the built-in `design` command), the `ui`
 /// submodule has the Storybook `design` skill and `design-system`.
-fn reply_by_folder(params: &serde_json::Value) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+fn reply_by_folder(params: &serde_json::Value) -> Result<serde_json::Value, mast_rpc::RpcError> {
     match params.get("cwd").and_then(serde_json::Value::as_str) {
         Some("/work/alpha/ui") => Ok(serde_json::json!([
             {"name": "design", "description": "Storybook design loop"},
@@ -192,7 +192,7 @@ fn reply_by_folder(params: &serde_json::Value) -> Result<serde_json::Value, zero
 /// The Design item's shape: rooted at a submodule folder below the Space
 /// path, with that submodule bound as a pinned, non-primary member.
 fn rooted_at_ui_submodule(snapshot: &mut WorkOutlineSnapshot, item: &str) {
-    let scope = zeron_proto::ExecutionScope::WorkItem {
+    let scope = mast_proto::ExecutionScope::WorkItem {
         work_item_id: item.into(),
     };
     let mut binding = execution_fixture::binding("repo:ui", "/work/alpha/ui", true, false);
@@ -200,11 +200,11 @@ fn rooted_at_ui_submodule(snapshot: &mut WorkOutlineSnapshot, item: &str) {
     binding.worktree_path = Some("/work/alpha/ui".into());
     snapshot
         .execution_configurations
-        .push(zeron_proto::ExecutionConfigurationView {
+        .push(mast_proto::ExecutionConfigurationView {
             id: scope.row_id(),
             space_id: "s1".into(),
             work_item_id: Some(item.into()),
-            configuration: Some(zeron_proto::ExecutionConfiguration {
+            configuration: Some(mast_proto::ExecutionConfiguration {
                 execution_root: "/work/alpha/ui".into(),
                 bindings: vec![binding],
                 schema: 1,

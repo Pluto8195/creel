@@ -10,7 +10,7 @@
 
 use std::io::IsTerminal;
 
-use zeron_engine::{AuthState, Engine, EngineConfig, InstanceLock, WorkspaceScope};
+use mast_engine::{AuthState, Engine, EngineConfig, InstanceLock, WorkspaceScope};
 
 #[derive(Debug, PartialEq, Eq)]
 struct AccountStatus {
@@ -101,7 +101,7 @@ pub async fn login(config: EngineConfig) -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() {
         anyhow::bail!("zeron login needs an interactive terminal");
     }
-    zeron_engine::terminal_sign_in(&auth).await?;
+    mast_engine::terminal_sign_in(&auth).await?;
     match auth.state() {
         AuthState::SignedIn { user, org_id } => {
             println!(
@@ -194,14 +194,14 @@ pub async fn status(config: EngineConfig) -> anyhow::Result<()> {
 /// derivation is correct when no engine is listening and tolerant of old
 /// daemons that predate EngineInfo.
 async fn live_engine_scope(ipc_port: u16) -> Option<WorkspaceScope> {
-    let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
+    let client = mast_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
         .await
         .ok()?;
     let value = client
-        .call(zeron_rpc::methods::ENGINE_INFO, serde_json::json!({}))
+        .call(mast_rpc::methods::ENGINE_INFO, serde_json::json!({}))
         .await
         .ok()?;
-    serde_json::from_value::<zeron_engine::EngineInfo>(value)
+    serde_json::from_value::<mast_engine::EngineInfo>(value)
         .ok()
         .map(|info| info.workspace_scope)
 }
@@ -222,7 +222,7 @@ fn engine_lock(config: &EngineConfig, verb: &str) -> anyhow::Result<InstanceLock
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_engine::{AuthUser, HarnessId};
+    use mast_engine::{AuthUser, HarnessId};
 
     fn config(data_dir: &std::path::Path) -> EngineConfig {
         EngineConfig {

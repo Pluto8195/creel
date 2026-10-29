@@ -1,4 +1,4 @@
-//! Syntax-highlighting contracts shared by Zeron's desktop surfaces.
+//! Syntax-highlighting contracts shared by Mast's desktop surfaces.
 //!
 //! This crate intentionally has no UI, RPC, or engine dependencies. Public
 //! ranges are byte offsets relative to one UTF-8 source line.
@@ -434,7 +434,7 @@ fn cached_markdown_inline_configuration() -> Result<&'static HighlightConfigurat
 
 fn rust_configuration() -> Result<HighlightConfiguration, HighlightError> {
     // The upstream Rust query groups numbers and booleans as
-    // `constant.builtin`. Zeron preserves those structural roles separately.
+    // `constant.builtin`. Mast preserves those structural roles separately.
     let highlights = tree_sitter_rust::HIGHLIGHTS_QUERY
         .replace(
             "(boolean_literal) @constant.builtin",

@@ -91,7 +91,10 @@ fn enums_are_lenient_and_fields_default() {
         ("reRequested", PullRequestMyReviewState::ReRequested),
         ("commented", PullRequestMyReviewState::Commented),
         ("approved", PullRequestMyReviewState::Approved),
-        ("changesRequested", PullRequestMyReviewState::ChangesRequested),
+        (
+            "changesRequested",
+            PullRequestMyReviewState::ChangesRequested,
+        ),
         ("none", PullRequestMyReviewState::None),
     ] {
         assert_eq!(serde_json::to_value(state).unwrap(), json!(text));
@@ -128,7 +131,14 @@ fn titles_keys_and_external_ids() {
     assert_eq!(parsed, PullRequestRef::new("Cofactr", "ui", 9));
     assert_eq!(parsed.url, "https://github.com/Cofactr/ui/pull/9");
     assert_eq!(parsed.external_id(), "Cofactr/ui#9");
-    for bad in ["", "ui#9", "Cofactr/ui#0", "Cofactr/ui#x", "a/b/c#1", "/ui#1"] {
+    for bad in [
+        "",
+        "ui#9",
+        "Cofactr/ui#0",
+        "Cofactr/ui#x",
+        "a/b/c#1",
+        "/ui#1",
+    ] {
         assert_eq!(PullRequestRef::parse_external_id(bad), None, "{bad}");
     }
 }
@@ -153,7 +163,9 @@ fn errors_round_trip_through_the_wire_string() {
         assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
     }
     assert_eq!(
-        GithubError::from_wire_message("github/whatever: x").unwrap().code,
+        GithubError::from_wire_message("github/whatever: x")
+            .unwrap()
+            .code,
         GithubErrorCode::Invalid
     );
     assert_eq!(GithubError::from_wire_message("linear/network: x"), None);
@@ -316,7 +328,10 @@ fn system_origin_requests_are_pinned() {
     .unwrap();
     assert_eq!(view.origin_kind, UserActionOriginKind::System);
     assert!(!view.origin_chat_available);
-    assert_eq!(serde_json::to_value(&view).unwrap()["originKind"], json!("system"));
+    assert_eq!(
+        serde_json::to_value(&view).unwrap()["originKind"],
+        json!("system")
+    );
 }
 
 #[test]
@@ -331,9 +346,17 @@ fn archived_by_sync_marker_is_optional_and_round_trips() {
         request_state: PrReviewRequestState::Merged,
         ..Default::default()
     };
-    assert!(serde_json::to_value(&state).unwrap().get("archivedBySync").is_none());
+    assert!(
+        serde_json::to_value(&state)
+            .unwrap()
+            .get("archivedBySync")
+            .is_none()
+    );
     state.archived_by_sync = Some(PrReviewRequestState::Merged);
     let value = serde_json::to_value(&state).unwrap();
     assert_eq!(value["archivedBySync"], "merged");
-    assert_eq!(serde_json::from_value::<WorkItemExternalSyncState>(value).unwrap(), state);
+    assert_eq!(
+        serde_json::from_value::<WorkItemExternalSyncState>(value).unwrap(),
+        state
+    );
 }

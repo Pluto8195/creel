@@ -27,7 +27,7 @@ DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
 APP_TARBALL="$OUT_DIR/zeron-$VERSION-macos-$ARCH-app.tar.gz"
 
 cd "$ROOT"
-cargo build --release -p zeron
+cargo build --release -p mast
 
 rm -rf "$APP" "$DMG" "$APP_TARBALL"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

@@ -20,7 +20,7 @@ use crate::artifacts::compare::{self, CompareMode, ComparePrefs, Flavor, OnionSt
 use crate::artifacts::document::{COMPARE_VIEWPORT_HEIGHT, COMPARE_VIEWPORT_WIDTH};
 use crate::artifacts::markdown_diff::{self, BlockDiff, BlockStatus};
 use crate::artifacts::pixel_diff::{self, DiffConfig, PixelDiff, Region};
-use zeron_proto::ArtifactViewport;
+use mast_proto::ArtifactViewport;
 
 /// One side of the compare, loaded.
 #[derive(Debug, Clone, PartialEq)]
@@ -470,7 +470,7 @@ impl ArtifactTab {
                 label,
                 text: model::source_text(&reply),
                 image: (image_kind
-                    && reply.encoding == zeron_proto::ArtifactContentEncoding::Base64)
+                    && reply.encoding == mast_proto::ArtifactContentEncoding::Base64)
                     .then(|| (reply.content.clone(), reply.mime_type.clone())),
             }
         };
@@ -480,7 +480,7 @@ impl ArtifactTab {
                 let left = side(left, labels.0, revisions.0);
                 let right = side(right, labels.1, revisions.1);
                 let lines = match (&left.text, &right.text) {
-                    (Some(old), Some(new)) => Some(zeron_proto::diff_lines(old, new)),
+                    (Some(old), Some(new)) => Some(mast_proto::diff_lines(old, new)),
                     _ => None,
                 };
                 let blocks = (view.flavor == Flavor::Markdown).then(|| {

@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use zeron_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
-use zeron_proto::SandboxLevel;
+use mast_engine::{EngineCore, EngineProfile, HarnessId, default_registry};
+use mast_proto::SandboxLevel;
 
 fn assemble(profile: EngineProfile) -> EngineCore {
     EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
@@ -147,7 +147,7 @@ async fn repair_never_touches_a_chat_with_no_harness_session() {
         "dev-user",
     ));
 
-    // An ordinary Zeron-native chat (no harness_session_id at all) must be
+    // An ordinary Mast-native chat (no harness_session_id at all) must be
     // left alone by this repair — it's scoped to external-session imports
     // only. Native chats with no config are expected (no run yet); backfilling
     // a harness onto them would be wrong.
@@ -246,7 +246,7 @@ async fn repair_never_overwrites_an_existing_config() {
         .expect("create chat row");
     core.workspace
         .set_chat_harness_session(chat_id, "some-external-session-id", "/work/project");
-    let custom_config = zeron_proto::ChatConfig {
+    let custom_config = mast_proto::ChatConfig {
         harness: HarnessId::Codex,
         model: Some("some-model".into()),
         reasoning: None,

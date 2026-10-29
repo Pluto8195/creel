@@ -33,8 +33,8 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use zeron_proto::work_outline::derive_id;
-use zeron_proto::{
+use mast_proto::work_outline::derive_id;
+use mast_proto::{
     ContinueChatForWorkItemParams, ResolveUserActionRequestParams, WorkItemLaunchState,
     WorkItemPrompt, WorkOutlineError, WorkOutlineErrorCode,
 };
@@ -66,7 +66,7 @@ fn chat_busy(state: &AppState, chat_id: &str) -> bool {
 /// Whether the busy-Chat queue send can reach `chat_id`'s host (the
 /// composer's check; without an engine the call itself reports it).
 fn queue_supported(state: &AppState, chat_id: &str) -> bool {
-    let capability = zeron_proto::capabilities::MESSAGE_QUEUE_V1;
+    let capability = mast_proto::capabilities::MESSAGE_QUEUE_V1;
     state.engine().is_none_or(|engine| {
         engine.engine_info().supports(capability) && state.chat_host_supports(chat_id, capability)
     })
@@ -356,7 +356,7 @@ impl RequiredActionsList {
             .text()
             .trim()
             .chars()
-            .take(zeron_proto::user_action_limits::MAX_NOTE_CHARS)
+            .take(mast_proto::user_action_limits::MAX_NOTE_CHARS)
             .collect()
     }
 
@@ -1080,7 +1080,7 @@ impl RequiredActionsList {
             .into_any_element()
     }
 
-    /// `zeron-artifact:` links in a request's text or detail, as chips that
+    /// `mast-artifact:` links in a request's text or detail, as chips that
     /// open the Artifact tab.
     fn render_artifact_links(
         &self,
@@ -1089,9 +1089,8 @@ impl RequiredActionsList {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let mut links = zeron_proto::artifacts::artifact_links(&row.text);
-        for link in zeron_proto::artifacts::artifact_links(row.info.as_deref().unwrap_or_default())
-        {
+        let mut links = mast_proto::artifacts::artifact_links(&row.text);
+        for link in mast_proto::artifacts::artifact_links(row.info.as_deref().unwrap_or_default()) {
             if !links.iter().any(|seen| seen.target == link.target) {
                 links.push(link);
             }
@@ -1103,7 +1102,7 @@ impl RequiredActionsList {
             let selector = format!("required-actions-artifact-{id}-{ix}");
             let url = format!(
                 "{}{}",
-                zeron_proto::artifacts::ARTIFACT_URL_SCHEME,
+                mast_proto::artifacts::ARTIFACT_URL_SCHEME,
                 link.target
             );
             let label = if link.label.is_empty() {

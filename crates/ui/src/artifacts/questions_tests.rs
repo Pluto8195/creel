@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use serde_json::json;
-use zeron_proto::{
+use mast_proto::{
     ArtifactContentEncoding, ArtifactDriftReply, ArtifactKind, ArtifactQuestionAnswer,
     ArtifactView, WorkOutlineActor,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
+use serde_json::json;
 
 use super::tab::ArtifactTab;
 use super::tests::{Calls, Reply, artifact, content_reply, id, init_ui, scripted, snapshot};
@@ -39,7 +39,7 @@ fn answer(id: &str, text: &str, at: i64) -> ArtifactQuestionAnswer {
     }
 }
 
-fn chat(id: &str, archived: bool) -> zeron_proto::Chat {
+fn chat(id: &str, archived: bool) -> mast_proto::Chat {
     serde_json::from_value(json!({
         "id": id, "deviceId": "dev", "archived": archived,
         "createdAt": "2026-07-19T12:00:00Z",
@@ -85,7 +85,7 @@ fn settle(vcx: &mut VisualTestContext) {
 fn open(
     cx: &mut TestAppContext,
     view: ArtifactView,
-    chats: Vec<zeron_proto::Chat>,
+    chats: Vec<mast_proto::Chat>,
     drift: Option<ArtifactDriftReply>,
 ) -> (Entity<ArtifactTab>, Calls, &mut VisualTestContext) {
     let (actions, calls) = scripted(replies(drift));

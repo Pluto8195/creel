@@ -1,5 +1,5 @@
 //! Work Outline service: the policy layer over the registry mutators in
-//! `zeron_doc::registry::work_outline` (contract `docs/plans/work-outline/
+//! `mast_doc::registry::work_outline` (contract `docs/plans/work-outline/
 //! m0-contract.md`, registry audit section 7.11).
 //!
 //! - `WorkOutlineMutate`: kill switch, operation-id replay protection (same
@@ -54,13 +54,13 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use zeron_proto::work_outline::{
+use mast_proto::work_outline::{
     DISABLE_WRITES_ENV, WorkOutlineErrorCode, derive_id, external_reference_id, roles,
 };
-use zeron_proto::work_outline_instructions::{
+use mast_proto::work_outline_instructions::{
     InstructionRevisionIntegrity, compare_instruction_revisions,
 };
-use zeron_proto::{
+use mast_proto::{
     WorkOutlineActor, WorkOutlineActorKind, WorkOutlineError, WorkOutlineMutateReply,
     WorkOutlineMutation, WorkOutlineQueryRequest, WorkOutlineQueryResponse, WorkOutlineSnapshot,
 };
@@ -174,7 +174,7 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
 /// This device's delivery record for a Chat it hosts (what
 /// `keepInstructionSession` keeps): `None` = not hosted here or no record.
 pub type KeptSessionResolver = std::sync::Arc<
-    dyn Fn(&str) -> Option<Option<zeron_proto::InstructionRevisionPin>> + Send + Sync,
+    dyn Fn(&str) -> Option<Option<mast_proto::InstructionRevisionPin>> + Send + Sync,
 >;
 
 /// The engine's Work Outline surface (one per `EngineRpc`).
@@ -267,7 +267,7 @@ impl WorkOutlineService {
     pub fn agent_context(
         &self,
         chat_id: &str,
-    ) -> Result<zeron_proto::AgentWorkItemContext, WorkOutlineError> {
+    ) -> Result<mast_proto::AgentWorkItemContext, WorkOutlineError> {
         let denied = |message: &str| WorkOutlineError::unauthorized(message);
         let chat = self
             .workspace
@@ -290,14 +290,14 @@ impl WorkOutlineService {
         chat_id: &str,
         space_id: &str,
         snapshot: &WorkOutlineSnapshot,
-    ) -> Result<zeron_proto::AgentWorkItemContext, WorkOutlineError> {
+    ) -> Result<mast_proto::AgentWorkItemContext, WorkOutlineError> {
         let denied = |message: &str| WorkOutlineError::unauthorized(message);
         let work_item_id = snapshot
             .assignments
             .iter()
             .find(|a| {
                 a.chat_id == chat_id
-                    && a.state == zeron_proto::WorkItemChatAssignmentState::Associated
+                    && a.state == mast_proto::WorkItemChatAssignmentState::Associated
             })
             .and_then(|a| a.work_item_id.clone())
             .ok_or_else(|| denied("The agent's Chat is not associated with a work item"))?;
@@ -305,7 +305,7 @@ impl WorkOutlineService {
             .item(&work_item_id)
             .cloned()
             .ok_or_else(|| denied("The agent's Chat is not associated with a work item"))?;
-        Ok(zeron_proto::AgentWorkItemContext {
+        Ok(mast_proto::AgentWorkItemContext {
             chat_id: chat_id.to_owned(),
             effective_instructions: snapshot.effective_instructions(&work_item_id),
             open_user_action_requests: snapshot
@@ -335,7 +335,7 @@ impl WorkOutlineService {
             ));
         }
         let operation_id = mutation.operation_id().to_owned();
-        let hash = zeron_doc::registry::work_outline::inputs_hash(mutation);
+        let hash = mast_doc::registry::work_outline::inputs_hash(mutation);
         let conflict = || {
             WorkOutlineError::new(
                 WorkOutlineErrorCode::OperationConflict,
@@ -461,7 +461,7 @@ impl WorkOutlineService {
     pub fn capture_chat_execution_binding(
         &self,
         chat_id: &str,
-        resolved: &zeron_proto::ResolvedExecutionConfiguration,
+        resolved: &mast_proto::ResolvedExecutionConfiguration,
         operation_id: &str,
     ) -> Result<bool, WorkOutlineError> {
         if writes_disabled() {
@@ -483,7 +483,7 @@ impl WorkOutlineService {
     /// The current snapshot of one Space (revision 0).
     pub fn snapshot(&self, space_id: &str) -> WorkOutlineSnapshot {
         let inputs = self.workspace.work_outline_inputs(space_id);
-        zeron_doc::materialize_work_outline(space_id, &inputs)
+        mast_doc::materialize_work_outline(space_id, &inputs)
     }
 
     /// `WatchWorkOutline`: the current snapshot first, then one frame per
@@ -524,7 +524,7 @@ impl WorkOutlineService {
                     let (marker, inputs) = workspace.work_outline_inputs_marked(&space_id);
                     (
                         marker,
-                        zeron_doc::materialize_work_outline(&space_id, &inputs),
+                        mast_doc::materialize_work_outline(&space_id, &inputs),
                     )
                 })
                 .await

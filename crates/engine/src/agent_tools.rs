@@ -1,6 +1,6 @@
 //! Agent tools (Work Outline Milestone 4): engine-minted per-Run capability
 //! tokens and the allow-listed agent RPC surface behind the injected
-//! `zeron mcp` server (wire contract: `zeron_proto::agent_tools`).
+//! `zeron mcp` server (wire contract: `mast_proto::agent_tools`).
 //!
 //! - [`AgentTokens`]: when `SessionsEngine` spawns a Run of a Chat in a Space
 //!   on a harness that can inject MCP servers, it mints a random token bound
@@ -36,20 +36,20 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use zeron_doc::SessionCommandPayload;
-use zeron_harness::AgentToolsInjection;
-use zeron_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolErrorCode, tools};
-use zeron_proto::work_outline::{derive_id, roles};
-use zeron_proto::{
+use mast_doc::SessionCommandPayload;
+use mast_harness::AgentToolsInjection;
+use mast_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolErrorCode, tools};
+use mast_proto::work_outline::{derive_id, roles};
+use mast_proto::{
     AssignChatToWorkItemParams, ChatDiffTargetSource, CreateUserActionRequestParams,
     CreateWorkItemParams, InstructionProposalOrigin, InstructionProposalTarget,
     ProposeWorkItemInstructionParams, ResolveUserActionRequestParams, RunRequest, SandboxLevel,
     UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges, WorkItemStatus,
     WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
 };
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::diff_targets::DiffTargetError;
 use crate::doc_host::DocHost;
@@ -75,7 +75,7 @@ pub enum AgentToolError {
     },
     WorkOutline(WorkOutlineError),
     /// A planning artifact tool failure (`artifact/<code>: …`).
-    Artifact(zeron_proto::ArtifactError),
+    Artifact(mast_proto::ArtifactError),
 }
 
 impl AgentToolError {
@@ -116,8 +116,8 @@ impl AgentToolError {
     }
 }
 
-impl From<zeron_proto::ArtifactError> for AgentToolError {
-    fn from(error: zeron_proto::ArtifactError) -> Self {
+impl From<mast_proto::ArtifactError> for AgentToolError {
+    fn from(error: mast_proto::ArtifactError) -> Self {
         Self::Artifact(error)
     }
 }
@@ -322,7 +322,7 @@ impl Drop for AgentTokenLease {
 static BOUND_IPC_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// Record the port `serve_ipc` bound, so injected servers dial this engine
-/// rather than whatever `ZERON_IPC_PORT` / the default names. One engine
+/// rather than whatever `MAST_IPC_PORT` / the default names. One engine
 /// serves IPC per process; the latest bind wins.
 pub fn note_bound_ipc_port(port: u16) {
     BOUND_IPC_PORT.store(port, Ordering::Relaxed);
@@ -370,6 +370,12 @@ impl AgentToolsLaunch {
             env: [
                 (agent_tools::TOKEN_ENV.to_owned(), token.to_owned()),
                 (agent_tools::IPC_PORT_ENV.to_owned(), ipc_port.to_string()),
+                // Older `zeron mcp` binaries read the old names.
+                (agent_tools::LEGACY_TOKEN_ENV.to_owned(), token.to_owned()),
+                (
+                    agent_tools::LEGACY_IPC_PORT_ENV.to_owned(),
+                    ipc_port.to_string(),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -497,7 +503,7 @@ struct LaunchChildArgs {
     work_item_id: String,
     prompt: String,
     #[serde(default)]
-    config: Option<zeron_proto::ChatConfig>,
+    config: Option<mast_proto::ChatConfig>,
 }
 
 /// Most items one `work_outline_read_subtree` call returns.
@@ -519,7 +525,7 @@ fn sandbox_rank(level: SandboxLevel) -> u8 {
 }
 
 /// Whether `target` is `root` or one of its effective descendants.
-fn in_subtree(snapshot: &zeron_proto::WorkOutlineSnapshot, root: &str, target: &str) -> bool {
+fn in_subtree(snapshot: &mast_proto::WorkOutlineSnapshot, root: &str, target: &str) -> bool {
     let mut cursor = Some(target.to_owned());
     let mut steps = 0usize;
     while let Some(id) = cursor {
@@ -722,7 +728,7 @@ impl AgentToolsService {
     fn linear_issue_for_agent(
         &self,
         identifier: &str,
-    ) -> Result<zeron_proto::LinearIssueSummary, &'static str> {
+    ) -> Result<mast_proto::LinearIssueSummary, &'static str> {
         let Some(linear) = lock(&self.linear).clone() else {
             return Err("unavailable");
         };
@@ -749,7 +755,7 @@ impl AgentToolsService {
     /// Linear on.
     fn linear_context(
         &self,
-        snapshot: &zeron_proto::WorkOutlineSnapshot,
+        snapshot: &mast_proto::WorkOutlineSnapshot,
         item_id: &str,
     ) -> Option<Value> {
         if !snapshot.space_settings.linear_enabled {
@@ -757,7 +763,7 @@ impl AgentToolsService {
         }
         let mut out = serde_json::Map::new();
         if let Some(reference) =
-            snapshot.nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_ISSUE_REFERENCE)
+            snapshot.nearest_linear_reference(item_id, mast_proto::linear::LINEAR_ISSUE_REFERENCE)
         {
             match self.linear_issue_for_agent(&reference.external_id) {
                 Ok(issue) => {
@@ -775,12 +781,12 @@ impl AgentToolsService {
                 }
             }
         }
-        if let Some(reference) = snapshot
-            .nearest_linear_reference(item_id, zeron_proto::linear::LINEAR_PROJECT_REFERENCE)
+        if let Some(reference) =
+            snapshot.nearest_linear_reference(item_id, mast_proto::linear::LINEAR_PROJECT_REFERENCE)
         {
             out.insert(
                 "linearProject".into(),
-                json!(zeron_proto::LinearProjectRef {
+                json!(mast_proto::LinearProjectRef {
                     id: reference.external_id.clone(),
                     name: reference.cached_title.clone().unwrap_or_default(),
                     url: reference.url.clone(),
@@ -1069,7 +1075,7 @@ impl AgentToolsService {
         let args: AssociateArgs = parse_args(arguments)?;
         let operation_id = context.operation_id_or_derived(arguments, || {
             let assigned = context.row_stamp(
-                zeron_doc::work_outline::KIND_WORK_ITEM_CHAT_ASSIGNMENTS,
+                mast_doc::work_outline::KIND_WORK_ITEM_CHAT_ASSIGNMENTS,
                 &context.grant.chat_id,
                 "assignedAt",
             );
@@ -1108,7 +1114,7 @@ impl AgentToolsService {
         };
         let operation_id = context.operation_id_or_derived(arguments, || {
             let updated = context.row_stamp(
-                zeron_doc::work_outline::KIND_WORK_ITEMS,
+                mast_doc::work_outline::KIND_WORK_ITEMS,
                 &target,
                 "updatedAt",
             );
@@ -1223,7 +1229,7 @@ impl AgentToolsService {
         let resolved = self
             .workspace
             .registry_row(
-                zeron_doc::work_outline::KIND_USER_ACTION_REQUESTS,
+                mast_doc::work_outline::KIND_USER_ACTION_REQUESTS,
                 &args.user_action_request_id,
             )
             .and_then(|row| {
@@ -1235,7 +1241,7 @@ impl AgentToolsService {
             .is_some_and(|state| state == "resolved");
         if !resolved {
             return Err(WorkOutlineError::new(
-                zeron_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
+                mast_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
                 "the request is still open after the resolve; nothing was changed",
             )
             .into());
@@ -1321,7 +1327,7 @@ impl AgentToolsService {
                 return Ok(json!({ "replayed": true }));
             }
             return Err(WorkOutlineError::new(
-                zeron_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
+                mast_proto::work_outline::WorkOutlineErrorCode::OperationConflict,
                 "idempotency_key was already used to create a chat with different inputs; \
                  use a new key for a new chat",
             )
@@ -1431,7 +1437,7 @@ impl AgentToolsService {
             .into());
         }
         let sessions = lock(&self.sessions).clone();
-        let mut requests: HashMap<&str, Vec<&zeron_proto::UserActionRequestView>> = HashMap::new();
+        let mut requests: HashMap<&str, Vec<&mast_proto::UserActionRequestView>> = HashMap::new();
         for request in snapshot
             .user_action_requests
             .iter()
@@ -1479,7 +1485,7 @@ impl AgentToolsService {
     pub fn prepare_child_launch(
         &self,
         params: &AgentToolCallParams,
-    ) -> Result<zeron_proto::CreateChatForWorkItemParams, AgentToolError> {
+    ) -> Result<mast_proto::CreateChatForWorkItemParams, AgentToolError> {
         let context = self.context(&params.token)?;
         let operation_id = context.operation_id(&params.arguments)?;
         let args: LaunchChildArgs = parse_args(&params.arguments)?;
@@ -1521,9 +1527,9 @@ impl AgentToolsService {
                 "a child chat can never have a wider sandbox than its parent",
             ));
         }
-        Ok(zeron_proto::CreateChatForWorkItemParams {
+        Ok(mast_proto::CreateChatForWorkItemParams {
             work_item_id: args.work_item_id,
-            initial_prompt: zeron_proto::WorkItemPrompt {
+            initial_prompt: mast_proto::WorkItemPrompt {
                 text: args.prompt,
                 attachments: Vec::new(),
             },
@@ -1539,10 +1545,10 @@ impl AgentToolsService {
 
 /// One `work_outline_read_subtree` walk.
 struct SubtreeWalk<'a> {
-    snapshot: &'a zeron_proto::WorkOutlineSnapshot,
+    snapshot: &'a mast_proto::WorkOutlineSnapshot,
     workspace: &'a WorkspaceHost,
     sessions: Option<&'a SessionsEngine>,
-    requests: &'a HashMap<&'a str, Vec<&'a zeron_proto::UserActionRequestView>>,
+    requests: &'a HashMap<&'a str, Vec<&'a mast_proto::UserActionRequestView>>,
     include_archived: bool,
     max_depth: u32,
 }
@@ -1616,7 +1622,7 @@ impl SubtreeWalk<'_> {
 
     /// The item's attached Chats (id, title, status, lastMessageAt) and how
     /// many were left out.
-    fn chats_of(&self, item: &zeron_proto::WorkItemView) -> (Vec<Value>, usize) {
+    fn chats_of(&self, item: &mast_proto::WorkItemView) -> (Vec<Value>, usize) {
         let mut chats = Vec::new();
         let mut omitted = 0usize;
         for chat_id in &item.chat_ids {
@@ -1632,10 +1638,10 @@ impl SubtreeWalk<'_> {
             }
             let status = match self.sessions.and_then(|s| s.session_status(chat_id)) {
                 Some(session) => match session.status {
-                    zeron_proto::SessionStatus::Working => "working",
-                    zeron_proto::SessionStatus::AwaitingInput => "awaitingInput",
-                    zeron_proto::SessionStatus::Errored => "errored",
-                    zeron_proto::SessionStatus::Idle => "idle",
+                    mast_proto::SessionStatus::Working => "working",
+                    mast_proto::SessionStatus::AwaitingInput => "awaitingInput",
+                    mast_proto::SessionStatus::Errored => "errored",
+                    mast_proto::SessionStatus::Idle => "idle",
                 },
                 None => "idle",
             };
@@ -1659,8 +1665,8 @@ impl SubtreeWalk<'_> {
 /// sandbox, approval mode, and cwd; the host overwrites the cwd of an
 /// execution-bound Chat and resolves instructions at dispatch).
 fn child_run_request(
-    chat: &zeron_proto::Chat,
-    space: Option<&zeron_proto::Space>,
+    chat: &mast_proto::Chat,
+    space: Option<&mast_proto::Space>,
     prompt: String,
     attachments: Vec<String>,
 ) -> RunRequest {
@@ -1764,10 +1770,16 @@ mod tests {
             ipc_port: Some(27655),
         };
         let injection = launch.injection("zat_secret").unwrap();
-        assert_eq!(injection.server_name, "zeron-agent");
+        assert_eq!(injection.server_name, "mast-agent");
         assert_eq!(injection.args, vec!["mcp".to_owned()]);
+        assert_eq!(injection.env["MAST_AGENT_TOKEN"], "zat_secret");
+        assert_eq!(injection.env["MAST_IPC_PORT"], "27655");
+        // An older `zeron mcp` binary reads the old names; both are exported.
         assert_eq!(injection.env["ZERON_AGENT_TOKEN"], "zat_secret");
         assert_eq!(injection.env["ZERON_IPC_PORT"], "27655");
+        assert!(mast_proto::agent_tools::is_server_name("zeron-agent"));
+        assert!(mast_proto::agent_tools::is_server_name("mast-agent"));
+        assert!(!mast_proto::agent_tools::is_server_name("zeron"));
         assert!(!injection.args.iter().any(|a| a.contains("zat_secret")));
         assert!(!injection.command.to_string_lossy().contains("zat_secret"));
     }
@@ -1787,7 +1799,7 @@ mod tests {
         );
         note_bound_ipc_port(41234);
         assert_eq!(
-            launch.injection("zat_x").unwrap().env["ZERON_IPC_PORT"],
+            launch.injection("zat_x").unwrap().env["MAST_IPC_PORT"],
             "41234"
         );
         note_bound_ipc_port(0);
@@ -1820,14 +1832,14 @@ mod tests {
 
     #[test]
     fn child_runs_take_only_prompt_and_attachments_from_the_caller() {
-        let chat: zeron_proto::Chat = serde_json::from_value(json!({
+        let chat: mast_proto::Chat = serde_json::from_value(json!({
             "id": "child", "deviceId": "dev", "archived": false,
             "createdAt": "2026-01-01T00:00:00Z",
             "config": { "harness": "codex", "model": "m-1", "sandbox": "read-only",
                         "autoApprove": false },
         }))
         .unwrap();
-        let space: zeron_proto::Space = serde_json::from_value(json!({
+        let space: mast_proto::Space = serde_json::from_value(json!({
             "id": "s", "deviceId": "dev", "path": "/repo", "createdAt": "2026-01-01T00:00:00Z",
         }))
         .unwrap();
@@ -1835,7 +1847,7 @@ mod tests {
             child_run_request(&chat, Some(&space), "go".into(), vec!["/tmp/a.png".into()]);
         assert_eq!(request.prompt, "go");
         assert_eq!(request.attachments, vec!["/tmp/a.png".to_owned()]);
-        assert_eq!(request.harness, Some(zeron_proto::HarnessId::Codex));
+        assert_eq!(request.harness, Some(mast_proto::HarnessId::Codex));
         assert_eq!(request.model.as_deref(), Some("m-1"));
         assert_eq!(request.sandbox, SandboxLevel::ReadOnly);
         assert!(!request.auto_approve);

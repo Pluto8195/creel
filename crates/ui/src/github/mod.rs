@@ -1,4 +1,4 @@
-//! PR review sync v1, client side (contract: `zeron_proto::pr_review_sync`,
+//! PR review sync v1, client side (contract: `mast_proto::pr_review_sync`,
 //! user docs: `docs/pr-review.md` "PR review sync").
 //!
 //! - Per Space the user picks ONE work item as the sync destination
@@ -33,7 +33,7 @@ pub(crate) mod store;
 
 use std::collections::HashMap;
 
-use zeron_proto::{
+use mast_proto::{
     GITHUB_PROVIDER, GITHUB_PULL_REQUEST_REFERENCE, PrReference, PullRequestRef,
     WorkOutlineSnapshot,
 };
@@ -146,7 +146,7 @@ pub(crate) fn space_available(
     state.space_row(space_id).is_some_and(|space| {
         state.device_supports(
             &space.device_id,
-            zeron_proto::capabilities::PR_REVIEW_SYNC_V1,
+            mast_proto::capabilities::PR_REVIEW_SYNC_V1,
         )
     })
 }
@@ -203,7 +203,7 @@ impl PrIndex {
 /// (⇧⌘P's destination list).
 pub(crate) fn destination_pr_items(
     snapshot: &WorkOutlineSnapshot,
-) -> Vec<(zeron_proto::WorkItemView, PullRequestRef)> {
+) -> Vec<(mast_proto::WorkItemView, PullRequestRef)> {
     let Some(destination) = live_destination(snapshot) else {
         return Vec::new();
     };
@@ -221,7 +221,7 @@ pub(crate) fn destination_pr_items(
 
 #[cfg(test)]
 pub(crate) mod fixture {
-    use zeron_proto::{
+    use mast_proto::{
         PullRequestCiStatus, PullRequestMyReviewState, PullRequestRef, PullRequestReviewDecision,
         PullRequestState, PullRequestStatusSummary, WorkItemExternalReferenceView,
     };

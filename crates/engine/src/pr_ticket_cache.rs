@@ -152,7 +152,7 @@ pub struct DiffStat {
 #[serde(rename_all = "camelCase")]
 pub struct PrLinkStatus {
     pub url: String,
-    pub source: Option<zeron_proto::ChatLinkSource>,
+    pub source: Option<mast_proto::ChatLinkSource>,
     pub detail: Option<PrStatus>,
 }
 
@@ -189,14 +189,14 @@ pub struct ChatLinkStatus {
     /// wire-contract test below) means `pr` (when present at all) came from
     /// inference — the pre-existing behavior, unchanged for a chat with no
     /// durable link.
-    pub pr_source: Option<zeron_proto::ChatLinkSource>,
+    pub pr_source: Option<mast_proto::ChatLinkSource>,
     /// Sibling to [`Self::pr_source`] for `ticket`.
-    pub ticket_source: Option<zeron_proto::ChatLinkSource>,
+    pub ticket_source: Option<mast_proto::ChatLinkSource>,
 }
 
 /// `is_worktree` (`session_canvas_server.py:300-304`): the cwd sits under a
 /// `.worktrees/` or `.agent-worktrees/` directory anywhere along its path —
-/// covers both Zeron's own worktree layout and agent-mode.sh's legacy one.
+/// covers both Mast's own worktree layout and agent-mode.sh's legacy one.
 pub fn is_worktree_cwd(cwd: &str) -> bool {
     cwd.contains("/.worktrees/") || cwd.contains("/.agent-worktrees/")
 }
@@ -351,7 +351,7 @@ impl PrTicketCache {
         space_id: Option<&str>,
         cwd: Option<&str>,
         branch: Option<&str>,
-        linked_pr_links: &[zeron_proto::ChatPrLink],
+        linked_pr_links: &[mast_proto::ChatPrLink],
         linked_ticket_id: Option<&str>,
     ) -> ChatLinkStatus {
         let linear_space = space_id.is_some_and(|space| {
@@ -416,11 +416,11 @@ impl PrTicketCache {
         let legacy_link =
             linked_pr_url
                 .filter(|url| !url.is_empty())
-                .map(|url| zeron_proto::ChatPrLink {
+                .map(|url| mast_proto::ChatPrLink {
                     url: url.to_string(),
                     // `status_for` predates per-link provenance; callers attach
                     // the real legacy source to `pr_source` after this read.
-                    source: zeron_proto::ChatLinkSource::Mentioned,
+                    source: mast_proto::ChatLinkSource::Mentioned,
                 });
         self.status_for_links(cwd, branch, legacy_link.as_slice(), linked_ticket_id)
     }
@@ -434,7 +434,7 @@ impl PrTicketCache {
         &self,
         cwd: Option<&str>,
         branch: Option<&str>,
-        linked_pr_links: &[zeron_proto::ChatPrLink],
+        linked_pr_links: &[mast_proto::ChatPrLink],
         linked_ticket_id: Option<&str>,
     ) -> ChatLinkStatus {
         let mut status = ChatLinkStatus::default();
@@ -990,7 +990,7 @@ fn fetch_github_pr_by_url(url: &str) -> Option<PrStatus> {
 /// genuinely clean worktree instead reads as `Some(DiffStat::default())`,
 /// since `git diff --shortstat` succeeds with empty stdout in that case).
 fn git_diff_shortstat(cwd: &Path) -> Option<DiffStat> {
-    let output = zeron_harness::git_command()
+    let output = mast_harness::git_command()
         .args(["diff", "--shortstat", "HEAD"])
         .current_dir(cwd)
         .output()
@@ -1163,9 +1163,9 @@ fn fetch_github_pr_by_number(repo: &str, number: u64) -> Option<PrStatus> {
 /// setup. In particular, app launches do not inherit the login shell PATH
 /// that commonly contains Homebrew's `gh`.
 fn gh_command() -> Option<Command> {
-    let executable = zeron_harness::resolve_login_shell_executable("gh")?;
+    let executable = mast_harness::resolve_login_shell_executable("gh")?;
     let mut command = Command::new(executable);
-    zeron_harness::compose_login_shell_path_std(&mut command);
+    mast_harness::compose_login_shell_path_std(&mut command);
     command.env("GH_PROMPT_DISABLED", "1").stdin(Stdio::null());
     Some(command)
 }
@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn status_for_links_keeps_every_durable_pr_while_details_load() {
-        use zeron_proto::{ChatLinkSource, ChatPrLink};
+        use mast_proto::{ChatLinkSource, ChatPrLink};
 
         let cache = PrTicketCache::new();
         let links = vec![
@@ -1455,7 +1455,7 @@ mod tests {
 
     #[test]
     fn status_for_links_does_not_queue_branch_guess_for_linked_prs() {
-        use zeron_proto::{ChatLinkSource, ChatPrLink};
+        use mast_proto::{ChatLinkSource, ChatPrLink};
 
         let cache = PrTicketCache::new();
         let links = vec![
@@ -1675,7 +1675,7 @@ mod tests {
                 lines_added: 5,
                 lines_removed: 1,
             }),
-            pr_source: Some(zeron_proto::ChatLinkSource::Manual),
+            pr_source: Some(mast_proto::ChatLinkSource::Manual),
             ticket_source: None,
         };
         let value = serde_json::to_value(&status).unwrap();

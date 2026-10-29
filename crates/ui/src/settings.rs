@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{App, Global, Task};
+use mast_proto::{AuthState, WorkspaceScope};
 use serde::{Deserialize, Serialize};
-use zeron_proto::{AuthState, WorkspaceScope};
 
 pub mod accounts;
 pub mod appearance;
@@ -65,7 +65,7 @@ const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewThreadComposerBackground {
-    /// Managed copy inside Zeron's device-local data directory.
+    /// Managed copy inside Mast's device-local data directory.
     pub path: String,
     /// Original file name shown in Appearance settings.
     pub name: String,
@@ -308,7 +308,7 @@ pub fn current(cx: &App) -> UiSettings {
         .unwrap_or_default()
 }
 
-/// Copy a selected image into Zeron's device-local data directory and make it
+/// Copy a selected image into Mast's device-local data directory and make it
 /// the new-thread canvas background. A unique file name avoids stale image
 /// caches when the background is replaced.
 pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Result<(), String> {
@@ -662,7 +662,7 @@ pub struct UiSettings {
     /// list. Kept for file compatibility; no longer read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space_order: Vec<String>,
-    /// Master switch for session notification chimes. `ZERON_DISABLE_SOUND`
+    /// Master switch for session notification chimes. `MAST_DISABLE_SOUND`
     /// overrides every per-event preference below.
     pub sound_enabled: bool,
     /// Chime when an agent run completes successfully.
@@ -672,9 +672,9 @@ pub struct UiSettings {
     /// Chime when a run fails or the durable connection state degrades.
     pub sound_attention_enabled: bool,
     /// Desktop banner notifications on the same transitions.
-    /// `ZERON_DISABLE_NOTIFICATIONS` overrides.
+    /// `MAST_DISABLE_NOTIFICATIONS` overrides.
     pub notifications_enabled: bool,
-    /// Suppress the banner while a Zeron window is focused (the chime covers
+    /// Suppress the banner while a Mast window is focused (the chime covers
     /// the foreground case).
     pub notifications_background_only: bool,
     /// Live status light: the Dock icon, Dock badge and in-app logo follow what
@@ -724,7 +724,7 @@ pub struct UiSettings {
     pub code_font_family: crate::typography::UiFontFamily,
     pub code_font_size: f32,
     /// Independently selected light and dark theme variants.
-    pub theme_selection: zeron_theme::ThemeSelection,
+    pub theme_selection: mast_theme::ThemeSelection,
     /// Changes pane: side-by-side diffs instead of the unified stack.
     pub diff_split: bool,
     /// Changes pane: wrap long source lines instead of scrolling horizontally.
@@ -736,7 +736,8 @@ pub struct UiSettings {
     pub transcript_width: f32,
     /// Open a normal web-link activation in the session Browser. Explicit
     /// context-menu actions remain available regardless of this preference.
-    pub open_web_links_in_zeron: bool,
+    #[serde(alias = "openWebLinksInZeron")]
+    pub open_web_links_in_mast: bool,
     /// Save edited workspace files automatically after the configured delay.
     pub files_autosave_enabled: bool,
     /// Idle time before an edited workspace file is saved automatically.
@@ -746,9 +747,9 @@ pub struct UiSettings {
     /// Include hidden and ignored entries in workspace file trees.
     pub files_show_all: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
-    pub accent: zeron_theme::AccentSelection,
+    pub accent: mast_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
-    pub surface: zeron_theme::SurfacePreference,
+    pub surface: mast_theme::SurfacePreference,
     /// Optional device-local artwork behind the blank new-thread composer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_thread_composer_background: Option<NewThreadComposerBackground>,
@@ -822,18 +823,18 @@ impl Default for UiSettings {
             terminal_font_size: crate::typography::TERMINAL_FONT_SIZE_DEFAULT,
             code_font_family: crate::typography::UiFontFamily::GeistMono,
             code_font_size: crate::typography::CODE_FONT_SIZE_DEFAULT,
-            theme_selection: zeron_theme::ThemeSelection::default(),
+            theme_selection: mast_theme::ThemeSelection::default(),
             diff_split: false,
             diff_wrap: false,
             code_fences_fit_content: false,
             transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
-            open_web_links_in_zeron: true,
+            open_web_links_in_mast: true,
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
             files_word_wrap: false,
             files_show_all: false,
-            accent: zeron_theme::AccentSelection::default(),
-            surface: zeron_theme::SurfacePreference::default(),
+            accent: mast_theme::AccentSelection::default(),
+            surface: mast_theme::SurfacePreference::default(),
             new_thread_composer_background: None,
             new_thread_background_effect: NewThreadBackgroundEffect::None,
             legacy_accent_color: None,
@@ -1186,7 +1187,7 @@ pub fn sidebar_pin_profile_key(
             }
             let org_id = token_org_id
                 .or(development_org_id.filter(|org_id| !org_id.is_empty()))
-                .unwrap_or(zeron_engine::DEFAULT_ORG_ID);
+                .unwrap_or(mast_engine::DEFAULT_ORG_ID);
             Some(format!("development:{org_id}:{user_id}"))
         }
     }
@@ -1746,10 +1747,10 @@ impl UiSettings {
     }
 
     fn migrated(mut self) -> Self {
-        if self.accent == zeron_theme::AccentSelection::ThemeDefault
+        if self.accent == mast_theme::AccentSelection::ThemeDefault
             && let Some(accent) = self.legacy_accent_color.take()
         {
-            self.accent = zeron_theme::AccentSelection::Preset(accent.into());
+            self.accent = mast_theme::AccentSelection::Preset(accent.into());
         }
         self.legacy_accent_color = None;
         self
@@ -1776,11 +1777,32 @@ fn min_or(value: f32, min: f32, default: f32) -> f32 {
     }
 }
 
-pub use zeron_proto::SidebarSection;
+pub use mast_proto::SidebarSection;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_saved_before_the_rename_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"openWebLinksInZeron": false, "accentColor": "zeron"}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert!(!loaded.open_web_links_in_mast);
+        assert_eq!(
+            loaded.accent,
+            mast_theme::AccentSelection::Preset(mast_theme::AccentPreset::Mast)
+        );
+        // And the next save writes the new key only.
+        loaded.save(dir.path()).unwrap();
+        let saved = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+        assert!(saved.contains("openWebLinksInMast"));
+        assert!(!saved.contains("openWebLinksInZeron"));
+    }
 
     #[test]
     fn composer_send_behavior_is_opt_in_for_old_and_partial_settings() {
@@ -1793,7 +1815,7 @@ mod tests {
 
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.composer_send_behavior, ComposerSendBehavior::Enter);
-        assert!(loaded.open_web_links_in_zeron);
+        assert!(loaded.open_web_links_in_mast);
         assert!(loaded.new_thread_composer_background.is_none());
         assert_eq!(
             loaded.new_thread_background_effect,
@@ -2340,7 +2362,7 @@ mod tests {
             git_history_author_display: GitHistoryAuthorDisplay::Name,
             ui_font_family: crate::typography::UiFontFamily::Installed("Arial".into()),
             ui_font_size: crate::typography::UiFontSize::ALL[5],
-            theme_selection: zeron_theme::ThemeSelection {
+            theme_selection: mast_theme::ThemeSelection {
                 light: "catppuccin-latte".into(),
                 dark: "catppuccin-mocha".into(),
             },
@@ -2348,7 +2370,7 @@ mod tests {
             diff_wrap: true,
             code_fences_fit_content: true,
             transcript_width: 960.0,
-            open_web_links_in_zeron: false,
+            open_web_links_in_mast: false,
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
             files_word_wrap: true,
@@ -2357,8 +2379,8 @@ mod tests {
             code_font_family: crate::typography::UiFontFamily::Geist,
             code_font_size: 11.0,
             files_show_all: true,
-            accent: zeron_theme::AccentSelection::Preset(zeron_theme::AccentPreset::Cyan),
-            surface: zeron_theme::SurfacePreference::Frosted,
+            accent: mast_theme::AccentSelection::Preset(mast_theme::AccentPreset::Cyan),
+            surface: mast_theme::SurfacePreference::Frosted,
             new_thread_composer_background: Some(NewThreadComposerBackground {
                 path: "/tmp/zeron/new-thread-background.png".into(),
                 name: "background.png".into(),
@@ -2373,7 +2395,7 @@ mod tests {
         assert!(json.contains(r#""diffWrap": true"#));
         assert_eq!(UiSettings::load(dir.path()), settings);
         assert!(json.contains(r#""codeFencesFitContent": true"#));
-        assert!(json.contains(r#""openWebLinksInZeron": false"#));
+        assert!(json.contains(r#""openWebLinksInMast": false"#));
         assert!(json.contains(r#""newThreadBackgroundEffect": "ascii""#));
         assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
         assert!(json.contains(r#""terminalFontSize": 15.0"#));
@@ -2509,8 +2531,8 @@ mod tests {
         .unwrap();
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.appearance, crate::appearance::AppearanceMode::System);
-        assert_eq!(loaded.accent, zeron_theme::AccentSelection::ThemeDefault);
-        assert_eq!(loaded.surface, zeron_theme::SurfacePreference::ThemeDefault);
+        assert_eq!(loaded.accent, mast_theme::AccentSelection::ThemeDefault);
+        assert_eq!(loaded.surface, mast_theme::SurfacePreference::ThemeDefault);
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(loaded.sidebar_pinned_session_ids_by_profile.is_empty());
         assert!(!loaded.sound_enabled, "other keys still parse");
@@ -2601,7 +2623,7 @@ mod tests {
         let loaded = UiSettings::load(dir.path());
         assert_eq!(
             loaded.accent,
-            zeron_theme::AccentSelection::Preset(zeron_theme::AccentPreset::Cyan)
+            mast_theme::AccentSelection::Preset(mast_theme::AccentPreset::Cyan)
         );
         loaded.save(dir.path()).unwrap();
         let saved = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
@@ -2669,7 +2691,7 @@ mod tests {
 
     fn signed_in(user_id: &str, org_id: Option<&str>) -> AuthState {
         AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: mast_proto::UserProfile {
                 id: user_id.to_string(),
                 email: format!("{user_id}@example.com"),
                 name: None,

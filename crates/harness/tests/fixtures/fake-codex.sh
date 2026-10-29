@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fake Codex app-server for zeron-harness tests.
+# Fake Codex app-server for mast-harness tests.
 #
 # Speaks scripted JSON-RPC 2.0 over stdio: initialize handshake, thread
 # start/resume, then a scenario picked from the turn/start prompt text. Driven
@@ -100,11 +100,11 @@ case "$turnline" in
 
 
 *scenario:agent-tools*)
-  # Report whether thread/start carried the Zeron MCP server overrides.
+  # Report whether thread/start carried the Mast MCP server overrides.
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
-  if has "$thread_line" '"mcp_servers.zeron-agent.command":"/opt/zeron/bin/zeron"' \
-    && has "$thread_line" '"mcp_servers.zeron-agent.args":["mcp"]' \
-    && has "$thread_line" '"mcp_servers.zeron-agent.env":{"ZERON_AGENT_TOKEN":"tok-1"}'; then
+  if has "$thread_line" '"mcp_servers.mast-agent.command":"/opt/zeron/bin/zeron"' \
+    && has "$thread_line" '"mcp_servers.mast-agent.args":["mcp"]' \
+    && has "$thread_line" '"mcp_servers.mast-agent.env":{"MAST_AGENT_TOKEN":"tok-1"}'; then
     emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:yes"}}'
   elif has "$thread_line" 'mcp_servers'; then
     emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-1","delta":"tools:partial"}}'
