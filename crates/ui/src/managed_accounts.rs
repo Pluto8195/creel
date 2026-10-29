@@ -15,11 +15,11 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, Focusable, SharedString, Subscription, Task, Window,
     div, prelude::*, px,
 };
-use zeron_proto::{
+use mast_proto::{
     AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, ManagedAccount,
     ManagedAccountsSnapshot,
 };
-use zeron_rpc::methods;
+use mast_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::popover;
@@ -808,7 +808,7 @@ pub fn account_pill(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{ChatAccountPin, ProjectAccountDefault};
+    use mast_proto::{ChatAccountPin, ProjectAccountDefault};
 
     fn account(id: &str, harness: HarnessId, label: &str) -> ManagedAccount {
         ManagedAccount {

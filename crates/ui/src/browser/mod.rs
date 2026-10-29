@@ -415,9 +415,9 @@ impl BrowserSurface {
     /// browser (its address bar or page) or nowhere; a link opened from the
     /// transcript must not pull focus out of the composer.
     fn may_take_focus(&self, window: &Window, cx: &App) -> bool {
-        window.focused(cx).is_none_or(|focused| {
-            focused == self.focus || focused == self.address.focus_handle(cx)
-        })
+        window
+            .focused(cx)
+            .is_none_or(|focused| focused == self.focus || focused == self.address.focus_handle(cx))
     }
 
     pub fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {

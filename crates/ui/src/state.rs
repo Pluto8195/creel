@@ -783,7 +783,7 @@ pub struct AppState {
     pub(crate) work_outline_actions_override: Option<crate::work_outline::WorkOutlineActions>,
     /// Latest managed-accounts snapshot per owning device id (accounts are
     /// device-local).
-    pub managed_accounts: HashMap<String, zeron_proto::ManagedAccountsSnapshot>,
+    pub managed_accounts: HashMap<String, mast_proto::ManagedAccountsSnapshot>,
     #[cfg(test)]
     pub(crate) accounts_rpc_override: Option<crate::managed_accounts::ScriptedAccountsRpc>,
     /// Per bound Chat: the latest `ValidateExecutionConfiguration {chatId}`

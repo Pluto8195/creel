@@ -97,7 +97,7 @@ pub(crate) enum MenuAction {
     /// The sidebar's Remove project confirmation.
     DeleteSpace(String),
     /// Open the project agent-account picker for one harness.
-    ProjectAccount(String, zeron_proto::HarnessId),
+    ProjectAccount(String, mast_proto::HarnessId),
     /// Linear integration entries (`crate::linear::menu`).
     Linear(crate::linear::menu::LinearMenuAction),
     /// PR review sync entries (`crate::github::menu`).
@@ -274,7 +274,7 @@ pub(crate) struct SpaceRowMenu {
     pub up_blocked: Option<&'static str>,
     pub down_blocked: Option<&'static str>,
     /// Per-project agent account entries ("Claude account: Work…").
-    pub account_labels: Vec<(zeron_proto::HarnessId, String)>,
+    pub account_labels: Vec<(mast_proto::HarnessId, String)>,
 }
 
 /// The Space root's menu (a multi-Space Space row, or the single-Space
@@ -370,7 +370,7 @@ fn space_root_menu(
             .map(|(harness, label)| {
                 MenuEntry::new(
                     match harness {
-                        zeron_proto::HarnessId::Codex => "codex-account",
+                        mast_proto::HarnessId::Codex => "codex-account",
                         _ => "claude-account",
                     },
                     label.clone(),
@@ -471,8 +471,8 @@ impl OutlineView {
                                 state.managed_accounts_for(Some(&space.device_id))
                             });
                             [
-                                zeron_proto::HarnessId::ClaudeCode,
-                                zeron_proto::HarnessId::Codex,
+                                mast_proto::HarnessId::ClaudeCode,
+                                mast_proto::HarnessId::Codex,
                             ]
                             .into_iter()
                             .map(|h| {
@@ -1100,7 +1100,7 @@ mod tests {
             up_blocked: Some("Already the first project"),
             down_blocked: None,
             account_labels: vec![(
-                zeron_proto::HarnessId::Codex,
+                mast_proto::HarnessId::Codex,
                 "Codex account: Default\u{2026}".into(),
             )],
         };

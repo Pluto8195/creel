@@ -27,8 +27,8 @@ fi
 cd "$(git rev-parse --show-toplevel)"
 [ -d apps/zeron ] && git mv apps/zeron apps/mast
 [ -f crates/mcp/src/zeron.rs ] && git mv crates/mcp/src/zeron.rs crates/mcp/src/mast.rs
-[ -f crates/theme/src/bin/zeron-theme-import.rs ] &&
-  git mv crates/theme/src/bin/zeron-theme-import.rs crates/theme/src/bin/mast-theme-import.rs
+[ -f crates/theme/src/bin/mast-theme-import.rs ] &&
+  git mv crates/theme/src/bin/mast-theme-import.rs crates/theme/src/bin/mast-theme-import.rs
 git ls-files -z -- '*.rs' '*.toml' '*.sh' '*.yml' '*.md' |
   xargs -0 perl -pi -e "$SUBST"
 # The mcp wrapper type `Zeron` is only a type in the mcp crate.

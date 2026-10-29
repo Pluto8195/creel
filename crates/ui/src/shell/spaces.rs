@@ -1132,7 +1132,7 @@ mod pinned_session_tests {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: mast_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -6410,7 +6410,7 @@ impl Shell {
     pub(super) fn open_project_account_picker(
         &mut self,
         space_id: String,
-        harness: zeron_proto::HarnessId,
+        harness: mast_proto::HarnessId,
         cx: &mut Context<Self>,
     ) {
         self.close_space_menu(cx);
@@ -6479,14 +6479,14 @@ impl Shell {
             let closing = self.space_menu.closing_since();
             let rename_id = space_id.clone();
             let delete_id = space_id.clone();
-            let account_labels: Vec<(zeron_proto::HarnessId, String)> = {
+            let account_labels: Vec<(mast_proto::HarnessId, String)> = {
                 let state = self.state.read(cx);
                 let snapshot = state
                     .space_row(&space_id)
                     .and_then(|space| state.managed_accounts_for(Some(&space.device_id)));
                 [
-                    zeron_proto::HarnessId::ClaudeCode,
-                    zeron_proto::HarnessId::Codex,
+                    mast_proto::HarnessId::ClaudeCode,
+                    mast_proto::HarnessId::Codex,
                 ]
                 .into_iter()
                 .map(|h| {

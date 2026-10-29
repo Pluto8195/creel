@@ -1826,7 +1826,7 @@ mod tests {
     }
     type AccountCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 
-    fn accounts_snapshot() -> zeron_proto::ManagedAccountsSnapshot {
+    fn accounts_snapshot() -> mast_proto::ManagedAccountsSnapshot {
         serde_json::from_value(serde_json::json!({
             "accounts": [
                 { "id": "a1", "harness": "claude-code", "label": "Work", "signedIn": true,
@@ -1893,7 +1893,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(m, _)| m == zeron_rpc::methods::SET_PROJECT_ACCOUNT)
+            .filter(|(m, _)| m == mast_rpc::methods::SET_PROJECT_ACCOUNT)
             .cloned()
             .collect();
         assert_eq!(set.len(), 1, "{set:?}");

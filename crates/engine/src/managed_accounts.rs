@@ -5,7 +5,7 @@
 //! pinned to the account run their CLI with `CLAUDE_CONFIG_DIR` / `CODEX_HOME`
 //! pointing there, so each account has its own credentials, settings and
 //! session history and several can run at once. Mast never copies tokens: the
-//! CLI itself writes the login (see `zeron_harness::account_home`).
+//! CLI itself writes the login (see `mast_harness::account_home`).
 //!
 //! The Default account (no entry anywhere) means "no env override": the live
 //! `~/.claude` / `~/.codex`, untouched, exactly as before this module existed.
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{
+use mast_proto::{
     AgentLoginPoll, AgentLoginStatus, ChatAccountPin, HarnessId, ManagedAccount,
     ManagedAccountsSnapshot, ProjectAccountDefault,
 };
@@ -94,7 +94,7 @@ fn split_key(key: &str) -> Option<(&str, HarnessId)> {
 
 struct Login {
     account_id: String,
-    child: Arc<Mutex<Option<zeron_harness::process::Child>>>,
+    child: Arc<Mutex<Option<mast_harness::process::Child>>>,
     output: Arc<Mutex<String>>,
     exit: Arc<Mutex<Option<Option<i32>>>>,
     started: Instant,
@@ -352,9 +352,9 @@ impl ManagedAccounts {
         self.prepare_home(account.harness, &home)?;
         let mut command = self.login_command(account.harness, &home)?;
         command
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+            .stdin(mast_harness::process::Stdio::null())
+            .stdout(mast_harness::process::Stdio::piped())
+            .stderr(mast_harness::process::Stdio::piped());
         // Codex: the app opens the single authorization tab (as the global
         // Add account flow does), so mute the CLI's own browser open.
         #[cfg(unix)]
@@ -395,20 +395,20 @@ impl ManagedAccounts {
         &self,
         harness: HarnessId,
         home: &Path,
-    ) -> Result<zeron_harness::process::Command, EngineError> {
+    ) -> Result<mast_harness::process::Command, EngineError> {
         if let Some(exe) = self.config.login_executables.get(harness_slug(harness)) {
-            let mut cmd = zeron_harness::process::Command::new(exe);
+            let mut cmd = mast_harness::process::Command::new(exe);
             cmd.args(if harness == HarnessId::ClaudeCode {
                 vec!["auth", "login"]
             } else {
                 vec!["login"]
             });
-            zeron_harness::account_home::apply(&mut cmd, harness, Some(home));
+            mast_harness::account_home::apply(&mut cmd, harness, Some(home));
             return Ok(cmd);
         }
         let resolved = match harness {
-            HarnessId::ClaudeCode => zeron_harness::claude::login_command(home),
-            _ => zeron_harness::codex::login_command(home),
+            HarnessId::ClaudeCode => mast_harness::claude::login_command(home),
+            _ => mast_harness::codex::login_command(home),
         };
         resolved.map_err(|e| EngineError::Other(format!("The CLI was not found: {e}")))
     }

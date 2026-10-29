@@ -10,8 +10,8 @@
 //! 2.1.285 binary), so two homes never share credentials. [`CLAUDE_KEYCHAIN_ISOLATED`]
 //! is the switch the engine reads when it prepares a managed Claude home: when
 //! false it forces file credentials (`.credentials.json`, mode 0600) instead.
+use mast_proto::HarnessId;
 use std::path::Path;
-use zeron_proto::HarnessId;
 
 /// Phase 0 finding, see the module docs. Flip to `false` to make the engine
 /// force file credentials in managed Claude homes.
