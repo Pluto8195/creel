@@ -167,6 +167,14 @@ fn replay_reply(mutation: &WorkOutlineMutation) -> WorkOutlineMutateReply {
             instruction_id: Some(derive_id(&p.proposal_id, roles::INSTRUCTION)),
             ..Default::default()
         },
+        WorkOutlineMutation::SaveWorkItemTemplate(p) => WorkOutlineMutateReply {
+            template_id: Some(
+                p.template_id
+                    .clone()
+                    .unwrap_or_else(|| derive_id(&p.operation_id, roles::TEMPLATE)),
+            ),
+            ..Default::default()
+        },
         _ => WorkOutlineMutateReply::default(),
     }
 }

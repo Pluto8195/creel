@@ -56,6 +56,8 @@ fn item(id: &str, parent: Option<&str>) -> WorkItemView {
         external_sync_state: None,
         is_project: false,
         worker_destination_id: None,
+        template_id: None,
+        template_revision: None,
     }
 }
 

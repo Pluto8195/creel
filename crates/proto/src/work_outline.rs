@@ -108,6 +108,8 @@ pub mod roles {
     pub const ITEM: &str = "item";
     /// Milestone 4: `workItemInstructionProposals` row ids.
     pub const PROPOSAL: &str = "proposal";
+    /// Project templates: `workItemTemplates` row ids.
+    pub const TEMPLATE: &str = "template";
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -413,6 +415,14 @@ pub struct WorkItemView {
     /// project go (`workItems.workerDestinationId`), e.g. its "Tickets" child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_destination_id: Option<String>,
+    /// Project templates: the template this project was created from or last
+    /// reviewed against (`workItems.templateId`); it may be dangling (deleted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Project templates: the revision of `template_id` last applied or
+    /// reviewed (`workItems.templateRevision`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_revision: Option<u32>,
 }
 
 impl WorkItemView {
@@ -726,6 +736,10 @@ pub struct WorkOutlineSnapshot {
     /// no settings row or is unavailable.
     #[serde(default)]
     pub space_settings: WorkOutlineSpaceSettings,
+    /// Project templates of this Space (live rows), sorted by lowercase name
+    /// then id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<crate::work_outline_templates::WorkItemTemplateView>,
 }
 
 impl WorkOutlineSnapshot {
@@ -820,6 +834,7 @@ impl WorkOutlineSnapshot {
             && self.user_action_requests == other.user_action_requests
             && self.instruction_proposals == other.instruction_proposals
             && self.space_settings == other.space_settings
+            && self.templates == other.templates
     }
 
     /// The Linear issue reference of an item (provider `linear`, type
@@ -1047,6 +1062,10 @@ pub struct WorkItemChanges {
     /// project's own subtree; users only; absent = unchanged).
     #[serde(default, skip_serializing_if = "FieldPatch::is_unchanged")]
     pub worker_destination: FieldPatch<String>,
+    /// Set or clear the template link (users and system only; the template
+    /// must be live in the item's Space; absent = unchanged).
+    #[serde(default, skip_serializing_if = "FieldPatch::is_unchanged")]
+    pub template: FieldPatch<crate::work_outline_templates::WorkItemTemplateLink>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1369,6 +1388,9 @@ pub enum WorkOutlineMutation {
     // ── PR review sync ──
     SetPrReviewSyncDestination(SetPrReviewSyncDestinationParams),
     SetLinearAssignedDestination(SetLinearAssignedDestinationParams),
+    // ── Project templates ──
+    SaveWorkItemTemplate(crate::work_outline_templates::SaveWorkItemTemplateParams),
+    DeleteWorkItemTemplate(crate::work_outline_templates::DeleteWorkItemTemplateParams),
 }
 
 impl WorkOutlineMutation {
@@ -1403,6 +1425,8 @@ impl WorkOutlineMutation {
             Self::LinkLinearProject(p) => &p.operation_id,
             Self::SetPrReviewSyncDestination(p) => &p.operation_id,
             Self::SetLinearAssignedDestination(p) => &p.operation_id,
+            Self::SaveWorkItemTemplate(p) => &p.operation_id,
+            Self::DeleteWorkItemTemplate(p) => &p.operation_id,
         }
     }
 
@@ -1437,6 +1461,8 @@ impl WorkOutlineMutation {
             Self::LinkLinearProject(_) => "linkLinearProject",
             Self::SetPrReviewSyncDestination(_) => "setPrReviewSyncDestination",
             Self::SetLinearAssignedDestination(_) => "setLinearAssignedDestination",
+            Self::SaveWorkItemTemplate(_) => "saveWorkItemTemplate",
+            Self::DeleteWorkItemTemplate(_) => "deleteWorkItemTemplate",
         }
     }
 
@@ -1494,6 +1520,9 @@ pub struct WorkOutlineMutateReply {
     pub user_action_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal_id: Option<String>,
+    /// `saveWorkItemTemplate`: the saved template's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
 }
 
 impl WorkOutlineMutateReply {
@@ -1971,6 +2000,7 @@ mod tests {
             external_sync_state: None,
             is_project: None,
             worker_destination: FieldPatch::Unchanged,
+            template: FieldPatch::Unchanged,
         };
         round_trip(
             &all,
@@ -2024,6 +2054,8 @@ mod tests {
                 external_sync_state: None,
                 is_project: false,
                 worker_destination_id: None,
+                template_id: None,
+                template_revision: None,
             }],
             assignments: vec![WorkItemChatAssignmentView {
                 chat_id: "chat-1".into(),
@@ -2065,6 +2097,7 @@ mod tests {
             user_action_requests: Vec::new(),
             instruction_proposals: Vec::new(),
             space_settings: Default::default(),
+            templates: Vec::new(),
         };
         let actor_json =
             json!({"kind":"agent","deviceId":"dev-1","chatId":"chat-1","messageId":"msg-1"});
@@ -2363,6 +2396,7 @@ mod tests {
                     external_sync_state: None,
                     is_project: None,
                     worker_destination: FieldPatch::Unchanged,
+                    template: FieldPatch::Unchanged,
                 },
                 operation_id: "op".into(),
             }),

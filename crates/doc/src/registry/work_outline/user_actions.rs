@@ -1033,7 +1033,10 @@ impl RegistryDoc {
             };
             if in_scope(work_item_id).is_ok()
                 || work_item_id == project
-                || tree.descendants(&project).iter().any(|id| id == work_item_id)
+                || tree
+                    .descendants(&project)
+                    .iter()
+                    .any(|id| id == work_item_id)
             {
                 Ok(())
             } else {
@@ -1089,7 +1092,10 @@ impl RegistryDoc {
                 let status_only = changes.title.is_none()
                     && changes.description.is_unchanged()
                     && changes.inherit_parent_instructions.is_none()
-                    && changes.external_sync_state.is_none();
+                    && changes.external_sync_state.is_none()
+                    && changes.is_project.is_none()
+                    && changes.worker_destination.is_unchanged()
+                    && changes.template.is_unchanged();
                 if !status_only {
                     return Err(unauthorized("Agents may only change a work item's status"));
                 }
