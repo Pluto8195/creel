@@ -323,10 +323,6 @@ impl ArtifactQuestionSync {
                 ),
                 info.join("\n"),
                 key,
-                format!(
-                    "artq\0{}\0{}\0{}",
-                    artifact.id, q.id, artifact.current_revision
-                ),
             ) as usize;
         }
 
@@ -381,12 +377,6 @@ impl ArtifactQuestionSync {
                 truncate(&rollup_text, user_action_limits::MAX_REQUEST_TEXT_CHARS),
                 rollup_info_full,
                 rollup_k,
-                format!(
-                    "artq-rollup\0{}\0{}\0{}",
-                    artifact.id,
-                    artifact.current_revision,
-                    derive_id(&rollup_info, "rollup")
-                ),
             ) as usize;
         }
         changes
@@ -466,18 +456,23 @@ impl ArtifactQuestionSync {
         text: String,
         info: String,
         dedupe_key: String,
-        operation_seed: String,
     ) -> bool {
+        // The operation id covers every input the write stores, so a changed
+        // payload (new origin, retitled plan, new revision) is a new write and
+        // an unchanged one replays idempotently instead of `operationConflict`.
+        let info = truncate(&info, user_action_limits::MAX_REQUEST_INFO_CHARS);
+        let dedupe_key = truncate(&dedupe_key, user_action_limits::MAX_DEDUPE_KEY_CHARS);
+        let operation_seed = format!(
+            "artq\0{item}\0{dedupe_key}\0{:?}\0{}\0{text}\0{info}",
+            origin.kind, origin.chat_id
+        );
         let mutation =
             WorkOutlineMutation::CreateUserActionRequest(CreateUserActionRequestParams {
                 work_item_id: item.to_owned(),
                 origin: origin.clone(),
                 text,
-                info: Some(truncate(&info, user_action_limits::MAX_REQUEST_INFO_CHARS)),
-                dedupe_key: Some(truncate(
-                    &dedupe_key,
-                    user_action_limits::MAX_DEDUPE_KEY_CHARS,
-                )),
+                info: Some(info),
+                dedupe_key: Some(dedupe_key),
                 operation_id: derive_id(&operation_seed, "artq"),
             });
         self.apply(mutation)

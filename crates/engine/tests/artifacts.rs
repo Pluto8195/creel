@@ -1361,6 +1361,38 @@ async fn blocking_questions_own_actions_and_the_rest_roll_up_without_duplicates(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn recreating_a_request_with_a_changed_origin_gets_a_new_operation_id() {
+    use mast_proto::ResolveUserActionRequestParams;
+    use mast_proto::work_outline::WorkOutlineMutation;
+    let rig = rig().await;
+    let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
+    let id = publish_plan(&rig, PLAN_V1, "v1").await;
+    sync.reconcile(&id);
+    let outline = mast_engine::work_outline::WorkOutlineService::new(rig.core.workspace.clone());
+    let actor = outline.system_actor();
+    let q1 = requests(&rig, &id)
+        .into_iter()
+        .find(|r| r.text.starts_with("Q-1"))
+        .unwrap();
+    outline
+        .mutate_as(
+            &WorkOutlineMutation::ResolveUserActionRequest(ResolveUserActionRequestParams {
+                user_action_request_id: q1.id.clone(),
+                note: Some("closed by the system".into()),
+                operation_id: "test-close-q1".into(),
+            }),
+            &actor,
+        )
+        .unwrap();
+    // The publishing chat goes away, so the next request has another origin
+    // but the same artifact, question and revision.
+    rig.core.workspace.set_chat_archived(CHAT, true).unwrap();
+    assert!(sync.reconcile(&id) > 0, "the changed request must be written");
+    let open = open_texts(&rig, &id);
+    assert!(open.contains(&"Q-1: Merge by MPN?".to_owned()), "{open:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn answering_in_the_card_resolves_the_action_and_reaches_the_agent() {
     let rig = rig().await;
     let sync = ArtifactQuestionSync::new(rig.core.artifacts.clone());
