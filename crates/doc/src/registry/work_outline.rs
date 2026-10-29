@@ -436,6 +436,43 @@ impl RegistryDoc {
         base.max(self.kinds_generation(&[KIND_SPACES, KIND_CHATS, KIND_SESSIONS]))
     }
 
+    /// Change marker of the outline kinds plus Spaces, without the Chat and
+    /// session rows (those are covered by
+    /// [`Self::work_outline_chat_session_fingerprint`], which ignores writes
+    /// the outline cannot see).
+    pub fn work_outline_structure_generation(&self) -> u64 {
+        self.kinds_generation(WORK_OUTLINE_KINDS)
+            .max(self.kinds_generation(&[KIND_SPACES]))
+    }
+
+    /// Hash of exactly the Chat and session fields [`Self::work_outline_inputs`]
+    /// reads for `space_id`: the Space's Chats' `(id, spaceId, archived)` and
+    /// every reported `executionSession`. Heartbeats, transcript appends,
+    /// titles and `lastSeenAt` leave it unchanged. Equal fingerprint and
+    /// [`Self::work_outline_structure_generation`] ⇒ equal inputs.
+    pub fn work_outline_chat_session_fingerprint(&self, space_id: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut chats: Vec<(String, bool)> = Vec::new();
+        self.visit_rows(KIND_CHATS, |row| {
+            if row.fields.get("spaceId").and_then(Value::as_str) == Some(space_id) {
+                let archived = row.fields.get("archived").and_then(Value::as_bool);
+                chats.push((row.id.clone(), archived.unwrap_or(false)));
+            }
+        });
+        chats.sort();
+        chats.hash(&mut hasher);
+        let mut sessions: Vec<(String, String)> = Vec::new();
+        self.visit_rows(KIND_SESSIONS, |row| {
+            if let Some(report) = row.fields.get("executionSession").filter(|v| v.is_object()) {
+                sessions.push((row.id.clone(), report.to_string()));
+            }
+        });
+        sessions.sort();
+        sessions.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Change marker of the outline kinds alone (work items, Required Actions,
     /// planning artifacts; no chat or session churn).
     pub fn work_outline_kinds_generation(&self) -> u64 {

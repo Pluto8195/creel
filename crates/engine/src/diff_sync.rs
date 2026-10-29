@@ -1423,6 +1423,57 @@ fn split_z(value: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Number of NUL-separated path fields that follow a raw record's header
+/// for status letter `status` (renames and copies carry two).
+fn raw_path_fields(status: &str) -> usize {
+    if status.starts_with('R') || status.starts_with('C') {
+        2
+    } else {
+        1
+    }
+}
+
+/// Split the output of `git diff --raw --numstat -z` into its raw block and
+/// its numstat block (raw records start with `:`; a record's path fields are
+/// consumed by count, so a path that begins with `:` cannot end the block).
+fn split_raw_numstat(value: &[u8]) -> (&[u8], &[u8]) {
+    let mut offset = 0usize;
+    while value.get(offset) == Some(&b':') {
+        let Some(end) = value[offset..].iter().position(|b| *b == 0) else {
+            return (value, &[]);
+        };
+        let header = String::from_utf8_lossy(&value[offset..offset + end]);
+        let status = header.rsplit(' ').next().unwrap_or_default().to_owned();
+        offset += end + 1;
+        for _ in 0..raw_path_fields(&status) {
+            match value[offset.min(value.len())..].iter().position(|b| *b == 0) {
+                Some(end) => offset += end + 1,
+                None => return (value, &[]),
+            }
+        }
+    }
+    (&value[..offset], &value[offset..])
+}
+
+/// `--name-status -z` bytes rebuilt from a `--raw -z` block.
+fn raw_to_name_status(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() / 4);
+    let mut fields = raw.split(|b| *b == 0).filter(|f| !f.is_empty());
+    while let Some(header) = fields.next() {
+        let header = String::from_utf8_lossy(header);
+        let status = header.rsplit(' ').next().unwrap_or_default();
+        out.extend_from_slice(status.as_bytes());
+        out.push(0);
+        for _ in 0..raw_path_fields(status) {
+            if let Some(path) = fields.next() {
+                out.extend_from_slice(path);
+                out.push(0);
+            }
+        }
+    }
+    out
+}
+
 fn parse_name_status(value: &[u8]) -> Vec<DiffFileSummary> {
     let fields = split_z(value);
     let mut out = Vec::new();
@@ -2240,23 +2291,15 @@ pub async fn capture_diff_against(
         .await
         .unwrap_or_else(|_| "HEAD".into());
 
-    let names = capture_git(
-        root,
-        &["diff", "--name-status", "-z", "--find-renames", base, "--"],
-        2 * 1024 * 1024,
-    )
-    .await?;
-    let nums = capture_git(
-        root,
-        &["diff", "--numstat", "-z", "--find-renames", base, "--"],
-        2 * 1024 * 1024,
-    )
-    .await?;
-    let raw = capture_git(
+    // One process answers three questions: `--raw` (modes, ids, status), its
+    // name-status view and `--numstat`. Git prints the raw block first, then
+    // the numstat block.
+    let combined = capture_git(
         root,
         &[
             "diff",
             "--raw",
+            "--numstat",
             "-z",
             "--no-abbrev",
             "--find-renames",
@@ -2266,6 +2309,19 @@ pub async fn capture_diff_against(
         2 * 1024 * 1024,
     )
     .await?;
+    let (raw_bytes, num_bytes) = split_raw_numstat(&combined.stdout);
+    let names = Capture {
+        stdout: raw_to_name_status(raw_bytes),
+        truncated: combined.truncated,
+    };
+    let nums = Capture {
+        stdout: num_bytes.to_vec(),
+        truncated: combined.truncated,
+    };
+    let raw = Capture {
+        stdout: raw_bytes.to_vec(),
+        truncated: combined.truncated,
+    };
     let tracked = capture_git(
         root,
         &[

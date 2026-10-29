@@ -973,6 +973,21 @@ impl RegistryDoc {
             .collect()
     }
 
+    /// Visit every live row of `kind` (overlay applied). Reads stored rows in
+    /// place when nothing queued touches the kind, else falls back to
+    /// [`Self::overlay_rows`]; row order is unspecified.
+    fn visit_rows(&self, kind: &str, mut visit: impl FnMut(&RegistryRow)) {
+        let queued = self
+            .pending
+            .iter()
+            .any(|batch| batch.ops.iter().any(|op| op.kind == kind));
+        if queued {
+            self.overlay_rows(kind).iter().for_each(visit);
+        } else if let Some(by_id) = self.authoritative.get(kind) {
+            by_id.values().filter(|row| !row.deleted).for_each(visit);
+        }
+    }
+
     fn read_kind<T: serde::de::DeserializeOwned>(&self, kind: &str) -> Vec<T> {
         let mut out = Vec::new();
         // Nothing queued touches this kind (the local profile settles its
