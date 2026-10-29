@@ -549,6 +549,8 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   in the engine (list/dismiss/resume RPCs): "Restarted HH:MM · N interrupted" with Resume, Dismiss,
   Resume all. "Idle + background process" is rendered but the engine doesn't track background
   processes yet.
+  Titlebar layout fix (`fix-titlebar-lamp-overlap`): `TITLEBAR_TRAILING_SLOTS_WIDTH` always reserves the
+  + and lamp slots, so titles never start under the lamp and the lamp's position is stable on every route.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
