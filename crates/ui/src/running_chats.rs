@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use mast_proto::{InterruptedOutcome, InterruptedRun};
 
 /// Above this many chats the list folds: children collapse under their
 /// coordinator and every Space after the second collapses to one line.
@@ -317,6 +318,71 @@ pub fn reconcile(snapshot: &Snapshot, selected: Option<&str>) -> Option<String> 
         .filter(|key| snapshot.find(key).is_some())
         .map(str::to_owned)
         .or_else(|| snapshot.entries().next().map(Entry::key))
+}
+
+/// One chat in the post-restart "Interrupted" block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedRow {
+    pub chat_id: String,
+    pub title: String,
+    pub outcome: InterruptedOutcome,
+}
+
+/// "Restarted 09:41 · 4 interrupted": what the engine's ledger says happened
+/// to turns a restart cut off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedBlock {
+    /// When the earliest listed interruption was recorded (epoch ms).
+    pub restarted_at_ms: i64,
+    /// Picked back up by boot recovery; clears when the turn completes.
+    pub resumed: Vec<InterruptedRow>,
+    /// Auto-resume exhausted or too old: waiting on a one-click decision.
+    pub needs_decision: Vec<InterruptedRow>,
+}
+
+impl InterruptedBlock {
+    pub fn total(&self) -> usize {
+        self.resumed.len() + self.needs_decision.len()
+    }
+}
+
+/// Group the ledger for display. `title_of` is `None` for a chat that no
+/// longer exists or is archived; those entries are left out.
+pub fn interrupted_block(
+    runs: &[InterruptedRun],
+    title_of: impl Fn(&str) -> Option<String>,
+) -> Option<InterruptedBlock> {
+    let mut block = InterruptedBlock {
+        restarted_at_ms: i64::MAX,
+        resumed: Vec::new(),
+        needs_decision: Vec::new(),
+    };
+    for run in runs {
+        let Some(title) = title_of(&run.chat_id) else {
+            continue;
+        };
+        block.restarted_at_ms = block.restarted_at_ms.min(run.interrupted_at_ms);
+        let row = InterruptedRow {
+            chat_id: run.chat_id.clone(),
+            title,
+            outcome: run.outcome,
+        };
+        match run.outcome {
+            InterruptedOutcome::Resumed => block.resumed.push(row),
+            InterruptedOutcome::Exhausted | InterruptedOutcome::Stale => {
+                block.needs_decision.push(row)
+            }
+        }
+    }
+    (block.total() > 0).then_some(block)
+}
+
+pub fn outcome_label(outcome: InterruptedOutcome) -> &'static str {
+    match outcome {
+        InterruptedOutcome::Resumed => "resumed automatically",
+        InterruptedOutcome::Exhausted => "auto-resume exhausted",
+        InterruptedOutcome::Stale => "too old to resume automatically",
+    }
 }
 
 #[cfg(test)]

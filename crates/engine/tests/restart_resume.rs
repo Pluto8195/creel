@@ -730,6 +730,136 @@ async fn persistent_session_serves_multiple_turns_on_one_child() {
     core.shutdown().await;
 }
 
+/// Manufacture a kill -9 mid-turn a minute ago (inside the 12h revival
+/// window) under `dir`, with `attempts` revivals already spent.
+fn seed_fresh_crash(dir: &std::path::Path, attempts: u32) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("device-id"), "dev-crash").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    {
+        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let doc = SessionDoc::init(CHAT).unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "msg-user-1".into(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "long task".into(),
+            }],
+            created_at: now - 60_000,
+            device_id: "dev-crash".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "msg-assistant-1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "partial…".into(),
+            }],
+            created_at: now - 30_000,
+            device_id: "dev-crash".into(),
+            status: Some(MessageStatus::Streaming),
+            continuation_of: None,
+        })
+        .unwrap();
+        store
+            .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
+            .unwrap();
+
+        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::SessionStarted {
+                    harness: HarnessId::Mock,
+                    model: "mock-1".into(),
+                    tools: vec![],
+                    cwd: "/tmp".into(),
+                    session_id: "hs-crash".into(),
+                    assistant_message_id: "msg-assistant-1".into(),
+                },
+            )
+            .unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::TextDelta {
+                    text: "partial…".into(),
+                },
+            )
+            .unwrap();
+        for _ in 0..attempts {
+            journal.note_resume_attempt(CHAT);
+        }
+    }
+}
+
+#[tokio::test]
+async fn exhausted_revivals_are_recorded_and_resumed_on_demand() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    seed_fresh_crash(&dir, 3);
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-crash".into(),
+            fail_starts: Default::default(),
+        },
+    );
+    let ledger = core.sessions.interrupted_runs();
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].chat_id, CHAT);
+    assert_eq!(ledger[0].outcome, mast_proto::InterruptedOutcome::Exhausted);
+    assert!(
+        requests.lock().unwrap().iter().all(|r| r.prompt != "long task"),
+        "an exhausted budget is not auto-resumed"
+    );
+
+    // One click re-sends the last message and clears the entry once it completes.
+    assert!(core.sessions.resume_interrupted(CHAT));
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "the manually resumed turn to complete",
+    )
+    .await;
+    assert!(requests.lock().unwrap().iter().any(|r| r.prompt == "long task"));
+    wait_for(
+        || core.sessions.interrupted_runs().is_empty(),
+        "the ledger entry to clear on completion",
+    )
+    .await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn dismissing_an_interrupted_run_clears_it_without_resuming() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    seed_fresh_crash(&dir, 3);
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-crash".into(),
+            fail_starts: Default::default(),
+        },
+    );
+    assert_eq!(core.sessions.interrupted_runs().len(), 1);
+    core.sessions.dismiss_interrupted(CHAT);
+    assert!(core.sessions.interrupted_runs().is_empty());
+    assert!(!core.sessions.resume_interrupted("no-such-chat"));
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
     let tmp = tempfile::tempdir().unwrap();
@@ -921,6 +1051,11 @@ async fn graceful_shutdown_mid_turn_marks_and_resumes_on_boot() {
         Some("hs-before-graceful-restart")
     );
     assert!(!journal.graceful_restart_marked(CHAT));
+    wait_for(
+        || journal.interrupted_runs().is_empty(),
+        "the resumed turn's ledger entry to clear",
+    )
+    .await;
     core.shutdown().await;
 }
 

@@ -56,6 +56,14 @@ pub mod methods {
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`; IPC-only.
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
+    /// Chats whose turn a restart or crash interrupted, with what boot
+    /// recovery did about each. No params; replies `InterruptedRun[]`. IPC-only.
+    pub const LIST_INTERRUPTED_RUNS: &str = "ListInterruptedRuns";
+    /// Forget one ledger entry. Params `{chatId}`. IPC-only.
+    pub const DISMISS_INTERRUPTED_RUN: &str = "DismissInterruptedRun";
+    /// One-click Resume/Resend: re-dispatch the last user message on the saved
+    /// harness session. Params `{chatId}`; replies `{resumed}`. IPC-only.
+    pub const RESUME_INTERRUPTED_RUN: &str = "ResumeInterruptedRun";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
     /// device sees the same queue. `{ chatId }` → `{ items: QueuedMessage[] }`.

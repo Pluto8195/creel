@@ -203,3 +203,35 @@ fn elapsed_formats() {
     assert_eq!(format_elapsed(7200), "2h");
     assert_eq!(format_elapsed(90_000), "1d 1h");
 }
+
+fn run(id: &str, at: i64, outcome: InterruptedOutcome) -> InterruptedRun {
+    InterruptedRun {
+        chat_id: id.into(),
+        interrupted_at_ms: at,
+        outcome,
+    }
+}
+
+#[test]
+fn interrupted_block_splits_resumed_from_needs_a_decision() {
+    let runs = [
+        run("a", 300, InterruptedOutcome::Resumed),
+        run("b", 100, InterruptedOutcome::Exhausted),
+        run("gone", 50, InterruptedOutcome::Resumed),
+        run("c", 200, InterruptedOutcome::Stale),
+    ];
+    let titles = |id: &str| (id != "gone").then(|| format!("Chat {id}"));
+    let block = interrupted_block(&runs, titles).unwrap();
+    assert_eq!(block.restarted_at_ms, 100, "deleted chats do not count");
+    assert_eq!(block.total(), 3);
+    assert_eq!(block.resumed[0].title, "Chat a");
+    let decide: Vec<_> = block.needs_decision.iter().map(|r| r.chat_id.as_str()).collect();
+    assert_eq!(decide, ["b", "c"]);
+}
+
+#[test]
+fn an_empty_or_fully_stale_ledger_has_no_block() {
+    assert_eq!(interrupted_block(&[], |_| Some("x".into())), None);
+    let runs = [run("a", 1, InterruptedOutcome::Resumed)];
+    assert_eq!(interrupted_block(&runs, |_| None), None);
+}
