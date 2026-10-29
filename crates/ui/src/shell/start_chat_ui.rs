@@ -2574,6 +2574,139 @@ mod tests {
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
     }
 
+    fn seed_accounts(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, with_account: bool) {
+        use mast_proto::{
+            HarnessId, ManagedAccount, ManagedAccountsSnapshot, ProjectAccountDefault,
+        };
+        let snapshot = if with_account {
+            ManagedAccountsSnapshot {
+                accounts: vec![ManagedAccount {
+                    id: "a1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    label: "Work".into(),
+                    email: Some("work@example.com".into()),
+                    signed_in: true,
+                    plan_label: None,
+                    usage_windows: Vec::new(),
+                }],
+                project_defaults: vec![ProjectAccountDefault {
+                    space_id: "s1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    account_id: Some("a1".into()),
+                }],
+                ..Default::default()
+            }
+        } else {
+            ManagedAccountsSnapshot::default()
+        };
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.set_managed_accounts(Some("d"), snapshot);
+            })
+        });
+    }
+
+    fn start_with_prompt(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        text: &str,
+    ) {
+        let prompt = shell.read_with(cx, |shell, cx| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            dialog.input_focus(cx)
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&prompt, cx);
+        });
+        draw(cx);
+        cx.simulate_input(text);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+    }
+
+    /// The account chip names the project's default; picking another account
+    /// overrides it for this one chat and Start sends the pick.
+    #[gpui::test]
+    fn start_chat_account_chip_overrides_the_project_default_for_one_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        seed_accounts(&shell, cx, true);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-account").is_some());
+        assert!(
+            cx.debug_bounds("start-chat-account-0").is_none(),
+            "closed until the chip is clicked"
+        );
+        click(cx, "start-chat-account-chip");
+        draw(cx);
+        // Default, then the one managed account.
+        assert!(cx.debug_bounds("start-chat-account-0").is_some());
+        assert!(cx.debug_bounds("start-chat-account-1").is_some());
+        assert!(cx.debug_bounds("start-chat-account-2").is_none());
+        click(cx, "start-chat-account-0");
+        draw(cx);
+        shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            assert_eq!(dialog.account_choice, Some(None), "Default, this chat only");
+            assert!(!dialog.account_open);
+        });
+        start_with_prompt(&shell, cx, "Ship it");
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0]["accountId"], "", "empty = the Default login");
+    }
+
+    /// Without an override the launch carries no account (the project's
+    /// default resolves at the first run), and with no managed accounts the
+    /// chip stays out of the dialog.
+    #[gpui::test]
+    fn start_chat_without_an_override_sends_no_account(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        seed_accounts(&shell, cx, false);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-account").is_none());
+        start_with_prompt(&shell, cx, "Ship it");
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert!(creates[0].get("accountId").is_none());
+    }
+
     type PrCalls = Arc<Mutex<Vec<serde_json::Value>>>;
 
     /// Answer `StartPrReview` from `answer`, recording every request.
