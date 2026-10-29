@@ -265,3 +265,53 @@ async fn bench_registry_session_heartbeat_publish() {
         t.elapsed().as_secs_f64() * 1000.0 / n as f64
     );
 }
+
+/// Journal scans on a copy of the real journals directory
+/// (`$MAST_PERF_REAL_COPY/profiles/local/journals`; copy it with
+/// `cp -c -R ~/.zeron/profiles/local/journals ...`, read-only on the source).
+#[test]
+#[ignore = "benchmark: needs MAST_PERF_REAL_COPY"]
+fn bench_journal_scans_real_copy() {
+    let Some(dir) = std::env::var_os("MAST_PERF_REAL_COPY") else {
+        eprintln!("BENCH journal | MAST_PERF_REAL_COPY not set, skipped");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir).join("profiles/local/journals");
+    let total: u64 = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.metadata().ok())
+        .map(|m| m.len())
+        .sum();
+    let biggest = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .max_by_key(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+        .unwrap();
+    let biggest_id = biggest
+        .path()
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    eprintln!(
+        "BENCH journal | dir bytes={total} biggest={} bytes",
+        biggest.metadata().unwrap().len()
+    );
+    let journal = mast_engine::RunJournal::open(&dir).unwrap();
+    for n in 1..=2 {
+        let stale = bench(
+            &format!("stale_sessions() over every journal (run {n})"),
+            || journal.stale_sessions().unwrap(),
+        );
+        eprintln!("BENCH journal | stale={}", stale.len());
+    }
+    bench("last_event() of the biggest journal", || {
+        journal.last_event(&biggest_id).unwrap()
+    });
+    // First append to a chat re-scans its journal for the next seq.
+    let event = mast_proto::AgentEvent::TextDelta { text: "x".into() };
+    bench("first append() to the biggest journal (scan_tail)", || {
+        journal.append(&biggest_id, &event).unwrap()
+    });
+}
