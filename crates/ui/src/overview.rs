@@ -10806,3 +10806,7 @@ mod logic_tests {
         include!("work_outline/compact_rows_tests.rs");
     }
 }
+
+#[cfg(test)]
+#[path = "perf/overview_bench.rs"]
+mod perf_bench;

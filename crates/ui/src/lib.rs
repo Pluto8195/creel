@@ -57,6 +57,8 @@ pub(crate) mod observe_gate;
 pub mod overview;
 pub mod overview_grouping;
 pub mod overview_positions;
+#[cfg(test)]
+mod perf;
 pub mod pickers;
 pub mod popover;
 pub(crate) mod pr_page;
@@ -67,6 +69,9 @@ pub mod rail;
 mod review_chats;
 pub mod settings;
 pub mod shell;
+#[cfg(test)]
+#[global_allocator]
+static COUNTING_ALLOC: perf::CountingAlloc = perf::CountingAlloc;
 pub mod sound;
 pub mod state;
 pub mod status_light;

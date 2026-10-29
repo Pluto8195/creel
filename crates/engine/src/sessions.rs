@@ -359,8 +359,7 @@ impl SessionsEngine {
         part_id: &str,
         is_diff: bool,
     ) -> Result<Option<String>, EngineError> {
-        let events = self.inner.journal.replay(chat_id, 0)?;
-        for (_, mut event) in events.into_iter().rev() {
+        let found = self.inner.journal.find_rev(chat_id, |_, mut event| {
             // Subagent traffic is journaled on the parent chat wrapped in one
             // or more routing envelopes. Its thin child doc uses the leaf
             // tool id for the same sidecar contract, so unwrap all envelopes.
@@ -371,20 +370,20 @@ impl SessionsEngine {
                 id, output, diff, ..
             } = event
             else {
-                continue;
+                return None;
             };
             if id != part_id {
-                continue;
+                return None;
             }
-            if is_diff {
-                return diff
-                    .map(|diff| serde_json::to_string(&diff))
+            Some(if is_diff {
+                diff.map(|diff| serde_json::to_string(&diff))
                     .transpose()
-                    .map_err(|err| EngineError::Other(format!("tool diff serialize: {err}")));
-            }
-            return Ok(output.filter(|text| !text.trim().is_empty()));
-        }
-        Ok(None)
+                    .map_err(|err| EngineError::Other(format!("tool diff serialize: {err}")))
+            } else {
+                Ok(output.filter(|text| !text.trim().is_empty()))
+            })
+        })?;
+        found.unwrap_or(Ok(None))
     }
 
     /// Bind generated-image intake to the same profile store used by attachment RPCs.
@@ -1356,7 +1355,8 @@ impl SessionsEngine {
             if chat.device_id != self.inner.device_id {
                 continue;
             }
-            let events = self.inner.journal.replay(&chat.id, 0)?;
+            // Only the final turn matters; don't parse the whole journal.
+            let events = self.inner.journal.replay_last_turn(&chat.id)?;
             let Some(tail) = completed_journal_tail(&events) else {
                 continue;
             };
@@ -1703,13 +1703,15 @@ impl Inner {
     /// The model of the newest `SessionStarted` in the chat's journal that
     /// reported one.
     fn journal_actual_model(&self, chat_id: &str) -> Option<String> {
-        let events = self.journal.replay(chat_id, 0).ok()?;
-        events.into_iter().rev().find_map(|(_, event)| match event {
-            AgentEvent::SessionStarted { harness, model, .. } => {
-                reported_model(harness, &model).map(str::to_owned)
-            }
-            _ => None,
-        })
+        self.journal
+            .find_rev(chat_id, |_, event| match event {
+                AgentEvent::SessionStarted { harness, model, .. } => {
+                    reported_model(harness, &model).map(str::to_owned)
+                }
+                _ => None,
+            })
+            .ok()
+            .flatten()
     }
 
     // NB: there is deliberately no `forget_harness_session` anymore. The old
@@ -1845,35 +1847,13 @@ impl Inner {
     /// the cwd of the `SessionStarted` that governs it. `Done.session_id`
     /// inherits the cwd of the most recent `SessionStarted` (same run).
     fn journal_harness_session(&self, chat_id: &str) -> Option<(String, String)> {
-        let events = match self.journal.replay(chat_id, 0) {
-            Ok(events) => events,
+        match harness_session_in_journal(&self.journal, chat_id) {
+            Ok(found) => found,
             Err(err) => {
                 tracing::warn!(chat = %chat_id, error = %err, "journal scan for harness session failed");
-                return None;
-            }
-        };
-        let mut current_cwd = String::new();
-        let mut found: Option<(String, String)> = None;
-        for (_, event) in events {
-            match event {
-                AgentEvent::SessionStarted {
-                    session_id, cwd, ..
-                } => {
-                    current_cwd = cwd;
-                    if !session_id.is_empty() {
-                        found = Some((session_id, current_cwd.clone()));
-                    }
-                }
-                AgentEvent::Done {
-                    session_id: Some(session_id),
-                    ..
-                } if !session_id.is_empty() => {
-                    found = Some((session_id, current_cwd.clone()));
-                }
-                _ => {}
+                None
             }
         }
-        found
     }
 
     /// An Execution Session started: record what its native session received
@@ -2152,6 +2132,35 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
 struct CompletedJournalTail {
     assistant_message_id: String,
     parts: Vec<MessagePart>,
+}
+
+/// [`Inner::journal_harness_session`]'s search, newest first. A
+/// `SessionStarted` carrying an id wins on its own (its cwd is its own); a
+/// `Done` carrying one waits for the nearest earlier `SessionStarted` (any,
+/// even without an id) for its cwd.
+fn harness_session_in_journal(
+    journal: &RunJournal,
+    chat_id: &str,
+) -> Result<Option<(String, String)>, crate::run_journal::JournalError> {
+    let mut waiting: Option<String> = None;
+    let found = journal.find_rev(chat_id, |_, event| match event {
+        AgentEvent::SessionStarted {
+            session_id, cwd, ..
+        } => match waiting.take() {
+            Some(done_session) => Some((done_session, cwd)),
+            None if !session_id.is_empty() => Some((session_id, cwd)),
+            None => None,
+        },
+        AgentEvent::Done {
+            session_id: Some(session_id),
+            ..
+        } if waiting.is_none() && !session_id.is_empty() => {
+            waiting = Some(session_id);
+            None
+        }
+        _ => None,
+    })?;
+    Ok(found.or_else(|| waiting.map(|session| (session, String::new()))))
 }
 
 /// Rebuild the journal's final completed top-level assistant segment. Provider
@@ -3470,6 +3479,97 @@ fn restart_marker_is_fresh(marked_at: i64, now: i64, freshness_ms: i64) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The backwards search agrees with the forward fold it replaced, over a
+    /// deterministic spread of session-event sequences (ids missing, cwds
+    /// changing, `Done`s with and without ids, no `SessionStarted` at all).
+    #[test]
+    fn harness_session_search_matches_the_forward_fold() {
+        fn forward(events: &[AgentEvent]) -> Option<(String, String)> {
+            let mut current_cwd = String::new();
+            let mut found = None;
+            for event in events {
+                match event {
+                    AgentEvent::SessionStarted {
+                        session_id, cwd, ..
+                    } => {
+                        current_cwd = cwd.clone();
+                        if !session_id.is_empty() {
+                            found = Some((session_id.clone(), current_cwd.clone()));
+                        }
+                    }
+                    AgentEvent::Done {
+                        session_id: Some(session_id),
+                        ..
+                    } if !session_id.is_empty() => {
+                        found = Some((session_id.clone(), current_cwd.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            found
+        }
+        let started = |id: &str, cwd: &str| AgentEvent::SessionStarted {
+            harness: HarnessId::Mock,
+            model: "m".into(),
+            tools: vec![],
+            cwd: cwd.into(),
+            session_id: id.into(),
+            assistant_message_id: "a".into(),
+        };
+        let done = |id: Option<&str>| AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: id.map(Into::into),
+        };
+        let text = || AgentEvent::TextDelta { text: "t".into() };
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        // Every sequence of up to 5 events drawn from this alphabet.
+        let alphabet: Vec<Box<dyn Fn() -> AgentEvent>> = vec![
+            Box::new(|| started("s1", "/one")),
+            Box::new(|| started("", "/two")),
+            Box::new(|| done(Some("d1"))),
+            Box::new(|| done(Some(""))),
+            Box::new(|| done(None)),
+            Box::new(text),
+        ];
+        let mut cases = 0;
+        let total = alphabet.len().pow(5) + alphabet.len().pow(4) + alphabet.len().pow(3);
+        for n in 0..total {
+            let len = if n < alphabet.len().pow(5) {
+                5
+            } else if n < alphabet.len().pow(5) + alphabet.len().pow(4) {
+                4
+            } else {
+                3
+            };
+            let mut code = n;
+            let events: Vec<AgentEvent> = (0..len)
+                .map(|_| {
+                    let event = alphabet[code % alphabet.len()]();
+                    code /= alphabet.len();
+                    event
+                })
+                .collect();
+            let chat = format!("chat-{n}");
+            for event in &events {
+                journal.append(&chat, event).unwrap();
+            }
+            assert_eq!(
+                harness_session_in_journal(&journal, &chat).unwrap(),
+                forward(&events),
+                "{events:?}"
+            );
+            cases += 1;
+        }
+        assert!(cases > 9000);
+        assert_eq!(
+            harness_session_in_journal(&journal, "missing").unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn full_tool_blobs_recover_from_the_latest_journal_result() {

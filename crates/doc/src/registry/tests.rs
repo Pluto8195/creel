@@ -1735,3 +1735,34 @@ fn settling_stops_at_a_server_and_rows_requeue_for_one() {
     assert_eq!(seed.clocks.as_ref(), Some(&row.clocks), "original clocks");
     assert_eq!(local.row(KIND_CHATS, "chat-0"), Some(row));
 }
+
+/// The in-place read (nothing pending for the kind) must parse exactly what
+/// the overlay path parses, with tombstones skipped.
+#[test]
+fn read_kind_in_place_matches_the_overlay_path() {
+    let mut doc = RegistryDoc::new("dev-a");
+    for i in 0..5 {
+        doc.upsert_chat(&chat(&format!("c{i}"), "dev-a")).unwrap();
+    }
+    assert!(doc.rename_chat("c2", "Renamed").unwrap());
+    assert!(doc.delete_chat("c3").unwrap());
+    // Queued writes force the overlay path; once settled the in-place one.
+    assert!(!doc.pending.is_empty());
+    let mut overlay = doc.read_chats().unwrap();
+    assert!(doc.settle_pending_locally());
+    assert!(doc.pending.is_empty());
+    let mut in_place = doc.read_chats().unwrap();
+    overlay.sort_by(|a, b| a.id.cmp(&b.id));
+    in_place.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(overlay, in_place);
+    assert_eq!(in_place.len(), 4, "the deleted chat is skipped");
+    assert_eq!(
+        in_place
+            .iter()
+            .find(|c| c.id == "c2")
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Renamed")
+    );
+}

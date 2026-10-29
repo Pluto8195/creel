@@ -3191,6 +3191,11 @@ pub struct Transcript {
     top_inset: f32,
     /// Hovered rail tick (grows + shows the preview card).
     rail_hover: Option<usize>,
+    /// Bumped whenever `rows` is replaced; keys `rail_cache`.
+    rows_generation: u64,
+    /// Rail ticks with their transcript rows, rebuilt only when the rows,
+    /// the doc entries or the echoes change (not on every frame).
+    pub(crate) rail_cache: Option<crate::rail::RailCache>,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (zeron chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -3428,6 +3433,8 @@ impl Transcript {
             bottom_clearance: 0.0,
             top_inset: OWN_SEND_TOP_INSET_PX,
             rail_hover: None,
+            rows_generation: 0,
+            rail_cache: None,
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -3510,6 +3517,10 @@ impl Transcript {
 
     pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    pub(crate) fn rows_generation(&self) -> u64 {
+        self.rows_generation
     }
 
     /// The Chat whose rows this transcript shows.
@@ -4542,6 +4553,7 @@ impl Transcript {
             }
             self.chat_id = selected;
             self.rows.clear();
+            self.rows_generation = self.rows_generation.wrapping_add(1);
             self.row_cache.clear();
             self.live_parsers.clear();
             self.tree_cache.clear();
@@ -4894,6 +4906,7 @@ impl Transcript {
         match diff_rows(&self.rows, &new_rows) {
             None => {
                 self.rows = new_rows;
+                self.rows_generation = self.rows_generation.wrapping_add(1);
                 self.refresh_protected_attachments(cx);
                 self.reconcile_own_turn_prompt();
                 // Replay readiness is independent of row content: an empty
@@ -4932,6 +4945,7 @@ impl Transcript {
             }
         }
         self.rows = new_rows;
+        self.rows_generation = self.rows_generation.wrapping_add(1);
         if old_last != self.rows.len().checked_sub(1) {
             if let Some(ix) = old_last.filter(|&ix| ix < self.rows.len()) {
                 // Bottom chrome moves to the new tail too.
@@ -14018,3 +14032,7 @@ impl Transcript {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+#[path = "perf/transcript_bench.rs"]
+mod perf_bench;

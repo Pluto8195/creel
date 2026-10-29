@@ -2547,3 +2547,7 @@ mod async_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "../perf/markdown_bench.rs"]
+mod perf_bench;
