@@ -471,8 +471,10 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   Account, Links, Needs you, Plan, Children; no-item chats get Runs in, Model, Account, "Add to
   outline". Hover card: ~400 ms show, 160 ms grace, ⌥⌘I pins; never takes focus. ⌥⌘; opens the
   Item tab. Removed: the work-context strip, drift and proposal lines, and the header's workspace /
-  chat-id / session-id chips. Follow-ups: restore chat/session id copy (Item tab) and rewrite the
-  deleted `open_web_reference` tests against the PR chip.
+  chat-id / session-id chips. Follow-up (`header-followups`, 2026-10-29): an "Identifiers" section at
+  the bottom of the Item tab (chat id, session id, workspace, each with Copy); `open_web_reference`
+  tests rewritten in `chat_item_tests.rs::web_references`; visual polish to the mockup (semibold title
+  under the breadcrumb, icons and tones on chips, tighter Item tab sections, condensed hover card).
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
