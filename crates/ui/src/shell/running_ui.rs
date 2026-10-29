@@ -508,6 +508,7 @@ impl Shell {
         let open = self.running.open;
         div()
             .id("running-lamp")
+            .debug_selector(|| "running-lamp".into())
             .flex_none()
             .ml(px(TITLEBAR_GROUP_GAP))
             .size(px(24.0))
