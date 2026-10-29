@@ -689,6 +689,7 @@ mod web_references {
     fn the_item_tab_pr_link_follows_the_same_rules(cx: &mut TestAppContext) {
         let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
         select(&shell, vcx, CHAT_API, Route::Chat);
+        super::expand(&shell, vcx, &["links"]);
         click(vcx, "chat-item-pr-0", Modifiers::default());
         assert_eq!(tabs(&shell, vcx), [PR_7]);
         assert!(vcx.opened_url().is_none());
@@ -1021,13 +1022,13 @@ fn the_item_tab_has_no_other_sections_expanded_until_asked(cx: &mut TestAppConte
 #[gpui::test]
 fn instructions_are_summarised_and_expand_to_their_entries(cx: &mut TestAppContext) {
     let (shell, vcx) = mount(cx, CHAT_API, true, |snapshot| {
-        let mut instruction = snapshot.instructions[0].clone();
-        instruction.id = "ins-long".into();
-        instruction.work_item_id = Some(API.into());
-        instruction.space_id = "s1".into();
-        instruction.archived_at = None;
-        instruction.text = format!("First line\n{}", "long ".repeat(80));
-        snapshot.instructions.push(instruction);
+        snapshot.instructions.push(crate::work_outline::instructions::fixture::instruction(
+            "ins-long",
+            "s1",
+            Some(API),
+            "a0",
+            &format!("First line\n{}", "long ".repeat(80)),
+        ));
     });
     let facts = shell.read_with(vcx, |shell, cx| shell.chat_item_facts(CHAT_API, cx).unwrap());
     let entries = &facts.item.unwrap().instructions.entries;
@@ -1166,7 +1167,7 @@ fn team_tab_rows_stack_without_overlap_for_two_and_fifteen_workers(cx: &mut Test
         // Each row names its branch; the waiting and ready ones say more.
         assert!(has(vcx, "team-branch-w-0"));
         assert!(has(vcx, "team-worker-activity-w-0"));
-        assert!(has(vcx, "team-worker-jump-w-2"), "ready-to-merge jump");
+        assert_eq!(has(vcx, "team-worker-jump-w-2"), n > 2, "ready-to-merge jump");
         assert!(!has(vcx, "team-worker-jump-w-0"));
     }
 }
