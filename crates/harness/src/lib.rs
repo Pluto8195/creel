@@ -379,9 +379,18 @@ fn compose_path_from<'a>(
 /// Git LFS's `git-lfs filter-process` (run during checkout and `worktree add`)
 /// would fail with "command not found". Every engine `git` spawn starts here.
 pub fn git_command() -> std::process::Command {
+    GIT_SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut command = std::process::Command::new("git");
     compose_login_shell_path_std(&mut command);
     command
+}
+
+static GIT_SPAWNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many `git` commands this process has built via [`git_command`] (a
+/// spawn counter for tests and benches).
+pub fn git_spawn_count() -> u64 {
+    GIT_SPAWNS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Async counterpart to [`git_command`].
