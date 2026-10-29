@@ -794,7 +794,108 @@ impl Shell {
                     ),
             );
         }
+        // Identifiers (the tab only): chat id, harness session id, workspace.
+        if tab {
+            col = col.child(self.render_identifiers(facts, theme, cx));
+        }
         col.into_any_element()
+    }
+
+    /// Copy one identifier; its button flips to "Copied" for ~1.2s.
+    pub(crate) fn copy_identifier(&mut self, key: &str, value: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(value));
+        self.copied_chat_identity = Some(key.to_string());
+        self.copied_chat_identity_clear = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1200))
+                .await;
+            this.update(cx, |this, cx| {
+                this.copied_chat_identity = None;
+                this.copied_chat_identity_clear = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn render_identifiers(
+        &mut self,
+        facts: &ChatItemFacts,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = self.state.read(cx);
+        let chat = state.chats.iter().find(|chat| chat.id == facts.chat_id);
+        let session = chat
+            .and_then(|chat| chat.harness_session_id.clone())
+            .filter(|id| !id.trim().is_empty());
+        let workspace = chat
+            .and_then(|chat| chat.space_id.as_deref())
+            .and_then(|id| state.space_row(id))
+            .map(|space| space.path.clone());
+        let rows = [
+            ("chat", "Chat ID", Some(facts.chat_id.clone())),
+            ("session", "Session ID", session),
+            ("workspace", "Workspace", workspace),
+        ];
+        let mut block = div()
+            .debug_selector(|| "chat-item-identifiers".into())
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_faint)
+                    .child("Identifiers"),
+            );
+        for (key, label, value) in rows {
+            let Some(value) = value else { continue };
+            let copied = self.copied_chat_identity.as_deref() == Some(key);
+            let id: SharedString = format!("chat-item-id-{key}").into();
+            let selector = id.to_string();
+            let copy_value = value.clone();
+            block = block.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(72.0))
+                            .text_color(theme.text_faint)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(value)),
+                    )
+                    .child(
+                        div()
+                            .id(id)
+                            .debug_selector(move || selector.clone())
+                            .flex_none()
+                            .px(px(4.0))
+                            .rounded(px(3.0))
+                            .cursor_pointer()
+                            .text_color(theme.accent)
+                            .hover(|el| el.bg(theme.element_hover))
+                            .child(if copied { "Copied" } else { "Copy" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy_identifier(key, copy_value.clone(), cx)
+                            })),
+                    ),
+            );
+        }
+        block.into_any_element()
     }
 
     fn render_item_path(
