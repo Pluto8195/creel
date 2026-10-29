@@ -666,7 +666,7 @@ impl Shell {
                 .debug_selector(move || selector.clone())
                 .flex()
                 .flex_col()
-                .gap(px(3.0))
+                .gap(px(2.0))
                 .child(section_label(theme, icon_path, label, icon_selector))
         };
         let text = |value: String| {
@@ -698,11 +698,11 @@ impl Shell {
                 .text_color(color)
                 .when(underline, |el| el.underline())
                 .hover(|el| el.bg(theme.element_hover))
-                .child(label)
+                .when(!label.is_empty(), |el| el.child(label))
         };
         let link = |id: String, label: &'static str| link_with(id, label, theme.text, true);
         let action_link = |id: String, label: &'static str| link_with(id, label, theme.success, false);
-        let mut col = div().flex().flex_col().gap(px(10.0));
+        let mut col = div().flex().flex_col().gap(px(12.0));
 
         // Path (the tab prints it in full; the card's header already shows it).
         if tab && let Some(item) = &facts.item {
@@ -731,10 +731,7 @@ impl Shell {
                             .items_center()
                             .gap(px(6.0))
                             .child(if item.instructions.drift {
-                                muted(format!(
-                                    "\u{26a0} {summary} \u{b7} changed since the applied revision"
-                                ))
-                                .text_color(theme.warning)
+                                muted(format!("{summary} \u{b7} changed")).text_color(theme.warning)
                             } else {
                                 muted(format!("{summary} \u{b7} up to date"))
                             })
@@ -753,7 +750,8 @@ impl Shell {
             );
         }
 
-        // Runs in.
+        // Runs in, model and account: the card leaves them to the header chips.
+        if tab {
         let runs_in = {
             let mut block = section("runs-in", "Runs in");
             if let Some(path) = &facts.runs_in {
@@ -770,17 +768,47 @@ impl Shell {
         col = col.child(runs_in);
 
         // Model and account.
+        let model_differs = facts.model.ran && facts.model.configured.is_some();
         col = col.child(
-            section("model", "Model")
-                .child(text(
-                    facts.model.label.clone().unwrap_or_else(|| "default".into()),
-                ))
-                .child(muted(facts.model.detail())),
+            section("model", "Model").child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_baseline()
+                    .gap(px(6.0))
+                    .child(text(
+                        facts.model.label.clone().unwrap_or_else(|| "default".into()),
+                    ))
+                    .child(
+                        muted(format!("\u{b7} {}", facts.model.detail()))
+                            .when(model_differs, |el| el.text_color(theme.warning)),
+                    ),
+            ),
         );
         col = col.child(section("account", "Account").child(match &facts.account {
-            Some(account) => text(account.clone()),
+            Some(account) => div()
+                .debug_selector(|| "chat-item-account-badge".into())
+                .flex_none()
+                .h(px(20.0))
+                .px(px(7.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .rounded(px(5.0))
+                .border_1()
+                .border_color(theme.border_strong)
+                .bg(theme.element_hover.opacity(0.55))
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text)
+                .child(
+                    crate::icons::icon(crate::icons::KEY_MINIMALISTIC)
+                        .size(px(11.0))
+                        .text_color(theme.text),
+                )
+                .child(SharedString::from(account.clone())),
             None => muted("Default login".into()),
         }));
+        }
 
         // Links.
         if let Some(item) = &facts.item
@@ -881,17 +909,34 @@ impl Shell {
             for child in item.children.iter().take(CHILD_ROWS) {
                 let space_id = item.space_id.clone();
                 let child_id = child.id.clone();
+                let glyph = if child.done {
+                    crate::icons::icon(crate::icons::CHECK)
+                        .size(px(10.0))
+                        .text_color(theme.success)
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex_none()
+                        .size(px(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(theme.text_muted)
+                        .into_any_element()
+                };
                 block = block.child(
                     link(format!("{prefix}-child-{}", child.id), "")
-                        .child(SharedString::from(format!(
-                            "{} {}",
-                            if child.done { "\u{2713}" } else { "\u{25cb}" },
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(div().w(px(10.0)).flex().justify_center().child(glyph))
+                        .child(SharedString::from(
                             if child.title.trim().is_empty() {
                                 "Untitled"
                             } else {
                                 child.title.as_str()
                             }
-                        )))
+                            .to_owned(),
+                        ))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_work_item_in_overview(space_id.clone(), child_id.clone(), cx)
                         })),

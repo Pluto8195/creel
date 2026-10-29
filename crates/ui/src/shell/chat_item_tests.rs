@@ -387,14 +387,22 @@ fn the_card_shows_after_the_hover_delay_and_hides_on_mouse_out(cx: &mut TestAppC
     assert!(has(vcx, "chat-item-card"));
     for selector in [
         "chat-item-card-instructions",
-        "chat-item-card-runs-in",
-        "chat-item-card-model",
+        "chat-item-card-links",
         "chat-item-card-needs-you",
     ] {
         assert!(has(vcx, selector), "{selector}");
     }
-    // The card is the condensed form: no full path or children list.
-    assert!(!has(vcx, "chat-item-card-path"));
+    // The card is the condensed form: the header chips already carry the
+    // model, account and branch, and the tab holds the rest.
+    for selector in [
+        "chat-item-card-runs-in",
+        "chat-item-card-model",
+        "chat-item-card-account",
+        "chat-item-card-identifiers",
+        "chat-item-card-path",
+    ] {
+        assert!(!has(vcx, selector), "{selector}");
+    }
     assert!(!has(vcx, "chat-item-card-children"));
     leave(vcx);
     wait(vcx, 400);
@@ -437,7 +445,7 @@ fn the_card_never_takes_the_keyboard_from_the_composer(cx: &mut TestAppContext) 
     wait(vcx, 500);
     assert!(has(vcx, "chat-item-card"));
     assert!(focused(vcx), "showing the card keeps focus");
-    let at = vcx.debug_bounds("chat-item-card-runs-in").unwrap().center();
+    let at = vcx.debug_bounds("chat-item-card-instructions").unwrap().center();
     vcx.simulate_click(at, gpui::Modifiers::default());
     draw(vcx);
     assert!(focused(vcx), "clicking inside the card keeps focus");
@@ -802,4 +810,30 @@ fn chip_tones_use_theme_tokens(_cx: &mut TestAppContext) {
     assert_eq!(chip_palette(&theme, ChipTone::Warn), (theme.warning, theme.warning));
     assert_eq!(chip_palette(&theme, ChipTone::Link), (theme.accent, theme.text));
     assert_eq!(chip_palette(&theme, ChipTone::Dim).1, theme.text_muted);
+}
+
+#[gpui::test]
+fn the_item_tab_keeps_rows_tight_and_actions_together(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, true, needs_attention);
+    // A link is one text line, not an empty line plus its label.
+    let pr = vcx.debug_bounds("chat-item-pr-0").unwrap();
+    assert!(pr.size.height < px(24.0), "{:?}", pr.size);
+    // Compare and Apply sit side by side.
+    let compare = vcx.debug_bounds("chat-header-instructions-compare").unwrap();
+    let apply = vcx.debug_bounds("chat-header-instructions-apply");
+    if let Some(apply) = apply {
+        assert_eq!(compare.top(), apply.top());
+    }
+    // The account is a badge.
+    assert!(has(vcx, "chat-item-account-badge"));
+}
+
+#[gpui::test]
+fn child_rows_are_tight_single_lines(cx: &mut TestAppContext) {
+    let (_, vcx) = mount(cx, CHAT_API, true, |_| {});
+    assert!(has(vcx, "chat-item-children"));
+    let row = vcx
+        .debug_bounds(Box::leak(format!("chat-item-child-{API_AUTH}").into_boxed_str()))
+        .expect("the child row");
+    assert!(row.size.height < px(24.0), "{:?}", row.size);
 }
