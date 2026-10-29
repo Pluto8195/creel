@@ -453,6 +453,17 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   per managed account, context-usage reader for managed homes, MCP/plugin sharing, Start Chat
   account chip, promoting old slots, API-key accounts. Needs Mikey's hand check: real sign-in and
   two accounts running at once.
+- **Internal rename zeron → mast** (2026-10-28, `rename-zeron-to-mast`): crates are `mast-*` (`mast-ui`,
+  `mast-engine`, `mast-harness`, `mast-mcp`, `mast-proto`, …), the app package is `mast` (`apps/mast`)
+  but the binary is still `zeron`, so the install command is `cargo build --profile installed -p mast`
+  and the output stays `target/installed/zeron`. Runtime names write the new form and accept the old:
+  `MAST_*` env (`ZERON_*` still read via `mast_proto::env`), MCP server `mast-agent` (`zeron-agent`
+  alias), `mast-artifact:` / `mast-file:` / `mast-msg:` / `mast-link:` schemes, `data-mast-*`,
+  `.mast/` artifacts folders (existing `.zeron/` folders still used), `mast.json` (`zeron.json`
+  fallback), `mast/<name>` worktree branches (`zeron/` still recognised). Not renamed (see
+  `docs/plans/rename-migration.md`): `~/.zeron`, bundle id `sh.zeron.app.dev`, Keychain names, the
+  `zeron` binary, the `zeron/` submodule folder. `scripts/rename-map.sh` maps upstream code onto the
+  new names. New git spawns use `mast_harness::git_command()`.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -564,7 +575,7 @@ status write-back, a "Waiting for input" group (declined), Tod-style action log 
 - **Tests:** UI tests need `--test-threads=1`. Time-limit with `perl -e 'alarm N; exec @ARGV' cargo
   test …` (macOS has no `timeout`). Known pre-existing failures are listed in the memory notes and
   `m0-contract.md`; they are not regressions.
-- **Install:** `cargo build --profile installed -p zeron` (optimised; since 2026-10-27, replaces the
+- **Install:** `cargo build --profile installed -p mast` (optimised; since 2026-10-27, replaces the
   debug build); back up the current binary to `~/zeron-dev-app-backups/`;
   `cp target/installed/zeron "$M/.zeron.installing" && mv -f` it to
   `/Applications/Mast.app/Contents/MacOS/zeron`; `codesign --force --sign - --identifier
