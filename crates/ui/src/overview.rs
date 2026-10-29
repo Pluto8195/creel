@@ -2591,7 +2591,7 @@ impl Overview {
     /// instead of navigating away — see `chat_panel_open`'s doc comment.
     /// Selecting the chat is what wires the Shell's transcript/composer to
     /// it; re-clicking the already-shown chat just refocuses the composer.
-    fn open_chat_panel(&mut self, chat_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_chat_panel(&mut self, chat_id: String, cx: &mut Context<Self>) {
         // Web `openTranscriptPanel` → `acknowledgeDone`.
         self.acknowledge_done(&chat_id, cx);
         let _ = self.shell.update(cx, |shell, cx| {
