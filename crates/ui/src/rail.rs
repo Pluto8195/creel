@@ -98,6 +98,14 @@ pub fn rail_ticks(
     ticks
 }
 
+/// Rail ticks mapped to transcript rows, valid for one `key`
+/// (rows generation, row count, transcript revision, echo count).
+#[derive(Clone)]
+pub struct RailCache {
+    pub(crate) key: (u64, usize, u64, usize),
+    pub(crate) pairs: std::rc::Rc<Vec<(RailTick, usize)>>,
+}
+
 /// The active tick for a scroll position: the last tick whose transcript row is
 /// at or above the viewport-top row (the prompt whose section you're reading).
 /// Before the first tick's row, the first tick is active.
@@ -412,22 +420,44 @@ impl Transcript {
         if !self.rail_enabled() {
             return gpui::Empty.into_any_element();
         }
-        let (entries, echoes) = {
+        let (revision, echo_count) = {
             let state = self.state_entity().read(cx);
-            (state.transcript.clone(), state.pending_echoes().to_vec())
+            (state.transcript_revision, state.pending_echoes().len())
         };
-        let ticks = rail_ticks(&entries, &echoes);
-        // Map each tick to its transcript row (user rows share the entry id).
-        let pairs: Vec<(RailTick, usize)> = ticks
-            .into_iter()
-            .filter_map(|tick| {
-                let row = self
+        let key = (self.rows_generation(), self.rows().len(), revision, echo_count);
+        let pairs = match &self.rail_cache {
+            Some(cache) if cache.key == key => cache.pairs.clone(),
+            _ => {
+                // Borrowed, not cloned: the transcript can be megabytes.
+                let ticks = {
+                    let state = self.state_entity().read(cx);
+                    rail_ticks(&state.transcript, state.pending_echoes())
+                };
+                // Map each tick to its transcript row (user rows share the
+                // entry id) with one pass over the rows.
+                let row_of: std::collections::HashMap<&str, usize> = self
                     .rows()
                     .iter()
-                    .position(|r| r.id.as_ref() == tick.message_id.as_str())?;
-                Some((tick, row))
-            })
-            .collect();
+                    .enumerate()
+                    .rev()
+                    .map(|(ix, row)| (row.id.as_ref(), ix))
+                    .collect();
+                let pairs: std::rc::Rc<Vec<(RailTick, usize)>> = std::rc::Rc::new(
+                    ticks
+                        .into_iter()
+                        .filter_map(|tick| {
+                            let row = *row_of.get(tick.message_id.as_str())?;
+                            Some((tick, row))
+                        })
+                        .collect(),
+                );
+                self.rail_cache = Some(RailCache {
+                    key,
+                    pairs: pairs.clone(),
+                });
+                pairs
+            }
+        };
         // A minimap of one exchange is noise, not navigation — the original
         // rail hides below two marks (message-rail.tsx `marks.length < 2`).
         if pairs.len() < 2 {
