@@ -186,6 +186,12 @@ projects; Datadog, Sentry and Metabase; anything else is shown as a documentatio
 
   Option paths are relative to the manifest. Publishing the manifest publishes the fragments with
   it.
+- **Set a design width.** "Side by side" lays each option out at a fixed width and scales it down
+  to its column, so two-column mockups and tables keep their real layout. Say what width each
+  option was designed for, in px (default 1100, clamped to 320–4000): per option with
+  `"designWidth": 1280` in its manifest entry, for all options with a top-level `"designWidth"`, or
+  in the fragment with `data-mast-design-width="1280"` on any element. Order of precedence: entry,
+  fragment attribute, top-level, 1100. Don't rely on the narrow column to reflow your layout.
 - The user's pick arrives as `Picked option B for "Receiving table layouts": Grouped by PO`. If
   `question` is set, that question is resolved with the pick.
 
