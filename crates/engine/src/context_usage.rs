@@ -60,6 +60,7 @@ use serde_json::Value;
 
 use crate::EngineError;
 use crate::external_import::ExternalSessionImporter;
+use crate::managed_accounts::ManagedAccounts;
 use crate::workspace_host::WorkspaceHost;
 
 /// Fixed context-window divisor, matching `session_canvas_server.py`'s
@@ -96,6 +97,9 @@ struct Inner {
     /// the mtime it was read at — mirrors `session_canvas_server.py`'s
     /// `_transcript_analysis_cache`: an unchanged file is never re-read.
     tail_cache: Mutex<HashMap<PathBuf, TailEntry>>,
+    /// Per-project accounts: a chat pinned to a managed home keeps its
+    /// transcripts under that home, not `~/.claude` / `~/.codex`.
+    managed: Mutex<Option<ManagedAccounts>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -118,8 +122,22 @@ impl ContextUsageProvider {
             inner: Arc::new(Inner {
                 session_paths: Mutex::new(HashMap::new()),
                 tail_cache: Mutex::new(HashMap::new()),
+                managed: Mutex::new(None),
             }),
         }
+    }
+
+    /// Resolve transcripts for chats pinned to a managed account under that
+    /// account's home. Called once at boot, after the accounts exist.
+    pub fn set_managed_accounts(&self, managed: ManagedAccounts) {
+        *lock(&self.inner.managed) = Some(managed);
+    }
+
+    /// The managed home `chat_id` is pinned to for `harness`, if any.
+    fn pinned_home(&self, chat_id: &str, harness: HarnessId) -> Option<PathBuf> {
+        lock(&self.inner.managed)
+            .as_ref()?
+            .pinned_home(chat_id, harness)
     }
 
     /// Best-effort context-window occupancy for `chat_id`, `0.0..=1.0`.
@@ -202,27 +220,37 @@ impl ContextUsageProvider {
             return None;
         }
         match chat.config.map(|config| config.harness) {
-            Some(HarnessId::Codex) => self.resolve_codex_transcript_path(&session_id),
-            Some(HarnessId::ClaudeCode) => self.resolve_transcript_path(&session_id),
+            Some(HarnessId::Codex) => self.resolve_codex_transcript_path(chat_id, &session_id),
+            Some(HarnessId::ClaudeCode) => self.resolve_transcript_path(chat_id, &session_id),
             // Legacy rows may predate persisted chat config. Preserve the
             // historical Claude lookup, then try Codex's date tree rather
             // than making those sessions permanently unclassifiable.
             _ => self
-                .resolve_transcript_path(&session_id)
-                .or_else(|| self.resolve_codex_transcript_path(&session_id)),
+                .resolve_transcript_path(chat_id, &session_id)
+                .or_else(|| self.resolve_codex_transcript_path(chat_id, &session_id)),
         }
     }
 
-    fn resolve_transcript_path(&self, session_id: &str) -> Option<PathBuf> {
-        self.resolve_transcript_path_under(&default_projects_root(), session_id)
+    /// A chat pinned to a managed account reads only that account's home;
+    /// everything else keeps the default `~/.claude/projects`.
+    fn resolve_transcript_path(&self, chat_id: &str, session_id: &str) -> Option<PathBuf> {
+        let root = match self.pinned_home(chat_id, HarnessId::ClaudeCode) {
+            Some(home) => home.join("projects"),
+            None => default_projects_root(),
+        };
+        self.resolve_transcript_path_under(&root, session_id)
     }
 
     /// Codex stores rollouts below a date tree such as
     /// `~/.codex/sessions/2026/10/01/rollout-...-<session-id>.jsonl`, unlike
     /// Claude's single project-directory level. Keep this separate from the
     /// Claude resolver so the latter's cheap, shallow lookup is unchanged.
-    fn resolve_codex_transcript_path(&self, session_id: &str) -> Option<PathBuf> {
-        self.resolve_codex_transcript_path_under(&default_codex_sessions_root(), session_id)
+    fn resolve_codex_transcript_path(&self, chat_id: &str, session_id: &str) -> Option<PathBuf> {
+        let root = match self.pinned_home(chat_id, HarnessId::Codex) {
+            Some(home) => home.join("sessions"),
+            None => default_codex_sessions_root(),
+        };
+        self.resolve_codex_transcript_path_under(&root, session_id)
     }
 
     fn resolve_codex_transcript_path_under(
@@ -655,5 +683,67 @@ mod tests {
 
         let provider = ContextUsageProvider::new(store);
         assert_eq!(provider.live_pct(chat_id).unwrap(), None);
+    }
+
+    fn managed_fixture() -> (tempfile::TempDir, ManagedAccounts, ContextUsageProvider) {
+        use crate::managed_accounts::ManagedAccountsConfig;
+        let data = tempfile::tempdir().unwrap();
+        let managed = ManagedAccounts::new(ManagedAccountsConfig::new(
+            data.path(),
+            data.path().join("default-claude"),
+            data.path().join("default-codex"),
+        ));
+        let provider = ContextUsageProvider::new(Arc::new(
+            DocsStore::open(tempfile::tempdir().unwrap().path()).unwrap(),
+        ));
+        provider.set_managed_accounts(managed.clone());
+        (data, managed, provider)
+    }
+
+    #[test]
+    fn claude_transcript_of_a_pinned_chat_resolves_under_the_managed_home() {
+        let (_data, managed, provider) = managed_fixture();
+        let account = managed.create(HarnessId::ClaudeCode, "Work").unwrap();
+        managed
+            .set_project_account("space-1", HarnessId::ClaudeCode, Some(&account.id))
+            .unwrap();
+        managed
+            .resolve_for_chat("chat-1", Some("space-1"), HarnessId::ClaudeCode, false)
+            .unwrap();
+        let home = managed.home_of(HarnessId::ClaudeCode, &account.id);
+        let transcript = home.join("projects/-proj/sess-1.jsonl");
+        write(&transcript, "{}\n");
+
+        let found = provider.resolve_transcript_path("chat-1", "sess-1");
+        assert_eq!(found.as_deref(), Some(transcript.as_path()));
+    }
+
+    #[test]
+    fn claude_transcript_of_a_default_chat_never_looks_in_a_managed_home() {
+        let (_data, managed, provider) = managed_fixture();
+        let account = managed.create(HarnessId::ClaudeCode, "Work").unwrap();
+        let home = managed.home_of(HarnessId::ClaudeCode, &account.id);
+        write(&home.join("projects/-proj/sess-2.jsonl"), "{}\n");
+        // chat-2 has no pin (Default): the managed home's file is not its
+        // transcript, so the lookup goes to ~/.claude/projects (absent here).
+        assert_eq!(provider.pinned_home("chat-2", HarnessId::ClaudeCode), None);
+    }
+
+    #[test]
+    fn codex_transcript_of_a_pinned_chat_resolves_under_the_managed_home() {
+        let (_data, managed, provider) = managed_fixture();
+        let account = managed.create(HarnessId::Codex, "Work").unwrap();
+        managed
+            .set_project_account("space-1", HarnessId::Codex, Some(&account.id))
+            .unwrap();
+        managed
+            .resolve_for_chat("chat-3", Some("space-1"), HarnessId::Codex, false)
+            .unwrap();
+        let home = managed.home_of(HarnessId::Codex, &account.id);
+        let rollout = home.join("sessions/2026/10/29/rollout-x-sess-3.jsonl");
+        write(&rollout, "{}\n");
+
+        let found = provider.resolve_codex_transcript_path("chat-3", "sess-3");
+        assert_eq!(found.as_deref(), Some(rollout.as_path()));
     }
 }

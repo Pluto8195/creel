@@ -70,6 +70,11 @@ pub(super) struct StartChatDialog {
     /// The picker closed through Esc / its chip: focus returns to the prompt
     /// on the next frame (so Enter starts).
     pub(super) focus_prompt_pending: bool,
+    /// The account chip's override for this one chat (`None` = the project's
+    /// default; `Some(None)` = Default login; `Some(Some(id))` = that
+    /// managed account). Pinned when the chat is created.
+    pub(super) account_choice: Option<Option<String>>,
+    pub(super) account_open: bool,
     resolved: Option<ResolvedExecutionConfiguration>,
     pub(super) target: WorktreeTarget,
     /// Worktree choices of the target repository: `None` while describing.
@@ -275,6 +280,7 @@ impl Shell {
             }
         });
         let describe = target.describe_path().map(str::to_owned);
+        let device_id_for_accounts = device_id.clone();
         let dialog = StartChatDialog {
             space_id: space_id.to_owned(),
             item_id: item_id.to_owned(),
@@ -288,6 +294,8 @@ impl Shell {
             worktree_name,
             pickers,
             focus_prompt_pending: false,
+            account_choice: None,
+            account_open: false,
             resolved,
             target,
             worktrees: None,
@@ -310,6 +318,10 @@ impl Shell {
             .skills
             .update(cx, |skills, cx| skills.set_source(source, cx));
         self.begin_work_outline_modal(WorkOutlineModal::StartChat(dialog), cx);
+        // The chip reads the owning device's managed accounts.
+        let account_device = Some(device_id_for_accounts).filter(|id| !id.is_empty());
+        self.state
+            .update(cx, |state, cx| state.load_managed_accounts(account_device, cx));
         self.validate_start_chat(cx);
         if let Some(path) = describe {
             self.describe_start_chat_target(path, cx);
@@ -417,6 +429,8 @@ impl Shell {
             worktree_name,
             pickers,
             focus_prompt_pending: false,
+            account_choice: None,
+            account_open: false,
             resolved: None,
             target: WorktreeTarget::None,
             worktrees: None,
@@ -585,6 +599,59 @@ impl Shell {
         .detach();
     }
 
+    /// The harness the dialog's picker currently resolves (or the fallback).
+    fn start_chat_harness(&self, cx: &App) -> Option<mast_proto::HarnessId> {
+        let dialog = match self.work_outline_modal.as_ref() {
+            Some(WorkOutlineModal::StartChat(dialog)) => dialog,
+            _ => return None,
+        };
+        Some(
+            dialog
+                .pickers
+                .read(cx)
+                .resolved(cx)
+                .harness
+                .unwrap_or(dialog.fallback_harness),
+        )
+    }
+
+    pub(super) fn toggle_start_chat_account(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.start_chat_dialog() {
+            dialog.account_open = !dialog.account_open;
+            cx.notify();
+        }
+    }
+
+    /// Choose the account for this one chat (`None` = Default login).
+    pub(super) fn set_start_chat_account(
+        &mut self,
+        account_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(harness) = self.start_chat_harness(cx) else {
+            return;
+        };
+        let Some((space_id, device_id)) = self
+            .start_chat_dialog()
+            .map(|d| (d.space_id.clone(), d.device_id.clone()))
+        else {
+            return;
+        };
+        let choice = crate::managed_accounts::start_chat_choice(
+            self.state
+                .read(cx)
+                .managed_accounts_for((!device_id.is_empty()).then_some(device_id.as_str())),
+            &space_id,
+            harness,
+            account_id,
+        );
+        if let Some(dialog) = self.start_chat_dialog() {
+            dialog.account_choice = choice;
+            dialog.account_open = false;
+            cx.notify();
+        }
+    }
+
     pub(super) fn set_start_chat_pick(&mut self, pick: WorktreePick, cx: &mut Context<Self>) {
         let Some(dialog) = self.start_chat_dialog() else {
             return;
@@ -738,6 +805,12 @@ impl Shell {
         // Built exactly as the composer builds a new chat's `createChat`
         // config (concrete harness, model, reasoning, options, approval).
         let config = dialog.pickers.read(cx).resolved(cx).chat_config();
+        let account_id = config.as_ref().and_then(|config| {
+            crate::managed_accounts::launch_account_id(
+                config.harness,
+                dialog.account_choice.as_ref(),
+            )
+        });
         let pickers = dialog.pickers.clone();
         let mut params = CreateChatForWorkItemParams {
             work_item_id: dialog.item_id.clone(),
@@ -751,6 +824,7 @@ impl Shell {
             operation_id: String::new(),
             parent_chat_id: None,
             target_device_id: None,
+            account_id,
         };
         // Same inputs → same operation id (a retry completes the same start).
         let inputs = serde_json::to_string(&params).unwrap_or_default();
@@ -865,6 +939,97 @@ fn device_name(shell: &Shell, device_id: &str, cx: &App) -> String {
         .unwrap_or_else(|| device_id.to_owned())
 }
 
+/// Start Chat's account chip: the account this chat will use (the project's
+/// default unless overridden) and, opened, the choices for this one chat.
+/// `None` when the agent has no accounts to choose from.
+fn start_chat_account_chip(
+    dialog: &StartChatDialog,
+    shell: &Shell,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> Option<gpui::Div> {
+    let harness = dialog
+        .pickers
+        .read(cx)
+        .resolved(cx)
+        .harness
+        .unwrap_or(dialog.fallback_harness);
+    let device = (!dialog.device_id.is_empty()).then_some(dialog.device_id.as_str());
+    let chip = crate::managed_accounts::start_chat_chip(
+        shell.state.read(cx).managed_accounts_for(device),
+        &dialog.space_id,
+        harness,
+        dialog.account_choice.as_ref(),
+    )?;
+    let label = format!(
+        "{} account: {}{}",
+        crate::managed_accounts::harness_name(harness),
+        chip.label,
+        if chip.overridden { " (this chat)" } else { "" }
+    );
+    let mut col = div()
+        .debug_selector(|| "start-chat-account".into())
+        .mt(px(6.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .id("start-chat-account-chip")
+                .debug_selector(|| "start-chat-account-chip".into())
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .hover(|el| el.text_color(theme.text))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_start_chat_account(cx)))
+                .child(
+                    icon(if dialog.account_open {
+                        icons::ALT_ARROW_DOWN
+                    } else {
+                        icons::ALT_ARROW_RIGHT
+                    })
+                    .size(px(10.0))
+                    .text_color(theme.text_muted),
+                )
+                .child(SharedString::from(label)),
+        );
+    if dialog.account_open {
+        for (ix, entry) in chip.entries.into_iter().enumerate() {
+            let id: SharedString = format!("start-chat-account-{ix}").into();
+            let selector = id.to_string();
+            let account_id = entry.account_id.clone();
+            let selected = entry.selected;
+            col = col.child(
+                popover::menu_row(theme, selected, id.clone())
+                    .id(id)
+                    .debug_selector(move || selector.clone())
+                    .role(gpui::Role::RadioButton)
+                    .aria_label(entry.label.clone())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_start_chat_account(account_id.clone(), cx)
+                    }))
+                    .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(
+                        if selected {
+                            theme.text
+                        } else {
+                            gpui::transparent_black()
+                        },
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child(SharedString::from(
+                        match &entry.detail {
+                            Some(detail) => format!("{} \u{b7} {detail}", entry.label),
+                            None => entry.label.clone(),
+                        },
+                    ))),
+            );
+        }
+    }
+    Some(col)
+}
+
 /// The Start Chat card.
 /// The Start Chat body's height budget in a `viewport_height` window: the
 /// window minus the card chrome (title, item path, buttons, scrim margin),
@@ -893,6 +1058,7 @@ pub(super) fn start_chat_card(
         .flex_row()
         .items_center()
         .child(dialog.pickers.clone());
+    let account_chip = start_chat_account_chip(dialog, shell, theme, cx);
 
     // Where it runs + validation.
     let mut execution = div().flex().flex_col().gap(px(2.0));
@@ -1273,6 +1439,7 @@ pub(super) fn start_chat_card(
                 )
                 .child(section_label("Agent", theme))
                 .child(agents)
+                .when_some(account_chip, |el, chip| el.child(chip))
                 .child(section_label("Runs in", theme))
                 .child(execution)
                 .when_some(worktree_unavailable, |el, unavailable| {
@@ -2405,6 +2572,139 @@ mod tests {
             assert_eq!(defaults.reasoning, Some(mast_proto::ReasoningLevel::High));
         });
         shell.read_with(cx, |shell, _| assert!(shell.work_outline_modal.is_none()));
+    }
+
+    fn seed_accounts(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext, with_account: bool) {
+        use mast_proto::{
+            HarnessId, ManagedAccount, ManagedAccountsSnapshot, ProjectAccountDefault,
+        };
+        let snapshot = if with_account {
+            ManagedAccountsSnapshot {
+                accounts: vec![ManagedAccount {
+                    id: "a1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    label: "Work".into(),
+                    email: Some("work@example.com".into()),
+                    signed_in: true,
+                    plan_label: None,
+                    usage_windows: Vec::new(),
+                }],
+                project_defaults: vec![ProjectAccountDefault {
+                    space_id: "s1".into(),
+                    harness: HarnessId::ClaudeCode,
+                    account_id: Some("a1".into()),
+                }],
+                ..Default::default()
+            }
+        } else {
+            ManagedAccountsSnapshot::default()
+        };
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.set_managed_accounts(Some("d"), snapshot);
+            })
+        });
+    }
+
+    fn start_with_prompt(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        text: &str,
+    ) {
+        let prompt = shell.read_with(cx, |shell, cx| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            dialog.input_focus(cx)
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&prompt, cx);
+        });
+        draw(cx);
+        cx.simulate_input(text);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+    }
+
+    /// The account chip names the project's default; picking another account
+    /// overrides it for this one chat and Start sends the pick.
+    #[gpui::test]
+    fn start_chat_account_chip_overrides_the_project_default_for_one_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        seed_accounts(&shell, cx, true);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-account").is_some());
+        assert!(
+            cx.debug_bounds("start-chat-account-0").is_none(),
+            "closed until the chip is clicked"
+        );
+        click(cx, "start-chat-account-chip");
+        draw(cx);
+        // Default, then the one managed account.
+        assert!(cx.debug_bounds("start-chat-account-0").is_some());
+        assert!(cx.debug_bounds("start-chat-account-1").is_some());
+        assert!(cx.debug_bounds("start-chat-account-2").is_none());
+        click(cx, "start-chat-account-0");
+        draw(cx);
+        shell.read_with(cx, |shell, _| {
+            let Some(WorkOutlineModal::StartChat(dialog)) = &shell.work_outline_modal else {
+                panic!("dialog");
+            };
+            assert_eq!(dialog.account_choice, Some(None), "Default, this chat only");
+            assert!(!dialog.account_open);
+        });
+        start_with_prompt(&shell, cx, "Ship it");
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0]["accountId"], "", "empty = the Default login");
+    }
+
+    /// Without an override the launch carries no account (the project's
+    /// default resolves at the first run), and with no managed accounts the
+    /// chip stays out of the dialog.
+    #[gpui::test]
+    fn start_chat_without_an_override_sends_no_account(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, cx) = test_shell(cx, dir.path());
+        let calls = seed(
+            &shell,
+            cx,
+            execution_fixture::snapshot("s1"),
+            true,
+            validated_ok(),
+            launched("chat-new"),
+        );
+        seed_composer_picker(&shell, cx);
+        seed_accounts(&shell, cx, false);
+        shell
+            .update(cx, |shell, cx| {
+                shell.open_start_chat("s1", HOUSEKEEPING, cx)
+            })
+            .unwrap();
+        draw(cx);
+        assert!(cx.debug_bounds("start-chat-account").is_none());
+        start_with_prompt(&shell, cx, "Ship it");
+        let creates = calls_to(&calls, mast_rpc::methods::CREATE_CHAT_FOR_WORK_ITEM);
+        assert_eq!(creates.len(), 1);
+        assert!(creates[0].get("accountId").is_none());
     }
 
     type PrCalls = Arc<Mutex<Vec<serde_json::Value>>>;

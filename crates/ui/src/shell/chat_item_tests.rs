@@ -104,6 +104,8 @@ fn mount<'a>(
                             label: "Work".into(),
                             email: None,
                             signed_in: false,
+                            plan_label: None,
+                            usage_windows: Vec::new(),
                         }],
                         project_defaults: Vec::new(),
                         chat_pins: vec![ChatAccountPin {

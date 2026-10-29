@@ -1183,6 +1183,13 @@ pub struct ManagedAccount {
     pub email: Option<String>,
     #[serde(default)]
     pub signed_in: bool,
+    /// Plan ("pro", "max"…) reported with the usage probe; absent until probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+    /// Rate-limit windows probed with this account's own token, same source
+    /// as the global slots. Empty until a forced list fills it.
+    #[serde(default)]
+    pub usage_windows: Vec<AgentUsageWindow>,
 }
 
 /// A project's default account for one harness. A project with no entry (or

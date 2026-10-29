@@ -407,6 +407,22 @@ impl SessionsEngine {
         let _ = self.inner.managed_accounts.set(accounts);
     }
 
+    /// Pin a new chat to a managed account chosen at launch (Start Chat's
+    /// account chip). A no-op for a chat that is already pinned.
+    pub fn pin_chat_account(
+        &self,
+        chat_id: &str,
+        harness: mast_proto::HarnessId,
+        account_id: &str,
+    ) -> Result<(), crate::EngineError> {
+        match self.inner.managed_accounts.get() {
+            Some(accounts) => accounts.pin_chat(chat_id, harness, account_id),
+            None => Err(crate::EngineError::Other(
+                "per-project accounts are not available here".into(),
+            )),
+        }
+    }
+
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);

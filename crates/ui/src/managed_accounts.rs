@@ -168,6 +168,94 @@ pub fn pick_entries(
     entries
 }
 
+/// Start Chat's account chip: the account the new chat will use, with the
+/// choices that override it for this one chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAccountChip {
+    pub label: String,
+    /// The pick differs from the project's default.
+    pub overridden: bool,
+    pub entries: Vec<PickEntry>,
+}
+
+/// The chip for a new chat of `harness` in `space_id`. `choice` is the
+/// dialog's override (`None` = none; `Some(None)` = Default;
+/// `Some(Some(id))` = that account). `None` when the harness has no
+/// accounts or the device has no managed account for it, so the dialog
+/// stays quiet for people who never added one.
+pub fn start_chat_chip(
+    snapshot: Option<&ManagedAccountsSnapshot>,
+    space_id: &str,
+    harness: HarnessId,
+    choice: Option<&Option<String>>,
+) -> Option<StartAccountChip> {
+    if !supports_accounts(harness) {
+        return None;
+    }
+    let snapshot = snapshot?;
+    let accounts = accounts_for(snapshot, harness);
+    if accounts.is_empty() {
+        return None;
+    }
+    let default_id = project_account(snapshot, space_id, harness).map(|a| a.id.clone());
+    let effective = match choice {
+        Some(pick) => pick.clone().filter(|id| accounts.iter().any(|a| &a.id == id)),
+        None => default_id.clone(),
+    };
+    let label = effective
+        .as_ref()
+        .and_then(|id| accounts.iter().find(|a| &a.id == id))
+        .map_or("Default", |a| a.label.as_str())
+        .to_string();
+    let mut entries = vec![PickEntry {
+        account_id: None,
+        label: "Default".into(),
+        detail: None,
+        selected: effective.is_none(),
+        saved_slot: None,
+        disabled: false,
+    }];
+    entries.extend(accounts.into_iter().map(|a| PickEntry {
+        account_id: Some(a.id.clone()),
+        label: a.label.clone(),
+        detail: Some(account_detail(a)),
+        selected: effective.as_deref() == Some(a.id.as_str()),
+        saved_slot: None,
+        disabled: false,
+    }));
+    Some(StartAccountChip {
+        label,
+        overridden: effective != default_id,
+        entries,
+    })
+}
+
+/// What the dialog stores after the user picks `account_id` (`None` =
+/// Default): picking the project's own default clears the override.
+pub fn start_chat_choice(
+    snapshot: Option<&ManagedAccountsSnapshot>,
+    space_id: &str,
+    harness: HarnessId,
+    account_id: Option<String>,
+) -> Option<Option<String>> {
+    let default_id = snapshot
+        .and_then(|s| project_account(s, space_id, harness))
+        .map(|a| a.id.clone());
+    (account_id != default_id).then_some(account_id)
+}
+
+/// `CreateChatForWorkItem.accountId` for the dialog's override: absent when
+/// there is none, empty for Default.
+pub fn launch_account_id(
+    harness: HarnessId,
+    choice: Option<&Option<String>>,
+) -> Option<String> {
+    if !supports_accounts(harness) {
+        return None;
+    }
+    choice.map(|pick| pick.clone().unwrap_or_default())
+}
+
 /// True when the snapshot offers any saved login for `harness`.
 pub fn has_saved(snapshot: Option<&ManagedAccountsSnapshot>, harness: HarnessId) -> bool {
     snapshot.is_some_and(|s| s.saved.iter().any(|a| a.harness == harness))
@@ -185,10 +273,20 @@ pub const SAVED_NOTE: &str = "Choosing a saved login moves it into this project'
 
 /// Email, or "Not signed in".
 pub fn account_detail(account: &ManagedAccount) -> String {
-    match (&account.email, account.signed_in) {
+    let base = match (&account.email, account.signed_in) {
         (Some(email), _) => email.clone(),
-        _ => "Not signed in".into(),
+        _ => return "Not signed in".into(),
+    };
+    match account.plan_label.as_deref().filter(|p| !p.is_empty()) {
+        Some(plan) => format!("{base} \u{b7} {plan}"),
+        None => base,
     }
+}
+
+/// `ListManagedAccounts` params: the Settings page forces the usage probe on
+/// a visit's first list, like the global accounts list does.
+pub fn list_params(force_usage: bool) -> serde_json::Value {
+    serde_json::json!({ "forceUsage": force_usage })
 }
 
 pub fn set_project_account_params(
@@ -1155,6 +1253,8 @@ mod tests {
             label: label.into(),
             email: None,
             signed_in: false,
+            plan_label: None,
+            usage_windows: Vec::new(),
         }
     }
 
@@ -1282,5 +1382,81 @@ mod tests {
             set_project_account_params("s1", HarnessId::ClaudeCode, Some("a1"))["accountId"],
             "a1"
         );
+    }
+
+    #[test]
+    fn account_detail_shows_the_probed_plan_after_the_email() {
+        let mut a = account("a1", HarnessId::ClaudeCode, "Work");
+        assert_eq!(account_detail(&a), "Not signed in");
+        a.signed_in = true;
+        a.email = Some("me@example.com".into());
+        assert_eq!(account_detail(&a), "me@example.com");
+        a.plan_label = Some("Max".into());
+        assert_eq!(account_detail(&a), "me@example.com \u{b7} Max");
+    }
+
+    #[test]
+    fn list_params_carry_the_force_usage_flag() {
+        assert_eq!(list_params(true), serde_json::json!({ "forceUsage": true }));
+        assert_eq!(list_params(false), serde_json::json!({ "forceUsage": false }));
+    }
+
+    #[test]
+    fn start_chat_chip_shows_the_project_default_and_marks_overrides() {
+        let snap = snapshot();
+        let chip = start_chat_chip(Some(&snap), "s1", HarnessId::ClaudeCode, None).unwrap();
+        assert_eq!(chip.label, "Work");
+        assert!(!chip.overridden);
+        let selected: Vec<_> = chip.entries.iter().filter(|e| e.selected).collect();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].account_id.as_deref(), Some("a1"));
+        // Default login picked for this one chat.
+        let chip =
+            start_chat_chip(Some(&snap), "s1", HarnessId::ClaudeCode, Some(&None)).unwrap();
+        assert_eq!(chip.label, "Default");
+        assert!(chip.overridden);
+        assert!(chip.entries[0].selected);
+        // A project with no default shows Default, not overridden.
+        let chip = start_chat_chip(Some(&snap), "s2", HarnessId::ClaudeCode, None).unwrap();
+        assert_eq!(chip.label, "Default");
+        assert!(!chip.overridden);
+    }
+
+    #[test]
+    fn start_chat_chip_is_quiet_without_accounts_to_choose_from() {
+        let snap = snapshot();
+        assert!(start_chat_chip(None, "s1", HarnessId::ClaudeCode, None).is_none());
+        assert!(start_chat_chip(Some(&snap), "s1", HarnessId::Cursor, None).is_none());
+        let empty = ManagedAccountsSnapshot::default();
+        assert!(start_chat_chip(Some(&empty), "s1", HarnessId::Codex, None).is_none());
+    }
+
+    #[test]
+    fn picking_the_projects_own_default_clears_the_override() {
+        let snap = snapshot();
+        let pick = |id: Option<&str>| {
+            start_chat_choice(Some(&snap), "s1", HarnessId::ClaudeCode, id.map(str::to_string))
+        };
+        assert_eq!(pick(Some("a1")), None);
+        assert_eq!(pick(None), Some(None));
+        // Another project (no default) treats Default as the baseline.
+        assert_eq!(
+            start_chat_choice(Some(&snap), "s2", HarnessId::ClaudeCode, None),
+            None
+        );
+    }
+
+    #[test]
+    fn launch_account_id_is_absent_without_an_override_and_empty_for_default() {
+        assert_eq!(launch_account_id(HarnessId::ClaudeCode, None), None);
+        assert_eq!(
+            launch_account_id(HarnessId::ClaudeCode, Some(&None)).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            launch_account_id(HarnessId::Codex, Some(&Some("a2".into()))).as_deref(),
+            Some("a2")
+        );
+        assert_eq!(launch_account_id(HarnessId::Cursor, Some(&None)), None);
     }
 }

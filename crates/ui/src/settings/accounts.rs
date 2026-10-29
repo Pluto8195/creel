@@ -462,7 +462,7 @@ impl AccountsPage {
         trigger.into_any_element()
     }
 
-    fn load_managed(&mut self, cx: &mut Context<Self>) {
+    fn load_managed(&mut self, force_usage: bool, cx: &mut Context<Self>) {
         let rpc = self
             .state
             .read(cx)
@@ -471,7 +471,10 @@ impl AccountsPage {
         self.managed = Loadable::Loading;
         self.managed_task = Some(cx.spawn(async move |this, cx| {
             let result = rpc
-                .call(methods::LIST_MANAGED_ACCOUNTS, serde_json::json!({}))
+                .call(
+                    methods::LIST_MANAGED_ACCOUNTS,
+                    crate::managed_accounts::list_params(force_usage),
+                )
                 .await
                 .and_then(|v| {
                     serde_json::from_value::<ManagedAccountsSnapshot>(v).map_err(|e| e.to_string())
@@ -541,13 +544,14 @@ impl AccountsPage {
         self.account_flow_sub = Some(cx.subscribe(&flow, |this: &mut Self, _, _, cx| {
             this.account_flow = None;
             this.account_flow_sub = None;
-            this.load_managed(cx);
+            this.load_managed(true, cx);
         }));
         self.account_flow = Some(flow);
         cx.notify();
     }
 
     fn render_project_accounts(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let now = Utc::now();
         let rows: Vec<AnyElement> = match &self.managed {
             Loadable::Ready(snapshot) => snapshot
                 .accounts
@@ -555,6 +559,13 @@ impl AccountsPage {
                 .enumerate()
                 .map(|(ix, account)| {
                     let remove_id = account.id.clone();
+                    // The meters sit under this row's own label and email, so
+                    // each ring is attributed to the account it measures.
+                    let meters: Vec<AnyElement> = account
+                        .usage_windows
+                        .iter()
+                        .map(|w| self.render_usage_meter(w, theme, now))
+                        .collect();
                     div()
                         .id(("managed-account-row", ix))
                         .px(px(20.0))
@@ -580,7 +591,18 @@ impl AccountsPage {
                                         .child(SharedString::from(
                                             crate::managed_accounts::account_detail(account),
                                         )),
-                                ),
+                                )
+                                .when(!meters.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .id(("managed-account-usage", ix))
+                                            .mt(px(6.0))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .children(meters),
+                                    )
+                                }),
                         )
                         .child(widgets::badge(
                             theme,
@@ -675,7 +697,7 @@ impl AccountsPage {
     }
 
     fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
-        self.load_managed(cx);
+        self.load_managed(force_usage, cx);
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
             return;
