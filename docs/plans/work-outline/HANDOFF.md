@@ -464,6 +464,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   `docs/plans/rename-migration.md`): `~/.zeron`, bundle id `sh.zeron.app.dev`, Keychain names, the
   `zeron` binary, the `zeron/` submodule folder. `scripts/rename-map.sh` maps upstream code onto the
   new names. New git spawns use `mast_harness::git_command()`.
+- **Chat header revamp** (2026-10-28, option C + B's card on hover): `chat_item.rs` fact sheet feeds
+  three surfaces. Header: clickable trimmed breadcrumb, title, chips (model actual/configured,
+  account, branch, PR, ticket), ⚠ / ● badges opening the Item tab. Sticky "Item" tab (first in the
+  right pane, not closable): path, instructions (Edit, Compare/Apply, proposals), Runs in, Model,
+  Account, Links, Needs you, Plan, Children; no-item chats get Runs in, Model, Account, "Add to
+  outline". Hover card: ~400 ms show, 160 ms grace, ⌥⌘I pins; never takes focus. ⌥⌘; opens the
+  Item tab. Removed: the work-context strip, drift and proposal lines, and the header's workspace /
+  chat-id / session-id chips. Follow-ups: restore chat/session id copy (Item tab) and rewrite the
+  deleted `open_web_reference` tests against the PR chip.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -550,8 +559,6 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 - **Artifacts phase 4:** G (comments on HTML anchors).
 - **Artifacts phase 5:** F (side-by-side options + pick) and H (canonical plan with the linked
   Linear project shown next to it; no mirroring into Linear).
-- **Chat header / side-panel revamp** based on the outline (item path, instructions state,
-  execution root). The work-context strip shipped; the rest is waiting on Mikey's approval.
 
 ## Parked (do not start unasked)
 
