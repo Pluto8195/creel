@@ -521,6 +521,14 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   2/3/4 up, per-column Widen/Narrow (2.2x share), Fit / 100% (real size, horizontal scroll); remembered
   per artifact (`artifactSideLayouts`). `crates/ui/src/artifacts/side_layout.rs`; conventions doc §6
   and the artifact_publish description tell design agents to set the width.
+- **Item tab A1 + Team tab** (2026-10-29, `item-tab-team`; design mast-artifact:b30aa528f035e921c286d66a56eb7606):
+  Needs-you block at the top of the Item tab (Required Actions for the item + descendants) grouped
+  Blocking → Ready to merge → FYI, oldest first, 2-line clamp with Details, inline Reply & resolve /
+  Resolve / Open / Approve; same grouping in the Details panel and the global Required Actions panel.
+  Other Item tab sections are one-line accordion rows. Team tab (`team.rs`, `shell/team_ui.rs`) appears
+  only for chats with workers (child chats or chats on descendant items): per-worker state, last
+  activity, PR/ticket chips with status, diff stats and Ready-to-merge jump, with a roll-up line; the
+  Item tab shows the roll-up and top workers.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
@@ -538,6 +546,7 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   - Engine integration, flaky under full load (pass alone): `instruction_delivery` revision-wait tests.
   - Flaky under full load with several child chats building (pass alone): `external_import_links_repair::repair_*`,
     `workspace_files::workspace_file_rpcs_list_search_read_write_and_watch`, harness `executable::tests::version_probe_bounds_hangs_and_rejects_nonzero`.
+  - Engine integration, flaky under load (pass alone): `codex_login_resolution::{codex_login_honors_override_only_installation, login_child}`.
   - Harness integration, environmental: `codex::models_discovers_visible_catalog_with_pagination`
     (expects `/bin/false`, which macOS lacks); `shell_env::falls_back_when_interactive_attempt_hangs`
     (flaky on the integration head too).
