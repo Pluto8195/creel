@@ -1095,6 +1095,10 @@ pub struct AgentAccount {
     /// Epoch millis of the slot's last snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_at: Option<i64>,
+    /// The slot's login now lives in a project (managed) account; it is no
+    /// longer offered for switching, so two homes never share one refresh token.
+    #[serde(default)]
+    pub promoted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1149,6 +1153,12 @@ pub struct AgentLoginPoll {
     /// agent had to install first); the app opens it once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The CLI is waiting for the user to paste the code the browser shows.
+    #[serde(default)]
+    pub awaiting_code: bool,
+    /// A device/user code the browser asks for (never an auth secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1204,6 +1214,26 @@ pub struct ManagedAccountsSnapshot {
     pub accounts: Vec<ManagedAccount>,
     pub project_defaults: Vec<ProjectAccountDefault>,
     pub chat_pins: Vec<ChatAccountPin>,
+    /// Saved Settings → Accounts logins that can be promoted into a project
+    /// account. Filled by the RPC layer from the global-switch slots.
+    #[serde(default)]
+    pub saved: Vec<SavedAccountOption>,
+}
+
+/// A saved (global-switch) login offered in the project account picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedAccountOption {
+    /// The slot id (what `PromoteSavedAccount` takes).
+    pub id: String,
+    pub harness: HarnessId,
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+    /// This is the live Default login: promoting it would put one refresh
+    /// token in two homes, so it is shown but not selectable.
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// CLI plan rate-limit window (accounts settings meters) — NOT app token accounting.

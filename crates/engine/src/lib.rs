@@ -69,7 +69,7 @@ pub mod work_outline_pr_links;
 pub mod workspace_files;
 pub mod workspace_host;
 
-pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
+pub use agent_accounts::{AgentAccounts, AgentAccountsConfig, PromotableSlot};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
@@ -79,7 +79,9 @@ pub use diff_sync::{
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
-pub use managed_accounts::{ManagedAccounts, ManagedAccountsConfig};
+pub use managed_accounts::{
+    HomeCredentialStore, ManagedAccounts, ManagedAccountsConfig, claude_keychain_service,
+};
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};

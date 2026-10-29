@@ -180,6 +180,27 @@ struct Slot {
     /// active account (which re-snapshots and bumps `saved_at`) never reorders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     created_at: Option<i64>,
+    /// Set once this login was copied into a project account (managed home).
+    /// The managed home now owns the refresh token: Mast stops refreshing the
+    /// slot and stops offering it for switching. A fresh live snapshot of the
+    /// same account (a new login) writes a new slot value and clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    promoted_to: Option<String>,
+}
+
+impl Slot {
+    fn is_promoted(&self) -> bool {
+        self.promoted_to.is_some()
+    }
+}
+
+/// A slot's login, read for copying into a managed home. Holds secrets: no
+/// `Debug`, never logged.
+pub struct PromotableSlot {
+    pub slot_id: String,
+    pub email: String,
+    pub credentials: serde_json::Value,
+    pub claude_config: Option<serde_json::Value>,
 }
 
 /// A live detection result (before it's persisted into a slot).
@@ -266,6 +287,9 @@ struct Inner {
     /// Slots with a token refresh in flight — a second refresh of the same
     /// (commonly single-use) refresh token would revoke the family.
     inflight_refreshes: Mutex<std::collections::HashSet<String>>,
+    /// Account keys of the live logins as of the last `list` (None = never
+    /// listed). Promotion consults this instead of reading the live login.
+    last_active: Mutex<Option<HashMap<HarnessId, String>>>,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -302,6 +326,7 @@ impl AgentAccounts {
                 flows: Mutex::new(HashMap::new()),
                 usage_cache: Mutex::new(HashMap::new()),
                 inflight_refreshes: Mutex::new(std::collections::HashSet::new()),
+                last_active: Mutex::new(None),
             }),
         }
     }
@@ -350,6 +375,8 @@ impl AgentAccounts {
             }
         }
 
+        *lock(&self.inner.last_active) = Some(active_keys.clone());
+
         // Stable presentation order: provider, then slot creation order (never
         // active-first — switching must not reshuffle the cards).
         let mut accounts: Vec<AgentAccount> = Vec::new();
@@ -375,8 +402,9 @@ impl AgentAccounts {
                     display_name: slot.profile.display_name.clone(),
                     organization: slot.profile.organization.clone(),
                     auth_kind: Some(slot.profile.auth_kind),
-                    switchable: true,
+                    switchable: !slot.is_promoted() || active,
                     saved_at: Some(slot.saved_at),
+                    promoted: slot.is_promoted(),
                 });
             }
             // A live login whose credentials we couldn't read has no slot — still
@@ -396,6 +424,7 @@ impl AgentAccounts {
                     auth_kind: Some(u.profile.auth_kind),
                     switchable: false,
                     saved_at: None,
+                    promoted: false,
                 });
             }
         }
@@ -422,6 +451,13 @@ impl AgentAccounts {
                     "That saved login no longer exists — refresh and try again.".into(),
                 )
             })?;
+        if slot.is_promoted() {
+            return Err(EngineError::Other(
+                "That login now belongs to a project account — switching to it here would put \
+                 one sign-in in two places. Add it again to use it globally."
+                    .into(),
+            ));
+        }
         match harness {
             HarnessId::ClaudeCode => self.activate_claude(&slot).await?,
             HarnessId::Codex => self.activate_codex(&slot)?,
@@ -495,6 +531,96 @@ impl AgentAccounts {
         let json = serde_json::to_string_pretty(&slot.credentials)
             .map_err(|e| EngineError::Other(format!("serialize codex auth: {e}")))?;
         write_file_atomic(&self.inner.config.codex_auth_file(), json.as_bytes(), true)
+    }
+
+    // ── promote a saved login into a project account ────────────────────────
+
+    /// Saved logins offered to the project picker, read from Mast's own slot
+    /// files and the last `list` result — never from the live login. Promoted
+    /// slots are omitted.
+    pub fn saved_options(&self) -> Vec<mast_proto::SavedAccountOption> {
+        let active = lock(&self.inner.last_active).clone().unwrap_or_default();
+        [HarnessId::ClaudeCode, HarnessId::Codex]
+            .into_iter()
+            .flat_map(|harness| {
+                let live = active.get(&harness).cloned();
+                self.read_slots(harness)
+                    .into_iter()
+                    .filter(|s| !s.is_promoted() && s.profile.auth_kind == AgentAuthKind::Oauth)
+                    .map(move |s| mast_proto::SavedAccountOption {
+                        active: live.as_deref() == Some(s.account_key.as_str()),
+                        id: s.id,
+                        harness,
+                        email: Some(s.profile.email),
+                        plan_label: s.profile.plan,
+                    })
+            })
+            .collect()
+    }
+
+    /// Read a slot for promotion. Refuses the live Default login (one refresh
+    /// token must never live in two homes), an already-promoted slot, and any
+    /// state where the live login is unknown.
+    pub fn export_for_promotion(
+        &self,
+        harness: HarnessId,
+        slot_id: &str,
+    ) -> Result<PromotableSlot, EngineError> {
+        if slot_id.len() != 16 || !slot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(EngineError::Other("Unknown saved account.".into()));
+        }
+        let slot = self
+            .read_slots(harness)
+            .into_iter()
+            .find(|s| s.id == slot_id)
+            .ok_or_else(|| EngineError::Other("That saved login no longer exists.".into()))?;
+        if slot.is_promoted() {
+            return Err(EngineError::Other(
+                "That login is already used by a project account.".into(),
+            ));
+        }
+        if slot.profile.auth_kind != AgentAuthKind::Oauth {
+            return Err(EngineError::Other(
+                "Only signed-in accounts can be used for a project.".into(),
+            ));
+        }
+        let active = lock(&self.inner.last_active).clone().ok_or_else(|| {
+            EngineError::Other(
+                "Open Settings → Accounts once so Mast can tell which login is your Default, \
+                 then try again."
+                    .into(),
+            )
+        })?;
+        if active.get(&harness).map(String::as_str) == Some(slot.account_key.as_str()) {
+            return Err(EngineError::Other(
+                "This is your Default login. Using it in a project too would share one sign-in \
+                 between two homes and one could be signed out when it refreshes. Use Add \
+                 account to sign in separately."
+                    .into(),
+            ));
+        }
+        Ok(PromotableSlot {
+            slot_id: slot.id,
+            email: slot.profile.email,
+            credentials: slot.credentials,
+            claude_config: slot.claude_config,
+        })
+    }
+
+    /// Record that the slot's login moved into managed account `account_id`.
+    pub fn mark_promoted(
+        &self,
+        harness: HarnessId,
+        slot_id: &str,
+        account_id: &str,
+    ) -> Result<(), EngineError> {
+        let mut slot = self
+            .read_slots(harness)
+            .into_iter()
+            .find(|s| s.id == slot_id)
+            .ok_or_else(|| EngineError::Other("That saved login no longer exists.".into()))?;
+        slot.promoted_to = Some(account_id.to_string());
+        self.write_slot(&slot)
     }
 
     // ── forget ──────────────────────────────────────────────────────────────
@@ -937,6 +1063,7 @@ impl AgentAccounts {
             claude_config: Some(serde_json::json!({ "oauthAccount": oauth_account })),
             saved_at: now_ms(),
             created_at: None,
+            promoted_to: None,
         })?;
         lock(&self.inner.flows).remove(login_id);
         self.list(false).await
@@ -958,6 +1085,8 @@ impl AgentAccounts {
                     status: AgentLoginStatus::Pending,
                     message: None,
                     url: None,
+                    awaiting_code: false,
+                    device_code: None,
                 });
             }
             Some(LoginFlow::Task { .. }) => unreachable!("task logins poll above"),
@@ -991,6 +1120,8 @@ impl AgentAccounts {
                 status: AgentLoginStatus::Done,
                 message: None,
                 url: None,
+                awaiting_code: false,
+                device_code: None,
             });
         }
         let exited = *lock(&exit);
@@ -1015,12 +1146,16 @@ impl AgentAccounts {
                 status: AgentLoginStatus::Error,
                 message: Some(message),
                 url: None,
+                awaiting_code: false,
+                device_code: None,
             });
         }
         Ok(AgentLoginPoll {
             status: AgentLoginStatus::Pending,
             message: None,
             url: None,
+            awaiting_code: false,
+            device_code: None,
         })
     }
 
@@ -1038,17 +1173,23 @@ impl AgentAccounts {
                         status: AgentLoginStatus::Pending,
                         message: state.message.clone(),
                         url: state.url.clone(),
+                        awaiting_code: false,
+                        device_code: None,
                     });
                 }
                 Some(Ok(())) => AgentLoginPoll {
                     status: AgentLoginStatus::Done,
                     message: None,
                     url: None,
+                    awaiting_code: false,
+                    device_code: None,
                 },
                 Some(Err(message)) => AgentLoginPoll {
                     status: AgentLoginStatus::Error,
                     message: Some(message.clone()),
                     url: None,
+                    awaiting_code: false,
+                    device_code: None,
                 },
             }
         };
@@ -1172,6 +1313,7 @@ impl AgentAccounts {
             claude_config: d.claude_config.clone(),
             saved_at: now_ms(),
             created_at: None,
+            promoted_to: None,
         })
     }
 
@@ -1325,7 +1467,7 @@ impl AgentAccounts {
             // stored token first and rotate the slot-owned pair only after
             // the endpoint actually rejected it. The active login is never
             // rotated: the running CLI may hold its single-use refresh token.
-            Err(_) if !is_active => {
+            Err(_) if !is_active && !slot.is_promoted() => {
                 let fresh = self.refresh_claude_slot(slot).await?;
                 self.claude_usage_request(&fresh).await.ok().flatten()
             }
