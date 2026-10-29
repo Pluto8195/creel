@@ -859,7 +859,7 @@ fn scan_https_url(output: &str) -> Option<String> {
 /// True when the CLI is asking for a pasted code.
 fn prompts_for_code(output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
-    ["paste", "code here", "enter the code", "enter code", "authorization code"]
+    ["paste", "code here", "authorization code"]
         .iter()
         .any(|needle| lower.contains(needle))
 }
