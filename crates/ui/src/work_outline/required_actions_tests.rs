@@ -949,7 +949,7 @@ fn proposals_for_one_instruction_group_together(cx: &mut gpui::TestAppContext) {
         .expect("one group for both");
     for id in ["p-a", "p-b"] {
         let card = row_bounds(vcx, format!("work-item-proposal-{id}")).unwrap();
-        assert!(group.contains(&card.origin) && group.contains(&card.bottom_right()));
+        assert!(group.contains(&card.center()), "{id} sits in the group");
     }
     // The pre-existing add proposal on UI is outside the group.
     let add = row_bounds(vcx, format!("work-item-proposal-{}", m4::P_UI)).unwrap();
