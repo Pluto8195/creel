@@ -529,6 +529,10 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   only for chats with workers (child chats or chats on descendant items): per-worker state, last
   activity, PR/ticket chips with status, diff stats and Ready-to-merge jump, with a roll-up line; the
   Item tab shows the roll-up and top workers.
+  PR rows in Item tab Links and the hover card (2026-10-30, `item-tab-pr-status`): state-coloured icon,
+  truncated title (tooltip with repo#n, state, checks, review), Open/Draft/Merged/Closed label, checks dot,
+  review decision, from the GithubStore cache (uncached → "PR #N" until `request_status` lands). Tickets
+  show "ID title" plus Linear state when known. Team tab PR chips are a separate component (unchanged).
 - **Project templates, increment 1** (2026-10-29, `project-templates`; design option A
   mast-artifact:d32bb551266cd62ceef33f16477b6c1a): Group into… (⌘/⇧-click multi-select item rows,
   right-click or ⌘⇧G; new container or existing item; one undo step). Per-item `isProject` and
