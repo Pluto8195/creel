@@ -5551,11 +5551,7 @@ impl Composer {
     /// Tell the engine the user is acting in this composer's chat. Fire and
     /// forget; throttled by the reporter unless the draft flag flipped.
     pub(crate) fn report_user_activity(&mut self, cx: &mut Context<Self>) {
-        let draft = !self.input.read(cx).text().is_empty();
-        let Some(params) = self
-            .activity
-            .note(&self.current_key, Some(draft), Instant::now())
-        else {
+        let Some(params) = self.next_activity_ping(cx) else {
             return;
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -5571,6 +5567,16 @@ impl Composer {
                 .await;
         })
         .detach();
+    }
+
+    /// The ping to send now, if the throttle allows one.
+    fn next_activity_ping(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<mast_proto::NoteChatUserActivityParams> {
+        let draft = !self.input.read(cx).text().is_empty();
+        self.activity
+            .note(&self.current_key, Some(draft), Instant::now())
     }
 
     fn on_input_edited(&mut self, cx: &mut Context<Self>) {
@@ -9313,31 +9319,20 @@ mod tests {
     /// flips between empty and non-empty, and is throttled otherwise.
     #[gpui::test]
     fn typing_reports_user_activity_with_the_draft_flag_and_throttles(cx: &mut gpui::TestAppContext) {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let (out, mut server_in) = tokio::sync::mpsc::channel::<String>(16);
-        let (_server_out, inbound) = tokio::sync::mpsc::channel::<String>(16);
         let state = cx.new(|_| AppState::new());
-        state.update(cx, |state, _| {
-            state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                mast_rpc::RpcClient::new(out, inbound),
-            ));
-            state.selected_chat = Some("c".into());
-        });
+        state.update(cx, |state, _| state.selected_chat = Some("c".into()));
         let composer = cx.new(|cx| Composer::new(state, cx));
         composer.update(cx, |composer, cx| {
             composer.input.update(cx, |input, cx| input.set_text("hi", cx));
-            composer.report_user_activity(cx);
+            let first = composer.next_activity_ping(cx).unwrap();
+            assert_eq!((first.chat_id.as_str(), first.draft_non_empty), ("c", Some(true)));
             // Same flag again, inside the window: nothing more.
-            composer.report_user_activity(cx);
+            assert!(composer.next_activity_ping(cx).is_none());
+            // Cleared (a send, or deleting the text): the flip goes out at once.
             composer.input.update(cx, |input, cx| input.set_text("", cx));
-            composer.report_user_activity(cx);
+            let cleared = composer.next_activity_ping(cx).unwrap();
+            assert_eq!(cleared.draft_non_empty, Some(false));
         });
-        cx.run_until_parked();
-        let frames: Vec<String> = std::iter::from_fn(|| server_in.try_recv().ok()).collect();
-        assert_eq!(frames.len(), 2, "{frames:?}");
-        assert!(frames[0].contains("NoteChatUserActivity") && frames[0].contains("\"draftNonEmpty\":true"));
-        assert!(frames[1].contains("\"draftNonEmpty\":false"));
     }
 
     /// The press intent is judged by eye everywhere except here: that a

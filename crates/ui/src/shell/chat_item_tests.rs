@@ -1389,7 +1389,7 @@ fn held_status() -> mast_proto::WakeStatus {
 fn the_team_header_has_wake_switches_and_shows_held_and_unseen_only_when_present(
     cx: &mut TestAppContext,
 ) {
-    let (shell, vcx) = mount(cx, CHAT_API, false, worker_asks);
+    let (shell, vcx) = mount(cx, CHAT_API, true, worker_asks);
     add_workers(&shell, vcx, 3);
     shell.update(vcx, |shell, cx| shell.open_team_tab(cx));
     draw(vcx);
