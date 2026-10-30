@@ -106,6 +106,11 @@ fn proposal_view_field_names_are_pinned() {
             tool_call_id: Some("t-1".into()),
         },
         created_at: 10,
+        action: ProposalAction::Edit,
+        instruction_id: Some("i-1".into()),
+        base_text: Some("Always lint".into()),
+        base_updated_at: 5,
+        rationale: Some("clearer".into()),
         review: Some(InstructionProposalReview {
             state: ProposalReviewState::Approved,
             by: agent(),
@@ -125,6 +130,11 @@ fn proposal_view_field_names_are_pinned() {
             "proposedBy": agent_json(),
             "sourceRef": {"chatId": "chat-1", "messageId": "m-1", "toolCallId": "t-1"},
             "createdAt": 10,
+            "action": "edit",
+            "instructionId": "i-1",
+            "baseText": "Always lint",
+            "baseUpdatedAt": 5,
+            "rationale": "clearer",
             "review": {"state": "approved", "by": agent_json(), "at": 20, "instructionId": "i-1"},
             "status": "approved"
         }),
@@ -195,6 +205,9 @@ fn mutation_field_names_are_pinned() {
                 tool_call_id: Some("t-1".into()),
             },
             text: "Prefer small PRs".into(),
+            action: ProposalAction::Add,
+            instruction_id: None,
+            rationale: None,
             operation_id: "op-3".into(),
         }),
         json!({
@@ -212,6 +225,7 @@ fn mutation_field_names_are_pinned() {
                 proposal_id: "p-1".into(),
                 approved_text: "Prefer small pull requests".into(),
                 placement: Some(InstructionPlacement::First),
+                allow_stale: false,
                 operation_id: "op-4".into(),
             },
         ),
@@ -376,4 +390,35 @@ fn agent_context_field_names_are_pinned() {
     ] {
         assert!(back.get(key).is_some(), "{key}");
     }
+}
+
+#[test]
+fn modification_proposals_round_trip_and_old_rows_read_as_add() {
+    round_trip(
+        &WorkOutlineMutation::ProposeWorkItemInstruction(ProposeWorkItemInstructionParams {
+            space_id: None,
+            target: InstructionProposalTarget::default(),
+            origin: InstructionProposalOrigin::default(),
+            text: String::new(),
+            action: ProposalAction::Remove,
+            instruction_id: Some("i-1".into()),
+            rationale: Some("obsolete".into()),
+            operation_id: "op-5".into(),
+        }),
+        json!({
+            "op": "proposeWorkItemInstruction",
+            "target": {"scope": "workItem"},
+            "origin": {},
+            "text": "",
+            "action": "remove",
+            "instructionId": "i-1",
+            "rationale": "obsolete",
+            "operationId": "op-5"
+        }),
+    );
+    let old: WorkItemInstructionProposalView =
+        serde_json::from_value(json!({"id": "p", "text": "t"})).unwrap();
+    assert_eq!(old.action, ProposalAction::Add);
+    let unknown: ProposalAction = serde_json::from_value(json!("rewrite")).unwrap();
+    assert_eq!(unknown, ProposalAction::Add);
 }
