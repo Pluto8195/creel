@@ -10,23 +10,107 @@ use gpui::{
     SharedString, Styled as _, div, prelude::*, px,
 };
 use mast_engine::pr_ticket_cache::ChatLinkStatus;
-use mast_proto::{Chat, ChatLinkSource, ChatModelDisplay, Space};
+use mast_proto::{
+    Chat, ChatLinkSource, ChatModelDisplay, PullRequestCiStatus, PullRequestRef,
+    PullRequestReviewDecision, PullRequestState, PullRequestStatusSummary, Space,
+};
 
 use crate::theme::Theme;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the PR cache knows about a linked PR beyond its title; absent until
+/// the status arrives (the link then reads "PR #N").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HeaderPrStatus {
+    pub state: PullRequestState,
+    pub checks: Option<PullRequestCiStatus>,
+    pub review: Option<PullRequestReviewDecision>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HeaderPr {
     pub url: String,
     pub number: u64,
     pub title: Option<String>,
     pub source: Option<ChatLinkSource>,
+    pub status: Option<HeaderPrStatus>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl HeaderPr {
+    /// `owner/repo` parsed from a `github.com/<owner>/<repo>/pull/<n>` URL.
+    pub(crate) fn repo(&self) -> Option<String> {
+        let rest = self.url.split_once("github.com/")?.1;
+        let mut parts = rest.split('/');
+        let (owner, repo) = (parts.next()?, parts.next()?);
+        (!owner.is_empty() && !repo.is_empty()).then(|| format!("{owner}/{repo}"))
+    }
+
+    /// The `PullRequestRef` the PR cache is keyed by, when the URL names one.
+    pub(crate) fn pull_request_ref(&self) -> Option<PullRequestRef> {
+        let repo = self.repo()?;
+        let (owner, name) = repo.split_once('/')?;
+        let number = if self.number > 0 {
+            self.number
+        } else {
+            pr_number_from_url(&self.url)
+        };
+        (number > 0).then(|| PullRequestRef::new(owner, name, number))
+    }
+
+    /// Fill title and status from a cached summary (the PR cache is fresher
+    /// than the chat-link sweep).
+    /// A `partial` summary (a list's search hit) has no CI or review detail,
+    /// so it keeps what the sweep already knew.
+    pub(crate) fn apply_summary(&mut self, summary: &PullRequestStatusSummary, partial: bool) {
+        if !summary.title.trim().is_empty() {
+            self.title = Some(summary.title.clone());
+        }
+        let known = self.status.unwrap_or_default();
+        self.status = Some(HeaderPrStatus {
+            state: summary.state,
+            checks: if partial {
+                known.checks
+            } else {
+                Some(summary.ci_status).filter(|ci| *ci != PullRequestCiStatus::None)
+            },
+            review: if partial {
+                known.review
+            } else {
+                summary.review_decision
+            },
+        });
+    }
+
+    pub(crate) fn status_from_detail(detail: &mast_engine::pr_ticket_cache::PrStatus) -> HeaderPrStatus {
+        use mast_engine::pr_ticket_cache::ChecksStatus;
+        HeaderPrStatus {
+            state: match detail.state.as_str() {
+                _ if detail.is_draft => PullRequestState::Draft,
+                "merged" => PullRequestState::Merged,
+                "closed" => PullRequestState::Closed,
+                _ => PullRequestState::Open,
+            },
+            checks: detail.checks.map(|checks| match checks {
+                ChecksStatus::Passing => PullRequestCiStatus::Passing,
+                ChecksStatus::Pending => PullRequestCiStatus::Pending,
+                ChecksStatus::Failing => PullRequestCiStatus::Failing,
+            }),
+            review: match detail.review_decision.as_deref() {
+                Some("APPROVED") => Some(PullRequestReviewDecision::Approved),
+                Some("CHANGES_REQUESTED") => Some(PullRequestReviewDecision::ChangesRequested),
+                Some("REVIEW_REQUIRED") => Some(PullRequestReviewDecision::ReviewRequired),
+                _ => None,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HeaderTicket {
     pub identifier: String,
     pub title: Option<String>,
     pub url: Option<String>,
+    /// The Linear state name ("In Progress"), when the sweep has it.
+    pub state: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,6 +130,7 @@ impl HeaderLinks {
                     number: pr.number,
                     title: pr.title.clone(),
                     source: status.pr_source,
+                    status: Some(HeaderPr::status_from_detail(pr)),
                 })
                 .into_iter()
                 .collect()
@@ -61,6 +146,7 @@ impl HeaderLinks {
                         .map_or_else(|| pr_number_from_url(&link.url), |pr| pr.number),
                     title: link.detail.as_ref().and_then(|pr| pr.title.clone()),
                     source: link.source,
+                    status: link.detail.as_ref().map(HeaderPr::status_from_detail),
                 })
                 .collect()
         };
@@ -70,6 +156,7 @@ impl HeaderLinks {
                 identifier: ticket.identifier.clone(),
                 title: ticket.title.clone(),
                 url: ticket.url.clone(),
+                state: ticket.status.clone().filter(|s| !s.trim().is_empty()),
             }),
         }
     }
@@ -406,18 +493,21 @@ mod tests {
                     number: 7,
                     title: Some("First".into()),
                     source: Some(ChatLinkSource::Manual),
+                    status: None,
                 },
                 HeaderPr {
                     url: "https://github.com/acme/app/pull/8".into(),
                     number: 8,
                     title: Some("Second".into()),
                     source: Some(ChatLinkSource::Mentioned),
+                    status: None,
                 },
             ],
             ticket: Some(HeaderTicket {
                 identifier: "ENG-42".into(),
                 title: Some("Header metadata".into()),
                 url: Some("https://linear.app/acme/issue/ENG-42".into()),
+                state: None,
             }),
         };
         let items = metadata_items(&chat(), None, Some(&links));

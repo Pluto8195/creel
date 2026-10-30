@@ -135,14 +135,37 @@ impl Shell {
             .get(chat_id)
             .and_then(|entry| entry.status.as_ref())
             .map(crate::chat_metadata::HeaderLinks::from_status);
-        Some(facts(&FactsInput {
+        let mut facts = facts(&FactsInput {
             chat,
             space_path: space.map(|space| space.path.as_str()),
             account: state.chat_account_badge(chat_id),
             links: links.as_ref(),
             snapshot: snapshot.as_deref(),
             artifacts: artifacts.as_deref(),
-        }))
+        });
+        // The PR cache is fresher than the chat-link sweep: overlay title and
+        // status from it (read-only; `ensure_item_pr_statuses` fetches).
+        for pr in &mut facts.prs {
+            if let Some(entry) = pr
+                .pull_request_ref()
+                .and_then(|pr_ref| state.github.status(&pr_ref))
+                && let crate::github::store::PrEntry::Ready {
+                    status, partial, ..
+                } = entry
+            {
+                pr.apply_summary(status, *partial);
+            }
+        }
+        Some(facts)
+    }
+
+    /// Ask the existing PR status fetch for every linked PR that is not
+    /// cached (or is stale). Never notifies; the chat redraws when the PR's
+    /// entry changes (the shell fingerprint covers the PR cache).
+    fn ensure_item_pr_statuses(&self, facts: &ChatItemFacts, cx: &mut App) {
+        for pr_ref in facts.prs.iter().filter_map(|pr| pr.pull_request_ref()) {
+            crate::github::store::request_status(&self.state, &pr_ref, false, cx);
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -218,6 +241,7 @@ impl Shell {
             self.chat_item_card.dismiss();
         }
         let facts = self.chat_item_facts(&chat_id, cx)?;
+        self.ensure_item_pr_statuses(&facts, cx);
         let card = self
             .chat_item_card
             .visible()
@@ -666,6 +690,7 @@ impl Shell {
         let Some(facts) = self.chat_item_facts(&chat_id, cx) else {
             return div().size_full().into_any_element();
         };
+        self.ensure_item_pr_statuses(&facts, cx);
         let body = self.render_item_tab_sections(&facts, &theme, cx);
         let focus = self.team_panel_focus(cx);
         self.panel_root("chat-item-tab", focus, body, cx)
@@ -1057,14 +1082,8 @@ impl Shell {
                 let mut block = div().flex().flex_col().gap(px(2.0));
                 for (ix, pr) in facts.prs.iter().enumerate() {
                     let url = pr.url.clone();
-                    let label = if pr.number > 0 {
-                        format!("PR #{}", pr.number)
-                    } else {
-                        "Pull request".into()
-                    };
                     block = block.child(
-                        link(format!("chat-item-pr-{ix}"), theme.text, true)
-                            .child(SharedString::from(label))
+                        pr_link_row(format!("chat-item-pr-{ix}"), pr, theme)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let external = window.modifiers().secondary();
                                 this.open_web_reference(&url, external, window, cx)
@@ -1074,8 +1093,7 @@ impl Shell {
                 if let Some(ticket) = &facts.ticket {
                     let url = ticket.url.clone();
                     block = block.child(
-                        link("chat-item-ticket".into(), theme.text, true)
-                            .child(SharedString::from(format!("Ticket {}", ticket.identifier)))
+                        ticket_link_row("chat-item-ticket".into(), ticket, theme)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(url) = &url {
                                     let external = window.modifiers().secondary();
@@ -1395,14 +1413,8 @@ impl Shell {
             let mut block = section("links", "Links");
             for (ix, pr) in facts.prs.iter().enumerate() {
                 let url = pr.url.clone();
-                let label = if pr.number > 0 {
-                    format!("PR #{}", pr.number)
-                } else {
-                    "Pull request".into()
-                };
                 block = block.child(
-                    link(format!("{prefix}-pr-{ix}"), "")
-                        .child(SharedString::from(label))
+                    pr_link_row(format!("{prefix}-pr-{ix}"), pr, theme)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let external = window.modifiers().secondary();
                             this.open_web_reference(&url, external, window, cx)
@@ -1412,8 +1424,7 @@ impl Shell {
             if let Some(ticket) = &facts.ticket {
                 let url = ticket.url.clone();
                 block = block.child(
-                    link(format!("{prefix}-ticket"), "")
-                        .child(SharedString::from(format!("Ticket {}", ticket.identifier)))
+                    ticket_link_row(format!("{prefix}-ticket"), ticket, theme)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if let Some(url) = &url {
                                 let external = window.modifiers().secondary();
@@ -1740,4 +1751,173 @@ impl Shell {
         let outline = page.read(cx).outline_entity();
         outline.update(cx, |outline, cx| outline.reveal(&key, cx));
     }
+}
+
+/// One linked PR as a row: state icon, truncated title, `repo#n`, state,
+/// checks dot and review decision. Without cached status it is just
+/// "PR #N" (the fetch is under way). The caller adds the click handler.
+/// Selectors: `<id>`, `<id>-title`, `<id>-state`, `<id>-checks`, `<id>-review`.
+pub(super) fn pr_link_row(
+    id: String,
+    pr: &crate::chat_metadata::HeaderPr,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    use crate::github::chip;
+    let selector = |suffix: &str| {
+        let selector = format!("{id}{suffix}");
+        move || selector.clone()
+    };
+    let number = if pr.number > 0 {
+        format!("#{}", pr.number)
+    } else {
+        String::new()
+    };
+    let repo_ref = match pr.repo() {
+        Some(repo) => format!("{repo}{number}"),
+        None => number.clone(),
+    };
+    let fallback = if pr.number > 0 {
+        format!("PR #{}", pr.number)
+    } else {
+        "Pull request".to_owned()
+    };
+    let title = pr.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let icon_color = pr
+        .status
+        .map_or(theme.text_faint, |status| chip::state_color(status.state, theme));
+    let mut tip = vec![title.map_or_else(|| fallback.clone(), str::to_owned)];
+    if !repo_ref.is_empty() && title.is_some() {
+        tip.push(repo_ref.clone());
+    }
+    if let Some(status) = pr.status {
+        tip.push(chip::state_label(status.state).to_owned());
+        if let Some(label) = status.checks.and_then(chip::ci_label) {
+            tip.push(label.to_owned());
+        }
+        if let Some(label) = chip::review_decision_label(status.review) {
+            tip.push(label.to_owned());
+        }
+    }
+    let tip: SharedString = tip.join("\n").into();
+    let mut row = div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(selector(""))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(4.0))
+        .rounded(px(3.0))
+        .cursor_pointer()
+        .text_size(crate::typography::ui_rems(11.5))
+        .text_color(theme.text)
+        .hover(|el| el.bg(theme.element_hover))
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::work_outline::chips::TextTooltip(tip.clone()))
+                .into()
+        })
+        .child(
+            crate::icons::icon(crate::icons::PULL_REQUEST)
+                .flex_none()
+                .size(px(11.0))
+                .text_color(icon_color),
+        )
+        .child(
+            div()
+                .debug_selector(selector("-title"))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(SharedString::from(title.map_or(fallback, str::to_owned))),
+        );
+    if title.is_some() && !repo_ref.is_empty() {
+        row = row.child(
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(repo_ref)),
+        );
+    }
+    if let Some(status) = pr.status {
+        row = row.child(
+            div()
+                .debug_selector(selector("-state"))
+                .flex_none()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(chip::state_color(status.state, theme))
+                .child(chip::state_label(status.state)),
+        );
+        if let Some(ci) = status.checks.filter(|ci| chip::ci_glyph(*ci).is_some()) {
+            row = row.child(
+                div()
+                    .debug_selector(selector("-checks"))
+                    .flex_none()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .bg(chip::ci_color(ci, theme)),
+            );
+        }
+        if let Some(label) = chip::review_decision_label(status.review) {
+            row = row.child(
+                div()
+                    .debug_selector(selector("-review"))
+                    .flex_none()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.text_muted)
+                    .child(label),
+            );
+        }
+    }
+    row
+}
+
+/// A linked ticket row: tag icon, `ID title` truncated, Linear state.
+pub(super) fn ticket_link_row(
+    id: String,
+    ticket: &crate::chat_metadata::HeaderTicket,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let selector = id.clone();
+    let tip: SharedString = match &ticket.title {
+        Some(title) => format!("{} {title}", ticket.identifier),
+        None => ticket.identifier.clone(),
+    }
+    .into();
+    let text = tip.clone();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(4.0))
+        .rounded(px(3.0))
+        .cursor_pointer()
+        .text_size(crate::typography::ui_rems(11.5))
+        .text_color(theme.text)
+        .hover(|el| el.bg(theme.element_hover))
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::work_outline::chips::TextTooltip(tip.clone()))
+                .into()
+        })
+        .child(
+            crate::icons::icon(crate::icons::TAG)
+                .flex_none()
+                .size(px(11.0))
+                .text_color(theme.text_muted),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(text))
+        .when_some(ticket.state.clone(), |el, state| {
+            el.child(
+                div()
+                    .flex_none()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(state)),
+            )
+        })
 }

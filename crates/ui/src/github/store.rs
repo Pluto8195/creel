@@ -155,6 +155,19 @@ impl GithubStore {
         self.status(pr).and_then(PrEntry::ready)
     }
 
+    /// Put a fetched status in the cache (headless tests).
+    #[cfg(test)]
+    pub(crate) fn set_ready_for_test(&mut self, status: PullRequestStatusSummary, partial: bool) {
+        self.statuses.insert(
+            status.pr_ref.key(),
+            PrEntry::Ready {
+                status: Box::new(status),
+                at: Instant::now(),
+                partial,
+            },
+        );
+    }
+
     /// Whether a fetch of `pr` is under way (the Details "Refreshing…").
     pub(crate) fn is_loading(&self, pr: &PullRequestRef) -> bool {
         self.in_flight.contains(&pr.key()) || matches!(self.status(pr), Some(PrEntry::Loading))
