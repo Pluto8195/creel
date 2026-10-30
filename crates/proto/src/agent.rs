@@ -1019,9 +1019,13 @@ pub mod agent_tools {
         },
         ToolUsage {
             tool: tools::PROPOSE_INSTRUCTION,
-            required: &[p("text", "the instruction"), KEY_CREATE],
+            required: &[KEY_CREATE],
             optional: &[
-                p("target", "item (default), parent, or spaceRoot"),
+                p("text", "the instruction (add, edit)"),
+                p("action", "add (default), edit, or remove"),
+                p("instructionId", "existing instruction (edit, remove)"),
+                p("rationale", "short reason"),
+                p("target", "item (default), parent, or spaceRoot (add)"),
                 p("toolCallId", "string"),
             ],
             example: r#"{"text": "Run cargo fmt before committing.", "idempotencyKey": "propose-fmt"}"#,

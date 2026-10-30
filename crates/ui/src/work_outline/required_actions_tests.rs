@@ -813,3 +813,145 @@ fn details_required_actions_offer_reply_and_resolve(cx: &mut gpui::TestAppContex
             .is_some()
     );
 }
+
+const INSTRUCTION_UI: &str = "ins-ui";
+
+/// A snapshot where `UI` carries one instruction and the given proposals
+/// target it (`(id, action, proposed text, base text)`).
+fn modification_snapshot(
+    instruction_text: &str,
+    proposals: &[(&str, &str, &str, &str)],
+) -> WorkOutlineSnapshot {
+    let mut snapshot = m4::snapshot("s1");
+    snapshot.instructions.push(
+        serde_json::from_value(serde_json::json!({
+            "id": INSTRUCTION_UI,
+            "spaceId": "s1",
+            "workItemId": UI,
+            "text": instruction_text,
+            "orderKey": "a0",
+        }))
+        .unwrap(),
+    );
+    for (id, action, text, base) in proposals {
+        let mut proposal = m4::proposal(id, "s1", Some(UI), CHAT_API, text);
+        proposal.action = serde_json::from_value(serde_json::json!(action)).unwrap();
+        proposal.instruction_id = Some(INSTRUCTION_UI.into());
+        proposal.base_text = Some((*base).into());
+        proposal.rationale = Some("CI runs both".into());
+        snapshot.instruction_proposals.push(proposal);
+    }
+    snapshot
+}
+
+fn open_ui_proposals(
+    overview: &Entity<Overview>,
+    vcx: &mut gpui::VisualTestContext,
+) -> Entity<crate::work_outline::details_panel::WorkItemDetails> {
+    overview.update(vcx, |o, cx| o.open_proposals("s1".into(), UI.into(), cx));
+    vcx.run_until_parked();
+    draw(vcx);
+    overview.read_with(vcx, |o, _| o.work_item_details.clone().unwrap())
+}
+
+/// An edit shows as a diff with its rationale; Accept goes through the drift
+/// confirmation and sends the proposed text without `allowStale`.
+#[gpui::test]
+fn edit_proposal_shows_a_diff_and_accepts(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = modification_snapshot(
+        "Run the linter.",
+        &[("p-edit", "edit", "Run the linter and tests.", "Run the linter.")],
+    );
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), snapshot, proposal_reply);
+    let details = open_ui_proposals(&overview, vcx);
+    assert!(row_bounds(vcx, "work-item-proposal-diff-p-edit".into()).is_some());
+    assert!(row_bounds(vcx, "work-item-proposal-rationale-p-edit".into()).is_some());
+    assert!(row_bounds(vcx, "work-item-proposal-stale-p-edit".into()).is_none());
+    assert!(row_bounds(vcx, "work-item-proposal-review-p-edit".into()).is_some());
+    click(vcx, "work-item-proposal-accept-p-edit".into());
+    let request = details
+        .update(vcx, |d, _| d.captured_drift.take())
+        .expect("chat-ui is assigned to UI: drift confirmation");
+    vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+    vcx.run_until_parked();
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["op"], "approveWorkItemInstructionProposal");
+    assert_eq!(recorded[0]["proposalId"], "p-edit");
+    assert_eq!(recorded[0]["approvedText"], "Run the linter and tests.");
+    assert!(recorded[0].get("allowStale").is_none());
+}
+
+/// An edit whose instruction changed since the base is stale: the three-way
+/// view shows, and Apply anyway sends `allowStale`.
+#[gpui::test]
+fn stale_edit_shows_three_way_and_applies_anyway(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = modification_snapshot(
+        "Run clippy.",
+        &[("p-edit", "edit", "Run the linter and tests.", "Run the linter.")],
+    );
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), snapshot, proposal_reply);
+    let details = open_ui_proposals(&overview, vcx);
+    assert!(row_bounds(vcx, "work-item-proposal-stale-p-edit".into()).is_some());
+    assert!(row_bounds(vcx, "work-item-proposal-now-p-edit".into()).is_some());
+    assert!(row_bounds(vcx, "work-item-proposal-diff-p-edit".into()).is_some());
+    click(vcx, "work-item-proposal-accept-p-edit".into());
+    if let Some(request) = details.update(vcx, |d, _| d.captured_drift.take()) {
+        vcx.update(|window, cx| (request.on_decision)(true, window, cx));
+        vcx.run_until_parked();
+    }
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["allowStale"], true);
+}
+
+/// A remove shows the struck-through instruction and the rationale; Dismiss
+/// rejects without a reason.
+#[gpui::test]
+fn remove_proposal_shows_strikethrough_and_dismisses(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = modification_snapshot(
+        "Run the linter.",
+        &[("p-rm", "remove", "", "Run the linter.")],
+    );
+    let (overview, calls, vcx) = m4_overview(cx, dir.path(), snapshot, proposal_reply);
+    open_ui_proposals(&overview, vcx);
+    assert!(row_bounds(vcx, "work-item-proposal-diff-p-rm".into()).is_some());
+    assert!(row_bounds(vcx, "work-item-proposal-rationale-p-rm".into()).is_some());
+    assert!(
+        row_bounds(vcx, "work-item-proposal-review-p-rm".into()).is_none(),
+        "a remove has no editor"
+    );
+    click(vcx, "work-item-proposal-dismiss-p-rm".into());
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["op"], "rejectWorkItemInstructionProposal");
+    assert_eq!(recorded[0]["proposalId"], "p-rm");
+    assert!(recorded[0].get("reason").is_none());
+}
+
+/// Proposals that touch one instruction share a group; an add stands alone.
+#[gpui::test]
+fn proposals_for_one_instruction_group_together(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = modification_snapshot(
+        "Run the linter.",
+        &[
+            ("p-a", "edit", "Run the linter and tests.", "Run the linter."),
+            ("p-b", "remove", "", "Run the linter."),
+        ],
+    );
+    let (overview, _calls, vcx) = m4_overview(cx, dir.path(), snapshot, proposal_reply);
+    open_ui_proposals(&overview, vcx);
+    let group = row_bounds(vcx, format!("work-item-proposal-group-{INSTRUCTION_UI}"))
+        .expect("one group for both");
+    for id in ["p-a", "p-b"] {
+        let card = row_bounds(vcx, format!("work-item-proposal-{id}")).unwrap();
+        assert!(group.contains(&card.center()), "{id} sits in the group");
+    }
+    // The pre-existing add proposal on UI is outside the group.
+    let add = row_bounds(vcx, format!("work-item-proposal-{}", m4::P_UI)).unwrap();
+    assert!(!group.contains(&add.center()));
+}

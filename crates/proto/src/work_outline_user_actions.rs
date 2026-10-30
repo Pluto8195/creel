@@ -224,8 +224,37 @@ pub enum ProposalTargetScope {
     Unknown,
 }
 
+/// What a proposal asks for. `add` (the default, and what rows written before
+/// edit/remove proposals read as) creates a new instruction; `edit` replaces
+/// the text of an existing one; `remove` archives it. Lenient: unknown reads
+/// as `add`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProposalAction {
+    Edit,
+    Remove,
+    /// Declared last because `#[serde(other)]` must sit on the last variant.
+    #[default]
+    #[serde(other)]
+    Add,
+}
+
+impl ProposalAction {
+    pub fn is_add(&self) -> bool {
+        *self == Self::Add
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Edit => "edit",
+            Self::Remove => "remove",
+        }
+    }
+}
+
 /// `{scope: "spaceRoot"}` or `{scope: "workItem", workItemId}`. Immutable on
-/// the row (modification proposals are deferred, spec L487).
+/// the row. For `edit` / `remove` it is the targeted instruction's scope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstructionProposalTarget {
@@ -323,6 +352,20 @@ pub struct WorkItemInstructionProposalView {
     pub source_ref: InstructionProposalOrigin,
     #[serde(default)]
     pub created_at: i64,
+    #[serde(default)]
+    pub action: ProposalAction,
+    /// The instruction an `edit` / `remove` targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_id: Option<String>,
+    /// The targeted instruction's text and `updatedAt` when the proposal was
+    /// made (its base revision; `edit` / `remove` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_text: Option<String>,
+    #[serde(default)]
+    pub base_updated_at: i64,
+    /// Why (optional, short; all actions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
     /// The effective review: when the approval instruction exists this is an
     /// approval (synthesized from the instruction when a concurrent reject
     /// won the register).
@@ -343,14 +386,33 @@ pub struct WorkItemInstructionProposalView {
 pub struct ProposeWorkItemInstructionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
+    /// Ignored for `edit` / `remove` (taken from the instruction).
+    #[serde(default)]
     pub target: InstructionProposalTarget,
     #[serde(default)]
     pub origin: InstructionProposalOrigin,
+    /// The proposed text; empty for `remove`.
+    #[serde(default)]
     pub text: String,
+    #[serde(default, skip_serializing_if = "ProposalAction::is_add")]
+    pub action: ProposalAction,
+    /// Required for `edit` / `remove`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
     pub operation_id: String,
 }
 
-/// `approveWorkItemInstructionProposal`: creates the instruction
+impl WorkItemInstructionProposalView {
+    /// An `edit` / `remove` is stale when its instruction's text differs from
+    /// the base it was proposed against, or the instruction was archived.
+    pub fn is_stale_against(&self, instruction: &crate::WorkItemInstructionView) -> bool {
+        instruction.archived() || self.base_text.as_deref() != Some(instruction.text.as_str())
+    }
+}
+
+/// `approveWorkItemInstructionProposal`: for `add`, creates the instruction
 /// `derive_id(proposalId, "instruction")` from `approvedText` in the
 /// proposal's target scope, with `sourceProposalId` and source provenance
 /// (`chatId`, `messageId`, `excerpt` = the proposed text, `contentHash`), in
@@ -360,10 +422,16 @@ pub struct ProposeWorkItemInstructionParams {
 #[serde(rename_all = "camelCase")]
 pub struct ApproveWorkItemInstructionProposalParams {
     pub proposal_id: String,
+    /// Unused for `remove`.
+    #[serde(default)]
     pub approved_text: String,
-    /// Absent = last in the target scope.
+    /// Absent = last in the target scope (`add` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<InstructionPlacement>,
+    /// Apply an `edit` / `remove` whose instruction changed since the
+    /// proposal was made.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_stale: bool,
     pub operation_id: String,
 }
 

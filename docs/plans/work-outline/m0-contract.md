@@ -1741,3 +1741,57 @@ live destination the Chat is not inside. `create_chat` (agent mode, with a `prom
 `create_chat` key so retries reuse the item) and starts the worker on it, instead of inheriting the
 caller's item and nesting under it. Without a destination, or with an explicit `workItemId`, the
 behaviour is unchanged.
+
+## Amendment: edit and remove instruction proposals
+
+Agents could only propose a NEW instruction, so changing an existing one meant an add plus a
+remove to review separately, with the old one lingering. Proposals now carry an action. This
+supersedes the "modification proposals stay deferred" note in Milestone 4 registry discoveries
+item 2.
+
+1. **Wire.** `ProposalAction = add | edit | remove` (lenient: unknown reads `add`).
+   `proposeWorkItemInstruction` gains `action` (omitted when `add`, so earlier inputs hashes are
+   unchanged), `instructionId` (required for edit / remove, refused for add) and `rationale`
+   (all actions, ≤ 1,000 chars, the note limit). `target` is now optional and ignored for
+   edit / remove: the engine derives it from the instruction (its work item, or the Space root).
+   `text` is the replacement for edit (non-empty, must differ from the current text), empty for
+   remove, the new instruction for add. `approveWorkItemInstructionProposal` gains `allowStale`
+   (omitted when false); `approvedText` defaults to empty and is unused for remove.
+2. **Rows.** Edit / remove proposals write, once at creation, `action`, `instructionId`,
+   `baseText` and `baseUpdatedAt` (the instruction's text and `updatedAt` when proposed: its base
+   revision); `rationale` for any action. The view exposes them (`action`, `instructionId`,
+   `baseText`, `baseUpdatedAt`, `rationale`); rows without them read as `add`.
+3. **Validation.** `instructionId` unknown → `notFound`; archived instruction or archived work
+   item → `archived`; unchanged edit text, text on a remove, or an id on an add → `invalid`.
+   Agents may name only instructions in their item's effective set (what
+   `work_outline_read_current` returns: own, inherited ancestors', Space root); any other
+   instruction is `unauthorized`. The unknown-id check runs first, so a missing id stays `notFound`.
+4. **Staleness.** A pending edit / remove is stale when the instruction's current text differs
+   from `baseText`, or it was archived (`WorkItemInstructionProposalView::is_stale_against`;
+   moves and reorders change `updatedAt` but not staleness). Approving a stale proposal without
+   `allowStale` is `invalid` and writes nothing; with it, the edit applies the approved text over
+   whatever is there. A stale proposal on an archived instruction can only be dismissed.
+5. **Accept.** One batch. Edit: the targeted instruction's `text` / `updatedAt` change (the same
+   plan as `updateWorkItemInstruction`, including the growth-budget check), so the instruction id,
+   source, ordering and revision history stay; no new instruction is created and `sourceProposalId`
+   is not rewritten. Remove: the archive pair (`archivedAt` / `archivedBy`), like
+   `archiveWorkItemInstruction`; already archived writes only the review. The review is
+   `approved` with `instructionId` = the targeted instruction. Approving an approved proposal
+   returns that id without writing; approving a rejected one is allowed. Reject / dismiss is
+   unchanged. Existing instruction revisions keep the text they snapshotted, so Compare / Apply
+   and drift tracking see an accepted edit exactly like a hand edit.
+6. **Templates.** Accepting changes only the item's own instruction. A template is a copy, so
+   it is untouched, and the template-changed review (which compares templates) is unaffected.
+7. **MCP.** `work_outline_propose_instruction { action?, instructionId?, text?, rationale?,
+   target?, idempotencyKey }`; only `idempotencyKey` is schema-required (text for add / edit is
+   checked by the tool). The reply adds `action` and `instructionId`. The description tells
+   agents to use edit / remove with an id from `work_outline_read_current` instead of add plus
+   remove. The MCP `INSTRUCTIONS` string is unchanged (still ≤ 1,900 characters).
+8. **UI.** Details → Proposed instructions groups pending proposals that touch one instruction
+   under a header with its current text (and "N proposed changes"); an add is alone. An edit
+   shows a word diff against the instruction (added words tinted, removed struck through) and
+   the rationale, with Accept / Edit then accept / Dismiss. A remove shows the struck-through
+   instruction, with Accept / Dismiss. A stale card shows "When proposed", "Now (changes since)"
+   and "Proposed" blocks, and its Accept reads "Apply anyway". Accepting goes through the drift
+   confirmation as an edit or archive of that instruction. The Item tab's proposals chip and
+   Needs-you lead to this surface.

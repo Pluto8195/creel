@@ -38,6 +38,7 @@ pub(crate) mod model;
 pub(crate) mod nav;
 pub(crate) mod optimistic;
 pub(crate) mod outline_view;
+pub(crate) mod proposal_diff;
 pub(crate) mod required_actions;
 pub(crate) mod required_actions_view;
 pub(crate) mod restructure;

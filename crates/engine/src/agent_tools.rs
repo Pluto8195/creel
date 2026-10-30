@@ -42,7 +42,7 @@ use mast_proto::agent_tools::{self, AgentOrigin, AgentToolCallParams, AgentToolE
 use mast_proto::work_outline::{derive_id, roles};
 use mast_proto::{
     AssignChatToWorkItemParams, ChatDiffTargetSource, CreateUserActionRequestParams,
-    CreateWorkItemParams, InstructionProposalOrigin, InstructionProposalTarget,
+    CreateWorkItemParams, InstructionProposalOrigin, InstructionProposalTarget, ProposalAction,
     ProposeWorkItemInstructionParams, ResolveUserActionRequestParams, RunRequest, SandboxLevel,
     UpdateWorkItemParams, UserActionRequestOrigin, WorkItemChanges, WorkItemStatus,
     WorkOutlineError, WorkOutlineMutateReply, WorkOutlineMutation, WorkOutlinePlacement,
@@ -461,7 +461,17 @@ struct ProposeInstructionArgs {
     /// `item` (default), `parent`, or `spaceRoot`.
     #[serde(default)]
     target: Option<String>,
+    /// Required for `add` and `edit`.
+    #[serde(default)]
     text: String,
+    /// `add` (default), `edit`, or `remove`.
+    #[serde(default)]
+    action: Option<String>,
+    /// Required for `edit` and `remove`.
+    #[serde(default)]
+    instruction_id: Option<String>,
+    #[serde(default)]
+    rationale: Option<String>,
     #[serde(default)]
     message_id: Option<String>,
     #[serde(default)]
@@ -1285,8 +1295,43 @@ impl AgentToolsService {
     ) -> Result<Value, AgentToolError> {
         let args: ProposeInstructionArgs = parse_args(arguments)?;
         let operation_id = context.operation_id(arguments)?;
-        if args.text.trim().is_empty() {
-            return Err(AgentToolError::invalid("text is empty"));
+        let action = match args.action.as_deref().map(str::trim).unwrap_or("add") {
+            "add" | "" => ProposalAction::Add,
+            "edit" => ProposalAction::Edit,
+            "remove" => ProposalAction::Remove,
+            other => {
+                return Err(AgentToolError::invalid(format!(
+                    "action must be add, edit, or remove, not {other:?}"
+                )));
+            }
+        };
+        let instruction_id = non_empty(args.instruction_id);
+        match action {
+            ProposalAction::Add => {
+                if args.text.trim().is_empty() {
+                    return Err(AgentToolError::invalid("text is empty"));
+                }
+                if instruction_id.is_some() {
+                    return Err(AgentToolError::invalid(
+                        "instructionId is only for action edit or remove",
+                    ));
+                }
+            }
+            ProposalAction::Edit | ProposalAction::Remove => {
+                if instruction_id.is_none() {
+                    return Err(AgentToolError::invalid(
+                        "instructionId is required for action edit or remove (see work_outline_read_current)",
+                    ));
+                }
+                if action == ProposalAction::Edit && args.text.trim().is_empty() {
+                    return Err(AgentToolError::invalid("text is empty"));
+                }
+                if action == ProposalAction::Remove && !args.text.is_empty() {
+                    return Err(AgentToolError::invalid(
+                        "a remove carries no text; give the reason in rationale",
+                    ));
+                }
+            }
         }
         let item = context.require_item("proposing instructions")?;
         let target = match args.target.as_deref().map(str::trim).unwrap_or("item") {
@@ -1321,11 +1366,16 @@ impl AgentToolsService {
                     tool_call_id: non_empty(args.tool_call_id),
                 },
                 text: args.text,
+                action,
+                instruction_id: instruction_id.clone(),
+                rationale: non_empty(args.rationale),
                 operation_id,
             });
         let reply = self.apply(context, &mutation)?;
         Ok(json!({
             "proposalId": reply.proposal_id,
+            "action": action.as_str(),
+            "instructionId": instruction_id,
             "target": target,
             "state": "pending",
             "note": "The user reviews the proposal; nothing changes until they accept it.",

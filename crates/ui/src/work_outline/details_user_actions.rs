@@ -15,9 +15,12 @@
 use super::*;
 
 use mast_proto::{
-    ApproveWorkItemInstructionProposalParams, RejectWorkItemInstructionProposalParams,
-    WorkItemInstructionProposalView, WorkOutlineActorKind, WorkOutlineErrorCode,
+    ApproveWorkItemInstructionProposalParams, ProposalAction,
+    RejectWorkItemInstructionProposalParams, WorkItemInstructionProposalView, WorkOutlineActorKind,
+    WorkOutlineErrorCode,
 };
+
+use crate::work_outline::proposal_diff::{self, DiffKind, ProposalGroup, Standing};
 
 use crate::work_outline::actions::{OperationSlot, instruction_error_text};
 use crate::work_outline::instructions::{self, OutlineChange};
@@ -258,8 +261,29 @@ impl WorkItemDetails {
         cx.notify();
     }
 
+    /// The drift-confirmed change accepting `proposal` with `text` makes.
+    fn proposal_change(
+        &self,
+        proposal: &WorkItemInstructionProposalView,
+        text: &str,
+    ) -> OutlineChange {
+        match (proposal.action, proposal.instruction_id.clone()) {
+            (ProposalAction::Edit, Some(instruction_id)) => OutlineChange::EditInstruction {
+                instruction_id,
+                text: text.to_owned(),
+            },
+            (ProposalAction::Remove, Some(instruction_id)) => {
+                OutlineChange::ArchiveInstruction { instruction_id }
+            }
+            _ => OutlineChange::AddInstruction {
+                work_item_id: required_actions::proposal_target_item(proposal).map(str::to_owned),
+                text: text.to_owned(),
+            },
+        }
+    }
+
     /// Approve with the reviewed text, through the drift confirmation when
-    /// the new instruction changes an assigned Chat's effective instructions.
+    /// the change affects an assigned Chat's effective instructions.
     pub(crate) fn approve_proposal(&mut self, cx: &mut Context<Self>) {
         let Some(review) = self.proposal_review.clone() else {
             return;
@@ -284,17 +308,61 @@ impl WorkItemDetails {
             cx.notify();
             return;
         }
-        let change = OutlineChange::AddInstruction {
-            work_item_id: required_actions::proposal_target_item(&proposal).map(str::to_owned),
-            text: text.clone(),
+        self.accept_with(proposal, text, cx);
+    }
+
+    /// Accept an edit or remove as proposed (no editor). A stale proposal is
+    /// applied anyway: the card already showed the three-way view.
+    pub(crate) fn accept_proposal(&mut self, proposal_id: &str, cx: &mut Context<Self>) {
+        let Some(proposal) = self.proposal(proposal_id) else {
+            self.proposals_error = Some("That proposal is gone".into());
+            cx.notify();
+            return;
         };
-        let proposal_id = review.proposal_id.clone();
+        let text = proposal.text.clone();
+        self.accept_with(proposal, text, cx);
+    }
+
+    fn accept_with(
+        &mut self,
+        proposal: WorkItemInstructionProposalView,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let allow_stale = self.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(
+                proposal_diff::standing(snapshot, &proposal),
+                Standing::Stale { .. }
+            )
+        });
+        let change = self.proposal_change(&proposal, &text);
+        let proposal_id = proposal.id.clone();
         self.with_drift_confirm(change, cx, move |this, cx| {
-            this.send_approve(proposal_id, text, cx)
+            this.send_approve(proposal_id, text, allow_stale, cx)
         });
     }
 
-    fn send_approve(&mut self, proposal_id: String, text: String, cx: &mut Context<Self>) {
+    /// Dismiss without a reason (an edit or remove card's one-click path).
+    pub(crate) fn dismiss_proposal(&mut self, proposal_id: &str, cx: &mut Context<Self>) {
+        let task = self
+            .state
+            .read(cx)
+            .work_outline_actions()
+            .reject_instruction_proposal(RejectWorkItemInstructionProposalParams {
+                proposal_id: proposal_id.to_owned(),
+                reason: None,
+                operation_id: new_operation_id(),
+            });
+        self.run_proposal(format!("proposal:{proposal_id}"), task, cx);
+    }
+
+    fn send_approve(
+        &mut self,
+        proposal_id: String,
+        text: String,
+        allow_stale: bool,
+        cx: &mut Context<Self>,
+    ) {
         let operation_id = match self.proposal_review.as_mut() {
             Some(review) if review.proposal_id == proposal_id => review.approve_op.id_for(&text),
             _ => new_operation_id(),
@@ -307,6 +375,7 @@ impl WorkItemDetails {
                 proposal_id: proposal_id.clone(),
                 approved_text: text,
                 placement: None,
+                allow_stale,
                 operation_id,
             });
         self.run_proposal(format!("proposal:{proposal_id}"), task, cx);
@@ -538,9 +607,10 @@ impl WorkItemDetails {
             None => "Space root".to_owned(),
         };
         let reach = instructions::affected_descendant_count(snapshot, scope_item);
-        for proposal in pending {
-            section = section.child(self.render_pending_proposal(
-                &proposal,
+        for group in proposal_diff::group_pending(pending) {
+            section = section.child(self.render_proposal_group(
+                group,
+                snapshot,
                 &target_label,
                 reach,
                 now,
@@ -588,9 +658,205 @@ impl WorkItemDetails {
         Some(section.into_any_element())
     }
 
+    /// One group of pending proposals. Edits and removes of one instruction
+    /// share a header with that instruction's current text; an add is alone.
+    #[allow(clippy::too_many_arguments)]
+    fn render_proposal_group(
+        &self,
+        group: ProposalGroup,
+        snapshot: &WorkOutlineSnapshot,
+        target_label: &str,
+        reach: usize,
+        now: chrono::DateTime<chrono::Utc>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut column = div().flex().flex_col().gap(px(4.0));
+        if let Some(instruction_id) = group.instruction_id.as_deref() {
+            let current = snapshot
+                .instructions
+                .iter()
+                .find(|i| i.id == instruction_id)
+                .map(|i| i.text.clone())
+                .or_else(|| group.proposals[0].base_text.clone())
+                .unwrap_or_default();
+            let count = group.proposals.len();
+            let selector = format!("work-item-proposal-group-{instruction_id}");
+            column = column
+                .debug_selector(move || selector.clone())
+                .pl(px(14.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(if count > 1 {
+                            format!("Instruction \u{b7} {count} proposed changes")
+                        } else {
+                            "Instruction".to_owned()
+                        })),
+                )
+                .child(
+                    div()
+                        .max_h(px(54.0))
+                        .overflow_hidden()
+                        .text_size(crate::typography::ui_rems(11.5))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(current)),
+                );
+        }
+        for proposal in &group.proposals {
+            column = column.child(self.render_pending_proposal(
+                proposal,
+                snapshot,
+                target_label,
+                reach,
+                now,
+                theme,
+                cx,
+            ));
+        }
+        column.into_any_element()
+    }
+
+    /// An inline diff: added words tinted, removed words struck through.
+    fn diff_text(runs: &[(DiffKind, String)], selector: String, theme: &Theme) -> AnyElement {
+        let (text, ranges) = proposal_diff::diff_layout(runs);
+        let added = gpui::HighlightStyle {
+            background_color: Some(theme.diff_add.opacity(0.22)),
+            ..Default::default()
+        };
+        let removed = gpui::HighlightStyle {
+            color: Some(theme.diff_del),
+            strikethrough: Some(gpui::StrikethroughStyle {
+                thickness: px(1.0),
+                color: Some(theme.diff_del),
+            }),
+            ..Default::default()
+        };
+        let highlights = ranges.into_iter().map(|(range, kind)| {
+            (
+                range,
+                if kind == DiffKind::Added {
+                    added
+                } else {
+                    removed
+                },
+            )
+        });
+        div()
+            .debug_selector(move || selector.clone())
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text)
+            .child(gpui::StyledText::new(text).with_highlights(highlights))
+            .into_any_element()
+    }
+
+    fn rationale_line(
+        proposal: &WorkItemInstructionProposalView,
+        theme: &Theme,
+    ) -> Option<AnyElement> {
+        let rationale = proposal.rationale.as_deref().filter(|r| !r.is_empty())?;
+        let selector = format!("work-item-proposal-rationale-{}", proposal.id);
+        Some(
+            div()
+                .debug_selector(move || selector.clone())
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_muted)
+                .italic()
+                .child(SharedString::from(format!("Why: {rationale}")))
+                .into_any_element(),
+        )
+    }
+
+    /// The body of a pending edit or remove card: the diff (or the struck
+    /// instruction) and, when the instruction changed since the proposal,
+    /// the three-way view.
+    fn modification_body(
+        proposal: &WorkItemInstructionProposalView,
+        standing: &Standing,
+        theme: &Theme,
+    ) -> AnyElement {
+        let id = &proposal.id;
+        let base = proposal.base_text.clone().unwrap_or_default();
+        let proposed = |runs_from: &str| {
+            if proposal.action == ProposalAction::Remove {
+                vec![(DiffKind::Removed, runs_from.to_owned())]
+            } else {
+                proposal_diff::word_diff(runs_from, &proposal.text)
+            }
+        };
+        let mut body = div().flex().flex_col().gap(px(3.0));
+        let label = |text: &'static str| {
+            div()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(theme.text_faint)
+                .child(text)
+        };
+        match standing {
+            Standing::Current => {
+                body = body.child(Self::diff_text(
+                    &proposed(&base),
+                    format!("work-item-proposal-diff-{id}"),
+                    theme,
+                ));
+            }
+            Standing::Stale { now } => {
+                let notice = if now.is_some() {
+                    "This instruction changed after the proposal was made. Apply it anyway or dismiss it."
+                } else {
+                    "This instruction was archived after the proposal was made."
+                };
+                body = body
+                    .child(
+                        div()
+                            .debug_selector({
+                                let selector = format!("work-item-proposal-stale-{id}");
+                                move || selector.clone()
+                            })
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.warning)
+                            .child(notice),
+                    )
+                    .child(label("When proposed"))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(base.clone())),
+                    );
+                if let Some(now) = now {
+                    body = body
+                        .child(label("Now (changes since)"))
+                        .child(Self::diff_text(
+                            &proposal_diff::word_diff(&base, now),
+                            format!("work-item-proposal-now-{id}"),
+                            theme,
+                        ));
+                }
+                body = body
+                    .child(label(if proposal.action == ProposalAction::Remove {
+                        "Proposed: remove"
+                    } else {
+                        "Proposed (against when proposed)"
+                    }))
+                    .child(Self::diff_text(
+                        &proposed(&base),
+                        format!("work-item-proposal-diff-{id}"),
+                        theme,
+                    ));
+            }
+        }
+        if let Some(line) = Self::rationale_line(proposal, theme) {
+            body = body.child(line);
+        }
+        body.into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn render_pending_proposal(
         &self,
         proposal: &WorkItemInstructionProposalView,
+        snapshot: &WorkOutlineSnapshot,
         target_label: &str,
         reach: usize,
         now: chrono::DateTime<chrono::Utc>,
@@ -645,8 +911,74 @@ impl WorkItemDetails {
             .pl(px(14.0))
             .py(px(2.0))
             .child(provenance);
+        let is_modification = proposal.action != ProposalAction::Add;
         let Some(review) = reviewing else {
             let review_id = id.clone();
+            if is_modification {
+                let standing = proposal_diff::standing(snapshot, proposal);
+                let stale = matches!(standing, Standing::Stale { .. });
+                let archived = matches!(standing, Standing::Stale { now: None });
+                let accept_id = id.clone();
+                let dismiss_id = id.clone();
+                let accept_label = match (stale, busy) {
+                    (_, true) => "Accepting\u{2026}",
+                    (true, false) => "Apply anyway",
+                    (false, false) => "Accept",
+                };
+                let mut buttons = div().flex().gap(px(6.0));
+                if !archived {
+                    buttons = buttons.child(
+                        Self::small_button(
+                            SharedString::from(format!("work-item-proposal-accept-{id}")),
+                            accept_label,
+                            theme,
+                        )
+                        .debug_selector({
+                            let selector = format!("work-item-proposal-accept-{id}");
+                            move || selector.clone()
+                        })
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.accept_proposal(&accept_id, cx)),
+                        ),
+                    );
+                    if proposal.action == ProposalAction::Edit {
+                        buttons = buttons.child(
+                            Self::small_button(
+                                SharedString::from(format!("work-item-proposal-review-{id}")),
+                                "Edit then accept",
+                                theme,
+                            )
+                            .debug_selector({
+                                let selector = format!("work-item-proposal-review-{id}");
+                                move || selector.clone()
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.begin_proposal_review(review_id.clone(), window, cx)
+                                },
+                            )),
+                        );
+                    }
+                }
+                buttons = buttons.child(
+                    Self::small_button(
+                        SharedString::from(format!("work-item-proposal-dismiss-{id}")),
+                        "Dismiss",
+                        theme,
+                    )
+                    .debug_selector({
+                        let selector = format!("work-item-proposal-dismiss-{id}");
+                        move || selector.clone()
+                    })
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.dismiss_proposal(&dismiss_id, cx)),
+                    ),
+                );
+                return row
+                    .child(Self::modification_body(proposal, &standing, theme))
+                    .child(buttons)
+                    .into_any_element();
+            }
             return row
                 .child(
                     div()
@@ -654,6 +986,7 @@ impl WorkItemDetails {
                         .text_color(theme.text)
                         .child(SharedString::from(proposal.text.clone())),
                 )
+                .children(Self::rationale_line(proposal, theme))
                 .child(
                     div().child(
                         Self::small_button(
@@ -711,7 +1044,11 @@ impl WorkItemDetails {
                     el.child(
                         Self::small_button(
                             "work-item-proposal-approve",
-                            if busy { "Approving\u{2026}" } else { "Approve" },
+                            match (busy, is_modification) {
+                                (true, _) => "Approving\u{2026}",
+                                (false, true) => "Accept",
+                                (false, false) => "Approve",
+                            },
                             theme,
                         )
                         .debug_selector(|| "work-item-proposal-approve".into())
@@ -771,7 +1108,14 @@ impl WorkItemDetails {
                 div()
                     .text_size(crate::typography::ui_rems(11.5))
                     .text_color(theme.text_muted)
-                    .child(SharedString::from(proposal.text.clone())),
+                    .child(SharedString::from(match proposal.action {
+                        ProposalAction::Add => proposal.text.clone(),
+                        ProposalAction::Edit => format!("Edit: {}", proposal.text),
+                        ProposalAction::Remove => format!(
+                            "Remove: {}",
+                            proposal.base_text.clone().unwrap_or_default()
+                        ),
+                    })),
             )
             .child(
                 div()

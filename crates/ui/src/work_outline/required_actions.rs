@@ -764,6 +764,11 @@ pub(crate) mod fixture {
                 tool_call_id: None,
             },
             created_at: NOW,
+            action: Default::default(),
+            instruction_id: None,
+            base_text: None,
+            base_updated_at: 0,
+            rationale: None,
             review: None,
             status: InstructionProposalStatus::Pending,
         }
