@@ -67,6 +67,7 @@ pub(crate) mod pr_page;
 pub(crate) mod pr_review_launch;
 pub mod project_actions;
 pub mod queue;
+pub mod menu_bar;
 pub mod running_chats;
 pub mod rail;
 mod review_chats;
@@ -240,7 +241,7 @@ pub fn run_app(config: UiConfig) {
         let click_state = state.clone();
         cx.spawn(async move |cx| {
             while let Some(chat_id) = click_rx.next().await {
-                let _ = cx.update(|cx| open_notified_chat(chat_id, &click_state, cx));
+                let _ = cx.update(|cx| open_notified_chat(Some(chat_id), &click_state, cx));
             }
         })
         .detach();
@@ -267,6 +268,16 @@ pub fn run_app(config: UiConfig) {
             state: state.clone(),
             boot: config.boot(),
         });
+        #[cfg(target_os = "macos")]
+        if let Some(mut events) = menu_bar::take_events() {
+            let menu_state = state.clone();
+            cx.spawn(async move |cx| {
+                while let Some(event) = events.next().await {
+                    let _ = cx.update(|cx| handle_menu_bar_event(event, &menu_state, cx));
+                }
+            })
+            .detach();
+        }
         open_main_window(state, config.boot(), cx);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         start_appshot_service(config.boot().data_dir, cx);
@@ -285,7 +296,7 @@ pub fn run_app(config: UiConfig) {
 /// A clicked banner: bring Mast forward on that chat through the sidebar's
 /// own path (chat route + composer focus), reopening the main window first if
 /// ⌘W closed it.
-fn open_notified_chat(chat_id: String, state: &gpui::Entity<state::AppState>, cx: &mut App) {
+fn open_notified_chat(chat_id: Option<String>, state: &gpui::Entity<state::AppState>, cx: &mut App) {
     cx.activate(true);
     if cx.windows().is_empty()
         && let Some(reopen) = cx.try_global::<ReopenState>()
@@ -301,10 +312,39 @@ fn open_notified_chat(chat_id: String, state: &gpui::Entity<state::AppState>, cx
         Some(shell) => {
             let _ = shell.update(cx, |shell, window, cx| {
                 window.activate_window();
-                shell.open_chat(chat_id, cx);
+                if let Some(chat_id) = chat_id {
+                    shell.open_chat(chat_id, cx);
+                }
             });
         }
-        None => state.update(cx, |state, cx| state.select_chat(Some(chat_id), cx)),
+        None => state.update(cx, |state, cx| state.select_chat(chat_id, cx)),
+    }
+}
+
+/// The menu bar item's clicks: bring Mast forward (reopening the window) for
+/// chats and "Open Mast", and hand the rest to the Shell.
+#[cfg(target_os = "macos")]
+fn handle_menu_bar_event(
+    event: menu_bar::MenuEvent,
+    state: &gpui::Entity<state::AppState>,
+    cx: &mut App,
+) {
+    use menu_bar::{MenuAction, MenuEvent};
+    match event {
+        MenuEvent::Action(MenuAction::OpenChat(chat_id)) => {
+            open_notified_chat(Some(chat_id), state, cx)
+        }
+        MenuEvent::Action(MenuAction::OpenMast) => open_notified_chat(None, state, cx),
+        MenuEvent::Action(MenuAction::Quit) => app_menus::request_quit(cx),
+        event => {
+            let shell = cx
+                .windows()
+                .into_iter()
+                .find_map(|window| window.downcast::<shell::Shell>());
+            if let Some(shell) = shell {
+                let _ = shell.update(cx, |shell, _, cx| shell.handle_menu_bar_event(event, cx));
+            }
+        }
     }
 }
 
