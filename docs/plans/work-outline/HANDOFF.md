@@ -573,6 +573,15 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   itself on mouse-down after the answer input did, stealing focus; the input wrapper now stops
   mouse-down (`markdown/render.rs`). HTML question cards: no blocker found; debug logging on target
   `focus` (web view mouse-down in_page/hit view, key routing, focus hand-backs) for a hand repro.
+- **Menu bar item** (2026-10-30, `menu-bar-item`; design A + C's mini bars,
+  mast-artifact:4b4633204f14e4dc1e6d8921620ac805): `crates/ui/src/menu_bar.rs` (pure menu model:
+  build_menu, usage_accounts, format_reset, lamp_rgba, near-limit rule; thin objc glue: NSStatusItem +
+  NSMenu, `MastMenuBarTarget`) and `shell/menu_bar_ui.rs`. Glyph: lamp in the state colour (idle
+  silicon, working clover, ready cobalt, needs-you bromine, error cadmium), fir ring for a newer build,
+  plus one mini bar per account (≤4, height = 5h %, bromine ≥80%, cadmium ≥95%). Menu: per-account
+  usage cards with reset times, chats (Needs you first), interrupted + Resume all, Restart when idle
+  (newer build only), Open Mast, Quit. Uses the existing usage cache; AppKit glue is compile-checked
+  only (hand-verify). Also supersedes the retired peon tray.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
