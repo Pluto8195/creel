@@ -680,6 +680,8 @@ pub struct UiSettings {
     /// Live status light: the Dock icon, Dock badge and in-app logo follow what
     /// the agents are doing. Off restores the bundle icon and a static logo.
     pub live_app_icon: bool,
+    /// The macOS menu bar item: the lamp, the running list and account usage.
+    pub show_menu_bar_item: bool,
     pub files_panel_width: f32,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
@@ -806,6 +808,7 @@ impl Default for UiSettings {
             notifications_enabled: true,
             notifications_background_only: true,
             live_app_icon: true,
+            show_menu_bar_item: true,
             files_panel_width: FILES_PANEL_DEFAULT,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
@@ -2327,6 +2330,7 @@ mod tests {
             notifications_enabled: false,
             notifications_background_only: false,
             live_app_icon: false,
+            show_menu_bar_item: false,
             files_panel_width: 310.0,
             right_pane_width: 700.0,
             right_pane_open: true,
@@ -2571,6 +2575,10 @@ mod tests {
         assert!(
             loaded.live_app_icon,
             "pre-status-light files default the live icon on"
+        );
+        assert!(
+            loaded.show_menu_bar_item,
+            "pre-menu-bar files default the menu bar item on"
         );
         assert!(
             !loaded.escape_stops_active_agent,

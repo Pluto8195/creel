@@ -23,6 +23,7 @@ pub enum NotificationsEvent {
         desktop: bool,
         background_only: bool,
         live_app_icon: bool,
+        menu_bar_item: bool,
     },
 }
 
@@ -35,6 +36,7 @@ pub struct NotificationsPage {
     desktop: bool,
     background_only: bool,
     live_app_icon: bool,
+    menu_bar_item: bool,
 }
 
 impl EventEmitter<NotificationsEvent> for NotificationsPage {}
@@ -48,6 +50,7 @@ enum NotificationPreference {
     Desktop,
     BackgroundOnly,
     LiveAppIcon,
+    MenuBarItem,
 }
 
 fn is_switch_activation(key: &str, is_held: bool) -> bool {
@@ -84,6 +87,7 @@ impl NotificationsPage {
         desktop: bool,
         background_only: bool,
         live_app_icon: bool,
+        menu_bar_item: bool,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -95,6 +99,7 @@ impl NotificationsPage {
             desktop,
             background_only,
             live_app_icon,
+            menu_bar_item,
         }
     }
 
@@ -107,6 +112,7 @@ impl NotificationsPage {
             desktop: self.desktop,
             background_only: self.background_only,
             live_app_icon: self.live_app_icon,
+            menu_bar_item: self.menu_bar_item,
         });
     }
 
@@ -119,6 +125,7 @@ impl NotificationsPage {
             NotificationPreference::Desktop => &mut self.desktop,
             NotificationPreference::BackgroundOnly => &mut self.background_only,
             NotificationPreference::LiveAppIcon => &mut self.live_app_icon,
+            NotificationPreference::MenuBarItem => &mut self.menu_bar_item,
         };
         *value = !*value;
         self.emit(cx);
@@ -153,6 +160,7 @@ impl Render for NotificationsPage {
         let desktop = self.desktop;
         let background_only = self.background_only;
         let live_app_icon = self.live_app_icon;
+        let menu_bar_item = self.menu_bar_item;
         let toggle = |id: &'static str, label: &'static str, enabled: bool, interactive: bool| {
             // Keep the familiar 32×18 visual inside a 40×40 activation target.
             // Disabled subordinate controls remain named switches in the
@@ -428,6 +436,42 @@ impl Render for NotificationsPage {
                             ),
                             accent,
                             NotificationPreference::LiveAppIcon,
+                            cx,
+                        ),
+                    ),
+            )
+            .child(
+                widgets::card_row(&theme, false)
+                    .child(widgets::row_tile(&theme, icons::BELL))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(widgets::row_title(&theme, "Menu bar item"))
+                            .child(widgets::meta_line(
+                                &theme,
+                                vec![
+                                    div()
+                                        .child(SharedString::from(
+                                            "Show the Mast lamp in the macOS menu bar: what is running, what needs \
+                                             you, and session and weekly usage for each account.",
+                                        ))
+                                        .into_any_element(),
+                                ],
+                            )),
+                    )
+                    .child(
+                        interactive_switch(
+                            toggle(
+                                "notifications-menu-bar-item-toggle",
+                                "Menu bar item",
+                                menu_bar_item,
+                                true,
+                            ),
+                            accent,
+                            NotificationPreference::MenuBarItem,
                             cx,
                         ),
                     ),

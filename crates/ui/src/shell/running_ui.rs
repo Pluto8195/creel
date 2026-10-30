@@ -406,7 +406,7 @@ impl Shell {
     }
 
     /// Resume (re-send the last message) or dismiss one ledger entry, or all.
-    fn handle_interrupted(&mut self, chat_ids: Vec<String>, resume: bool, cx: &mut Context<Self>) {
+    pub(super) fn handle_interrupted(&mut self, chat_ids: Vec<String>, resume: bool, cx: &mut Context<Self>) {
         // Optimistic: the entry is gone from the list at once; the engine's
         // answer (and the next refresh) is the truth.
         self.running
@@ -433,6 +433,14 @@ impl Shell {
         .detach();
     }
 
+    /// The newer installed build, for the menu bar item.
+    pub(super) fn pending_build(&self) -> Option<crate::menu_bar::PendingBuild> {
+        self.running.pending.as_ref().map(|pending| crate::menu_bar::PendingBuild {
+            changes: pending.changes.as_ref().map(Vec::len),
+            armed: self.running.plan.is_armed(),
+        })
+    }
+
     pub(super) fn interrupted_block(&self, cx: &App) -> Option<running_chats::InterruptedBlock> {
         let state = self.state.read(cx);
         running_chats::interrupted_block(&self.running.interrupted, |chat_id| {
@@ -450,7 +458,7 @@ impl Shell {
         })
     }
 
-    fn arm_restart_when_idle(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn arm_restart_when_idle(&mut self, cx: &mut Context<Self>) {
         self.running.plan.arm();
         cx.notify();
     }

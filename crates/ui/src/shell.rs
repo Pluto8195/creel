@@ -76,6 +76,7 @@ mod perf_tests;
 mod pr_review_ui;
 mod project_icon;
 mod required_actions_ui;
+mod menu_bar_ui;
 mod running_ui;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1771,6 +1772,7 @@ pub struct Shell {
     /// The status light the in-app logo shows; `None` while "Live app icon" is off.
     status_light: Option<crate::status_light::LightSummary>,
     dock_sync: crate::status_light::DockSync,
+    menu_bar: menu_bar_ui::MenuBarUi,
     /// Spaces this Shell asked `AppState` to watch (so notifications and
     /// Required Actions work before the Overview exists).
     user_action_watch: Option<Vec<String>>,
@@ -2233,6 +2235,7 @@ impl Shell {
             user_action_notifier: Default::default(),
             status_light: None,
             dock_sync: Default::default(),
+            menu_bar: Default::default(),
             user_action_watch: None,
             connectivity_notifications: Default::default(),
             attention_sound_gate: Default::default(),
@@ -4334,6 +4337,7 @@ impl Shell {
         {
             crate::status_light::apply(ops);
         }
+        self.sync_menu_bar(false, cx);
     }
 
     /// The Mast logo, lit by the status light unless "Live app icon" is off.
@@ -4883,6 +4887,7 @@ impl Shell {
                             self.settings.notifications_enabled,
                             self.settings.notifications_background_only,
                             self.settings.live_app_icon,
+                            self.settings.show_menu_bar_item,
                             cx,
                         )
                     });
@@ -4898,6 +4903,7 @@ impl Shell {
                                 desktop,
                                 background_only,
                                 live_app_icon,
+                                menu_bar_item,
                             } = *event;
                             this.settings.sound_enabled = sound;
                             this.settings.sound_completion_enabled = completion_sound;
@@ -4906,7 +4912,9 @@ impl Shell {
                             this.settings.notifications_enabled = desktop;
                             this.settings.notifications_background_only = background_only;
                             this.settings.live_app_icon = live_app_icon;
+                            this.settings.show_menu_bar_item = menu_bar_item;
                             this.sync_status_light(cx);
+                            this.sync_menu_bar(true, cx);
                             this.schedule_save(cx);
                             cx.notify();
                         },
