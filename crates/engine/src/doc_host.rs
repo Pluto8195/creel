@@ -264,6 +264,9 @@ pub struct DocHostConfig {
 
 struct DocHostInner {
     store: Arc<DocsStore>,
+    /// Orchestrator wake messages in flight (user-first: a user message
+    /// pulls or interrupts them, see `yield_event_turn_to_user`).
+    event_turns: Arc<crate::orchestrator_wakes::EventTurns>,
     config: DocHostConfig,
     /// Set-once (first wins), cleared by `shutdown_workers`: sessions and
     /// doc-host reference each other through Arcs, so a retired runtime's
@@ -987,6 +990,7 @@ impl DocHost {
             inner: Arc::new(DocHostInner {
                 store,
                 config,
+                event_turns: Arc::new(crate::orchestrator_wakes::EventTurns::default()),
                 sessions: Mutex::new(None),
                 workspace: OnceLock::new(),
                 repos: OnceLock::new(),
@@ -3058,6 +3062,36 @@ impl DocHost {
         attachments: Vec<String>,
         hold_for_turn_end: bool,
     ) -> Result<String, EngineError> {
+        self.queue_message_inner(chat_id, text, attachments, hold_for_turn_end, true)
+    }
+
+    /// Queue an orchestrator wake message. It is not a user message: it never
+    /// pulls back or interrupts another wake, and its id is registered with
+    /// [`crate::orchestrator_wakes::EventTurns`] by the caller.
+    pub(crate) fn queue_event_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Result<String, EngineError> {
+        self.queue_message_inner(chat_id, text, Vec::new(), false, false)
+    }
+
+    fn queue_message_inner(
+        &self,
+        chat_id: &str,
+        text: &str,
+        attachments: Vec<String>,
+        hold_for_turn_end: bool,
+        from_user: bool,
+    ) -> Result<String, EngineError> {
+        if from_user {
+            // User first: a wake still waiting in the queue is pulled back
+            // (its events return to the held batch) so it can never run
+            // ahead of this message, and a running event turn is
+            // interrupted so this message runs next.
+            self.pull_pending_event_message(chat_id);
+            self.spawn_interrupt_event_turn(chat_id);
+        }
         let handle = self.open(chat_id)?;
         let id = new_id();
         // Capture at queue time (acceptance 10): the row is delivered with the
@@ -3615,6 +3649,67 @@ impl DocHost {
         Ok(true)
     }
 
+    /// Orchestrator wake bookkeeping shared with the wake service.
+    pub fn event_turns(&self) -> Arc<crate::orchestrator_wakes::EventTurns> {
+        self.inner.event_turns.clone()
+    }
+
+    /// A wake message still waiting in the queue is taken back out and its
+    /// events handed back to the wake service.
+    fn pull_pending_event_message(&self, chat_id: &str) {
+        let turns = &self.inner.event_turns;
+        let Some(message_id) = turns.pending_message(chat_id) else {
+            return;
+        };
+        let Ok(handle) = self.open(chat_id) else {
+            return;
+        };
+        if matches!(handle.doc.take_queued(&message_id), Ok(Some(_))) {
+            handle.publish_queue();
+            turns.cancel_pending(chat_id);
+        } else {
+            // The drain already took it: it is a turn now (or about to be).
+            turns.mark_dispatched(chat_id);
+        }
+    }
+
+    fn spawn_interrupt_event_turn(&self, chat_id: &str) {
+        if !self.inner.event_turns.has_started(chat_id) {
+            return;
+        }
+        let host = self.clone();
+        let chat_id = chat_id.to_owned();
+        self.spawn_worker(async move {
+            host.yield_event_turn_to_user(&chat_id).await;
+        });
+    }
+
+    /// The user's message goes first: pull a wake that has not started, or
+    /// interrupt the event-started turn so the message runs next.
+    pub async fn yield_event_turn_to_user(&self, chat_id: &str) {
+        self.pull_pending_event_message(chat_id);
+        let turns = &self.inner.event_turns;
+        if !turns.has_started(chat_id) {
+            return;
+        }
+        turns.clear(chat_id);
+        if let Some(sessions) = self.sessions() {
+            // Dispatched but the turn may not be in flight yet: give it a
+            // moment, so the message never queues behind an event turn.
+            for _ in 0..150 {
+                if sessions.turn_in_flight(chat_id) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            if !sessions.turn_in_flight(chat_id) {
+                return;
+            }
+            tracing::info!(chat = %chat_id, "interrupting an event-started turn for a user message");
+            let _ = sessions.interrupt(chat_id).await;
+        }
+    }
+
     /// Host-only: hand queued messages to the agent when there is somewhere to
     /// put them.
     ///
@@ -3747,6 +3842,9 @@ impl DocHost {
             return Err(EngineError::Other("sessions engine not wired".into()));
         };
         let chat_id = &handle.chat_id;
+        if !self.inner.event_turns.is_event_message(&item.id) {
+            self.yield_event_turn_to_user(chat_id).await;
+        }
         // Keep the queue row's identity when it becomes a real user message.
         // The submitting viewport learns this id from QueueMessage and can
         // therefore wait without disturbing the active turn's runway, then
@@ -4953,6 +5051,14 @@ impl DocHost {
         entry: &SessionCommandEntry,
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
+        if matches!(
+            &entry.payload,
+            SessionCommandPayload::Run { .. }
+                | SessionCommandPayload::RunWithInstructions { .. }
+                | SessionCommandPayload::Steer { .. }
+        ) {
+            self.yield_event_turn_to_user(chat_id).await;
+        }
         match &entry.payload {
             SessionCommandPayload::Run {
                 request,

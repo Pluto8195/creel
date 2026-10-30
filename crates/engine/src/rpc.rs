@@ -796,6 +796,8 @@ pub struct EngineRpc {
     /// Planning artifacts (`*ARTIFACT*` methods; content-bearing ones are
     /// forwardable to the owning device).
     artifacts: crate::artifacts::ArtifactsService,
+    /// Worker-event wakes for orchestrator chats (`*_WAKE_*` methods).
+    orchestrator_wakes: crate::orchestrator_wakes::OrchestratorWakes,
     engine_info: EngineInfo,
 }
 
@@ -889,6 +891,15 @@ impl EngineRpc {
         // tool calls meet in one broker.
         let artifacts = crate::artifacts::ArtifactsService::new(workspace.clone());
         agent_tools.set_artifacts(artifacts.clone());
+        // Engine assembly replaces this with the shared, watching service
+        // (`with_orchestrator_wakes`); a bare surface only answers the RPCs.
+        let orchestrator_wakes = crate::orchestrator_wakes::OrchestratorWakes::new(
+            sessions.clone(),
+            doc_host.clone(),
+            workspace.clone(),
+            None,
+            crate::orchestrator_wakes::system_clock(),
+        );
         Self {
             sessions,
             doc_host,
@@ -922,6 +933,7 @@ impl EngineRpc {
             linear: crate::linear::LinearService::default(),
             pr_review_sync,
             artifacts,
+            orchestrator_wakes,
             engine_info,
         }
     }
@@ -931,6 +943,16 @@ impl EngineRpc {
     pub fn with_artifacts(mut self, artifacts: crate::artifacts::ArtifactsService) -> Self {
         self.agent_tools.set_artifacts(artifacts.clone());
         self.artifacts = artifacts;
+        self
+    }
+
+    /// Share the engine's orchestrator-wake service (its watchers run in the
+    /// engine, not per RPC surface).
+    pub fn with_orchestrator_wakes(
+        mut self,
+        wakes: crate::orchestrator_wakes::OrchestratorWakes,
+    ) -> Self {
+        self.orchestrator_wakes = wakes;
         self
     }
 
@@ -2587,6 +2609,30 @@ impl RpcService for EngineRpc {
                     })),
                     None => RpcReply::value(&serde_json::json!({ "ready": false })),
                 }
+            }
+            methods::GET_WAKE_STATUS => {
+                let p: ChatParams = parse_params(params)?;
+                RpcReply::value(&self.orchestrator_wakes.status(&p.chat_id))
+            }
+            methods::SET_WAKE_SETTINGS => {
+                let p: mast_proto::SetWakeSettingsParams = parse_params(params)?;
+                RpcReply::value(
+                    &self
+                        .orchestrator_wakes
+                        .set_settings(&p.chat_id, p.settings)
+                        .await,
+                )
+            }
+            methods::WAKE_DELIVER_NOW => {
+                let p: ChatParams = parse_params(params)?;
+                RpcReply::value(&self.orchestrator_wakes.deliver_now(&p.chat_id).await)
+            }
+            methods::NOTE_CHAT_USER_ACTIVITY => {
+                let p: mast_proto::NoteChatUserActivityParams = parse_params(params)?;
+                self.orchestrator_wakes
+                    .note_user_activity(&p.chat_id, p.draft_non_empty)
+                    .await;
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::LIST_INTERRUPTED_RUNS => RpcReply::value(&self.sessions.interrupted_runs()),
             methods::DISMISS_INTERRUPTED_RUN => {

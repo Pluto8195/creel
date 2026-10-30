@@ -39,6 +39,7 @@ pub mod linear;
 pub mod liveness;
 pub mod local_import;
 pub mod managed_accounts;
+pub mod orchestrator_wakes;
 mod model_catalogs;
 pub mod pr_chat_links;
 pub mod pr_dash;
@@ -205,6 +206,7 @@ pub struct EngineCore {
     /// stored-file watcher, render-check routing). Shared by every RPC
     /// surface so the UI's render registration reaches agent tool calls.
     pub artifacts: artifacts::ArtifactsService,
+    pub orchestrator_wakes: orchestrator_wakes::OrchestratorWakes,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -586,6 +588,12 @@ impl EngineCore {
         }
         artifacts.spawn_watch_loop();
         artifact_questions::ArtifactQuestionSync::new(artifacts.clone()).spawn_loop();
+        let orchestrator_wakes = orchestrator_wakes::OrchestratorWakes::start(
+            sessions.clone(),
+            doc_host.clone(),
+            workspace.clone(),
+            Some(data_dir.join("orchestrator-wakes.json")),
+        );
         Ok(Self {
             sessions,
             doc_host,
@@ -611,6 +619,7 @@ impl EngineCore {
             pr_review_sync,
             context_usage,
             artifacts,
+            orchestrator_wakes,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -750,7 +759,8 @@ impl EngineCore {
         .with_linear(self.linear.clone())
         .with_pr_review_sync(self.pr_review_sync.clone())
         .with_context_usage(self.context_usage.clone())
-        .with_artifacts(self.artifacts.clone());
+        .with_artifacts(self.artifacts.clone())
+        .with_orchestrator_wakes(self.orchestrator_wakes.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }

@@ -64,6 +64,18 @@ pub mod methods {
     /// One-click Resume/Resend: re-dispatch the last user message on the saved
     /// harness session. Params `{chatId}`; replies `{resumed}`. IPC-only.
     pub const RESUME_INTERRUPTED_RUN: &str = "ResumeInterruptedRun";
+    /// Worker-event wake status of one chat (settings, held and recent
+    /// events). Params `{chatId}`; replies `WakeStatus`. IPC-only.
+    pub const GET_WAKE_STATUS: &str = "GetWakeStatus";
+    /// Change a chat's wake settings. Params `SetWakeSettingsParams`; replies
+    /// the new `WakeStatus`. IPC-only.
+    pub const SET_WAKE_SETTINGS: &str = "SetWakeSettings";
+    /// Deliver the held worker events now (still never mid-turn and never
+    /// ahead of queued user messages). Params `{chatId}`; replies `WakeStatus`.
+    pub const WAKE_DELIVER_NOW: &str = "WakeDeliverNow";
+    /// The user is focused / typing / has a draft in this chat. Params
+    /// `NoteChatUserActivityParams`. IPC-only.
+    pub const NOTE_CHAT_USER_ACTIVITY: &str = "NoteChatUserActivity";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
     /// device sees the same queue. `{ chatId }` → `{ items: QueuedMessage[] }`.
