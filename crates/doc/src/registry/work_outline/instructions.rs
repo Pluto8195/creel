@@ -303,7 +303,7 @@ impl RegistryDoc {
     }
 
     /// Decoded instructions of one Space (archived included).
-    fn instructions_of_space(&self, space_id: &str) -> Vec<WorkItemInstructionView> {
+    pub(super) fn instructions_of_space(&self, space_id: &str) -> Vec<WorkItemInstructionView> {
         self.overlay_rows(KIND_WORK_ITEM_INSTRUCTIONS)
             .iter()
             .filter_map(|row| decode_instruction(row).ok())
@@ -311,7 +311,7 @@ impl RegistryDoc {
             .collect()
     }
 
-    fn live_instruction(&self, id: &str) -> Outcome<WorkItemInstructionView> {
+    pub(super) fn live_instruction(&self, id: &str) -> Outcome<WorkItemInstructionView> {
         check_id("instruction", id)?;
         let row = self
             .overlay_row(KIND_WORK_ITEM_INSTRUCTIONS, id)
@@ -594,25 +594,41 @@ impl RegistryDoc {
     ) -> Outcome<()> {
         let instruction = self.live_instruction(&p.instruction_id)?;
         self.require_space(&instruction.space_id)?;
+        let plan = self.plan_instruction_text_update(&instruction, &p.text, now_ms)?;
+        match plan {
+            Some(plan) => self.commit(vec![plan], &[]),
+            None => Ok(()),
+        }
+    }
+
+    /// The text-update op of `instruction` (`None` when the text is
+    /// unchanged), after the archived, text and growth-budget checks. Shared
+    /// with approving an edit proposal.
+    pub(super) fn plan_instruction_text_update(
+        &self,
+        instruction: &WorkItemInstructionView,
+        text: &str,
+        now_ms: i64,
+    ) -> Outcome<Option<Planned>> {
         if instruction.archived() {
             return Err(err(
                 WorkOutlineErrorCode::Archived,
                 "Archived instructions cannot be edited",
             ));
         }
-        check_instruction_text(&p.text)?;
-        if instruction.text == p.text {
-            return Ok(());
+        check_instruction_text(text)?;
+        if instruction.text == text {
+            return Ok(None);
         }
-        let grows = p.text.chars().count() > instruction.text.chars().count()
-            || escaped_units(&p.text) > escaped_units(&instruction.text);
+        let grows = text.chars().count() > instruction.text.chars().count()
+            || escaped_units(text) > escaped_units(&instruction.text);
         if grows {
             let instructions: Vec<WorkItemInstructionView> = self
                 .instructions_of_space(&instruction.space_id)
                 .into_iter()
                 .map(|mut i| {
                     if i.id == instruction.id {
-                        i.text = p.text.clone();
+                        i.text = text.to_owned();
                     }
                     i
                 })
@@ -624,17 +640,14 @@ impl RegistryDoc {
                 "This edit",
             )?;
         }
-        self.commit(
-            vec![Planned::update(
-                KIND_WORK_ITEM_INSTRUCTIONS,
-                &p.instruction_id,
-                BTreeMap::from([
-                    ("text".to_owned(), json!(p.text)),
-                    ("updatedAt".to_owned(), json!(now_ms)),
-                ]),
-            )],
-            &[],
-        )
+        Ok(Some(Planned::update(
+            KIND_WORK_ITEM_INSTRUCTIONS,
+            &instruction.id,
+            BTreeMap::from([
+                ("text".to_owned(), json!(text)),
+                ("updatedAt".to_owned(), json!(now_ms)),
+            ]),
+        )))
     }
 
     /// `moveWorkItemInstruction`: reorder within the instruction's own scope

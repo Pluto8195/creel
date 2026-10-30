@@ -319,16 +319,19 @@ fn work_outline_catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: agent_tool_names::PROPOSE_INSTRUCTION,
-            description: "Propose a durable instruction for your chat's item, its parent, or the project root. The user reviews it; nothing changes until they accept. Required: text and idempotencyKey. Optional: target (item, parent, or spaceRoot).",
+            description: "Propose an instruction change; the user reviews it and nothing changes until they accept. To change or drop an existing instruction use action edit/remove with its instructionId (ids are in work_outline_read_current), not add plus remove. Required: idempotencyKey, and text (add, edit). Optional: action (add default, edit, remove), instructionId, rationale, target (add: item, parent, spaceRoot).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "target": { "type": "string", "enum": ["item", "parent", "spaceRoot"], "default": "item" },
+                    "action": { "type": "string", "enum": ["add", "edit", "remove"], "default": "add" },
+                    "instructionId": { "type": "string" },
                     "text": { "type": "string" },
+                    "rationale": { "type": "string" },
+                    "target": { "type": "string", "enum": ["item", "parent", "spaceRoot"], "default": "item" },
                     "toolCallId": { "type": "string" },
                     "idempotencyKey": idempotency_key_schema()
                 },
-                "required": ["text", "idempotencyKey"]
+                "required": ["idempotencyKey"]
             }),
         },
     ]
@@ -1115,8 +1118,7 @@ impl Tools {
                 .zeron
                 .agent_tool(agent_tool_names::READ_CURRENT, json!({}))
                 .await?;
-            if let Some(destination) = current.get("workerDestinationId").and_then(Value::as_str)
-            {
+            if let Some(destination) = current.get("workerDestinationId").and_then(Value::as_str) {
                 let title: String = args
                     .title
                     .as_deref()
@@ -2763,7 +2765,11 @@ mod tests {
             .await
             .unwrap();
         assert!(world.agent_calls(agent_tool_names::CREATE_CHILD).is_empty());
-        assert!(world.agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT).is_empty());
+        assert!(
+            world
+                .agent_calls(agent_tool_names::LAUNCH_CHILD_CHAT)
+                .is_empty()
+        );
     }
 
     #[tokio::test]

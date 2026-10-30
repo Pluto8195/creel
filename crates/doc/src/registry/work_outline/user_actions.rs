@@ -32,7 +32,7 @@ use mast_proto::work_outline_instructions::{
 use mast_proto::work_outline_user_actions::{
     ApproveWorkItemInstructionProposalParams, COMPLETION_RESOLUTION_NOTE,
     CreateUserActionRequestParams, InstructionProposalReview, InstructionProposalStatus,
-    InstructionProposalTarget, ProposalReviewState, ProposalTargetScope,
+    InstructionProposalTarget, ProposalAction, ProposalReviewState, ProposalTargetScope,
     ProposeWorkItemInstructionParams, RejectWorkItemInstructionProposalParams,
     ResolveUserActionRequestParams, UserActionOriginKind, UserActionRequestState,
     UserActionRequestView, UserActionResolution, WorkItemInstructionProposalView,
@@ -226,6 +226,15 @@ pub(crate) fn decode_proposal(
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
         created_at: i64_field(row, "createdAt").unwrap_or(0),
+        action: row
+            .fields
+            .get("action")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        instruction_id: str_field(row, "instructionId"),
+        base_text: str_field(row, "baseText"),
+        base_updated_at: i64_field(row, "baseUpdatedAt").unwrap_or(0),
+        rationale: str_field(row, "rationale"),
         review,
         status,
     })
@@ -653,7 +662,38 @@ impl RegistryDoc {
         now_ms: i64,
     ) -> Outcome<String> {
         check_operation_id(&p.operation_id)?;
-        check_instruction_text(&p.text)?;
+        check_note("The rationale", p.rationale.as_deref())?;
+        let existing = match p.action {
+            ProposalAction::Add => {
+                if p.instruction_id.is_some() {
+                    return Err(invalid("Only an edit or remove names an instruction"));
+                }
+                check_instruction_text(&p.text)?;
+                None
+            }
+            ProposalAction::Edit | ProposalAction::Remove => {
+                let instruction_id = p
+                    .instruction_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("An edit or remove proposal needs an instructionId"))?;
+                let instruction = self.live_instruction(instruction_id)?;
+                if instruction.archived() {
+                    return Err(err(
+                        WorkOutlineErrorCode::Archived,
+                        "The instruction is archived",
+                    ));
+                }
+                if p.action == ProposalAction::Edit {
+                    check_instruction_text(&p.text)?;
+                    if p.text == instruction.text {
+                        return Err(invalid("The proposed text equals the current text"));
+                    }
+                } else if !p.text.is_empty() {
+                    return Err(invalid("A remove proposal carries no text (use rationale)"));
+                }
+                Some(instruction)
+            }
+        };
         if let Some(chat) = &p.origin.chat_id {
             check_id("origin Chat", chat)?;
         }
@@ -698,47 +738,63 @@ impl RegistryDoc {
                 })?)
             }
         };
-        let (space_id, target) = match p.target.scope {
-            ProposalTargetScope::WorkItem => {
-                let work_item_id = p
-                    .target
-                    .work_item_id
-                    .as_deref()
-                    .ok_or_else(|| invalid("A work-item proposal needs a workItemId"))?;
-                check_id("work item", work_item_id)?;
-                let item = self.live_item(work_item_id)?;
-                if item.archived() {
-                    return Err(err(
-                        WorkOutlineErrorCode::Archived,
-                        "The work item is archived",
-                    ));
+        let (space_id, target) = if let Some(instruction) = &existing {
+            let target = match &instruction.work_item_id {
+                Some(id) => {
+                    if self.live_item(id)?.archived() {
+                        return Err(err(
+                            WorkOutlineErrorCode::Archived,
+                            "The work item is archived",
+                        ));
+                    }
+                    InstructionProposalTarget::work_item(id)
                 }
-                if p.space_id.as_ref().is_some_and(|s| *s != item.space_id) {
-                    return Err(err(
-                        WorkOutlineErrorCode::CrossSpace,
-                        "The work item belongs to another Space",
-                    ));
+                None => InstructionProposalTarget::space_root(),
+            };
+            (instruction.space_id.clone(), target)
+        } else {
+            match p.target.scope {
+                ProposalTargetScope::WorkItem => {
+                    let work_item_id = p
+                        .target
+                        .work_item_id
+                        .as_deref()
+                        .ok_or_else(|| invalid("A work-item proposal needs a workItemId"))?;
+                    check_id("work item", work_item_id)?;
+                    let item = self.live_item(work_item_id)?;
+                    if item.archived() {
+                        return Err(err(
+                            WorkOutlineErrorCode::Archived,
+                            "The work item is archived",
+                        ));
+                    }
+                    if p.space_id.as_ref().is_some_and(|s| *s != item.space_id) {
+                        return Err(err(
+                            WorkOutlineErrorCode::CrossSpace,
+                            "The work item belongs to another Space",
+                        ));
+                    }
+                    (
+                        item.space_id,
+                        InstructionProposalTarget::work_item(work_item_id),
+                    )
                 }
-                (
-                    item.space_id,
-                    InstructionProposalTarget::work_item(work_item_id),
-                )
-            }
-            ProposalTargetScope::SpaceRoot => {
-                if p.target.work_item_id.is_some() {
-                    return Err(invalid("A Space-root proposal cannot name a work item"));
+                ProposalTargetScope::SpaceRoot => {
+                    if p.target.work_item_id.is_some() {
+                        return Err(invalid("A Space-root proposal cannot name a work item"));
+                    }
+                    let space = p
+                        .space_id
+                        .clone()
+                        .or_else(|| origin_space.clone())
+                        .ok_or_else(|| {
+                            invalid("A Space-root proposal needs a spaceId or an origin Chat")
+                        })?;
+                    (space, InstructionProposalTarget::space_root())
                 }
-                let space = p
-                    .space_id
-                    .clone()
-                    .or_else(|| origin_space.clone())
-                    .ok_or_else(|| {
-                        invalid("A Space-root proposal needs a spaceId or an origin Chat")
-                    })?;
-                (space, InstructionProposalTarget::space_root())
-            }
-            ProposalTargetScope::Unknown => {
-                return Err(invalid("Unknown proposal target scope"));
+                ProposalTargetScope::Unknown => {
+                    return Err(invalid("Unknown proposal target scope"));
+                }
             }
         };
         self.require_space(&space_id)?;
@@ -748,7 +804,7 @@ impl RegistryDoc {
                 "The origin Chat belongs to another Space",
             ));
         }
-        let set = BTreeMap::from([
+        let mut set = BTreeMap::from([
             ("spaceId".to_owned(), json!(space_id)),
             (
                 "target".to_owned(),
@@ -764,6 +820,15 @@ impl RegistryDoc {
             ("inputsHash".to_owned(), json!(hash)),
             ("v".to_owned(), json!(WORK_OUTLINE_ROW_VERSION)),
         ]);
+        if let Some(instruction) = &existing {
+            set.insert("action".to_owned(), json!(p.action.as_str()));
+            set.insert("instructionId".to_owned(), json!(instruction.id));
+            set.insert("baseText".to_owned(), json!(instruction.text));
+            set.insert("baseUpdatedAt".to_owned(), json!(instruction.updated_at));
+        }
+        if let Some(rationale) = p.rationale.as_ref().filter(|r| !r.is_empty()) {
+            set.insert("rationale".to_owned(), json!(rationale));
+        }
         let extra: Vec<(&str, &str)> = target
             .work_item_id
             .as_deref()
@@ -797,11 +862,14 @@ impl RegistryDoc {
     ) -> Outcome<String> {
         check_operation_id(&p.operation_id)?;
         check_id("proposal", &p.proposal_id)?;
-        check_instruction_text(&p.approved_text)?;
         let proposal = self
             .instruction_proposal(&p.proposal_id)
             .ok_or_else(|| not_found("Proposal not found"))?;
         self.require_space(&proposal.space_id)?;
+        if proposal.action != ProposalAction::Add {
+            return self.approve_instruction_modification(p, &proposal, actor, now_ms);
+        }
+        check_instruction_text(&p.approved_text)?;
         let instruction_id = derive_id(&p.proposal_id, roles::INSTRUCTION);
         match self.row_state(KIND_WORK_ITEM_INSTRUCTIONS, &instruction_id) {
             RowState::Live => return Ok(instruction_id),
@@ -863,6 +931,75 @@ impl RegistryDoc {
             )]),
         ));
         let extra: Vec<(&str, &str)> = work_item_id
+            .as_deref()
+            .map(|w| (KIND_WORK_ITEMS, w))
+            .into_iter()
+            .collect();
+        self.commit(plan, &extra)?;
+        Ok(instruction_id)
+    }
+
+    /// Approving an `edit` (a new text on the same instruction, so its
+    /// history and drift tracking stay) or a `remove` (archive), with the
+    /// review in the same batch. Reply: the targeted instruction's id. An
+    /// already approved proposal returns it without writing. A proposal whose
+    /// instruction changed since its base is refused unless `allowStale`.
+    fn approve_instruction_modification(
+        &mut self,
+        p: &ApproveWorkItemInstructionProposalParams,
+        proposal: &WorkItemInstructionProposalView,
+        actor: &WorkOutlineActor,
+        now_ms: i64,
+    ) -> Outcome<String> {
+        let instruction_id = proposal
+            .instruction_id
+            .clone()
+            .ok_or_else(|| invalid("The proposal names no instruction"))?;
+        if proposal.status == InstructionProposalStatus::Approved {
+            return Ok(instruction_id);
+        }
+        let instruction = self.live_instruction(&instruction_id)?;
+        let mut plan = Vec::new();
+        let archived_already = instruction.archived();
+        if proposal.is_stale_against(&instruction) && !archived_already && !p.allow_stale {
+            return Err(invalid(
+                "The instruction changed after this proposal was made; apply anyway or dismiss it",
+            ));
+        }
+        match proposal.action {
+            ProposalAction::Edit => {
+                if let Some(update) =
+                    self.plan_instruction_text_update(&instruction, &p.approved_text, now_ms)?
+                {
+                    plan.push(update);
+                }
+            }
+            _ if archived_already => {}
+            _ => plan.push(Planned::update(
+                KIND_WORK_ITEM_INSTRUCTIONS,
+                &instruction_id,
+                BTreeMap::from([
+                    ("archivedAt".to_owned(), json!(now_ms)),
+                    ("archivedBy".to_owned(), actor_row_value(actor)),
+                    ("updatedAt".to_owned(), json!(now_ms)),
+                ]),
+            )),
+        }
+        plan.push(Planned::update(
+            KIND_WORK_ITEM_INSTRUCTION_PROPOSALS,
+            &p.proposal_id,
+            BTreeMap::from([(
+                "review".to_owned(),
+                json!({
+                    "state": "approved",
+                    "by": actor_row_value(actor),
+                    "at": now_ms,
+                    "instructionId": instruction_id,
+                }),
+            )]),
+        ));
+        let extra: Vec<(&str, &str)> = instruction
+            .work_item_id
             .as_deref()
             .map(|w| (KIND_WORK_ITEMS, w))
             .into_iter()
@@ -1143,6 +1280,30 @@ impl RegistryDoc {
             WorkOutlineMutation::ProposeWorkItemInstruction(p) => {
                 if p.origin.chat_id.as_deref().is_some_and(|c| c != chat_id) {
                     return Err(unauthorized("Agents may only propose from their own Chat"));
+                }
+                if p.action != ProposalAction::Add {
+                    // Only instructions the agent can read (its item's
+                    // effective set, Space root included). An unknown id is
+                    // left to the mutator's `notFound`.
+                    let Some(id) = p.instruction_id.as_deref() else {
+                        return Ok(());
+                    };
+                    if self.live_instruction(id).is_err() {
+                        return Ok(());
+                    }
+                    let own = require_assigned()?;
+                    let reachable = self
+                        .effective_instructions_of(&own)?
+                        .entries
+                        .iter()
+                        .any(|e| e.instruction_id == id);
+                    return if reachable {
+                        Ok(())
+                    } else {
+                        Err(unauthorized(
+                            "Agents may only propose changes to instructions they inherit",
+                        ))
+                    };
                 }
                 match p.target.scope {
                     ProposalTargetScope::SpaceRoot => {
