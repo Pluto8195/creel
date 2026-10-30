@@ -651,6 +651,12 @@ The peon tray (`peon_tray.py`) was retired on 2026-10-20. Zeron's own banners an
 
 ## Parked (do not start unasked)
 
+Archived-chat retention (measured 2026-10-30, not needed yet): 363 chats, 108 archived; archived rows
+are 0.33 MB of the 6.4 MB registry, archived transcripts 37 MB of 93 MB snapshot docs; `docs.sqlite3`
+112 MB, journals 265 MB (626 files). Cost is mostly disk; boot reads journal tails only. If it grows,
+add a retention setting that compacts/exports transcripts and journals of chats archived > N days,
+keeping the registry row.
+
 Decisions 2026-10-28: Linear automatic project sync / status write-back stays parked (manual
 sync is fine; auto changes could make a mess). The internal zeron → mast code rename goes on its
 own branch `rename-zeron-to-mast`, not merged until Mikey reviews it. Active-checkout tracking
