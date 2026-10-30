@@ -1980,7 +1980,7 @@ async fn first_guess_calls_succeed_or_say_exactly_what_to_pass() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("missing field `text`"), "{err}");
+    assert!(err.contains("text is empty"), "{err}");
     assert!(
         err.contains("Usage of work_outline_propose_instruction"),
         "{err}"
