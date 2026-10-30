@@ -563,6 +563,16 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   processes yet.
   Titlebar layout fix (`fix-titlebar-lamp-overlap`): `TITLEBAR_TRAILING_SLOTS_WIDTH` always reserves the
   + and lamp slots, so titles never start under the lamp and the lamp's position is stable on every route.
+- **Instruction proposals edit/remove** (2026-10-30, `instruction-proposal-edits`): proposals carry
+  `action` add | edit | remove, `instructionId` and an optional `rationale`; edit/remove record the base
+  text + updatedAt. Accepting an edit rewrites the same instruction (history/drift intact); a remove
+  archives it; stale proposals are refused unless Apply anyway (`allowStale`). Agents may only target
+  instructions in their item's effective set. Details → Proposed instructions shows a word diff
+  (`proposal_diff.rs`), struck-through removes, the rationale, Accept / Edit then accept / Dismiss.
+- **Plan question typing** (2026-10-30, `fix-plan-question-typing`): the Markdown preview root focused
+  itself on mouse-down after the answer input did, stealing focus; the input wrapper now stops
+  mouse-down (`markdown/render.rs`). HTML question cards: no blocker found; debug logging on target
+  `focus` (web view mouse-down in_page/hit view, key routing, focus hand-backs) for a hand repro.
 - **Known test failures** (pre-existing, not regressions):
   - Engine lib, on main `3801cb5b`: `capture_source_context_reads_the_dispatch_checkout`,
     `local_opening_tail_arrives_before_full_mirror_and_keeps_all_history`.
