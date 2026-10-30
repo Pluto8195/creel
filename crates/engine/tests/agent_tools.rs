@@ -2376,3 +2376,119 @@ async fn saving_a_project_template_freezes_the_subtree_and_agents_cannot() {
     assert!(snap.templates.is_empty());
     assert_eq!(snap.item(&p.project).unwrap().template_id.as_deref(), Some(template_id.as_str()));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn propose_edit_and_remove_target_instructions_the_chat_can_read() {
+    let rig = rig().await;
+    let root_a = create_item(&rig, "op-a", "Feature A", None).await;
+    let root_b = create_item(&rig, "op-b", "Feature B", None).await;
+    add_instruction(
+        &rig,
+        "ins-a",
+        json!({ "type": "workItem", "workItemId": root_a }),
+        "Run the linter.",
+    )
+    .await;
+    add_instruction(
+        &rig,
+        "ins-b",
+        json!({ "type": "workItem", "workItemId": root_b }),
+        "Elsewhere rule.",
+    )
+    .await;
+    assign_chat(&rig, "assign-caller", CHAT, &root_a).await;
+    let tokens = rig.core.sessions.agent_tokens();
+    let lease = tokens.mint(CHAT, "run-1", SPACE, &rig.core.device_id);
+    let token = lease.token().to_owned();
+
+    // read_current lists instruction ids with their text.
+    let read = tool(&rig, &token, "work_outline_read_current", json!({}))
+        .await
+        .unwrap();
+    let entry = &read["effectiveInstructions"]["entries"][0];
+    assert_eq!(entry["text"], "Run the linter.");
+    let id = entry["instructionId"].as_str().unwrap().to_owned();
+    let foreign = snapshot(&rig)
+        .instructions
+        .iter()
+        .find(|i| i.text == "Elsewhere rule.")
+        .unwrap()
+        .id
+        .clone();
+
+    let edit = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "action": "edit", "instructionId": id, "text": "Run the linter and tests.",
+                "rationale": "CI runs both", "idempotencyKey": "e1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edit["action"], "edit");
+    let proposal_id = edit["proposalId"].as_str().unwrap().to_owned();
+    let snap = snapshot(&rig);
+    let proposal = snap.instruction_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.base_text.as_deref(), Some("Run the linter."));
+    assert_eq!(proposal.rationale.as_deref(), Some("CI runs both"));
+    assert_eq!(snap.instructions.len(), 2, "nothing changes until accepted");
+
+    let remove = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "action": "remove", "instructionId": id, "rationale": "obsolete",
+                "idempotencyKey": "r1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(remove["action"], "remove");
+
+    // Validation: unknown id, an id outside the chat's reach, missing id,
+    // remove with text, edit without text.
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "action": "edit", "instructionId": "nope", "text": "x", "idempotencyKey": "v1" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("not found") || err.contains("notFound"), "{err}");
+    let err = tool(
+        &rig,
+        &token,
+        "work_outline_propose_instruction",
+        json!({ "action": "remove", "instructionId": foreign, "idempotencyKey": "v2" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("nauthorized") || err.contains("inherit"), "{err}");
+    for (key, args) in [
+        ("v3", json!({ "action": "edit", "text": "x" })),
+        ("v4", json!({ "action": "remove", "instructionId": id, "text": "x" })),
+        ("v5", json!({ "action": "edit", "instructionId": id })),
+        ("v6", json!({ "action": "bogus", "instructionId": id })),
+    ] {
+        let mut args = args;
+        args["idempotencyKey"] = json!(key);
+        let err = tool(&rig, &token, "work_outline_propose_instruction", args)
+            .await
+            .unwrap_err();
+        assert!(err.contains("agent-tools/invalid"), "{key}: {err}");
+    }
+
+    // Accepting the edit rewrites the same instruction.
+    rig.client
+        .call(
+            methods::WORK_OUTLINE_MUTATE,
+            json!({ "op": "approveWorkItemInstructionProposal", "proposalId": proposal_id,
+                    "approvedText": "Run the linter and tests.", "operationId": "approve-1" }),
+        )
+        .await
+        .unwrap();
+    let snap = snapshot(&rig);
+    let instruction = snap.instructions.iter().find(|i| i.id == id).unwrap();
+    assert_eq!(instruction.text, "Run the linter and tests.");
+    assert_eq!(snap.instructions.len(), 2);
+}
