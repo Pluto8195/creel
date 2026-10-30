@@ -4,9 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use mast_proto::{
-    WakeEventKind, WakeEventView, WakeHoldReason, WakeSettings, WakeStatus,
-};
+use mast_proto::{WakeEventKind, WakeEventView, WakeHoldReason, WakeSettings, WakeStatus};
 
 /// How long events are collected before they go out as one message. At most
 /// one wake is delivered per window.
@@ -187,7 +185,10 @@ impl WakeCore {
 
     /// The orchestrator started a turn: everything before now is seen.
     pub fn note_turn_start(&mut self, orch: &str, now: i64) {
-        self.orchs.entry(orch.to_owned()).or_default().last_turn_start_ms = now;
+        self.orchs
+            .entry(orch.to_owned())
+            .or_default()
+            .last_turn_start_ms = now;
     }
 
     /// The user is acting in this chat.
@@ -298,8 +299,12 @@ impl WakeCore {
             delivered,
             unseen: e.at_ms >= o.last_turn_start_ms && !delivered,
         };
-        let recent: Vec<WakeEventView> =
-            o.log.iter().rev().map(|l| view(&l.event, l.delivered)).collect();
+        let recent: Vec<WakeEventView> = o
+            .log
+            .iter()
+            .rev()
+            .map(|l| view(&l.event, l.delivered))
+            .collect();
         let (hold_reason, next_delivery_at_ms) = match decision {
             Decision::Hold(r) => (Some(r), None),
             Decision::WaitUntil { at_ms, reason } => (Some(reason), Some(at_ms)),
@@ -327,7 +332,10 @@ fn push_log(o: &mut Orch, event: WakeEvent, delivered: bool) {
 
 /// The `ActionResolved` key matching a raised key (`act:<x>` ↔ `res:<x>`).
 pub fn resolved_key(raised_key: &str) -> String {
-    format!("res:{}", raised_key.strip_prefix("act:").unwrap_or(raised_key))
+    format!(
+        "res:{}",
+        raised_key.strip_prefix("act:").unwrap_or(raised_key)
+    )
 }
 
 #[cfg(test)]
@@ -336,7 +344,13 @@ mod tests {
 
     const ORCH: &str = "orch";
 
-    fn event(core: &mut WakeCore, worker: &str, kind: WakeEventKind, key: &str, at: i64) -> WakeEvent {
+    fn event(
+        core: &mut WakeCore,
+        worker: &str,
+        kind: WakeEventKind,
+        key: &str,
+        at: i64,
+    ) -> WakeEvent {
         WakeEvent {
             id: core.next_event_id(),
             key: key.into(),
@@ -349,7 +363,13 @@ mod tests {
     }
 
     fn raised(core: &mut WakeCore, worker: &str, key: &str, at: i64) -> WakeEvent {
-        event(core, worker, WakeEventKind::ActionRaised, &format!("act:{key}"), at)
+        event(
+            core,
+            worker,
+            WakeEventKind::ActionRaised,
+            &format!("act:{key}"),
+            at,
+        )
     }
 
     const IDLE: Ctx = Ctx {
@@ -429,10 +449,7 @@ mod tests {
         let a = raised(&mut core, "w1", "a", 0);
         core.record(ORCH, a, 0);
         let late = 10 * WAKE_WINDOW_MS;
-        let busy = Ctx {
-            busy: true,
-            ..IDLE
-        };
+        let busy = Ctx { busy: true, ..IDLE };
         assert_eq!(
             core.decide(ORCH, late, busy, false),
             Decision::Hold(WakeHoldReason::Busy)
@@ -524,14 +541,20 @@ mod tests {
         let resolved = event(&mut core, "w1", WakeEventKind::ActionResolved, "res:a", 10);
         assert!(!core.record(ORCH, resolved, 10));
         assert!(!core.has_held(ORCH));
-        assert_eq!(core.decide(ORCH, 10 * WAKE_WINDOW_MS, IDLE, false), Decision::Nothing);
+        assert_eq!(
+            core.decide(ORCH, 10 * WAKE_WINDOW_MS, IDLE, false),
+            Decision::Nothing
+        );
     }
 
     #[test]
     fn settings_gate_which_kinds_are_held_but_all_are_logged() {
         let mut core = WakeCore::new();
         let turn = event(&mut core, "w1", WakeEventKind::TurnFinished, "turn:w1:0", 0);
-        assert!(!core.record(ORCH, turn, 0), "turn-finished is off by default");
+        assert!(
+            !core.record(ORCH, turn, 0),
+            "turn-finished is off by default"
+        );
         assert!(!core.has_held(ORCH));
         let status = core.status(ORCH, 1, IDLE);
         assert_eq!(status.recent.len(), 1, "still shown for the unseen marks");

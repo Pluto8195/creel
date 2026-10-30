@@ -94,8 +94,13 @@ impl Rig {
             finish: finish.clone(),
             prompts: prompts.clone(),
         }));
-        let core = EngineCore::assemble(&path.join("data"), Arc::new(registry), HarnessId::Mock, None)
-            .expect("engine core assembles");
+        let core = EngineCore::assemble(
+            &path.join("data"),
+            Arc::new(registry),
+            HarnessId::Mock,
+            None,
+        )
+        .expect("engine core assembles");
         let store = path.join("wakes.json");
         let clock = Arc::new(AtomicI64::new(1_000_000));
         let tick = clock.clone();
@@ -121,8 +126,16 @@ impl Rig {
         rig.chat("w1", Some(ORCH));
         rig.chat("w2", Some(ORCH));
         rig.chat("stranger", None);
-        rig.wakes.ingest_chats(&rig.core.workspace.read_chats().unwrap()).await;
-        rig.wakes.ingest_sessions(&[session("w1", SessionStatus::Working), session("w2", SessionStatus::Working), session("stranger", SessionStatus::Working)]).await;
+        rig.wakes
+            .ingest_chats(&rig.core.workspace.read_chats().unwrap())
+            .await;
+        rig.wakes
+            .ingest_sessions(&[
+                session("w1", SessionStatus::Working),
+                session("w2", SessionStatus::Working),
+                session("stranger", SessionStatus::Working),
+            ])
+            .await;
         rig
     }
 
@@ -138,7 +151,10 @@ impl Rig {
                 parent.map(str::to_owned),
             )
             .unwrap();
-        self.core.workspace.rename_chat(id, &format!("Title {id}")).unwrap();
+        self.core
+            .workspace
+            .rename_chat(id, &format!("Title {id}"))
+            .unwrap();
     }
 
     fn advance(&self, ms: i64) {
@@ -146,7 +162,9 @@ impl Rig {
     }
 
     async fn worker_errors(&self, id: &str) {
-        self.wakes.ingest_sessions(&[session(id, SessionStatus::Errored)]).await;
+        self.wakes
+            .ingest_sessions(&[session(id, SessionStatus::Errored)])
+            .await;
     }
 
     fn wake_prompts(&self) -> Vec<String> {
@@ -162,7 +180,10 @@ impl Rig {
     async fn wait_for<F: FnMut() -> bool>(&self, mut f: F, what: &str) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while !f() {
-            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
     }
@@ -198,7 +219,8 @@ async fn child_errors_batch_into_one_system_message_after_the_window() {
 
     rig.advance(WAKE_WINDOW_MS);
     rig.wakes.evaluate(ORCH, false).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the wake message").await;
+    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the wake message")
+        .await;
     let prompts = rig.wake_prompts();
     assert_eq!(prompts.len(), 1, "ONE message for both workers");
     assert!(prompts[0].contains("Title w1") && prompts[0].contains("Title w2"));
@@ -226,8 +248,15 @@ async fn only_children_wake_their_orchestrator() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_running_turn_holds_the_batch_until_it_ends() {
     let rig = Rig::new().await;
-    rig.core.doc_host.queue_message(ORCH, "opening", Vec::new()).unwrap();
-    rig.wait_for(|| rig.core.sessions.turn_in_flight(ORCH), "the orchestrator's turn").await;
+    rig.core
+        .doc_host
+        .queue_message(ORCH, "opening", Vec::new())
+        .unwrap();
+    rig.wait_for(
+        || rig.core.sessions.turn_in_flight(ORCH),
+        "the orchestrator's turn",
+    )
+    .await;
     rig.worker_errors("w1").await;
     rig.advance(10 * WAKE_WINDOW_MS);
     rig.wakes.evaluate(ORCH, false).await;
@@ -240,9 +269,14 @@ async fn a_running_turn_holds_the_batch_until_it_ends() {
     assert_eq!(rig.wakes.status(ORCH).held.len(), 1);
 
     let _ = rig.finish.send(());
-    rig.wait_for(|| !rig.core.sessions.turn_in_flight(ORCH), "the turn to end").await;
+    rig.wait_for(
+        || !rig.core.sessions.turn_in_flight(ORCH),
+        "the turn to end",
+    )
+    .await;
     rig.wakes.evaluate(ORCH, false).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "delivery after the turn").await;
+    rig.wait_for(|| !rig.wake_prompts().is_empty(), "delivery after the turn")
+        .await;
     let _ = rig.finish.send(());
     rig.core.shutdown().await;
 }
@@ -255,7 +289,10 @@ async fn a_draft_and_recent_activity_hold_delivery() {
     rig.advance(10 * USER_QUIET_MS);
     rig.wakes.evaluate(ORCH, false).await;
     rig.settle().await;
-    assert!(rig.wake_prompts().is_empty(), "a draft holds however long it sits");
+    assert!(
+        rig.wake_prompts().is_empty(),
+        "a draft holds however long it sits"
+    );
     assert_eq!(
         rig.wakes.status(ORCH).hold_reason,
         Some(mast_proto::WakeHoldReason::Draft)
@@ -266,11 +303,18 @@ async fn a_draft_and_recent_activity_hold_delivery() {
     rig.advance(USER_QUIET_MS / 2);
     rig.wakes.evaluate(ORCH, false).await;
     rig.settle().await;
-    assert!(rig.wake_prompts().is_empty(), "the user was here a minute ago");
+    assert!(
+        rig.wake_prompts().is_empty(),
+        "the user was here a minute ago"
+    );
 
     rig.advance(USER_QUIET_MS);
     rig.wakes.evaluate(ORCH, false).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "delivery once the user is gone").await;
+    rig.wait_for(
+        || !rig.wake_prompts().is_empty(),
+        "delivery once the user is gone",
+    )
+    .await;
     let _ = rig.finish.send(());
     rig.core.shutdown().await;
 }
@@ -281,7 +325,8 @@ async fn deliver_now_skips_the_window_and_the_draft() {
     rig.worker_errors("w1").await;
     rig.wakes.note_user_activity(ORCH, Some(true)).await;
     rig.wakes.deliver_now(ORCH).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the forced delivery").await;
+    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the forced delivery")
+        .await;
     let _ = rig.finish.send(());
     rig.core.shutdown().await;
 }
@@ -292,8 +337,13 @@ async fn a_user_message_interrupts_an_event_started_turn_and_runs_next() {
     rig.worker_errors("w1").await;
     rig.advance(WAKE_WINDOW_MS);
     rig.wakes.evaluate(ORCH, false).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the event turn to start").await;
-    rig.wait_for(|| rig.core.sessions.turn_in_flight(ORCH), "the event turn in flight").await;
+    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the event turn to start")
+        .await;
+    rig.wait_for(
+        || rig.core.sessions.turn_in_flight(ORCH),
+        "the event turn in flight",
+    )
+    .await;
     // The wake service sees the turn running (the session watch does this).
     rig.wakes
         .ingest_sessions(&[session(ORCH, SessionStatus::Working)])
@@ -301,15 +351,30 @@ async fn a_user_message_interrupts_an_event_started_turn_and_runs_next() {
 
     // Mikey types: the event turn is interrupted (it never finished — the
     // test never sent `finish`), and his message is the very next turn.
-    rig.core.doc_host.queue_message(ORCH, "hello from the user", Vec::new()).unwrap();
+    rig.core
+        .doc_host
+        .queue_message(ORCH, "hello from the user", Vec::new())
+        .unwrap();
     rig.wait_for(
-        || rig.prompts.lock().unwrap().iter().any(|p| p == "hello from the user"),
+        || {
+            rig.prompts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p == "hello from the user")
+        },
         "the user's message to run next",
     )
     .await;
     let prompts = rig.prompts.lock().unwrap().clone();
-    let wake = prompts.iter().position(|p| p.contains("Worker updates:")).unwrap();
-    let user = prompts.iter().position(|p| p == "hello from the user").unwrap();
+    let wake = prompts
+        .iter()
+        .position(|p| p.contains("Worker updates:"))
+        .unwrap();
+    let user = prompts
+        .iter()
+        .position(|p| p == "hello from the user")
+        .unwrap();
     assert!(wake < user);
     let _ = rig.finish.send(());
     rig.core.shutdown().await;
@@ -320,7 +385,9 @@ async fn settings_default_and_gate_event_kinds() {
     let rig = Rig::new().await;
     assert_eq!(rig.wakes.settings(ORCH), WakeSettings::default());
     // Turn-finished is off by default: it is logged (unseen mark) not held.
-    rig.wakes.ingest_sessions(&[session("w1", SessionStatus::Idle)]).await;
+    rig.wakes
+        .ingest_sessions(&[session("w1", SessionStatus::Idle)])
+        .await;
     let status = rig.wakes.status(ORCH);
     assert!(status.held.is_empty());
     assert_eq!(status.recent.len(), 1);
@@ -328,14 +395,28 @@ async fn settings_default_and_gate_event_kinds() {
     assert!(status.recent[0].unseen);
 
     rig.wakes
-        .set_settings(ORCH, WakeSettings { turn_finished: true, ..WakeSettings::default() })
+        .set_settings(
+            ORCH,
+            WakeSettings {
+                turn_finished: true,
+                ..WakeSettings::default()
+            },
+        )
         .await;
-    rig.wakes.ingest_sessions(&[session("w2", SessionStatus::Idle)]).await;
+    rig.wakes
+        .ingest_sessions(&[session("w2", SessionStatus::Idle)])
+        .await;
     assert_eq!(rig.wakes.status(ORCH).held.len(), 1);
 
     // Master switch off clears what was held and holds nothing new.
     rig.wakes
-        .set_settings(ORCH, WakeSettings { enabled: false, ..WakeSettings::default() })
+        .set_settings(
+            ORCH,
+            WakeSettings {
+                enabled: false,
+                ..WakeSettings::default()
+            },
+        )
         .await;
     assert!(rig.wakes.status(ORCH).held.is_empty());
     rig.worker_errors("w1").await;
@@ -350,7 +431,11 @@ async fn settings_default_and_gate_event_kinds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settings_persist_across_service_restarts() {
     let rig = Rig::new().await;
-    let custom = WakeSettings { prs: true, errors: false, ..WakeSettings::default() };
+    let custom = WakeSettings {
+        prs: true,
+        errors: false,
+        ..WakeSettings::default()
+    };
     rig.wakes.set_settings(ORCH, custom).await;
     let again = OrchestratorWakes::new(
         rig.core.sessions.clone(),
@@ -383,7 +468,11 @@ fn request(id: &str, chat: &str, text: &str, state: &str) -> serde_json::Value {
 async fn required_actions_raised_wake_once_and_dedupe() {
     let rig = Rig::new().await;
     // The first snapshot only seeds what already exists.
-    rig.wakes.ingest_snapshot(&snapshot(serde_json::json!([request("r0", "w1", "old", "open")]))).await;
+    rig.wakes
+        .ingest_snapshot(&snapshot(serde_json::json!([request(
+            "r0", "w1", "old", "open"
+        )])))
+        .await;
     assert!(rig.wakes.status(ORCH).held.is_empty());
 
     let raised = snapshot(serde_json::json!([
@@ -394,17 +483,30 @@ async fn required_actions_raised_wake_once_and_dedupe() {
     rig.wakes.ingest_snapshot(&raised).await;
     rig.wakes.ingest_snapshot(&raised).await; // a re-read of the same state
     let held = rig.wakes.status(ORCH).held;
-    assert_eq!(held.len(), 1, "one event; strangers and repeats are dropped");
+    assert_eq!(
+        held.len(),
+        1,
+        "one event; strangers and repeats are dropped"
+    );
     assert!(held[0].summary.contains("Ready to merge: parser-fix"));
     assert!(held[0].summary.contains("request r1"));
 
     rig.advance(WAKE_WINDOW_MS);
     rig.wakes.evaluate(ORCH, false).await;
-    rig.wait_for(|| !rig.wake_prompts().is_empty(), "the Required Action wake").await;
+    rig.wait_for(
+        || !rig.wake_prompts().is_empty(),
+        "the Required Action wake",
+    )
+    .await;
     assert!(rig.wake_prompts()[0].contains("Ready to merge: parser-fix"));
 
     // Re-raised after delivery: the same action is not news again.
-    let resolved = snapshot(serde_json::json!([request("r1", "w1", "Ready to merge: parser-fix", "resolved")]));
+    let resolved = snapshot(serde_json::json!([request(
+        "r1",
+        "w1",
+        "Ready to merge: parser-fix",
+        "resolved"
+    )]));
     rig.wakes.ingest_snapshot(&resolved).await;
     let held = rig.wakes.status(ORCH).held;
     assert_eq!(held.len(), 1);
@@ -416,10 +518,26 @@ async fn required_actions_raised_wake_once_and_dedupe() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raised_and_resolved_inside_one_window_say_nothing() {
     let rig = Rig::new().await;
-    rig.wakes.ingest_snapshot(&snapshot(serde_json::json!([]))).await;
-    rig.wakes.ingest_snapshot(&snapshot(serde_json::json!([request("r1", "w1", "Approve plan", "open")]))).await;
+    rig.wakes
+        .ingest_snapshot(&snapshot(serde_json::json!([])))
+        .await;
+    rig.wakes
+        .ingest_snapshot(&snapshot(serde_json::json!([request(
+            "r1",
+            "w1",
+            "Approve plan",
+            "open"
+        )])))
+        .await;
     assert_eq!(rig.wakes.status(ORCH).held.len(), 1);
-    rig.wakes.ingest_snapshot(&snapshot(serde_json::json!([request("r1", "w1", "Approve plan", "resolved")]))).await;
+    rig.wakes
+        .ingest_snapshot(&snapshot(serde_json::json!([request(
+            "r1",
+            "w1",
+            "Approve plan",
+            "resolved"
+        )])))
+        .await;
     assert!(rig.wakes.status(ORCH).held.is_empty());
     rig.core.shutdown().await;
 }
