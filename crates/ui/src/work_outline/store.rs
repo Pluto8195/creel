@@ -242,6 +242,8 @@ pub(crate) fn fixture_item(
         external_sync_state: None,
         is_project: false,
         worker_destination_id: None,
+        template_id: None,
+        template_revision: None,
     }
 }
 

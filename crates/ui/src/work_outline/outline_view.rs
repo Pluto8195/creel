@@ -26,6 +26,7 @@ use super::actions::new_operation_id;
 use super::chips::{self, TextTooltip};
 pub(crate) mod group;
 mod move_toast;
+pub(crate) mod templates;
 mod tree_guides_view;
 mod undo;
 
@@ -232,6 +233,8 @@ enum EditKind {
         anchor: CreateAnchor,
         /// "Group into… › New container…": the items to move under it.
         group: Option<Vec<String>>,
+        /// "New from template…": the title row of the new project.
+        template: Option<Box<templates::TemplateFlow>>,
     },
     Rename {
         item_id: String,
@@ -264,6 +267,9 @@ enum PickerPurpose {
         space_id: String,
         item_ids: Vec<String>,
     },
+    /// "New from template…": choose a template, or the parent of a project
+    /// made from a Linear project (`outline_view/templates.rs`).
+    Template(templates::TemplateStage),
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +478,9 @@ pub(crate) struct OutlineView {
     /// The non-blocking "Moved X · instructions changed" toast with Undo.
     move_toast: Option<move_toast::MoveToast>,
     move_toast_seq: u64,
+    /// "Created project … from template …" with Undo, and the template flow
+    /// a caller without a window asked for (`outline_view/templates.rs`).
+    templates: templates::TemplatesState,
     /// An undo or redo is running (see `outline_view::undo`).
     log_busy: bool,
     /// The move toast's Undo is sending its inverse: it is not a new change.
@@ -565,6 +574,7 @@ impl OutlineView {
             notice_seq: 0,
             move_toast: None,
             move_toast_seq: 0,
+            templates: Default::default(),
             compact_single_chat: true,
             log_busy: false,
             skip_log: false,
@@ -1237,6 +1247,7 @@ impl OutlineView {
                 placement,
                 anchor,
                 group: None,
+                template: None,
             },
             operation_id: new_operation_id(),
             submitting: false,
@@ -1309,6 +1320,20 @@ impl OutlineView {
         edit.submitting = true;
         let operation_id = edit.operation_id.clone();
         let kind = edit.kind.clone();
+        if let EditKind::Create {
+            template: Some(flow),
+            ..
+        } = &kind
+        {
+            // "New from template…": create the whole project.
+            let flow = (**flow).clone();
+            self.editing = None;
+            if let Err(notice) = self.instantiate_template(flow, title, cx) {
+                self.show_notice(notice, cx);
+            }
+            cx.notify();
+            return;
+        }
         if let EditKind::Create {
             space_id,
             group: Some(item_ids),
@@ -1593,6 +1618,10 @@ impl OutlineView {
             self.choose_group_entry(space_id, item_ids, entry, window, cx);
             return;
         }
+        if let PickerPurpose::Template(stage) = purpose {
+            self.choose_template_entry(stage, entry, window, cx);
+            return;
+        }
         let operation_id = picker.operation_id.clone();
         let place_first = picker.place_first;
         let change = match &purpose {
@@ -1612,7 +1641,7 @@ impl OutlineView {
                     work_item_id: item_id.clone(),
                 })
             }
-            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } | PickerPurpose::Template(_) => None,
         };
         let snapshot = match &purpose {
             PickerPurpose::Move { item_id } | PickerPurpose::AssociateWithItem { item_id } => {
@@ -1625,7 +1654,7 @@ impl OutlineView {
                 .find(|chat| &chat.id == chat_id)
                 .and_then(|chat| chat.space_id.as_deref())
                 .and_then(|space| self.snapshot(space)),
-            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } | PickerPurpose::Template(_) => None,
         };
         let impact = change
             .as_ref()
@@ -1663,7 +1692,7 @@ impl OutlineView {
                             work_item_id: item_id.clone(),
                         })
                 }
-                PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => None,
+                PickerPurpose::RecentChanges | PickerPurpose::Group { .. } | PickerPurpose::Template(_) => None,
             };
             snapshot
                 .map(|snapshot| snapshot.space_id.clone())
@@ -1698,7 +1727,7 @@ impl OutlineView {
             WorkOutlinePlacement::Last
         };
         let (task, item_id, change) = match picker.purpose.clone() {
-            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } => return,
+            PickerPurpose::RecentChanges | PickerPurpose::Group { .. } | PickerPurpose::Template(_) => return,
             PickerPurpose::Move { item_id } => (
                 actions.move_work_item(mast_proto::MoveWorkItemParams {
                     work_item_id: item_id.clone(),
@@ -3598,6 +3627,15 @@ fn item_body(
             ))
         })
         .children(proposals)
+        .when_some(item.template_changed.filter(|_| !item.archived), |el, (from, to)| {
+            let tip: SharedString =
+                "The template this project came from changed. Open details to review".into();
+            el.child(
+                chips::template_chip(format!("outline-template-changed-{key}"), from, to, theme)
+                    .id(SharedString::from(format!("outline-template-changed-{key}")))
+                    .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into()),
+            )
+        })
         .when(
             item.chat_count > 0 && !compact_pr && item.compact_chat.is_none(),
             |el| {
@@ -3900,7 +3938,9 @@ impl Render for OutlineView {
             _ => None,
         };
         let notice = self.notice.clone();
+        self.open_requested_template_flow(window, cx);
         let move_toast = self.render_move_toast(&theme, cx);
+        let template_toast = self.render_template_toast(&theme, cx);
         if self.focus_logs.is_none() {
             self.focus_logs = Some([
                 cx.on_focus_in(&self.focus, window, |this, window, _| {
@@ -4074,6 +4114,7 @@ impl Render for OutlineView {
                 }
             }))
             .when_some(move_toast, |el, toast| el.child(toast))
+            .when_some(template_toast, |el, toast| el.child(toast))
             .when_some(self.error_notice.clone(), |el, (title, detail, copy)| {
                 let outline = cx.entity();
                 el.child(

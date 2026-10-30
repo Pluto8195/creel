@@ -302,6 +302,12 @@ pub(crate) enum LinearPanelEvent {
     },
     /// Open Settings → Linear (connect / reconnect).
     OpenSettings,
+    /// "New project item…" on a project row: create a project work item from
+    /// a template, named and linked to this Linear project.
+    CreateProjectItem {
+        space_id: String,
+        project: mast_proto::linear::LinearProjectRef,
+    },
 }
 
 /// A short status line under the search box.
@@ -1618,6 +1624,8 @@ impl LinearPanel {
         );
         let toggle_id = id.clone();
         let link_project = project.clone();
+        let template_project = project.to_ref();
+        let template_space = self.space_id.clone();
         let linking = self.busy.contains(&format!("link-project:{id}"));
         let row_selector = format!("linear-project-row-{id}");
         let header = div()
@@ -1686,6 +1694,34 @@ impl LinearPanel {
         let mut column = div().flex().flex_col().child(header);
         if open {
             let mut body = div().flex().flex_col().pl(px(14.0));
+            let template_button = div().flex().child(
+                Self::small_button(
+                    SharedString::from(format!("linear-project-template-{id}")),
+                    "New project item\u{2026}",
+                    theme,
+                )
+                .debug_selector({
+                    let selector = format!("linear-project-template-{id}");
+                    move || selector.clone()
+                })
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        TextTooltip(
+                            "Create a project work item from a template, named and linked to this Linear project"
+                                .into(),
+                        )
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(LinearPanelEvent::CreateProjectItem {
+                        space_id: template_space.clone(),
+                        project: template_project.clone(),
+                    })
+                })),
+            );
+            body = body.child(template_button);
             match issues {
                 None | Some(Load::Loading) => {
                     body = body.child(Self::quiet("Loading\u{2026}", theme))

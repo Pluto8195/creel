@@ -6382,6 +6382,27 @@ impl Overview {
                         .update(cx, |outline, cx| outline.show_error(notice, cx));
                 }
             }
+            DetailsEvent::NewFromTemplate {
+                space_id,
+                template_id,
+            } => {
+                let mut flow = crate::work_outline::outline_view::templates::TemplateFlow::new(
+                    space_id.clone(),
+                    None,
+                );
+                flow.template_id = template_id.clone();
+                this.outline
+                    .update(cx, |outline, cx| outline.request_new_from_template(flow, cx));
+            }
+            DetailsEvent::Notice { text, error } => {
+                this.outline.update(cx, |outline, cx| {
+                    if *error {
+                        outline.show_error(text, cx)
+                    } else {
+                        outline.show_notice(text.clone(), cx)
+                    }
+                });
+            }
             DetailsEvent::AddLinearIssues { space_id, item_id } => {
                 if let Err(notice) =
                     this.open_project_issue_picker(space_id.clone(), item_id.clone(), cx)
@@ -10852,6 +10873,17 @@ mod logic_tests {
     }
     mod project_ui_tests {
         include!("work_outline/project_ui_tests.rs");
+    }
+    /// Project templates: save, list, New from template, Linear entry.
+    mod templates_tests {
+        include!("work_outline/templates_tests.rs");
+    }
+    /// "Template changed" chip and per-project review.
+    mod convert_tests {
+        include!("work_outline/convert_tests.rs");
+    }
+    mod template_review_tests {
+        include!("work_outline/template_review_tests.rs");
     }
 
     /// First-use empty state of the Outline; shares this module's fixtures.

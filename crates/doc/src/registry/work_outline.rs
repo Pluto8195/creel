@@ -47,6 +47,7 @@ pub mod instructions;
 pub mod linear;
 mod materialize;
 pub mod pr_review_sync;
+pub mod templates;
 pub mod user_actions;
 
 use materialize::{DecodedItem, OutlineTree, build_tree, cycle_victim, decode_item};
@@ -60,6 +61,7 @@ pub const KIND_INSTRUCTION_REVISIONS: &str = "instructionRevisions";
 pub const KIND_INSTRUCTION_REVISION_APPLICATIONS: &str = "instructionRevisionApplications";
 pub use execution::{KIND_CHAT_EXECUTION_BINDINGS, KIND_EXECUTION_CONFIGURATIONS};
 pub use linear::KIND_WORK_OUTLINE_SPACE_SETTINGS;
+pub use templates::KIND_WORK_ITEM_TEMPLATES;
 pub use user_actions::{KIND_USER_ACTION_REQUESTS, KIND_WORK_ITEM_INSTRUCTION_PROPOSALS};
 
 /// Every outline kind this build writes: the `delete_space` cascade and the
@@ -76,6 +78,7 @@ pub const WORK_OUTLINE_KINDS: &[&str] = &[
     KIND_USER_ACTION_REQUESTS,
     KIND_WORK_ITEM_INSTRUCTION_PROPOSALS,
     KIND_WORK_OUTLINE_SPACE_SETTINGS,
+    KIND_WORK_ITEM_TEMPLATES,
     // Planning artifacts carry `spaceId` too: the Space cascade and the
     // orphan sweep cover them.
     mast_proto::artifacts::KIND_ARTIFACTS,
@@ -412,6 +415,11 @@ impl RegistryDoc {
             references: self.overlay_rows(KIND_WORK_ITEM_EXTERNAL_REFERENCES),
             instructions: self.overlay_rows(KIND_WORK_ITEM_INSTRUCTIONS),
             space_settings: self.overlay_row(KIND_WORK_OUTLINE_SPACE_SETTINGS, space_id),
+            templates: self
+                .overlay_rows(KIND_WORK_ITEM_TEMPLATES)
+                .into_iter()
+                .filter(|row| row.fields.get("spaceId").and_then(Value::as_str) == Some(space_id))
+                .collect(),
             applications,
             revisions,
             sessions,
@@ -898,6 +906,16 @@ impl RegistryDoc {
             WorkOutlineMutation::SetLinearAssignedDestination(p) => self
                 .set_linear_assigned_destination(p, now_ms)
                 .map(|_| empty),
+            WorkOutlineMutation::SaveWorkItemTemplate(p) => {
+                let id = self.save_work_item_template(p, now_ms)?;
+                Ok(WorkOutlineMutateReply {
+                    template_id: Some(id),
+                    ..Default::default()
+                })
+            }
+            WorkOutlineMutation::DeleteWorkItemTemplate(p) => {
+                self.delete_work_item_template(p).map(|_| empty)
+            }
         }
     }
 
@@ -1064,7 +1082,8 @@ impl RegistryDoc {
         // Project templates: the project flag and the worker destination are
         // user decisions (agents are already limited to status above).
         let project_change = p.changes.is_project.is_some()
-            || !p.changes.worker_destination.is_unchanged();
+            || !p.changes.worker_destination.is_unchanged()
+            || !p.changes.template.is_unchanged();
         if project_change && actor.kind == WorkOutlineActorKind::Agent {
             return Err(WorkOutlineError::unauthorized(
                 "Agents may not change a project's settings",
@@ -1104,6 +1123,24 @@ impl RegistryDoc {
                 }
                 if item.worker_destination_id.as_deref() != Some(destination.as_str()) {
                     set.insert("workerDestinationId".to_owned(), json!(destination));
+                }
+            }
+        }
+        match &p.changes.template {
+            FieldPatch::Unchanged => {}
+            FieldPatch::Clear => {
+                if item.template_id.is_some() || item.template_revision.is_some() {
+                    set.insert("templateId".to_owned(), Value::Null);
+                    set.insert("templateRevision".to_owned(), Value::Null);
+                }
+            }
+            FieldPatch::Set(link) => {
+                self.check_template_link(&item.space_id, link)?;
+                if item.template_id.as_deref() != Some(link.template_id.as_str())
+                    || item.template_revision != Some(link.revision)
+                {
+                    set.insert("templateId".to_owned(), json!(link.template_id));
+                    set.insert("templateRevision".to_owned(), json!(link.revision));
                 }
             }
         }

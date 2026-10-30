@@ -27,6 +27,7 @@ pub(crate) mod action_log;
 pub(crate) mod actions;
 pub(crate) mod chips;
 pub(crate) mod command;
+pub(crate) mod convert;
 pub(crate) mod details_panel;
 pub(crate) mod execution;
 pub(crate) mod filter;
@@ -42,6 +43,8 @@ pub(crate) mod required_actions_view;
 pub(crate) mod restructure;
 pub(crate) mod revision_diff;
 pub(crate) mod store;
+pub(crate) mod template_review;
+pub(crate) mod templates;
 pub(crate) mod tree_guides;
 
 #[allow(unused_imports)]

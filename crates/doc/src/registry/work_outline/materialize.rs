@@ -92,6 +92,8 @@ pub struct WorkOutlineInputs {
     pub instruction_proposals: Vec<RegistryRow>,
     /// The Space's live `workOutlineSpaceSettings` row (Linear), if any.
     pub space_settings: Option<RegistryRow>,
+    /// Live `workItemTemplates` rows of this Space (project templates).
+    pub templates: Vec<RegistryRow>,
 }
 
 // ── lenient row decoding ────────────────────────────────────────────────────
@@ -160,6 +162,9 @@ pub(crate) struct DecodedItem {
     pub is_project: bool,
     /// `workerDestinationId` (project templates).
     pub worker_destination_id: Option<String>,
+    /// `templateId` / `templateRevision` (project templates).
+    pub template_id: Option<String>,
+    pub template_revision: Option<u32>,
 }
 
 impl DecodedItem {
@@ -221,6 +226,12 @@ pub(crate) fn decode_item(row: &RegistryRow) -> Result<DecodedItem, WorkOutlineR
             .and_then(Value::as_bool)
             .unwrap_or(false),
         worker_destination_id: str_field(row, "workerDestinationId").filter(|id| !id.is_empty()),
+        template_id: str_field(row, "templateId").filter(|id| !id.is_empty()),
+        template_revision: row
+            .fields
+            .get("templateRevision")
+            .and_then(Value::as_u64)
+            .and_then(|r| u32::try_from(r).ok()),
     })
 }
 
@@ -651,6 +662,8 @@ pub(crate) fn bare_view(
         external_sync_state: None,
         is_project: false,
         worker_destination_id: None,
+        template_id: None,
+        template_revision: None,
     }
 }
 
@@ -900,6 +913,8 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
             external_sync_state: item.external_sync_state.clone(),
             is_project: item.is_project,
             worker_destination_id: item.worker_destination_id.clone(),
+            template_id: item.template_id.clone(),
+            template_revision: item.template_revision,
         });
     }
     for index in (0..views.len()).rev() {
@@ -950,6 +965,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         &mut repairs,
     );
 
+    let templates = super::templates::decode_templates(space_id, &inputs.templates, &mut repairs);
     WorkOutlineSnapshot {
         space_id: space_id.into(),
         available: true,
@@ -971,6 +987,7 @@ pub fn materialize_work_outline(space_id: &str, inputs: &WorkOutlineInputs) -> W
         user_action_requests: user_actions.requests,
         instruction_proposals: user_actions.proposals,
         space_settings: super::linear::decode_space_settings(inputs.space_settings.as_ref()),
+        templates,
     }
 }
 

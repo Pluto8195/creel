@@ -1685,3 +1685,59 @@ descendants".
 5. **Tests.** `crates/engine/tests/agent_tools.rs` (scope, resolution, limits),
    `crates/doc/src/registry/work_outline/` (field validation), `crates/proto/src/work_outline.rs`
    (snapshot helpers).
+
+## Amendment: project templates
+
+Design option A, "Template as a copy". A per-Space Templates area outside the normal outline.
+
+1. **Storage.** Registry kind `workItemTemplates` (in `WORK_OUTLINE_KINDS`, so the Space cascade
+   and orphan sweep cover it). Row id = `derive_id(operationId, "template")`; fields `spaceId`,
+   `name`, `revision` (u32, from 1), `body` (a `TemplateNode` tree), `createdAt`, `updatedAt`,
+   `lastOperationId`, `v`. The snapshot carries live rows as `templates` (omitted when empty;
+   part of `sameContentAs`), sorted by lowercase name then id; an undecodable row is a `malformed`
+   repair. Items gain `templateId` / `templateRevision` (`workItems` fields, LWW, in the view).
+2. **What a template is.** A frozen copy of ANY item's subtree (Mast never decides a project's shape; the item need not be a project): titles, descriptions, each item's
+   live instruction texts in order, which item is a project, which is the worker destination.
+   **Dropped:** Chats and assignments, tickets (the children of every worker destination),
+   external links (the items themselves stay, as plain nodes), archived items, artifacts,
+   statuses, execution configuration.
+3. **Limits.** At most 64 nodes, 6 levels (root = level 1), 16 instructions per node, a name of
+   1..=80 characters (trimmed; unique per Space, case-insensitive, `invalid` on a duplicate), and
+   a serialized body of at most 13,000 UTF-16 units. Over a limit is `limitExceeded`.
+4. **Mutations (user only; agents are `unauthorized`, the default for unlisted ops).**
+   - `saveWorkItemTemplate { spaceId, projectWorkItemId, name, templateId?, operationId }`:
+     the item must be a live, non-archived item in the Space (any item). No `templateId` creates a template
+     (reply `templateId`); `templateId` replaces that template's name and body and adds 1 to its
+     revision (`notFound` when missing or deleted). In the same batch the source project's
+     `templateId` / `templateRevision` are set to the saved template and revision. A replay of the
+     same `operationId` never bumps twice.
+   - `deleteWorkItemTemplate { templateId, operationId }`: tombstones the row (idempotent). Projects
+     keep their link, which then reads as dangling; a deleted id is never revived.
+   - `updateWorkItem.changes.template`: `{"templateId","revision"}` sets, `null` clears (users and
+     system only). The template must be live in the item's Space and the revision no newer than
+     the template's. Set it to the template's revision to mark a project "reviewed".
+5. **Revisions.** A project remembers the revision it was created from or last reviewed against.
+   `template_changed(project, template)` is true when the project links that template with a
+   smaller revision (a missing revision counts as 0).
+6. **Instantiation and review are client compositions of existing mutations.** There is no
+   `instantiate` mutation. `plan_template_instantiation(template, newTitle)` returns the flat
+   ordered plan (`CreateItem`, `AddInstruction`, `MarkProject`, `SetWorkerDestination`,
+   `LinkTemplate`) the client turns into `createWorkItem`, `createWorkItemInstruction` and
+   `updateWorkItem` calls. `diff_template_against_project(snapshot, template, projectId)` returns
+   `TemplateChange`s (`addedItem`, `removedItem`, `instructionAdded`, `instructionRemoved`,
+   `workerDestinationChanged`); empty means in sync; removed items are reported, never deleted.
+   Both are pure and live in `crates/proto/src/work_outline_templates.rs`.
+7. **Tests.** `crates/proto/src/work_outline_templates/tests.rs` (wire shapes, helpers),
+   `crates/doc/src/registry/work_outline/templates/tests.rs` (save, re-save, delete, names,
+   limits, link validation, agent denial), `crates/engine/tests/agent_tools.rs`
+   (`saving_a_project_template_freezes_the_subtree_and_agents_cannot`).
+
+### Amendment addendum: `create_chat` without `workItemId` in a project
+
+`work_outline_read_current` replies with `workerDestinationId` when the Chat's nearest project has a
+live destination the Chat is not inside. `create_chat` (agent mode, with a `prompt`, no `workItemId`,
+`cwd` or `branch`) then creates a NEW item under that destination via `work_outline_create_child`
+(title = `title`, else the prompt's first line, ≤ 80 chars; idempotency key derived from the
+`create_chat` key so retries reuse the item) and starts the worker on it, instead of inheriting the
+caller's item and nesting under it. Without a destination, or with an explicit `workItemId`, the
+behaviour is unchanged.

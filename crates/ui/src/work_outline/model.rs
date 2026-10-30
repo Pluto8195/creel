@@ -129,6 +129,9 @@ pub(crate) struct ItemRow {
     /// Associated Chats whose captured execution configuration differs from
     /// the item's current one (`executionExceptions`).
     pub execution_exceptions: u32,
+    /// `(linked, current)` template revisions of a project whose template
+    /// moved on (the "Template changed" chip).
+    pub template_changed: Option<(u32, u32)>,
     /// Subtree rollup (descendant status totals, Milestone 4).
     pub rollup: mast_proto::WorkItemRollup,
     /// Pending instruction proposals targeting this item (Milestone 4).
@@ -678,6 +681,7 @@ fn item_node<'s>(
                 .max(item.chat_ids.len() as u32),
             has_references: !item.external_reference_ids.is_empty(),
             execution_exceptions: snapshot.execution_exception_chats(&item.id).len() as u32,
+            template_changed: super::template_review::chip_revisions(snapshot, item),
             rollup: item.rollup.clone(),
             pending_proposals: super::required_actions::pending_proposal_count(
                 snapshot,

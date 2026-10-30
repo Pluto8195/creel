@@ -937,6 +937,7 @@ impl WorkItemDetails {
         let execution = self.render_execution_section(&snapshot, theme, cx);
         let linear = self.render_space_linear(&snapshot, theme, cx);
         let pr_sync = self.render_space_pr_sync(&snapshot, theme, cx);
+        let templates = self.render_templates_section(&snapshot, theme, cx);
         frame.child(header).child(
             div()
                 .id("work-item-details-body")
@@ -960,6 +961,7 @@ impl WorkItemDetails {
                 .child(section)
                 .when_some(proposals, |el, proposals| el.child(proposals))
                 .child(execution)
+                .child(templates)
                 .child(linear)
                 .child(pr_sync),
         )

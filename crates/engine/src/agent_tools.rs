@@ -1036,6 +1036,13 @@ impl AgentToolsService {
         if let (Some(Value::Object(linear)), Some(object)) = (linear, reply.as_object_mut()) {
             object.extend(linear);
         }
+        // Project templates: where workers this Chat creates go (set only
+        // when its project has a live destination the Chat is not inside).
+        if let Some(destination) = snapshot.worker_destination_for(&item.id)
+            && let Some(object) = reply.as_object_mut()
+        {
+            object.insert("workerDestinationId".into(), json!(destination));
+        }
         reply
     }
 

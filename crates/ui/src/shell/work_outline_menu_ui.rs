@@ -16,6 +16,7 @@ use super::*;
 use gpui::WeakEntity;
 
 use crate::work_outline::hints::{self, HintKey, WithHint as _};
+use crate::work_outline::templates::TemplateMenuAction;
 use crate::work_outline::outline_view::OutlineView;
 use crate::work_outline::outline_view::context_menu::{
     MenuAction, MenuEntry, MenuKind, OutlineContextMenu,
@@ -445,6 +446,30 @@ impl Shell {
             }
             MenuAction::Linear(action) => self.run_linear_menu_action(action, window, cx),
             MenuAction::Github(action) => self.run_github_menu_action(action, window, cx),
+            MenuAction::Template(action) => match action {
+                TemplateMenuAction::SaveAsTemplate { .. } => {
+                    self.with_menu_details(target, window, cx, |details, window, cx| {
+                        details.begin_save_template(window, cx)
+                    })
+                }
+                TemplateMenuAction::ConvertToProject { .. } => {
+                    self.with_menu_details(target, window, cx, |details, _window, cx| {
+                        details.begin_convert(cx)
+                    })
+                }
+                TemplateMenuAction::NewFromTemplate { space_id, parent } => {
+                    if let Some(outline) = outline.upgrade() {
+                        outline.update(cx, |outline, cx| {
+                            outline.request_new_from_template(
+                                crate::work_outline::outline_view::templates::TemplateFlow::new(
+                                    space_id, parent,
+                                ),
+                                cx,
+                            )
+                        });
+                    }
+                }
+            },
             MenuAction::Outline(_)
             | MenuAction::Command(_)
             | MenuAction::StatusPage
@@ -846,7 +871,7 @@ mod tests {
         })
     }
 
-    const ITEM_ENTRIES: [&str; 21] = [
+    const ITEM_ENTRIES: [&str; 24] = [
         "open-details",
         "start-chat",
         "rename",
@@ -858,6 +883,9 @@ mod tests {
         "outdent",
         "move-to",
         "group-into",
+        "save-as-template",
+        "new-from-template",
+        "convert-to-project",
         "set-status",
         "associate",
         "effective-instructions",
@@ -1049,6 +1077,7 @@ mod tests {
             ids(&shell, cx),
             [
                 "new-item",
+                "new-from-template",
                 "space-instructions",
                 "execution",
                 "required-actions",
@@ -1730,6 +1759,7 @@ mod tests {
             ids(&shell, cx),
             [
                 "new-item",
+                "new-from-template",
                 "space-instructions",
                 "execution",
                 "move-up",

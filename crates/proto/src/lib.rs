@@ -22,6 +22,7 @@ pub mod work_outline_execution;
 pub mod work_outline_instructions;
 pub mod work_outline_launch;
 pub mod work_outline_order;
+pub mod work_outline_templates;
 pub mod work_outline_user_actions;
 pub mod workspace;
 
@@ -54,6 +55,7 @@ pub use work_outline_execution::*;
 pub use work_outline_instructions::*;
 pub use work_outline_launch::*;
 pub use work_outline_order::*;
+pub use work_outline_templates::*;
 pub use work_outline_user_actions::*;
 pub use workspace::*;
 
