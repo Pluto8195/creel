@@ -536,8 +536,16 @@ All milestones M0–M4 of the spec, then the follow-ups below. User docs: `docs/
   parent resolves to the nearest project's destination; `create_chat { workItemId = project }` starts
   in it; project scope (contract amendment in m0-contract.md) lets a chat on a project's Planning item
   create into its sibling Tickets container but nothing outside the project. Gap: a bare `create_chat`
-  without `workItemId` still inherits the caller's item and nests under the caller. Increment 2
-  (templates, change review, Convert to project wizard) in progress on `project-templates-2`.
+  without `workItemId` still inherits the caller's item (fixed in increment 2).
+  Increment 2 (2026-10-30, `project-templates-2`): templates copy ANY item subtree (titles,
+  descriptions, instructions on every node, project flag, worker destination; not chats, Required
+  Actions, external links, archived items or tickets under a destination). Save as template… on any
+  item (Update template = rev+1, or Save as new); Space-root details → Templates (list, tree preview
+  with per-node instructions, New from template…, Delete). New from template… creates exactly that
+  tree under a chosen parent with a chosen root title (item menu, Space-root menu, Templates list).
+  Template-changed review for copies; Convert to project maps an existing item onto a chosen
+  template. A bare `create_chat` (no `workItemId`) from a chat inside a project with a worker
+  destination creates a new item there and starts the worker on it.
 - **Running-chats popover** (2026-10-29, `running-chats-popover`; design A revised
   mast-artifact:f5bdd9f1c79754065ba039d4e8b0d62f): titlebar lamp button (next to +) or ⌥⌘R opens a
   popover: Needs you first, then by Space, children under coordinators; rows show title, last message
