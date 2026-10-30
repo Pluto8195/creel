@@ -161,6 +161,7 @@ impl Shell {
                     .text_color(theme.text)
                     .child(SharedString::from(team.roll_up())),
             );
+            col = col.child(self.render_team_wake_header(&chat_id, &theme, cx));
             for worker in &team.workers {
                 col = col.child(self.render_worker_row(worker, false, &theme, cx));
             }
@@ -294,6 +295,7 @@ impl Shell {
             .unwrap_or_default();
         let color = Self::state_color(theme, worker.state);
         let open_id = id.clone();
+        let unseen = self.unseen_for_worker(&id);
         let mut row = div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector.clone())
@@ -324,6 +326,29 @@ impl Shell {
                             .text_color(theme.text)
                             .child(SharedString::from(worker.title.clone())),
                     )
+                    .children((!unseen.is_empty()).then(|| {
+                        let tip = SharedString::from(format!(
+                            "Unseen by the orchestrator:\n{}",
+                            unseen.join("\n")
+                        ));
+                        div()
+                            .id(SharedString::from(format!("{prefix}-unseen-{id}")))
+                            .debug_selector({
+                                let selector = format!("{prefix}-unseen-{id}");
+                                move || selector.clone()
+                            })
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(3.0))
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.warning)
+                            .child(div().size(px(5.0)).rounded_full().bg(theme.warning))
+                            .child("unseen")
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| SurfaceTabTooltip { text: tip.clone() }).into()
+                            })
+                    }))
                     .child(
                         div()
                             .flex_none()

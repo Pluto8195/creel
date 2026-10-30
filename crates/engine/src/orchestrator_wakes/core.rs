@@ -329,3 +329,259 @@ fn push_log(o: &mut Orch, event: WakeEvent, delivered: bool) {
 pub fn resolved_key(raised_key: &str) -> String {
     format!("res:{}", raised_key.strip_prefix("act:").unwrap_or(raised_key))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORCH: &str = "orch";
+
+    fn event(core: &mut WakeCore, worker: &str, kind: WakeEventKind, key: &str, at: i64) -> WakeEvent {
+        WakeEvent {
+            id: core.next_event_id(),
+            key: key.into(),
+            worker_chat_id: worker.into(),
+            worker_title: Some(format!("title {worker}")),
+            kind,
+            summary: format!("{worker} — {key}"),
+            at_ms: at,
+        }
+    }
+
+    fn raised(core: &mut WakeCore, worker: &str, key: &str, at: i64) -> WakeEvent {
+        event(core, worker, WakeEventKind::ActionRaised, &format!("act:{key}"), at)
+    }
+
+    const IDLE: Ctx = Ctx {
+        busy: false,
+        queue_nonempty: false,
+    };
+
+    #[test]
+    fn defaults_wake_for_required_actions_and_errors_only() {
+        let s = WakeSettings::default();
+        assert!(s.enabled);
+        assert!(s.wakes_for(WakeEventKind::ActionRaised));
+        assert!(s.wakes_for(WakeEventKind::ActionResolved));
+        assert!(s.wakes_for(WakeEventKind::Errored));
+        assert!(!s.wakes_for(WakeEventKind::TurnFinished));
+        assert!(!s.wakes_for(WakeEventKind::PrOpened));
+        assert!(!s.wakes_for(WakeEventKind::PrMerged));
+        let off = WakeSettings {
+            enabled: false,
+            ..s
+        };
+        assert!(WakeEventKind::ALL.iter().all(|k| !off.wakes_for(*k)));
+    }
+
+    #[test]
+    fn events_batch_into_one_message_after_the_window() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 1_000);
+        let b = event(&mut core, "w2", WakeEventKind::Errored, "err:w2", 20_000);
+        assert!(core.record(ORCH, a, 1_000));
+        assert!(core.record(ORCH, b, 20_000));
+        // Inside the window: wait for its end, counted from the first event.
+        assert_eq!(
+            core.decide(ORCH, 30_000, IDLE, false),
+            Decision::WaitUntil {
+                at_ms: 1_000 + WAKE_WINDOW_MS,
+                reason: WakeHoldReason::Window
+            }
+        );
+        let Decision::Deliver(batch) = core.decide(ORCH, 1_000 + WAKE_WINDOW_MS, IDLE, false)
+        else {
+            panic!("expected a delivery");
+        };
+        assert_eq!(batch.events.len(), 2);
+        let text = batch.render();
+        assert!(text.contains("Worker updates:"));
+        assert!(text.contains("w1 — act:a") && text.contains("w2 — err:w2"));
+        core.delivered(ORCH, &batch, 50_000);
+        assert_eq!(core.decide(ORCH, 60_000, IDLE, false), Decision::Nothing);
+    }
+
+    #[test]
+    fn at_most_one_wake_per_window() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        core.record(ORCH, a, 0);
+        let Decision::Deliver(batch) = core.decide(ORCH, WAKE_WINDOW_MS, IDLE, false) else {
+            panic!()
+        };
+        core.delivered(ORCH, &batch, WAKE_WINDOW_MS);
+        // A new event right after: its own window opens, and the previous
+        // delivery's window also has to pass.
+        let b = raised(&mut core, "w2", "b", WAKE_WINDOW_MS + 1_000);
+        core.record(ORCH, b, WAKE_WINDOW_MS + 1_000);
+        assert_eq!(
+            core.decide(ORCH, WAKE_WINDOW_MS + 2_000, IDLE, false),
+            Decision::WaitUntil {
+                at_ms: 2 * WAKE_WINDOW_MS + 1_000,
+                reason: WakeHoldReason::Window
+            }
+        );
+    }
+
+    #[test]
+    fn never_delivers_mid_turn_or_ahead_of_a_queued_user_message() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        core.record(ORCH, a, 0);
+        let late = 10 * WAKE_WINDOW_MS;
+        let busy = Ctx {
+            busy: true,
+            ..IDLE
+        };
+        assert_eq!(
+            core.decide(ORCH, late, busy, false),
+            Decision::Hold(WakeHoldReason::Busy)
+        );
+        // Even "Deliver now" never interrupts a turn.
+        assert_eq!(
+            core.decide(ORCH, late, busy, true),
+            Decision::Hold(WakeHoldReason::Busy)
+        );
+        let queued = Ctx {
+            queue_nonempty: true,
+            ..IDLE
+        };
+        assert_eq!(
+            core.decide(ORCH, late, queued, false),
+            Decision::Hold(WakeHoldReason::Queued)
+        );
+        assert_eq!(
+            core.decide(ORCH, late, queued, true),
+            Decision::Hold(WakeHoldReason::Queued)
+        );
+        assert!(matches!(
+            core.decide(ORCH, late, IDLE, false),
+            Decision::Deliver(_)
+        ));
+    }
+
+    #[test]
+    fn holds_while_the_user_has_a_draft_and_for_two_minutes_after_activity() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        core.record(ORCH, a, 0);
+        let t = 5 * WAKE_WINDOW_MS;
+        core.note_user_activity(ORCH, t, Some(true));
+        // A draft holds indefinitely, however old the activity.
+        assert_eq!(
+            core.decide(ORCH, t + 10 * USER_QUIET_MS, IDLE, false),
+            Decision::Hold(WakeHoldReason::Draft)
+        );
+        core.note_user_activity(ORCH, t + 1_000, Some(false));
+        // Draft cleared, but the user was just here.
+        assert_eq!(
+            core.decide(ORCH, t + 2_000, IDLE, false),
+            Decision::WaitUntil {
+                at_ms: t + 1_000 + USER_QUIET_MS,
+                reason: WakeHoldReason::RecentActivity
+            }
+        );
+        assert!(matches!(
+            core.decide(ORCH, t + 1_000 + USER_QUIET_MS, IDLE, false),
+            Decision::Deliver(_)
+        ));
+        // "Deliver now" skips the draft and activity holds.
+        core.note_user_activity(ORCH, t + 200_000, Some(true));
+        assert!(matches!(
+            core.decide(ORCH, t + 200_001, IDLE, true),
+            Decision::Deliver(_)
+        ));
+    }
+
+    #[test]
+    fn duplicates_are_dropped_held_or_already_delivered() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        assert!(core.record(ORCH, a.clone(), 0));
+        let again = raised(&mut core, "w1", "a", 5);
+        assert!(!core.record(ORCH, again, 5), "held duplicate");
+        let Decision::Deliver(batch) = core.decide(ORCH, WAKE_WINDOW_MS, IDLE, false) else {
+            panic!()
+        };
+        core.delivered(ORCH, &batch, WAKE_WINDOW_MS);
+        let reraised = raised(&mut core, "w1", "a", WAKE_WINDOW_MS + 1);
+        assert!(
+            !core.record(ORCH, reraised, WAKE_WINDOW_MS + 1),
+            "delivered duplicate"
+        );
+        let later = raised(&mut core, "w1", "a", DEDUPE_TTL_MS + WAKE_WINDOW_MS + 5);
+        assert!(
+            core.record(ORCH, later, DEDUPE_TTL_MS + WAKE_WINDOW_MS + 5),
+            "after the dedupe TTL it is news again"
+        );
+    }
+
+    #[test]
+    fn raised_then_resolved_before_delivery_cancels_out() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        core.record(ORCH, a, 0);
+        let resolved = event(&mut core, "w1", WakeEventKind::ActionResolved, "res:a", 10);
+        assert!(!core.record(ORCH, resolved, 10));
+        assert!(!core.has_held(ORCH));
+        assert_eq!(core.decide(ORCH, 10 * WAKE_WINDOW_MS, IDLE, false), Decision::Nothing);
+    }
+
+    #[test]
+    fn settings_gate_which_kinds_are_held_but_all_are_logged() {
+        let mut core = WakeCore::new();
+        let turn = event(&mut core, "w1", WakeEventKind::TurnFinished, "turn:w1:0", 0);
+        assert!(!core.record(ORCH, turn, 0), "turn-finished is off by default");
+        assert!(!core.has_held(ORCH));
+        let status = core.status(ORCH, 1, IDLE);
+        assert_eq!(status.recent.len(), 1, "still shown for the unseen marks");
+        // Turn it on: the next one is held.
+        core.set_settings(
+            ORCH,
+            WakeSettings {
+                turn_finished: true,
+                ..WakeSettings::default()
+            },
+        );
+        let turn = event(&mut core, "w1", WakeEventKind::TurnFinished, "turn:w1:1", 2);
+        assert!(core.record(ORCH, turn, 2));
+        // Master switch off drops what is held.
+        core.set_settings(
+            ORCH,
+            WakeSettings {
+                enabled: false,
+                ..WakeSettings::default()
+            },
+        );
+        assert!(!core.has_held(ORCH));
+    }
+
+    #[test]
+    fn events_after_the_orchestrators_last_turn_are_unseen() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 100);
+        core.record(ORCH, a, 100);
+        core.note_turn_start(ORCH, 50);
+        let status = core.status(ORCH, 200, IDLE);
+        assert_eq!(status.unseen_count, 1);
+        assert!(status.recent[0].unseen);
+        core.note_turn_start(ORCH, 150);
+        let status = core.status(ORCH, 200, IDLE);
+        assert_eq!(status.unseen_count, 0);
+        assert!(!status.recent[0].unseen);
+    }
+
+    #[test]
+    fn a_cancelled_delivery_returns_its_events_to_the_batch() {
+        let mut core = WakeCore::new();
+        let a = raised(&mut core, "w1", "a", 0);
+        core.record(ORCH, a, 0);
+        let Decision::Deliver(batch) = core.decide(ORCH, WAKE_WINDOW_MS, IDLE, false) else {
+            panic!()
+        };
+        core.delivered(ORCH, &batch, WAKE_WINDOW_MS);
+        core.restore(ORCH, batch.events, WAKE_WINDOW_MS + 10);
+        assert!(core.has_held(ORCH));
+        assert!(!core.status(ORCH, WAKE_WINDOW_MS + 10, IDLE).recent[0].delivered);
+    }
+}

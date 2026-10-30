@@ -56,6 +56,7 @@ fn section_icon(name: &str) -> &'static str {
         "needs-you" => crate::icons::BELL,
         "plan" => crate::icons::CHECKLIST,
         "children" => crate::icons::LIST,
+        "wakes" => crate::icons::BELL,
         "work-item" => crate::icons::PLUS,
         _ => crate::icons::TAG,
     }
@@ -776,7 +777,7 @@ impl Shell {
 
     /// One accordion row: icon, label, a one-line summary and a chevron; the
     /// `body` shows only while the row is open.
-    fn item_accordion(
+    pub(super) fn item_accordion(
         &mut self,
         name: &'static str,
         label: &'static str,
@@ -936,6 +937,7 @@ impl Shell {
         let team = self.team_facts(&facts.chat_id, cx);
         if !team.is_empty() {
             col = col.child(self.render_item_tab_team(&team, theme, cx));
+            col = col.child(self.render_item_tab_wake(&facts.chat_id, theme, cx));
         }
 
         // Instructions.

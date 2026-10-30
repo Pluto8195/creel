@@ -84,6 +84,7 @@ pub(crate) mod spaces;
 mod start_chat_ui;
 mod tabs;
 mod team_ui;
+mod wake_ui;
 mod work_outline_menu_ui;
 pub(crate) mod work_outline_ui;
 pub(crate) use tabs::chat_identity_for;
@@ -1810,6 +1811,8 @@ pub struct Shell {
     item_tab_open: std::collections::HashSet<&'static str>,
     item_needs: Option<chat_item_ui::ItemNeeds>,
     team_panel_focus: Option<FocusHandle>,
+    /// Orchestrator wakes: per-chat status cache and refresh loops.
+    wakes: wake_ui::WakeUi,
     /// What the full-chat header adds below the metadata line (the work-context
     /// strip's line), so the transcript's top fade clears it.
     chat_header_extra_clearance: f32,
@@ -2257,6 +2260,7 @@ impl Shell {
             item_tab_open: Default::default(),
             item_needs: None,
             team_panel_focus: None,
+            wakes: Default::default(),
             chat_header_extra_clearance: 0.0,
             update_flow: UpdateFlow::Idle,
             update_task: None,
