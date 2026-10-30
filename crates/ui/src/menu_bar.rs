@@ -29,11 +29,43 @@ pub const USAGE_REFRESH_SECS: u64 = 60;
 // Glyph
 // ---------------------------------------------------------------------------
 
-/// The menu bar glyph: the lamp colour, plus a ring when a newer build waits.
+/// Most accounts drawn as mini bars next to the lamp.
+pub const MAX_GLYPH_BARS: usize = 4;
+
+/// One mini bar per account: its session (5h) usage in percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GlyphBars {
+    pub percent: [u8; MAX_GLYPH_BARS],
+    pub len: u8,
+}
+
+impl GlyphBars {
+    pub fn from_usage(accounts: Option<&[UsageAccount]>) -> Self {
+        let mut bars = Self::default();
+        for window in accounts
+            .into_iter()
+            .flatten()
+            .filter_map(|account| account.windows.first())
+            .take(MAX_GLYPH_BARS)
+        {
+            bars.percent[bars.len as usize] = percent(window.fraction).min(100) as u8;
+            bars.len += 1;
+        }
+        bars
+    }
+
+    fn levels(&self) -> impl Iterator<Item = u8> + '_ {
+        self.percent[..self.len as usize].iter().copied()
+    }
+}
+
+/// The menu bar glyph: the lamp colour, a ring when a newer build waits, and
+/// one mini bar per account showing its session usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Glyph {
     pub light: AppLight,
     pub ring: bool,
+    pub bars: GlyphBars,
 }
 
 /// Cofactr palette: silicon, clover, cobalt, bromine, cadmium.
@@ -47,22 +79,53 @@ pub fn lamp_color(light: AppLight) -> [u8; 3] {
     }
 }
 
+/// Clover, bromine (80%+) or cadmium (95%+) for a usage percentage.
+pub fn bar_color(percent: u8) -> [u8; 3] {
+    match usage_level(f32::from(percent) / 100.0) {
+        UsageLevel::Normal => [0x38, 0xD0, 0x59],
+        UsageLevel::Warn => [0xDF, 0xBE, 0x1B],
+        UsageLevel::Critical => [0xFE, 0x4B, 0x25],
+    }
+}
+
 /// The pending-build ring (Cofactr fir, readable on a light and a dark bar).
 pub const RING_COLOR: [u8; 3] = [0x61, 0x9C, 0x82];
+/// The empty part of a mini bar (Cofactr silicon, faint).
+pub const TRACK_COLOR: [u8; 3] = [0xB5, 0xB5, 0xB5];
+const TRACK_ALPHA: u8 = 90;
 
-/// Edge length of the glyph bitmap in pixels (22 pt at 2x).
+/// Height of the glyph bitmap in pixels (22 pt at 2x); the lamp is a square
+/// of this size at the left.
 pub const GLYPH_PX: u32 = 44;
+const BAR_W: u32 = 6;
+const BAR_GAP: u32 = 3;
+const BAR_LEAD: u32 = 4;
+const BAR_H: u32 = 28;
+const BAR_MIN_H: u32 = 3;
 
-/// Straight-alpha RGBA of the glyph: a disc, and a ring around it when
-/// `glyph.ring`. Edges are anti-aliased by pixel coverage.
+/// Bitmap width: the lamp square, then the bars.
+pub fn glyph_width(glyph: Glyph) -> u32 {
+    match glyph.bars.len as u32 {
+        0 => GLYPH_PX,
+        n => GLYPH_PX + BAR_LEAD + n * BAR_W + (n - 1) * BAR_GAP,
+    }
+}
+
+/// Straight-alpha RGBA of the glyph, `glyph_width` x `GLYPH_PX`: a disc (and a
+/// ring around it when `glyph.ring`), then a mini bar per account standing on
+/// a faint track. Lamp edges are anti-aliased by pixel coverage.
 pub fn lamp_rgba(glyph: Glyph) -> Vec<u8> {
-    let size = GLYPH_PX as f32;
-    let centre = size / 2.0;
+    let width = glyph_width(glyph);
+    let centre = GLYPH_PX as f32 / 2.0;
     let (disc_r, ring_in, ring_out) = (13.0_f32, 17.0_f32, 19.5_f32);
     let coverage = |d: f32, inner: f32, outer: f32| -> f32 {
         ((outer + 0.5 - d).min(d - inner + 0.5)).clamp(0.0, 1.0)
     };
-    let mut out = Vec::with_capacity((GLYPH_PX * GLYPH_PX * 4) as usize);
+    let mut out = vec![0u8; (width * GLYPH_PX * 4) as usize];
+    let mut put = |x: u32, y: u32, rgb: [u8; 3], alpha: u8| {
+        let at = ((y * width + x) * 4) as usize;
+        out[at..at + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], alpha]);
+    };
     for y in 0..GLYPH_PX {
         for x in 0..GLYPH_PX {
             let d = ((x as f32 + 0.5 - centre).powi(2) + (y as f32 + 0.5 - centre).powi(2)).sqrt();
@@ -77,7 +140,22 @@ pub fn lamp_rgba(glyph: Glyph) -> Vec<u8> {
             } else {
                 (RING_COLOR, ring)
             };
-            out.extend_from_slice(&[rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8]);
+            put(x, y, rgb, (alpha * 255.0).round() as u8);
+        }
+    }
+    let base = (GLYPH_PX + BAR_H) / 2; // bars stand on a shared baseline, centred vertically
+    for (i, level) in glyph.bars.levels().enumerate() {
+        let x0 = GLYPH_PX + BAR_LEAD + i as u32 * (BAR_W + BAR_GAP);
+        let filled = (BAR_H * u32::from(level.min(100)) / 100).max(BAR_MIN_H).min(BAR_H);
+        for dx in 0..BAR_W {
+            for dy in 0..BAR_H {
+                let y = base - 1 - dy;
+                if dy < filled {
+                    put(x0 + dx, y, bar_color(level), 255);
+                } else {
+                    put(x0 + dx, y, TRACK_COLOR, TRACK_ALPHA);
+                }
+            }
         }
     }
     out
@@ -562,10 +640,21 @@ where
     if input.pending.is_some() {
         tooltip.push_str(" \u{b7} new build installed");
     }
+    for account in input.usage.into_iter().flatten() {
+        if let Some(window) = account.windows.first() {
+            tooltip.push_str(&format!(
+                "\n{} {} {}%",
+                account.name,
+                window.label,
+                percent(window.fraction)
+            ));
+        }
+    }
     MenuView {
         glyph: Glyph {
             light: input.light,
             ring: input.pending.is_some(),
+            bars: GlyphBars::from_usage(input.usage),
         },
         tooltip,
         items,
@@ -593,7 +682,7 @@ pub fn take_events() -> Option<futures::channel::mpsc::UnboundedReceiver<MenuEve
 
 fn glyph_png(glyph: Glyph) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, GLYPH_PX, GLYPH_PX);
+    let mut encoder = png::Encoder::new(&mut out, glyph_width(glyph), GLYPH_PX);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     // 144 dpi: AppKit reads the image as 22 x 22 points.

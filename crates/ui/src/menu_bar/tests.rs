@@ -361,20 +361,20 @@ fn the_interrupted_block_offers_resume_all_for_chats_needing_a_decision() {
 
 // --- glyph ----------------------------------------------------------------------------
 
-fn pixel(rgba: &[u8], x: u32, y: u32) -> [u8; 4] {
-    let at = ((y * GLYPH_PX + x) * 4) as usize;
+fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let at = ((y * width + x) * 4) as usize;
     [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
 }
 
 #[test]
 fn the_glyph_is_the_lamp_colour_in_the_middle_and_clear_in_the_corners() {
     for light in AppLight::ALL {
-        let rgba = lamp_rgba(Glyph { light, ring: false });
+        let rgba = lamp_rgba(Glyph { light, ring: false, bars: GlyphBars::default() });
         assert_eq!(rgba.len(), (GLYPH_PX * GLYPH_PX * 4) as usize);
-        let [r, g, b, a] = pixel(&rgba, GLYPH_PX / 2, GLYPH_PX / 2);
+        let [r, g, b, a] = pixel(&rgba, GLYPH_PX, GLYPH_PX / 2, GLYPH_PX / 2);
         assert_eq!([r, g, b], lamp_color(light), "{light:?}");
         assert_eq!(a, 255);
-        assert_eq!(pixel(&rgba, 0, 0)[3], 0, "{light:?} corner is clear");
+        assert_eq!(pixel(&rgba, GLYPH_PX, 0, 0)[3], 0, "{light:?} corner is clear");
     }
 }
 
@@ -390,13 +390,13 @@ fn every_state_has_its_own_colour() {
 
 #[test]
 fn a_pending_build_adds_a_ring_and_nothing_else_changes_inside() {
-    let plain = lamp_rgba(Glyph { light: AppLight::Working, ring: false });
-    let ringed = lamp_rgba(Glyph { light: AppLight::Working, ring: true });
+    let plain = lamp_rgba(Glyph { light: AppLight::Working, ring: false, bars: GlyphBars::default() });
+    let ringed = lamp_rgba(Glyph { light: AppLight::Working, ring: true, bars: GlyphBars::default() });
     // On the ring's radius (x = centre + 18).
     let on_ring = (GLYPH_PX / 2 + 18, GLYPH_PX / 2);
-    assert_eq!(pixel(&plain, on_ring.0, on_ring.1)[3], 0);
-    assert_eq!(pixel(&ringed, on_ring.0, on_ring.1), [RING_COLOR[0], RING_COLOR[1], RING_COLOR[2], 255]);
-    assert_eq!(pixel(&plain, GLYPH_PX / 2, GLYPH_PX / 2), pixel(&ringed, GLYPH_PX / 2, GLYPH_PX / 2));
+    assert_eq!(pixel(&plain, GLYPH_PX, on_ring.0, on_ring.1)[3], 0);
+    assert_eq!(pixel(&ringed, GLYPH_PX, on_ring.0, on_ring.1), [RING_COLOR[0], RING_COLOR[1], RING_COLOR[2], 255]);
+    assert_eq!(pixel(&plain, GLYPH_PX, GLYPH_PX / 2, GLYPH_PX / 2), pixel(&ringed, GLYPH_PX, GLYPH_PX / 2, GLYPH_PX / 2));
 }
 
 #[test]
@@ -406,15 +406,82 @@ fn the_glyph_follows_the_light_and_the_pending_build() {
         &MenuInput { snapshot: &snap, interrupted: None, usage: Some(&[]), pending: Some(PendingBuild { changes: None, armed: false }), light: AppLight::Error, now: now() },
         &Utc,
     );
-    assert_eq!(view.glyph, Glyph { light: AppLight::Error, ring: true });
+    assert_eq!(view.glyph, Glyph { light: AppLight::Error, ring: true, bars: GlyphBars::default() });
     assert!(view.tooltip.contains("new build installed"));
     let view = menu(&snap, Some(&[]), None);
-    assert_eq!(view.glyph, Glyph { light: AppLight::Input, ring: false });
+    assert_eq!(view.glyph, Glyph { light: AppLight::Input, ring: false, bars: GlyphBars::default() });
 }
 
 #[test]
 fn the_glyph_encodes_as_a_png_at_144_dpi() {
-    let png = glyph_png(Glyph { light: AppLight::Idle, ring: true });
+    let png = glyph_png(Glyph { light: AppLight::Idle, ring: true, bars: GlyphBars::default() });
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     assert!(png.windows(4).any(|w| w == b"pHYs"));
+}
+
+// --- mini bars in the glyph -----------------------------------------------------
+
+fn bars_glyph(bars: GlyphBars) -> Glyph {
+    Glyph { light: AppLight::Working, ring: false, bars }
+}
+
+#[test]
+fn one_mini_bar_per_account_with_a_session_window_up_to_four() {
+    let usage = [
+        account("a", 0.62, 0.4),
+        UsageAccount { name: "no windows".into(), windows: vec![] },
+        account("b", 0.91, 0.7),
+        account("c", 0.18, 0.5),
+    ];
+    let bars = GlyphBars::from_usage(Some(&usage));
+    assert_eq!((bars.len, &bars.percent[..3]), (3, &[62, 91, 18][..]));
+    assert_eq!(GlyphBars::from_usage(None).len, 0, "nothing while usage loads");
+    let many: Vec<UsageAccount> = (0..7).map(|i| account("x", i as f32 / 10.0, 0.0)).collect();
+    assert_eq!(GlyphBars::from_usage(Some(&many)).len as usize, MAX_GLYPH_BARS);
+}
+
+#[test]
+fn the_glyph_widens_by_the_bars_and_stays_square_without_them() {
+    assert_eq!(glyph_width(bars_glyph(GlyphBars::default())), GLYPH_PX);
+    let three = GlyphBars { percent: [62, 91, 18, 0], len: 3 };
+    assert_eq!(glyph_width(bars_glyph(three)), GLYPH_PX + 4 + 3 * 6 + 2 * 3);
+    let glyph = bars_glyph(three);
+    assert_eq!(lamp_rgba(glyph).len() as u32, glyph_width(glyph) * GLYPH_PX * 4);
+}
+
+#[test]
+fn a_mini_bar_is_filled_by_its_percent_and_coloured_by_level() {
+    let bars = GlyphBars { percent: [50, 91, 97, 0], len: 3 };
+    let glyph = bars_glyph(bars);
+    let (width, rgba) = (glyph_width(glyph), lamp_rgba(glyph));
+    let base = (GLYPH_PX + BAR_H) / 2;
+    let column = |i: u32| GLYPH_PX + BAR_LEAD + i * (BAR_W + BAR_GAP) + BAR_W / 2;
+    let filled_rows = |i: u32| {
+        (0..BAR_H)
+            .filter(|dy| pixel(&rgba, width, column(i), base - 1 - dy)[3] == 255)
+            .count() as u32
+    };
+    assert_eq!(filled_rows(0), BAR_H / 2);
+    assert!(filled_rows(1) > filled_rows(0) && filled_rows(2) > filled_rows(1));
+    let top = |i: u32| pixel(&rgba, width, column(i), base - 1);
+    assert_eq!(&top(0)[..3], &bar_color(50));
+    assert_eq!(&top(1)[..3], &[0xDF, 0xBE, 0x1B], "91% is bromine");
+    assert_eq!(&top(2)[..3], &[0xFE, 0x4B, 0x25], "97% is cadmium");
+    // Above the fill the track shows, faintly; outside the bars it is clear.
+    assert_eq!(pixel(&rgba, width, column(0), base - BAR_H)[3], TRACK_ALPHA);
+    assert_eq!(pixel(&rgba, width, GLYPH_PX + 1, GLYPH_PX / 2)[3], 0);
+}
+
+#[test]
+fn an_empty_account_still_shows_a_stub_and_the_menu_glyph_carries_the_bars() {
+    let zero = GlyphBars { percent: [0, 0, 0, 0], len: 1 };
+    let glyph = bars_glyph(zero);
+    let (width, rgba) = (glyph_width(glyph), lamp_rgba(glyph));
+    let x = GLYPH_PX + BAR_LEAD + BAR_W / 2;
+    let base = (GLYPH_PX + BAR_H) / 2;
+    assert_eq!(pixel(&rgba, width, x, base - 1)[3], 255);
+    let usage = [account("a", 0.62, 0.4), account("b", 0.91, 0.7)];
+    let view = menu(&snapshot(&[]), Some(&usage), None);
+    assert_eq!(view.glyph.bars.len, 2);
+    assert!(view.tooltip.contains("a 5h 62%") && view.tooltip.contains("b 5h 91%"));
 }
