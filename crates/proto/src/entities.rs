@@ -1190,6 +1190,10 @@ pub struct ManagedAccount {
     /// as the global slots. Empty until a forced list fills it.
     #[serde(default)]
     pub usage_windows: Vec<AgentUsageWindow>,
+    /// Why there are no usage windows ("token expired — …", "not signed in");
+    /// absent when there are windows or nothing is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_note: Option<String>,
 }
 
 /// A project's default account for one harness. A project with no entry (or

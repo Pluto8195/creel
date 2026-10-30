@@ -1005,17 +1005,34 @@ impl EngineRpc {
         snapshot.saved = self.agent_accounts.saved_options();
         // Usage per managed account: probed with the account's own token
         // (never refreshed); cache-only unless the caller forces it.
-        for account in snapshot.accounts.iter_mut().filter(|a| a.signed_in) {
-            let Some((harness, credentials)) = managed.credentials_of(&account.id) else {
+        for account in snapshot.accounts.iter_mut() {
+            if !account.signed_in {
+                account.usage_note = Some("not signed in".into());
                 continue;
+            }
+            let (harness, credentials) = match managed.credentials_or_reason(&account.id) {
+                Ok(found) => found,
+                Err(reason) => {
+                    account.usage_note = Some(reason);
+                    continue;
+                }
             };
-            if let Some((windows, plan)) = self
+            match self
                 .agent_accounts
                 .managed_usage(harness, &account.id, &credentials, force_usage)
                 .await
             {
-                account.usage_windows = windows;
-                account.plan_label = plan;
+                Some((windows, plan)) => {
+                    account.usage_windows = windows;
+                    account.plan_label = plan;
+                }
+                None => {
+                    account.usage_note = self
+                        .agent_accounts
+                        .managed_usage_note(harness, &account.id)
+                        // Cache-only list with nothing cached yet.
+                        .or_else(|| (!force_usage).then(|| "not probed yet".to_string()));
+                }
             }
         }
         Ok(snapshot)

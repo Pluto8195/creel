@@ -2594,6 +2594,7 @@ mod tests {
                     signed_in: true,
                     plan_label: None,
                     usage_windows: Vec::new(),
+                    usage_note: None,
                 }],
                 project_defaults: vec![ProjectAccountDefault {
                     space_id: "s1".into(),

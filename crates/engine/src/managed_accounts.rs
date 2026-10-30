@@ -471,11 +471,21 @@ impl ManagedAccounts {
     /// own home (file) or its own Keychain item. Used to probe usage; never
     /// logged or returned over RPC.
     pub fn credentials_of(&self, account_id: &str) -> Option<(HarnessId, serde_json::Value)> {
+        self.credentials_or_reason(account_id).ok()
+    }
+
+    /// [`Self::credentials_of`] with why nothing was found, for the usage
+    /// rows (and debug logs, target `usage`). Never includes the secret.
+    pub fn credentials_or_reason(
+        &self,
+        account_id: &str,
+    ) -> Result<(HarnessId, serde_json::Value), String> {
         let harness = lock(&self.store)
             .accounts
             .iter()
-            .find(|a| a.id == account_id)?
-            .harness;
+            .find(|a| a.id == account_id)
+            .map(|a| a.harness)
+            .ok_or_else(|| "unknown account".to_string())?;
         let home = self.home_of(harness, account_id);
         let value = match harness {
             HarnessId::ClaudeCode => {
@@ -484,12 +494,26 @@ impl ManagedAccounts {
                     .then(|| store.get(&claude_keychain_service(&home)))
                     .flatten()
                     .and_then(|text| serde_json::from_str(&text).ok());
-                keychain.or_else(|| read_json(&home.join(".credentials.json")))?
+                match keychain.or_else(|| read_json(&home.join(".credentials.json"))) {
+                    Some(value) => value,
+                    None => {
+                        tracing::debug!(target: "usage", account = account_id, "no Keychain item or .credentials.json readable for the managed Claude home");
+                        return Err(
+                            "sign-in not readable (Keychain item missing or access denied)".into(),
+                        );
+                    }
+                }
             }
-            HarnessId::Codex => read_json(&home.join("auth.json"))?,
-            _ => return None,
+            HarnessId::Codex => match read_json(&home.join("auth.json")) {
+                Some(value) => value,
+                None => {
+                    tracing::debug!(target: "usage", account = account_id, "no auth.json in the managed Codex home");
+                    return Err("sign-in not readable (no auth.json in the account's home)".into());
+                }
+            },
+            _ => return Err("usage is not available for this harness".into()),
         };
-        Some((harness, value))
+        Ok((harness, value))
     }
 
     fn view_by_id(&self, id: &str) -> Option<ManagedAccount> {
@@ -578,6 +602,7 @@ impl ManagedAccounts {
             email,
             plan_label: None,
             usage_windows: Vec::new(),
+            usage_note: None,
         }
     }
 

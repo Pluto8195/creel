@@ -323,6 +323,17 @@ pub struct AccountsRpc {
 }
 
 impl AccountsRpc {
+    /// Whether a call can be answered at all (an engine, or a test script).
+    pub fn is_connected(&self) -> bool {
+        self.engine.is_some() || self.scripted.is_some()
+    }
+
+    /// Tests: answered by a script rather than an engine.
+    #[cfg(test)]
+    pub fn is_scripted(&self) -> bool {
+        self.scripted.is_some()
+    }
+
     pub fn call(&self, method: &'static str, params: serde_json::Value) -> RpcFuture {
         let mut params = params;
         if let (Some(target), Some(object)) = (&self.target, params.as_object_mut()) {
@@ -1255,6 +1266,7 @@ mod tests {
             signed_in: false,
             plan_label: None,
             usage_windows: Vec::new(),
+            usage_note: None,
         }
     }
 

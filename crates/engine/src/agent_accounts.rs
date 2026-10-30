@@ -88,6 +88,9 @@ const CLAUDE_SHARED_CREDENTIAL_KEYS: &[&str] = &[
 ];
 
 const USAGE_TTL: Duration = Duration::from_secs(60);
+/// Shown when a usage endpoint rejects a token. Managed tokens are never
+/// refreshed here: only the CLI refreshes its own home.
+const TOKEN_REJECTED: &str = "token expired \u{2014} start a chat on this account to refresh it";
 /// An abandoned login flow (dialog dismissed without Cancel) is reaped past this.
 const FLOW_TTL: Duration = Duration::from_secs(15 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -284,6 +287,8 @@ struct Inner {
     flows: Mutex<HashMap<String, LoginFlow>>,
     /// `"{harness}:{accountKey}"` → cached usage windows.
     usage_cache: Mutex<HashMap<String, CachedUsage>>,
+    /// Why a managed account's last probe found nothing (same keys as the cache).
+    usage_notes: Mutex<HashMap<String, String>>,
     /// Usage endpoints; tests point these at a local fake.
     usage_urls: Mutex<(String, String)>,
     /// Slots with a token refresh in flight — a second refresh of the same
@@ -327,6 +332,7 @@ impl AgentAccounts {
                 http,
                 flows: Mutex::new(HashMap::new()),
                 usage_cache: Mutex::new(HashMap::new()),
+                usage_notes: Mutex::new(HashMap::new()),
                 usage_urls: Mutex::new((CLAUDE_USAGE_URL.to_string(), CODEX_USAGE_URL.to_string())),
                 inflight_refreshes: Mutex::new(std::collections::HashSet::new()),
                 last_active: Mutex::new(None),
@@ -1471,6 +1477,11 @@ impl AgentAccounts {
     /// and a second refresh would burn its single-use refresh token. A
     /// rejected token just means "unavailable" until the CLI refreshes it.
     /// Non-forced calls answer from the cache only (no network).
+    pub fn managed_usage_note(&self, harness: HarnessId, account_id: &str) -> Option<String> {
+        let key = format!("managed:{}:{account_id}", harness_slug(harness));
+        lock(&self.inner.usage_notes).get(&key).cloned()
+    }
+
     pub async fn managed_usage(
         &self,
         harness: HarnessId,
@@ -1487,16 +1498,31 @@ impl AgentAccounts {
         if !force {
             return None;
         }
-        let usage = match harness {
+        let probed: Result<UsageSnapshot, String> = match harness {
             HarnessId::ClaudeCode => {
                 let oauth = credentials.get("claudeAiOauth");
                 match oauth.and_then(|o| str_field(o, "accessToken")) {
-                    Some(token) => self.claude_usage_request(&token).await.ok().flatten(),
-                    None => None,
+                    Some(token) => match self.claude_usage_request(&token).await {
+                        Ok(Some(usage)) => Ok(usage),
+                        Ok(None) => Err("no usage data returned".to_string()),
+                        Err(reason) => Err(reason),
+                    },
+                    None => Err("the sign-in has no access token".to_string()),
                 }
             }
-            HarnessId::Codex => self.codex_usage(credentials).await,
-            _ => None,
+            HarnessId::Codex => self.codex_probe(credentials).await,
+            _ => Err("usage is not available for this harness".to_string()),
+        };
+        let usage = match probed {
+            Ok(usage) => {
+                lock(&self.inner.usage_notes).remove(&key);
+                Some(usage)
+            }
+            Err(reason) => {
+                tracing::debug!(target: "usage", account = account_id, harness = harness_slug(harness), %reason, "managed usage unavailable");
+                lock(&self.inner.usage_notes).insert(key.clone(), reason);
+                None
+            }
         };
         lock(&self.inner.usage_cache).insert(key, (usage.clone(), Instant::now()));
         usage.map(|u| (u.windows, u.plan_label))
@@ -1522,7 +1548,10 @@ impl AgentAccounts {
 
     /// One usage probe: GET the endpoint and parse windows. `Err` means the
     /// token was rejected (401/403) — the only case worth a refresh.
-    async fn claude_usage_request(&self, access_token: &str) -> Result<Option<UsageSnapshot>, ()> {
+    async fn claude_usage_request(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<UsageSnapshot>, String> {
         let url = lock(&self.inner.usage_urls).0.clone();
         let response = self
             .inner
@@ -1532,27 +1561,34 @@ impl AgentAccounts {
             .header("anthropic-beta", "oauth-2025-04-20")
             .send()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "usage service unreachable".to_string())?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             || response.status() == reqwest::StatusCode::FORBIDDEN
         {
-            return Err(());
+            return Err(TOKEN_REJECTED.to_string());
         }
+        let status = response.status();
         let body: serde_json::Value = response
             .error_for_status()
-            .map_err(|_| ())?
+            .map_err(|_| format!("usage service returned {status}"))?
             .json()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "usage response unreadable".to_string())?;
         Ok(claude_usage_windows(&body))
     }
 
     async fn codex_usage(&self, credentials: &serde_json::Value) -> Option<UsageSnapshot> {
-        let tokens = credentials.get("tokens")?;
+        self.codex_probe(credentials).await.ok()
+    }
+
+    /// The Codex usage probe with the reason it found nothing.
+    async fn codex_probe(&self, credentials: &serde_json::Value) -> Result<UsageSnapshot, String> {
+        let no_login = || "no ChatGPT sign-in (API key login, or not signed in)".to_string();
+        let tokens = credentials.get("tokens").ok_or_else(no_login)?;
         // api-key mode has no ChatGPT rate windows.
-        let access_token = str_field(tokens, "access_token")?;
+        let access_token = str_field(tokens, "access_token").ok_or_else(no_login)?;
         let url = lock(&self.inner.usage_urls).1.clone();
-        let body: serde_json::Value = self
+        let response = self
             .inner
             .http
             .get(url)
@@ -1563,13 +1599,20 @@ impl AgentAccounts {
             )
             .send()
             .await
-            .ok()?
+            .map_err(|_| "usage service unreachable".to_string())?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(TOKEN_REJECTED.to_string());
+        }
+        let body: serde_json::Value = response
             .error_for_status()
-            .ok()?
+            .map_err(|_| format!("usage service returned {status}"))?
             .json()
             .await
-            .ok()?;
-        let rl = body.get("rate_limit")?;
+            .map_err(|_| "usage response unreadable".to_string())?;
+        let no_data = || "no usage data returned".to_string();
+        let rl = body.get("rate_limit").ok_or_else(no_data)?;
+
         let mut windows = Vec::new();
         for key in ["primary_window", "secondary_window"] {
             if let Some(w) = rl.get(key)
@@ -1587,13 +1630,13 @@ impl AgentAccounts {
             }
         }
         if windows.is_empty() {
-            return None;
+            return Err(no_data());
         }
         // Live plan ("free"/"plus"/"pro"…) — beats the login-time JWT claim,
         // so a plan change shows up on the next forced refresh without a
         // re-login.
         let plan_label = codex_plan(str_field(&body, "plan_type").as_deref());
-        Some(UsageSnapshot {
+        Ok(UsageSnapshot {
             windows,
             plan_label,
         })

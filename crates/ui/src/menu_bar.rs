@@ -180,6 +180,8 @@ pub struct UsageAccount {
     /// Session first, then the longer window; empty when the probe has
     /// nothing (signed out, token rejected).
     pub windows: Vec<UsageWindow>,
+    /// Why there are no windows ("API key", "token expired \u{2014} \u{2026}").
+    pub note: Option<String>,
 }
 
 impl UsageAccount {
@@ -231,9 +233,30 @@ fn windows_of(windows: &[mast_proto::AgentUsageWindow]) -> Vec<UsageWindow> {
         .collect()
 }
 
+/// Shown when a probe found nothing and nothing says why.
+pub const NO_USAGE_DATA: &str = "no usage data";
+
+fn account_of(
+    name: String,
+    windows: &[mast_proto::AgentUsageWindow],
+    note: Option<String>,
+) -> UsageAccount {
+    let windows = windows_of(windows);
+    let note = if windows.is_empty() {
+        let note = note.unwrap_or_else(|| NO_USAGE_DATA.to_owned());
+        tracing::debug!(target: "usage", account = %name, reason = %note, "usage unavailable");
+        Some(note)
+    } else {
+        None
+    };
+    UsageAccount { name, windows, note }
+}
+
 /// The accounts in use, Claude Code then Codex: the live Default login of each
-/// harness, then that harness's signed-in managed (per-project) accounts.
-/// Saved but inactive Settings logins are not in use and are left out.
+/// harness, then that harness's managed (per-project) accounts. Saved but
+/// inactive Settings logins are not in use and are left out. An account with
+/// no windows carries the reason (the engine's note for managed accounts, "API
+/// key" for an API-key Default login).
 pub fn usage_accounts(
     global: Option<&AgentAccountsSnapshot>,
     managed: Option<&ManagedAccountsSnapshot>,
@@ -248,20 +271,29 @@ pub fn usage_accounts(
             .flat_map(|snapshot| &snapshot.accounts)
             .filter(|account| account.harness == harness && account.active)
         {
-            out.push(UsageAccount {
-                name: format!("Default \u{b7} {product}"),
-                windows: windows_of(&account.usage_windows),
-            });
+            let note = (account.auth_kind == Some(mast_proto::AgentAuthKind::ApiKey))
+                .then(|| "API key, no plan usage".to_owned());
+            out.push(account_of(
+                format!("Default \u{b7} {product}"),
+                &account.usage_windows,
+                note,
+            ));
         }
         for account in managed
             .into_iter()
             .flat_map(|snapshot| &snapshot.accounts)
-            .filter(|account| account.harness == harness && account.signed_in)
+            .filter(|account| account.harness == harness)
         {
-            out.push(UsageAccount {
-                name: format!("{} \u{b7} {product}", account.label),
-                windows: windows_of(&account.usage_windows),
-            });
+            let note = if account.signed_in {
+                account.usage_note.clone()
+            } else {
+                Some("not signed in".to_owned())
+            };
+            out.push(account_of(
+                format!("{} \u{b7} {product}", account.label),
+                &account.usage_windows,
+                note,
+            ));
         }
     }
     out
@@ -295,12 +327,10 @@ where
     format!("resets {}", at.with_timezone(tz).format("%a %-H:%M"))
 }
 
-/// `▰▰▰▰▰▰▱▱▱▱` for 0.62.
-pub fn usage_bar(fraction: f32) -> String {
+/// Filled and empty cells of a usage bar: (6, 4) for 0.62.
+pub fn bar_cells(fraction: f32) -> (usize, usize) {
     let filled = ((fraction.clamp(0.0, 1.0) * BAR_CELLS as f32).round() as usize).min(BAR_CELLS);
-    let mut bar = "\u{25b0}".repeat(filled);
-    bar.push_str(&"\u{25b1}".repeat(BAR_CELLS - filled));
-    bar
+    (filled, BAR_CELLS - filled)
 }
 
 pub fn percent(fraction: f32) -> u32 {
@@ -316,6 +346,8 @@ pub fn percent(fraction: f32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Muted,
+    /// The empty part of a usage bar.
+    Track,
     Clover,
     Bromine,
     Cadmium,
@@ -403,11 +435,29 @@ pub struct PendingBuild {
     pub armed: bool,
 }
 
+/// What the Usage section has to show.
+#[derive(Debug, Clone, Copy)]
+pub enum UsageView<'a> {
+    /// The first probe has not answered yet.
+    Loading,
+    /// Every probe failed and nothing is cached: the reason.
+    Failed(&'a str),
+    Accounts(&'a [UsageAccount]),
+}
+
+impl<'a> UsageView<'a> {
+    fn accounts(self) -> Option<&'a [UsageAccount]> {
+        match self {
+            Self::Accounts(accounts) => Some(accounts),
+            _ => None,
+        }
+    }
+}
+
 pub struct MenuInput<'a> {
     pub snapshot: &'a Snapshot,
     pub interrupted: Option<&'a InterruptedBlock>,
-    /// `None` while the first probe is loading.
-    pub usage: Option<&'a [UsageAccount]>,
+    pub usage: UsageView<'a>,
     pub pending: Option<PendingBuild>,
     pub light: AppLight,
     pub now: DateTime<Utc>,
@@ -446,25 +496,33 @@ fn chat_item(row: &Row) -> Item {
     }
 }
 
-fn usage_items<Tz: TimeZone>(
-    accounts: Option<&[UsageAccount]>,
-    now: DateTime<Utc>,
-    tz: &Tz,
-) -> Vec<Item>
+fn quiet_line(text: &str, indent: u8) -> Item {
+    let mut styled = Styled::default();
+    styled.push(text, Some(Tone::Muted));
+    Item::Line {
+        text: styled,
+        indent,
+    }
+}
+
+fn usage_items<Tz: TimeZone>(usage: UsageView<'_>, now: DateTime<Utc>, tz: &Tz) -> Vec<Item>
 where
     Tz::Offset: std::fmt::Display,
 {
-    let Some(accounts) = accounts else {
-        return vec![
-            Item::Section("Usage".into()),
-            Item::Line {
-                text: Styled::plain("Loading\u{2026}"),
-                indent: 0,
-            },
-        ];
+    let accounts = match usage {
+        UsageView::Loading => {
+            return vec![Item::Section("Usage".into()), quiet_line("Loading\u{2026}", 0)];
+        }
+        UsageView::Failed(reason) => {
+            return vec![
+                Item::Section("Usage".into()),
+                quiet_line(&format!("usage unavailable \u{2014} {reason}"), 0),
+            ];
+        }
+        UsageView::Accounts(accounts) => accounts,
     };
     if accounts.is_empty() {
-        return Vec::new();
+        return vec![Item::Section("Usage".into()), quiet_line("no accounts signed in", 0)];
     }
     let tone_of = |level| match level {
         UsageLevel::Normal => Tone::Clover,
@@ -483,26 +541,19 @@ where
             indent: 0,
         });
         if account.windows.is_empty() {
-            items.push(Item::Line {
-                text: {
-                    let mut text = Styled::default();
-                    text.push("usage unavailable", Some(Tone::Muted));
-                    text
-                },
-                indent: 1,
-            });
+            let note = account.note.as_deref().unwrap_or(NO_USAGE_DATA);
+            items.push(quiet_line(&format!("usage unavailable \u{2014} {note}"), 1));
         }
         for window in &account.windows {
+            let (filled, empty) = bar_cells(window.fraction);
             let mut line = Styled::default();
             line.push(&format!("{}  ", window.label), Some(Tone::Muted));
             line.push(
-                &format!(
-                    "{} {:>3}%",
-                    usage_bar(window.fraction),
-                    percent(window.fraction)
-                ),
+                &"\u{2588}".repeat(filled),
                 Some(tone_of(usage_level(window.fraction))),
             );
+            line.push(&"\u{2588}".repeat(empty), Some(Tone::Track));
+            line.push(&format!("  {:>3}%", percent(window.fraction)), None);
             let reset = format_reset(window.resets_at, now, tz);
             if !reset.is_empty() {
                 line.push(&format!("   {reset}"), Some(Tone::Muted));
@@ -640,7 +691,7 @@ where
     if input.pending.is_some() {
         tooltip.push_str(" \u{b7} new build installed");
     }
-    for account in input.usage.into_iter().flatten() {
+    for account in input.usage.accounts().into_iter().flatten() {
         if let Some(window) = account.windows.first() {
             tooltip.push_str(&format!(
                 "\n{} {} {}%",
@@ -654,10 +705,70 @@ where
         glyph: Glyph {
             light: input.light,
             ring: input.pending.is_some(),
-            bars: GlyphBars::from_usage(input.usage),
+            bars: GlyphBars::from_usage(input.usage.accounts()),
         },
         tooltip,
         items,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Usage refresh schedule
+// ---------------------------------------------------------------------------
+
+/// While the app runs, usage is re-probed this often (the engine's own cache
+/// is 60 s, so a probe never costs more than one request per account).
+pub const USAGE_PERIODIC_SECS: u64 = 300;
+/// Menu opens refresh usage only if the last probe is at least this old, and a
+/// failed probe is retried after it.
+pub const USAGE_STALE_SECS: u64 = USAGE_REFRESH_SECS;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageTrigger {
+    /// The 1 s heartbeat (startup and the periodic refresh).
+    Tick,
+    /// The menu is about to open.
+    MenuOpen,
+}
+
+/// When to probe usage. Pure: the caller passes the clock.
+#[derive(Debug, Default)]
+pub struct UsageSchedule {
+    last: Option<std::time::Instant>,
+    failed: bool,
+    in_flight: bool,
+}
+
+impl UsageSchedule {
+    /// Nothing has been probed yet: the startup probe is due.
+    pub fn due(&self, now: std::time::Instant, trigger: UsageTrigger) -> bool {
+        if self.in_flight {
+            return false;
+        }
+        let Some(last) = self.last else {
+            return true;
+        };
+        let age = now.saturating_duration_since(last).as_secs();
+        match trigger {
+            UsageTrigger::MenuOpen => age >= USAGE_STALE_SECS,
+            UsageTrigger::Tick if self.failed => age >= USAGE_STALE_SECS,
+            UsageTrigger::Tick => age >= USAGE_PERIODIC_SECS,
+        }
+    }
+
+    pub fn begin(&mut self) {
+        self.in_flight = true;
+    }
+
+    /// `ok` is false when every request failed.
+    pub fn finish(&mut self, now: std::time::Instant, ok: bool) {
+        self.in_flight = false;
+        self.last = Some(now);
+        self.failed = !ok;
+    }
+
+    pub fn in_flight(&self) -> bool {
+        self.in_flight
     }
 }
 
@@ -731,6 +842,10 @@ mod platform {
         /// Click targets of the items currently in the menu, by tag.
         actions: Vec<MenuAction>,
         glyph: Option<Glyph>,
+        /// What the menu was last filled from, and for which appearance, so a
+        /// light/dark switch re-colours it when it next opens.
+        view: Option<MenuView>,
+        dark: bool,
     }
 
     thread_local! {
@@ -760,14 +875,57 @@ mod platform {
 
     extern "C" fn item_clicked(_this: &Object, _sel: Sel, sender: *mut Object) {
         let tag: isize = unsafe { msg_send![sender, tag] };
-        let action = GLUE.with(|glue| glue.borrow().actions.get(tag as usize).cloned());
+        let action = usize::try_from(tag)
+            .ok()
+            .and_then(|tag| GLUE.with(|glue| glue.borrow().actions.get(tag).cloned()));
         if let Some(action) = action {
             send(MenuEvent::Action(action));
         }
     }
 
     extern "C" fn menu_will_open(_this: &Object, _sel: Sel, _menu: *mut Object) {
+        // The menu bar may have switched between light and dark since the
+        // titles were coloured: refill before it shows.
+        GLUE.with(|glue| {
+            let mut glue = glue.borrow_mut();
+            let Some(live) = glue.live.as_ref() else {
+                return;
+            };
+            let (item, menu) = (live.item, live.menu);
+            let dark = unsafe { is_dark(item) };
+            if dark != glue.dark
+                && let Some(view) = glue.view.clone()
+            {
+                let mut actions = std::mem::take(&mut glue.actions);
+                unsafe { fill(menu, target(), &view.items, &mut actions, dark) };
+                glue.actions = actions;
+                glue.dark = dark;
+            }
+        });
         send(MenuEvent::WillOpen);
+    }
+
+    /// Whether the menu bar the item lives in is dark.
+    unsafe fn is_dark(item: *mut Object) -> bool {
+        unsafe {
+            let button: *mut Object = msg_send![item, button];
+            if button.is_null() {
+                return false;
+            }
+            let appearance: *mut Object = msg_send![button, effectiveAppearance];
+            if appearance.is_null() {
+                return false;
+            }
+            let name: *mut Object = msg_send![appearance, name];
+            if name.is_null() {
+                return false;
+            }
+            let utf8: *const std::os::raw::c_char = msg_send![name, UTF8String];
+            !utf8.is_null()
+                && std::ffi::CStr::from_ptr(utf8)
+                    .to_string_lossy()
+                    .contains("Dark")
+        }
     }
 
     fn target() -> *mut Object {
@@ -807,13 +965,25 @@ mod platform {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
-    unsafe fn color(tone: Option<Tone>) -> *mut Object {
-        let rgb = match tone {
-            None => return unsafe { msg_send![class!(NSColor), labelColor] },
-            Some(Tone::Muted) => return unsafe { msg_send![class!(NSColor), secondaryLabelColor] },
-            Some(Tone::Clover) => [0x38, 0xD0, 0x59],
-            Some(Tone::Bromine) => [0xDF, 0xBE, 0x1B],
-            Some(Tone::Cadmium) => [0xFE, 0x4B, 0x25],
+    /// Text uses the system label colours (never dimmed); only the usage fills
+    /// and warnings use palette tones, darker on a light menu bar for contrast.
+    unsafe fn color(tone: Option<Tone>, dark: bool) -> *mut Object {
+        let rgb = match (tone, dark) {
+            (None, _) => return unsafe { msg_send![class!(NSColor), labelColor] },
+            (Some(Tone::Muted), _) => {
+                return unsafe { msg_send![class!(NSColor), secondaryLabelColor] };
+            }
+            (Some(Tone::Track), _) => unsafe {
+                let base: *mut Object = msg_send![class!(NSColor), secondaryLabelColor];
+                return msg_send![base, colorWithAlphaComponent: 0.35f64];
+            },
+            // Clover / bromine / cadmium; on light: juniper and darker shades.
+            (Some(Tone::Clover), true) => [0x38, 0xD0, 0x59],
+            (Some(Tone::Clover), false) => [0x24, 0x5F, 0x31],
+            (Some(Tone::Bromine), true) => [0xDF, 0xBE, 0x1B],
+            (Some(Tone::Bromine), false) => [0xA6, 0x8A, 0x00],
+            (Some(Tone::Cadmium), true) => [0xFE, 0x4B, 0x25],
+            (Some(Tone::Cadmium), false) => [0xD9, 0x3A, 0x15],
         };
         let [r, g, b] = rgb.map(|c: u8| f64::from(c) / 255.0);
         unsafe {
@@ -834,7 +1004,7 @@ mod platform {
     }
 
     /// An attributed title made of coloured runs.
-    unsafe fn attributed(styled: &Styled, bold: bool, mono: bool) -> *mut Object {
+    unsafe fn attributed(styled: &Styled, bold: bool, mono: bool, dark: bool) -> *mut Object {
         unsafe {
             let result: *mut Object = msg_send![class!(NSMutableAttributedString), alloc];
             let result: *mut Object = msg_send![result, init];
@@ -856,7 +1026,7 @@ mod platform {
                     .iter()
                     .collect();
                 let keys = [NSForegroundColorAttributeName, NSFontAttributeName];
-                let values = [color(tone), font(bold, mono)];
+                let values = [color(tone, dark), font(bold, mono)];
                 let attributes: *mut Object = msg_send![
                     class!(NSDictionary),
                     dictionaryWithObjects: values.as_ptr()
@@ -884,6 +1054,7 @@ mod platform {
         mono: bool,
         indent: u8,
         action: Option<usize>,
+        dark: bool,
     ) {
         unsafe {
             let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
@@ -894,19 +1065,15 @@ mod platform {
                 keyEquivalent: ns_string("")
             ];
             if let Some(styled) = title {
-                let _: () = msg_send![item, setAttributedTitle: attributed(styled, bold, mono)];
+                let _: () = msg_send![item, setAttributedTitle: attributed(styled, bold, mono, dark)];
             }
             let _: () = msg_send![item, setTarget: target];
             let _: () = msg_send![item, setIndentationLevel: indent as isize];
-            match action {
-                Some(tag) => {
-                    let _: () = msg_send![item, setTag: tag as isize];
-                    let _: () = msg_send![item, setEnabled: true];
-                }
-                None => {
-                    let _: () = msg_send![item, setEnabled: false];
-                }
-            }
+            // Every row is enabled so AppKit never dims it; rows without an
+            // action carry tag -1 and a click only closes the menu.
+            let tag = action.map_or(-1, |tag| tag as isize);
+            let _: () = msg_send![item, setTag: tag];
+            let _: () = msg_send![item, setEnabled: true];
             let _: () = msg_send![menu, addItem: item];
             let _: () = msg_send![item, release];
         }
@@ -919,7 +1086,13 @@ mod platform {
         }
     }
 
-    unsafe fn fill(menu: *mut Object, target: *mut Object, items: &[Item], actions: &mut Vec<MenuAction>) {
+    unsafe fn fill(
+        menu: *mut Object,
+        target: *mut Object,
+        items: &[Item],
+        actions: &mut Vec<MenuAction>,
+        dark: bool,
+    ) {
         unsafe {
             let _: () = msg_send![menu, removeAllItems];
             actions.clear();
@@ -931,23 +1104,23 @@ mod platform {
                 match item {
                     Item::Title(text) => {
                         let styled = Styled::plain(text.clone());
-                        add_item(menu, target, Some(&styled), text, true, false, 0, None);
+                        add_item(menu, target, Some(&styled), text, true, false, 0, None, dark);
                     }
                     Item::Section(text) => {
                         let mut styled = Styled::default();
                         styled.push(text, Some(Tone::Muted));
-                        add_item(menu, target, Some(&styled), text, false, false, 0, None);
+                        add_item(menu, target, Some(&styled), text, false, false, 0, None, dark);
                     }
                     Item::Chat { chat_id, text } => {
                         let tag = click(MenuAction::OpenChat(chat_id.clone()));
-                        add_item(menu, target, Some(text), &text.text, false, false, 0, Some(tag));
+                        add_item(menu, target, Some(text), &text.text, false, false, 0, Some(tag), dark);
                     }
                     Item::Line { text, indent } => {
-                        add_item(menu, target, Some(text), &text.text, false, true, *indent, None);
+                        add_item(menu, target, Some(text), &text.text, false, true, *indent, None, dark);
                     }
                     Item::Action { action, label } => {
                         let tag = click(action.clone());
-                        add_item(menu, target, None, label, false, false, 0, Some(tag));
+                        add_item(menu, target, None, label, false, false, 0, Some(tag), dark);
                     }
                     Item::Separator => separator(menu),
                 }
@@ -988,6 +1161,7 @@ mod platform {
                         let _: () = msg_send![live.item, release];
                     }
                     glue.glyph = None;
+                    glue.view = None;
                     return;
                 };
                 let target = target();
@@ -1025,9 +1199,12 @@ mod platform {
                 if !button.is_null() {
                     let _: () = msg_send![button, setToolTip: ns_string(&view.tooltip)];
                 }
+                let dark = is_dark(item);
                 let mut actions = std::mem::take(&mut glue.actions);
-                fill(menu, target, &view.items, &mut actions);
+                fill(menu, target, &view.items, &mut actions, dark);
                 glue.actions = actions;
+                glue.dark = dark;
+                glue.view = Some(view.clone());
             });
         }
     }

@@ -42,7 +42,7 @@ fn menu(snapshot: &Snapshot, usage: Option<&[UsageAccount]>, pending: Option<Pen
         &MenuInput {
             snapshot,
             interrupted: None,
-            usage,
+            usage: usage.map_or(UsageView::Loading, UsageView::Accounts),
             pending,
             light: AppLight::Input,
             now: now(),
@@ -108,11 +108,11 @@ fn reset_weekday_follows_the_given_time_zone() {
 
 #[test]
 fn bars_fill_by_tenths_and_clamp() {
-    assert_eq!(usage_bar(0.0), "▱▱▱▱▱▱▱▱▱▱");
-    assert_eq!(usage_bar(0.62), "▰▰▰▰▰▰▱▱▱▱");
-    assert_eq!(usage_bar(1.0), "▰▰▰▰▰▰▰▰▰▰");
-    assert_eq!(usage_bar(7.0), "▰▰▰▰▰▰▰▰▰▰");
-    assert_eq!(usage_bar(-1.0), "▱▱▱▱▱▱▱▱▱▱");
+    assert_eq!(bar_cells(0.0), (0, 10));
+    assert_eq!(bar_cells(0.62), (6, 4));
+    assert_eq!(bar_cells(1.0), (10, 0));
+    assert_eq!(bar_cells(7.0), (10, 0));
+    assert_eq!(bar_cells(-1.0), (0, 10));
     assert_eq!(percent(0.915), 92);
     assert_eq!(percent(2.0), 100);
 }
@@ -121,6 +121,7 @@ fn bars_fill_by_tenths_and_clamp() {
 
 fn account(name: &str, session: f32, week: f32) -> UsageAccount {
     UsageAccount {
+        note: None,
         name: name.into(),
         windows: vec![
             UsageWindow {
@@ -144,7 +145,7 @@ fn near_limit_starts_at_eighty_percent_on_either_window() {
     assert!(account("a", 0.10, 0.85).near_limit(), "the weekly window counts");
     assert_eq!(account("a", 0.94, 0.1).level(), UsageLevel::Warn);
     assert_eq!(account("a", 0.1, 0.95).level(), UsageLevel::Critical);
-    assert!(!UsageAccount { name: "x".into(), windows: vec![] }.near_limit());
+    assert!(!UsageAccount { name: "x".into(), windows: vec![], note: None }.near_limit());
 }
 
 #[test]
@@ -162,7 +163,11 @@ fn a_near_limit_account_is_flagged_and_toned_in_the_menu() {
             _ => None,
         })
         .expect("the 91% line");
-    assert!(personal_5h.text.contains("5h  ▰▰▰▰▰▰▰▰▰▱  91%"), "{}", personal_5h.text);
+    assert!(personal_5h.text.contains("5h  ██████████   91%"), "{}", personal_5h.text);
+    // Nine filled cells in the tone, one track cell, and the percentage in the label colour.
+    assert!(personal_5h.spans.iter().any(|s| s.tone == Tone::Bromine && s.len == 9));
+    assert!(personal_5h.spans.iter().any(|s| s.tone == Tone::Track && s.len == 1));
+    assert!(!personal_5h.spans.iter().any(|s| s.start >= 4 + 10 && s.start < 4 + 10 + 6 && s.tone != Tone::Muted), "the % is not tinted");
     assert!(personal_5h.text.ends_with("resets in 38m"));
     assert!(personal_5h.spans.iter().any(|s| s.tone == Tone::Bromine));
     let critical = [account("x", 0.97, 0.1)];
@@ -199,11 +204,12 @@ fn managed(label: &str, harness: HarnessId, signed_in: bool) -> ManagedAccount {
         signed_in,
         plan_label: None,
         usage_windows: vec![window("Session", 0.2, 30), window("Week", 0.5, 3000)],
+        usage_note: None,
     }
 }
 
 #[test]
-fn usage_accounts_list_default_then_managed_per_harness_and_skip_the_unused() {
+fn usage_accounts_list_default_then_managed_per_harness_and_skip_unused_saved_logins() {
     let global = AgentAccountsSnapshot {
         accounts: vec![
             slot("saved", HarnessId::ClaudeCode, false, vec![window("Session", 0.9, 5)]),
@@ -228,13 +234,14 @@ fn usage_accounts_list_default_then_managed_per_harness_and_skip_the_unused() {
         [
             "Default \u{b7} Claude Code",
             "Personal \u{b7} Claude Code",
+            "Signed out \u{b7} Claude Code",
             "Default \u{b7} Codex",
             "Work \u{b7} Codex"
         ]
     );
     let labels: Vec<&str> = accounts[0].windows.iter().map(|w| w.label.as_str()).collect();
     assert_eq!(labels, ["5h", "wk"]);
-    assert_eq!(accounts[2].windows[1].label, "mo");
+    assert_eq!(accounts[3].windows[1].label, "mo");
     assert!(usage_accounts(None, None).is_empty());
 }
 
@@ -294,16 +301,19 @@ fn restart_shows_only_with_a_pending_build_and_once_armed_is_a_status_line() {
 #[test]
 fn nothing_running_has_the_footer_only() {
     let view = menu(&snapshot(&[]), Some(&[]), None);
-    assert_eq!(texts(&view), ["Nothing running", "---", "Open Mast", "Quit Mast"]);
+    assert_eq!(
+        texts(&view),
+        ["Nothing running", "---", "Usage", "no accounts signed in", "---", "Open Mast", "Quit Mast"]
+    );
 }
 
 #[test]
 fn usage_loads_then_unavailable_accounts_say_so() {
     let loading = texts(&menu(&snapshot(&[]), None, None));
     assert!(loading.iter().any(|l| l == "Usage") && loading.iter().any(|l| l == "Loading\u{2026}"));
-    let empty = [UsageAccount { name: "Default \u{b7} Codex".into(), windows: vec![] }];
+    let empty = [UsageAccount { name: "Default \u{b7} Codex".into(), windows: vec![], note: None }];
     let lines = texts(&menu(&snapshot(&[]), Some(&empty), None));
-    assert!(lines.iter().any(|l| l == "usage unavailable"));
+    assert!(lines.iter().any(|l| l == "usage unavailable \u{2014} no usage data"));
 }
 
 #[test]
@@ -341,7 +351,7 @@ fn the_interrupted_block_offers_resume_all_for_chats_needing_a_decision() {
         &MenuInput {
             snapshot: &snap,
             interrupted: Some(&block),
-            usage: Some(&[]),
+            usage: UsageView::Accounts(&[]),
             pending: None,
             light: AppLight::Idle,
             now: now(),
@@ -403,7 +413,7 @@ fn a_pending_build_adds_a_ring_and_nothing_else_changes_inside() {
 fn the_glyph_follows_the_light_and_the_pending_build() {
     let snap = snapshot(&[]);
     let view = build_menu(
-        &MenuInput { snapshot: &snap, interrupted: None, usage: Some(&[]), pending: Some(PendingBuild { changes: None, armed: false }), light: AppLight::Error, now: now() },
+        &MenuInput { snapshot: &snap, interrupted: None, usage: UsageView::Accounts(&[]), pending: Some(PendingBuild { changes: None, armed: false }), light: AppLight::Error, now: now() },
         &Utc,
     );
     assert_eq!(view.glyph, Glyph { light: AppLight::Error, ring: true, bars: GlyphBars::default() });
@@ -429,7 +439,7 @@ fn bars_glyph(bars: GlyphBars) -> Glyph {
 fn one_mini_bar_per_account_with_a_session_window_up_to_four() {
     let usage = [
         account("a", 0.62, 0.4),
-        UsageAccount { name: "no windows".into(), windows: vec![] },
+        UsageAccount { name: "no windows".into(), windows: vec![], note: None },
         account("b", 0.91, 0.7),
         account("c", 0.18, 0.5),
     ];
@@ -484,4 +494,108 @@ fn an_empty_account_still_shows_a_stub_and_the_menu_glyph_carries_the_bars() {
     let view = menu(&snapshot(&[]), Some(&usage), None);
     assert_eq!(view.glyph.bars.len, 2);
     assert!(view.tooltip.contains("a 5h 62%") && view.tooltip.contains("b 5h 91%"));
+}
+
+// --- unavailable usage ------------------------------------------------------------
+
+fn managed_with(label: &str, harness: HarnessId, signed_in: bool, note: Option<&str>) -> ManagedAccount {
+    ManagedAccount {
+        id: label.into(),
+        harness,
+        label: label.into(),
+        email: None,
+        signed_in,
+        plan_label: None,
+        usage_windows: vec![],
+        usage_note: note.map(str::to_owned),
+    }
+}
+
+#[test]
+fn an_account_without_windows_says_why_in_its_card() {
+    let global = AgentAccountsSnapshot {
+        accounts: vec![{
+            let mut key = slot("live", HarnessId::Codex, true, vec![]);
+            key.auth_kind = Some(mast_proto::AgentAuthKind::ApiKey);
+            key
+        }],
+        warnings: vec![],
+    };
+    let managed = ManagedAccountsSnapshot {
+        accounts: vec![
+            managed_with("me@x.com", HarnessId::ClaudeCode, true, Some("token expired \u{2014} start a chat on this account to refresh it")),
+            managed_with("old@x.com", HarnessId::ClaudeCode, false, None),
+            managed_with("bare@x.com", HarnessId::Codex, true, None),
+        ],
+        ..Default::default()
+    };
+    let accounts = usage_accounts(Some(&global), Some(&managed));
+    let view = menu(&snapshot(&[]), Some(&accounts), None);
+    let lines = texts(&view);
+    for want in [
+        "usage unavailable \u{2014} token expired \u{2014} start a chat on this account to refresh it",
+        "usage unavailable \u{2014} not signed in",
+        "usage unavailable \u{2014} no usage data",
+        "usage unavailable \u{2014} API key, no plan usage",
+    ] {
+        assert!(lines.iter().any(|l| l == want), "{want}: {lines:?}");
+    }
+    // Each reason sits under its account's name.
+    let at = |needle: &str| lines.iter().position(|l| l.starts_with(needle)).unwrap();
+    assert_eq!(lines[at("me@x.com") + 1], "usage unavailable \u{2014} token expired \u{2014} start a chat on this account to refresh it");
+}
+
+#[test]
+fn a_failed_probe_with_nothing_cached_shows_the_reason_and_loading_is_distinct() {
+    let snap = snapshot(&[]);
+    let view = build_menu(
+        &MenuInput { snapshot: &snap, interrupted: None, usage: UsageView::Failed("Engine not connected"), pending: None, light: AppLight::Idle, now: now() },
+        &Utc,
+    );
+    assert!(texts(&view).iter().any(|l| l == "usage unavailable \u{2014} Engine not connected"));
+    assert_eq!(view.glyph.bars.len, 0, "no bars without data");
+    assert!(texts(&menu(&snap, None, None)).iter().any(|l| l == "Loading\u{2026}"));
+}
+
+// --- refresh schedule (fake clock) -----------------------------------------------
+
+#[test]
+fn startup_probes_once_then_waits_for_the_period() {
+    let t0 = std::time::Instant::now();
+    let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
+    let mut schedule = UsageSchedule::default();
+    assert!(schedule.due(at(0), UsageTrigger::Tick), "the startup probe is due at once");
+    schedule.begin();
+    assert!(!schedule.due(at(1), UsageTrigger::Tick), "not while one is in flight");
+    assert!(!schedule.due(at(1), UsageTrigger::MenuOpen));
+    schedule.finish(at(2), true);
+    assert!(!schedule.due(at(3), UsageTrigger::Tick));
+    assert!(!schedule.due(at(2 + USAGE_PERIODIC_SECS - 1), UsageTrigger::Tick));
+    assert!(schedule.due(at(2 + USAGE_PERIODIC_SECS), UsageTrigger::Tick), "every five minutes");
+}
+
+#[test]
+fn opening_the_menu_refreshes_only_a_stale_probe() {
+    let t0 = std::time::Instant::now();
+    let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
+    let mut schedule = UsageSchedule::default();
+    schedule.begin();
+    schedule.finish(at(0), true);
+    assert!(!schedule.due(at(USAGE_STALE_SECS - 1), UsageTrigger::MenuOpen), "the 60 s cache");
+    assert!(schedule.due(at(USAGE_STALE_SECS), UsageTrigger::MenuOpen));
+    assert!(!schedule.due(at(USAGE_STALE_SECS), UsageTrigger::Tick), "a tick still waits for the period");
+}
+
+#[test]
+fn a_failed_probe_is_retried_after_a_minute_not_five() {
+    let t0 = std::time::Instant::now();
+    let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
+    let mut schedule = UsageSchedule::default();
+    schedule.begin();
+    schedule.finish(at(0), false);
+    assert!(!schedule.due(at(USAGE_STALE_SECS - 1), UsageTrigger::Tick));
+    assert!(schedule.due(at(USAGE_STALE_SECS), UsageTrigger::Tick));
+    schedule.begin();
+    schedule.finish(at(USAGE_STALE_SECS), true);
+    assert!(!schedule.due(at(2 * USAGE_STALE_SECS), UsageTrigger::Tick), "success goes back to five minutes");
 }

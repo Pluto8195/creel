@@ -112,6 +112,7 @@ fn mount<'a>(
                             signed_in: false,
                             plan_label: None,
                             usage_windows: Vec::new(),
+                            usage_note: None,
                         }],
                         project_defaults: Vec::new(),
                         chat_pins: vec![ChatAccountPin {

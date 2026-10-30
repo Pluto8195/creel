@@ -291,3 +291,86 @@ fn pinning_a_chat_at_start_overrides_the_project_default_once() {
             .is_err()
     );
 }
+
+// --- why usage is unavailable (shown in the menu bar item's cards) -------------
+
+#[tokio::test]
+async fn a_rejected_token_says_it_expired_and_a_later_success_clears_the_note() {
+    let rig = rig();
+    let account = rig.managed.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let home = rig.managed.home_of(HarnessId::ClaudeCode, &account.id);
+    std::fs::write(
+        home.join(".credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"stale"}}"#,
+    )
+    .unwrap();
+    let (harness, creds) = rig.managed.credentials_of(&account.id).unwrap();
+
+    let rejected = fake_usage(401, "{}").await;
+    rig.agent.set_usage_urls(&rejected.url, &rejected.url);
+    assert!(rig.agent.managed_usage(harness, &account.id, &creds, true).await.is_none());
+    let note = rig.agent.managed_usage_note(harness, &account.id).unwrap();
+    assert!(note.starts_with("token expired"), "{note}");
+    assert!(!note.contains("stale"), "the note never carries the token");
+
+    // After the CLI refreshes (a good token), the probe works and the note goes.
+    let ok = fake_usage(200, CLAUDE_BODY).await;
+    rig.agent.set_usage_urls(&ok.url, &ok.url);
+    // Past the 60 s cache: a forced list of the engine clears it.
+    rig.agent.list(true).await.unwrap();
+    assert!(rig.agent.managed_usage(harness, &account.id, &creds, true).await.is_some());
+    assert_eq!(rig.agent.managed_usage_note(harness, &account.id), None);
+}
+
+#[tokio::test]
+async fn other_probe_failures_name_themselves() {
+    let rig = rig();
+    let account = rig.managed.create(HarnessId::ClaudeCode, "Work").unwrap();
+    let creds = serde_json::json!({ "claudeAiOauth": { "accessToken": "t" } });
+
+    let broken = fake_usage(500, "{}").await;
+    rig.agent.set_usage_urls(&broken.url, &broken.url);
+    assert!(rig.agent.managed_usage(HarnessId::ClaudeCode, &account.id, &creds, true).await.is_none());
+    let note = rig.agent.managed_usage_note(HarnessId::ClaudeCode, &account.id).unwrap();
+    assert!(note.starts_with("usage service returned 500"), "{note}");
+
+    let empty = fake_usage(200, "{}").await;
+    rig.agent.set_usage_urls(&empty.url, &empty.url);
+    rig.agent.list(true).await.unwrap();
+    assert!(rig.agent.managed_usage(HarnessId::ClaudeCode, &account.id, &creds, true).await.is_none());
+    assert_eq!(
+        rig.agent.managed_usage_note(HarnessId::ClaudeCode, &account.id).as_deref(),
+        Some("no usage data returned")
+    );
+
+    let no_token = serde_json::json!({ "claudeAiOauth": {} });
+    rig.agent.list(true).await.unwrap();
+    assert!(rig.agent.managed_usage(HarnessId::ClaudeCode, &account.id, &no_token, true).await.is_none());
+    assert_eq!(
+        rig.agent.managed_usage_note(HarnessId::ClaudeCode, &account.id).as_deref(),
+        Some("the sign-in has no access token")
+    );
+}
+
+#[tokio::test]
+async fn a_codex_api_key_login_has_no_plan_usage() {
+    let rig = rig();
+    let account = rig.managed.create(HarnessId::Codex, "Keyed").unwrap();
+    let creds = serde_json::json!({ "OPENAI_API_KEY": "sk-secret" });
+    assert!(rig.agent.managed_usage(HarnessId::Codex, &account.id, &creds, true).await.is_none());
+    let note = rig.agent.managed_usage_note(HarnessId::Codex, &account.id).unwrap();
+    assert!(note.contains("API key login"), "{note}");
+    assert!(!note.contains("sk-secret"));
+}
+
+#[test]
+fn a_missing_sign_in_says_where_it_looked() {
+    let rig = rig();
+    let claude = rig.managed.create(HarnessId::ClaudeCode, "Empty").unwrap();
+    let reason = rig.managed.credentials_or_reason(&claude.id).unwrap_err();
+    assert!(reason.contains("Keychain"), "{reason}");
+    let codex = rig.managed.create(HarnessId::Codex, "Empty").unwrap();
+    let reason = rig.managed.credentials_or_reason(&codex.id).unwrap_err();
+    assert!(reason.contains("auth.json"), "{reason}");
+    assert_eq!(rig.managed.credentials_or_reason("missing").unwrap_err(), "unknown account");
+}
