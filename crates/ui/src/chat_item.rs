@@ -202,6 +202,7 @@ pub(crate) fn facts(input: &FactsInput<'_>) -> ChatItemFacts {
                 identifier: found.identifier,
                 title: None,
                 url: Some(found.url),
+                state: None,
             });
         }
         if prs.is_empty() {
@@ -211,6 +212,7 @@ pub(crate) fn facts(input: &FactsInput<'_>) -> ChatItemFacts {
                     number: pr.number,
                     title: None,
                     source: None,
+                    status: None,
                 });
             }
         }

@@ -1139,6 +1139,10 @@ fn header_links(status: &OverviewLinkStatus) -> crate::chat_metadata::HeaderLink
                     .as_ref()
                     .map_or_else(|| pr_number_from_url(&link.url), |pr| pr.number),
                 title: link.detail.as_ref().and_then(|pr| pr.title.clone()),
+                status: link
+                    .detail
+                    .as_ref()
+                    .map(crate::chat_metadata::HeaderPr::status_from_detail),
                 url: link.url,
                 source: link.source,
             })
@@ -1150,6 +1154,7 @@ fn header_links(status: &OverviewLinkStatus) -> crate::chat_metadata::HeaderLink
                 identifier: ticket.identifier.clone(),
                 title: ticket.title.clone(),
                 url: ticket.url.clone(),
+                state: ticket.status.clone().filter(|s| !s.trim().is_empty()),
             }),
     }
 }

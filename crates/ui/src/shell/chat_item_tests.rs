@@ -1210,3 +1210,136 @@ fn the_team_hotkey_avoids_the_browsers_new_tab(_cx: &mut TestAppContext) {
             .all(|id| id.default_combo() != "mod-t" && id.default_combo() != OPEN_TEAM_TAB_COMBO)
     );
 }
+
+// ----------------------------------------------------------------------
+// Linked PR rows: title, state, checks, review from the PR cache
+// ----------------------------------------------------------------------
+mod pr_rows {
+    use super::*;
+    use crate::github::fixture::summary;
+    use mast_proto::{
+        PullRequestCiStatus, PullRequestReviewDecision, PullRequestState,
+    };
+
+    fn cache(
+        shell: &Entity<Shell>,
+        vcx: &mut VisualTestContext,
+        edit: impl FnOnce(&mut mast_proto::PullRequestStatusSummary),
+        partial: bool,
+    ) {
+        shell.update(vcx, |shell, cx| {
+            let mut status = summary("app", 7, "Add auth to the API");
+            edit(&mut status);
+            shell.state.update(cx, |state, _| {
+                state.github.set_ready_for_test(status, partial)
+            });
+            cx.notify();
+        });
+        draw(vcx);
+    }
+
+    fn facts(shell: &Entity<Shell>, vcx: &mut VisualTestContext) -> crate::chat_item::ChatItemFacts {
+        shell.read_with(vcx, |shell, cx| shell.chat_item_facts(CHAT_API, cx).unwrap())
+    }
+
+    #[gpui::test]
+    fn an_uncached_pr_reads_pr_number_until_its_status_arrives(cx: &mut TestAppContext) {
+        let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+        expand(&shell, vcx, &["links"]);
+        let pr = facts(&shell, vcx).prs.remove(0);
+        assert_eq!((pr.number, pr.title.clone(), pr.status), (7, None, None));
+        assert!(has(vcx, "chat-item-pr-0"));
+        assert!(has(vcx, "chat-item-pr-0-title"));
+        for gone in ["chat-item-pr-0-state", "chat-item-pr-0-checks", "chat-item-pr-0-review"] {
+            assert!(!has(vcx, gone), "{gone}");
+        }
+        cache(&shell, vcx, |_| {}, false);
+        assert!(has(vcx, "chat-item-pr-0-state"));
+    }
+
+    #[gpui::test]
+    fn a_cached_pr_shows_title_state_checks_and_review(cx: &mut TestAppContext) {
+        let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+        expand(&shell, vcx, &["links"]);
+        cache(
+            &shell,
+            vcx,
+            |s| {
+                s.ci_status = PullRequestCiStatus::Failing;
+                s.review_decision = Some(PullRequestReviewDecision::ChangesRequested);
+            },
+            false,
+        );
+        let pr = facts(&shell, vcx).prs.remove(0);
+        assert_eq!(pr.title.as_deref(), Some("Add auth to the API"));
+        let status = pr.status.unwrap();
+        assert_eq!(status.state, PullRequestState::Open);
+        assert_eq!(status.checks, Some(PullRequestCiStatus::Failing));
+        assert_eq!(status.review, Some(PullRequestReviewDecision::ChangesRequested));
+        assert_eq!(pr.repo().as_deref(), Some("acme/app"));
+        for id in [
+            "chat-item-pr-0-title",
+            "chat-item-pr-0-state",
+            "chat-item-pr-0-checks",
+            "chat-item-pr-0-review",
+        ] {
+            assert!(has(vcx, id), "{id}");
+        }
+        // Merged with no checks and no review decision drops those slots.
+        cache(
+            &shell,
+            vcx,
+            |s| {
+                s.state = PullRequestState::Merged;
+                s.ci_status = PullRequestCiStatus::None;
+                s.review_decision = None;
+            },
+            false,
+        );
+        let status = facts(&shell, vcx).prs[0].status.unwrap();
+        assert_eq!(status.state, PullRequestState::Merged);
+        assert!(has(vcx, "chat-item-pr-0-state"));
+        assert!(!has(vcx, "chat-item-pr-0-checks"));
+        assert!(!has(vcx, "chat-item-pr-0-review"));
+        cache(&shell, vcx, |s| s.state = PullRequestState::Draft, false);
+        assert_eq!(facts(&shell, vcx).prs[0].status.unwrap().state, PullRequestState::Draft);
+    }
+
+    #[gpui::test]
+    fn a_list_row_fills_title_and_state_without_blanking_known_checks(cx: &mut TestAppContext) {
+        let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+        cache(&shell, vcx, |s| s.state = PullRequestState::Closed, true);
+        let pr = facts(&shell, vcx).prs.remove(0);
+        assert_eq!(pr.title.as_deref(), Some("Add auth to the API"));
+        assert_eq!(pr.status.unwrap().state, PullRequestState::Closed);
+        // A partial row has no CI detail: nothing is invented.
+        assert_eq!(pr.status.unwrap().checks, None);
+    }
+
+    #[gpui::test]
+    fn a_long_title_truncates_inside_the_tab_and_the_card(cx: &mut TestAppContext) {
+        let (shell, vcx) = mount(cx, CHAT_API, true, |_| {});
+        expand(&shell, vcx, &["links"]);
+        cache(&shell, vcx, |s| s.title = "A very long pull request title ".repeat(30), false);
+        let tab = vcx.debug_bounds("chat-item-tab").unwrap();
+        let row = vcx.debug_bounds("chat-item-pr-0").unwrap();
+        let title = vcx.debug_bounds("chat-item-pr-0-title").unwrap();
+        assert!(row.right() <= tab.right(), "{row:?} in {tab:?}");
+        assert!(title.size.height < px(24.0), "one line: {:?}", title.size);
+        // The state still fits next to the clipped title.
+        let state = vcx.debug_bounds("chat-item-pr-0-state").unwrap();
+        assert!(state.right() <= tab.right());
+    }
+
+    #[gpui::test]
+    fn the_hover_card_row_shows_the_same_status(cx: &mut TestAppContext) {
+        let (shell, vcx) = mount(cx, CHAT_API, false, |_| {});
+        cache(&shell, vcx, |_| {}, false);
+        shell.update(vcx, |shell, cx| {
+            shell.toggle_chat_item_card_pin(cx);
+        });
+        draw(vcx);
+        assert!(has(vcx, "chat-item-card-pr-0-title"));
+        assert!(has(vcx, "chat-item-card-pr-0-state"));
+    }
+}

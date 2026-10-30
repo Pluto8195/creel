@@ -330,8 +330,9 @@ fn worker(chat: &Chat, item_id: Option<&str>, input: &TeamInput<'_>) -> WorkerFa
         .and_then(|s| s.ticket.as_ref())
         .map(|t| HeaderTicket {
             identifier: t.identifier.clone(),
-            title: None,
+            title: t.title.clone(),
             url: t.url.clone(),
+            state: t.status.clone(),
         })
         .or_else(|| {
             let snapshot = snapshot?;
@@ -340,6 +341,7 @@ fn worker(chat: &Chat, item_id: Option<&str>, input: &TeamInput<'_>) -> WorkerFa
                 identifier: found.identifier,
                 title: None,
                 url: Some(found.url),
+                state: None,
             })
         });
     let title = item
