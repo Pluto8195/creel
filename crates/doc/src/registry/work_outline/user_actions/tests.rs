@@ -179,8 +179,60 @@ fn propose_params(
             tool_call_id: None,
         },
         text: "Always run the linter before committing".into(),
+        action: ProposalAction::Add,
+        instruction_id: None,
+        rationale: None,
         operation_id: op.into(),
     })
+}
+
+fn modify_params(
+    op: &str,
+    action: ProposalAction,
+    instruction_id: &str,
+    text: &str,
+) -> WorkOutlineMutation {
+    WorkOutlineMutation::ProposeWorkItemInstruction(ProposeWorkItemInstructionParams {
+        space_id: None,
+        target: InstructionProposalTarget::default(),
+        origin: InstructionProposalOrigin::default(),
+        text: text.into(),
+        action,
+        instruction_id: Some(instruction_id.into()),
+        rationale: Some("clearer".into()),
+        operation_id: op.into(),
+    })
+}
+
+fn approve_stale_params(op: &str, proposal: &str, text: &str) -> WorkOutlineMutation {
+    WorkOutlineMutation::ApproveWorkItemInstructionProposal(
+        ApproveWorkItemInstructionProposalParams {
+            proposal_id: proposal.into(),
+            approved_text: text.into(),
+            placement: None,
+            allow_stale: true,
+            operation_id: op.into(),
+        },
+    )
+}
+
+fn instruct_in(doc: &mut RegistryDoc, op: &str, work_item: &str, text: &str) -> String {
+    apply(
+        doc,
+        WorkOutlineMutation::CreateWorkItemInstruction(CreateWorkItemInstructionParams {
+            space_id: SPACE.into(),
+            scope: InstructionScope::WorkItem {
+                work_item_id: work_item.into(),
+            },
+            text: text.into(),
+            placement: None,
+            source: None,
+            operation_id: op.into(),
+        }),
+    )
+    .unwrap()
+    .instruction_id
+    .unwrap()
 }
 
 fn approve_params(op: &str, proposal: &str, text: &str) -> WorkOutlineMutation {
@@ -189,6 +241,7 @@ fn approve_params(op: &str, proposal: &str, text: &str) -> WorkOutlineMutation {
             proposal_id: proposal.into(),
             approved_text: text.into(),
             placement: None,
+            allow_stale: false,
             operation_id: op.into(),
         },
     )
@@ -901,6 +954,7 @@ fn approval_of_an_archived_target_fails_and_placement_is_honored() {
                 proposal_id: p,
                 approved_text: "first".into(),
                 placement: Some(InstructionPlacement::First),
+                allow_stale: false,
                 operation_id: "op-a".into(),
             },
         ),
@@ -1532,4 +1586,170 @@ fn agent_without_assignment_or_project_is_narrowed_further() {
             .code,
         WorkOutlineErrorCode::Unauthorized
     );
+}
+
+// ── edit and remove proposals ────────────────────────────────────────────────
+
+#[test]
+fn edit_proposal_records_its_base_and_approval_edits_the_same_instruction() {
+    let mut doc = doc_with_spaces("dev-a");
+    let w = item(&mut doc, "w", None);
+    let i = instruct_in(&mut doc, "i1", &w, "Run the linter");
+    let p = apply(
+        &mut doc,
+        modify_params("p1", ProposalAction::Edit, &i, "Run the linter and tests"),
+    )
+    .unwrap()
+    .proposal_id
+    .unwrap();
+    let s = snap(&doc);
+    let proposal = s.instruction_proposal(&p).unwrap();
+    assert_eq!(proposal.action, ProposalAction::Edit);
+    assert_eq!(proposal.instruction_id.as_deref(), Some(i.as_str()));
+    assert_eq!(proposal.base_text.as_deref(), Some("Run the linter"));
+    assert_eq!(proposal.rationale.as_deref(), Some("clearer"));
+    assert_eq!(proposal.target, InstructionProposalTarget::work_item(&w));
+    assert_eq!(proposal.status, InstructionProposalStatus::Pending);
+    assert!(!proposal.is_stale_against(s.instructions.iter().find(|x| x.id == i).unwrap()));
+
+    let reply = apply(&mut doc, approve_params("a1", &p, "Run linter, tests")).unwrap();
+    assert_eq!(reply.instruction_id.as_deref(), Some(i.as_str()));
+    let s = snap(&doc);
+    assert_eq!(s.instructions.len(), 1, "no second instruction");
+    assert_eq!(s.instructions[0].text, "Run linter, tests");
+    assert_eq!(s.instructions[0].id, i, "same instruction, new text");
+    let proposal = s.instruction_proposal(&p).unwrap();
+    assert_eq!(proposal.status, InstructionProposalStatus::Approved);
+    // Approving again writes nothing.
+    let batches = doc.pending_len();
+    apply(&mut doc, approve_params("a2", &p, "other")).unwrap();
+    assert_eq!(doc.pending_len(), batches);
+    // Rejecting an approved edit is refused, like an add.
+    assert!(apply(&mut doc, reject_params("r1", &p)).is_err());
+}
+
+#[test]
+fn stale_edit_needs_allow_stale_and_remove_archives() {
+    let mut doc = doc_with_spaces("dev-a");
+    let w = item(&mut doc, "w", None);
+    let i = instruct_in(&mut doc, "i1", &w, "Run the linter");
+    let p = apply(
+        &mut doc,
+        modify_params("p1", ProposalAction::Edit, &i, "Run the linter and tests"),
+    )
+    .unwrap()
+    .proposal_id
+    .unwrap();
+    let rm = apply(
+        &mut doc,
+        modify_params("p2", ProposalAction::Remove, &i, ""),
+    )
+    .unwrap()
+    .proposal_id
+    .unwrap();
+    // Someone edits the instruction after the proposals.
+    apply(
+        &mut doc,
+        WorkOutlineMutation::UpdateWorkItemInstruction(UpdateWorkItemInstructionParams {
+            instruction_id: i.clone(),
+            text: "Run clippy".into(),
+            operation_id: "e1".into(),
+        }),
+    )
+    .unwrap();
+    let s = snap(&doc);
+    let current = s.instructions.iter().find(|x| x.id == i).unwrap();
+    assert!(s.instruction_proposal(&p).unwrap().is_stale_against(current));
+    let error = apply(&mut doc, approve_params("a1", &p, "Run the linter and tests")).unwrap_err();
+    assert_eq!(error.code, WorkOutlineErrorCode::Invalid);
+    assert_eq!(snap(&doc).instructions[0].text, "Run clippy", "nothing written");
+    apply(&mut doc, approve_stale_params("a2", &p, "Run clippy and tests")).unwrap();
+    assert_eq!(snap(&doc).instructions[0].text, "Run clippy and tests");
+    // The remove is now stale too; apply anyway archives.
+    assert!(apply(&mut doc, approve_params("a3", &rm, "")).is_err());
+    apply(&mut doc, approve_stale_params("a4", &rm, "")).unwrap();
+    let s = snap(&doc);
+    assert!(s.instructions.iter().find(|x| x.id == i).unwrap().archived());
+    assert_eq!(
+        s.instruction_proposal(&rm).unwrap().status,
+        InstructionProposalStatus::Approved
+    );
+}
+
+#[test]
+fn modification_proposals_validate() {
+    let mut doc = doc_with_spaces("dev-a");
+    let w = item(&mut doc, "w", None);
+    let i = instruct_in(&mut doc, "i1", &w, "Run the linter");
+    let invalid_code = |doc: &mut RegistryDoc, m| apply(doc, m).unwrap_err().code;
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v1", ProposalAction::Edit, "nope", "x")),
+        WorkOutlineErrorCode::NotFound
+    );
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v2", ProposalAction::Edit, &i, "Run the linter")),
+        WorkOutlineErrorCode::Invalid,
+        "no change"
+    );
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v3", ProposalAction::Edit, &i, "")),
+        WorkOutlineErrorCode::Invalid
+    );
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v4", ProposalAction::Remove, &i, "text")),
+        WorkOutlineErrorCode::Invalid
+    );
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v5", ProposalAction::Add, &i, "x")),
+        WorkOutlineErrorCode::Invalid
+    );
+    // An archived instruction cannot be proposed against.
+    apply(
+        &mut doc,
+        WorkOutlineMutation::ArchiveWorkItemInstruction(ArchiveWorkItemInstructionParams {
+            instruction_id: i.clone(),
+            operation_id: "ar".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        invalid_code(&mut doc, modify_params("v6", ProposalAction::Remove, &i, "")),
+        WorkOutlineErrorCode::Archived
+    );
+}
+
+#[test]
+fn agent_modifications_reach_only_inherited_instructions() {
+    let mut f = fixture();
+    let (own, parent, sibling) = (f.own.clone(), f.parent.clone(), f.sibling.clone());
+    let on_own = instruct_in(&mut f.doc, "io", &own, "own rule");
+    let on_parent = instruct_in(&mut f.doc, "ip", &parent, "parent rule");
+    let on_sibling = instruct_in(&mut f.doc, "is", &sibling, "sibling rule");
+    for (op, id) in [("m1", &on_own), ("m2", &on_parent)] {
+        let proposal = as_agent(
+            &mut f,
+            modify_params(op, ProposalAction::Edit, id, "changed rule"),
+        )
+        .unwrap()
+        .proposal_id
+        .unwrap();
+        let view = snap(&f.doc).instruction_proposal(&proposal).unwrap().clone();
+        assert_eq!(view.source_ref.chat_id.as_deref(), Some("c1"));
+    }
+    denied(
+        &mut f,
+        modify_params("m3", ProposalAction::Remove, &on_sibling, ""),
+    );
+    assert_eq!(
+        as_agent(
+            &mut f,
+            modify_params("m4", ProposalAction::Edit, "missing", "x")
+        )
+        .unwrap_err()
+        .code,
+        WorkOutlineErrorCode::NotFound
+    );
+    // Agents never approve.
+    let p = snap(&f.doc).instruction_proposals[0].id.clone();
+    denied(&mut f, approve_params("m5", &p, "x"));
 }
