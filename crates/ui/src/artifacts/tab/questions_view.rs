@@ -286,6 +286,15 @@ impl ArtifactTab {
     }
 
     #[cfg(test)]
+    pub(crate) fn typed_answer_for_tests(&self, cx: &gpui::App) -> String {
+        self.questions
+            .input
+            .as_ref()
+            .map(|input| input.read(cx).text().to_owned())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_answer_text_for_tests(&mut self, text: &str, cx: &mut Context<Self>) {
         if let Some(input) = self.questions.input.clone() {
             input.update(cx, |input, cx| input.set_text(text, cx));

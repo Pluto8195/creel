@@ -632,6 +632,10 @@ fn answer_affordance(id: &str, ui: &AnswerUi, row_key: &SharedString, theme: &Th
                 .bg(theme.surface)
                 .px(crate::typography::ui_rems(8.0))
                 .py(crate::typography::ui_rems(5.0))
+                // The preview root focuses itself on mouse-down; without this
+                // it runs after the input's own handler and steals focus, so a
+                // click into the field left keystrokes with nothing.
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .children(ui.input.clone()),
         )
         .child(

@@ -201,6 +201,25 @@ fn answering_records_the_answer_and_tells_the_publishing_chat(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn clicking_the_open_answer_input_keeps_focus_and_typing_lands(cx: &mut TestAppContext) {
+    let _dir = init_ui(cx);
+    let (tab, _calls, vcx) = open(cx, plan(Vec::new()), Vec::new(), None);
+    tab.update_in(vcx, |tab, window, cx| {
+        tab.begin_answer("q-2".into(), window, cx)
+    });
+    settle(vcx);
+    let bounds = vcx
+        .debug_bounds("question-answer-input-Q-2")
+        .expect("answer input drawn");
+    vcx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(vcx);
+    vcx.simulate_input("UTC");
+    settle(vcx);
+    let typed = tab.read_with(vcx, |tab, cx| tab.typed_answer_for_tests(cx));
+    assert_eq!(typed, "UTC");
+}
+
+#[gpui::test]
 fn answering_still_records_when_the_chat_is_archived(cx: &mut TestAppContext) {
     let _dir = init_ui(cx);
     let (tab, calls, vcx) = open(cx, plan(Vec::new()), vec![chat("chat-api", true)], None);

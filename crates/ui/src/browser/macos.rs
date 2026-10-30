@@ -417,6 +417,13 @@ impl NativePage {
                 let in_page = monitor_parent
                     .hitTest(point)
                     .is_some_and(|hit| hit.isDescendantOf(&monitor_clip));
+                tracing::debug!(
+                    target: "focus",
+                    in_page,
+                    point = ?(point.x, point.y),
+                    hit = ?monitor_parent.hitTest(point).map(|v| v.class().name().to_string_lossy().into_owned()),
+                    "web view mouse-down"
+                );
                 if click_leaves_page(in_page) {
                     focus_view(&monitor_parent);
                 }
@@ -454,6 +461,7 @@ impl NativePage {
                 &monitor_shortcuts.borrow(),
                 &monitor_extra_keys.borrow(),
             );
+            tracing::debug!(target: "focus", %combo, ?route, "web view key");
             if route == KeyRoute::AppUnlessPageField {
                 // Decided asynchronously: take the key now, probe the page,
                 // then either forward it to GPUI or hand it back to the page
@@ -787,6 +795,7 @@ fn click_leaves_page(in_page: bool) -> bool {
 
 /// Make `view` (GPUI's content view) the window's first responder.
 fn focus_view(view: &NSView) {
+    tracing::debug!(target: "focus", "web view hands first responder back to the app");
     if let Some(window) = view.window() {
         window.makeFirstResponder(Some(view));
     }
