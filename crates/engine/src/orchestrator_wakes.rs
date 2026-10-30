@@ -20,6 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use futures::FutureExt;
+
 use mast_proto::{
     Chat, Session, SessionStatus, WakeEventKind, WakeSettings, WakeStatus, WorkOutlineSnapshot,
 };
@@ -166,6 +168,8 @@ struct Inner {
     event_turns: Arc<EventTurns>,
     clock: Clock,
     store: Option<PathBuf>,
+    /// Ends the watchers: they hold the sessions/doc-host graph alive.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone)]
@@ -202,6 +206,7 @@ impl OrchestratorWakes {
                 event_turns,
                 clock,
                 store,
+                cancel: tokio_util::sync::CancellationToken::new(),
             }),
         }
     }
@@ -218,6 +223,11 @@ impl OrchestratorWakes {
         this
     }
 
+    /// Stop the watchers so a retired engine graph can be freed.
+    pub fn shutdown(&self) {
+        self.inner.cancel.cancel();
+    }
+
     fn now(&self) -> i64 {
         (self.inner.clock)()
     }
@@ -229,7 +239,7 @@ impl OrchestratorWakes {
             loop {
                 let sessions = rx.borrow_and_update().clone();
                 this.ingest_sessions(&sessions).await;
-                if rx.changed().await.is_err() {
+                if this.watch_ended(rx.changed()).await {
                     break;
                 }
             }
@@ -240,7 +250,7 @@ impl OrchestratorWakes {
             loop {
                 let chats = rx.borrow_and_update().clone();
                 this.ingest_chats(&chats).await;
-                if rx.changed().await.is_err() {
+                if this.watch_ended(rx.changed()).await {
                     break;
                 }
             }
@@ -250,7 +260,12 @@ impl OrchestratorWakes {
             let mut changes = this.inner.workspace.watch_changes();
             let mut markers: HashMap<String, (u64, u64, bool)> = HashMap::new();
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if this
+                    .watch_ended(tokio::time::sleep(std::time::Duration::from_millis(500)).map(Ok::<(), ()>))
+                    .await
+                {
+                    break;
+                }
                 changes.borrow_and_update();
                 let spaces = this.inner.workspace.read_spaces().unwrap_or_default();
                 for space in spaces {
@@ -271,11 +286,22 @@ impl OrchestratorWakes {
                     markers.insert(space.id.clone(), marker);
                     this.ingest_snapshot(&snapshot).await;
                 }
-                if changes.changed().await.is_err() {
+                if this.watch_ended(changes.changed()).await {
                     break;
                 }
             }
         });
+    }
+
+    /// Wait for `next`; true when the watch closed or the service shut down.
+    async fn watch_ended<T, E>(
+        &self,
+        next: impl std::future::Future<Output = Result<T, E>>,
+    ) -> bool {
+        tokio::select! {
+            _ = self.inner.cancel.cancelled() => true,
+            result = next => result.is_err(),
+        }
     }
 
     // ── settings / status / user activity ─────────────────────────────────
