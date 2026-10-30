@@ -4396,6 +4396,9 @@ pub struct Composer {
     pickers: Entity<Pickers>,
     /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
     drafts: HashMap<String, String>,
+    /// Throttle for "the user is acting here" pings to the engine (orchestrator
+    /// wakes hold events while the user is typing).
+    activity: crate::orchestrator_wakes::ActivityReporter,
     /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
     /// navigating away and back restores them; memory-only, like the original.
     pub(crate) attachments: HashMap<String, Vec<StagedAttachment>>,
@@ -4681,6 +4684,7 @@ impl Composer {
             queue_edit_draft: None,
             pickers,
             drafts: HashMap::new(),
+            activity: Default::default(),
             attachments: HashMap::new(),
             appshots: HashMap::new(),
             skills: HashMap::new(),
@@ -5544,7 +5548,33 @@ impl Composer {
         self.sync_mention_controls(cx);
     }
 
+    /// Tell the engine the user is acting in this composer's chat. Fire and
+    /// forget; throttled by the reporter unless the draft flag flipped.
+    pub(crate) fn report_user_activity(&mut self, cx: &mut Context<Self>) {
+        let draft = !self.input.read(cx).text().is_empty();
+        let Some(params) = self
+            .activity
+            .note(&self.current_key, Some(draft), Instant::now())
+        else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Ok(value) = serde_json::to_value(&params) else {
+            return;
+        };
+        cx.spawn(async move |_, _| {
+            let _ = engine
+                .client()
+                .call(methods::NOTE_CHAT_USER_ACTIVITY, value)
+                .await;
+        })
+        .detach();
+    }
+
     fn on_input_edited(&mut self, cx: &mut Context<Self>) {
+        self.report_user_activity(cx);
         if self.wizard.is_some() {
             if self.mention.token.is_some() || self.mention_task.is_some() {
                 self.reset_mention(None, cx);
@@ -6472,6 +6502,9 @@ impl Composer {
                 self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             }
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
+            // Landing on a chat is activity there; the restored draft decides
+            // the flag.
+            self.report_user_activity(cx);
         }
 
         // A pending agent question must not take over an active queue edit.
@@ -6913,6 +6946,7 @@ impl Composer {
 
         self.input.update(cx, |input, cx| input.set_text("", cx));
         self.drafts.remove(&self.current_key);
+        self.report_user_activity(cx);
         self.failure = None;
         self.sending = true;
         // A queued row is represented by the queue panel, not the transcript.
@@ -9273,6 +9307,37 @@ mod tests {
         // written its frame into the channel by the time the executor parks.
         cx.run_until_parked();
         assert!(server_in.try_recv().is_err());
+    }
+
+    /// Orchestrator wakes: typing tells the engine at once when the draft
+    /// flips between empty and non-empty, and is throttled otherwise.
+    #[gpui::test]
+    fn typing_reports_user_activity_with_the_draft_flag_and_throttles(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let (out, mut server_in) = tokio::sync::mpsc::channel::<String>(16);
+        let (_server_out, inbound) = tokio::sync::mpsc::channel::<String>(16);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                mast_rpc::RpcClient::new(out, inbound),
+            ));
+            state.selected_chat = Some("c".into());
+        });
+        let composer = cx.new(|cx| Composer::new(state, cx));
+        composer.update(cx, |composer, cx| {
+            composer.input.update(cx, |input, cx| input.set_text("hi", cx));
+            composer.report_user_activity(cx);
+            // Same flag again, inside the window: nothing more.
+            composer.report_user_activity(cx);
+            composer.input.update(cx, |input, cx| input.set_text("", cx));
+            composer.report_user_activity(cx);
+        });
+        cx.run_until_parked();
+        let frames: Vec<String> = std::iter::from_fn(|| server_in.try_recv().ok()).collect();
+        assert_eq!(frames.len(), 2, "{frames:?}");
+        assert!(frames[0].contains("NoteChatUserActivity") && frames[0].contains("\"draftNonEmpty\":true"));
+        assert!(frames[1].contains("\"draftNonEmpty\":false"));
     }
 
     /// The press intent is judged by eye everywhere except here: that a

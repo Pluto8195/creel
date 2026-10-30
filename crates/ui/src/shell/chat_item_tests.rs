@@ -1343,3 +1343,107 @@ mod pr_rows {
         assert!(has(vcx, "chat-item-card-pr-0-state"));
     }
 }
+
+// ----------------------------------------------------------------------
+// Orchestrator wakes: Team header, Item tab, unseen marks
+// ----------------------------------------------------------------------
+
+fn wake_event(id: &str, worker: &str, unseen: bool) -> mast_proto::WakeEventView {
+    mast_proto::WakeEventView {
+        id: id.into(),
+        worker_chat_id: worker.into(),
+        worker_title: None,
+        kind: mast_proto::WakeEventKind::Errored,
+        summary: format!("{worker} errored ({id})"),
+        at_ms: 1,
+        delivered: false,
+        unseen,
+    }
+}
+
+fn set_wake_status(shell: &Entity<Shell>, vcx: &mut VisualTestContext, status: mast_proto::WakeStatus) {
+    shell.update(vcx, |shell, cx| {
+        shell.wakes.set(status);
+        cx.notify();
+    });
+    draw(vcx);
+}
+
+fn held_status() -> mast_proto::WakeStatus {
+    mast_proto::WakeStatus {
+        chat_id: CHAT_API.into(),
+        is_orchestrator: true,
+        held: vec![wake_event("e1", "w-1", false), wake_event("e2", "w-1", false)],
+        hold_reason: Some(mast_proto::WakeHoldReason::Draft),
+        recent: vec![
+            wake_event("e2", "w-1", true),
+            wake_event("e1", "w-1", true),
+            wake_event("e0", "w-0", false),
+        ],
+        unseen_count: 2,
+        ..Default::default()
+    }
+}
+
+#[gpui::test]
+fn the_team_header_has_wake_switches_and_shows_held_and_unseen_only_when_present(
+    cx: &mut TestAppContext,
+) {
+    let (shell, vcx) = mount(cx, CHAT_API, false, worker_asks);
+    add_workers(&shell, vcx, 3);
+    shell.update(vcx, |shell, cx| shell.open_team_tab(cx));
+    draw(vcx);
+    for key in ["enabled", "required-actions", "errors", "turn-finished", "prs"] {
+        let selector: &'static str = Box::leak(format!("team-wake-toggle-{key}").into_boxed_str());
+        assert!(has(vcx, selector), "{selector}");
+    }
+    assert!(!has(vcx, "team-wake-held") && !has(vcx, "team-wake-deliver"));
+    assert!(!has(vcx, "team-wake-unseen"));
+
+    set_wake_status(&shell, vcx, held_status());
+    assert!(has(vcx, "team-wake-held"));
+    assert!(has(vcx, "team-wake-held-reason"));
+    assert!(has(vcx, "team-wake-deliver"));
+    assert!(has(vcx, "team-wake-unseen"));
+    // Only the worker with unseen events is marked.
+    assert!(has(vcx, "team-worker-unseen-w-1"));
+    assert!(!has(vcx, "team-worker-unseen-w-0"));
+    assert!(!has(vcx, "team-worker-unseen-w-2"));
+    shell.read_with(vcx, |shell, _| {
+        assert_eq!(
+            shell.unseen_for_worker("w-1"),
+            ["w-1 errored (e1)", "w-1 errored (e2)"]
+        );
+    });
+}
+
+#[gpui::test]
+fn the_item_tab_shows_the_compact_wake_control_only_for_chats_with_workers(cx: &mut TestAppContext) {
+    let (shell, vcx) = mount(cx, CHAT_API, true, worker_asks);
+    add_workers(&shell, vcx, 3);
+    assert!(has(vcx, "chat-item-wakes"));
+    assert!(!has(vcx, "chat-item-wake-held"));
+    expand(&shell, vcx, &["wakes"]);
+    assert!(has(vcx, "chat-item-wake-toggle-enabled"));
+    assert!(has(vcx, "chat-item-wake-toggle-prs"));
+    set_wake_status(&shell, vcx, held_status());
+    assert!(has(vcx, "chat-item-wake-held"));
+    assert!(has(vcx, "chat-item-wake-deliver"));
+
+    let (_shell, vcx) = mount(cx, CHAT_LOOSE_A, true, |_| {});
+    assert!(!has(vcx, "chat-item-wakes"));
+    assert!(!has(vcx, "chat-item-wake-held"));
+}
+
+#[gpui::test]
+fn toggling_a_wake_switch_updates_the_cached_settings_at_once(cx: &mut TestAppContext) {
+    use crate::orchestrator_wakes::WakeToggle;
+    let (shell, vcx) = mount(cx, CHAT_API, false, worker_asks);
+    add_workers(&shell, vcx, 2);
+    shell.update(vcx, |shell, cx| shell.toggle_wake(CHAT_API, WakeToggle::TurnFinished, cx));
+    shell.update(vcx, |shell, cx| shell.toggle_wake(CHAT_API, WakeToggle::Enabled, cx));
+    shell.read_with(vcx, |shell, _| {
+        let settings = shell.wakes.statuses[CHAT_API].settings;
+        assert!(settings.turn_finished && !settings.enabled && settings.errors);
+    });
+}
